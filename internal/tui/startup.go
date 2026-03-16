@@ -1,11 +1,9 @@
 package tui
 
 import (
-    "fmt"
     "strings"
 
     tea "github.com/charmbracelet/bubbletea"
-    "github.com/charmbracelet/lipgloss"
 )
 
 // CheckResult is sent as a Bubble Tea message when a startup check completes.
@@ -44,26 +42,21 @@ func (m StartupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
     return m, nil
 }
 
-var (
-    okStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-    errStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-    waitStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
-)
-
 func (m StartupModel) View() string {
-    var sb strings.Builder
-    sb.WriteString("forge v0.1.0\n\nChecking configuration...\n\n")
-    for _, r := range m.Results {
-        if r.OK {
-            sb.WriteString(okStyle.Render("✓ "+r.Name+"\n"))
-        } else {
-            sb.WriteString(errStyle.Render(fmt.Sprintf("✗ %s: %s\n", r.Name, r.Detail)))
-        }
-    }
-    if m.Failed {
-        sb.WriteString(errStyle.Render("\nCheck your API keys and try again.  (q) quit\n"))
-    } else {
-        sb.WriteString(waitStyle.Render("\n● Checking...\n"))
-    }
-    return sb.String()
+	var sb strings.Builder
+	sb.WriteString(styleBold.Render("forge") + "  " + styleDim.Render("v0.1.0") + "\n\n")
+	sb.WriteString(styleDim.Render("Checking configuration...") + "\n\n")
+	for _, r := range m.Results {
+		if r.OK {
+			sb.WriteString(styleGreen.Render("✓") + styleMid.Render(" "+r.Name) + "\n")
+		} else {
+			sb.WriteString(styleRed.Render("✗") + styleMid.Render(" "+r.Name) + styleDim.Render(": "+r.Detail) + "\n")
+		}
+	}
+	if m.Failed {
+		sb.WriteString("\n" + styleRed.Render("Check your API keys and try again.") + styleDim.Render("  (q) quit") + "\n")
+	} else {
+		sb.WriteString("\n" + styleYellow.Render("●") + styleDim.Render(" Checking...") + "\n")
+	}
+	return sb.String()
 }
