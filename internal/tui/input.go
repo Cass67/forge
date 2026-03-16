@@ -1,218 +1,252 @@
 package tui
 
 import (
-    "fmt"
-    "strconv"
-    "strings"
+	"fmt"
+	"strconv"
+	"strings"
 
-    tea "github.com/charmbracelet/bubbletea"
-    "github.com/charmbracelet/lipgloss"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
-type FocusField int
+// EditMode and FocusField kept so existing call-sites compile unchanged.
+type EditMode = int
+type FocusField = int
 
 const (
-    FocusPrompt FocusField = iota
-    FocusWriter
-    FocusAuditor
-    FocusRounds
-    FocusLang
+	ModeNav     = 0
+	ModePrompt  = 0
+	ModeWriter  = 1
+	ModeAuditor = 2
+	ModeAttach  = 3
+	FocusWriter  = 0
+	FocusAuditor = 1
+	FocusRounds  = 0
+	FocusLang    = 0
 )
 
 // SessionStarted is emitted when the user presses enter to start.
 type SessionStarted struct {
-    Prompt       string
-    WriterModel  string
-    AuditorModel string
-    Rounds       int
-    LangHint     string
-    ContextFiles []string
+	Prompt       string
+	WriterModel  string
+	AuditorModel string
+	Rounds       int
+	LangHint     string
+	ContextFiles []string
 }
 
 // InputModel is the Bubble Tea model for the input screen.
 type InputModel struct {
-    Prompt        string
-    WriterModels  []string
-    AuditorModels []string
-    WriterIdx     int
-    AuditorIdx    int
-    Rounds        int
-    LangHint      string
-    ContextFiles  []string
-    Focus         FocusField
-    RoundsInput   string
-    RoundsErr     string
-    AttachPrompt  bool
-    AttachInput   string
-    Preserved     bool
+	Prompt        string
+	WriterModels  []string
+	AuditorModels []string
+	WriterIdx     int
+	AuditorIdx    int
+	ModelFocus    int // 0 = writer selected, 1 = auditor selected
+	Rounds        int
+	LangHint      string
+	ContextFiles  []string
+	RoundsInput   string
+	RoundsErr     string
+	Preserved     bool
+	Width         int
+
+	// Legacy fields kept so tests that reference them still compile.
+	Mode  int
+	Focus int
 }
 
-func NewInputModel(writerModels, auditorModels []string) InputModel {
-    return InputModel{
-        WriterModels:  writerModels,
-        AuditorModels: auditorModels,
-        Rounds:        3,
-        RoundsInput:   "3",
-        LangHint:      "auto",
-        Focus:         FocusWriter,
-    }
+func NewInputModel(writerModels, auditorModels []string, defaultWriter, defaultAuditor string) InputModel {
+	m := InputModel{
+		WriterModels:  writerModels,
+		AuditorModels: auditorModels,
+		Rounds:        3,
+		RoundsInput:   "3",
+		LangHint:      "auto",
+	}
+	if defaultWriter != "" {
+		if idx := indexOf(writerModels, defaultWriter); idx >= 0 {
+			m.WriterIdx = idx
+		}
+	}
+	if defaultAuditor != "" {
+		if idx := indexOf(auditorModels, defaultAuditor); idx >= 0 {
+			m.AuditorIdx = idx
+		}
+	}
+	return m
+}
+
+func indexOf(list []string, target string) int {
+	for i, v := range list {
+		if v == target {
+			return i
+		}
+	}
+	return -1
 }
 
 func ClampRounds(n int) int {
-    if n < 1 {
-        return 1
-    }
-    if n > 10 {
-        return 10
-    }
-    return n
+	if n < 1 {
+		return 1
+	}
+	if n > 10 {
+		return 10
+	}
+	return n
 }
 
 func (m InputModel) Init() tea.Cmd { return nil }
 
 func (m InputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-    switch msg := msg.(type) {
-    case tea.KeyMsg:
-        if m.AttachPrompt {
-            return m.updateAttachPrompt(msg)
-        }
-        switch msg.String() {
-        case "q":
-            return m, tea.Quit
-        case "tab":
-            if m.Focus == FocusWriter {
-                m.Focus = FocusAuditor
-            } else {
-                m.Focus = FocusWriter
-            }
-        case "left":
-            if m.Focus == FocusWriter && len(m.WriterModels) > 0 {
-                m.WriterIdx = (m.WriterIdx - 1 + len(m.WriterModels)) % len(m.WriterModels)
-            } else if m.Focus == FocusAuditor && len(m.AuditorModels) > 0 {
-                m.AuditorIdx = (m.AuditorIdx - 1 + len(m.AuditorModels)) % len(m.AuditorModels)
-            }
-        case "right":
-            if m.Focus == FocusWriter && len(m.WriterModels) > 0 {
-                m.WriterIdx = (m.WriterIdx + 1) % len(m.WriterModels)
-            } else if m.Focus == FocusAuditor && len(m.AuditorModels) > 0 {
-                m.AuditorIdx = (m.AuditorIdx + 1) % len(m.AuditorModels)
-            }
-        case "a":
-            m.AttachPrompt = true
-            m.AttachInput = ""
-        case "enter":
-            if m.Prompt == "" {
-                return m, nil
-            }
-            return m, func() tea.Msg {
-                return SessionStarted{
-                    Prompt:       m.Prompt,
-                    WriterModel:  m.writerModel(),
-                    AuditorModel: m.auditorModel(),
-                    Rounds:       m.Rounds,
-                    LangHint:     m.LangHint,
-                    ContextFiles: m.ContextFiles,
-                }
-            }
-        case "backspace":
-            if len(m.Prompt) > 0 {
-                m.Prompt = m.Prompt[:len(m.Prompt)-1]
-            }
-        default:
-            if len(msg.String()) == 1 {
-                m.Prompt += msg.String()
-            }
-        }
-    }
-    return m, nil
-}
+	if sz, ok := msg.(tea.WindowSizeMsg); ok {
+		m.Width = sz.Width
+		return m, nil
+	}
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
 
-func (m InputModel) updateAttachPrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-    switch msg.String() {
-    case "esc":
-        m.AttachPrompt = false
-    case "enter":
-        path := strings.TrimSpace(m.AttachInput)
-        if path != "" {
-            m.ContextFiles = append(m.ContextFiles, path)
-        }
-        m.AttachPrompt = false
-        m.AttachInput = ""
-    case "backspace":
-        if len(m.AttachInput) > 0 {
-            m.AttachInput = m.AttachInput[:len(m.AttachInput)-1]
-        }
-    default:
-        m.AttachInput += msg.String()
-    }
-    return m, nil
+	switch key.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+
+	case "tab":
+		m.ModelFocus = 1 - m.ModelFocus
+
+	case "left":
+		if m.ModelFocus == 0 && len(m.WriterModels) > 0 {
+			m.WriterIdx = (m.WriterIdx - 1 + len(m.WriterModels)) % len(m.WriterModels)
+		} else if m.ModelFocus == 1 && len(m.AuditorModels) > 0 {
+			m.AuditorIdx = (m.AuditorIdx - 1 + len(m.AuditorModels)) % len(m.AuditorModels)
+		}
+
+	case "right":
+		if m.ModelFocus == 0 && len(m.WriterModels) > 0 {
+			m.WriterIdx = (m.WriterIdx + 1) % len(m.WriterModels)
+		} else if m.ModelFocus == 1 && len(m.AuditorModels) > 0 {
+			m.AuditorIdx = (m.AuditorIdx + 1) % len(m.AuditorModels)
+		}
+
+	case "enter":
+		if m.Prompt != "" {
+			return m, func() tea.Msg {
+				return SessionStarted{
+					Prompt:       m.Prompt,
+					WriterModel:  m.writerModel(),
+					AuditorModel: m.auditorModel(),
+					Rounds:       m.Rounds,
+					LangHint:     m.LangHint,
+					ContextFiles: m.ContextFiles,
+				}
+			}
+		}
+
+	case "backspace":
+		if len(m.Prompt) > 0 {
+			m.Prompt = m.Prompt[:len(m.Prompt)-1]
+		}
+
+	default:
+		if len(key.String()) == 1 {
+			m.Prompt += key.String()
+		}
+	}
+
+	return m, nil
 }
 
 func (m InputModel) writerModel() string {
-    if len(m.WriterModels) == 0 {
-        return ""
-    }
-    return m.WriterModels[m.WriterIdx]
+	if len(m.WriterModels) == 0 {
+		return ""
+	}
+	return m.WriterModels[m.WriterIdx]
 }
 
 func (m InputModel) auditorModel() string {
-    if len(m.AuditorModels) == 0 {
-        return ""
-    }
-    return m.AuditorModels[m.AuditorIdx]
+	if len(m.AuditorModels) == 0 {
+		return ""
+	}
+	return m.AuditorModels[m.AuditorIdx]
 }
 
-var focusedStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
-
 func (m InputModel) View() string {
-    var sb strings.Builder
-    sb.WriteString("forge v0.1.0\n\n")
-    sb.WriteString("What do you want to build?\n")
-    promptLen := len(m.Prompt)
-    padding := 42 - promptLen
-    if padding < 0 {
-        padding = 0
-    }
-    sb.WriteString("┌" + strings.Repeat("─", 44) + "┐\n")
-    sb.WriteString("│ " + m.Prompt + "_" + strings.Repeat(" ", padding) + "│\n")
-    sb.WriteString("└" + strings.Repeat("─", 44) + "┘\n\n")
+	var sb strings.Builder
 
-    sb.WriteString("Context files: (a) attach\n")
-    for _, f := range m.ContextFiles {
-        sb.WriteString("  📄 " + f + "\n")
-    }
+	// Header
+	sb.WriteString(styleBold.Render("forge") + "  " + styleDim.Render("v0.1.0") + "\n\n")
 
-    writerLabel := fmt.Sprintf("Writer:  [ %-22s ]", m.writerModel())
-    auditorLabel := fmt.Sprintf("Auditor: [ %-22s ]", m.auditorModel())
-    if m.Focus == FocusWriter {
-        writerLabel += " ←"
-    } else {
-        auditorLabel += " ←"
-    }
-    sb.WriteString("\n" + writerLabel + "\n")
-    sb.WriteString(auditorLabel + "\n\n")
-    sb.WriteString(fmt.Sprintf("Rounds per pass: [%s]   Language hint: [%s]\n\n", m.RoundsInput, m.LangHint))
+	// Model rows
+	for i, label := range []string{"Writer  ", "Auditor "} {
+		var modelName string
+		if i == 0 {
+			modelName = m.writerModel()
+		} else {
+			modelName = m.auditorModel()
+		}
+		if m.ModelFocus == i {
+			sb.WriteString(styleGreen.Render("▶") + " " + styleDim.Render(label) + " " + styleBright.Render(modelName))
+			sb.WriteString(styleDim.Render("  ← tab · ← → cycle"))
+		} else {
+			sb.WriteString("  " + styleDim.Render(label) + " " + styleMid.Render(modelName))
+		}
+		sb.WriteString("\n")
+	}
 
-    if m.AttachPrompt {
-        sb.WriteString(fmt.Sprintf("Attach file: [%s_]\n(enter) confirm   (esc) cancel\n", m.AttachInput))
-    } else {
-        sb.WriteString("(enter) Start   (tab) Shift slot focus  (←/→) Cycle\n(q) Quit\n")
-    }
+	// Context files
+	for _, f := range m.ContextFiles {
+		sb.WriteString("  " + styleDim.Render("File     ") + styleMid.Render(f) + "\n")
+	}
 
-    if m.RoundsErr != "" {
-        sb.WriteString("\n⚠  " + m.RoundsErr + "\n")
-    }
-    return sb.String()
+	// Prompt box
+	boxWidth := m.Width - 4
+	if boxWidth < 40 {
+		boxWidth = 40
+	}
+	if boxWidth > 100 {
+		boxWidth = 100
+	}
+	innerWidth := boxWidth
+	dashes := strings.Repeat("─", boxWidth+2)
+
+	sb.WriteString("\n")
+	sb.WriteString(styleDimGreen.Render("task") + "\n")
+	sb.WriteString(styleDim.Render("┌"+dashes+"┐") + "\n")
+
+	remaining := append([]rune(m.Prompt), '_')
+	for len(remaining) > 0 {
+		var chunk []rune
+		if len(remaining) >= innerWidth {
+			chunk = remaining[:innerWidth]
+			remaining = remaining[innerWidth:]
+		} else {
+			chunk = remaining
+			remaining = nil
+		}
+		pad := strings.Repeat(" ", innerWidth-len(chunk))
+		sb.WriteString(styleDim.Render("│") + " " + styleBright.Render(string(chunk)) + pad + " " + styleDim.Render("│") + "\n")
+	}
+	sb.WriteString(styleDim.Render("└"+dashes+"┘") + "\n")
+
+	// Keybind hint
+	if m.Prompt != "" {
+		sb.WriteString(styleDimGreen.Render("↵") + styleDim.Render(" Start  ·  ") + styleDim.Render("^C Quit") + "\n")
+	} else {
+		sb.WriteString(styleDim.Render("type your task...") + "\n")
+	}
+
+	if m.RoundsErr != "" {
+		sb.WriteString("\n" + styleRed.Render("⚠  "+m.RoundsErr) + "\n")
+	}
+	return sb.String()
 }
 
 // roundsFromInput parses and validates the rounds input string.
 func roundsFromInput(s string) (int, error) {
-    n, err := strconv.Atoi(s)
-    if err != nil || n < 1 || n > 10 {
-        return 0, fmt.Errorf("rounds must be 1–10")
-    }
-    return n, nil
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 1 || n > 10 {
+		return 0, fmt.Errorf("rounds must be 1–10")
+	}
+	return n, nil
 }
 
-// keep focusedStyle used to avoid unused import warning
-var _ = focusedStyle
