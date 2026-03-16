@@ -1,45 +1,45 @@
 package tui
 
 import (
-    "strings"
+	"strings"
 
-    tea "github.com/charmbracelet/bubbletea"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // CheckResult is sent as a Bubble Tea message when a startup check completes.
 type CheckResult struct {
-    Name   string
-    OK     bool
-    Detail string
+	Name   string
+	OK     bool
+	Detail string
 }
 
 // StartupModel is the Bubble Tea model for the startup check screen.
 type StartupModel struct {
-    Results []CheckResult
-    Done    bool
-    Failed  bool
+	Results []CheckResult
+	Done    bool
+	Failed  bool
 }
 
 func NewStartupModel() StartupModel {
-    return StartupModel{}
+	return StartupModel{}
 }
 
 func (m StartupModel) Init() tea.Cmd { return nil }
 
 func (m StartupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-    switch msg := msg.(type) {
-    case CheckResult:
-        m.Results = append(m.Results, msg)
-        if !msg.OK {
-            m.Failed = true
-        }
-        return m, nil
-    case tea.KeyMsg:
-        if isQuit(msg) {
-            return m, tea.Quit
-        }
-    }
-    return m, nil
+	switch msg := msg.(type) {
+	case CheckResult:
+		m.Results = append(m.Results, msg)
+		if !msg.OK {
+			m.Failed = true
+		}
+		return m, nil
+	case tea.KeyMsg:
+		if isQuit(msg) {
+			return m, tea.Quit
+		}
+	}
+	return m, nil
 }
 
 func (m StartupModel) View() string {
