@@ -1,0 +1,93 @@
+package config_test
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"forge/internal/config"
+)
+
+func writeTemp(t *testing.T, content string) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "forge-*.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(content)
+	f.Close()
+	return f.Name()
+}
+
+func TestLoadDefaults(t *testing.T) {
+	path := writeTemp(t, "")
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Models.Writer == "" {
+		t.Error("expected default writer model")
+	}
+	if cfg.Session.RoundsPerPass < 1 {
+		t.Error("expected positive default rounds")
+	}
+}
+
+func TestLoadExplicit(t *testing.T) {
+	toml := `
+[models]
+writer     = "claude-opus-4-6"
+auditor    = "gpt-4o"
+summarizer = "claude-haiku-4-5-20251001"
+
+[session]
+rounds_per_pass = 5
+output_dir = "/tmp/forge-out"
+`
+	path := writeTemp(t, toml)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Models.Writer != "claude-opus-4-6" {
+		t.Errorf("got %s", cfg.Models.Writer)
+	}
+	if cfg.Session.RoundsPerPass != 5 {
+		t.Errorf("got %d", cfg.Session.RoundsPerPass)
+	}
+}
+
+func TestEnvOverridesKeys(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "env-key")
+	path := writeTemp(t, "[keys]\nanthropic = \"file-key\"")
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AnthropicKey() != "env-key" {
+		t.Errorf("expected env-key, got %s", cfg.AnthropicKey())
+	}
+}
+
+func TestTildeExpansion(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	toml := "[session]\noutput_dir = \"~/forge-out\""
+	path := writeTemp(t, toml)
+	cfg, _ := config.Load(path)
+	expected := filepath.Join(home, "forge-out")
+	if cfg.Session.OutputDir != expected {
+		t.Errorf("expected %s, got %s", expected, cfg.Session.OutputDir)
+	}
+}
+
+func TestRoundsValidation(t *testing.T) {
+	for _, n := range []int{0, -1, 11} {
+		if config.ValidRounds(n) {
+			t.Errorf("expected %d to be invalid", n)
+		}
+	}
+	for _, n := range []int{1, 3, 10} {
+		if !config.ValidRounds(n) {
+			t.Errorf("expected %d to be valid", n)
+		}
+	}
+}
