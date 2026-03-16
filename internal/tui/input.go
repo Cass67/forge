@@ -1,27 +1,9 @@
 package tui
 
 import (
-	"fmt"
-	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-)
-
-// EditMode and FocusField kept so existing call-sites compile unchanged.
-type EditMode = int
-type FocusField = int
-
-const (
-	ModeNav     = 0
-	ModePrompt  = 0
-	ModeWriter  = 1
-	ModeAuditor = 2
-	ModeAttach  = 3
-	FocusWriter  = 0
-	FocusAuditor = 1
-	FocusRounds  = 0
-	FocusLang    = 0
 )
 
 // SessionStarted is emitted when the user presses enter to start.
@@ -49,10 +31,6 @@ type InputModel struct {
 	RoundsErr     string
 	Preserved     bool
 	Width         int
-
-	// Legacy fields kept so tests that reference them still compile.
-	Mode  int
-	Focus int
 }
 
 func NewInputModel(writerModels, auditorModels []string, defaultWriter, defaultAuditor string) InputModel {
@@ -240,13 +218,3 @@ func (m InputModel) View() string {
 	}
 	return sb.String()
 }
-
-// roundsFromInput parses and validates the rounds input string.
-func roundsFromInput(s string) (int, error) {
-	n, err := strconv.Atoi(s)
-	if err != nil || n < 1 || n > 10 {
-		return 0, fmt.Errorf("rounds must be 1–10")
-	}
-	return n, nil
-}
-
