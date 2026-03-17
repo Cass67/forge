@@ -25,7 +25,6 @@ type PostRunApp struct {
 	done   DoneModel
 	fix    FixModel
 	result PostRunResult
-	width  int
 }
 
 func NewPostRunApp(
@@ -48,7 +47,6 @@ func (a PostRunApp) Init() tea.Cmd { return nil }
 
 func (a PostRunApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if sz, ok := msg.(tea.WindowSizeMsg); ok {
-		a.width = sz.Width
 		a.fix.Width = sz.Width
 		return a, nil
 	}
@@ -64,6 +62,8 @@ func (a PostRunApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			WriterModel:  msg.WriterModel,
 			AuditorModel: msg.AuditorModel,
 		}
+		return a, tea.Quit
+	case NewSessionRequested:
 		return a, tea.Quit
 	}
 

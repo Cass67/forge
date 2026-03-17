@@ -128,6 +128,7 @@ func main() {
 			AuditorModel: post.AuditorModel,
 			Rounds:       lastStart.Rounds,
 			LangHint:     lastStart.LangHint,
+			ContextFiles: lastStart.ContextFiles,
 		}
 		gate = session.NewTurnGate() // fresh gate — don't carry manual-mode state across sessions
 		events, outDir = startSession(ctx, cfg, tokens, reg, lastStart, gate, filepath.Join(outDir, "code"))
