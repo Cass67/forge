@@ -8,6 +8,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// FixRequested is emitted when the user presses f on the done screen.
+type FixRequested struct{}
+
 // NewSessionRequested is emitted when the user presses n.
 type NewSessionRequested struct{}
 
@@ -36,6 +39,10 @@ func (m DoneModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, openDir(m.OutputDir)
 	case KeyNewSession:
 		return m, func() tea.Msg { return NewSessionRequested{} }
+	case KeyFix:
+		if !m.Aborted {
+			return m, func() tea.Msg { return FixRequested{} }
+		}
 	}
 	return m, nil
 }
@@ -53,7 +60,11 @@ func (m DoneModel) View() string {
 		sb.WriteString(styleGreen.Render("✓") + styleBright.Render(" Session complete") + "\n")
 	}
 	sb.WriteString("\n" + styleDim.Render("Output  ") + styleMid.Render(m.OutputDir) + "\n")
-	sb.WriteString("\n" + styleDim.Render("o  open in Finder   n  new session   q  quit") + "\n")
+	if m.Aborted {
+		sb.WriteString("\n" + styleDim.Render("o  open in Finder   n  new session   q  quit") + "\n")
+	} else {
+		sb.WriteString("\n" + styleDim.Render("o  open in Finder   n  new session   f  fix   q  quit") + "\n")
+	}
 	return sb.String()
 }
 
