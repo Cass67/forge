@@ -2,6 +2,8 @@ package output
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,6 +70,33 @@ func (w *Writer) WriteSessionJSON(meta SessionMeta) error {
 	return os.WriteFile(filepath.Join(w.dir, "session.json"), data, 0o644)
 }
 
+// AppendAgentTranscript appends one completed agent turn to a markdown log.
+func (w *Writer) AppendAgentTranscript(agent string, pass, round int, content string) error {
+	name := transcriptFilename(agent)
+	if name == "" {
+		return fmt.Errorf("unknown agent %q", agent)
+	}
+	path := filepath.Join(w.dir, name)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	var sb strings.Builder
+	if info, statErr := f.Stat(); statErr == nil && info.Size() == 0 {
+		sb.WriteString("# " + transcriptTitle(agent) + "\n\n")
+	}
+	sb.WriteString(fmt.Sprintf("## Pass %d Round %d\n\n", pass, round))
+	sb.WriteString(content)
+	if !strings.HasSuffix(content, "\n") {
+		sb.WriteByte('\n')
+	}
+	sb.WriteString("\n")
+	_, err = f.WriteString(sb.String())
+	return err
+}
+
 // InlineCodeFiles reads all files under code/ and returns them as fenced blocks.
 func (w *Writer) InlineCodeFiles() (string, error) {
 	codeDir := filepath.Join(w.dir, "code")
@@ -87,4 +116,49 @@ func (w *Writer) InlineCodeFiles() (string, error) {
 		return nil
 	})
 	return sb.String(), err
+}
+
+// SeedFrom copies all files from srcCodeDir into this writer's code/ subdirectory.
+// If srcCodeDir does not exist the call is a no-op.
+func (w *Writer) SeedFrom(srcCodeDir string) error {
+	if _, err := os.Stat(srcCodeDir); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return filepath.WalkDir(srcCodeDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, _ := filepath.Rel(srcCodeDir, path)
+		dst := filepath.Join(w.dir, "code", rel)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(dst, data, 0o644)
+	})
+}
+
+func transcriptFilename(agent string) string {
+	switch agent {
+	case "writer":
+		return "AI-1.md"
+	case "auditor":
+		return "AI-2.md"
+	default:
+		return ""
+	}
+}
+
+func transcriptTitle(agent string) string {
+	switch agent {
+	case "writer":
+		return "AI-1 Transcript"
+	case "auditor":
+		return "AI-2 Transcript"
+	default:
+		return "Transcript"
+	}
 }
