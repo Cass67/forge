@@ -36,6 +36,7 @@ type ChatLiveConfig struct {
 	ApprovalCh      <-chan tools.Action
 	ResponseCh      chan<- bool
 	Skills          []skills.Skill
+	AutoSkillsMode  string
 }
 
 type ChatLiveResult struct {
@@ -75,6 +76,8 @@ type chatSessionEntry struct {
 
 type chatOverlayState struct {
 	helpVisible  bool
+	helpTab      int
+	helpScroll   int
 	statsVisible bool
 	search       chatSearchState
 	models       chatModelPickerState
@@ -229,7 +232,10 @@ type chatLiveModel struct {
 	inputGoalX       int
 	inputGoalXSet    bool
 	exitPending      bool
+	pasting          bool
 	skills           []skills.Skill
+	autoSkillsMode   string
+	slashComplete    chatSlashCompletionState
 }
 
 type chatCodeRenderCache struct {
@@ -247,6 +253,12 @@ type chatInputVisualLine struct {
 	text     string
 	startPos int
 	endPos   int
+}
+
+type chatSlashCompletionState struct {
+	baseInput string
+	matches   []string
+	index     int
 }
 
 type chatInputLayout struct {
@@ -274,6 +286,7 @@ func RunChatLive(events <-chan llm.Event, cfg ChatLiveConfig, inputCh chan<- str
 	defer screen.Fini()
 
 	screen.EnableMouse()
+	screen.EnablePaste()
 	screen.Clear()
 	w, h := screen.Size()
 
@@ -332,6 +345,12 @@ func RunChatLive(events <-chan llm.Event, cfg ChatLiveConfig, inputCh chan<- str
 			case *tcell.EventResize:
 				screen.Sync()
 				m.width, m.height = msg.Size()
+			case *tcell.EventPaste:
+				if msg.Start() {
+					m.pasting = true
+				} else if msg.End() {
+					m.pasting = false
+				}
 			case *tcell.EventKey:
 				result, done := m.handleKey(msg, inputCh)
 				if done {
@@ -535,10 +554,16 @@ func (m *chatLiveModel) handleKey(ev *tcell.EventKey, inputCh chan<- string) (Ch
 		m.clearInputGoal()
 		m.scrollFocused(m.bodyHeight() / 2)
 
+	case tcell.KeyTab:
+		if m.completeSlashCommand() {
+			return ChatLiveResult{}, false
+		}
+
 	case tcell.KeyEnter:
 		input := strings.TrimSpace(m.inputBuf)
-		if ev.Modifiers()&tcell.ModShift != 0 {
+		if m.pasting || ev.Modifiers()&tcell.ModShift != 0 {
 			m.clearInputGoal()
+			m.resetSlashCompletion()
 			m.insertInputRune('\n')
 			return ChatLiveResult{}, false
 		}
@@ -550,6 +575,7 @@ func (m *chatLiveModel) handleKey(ev *tcell.EventKey, inputCh chan<- string) (Ch
 			m.handleSlashCommand(input)
 			m.inputBuf = ""
 			m.inputPos = 0
+			m.resetSlashCompletion()
 			m.clearInputGoal()
 			return ChatLiveResult{}, false
 		}
@@ -558,6 +584,7 @@ func (m *chatLiveModel) handleKey(ev *tcell.EventKey, inputCh chan<- string) (Ch
 
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		m.clearInputGoal()
+		m.resetSlashCompletion()
 		if m.inputPos > 0 {
 			runes := []rune(m.inputBuf)
 			m.inputBuf = string(runes[:m.inputPos-1]) + string(runes[m.inputPos:])
@@ -566,6 +593,7 @@ func (m *chatLiveModel) handleKey(ev *tcell.EventKey, inputCh chan<- string) (Ch
 
 	case tcell.KeyDelete:
 		m.clearInputGoal()
+		m.resetSlashCompletion()
 		runes := []rune(m.inputBuf)
 		if m.inputPos < len(runes) {
 			m.inputBuf = string(runes[:m.inputPos]) + string(runes[m.inputPos+1:])
@@ -573,12 +601,15 @@ func (m *chatLiveModel) handleKey(ev *tcell.EventKey, inputCh chan<- string) (Ch
 
 	case tcell.KeyCtrlA:
 		m.clearInputGoal()
+		m.resetSlashCompletion()
 		m.inputPos = 0
 	case tcell.KeyCtrlE:
 		m.clearInputGoal()
+		m.resetSlashCompletion()
 		m.inputPos = len([]rune(m.inputBuf))
 	case tcell.KeyCtrlU:
 		m.clearInputGoal()
+		m.resetSlashCompletion()
 		m.inputBuf = ""
 		m.inputPos = 0
 	case tcell.KeyCtrlF:
@@ -587,9 +618,13 @@ func (m *chatLiveModel) handleKey(ev *tcell.EventKey, inputCh chan<- string) (Ch
 	case tcell.KeyCtrlK:
 		m.clearInputGoal()
 		m.overlays.helpVisible = true
+		m.overlays.helpTab = 0
+		m.overlays.helpScroll = 0
 	case tcell.KeyF1:
 		m.clearInputGoal()
 		m.overlays.helpVisible = true
+		m.overlays.helpTab = 0
+		m.overlays.helpScroll = 0
 	case tcell.KeyF2:
 		m.clearInputGoal()
 		m.themeLowContrast = !m.themeLowContrast
@@ -597,6 +632,15 @@ func (m *chatLiveModel) handleKey(ev *tcell.EventKey, inputCh chan<- string) (Ch
 			m.display.flash = "theme: low contrast"
 		} else {
 			m.display.flash = "theme: default"
+		}
+
+	case tcell.KeyCtrlJ:
+		if m.pasting {
+			m.display.flash = ""
+			m.clearInputGoal()
+			m.resetSlashCompletion()
+			m.insertInputRune('\n')
+			return ChatLiveResult{}, false
 		}
 
 	case tcell.KeyRune:
@@ -612,6 +656,7 @@ func (m *chatLiveModel) handleKey(ev *tcell.EventKey, inputCh chan<- string) (Ch
 		}
 		m.display.flash = ""
 		m.clearInputGoal()
+		m.resetSlashCompletion()
 		m.insertInputRune(ev.Rune())
 		if ev.Rune() == '@' {
 			m.openFilePicker("")
@@ -626,10 +671,133 @@ func (m *chatLiveModel) clearInputGoal() {
 	m.inputGoalXSet = false
 }
 
+func (m *chatLiveModel) resetSlashCompletion() {
+	m.slashComplete = chatSlashCompletionState{}
+}
+
 func (m *chatLiveModel) moveInputCursorHorizontal(delta int) {
 	m.clearInputGoal()
+	m.resetSlashCompletion()
 	runes := []rune(m.inputBuf)
 	m.inputPos = clamp(m.inputPos+delta, 0, len(runes))
+}
+
+func (m *chatLiveModel) completeSlashCommand() bool {
+	if strings.Contains(m.inputBuf, "\n") {
+		m.resetSlashCompletion()
+		return false
+	}
+	input := strings.TrimSpace(m.inputBuf)
+	if !strings.HasPrefix(input, "/") {
+		m.resetSlashCompletion()
+		return false
+	}
+	if m.slashComplete.baseInput != "" && len(m.slashComplete.matches) > 1 && input == m.inputBuf {
+		for _, match := range m.slashComplete.matches {
+			if input == match {
+				m.slashComplete.index = (m.slashComplete.index + 1) % len(m.slashComplete.matches)
+				m.inputBuf = m.slashComplete.matches[m.slashComplete.index]
+				m.inputPos = len([]rune(m.inputBuf))
+				m.display.flash = strings.Join(m.slashComplete.matches, "  ")
+				return true
+			}
+		}
+	}
+	matches := m.matchingSlashCommands(input)
+	if len(matches) == 0 {
+		m.resetSlashCompletion()
+		m.display.flash = fmt.Sprintf("no command matches %s", input)
+		return true
+	}
+	if len(matches) == 1 {
+		m.resetSlashCompletion()
+		m.inputBuf = matches[0]
+		m.inputPos = len([]rune(m.inputBuf))
+		m.display.flash = matches[0]
+		return true
+	}
+	prefix := longestCommonPrefix(matches)
+	m.slashComplete = chatSlashCompletionState{baseInput: input, matches: matches, index: 0}
+	if len([]rune(prefix)) > len([]rune(input)) {
+		m.inputBuf = prefix
+		m.inputPos = len([]rune(m.inputBuf))
+		m.display.flash = strings.Join(matches, "  ")
+		return true
+	}
+	m.inputBuf = matches[0]
+	m.inputPos = len([]rune(m.inputBuf))
+	m.display.flash = strings.Join(matches, "  ")
+	return true
+}
+
+func (m *chatLiveModel) matchingSlashCommands(input string) []string {
+	commands := []string{
+		"/help",
+		"/find",
+		"/models",
+		"/model",
+		"/expand",
+		"/toggle tools",
+		"/toggle tools on",
+		"/toggle tools off",
+		"/theme",
+		"/theme low",
+		"/theme default",
+		"/debug perf",
+		"/debug perf reset",
+		"/copy agent",
+		"/copy tools",
+		"/copy code",
+		"/copy result",
+		"/save",
+		"/restore",
+		"/sessions",
+		"/stats",
+		"/clear",
+		"/clear all",
+		"/clear agent",
+		"/clear tools",
+		"/skills",
+		"/exit",
+		"/quit",
+	}
+	for _, s := range m.skills {
+		commands = append(commands, "/"+s.Name)
+	}
+	seen := make(map[string]struct{}, len(commands))
+	matches := make([]string, 0, len(commands))
+	for _, cmd := range commands {
+		if !strings.HasPrefix(cmd, input) {
+			continue
+		}
+		if _, ok := seen[cmd]; ok {
+			continue
+		}
+		seen[cmd] = struct{}{}
+		matches = append(matches, cmd)
+	}
+	sort.Strings(matches)
+	return matches
+}
+
+func longestCommonPrefix(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	prefix := []rune(values[0])
+	for _, value := range values[1:] {
+		r := []rune(value)
+		n := min(len(prefix), len(r))
+		i := 0
+		for i < n && prefix[i] == r[i] {
+			i++
+		}
+		prefix = prefix[:i]
+		if len(prefix) == 0 {
+			return ""
+		}
+	}
+	return string(prefix)
 }
 
 func (m *chatLiveModel) moveInputCursorVertical(delta int) {
@@ -682,25 +850,26 @@ func (m *chatLiveModel) submitInput(inputCh chan<- string) (ChatLiveResult, bool
 		// Check for skill activation before built-in commands
 		cmd := strings.TrimPrefix(input, "/")
 		if s, ok := skills.Get(m.skills, cmd); ok {
-			m.inputBuf = ""
-			m.inputPos = 0
-			m.display.flash = fmt.Sprintf("skill: %s", s.Name)
-			msg := fmt.Sprintf("[Skill: %s]\n\n%s", s.Name, s.Body)
-			m.display.lastExpandable = ""
-			m.display.statsDuration = 0
-			m.display.statsUsage = llm.Usage{}
-			m.display.turnStartedAt = time.Now()
-			m.appendTurnStart(fmt.Sprintf("/%s", s.Name))
-			m.busy = true
-			m.status = "running"
-			m.display.spinnerFrame = 0
-			inputCh <- msg
+			m.submitSkillInput(inputCh, s, fmt.Sprintf("/%s", s.Name), fmt.Sprintf("skill: %s", s.Name), skills.SkillMessage(s))
 			return ChatLiveResult{}, false
 		}
 		m.handleSlashCommand(input)
 		m.inputBuf = ""
 		m.inputPos = 0
 		return ChatLiveResult{}, false
+	}
+	if !m.busy {
+		switch m.autoSkillsMode {
+		case skills.AutoSkillsAuto:
+			if s, ok := skills.DetectAuto(m.skills, input); ok {
+				m.submitSkillInput(inputCh, s, input, fmt.Sprintf("auto skill: %s", s.Name), skills.SkillMessageWithUserInput(s, input))
+				return ChatLiveResult{}, false
+			}
+		case "", skills.AutoSkillsSuggest:
+			if s, ok := skills.DetectAuto(m.skills, input); ok {
+				m.display.flash = fmt.Sprintf("suggested skill: /%s", s.Name)
+			}
+		}
 	}
 	if m.busy {
 		m.inputBuf = ""
@@ -726,6 +895,21 @@ func (m *chatLiveModel) submitInput(inputCh chan<- string) (ChatLiveResult, bool
 	m.display.spinnerFrame = 0
 	inputCh <- input
 	return ChatLiveResult{}, false
+}
+
+func (m *chatLiveModel) submitSkillInput(inputCh chan<- string, s skills.Skill, turnLabel, flash, msg string) {
+	m.inputBuf = ""
+	m.inputPos = 0
+	m.display.flash = flash
+	m.display.lastExpandable = ""
+	m.display.statsDuration = 0
+	m.display.statsUsage = llm.Usage{}
+	m.display.turnStartedAt = time.Now()
+	m.appendTurnStart(turnLabel)
+	m.busy = true
+	m.status = "running"
+	m.display.spinnerFrame = 0
+	inputCh <- msg
 }
 
 func (m *chatLiveModel) insertInputRune(r rune) {

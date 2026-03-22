@@ -9,10 +9,123 @@ import (
 	"github.com/gdamore/tcell/v2"
 )
 
+func (m *chatLiveModel) helpLines() []string {
+	switch m.overlays.helpTab {
+	case 1:
+		return []string{
+			"Chat commands",
+			"",
+			"Discovery and navigation:",
+			"  /help              open this help overlay",
+			"  /find              open search for current pane",
+			"  /find <query>      search current pane with initial query",
+			"  /models            open model picker",
+			"  /model             open model picker",
+			"  /model <name>      switch to a model",
+			"  /sessions          restore / rename / delete session",
+			"",
+			"Session state:",
+			"  /save              save using an automatic session name",
+			"  /save <name>       save session snapshot",
+			"  /restore           restore latest saved session",
+			"  /restore <name>    restore session snapshot by name",
+			"  /stats             show latest turn stats / Copilot quota",
+			"",
+			"Layout and display:",
+			"  /toggle tools      show / hide tools pane",
+			"  /toggle tools on   show tools pane",
+			"  /toggle tools off  hide tools pane",
+			"  /theme             toggle low-contrast theme",
+			"  /theme low         enable low-contrast theme",
+			"  /theme default     restore default theme",
+			"",
+			"Export and cleanup:",
+			"  /copy agent        export agent pane",
+			"  /copy tools        export tools pane",
+			"  /copy code         export latest code block",
+			"  /copy result       export latest tool result",
+			"  /expand            expand last truncated result",
+			"  /clear             clear panes (and history when available)",
+			"  /clear all         same as /clear",
+			"  /clear agent       clear agent pane",
+			"  /clear tools       clear tools pane",
+			"  /exit              leave live mode",
+		}
+	case 2:
+		return []string{
+			"CLI skills",
+			"",
+			"In chat:",
+			"  /skills            list available skills and activation names",
+			"  /<skill>           activate a loaded skill by name",
+			"                     example: /skills, then /tdd",
+			"",
+			"Skill locations:",
+			"  project: ./.forge/skills/",
+			"  global:  ~/.config/forge/skills/",
+			"",
+			"CLI help:",
+			"  forge help",
+			"  forge help skills",
+			"",
+			"Inspect skills:",
+			"  forge skills list",
+			"  forge skills dir",
+			"  forge skills status",
+			"  forge skills search <query>",
+			"  forge skills remove <name>",
+			"",
+			"Install/update skills:",
+			"  forge skills install [--scope global|project] <source>",
+			"  forge skills install [--scope global|project] --git <repo-url> [--subdir <path>]",
+			"  forge skills install [--scope global|project] superpowers [skill-name ...]",
+			"  forge skills update superpowers [--scope global|project]",
+			"",
+			"Install sources:",
+			"  - local .md skill file",
+			"  - local directory containing .md skill files",
+			"  - HTTP(S) URL to a raw markdown skill file",
+		}
+	default:
+		return []string{
+			"Keyboard shortcuts",
+			"",
+			"Help navigation:",
+			"  F1 / Ctrl-K        open help",
+			"  ← / →              switch help tab",
+			"  ↑ / ↓              scroll help",
+			"  PgUp / PgDn        page help",
+			"  Home / End         jump to top / bottom",
+			"  Esc / Enter / ?    close help",
+			"",
+			"Prompt editing:",
+			"  Enter              send current prompt",
+			"  Shift-Enter        insert newline in prompt",
+			"  ← / → / ↑ / ↓      move prompt cursor",
+			"  Ctrl-A / Ctrl-E    jump to start / end",
+			"  Ctrl-U             clear prompt",
+			"",
+			"Pane navigation:",
+			"  Alt-← / Alt-→      focus agent/tools pane",
+			"  Alt-↑ / Alt-↓      scroll focused pane",
+			"  PgUp / PgDn        scroll focused pane",
+			"  Mouse wheel        scroll hovered pane",
+			"  Drag divider       resize split panes",
+			"  Click scrollbar    page / drag scroll thumb",
+			"  Click + drag       select pane text",
+			"  Middle click       export hovered pane / selection",
+			"",
+			"Search navigation:",
+			"  Ctrl-F             open search for current pane",
+			"  n / N              next / previous search hit",
+		}
+	}
+}
+
 func (m *chatLiveModel) renderHelpOverlay(screen tcell.Screen) {
 	w, h := screen.Size()
-	boxW := min(86, max(54, w-8))
-	boxH := min(23, max(16, h-6))
+	boxW := min(108, max(72, w-6))
+	boxH := min(32, max(20, h-4))
 	x0 := (w - boxW) / 2
 	y0 := (h - boxH) / 2
 	backdrop := tcell.StyleDefault.Background(tcell.GetColor("#000000")).Foreground(tcell.GetColor("#000000"))
@@ -26,45 +139,40 @@ func (m *chatLiveModel) renderHelpOverlay(screen tcell.Screen) {
 	titleStyle := tcell.StyleDefault.Background(tcell.GetColor("#161b22")).Foreground(tcell.GetColor("#56d364")).Bold(true)
 	textStyle := tcell.StyleDefault.Background(tcell.GetColor("#161b22")).Foreground(tcell.GetColor("#c9d1d9"))
 	dimStyle := tcell.StyleDefault.Background(tcell.GetColor("#161b22")).Foreground(tcell.GetColor("#8b949e"))
-	drawText(screen, x0+2, y0, titleStyle, fitWidth(" Keyboard shortcuts ", max(1, boxW-4)))
-	lines := []string{
-		"F1 / Ctrl-K      open help",
-		"F2               toggle low-contrast theme",
-		"Enter            send current prompt",
-		"Shift-Enter      insert newline in prompt",
-		"← / → / ↑ / ↓    move prompt cursor",
-		"Alt-← / Alt-→    focus agent/tools pane",
-		"Alt-↑ / Alt-↓    scroll focused pane",
-		"Ctrl-F / /find   search current pane",
-		"n / N            next / previous search hit",
-		"PgUp / PgDn      scroll focused pane",
-		"Mouse wheel      scroll hovered pane",
-		"Drag divider     resize split panes",
-		"Click scrollbar  page / drag scroll thumb",
-		"Click + drag     select pane text",
-		"Middle click     export hovered pane / selection",
-		"/models          open model picker",
-		"/sessions        restore / rename / delete session",
-		"/save [name]     save session snapshot",
-		"/restore [name]  restore session snapshot",
-		"/toggle tools    show / hide tools pane",
-		"/stats           show latest turn stats / Copilot quota",
-		"/copy code       export latest code block",
-		"/copy result     export latest tool result",
-		"/expand          expand last truncated result",
-		"/skills          list available skills and activation names",
-		"/<skill>         activate a loaded skill by name from /skills",
-		"                 example: /skills, then /tdd",
-		"/clear           clear panes (and history when available)",
-		"/exit            leave live mode",
+	activeTabStyle := tcell.StyleDefault.Background(tcell.GetColor("#1f6feb")).Foreground(tcell.GetColor("#ffffff")).Bold(true)
+	inactiveTabStyle := tcell.StyleDefault.Background(tcell.GetColor("#22272e")).Foreground(tcell.GetColor("#8b949e"))
+
+	drawText(screen, x0+2, y0, titleStyle, fitWidth(" Help ", max(1, boxW-4)))
+	tabs := []string{" Keys ", " Chat Commands ", " CLI Skills "}
+	tabX := x0 + 2
+	for i, tab := range tabs {
+		style := inactiveTabStyle
+		if i == m.overlays.helpTab {
+			style = activeTabStyle
+		}
+		drawText(screen, tabX, y0+1, style, tab)
+		tabX += len([]rune(tab)) + 1
 	}
-	for i, line := range lines {
-		if y0+2+i >= y0+boxH-2 {
+
+	lines := m.helpLines()
+	contentTop := y0 + 3
+	contentHeight := max(1, boxH-5)
+	maxScroll := max(0, len(lines)-contentHeight)
+	if m.overlays.helpScroll > maxScroll {
+		m.overlays.helpScroll = maxScroll
+		if m.overlays.helpScroll < 0 {
+			m.overlays.helpScroll = 0
+		}
+	}
+	for i := 0; i < contentHeight; i++ {
+		idx := m.overlays.helpScroll + i
+		if idx >= len(lines) {
 			break
 		}
-		drawText(screen, x0+2, y0+2+i, textStyle, fitWidth(line, max(1, boxW-4)))
+		drawText(screen, x0+2, contentTop+i, textStyle, fitWidth(lines[idx], max(1, boxW-4)))
 	}
-	drawText(screen, x0+2, y0+boxH-2, dimStyle, fitWidth("Esc / Enter / ? closes this overlay", max(1, boxW-4)))
+	footer := fmt.Sprintf("Tab %d/%d • lines %d-%d/%d • ←/→ switch tabs • ↑/↓ scroll • Esc closes", m.overlays.helpTab+1, len(tabs), min(len(lines), m.overlays.helpScroll+1), min(len(lines), m.overlays.helpScroll+contentHeight), len(lines))
+	drawText(screen, x0+2, y0+boxH-2, dimStyle, fitWidth(footer, max(1, boxW-4)))
 }
 
 func (m *chatLiveModel) renderStatsOverlay(screen tcell.Screen) {

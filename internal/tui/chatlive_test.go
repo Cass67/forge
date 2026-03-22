@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"forge/internal/skills"
+
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -118,6 +120,56 @@ func TestHandleKeyEnterSubmitsMultilineInput(t *testing.T) {
 	}
 }
 
+func TestHandleKeyPastedEnterInsertsNewlineInsteadOfSubmitting(t *testing.T) {
+	inputCh := make(chan string, 1)
+	m := chatLiveModel{
+		inputBuf: "first line",
+		inputPos: len([]rune("first line")),
+		pasting:  true,
+	}
+
+	result, done := m.handleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0), inputCh)
+	if done {
+		t.Fatal("expected chat to remain open")
+	}
+	if result != (ChatLiveResult{}) {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if got := m.inputBuf; got != "first line\n" {
+		t.Fatalf("inputBuf = %q, want %q", got, "first line\n")
+	}
+	select {
+	case got := <-inputCh:
+		t.Fatalf("expected no submitted input, got %q", got)
+	default:
+	}
+}
+
+func TestHandleKeyPastedCtrlJInsertsNewlineInsteadOfSubmitting(t *testing.T) {
+	inputCh := make(chan string, 1)
+	m := chatLiveModel{
+		inputBuf: "first line",
+		inputPos: len([]rune("first line")),
+		pasting:  true,
+	}
+
+	result, done := m.handleKey(tcell.NewEventKey(tcell.KeyCtrlJ, 0, 0), inputCh)
+	if done {
+		t.Fatal("expected chat to remain open")
+	}
+	if result != (ChatLiveResult{}) {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if got := m.inputBuf; got != "first line\n" {
+		t.Fatalf("inputBuf = %q, want %q", got, "first line\n")
+	}
+	select {
+	case got := <-inputCh:
+		t.Fatalf("expected no submitted input, got %q", got)
+	default:
+	}
+}
+
 func TestInputLayoutWrapsAndTracksCursor(t *testing.T) {
 	m := chatLiveModel{height: 20, inputBuf: "abcdefghij", inputPos: len([]rune("abcdefghij"))}
 	layout := m.inputLayout(12)
@@ -227,5 +279,217 @@ func TestHandleKeyEscapePendingClearsOnOtherKey(t *testing.T) {
 	}
 	if !m.exitPending {
 		t.Fatal("expected exit to be pending again")
+	}
+}
+
+func TestHandleKeyTabCompletesSkillsCommand(t *testing.T) {
+	inputCh := make(chan string, 1)
+	m := chatLiveModel{
+		inputBuf: "/sk",
+		inputPos: len([]rune("/sk")),
+	}
+
+	_, done := m.handleKey(tcell.NewEventKey(tcell.KeyTab, 0, 0), inputCh)
+	if done {
+		t.Fatal("tab should not exit")
+	}
+	if got := m.inputBuf; got != "/skills" {
+		t.Fatalf("inputBuf = %q, want %q", got, "/skills")
+	}
+}
+
+func TestHandleKeyTabCompletesLoadedSkillName(t *testing.T) {
+	inputCh := make(chan string, 1)
+	m := chatLiveModel{
+		inputBuf: "/td",
+		inputPos: len([]rune("/td")),
+		skills:   []skills.Skill{{Name: "tdd", Description: "Test-driven development"}},
+	}
+
+	_, done := m.handleKey(tcell.NewEventKey(tcell.KeyTab, 0, 0), inputCh)
+	if done {
+		t.Fatal("tab should not exit")
+	}
+	if got := m.inputBuf; got != "/tdd" {
+		t.Fatalf("inputBuf = %q, want %q", got, "/tdd")
+	}
+}
+
+func TestHandleKeyTabCyclesAmbiguousSlashMatches(t *testing.T) {
+	inputCh := make(chan string, 1)
+	m := chatLiveModel{
+		inputBuf: "/c",
+		inputPos: len([]rune("/c")),
+	}
+
+	_, done := m.handleKey(tcell.NewEventKey(tcell.KeyTab, 0, 0), inputCh)
+	if done {
+		t.Fatal("first tab should not exit")
+	}
+	if got := m.inputBuf; got != "/clear" {
+		t.Fatalf("inputBuf after first tab = %q, want %q", got, "/clear")
+	}
+
+	_, done = m.handleKey(tcell.NewEventKey(tcell.KeyTab, 0, 0), inputCh)
+	if done {
+		t.Fatal("second tab should not exit")
+	}
+	if got := m.inputBuf; got != "/clear agent" {
+		t.Fatalf("inputBuf after second tab = %q, want %q", got, "/clear agent")
+	}
+
+	_, done = m.handleKey(tcell.NewEventKey(tcell.KeyTab, 0, 0), inputCh)
+	if done {
+		t.Fatal("third tab should not exit")
+	}
+	if got := m.inputBuf; got != "/clear all" {
+		t.Fatalf("inputBuf after third tab = %q, want %q", got, "/clear all")
+	}
+}
+
+func TestSubmitInputExplicitSkillActivation(t *testing.T) {
+	inputCh := make(chan string, 1)
+	m := chatLiveModel{
+		inputBuf: "/brainstorming",
+		inputPos: len([]rune("/brainstorming")),
+		skills: []skills.Skill{{
+			Name:        "brainstorming",
+			Description: "Planning and ideation",
+			Body:        "Use brainstorming first.",
+		}},
+	}
+
+	result, done := m.submitInput(inputCh)
+	if done {
+		t.Fatal("expected chat to remain open")
+	}
+	if result != (ChatLiveResult{}) {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if got := m.display.flash; got != "skill: brainstorming" {
+		t.Fatalf("flash = %q, want %q", got, "skill: brainstorming")
+	}
+	select {
+	case got := <-inputCh:
+		want := "[Skill: brainstorming]\n\nUse brainstorming first."
+		if got != want {
+			t.Fatalf("submitted input = %q, want %q", got, want)
+		}
+	default:
+		t.Fatal("expected skill input to be submitted")
+	}
+}
+
+func TestSubmitInputAutoActivatesPlanningSkill(t *testing.T) {
+	inputCh := make(chan string, 1)
+	m := chatLiveModel{
+		inputBuf:       "this is planning, let's design the architecture first",
+		inputPos:       len([]rune("this is planning, let's design the architecture first")),
+		autoSkillsMode: skills.AutoSkillsAuto,
+		skills: []skills.Skill{{
+			Name:        "brainstorming",
+			Description: "Planning and ideation",
+			Body:        "Use brainstorming first.",
+		}},
+	}
+
+	result, done := m.submitInput(inputCh)
+	if done {
+		t.Fatal("expected chat to remain open")
+	}
+	if result != (ChatLiveResult{}) {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if got := m.display.flash; got != "auto skill: brainstorming" {
+		t.Fatalf("flash = %q, want %q", got, "auto skill: brainstorming")
+	}
+	select {
+	case got := <-inputCh:
+		want := "[Skill: brainstorming]\n\nUse brainstorming first.\n\nthis is planning, let's design the architecture first"
+		if got != want {
+			t.Fatalf("submitted input = %q, want %q", got, want)
+		}
+	default:
+		t.Fatal("expected auto-activated skill input to be submitted")
+	}
+}
+
+func TestSubmitInputAutoActivatesDebuggingSkill(t *testing.T) {
+	inputCh := make(chan string, 1)
+	m := chatLiveModel{
+		inputBuf:       "please debug this failing regression and investigate root cause",
+		inputPos:       len([]rune("please debug this failing regression and investigate root cause")),
+		autoSkillsMode: skills.AutoSkillsAuto,
+		skills: []skills.Skill{{
+			Name:        "systematic-debugging",
+			Description: "Debugging methodically",
+			Body:        "Debug systematically.",
+		}},
+	}
+
+	_, _ = m.submitInput(inputCh)
+	select {
+	case got := <-inputCh:
+		want := "[Skill: systematic-debugging]\n\nDebug systematically.\n\nplease debug this failing regression and investigate root cause"
+		if got != want {
+			t.Fatalf("submitted input = %q, want %q", got, want)
+		}
+	default:
+		t.Fatal("expected debugging skill input to be submitted")
+	}
+}
+
+func TestSubmitInputSuggestsSkillInSuggestMode(t *testing.T) {
+	inputCh := make(chan string, 1)
+	m := chatLiveModel{
+		inputBuf:       "this is planning, let's design the architecture first",
+		inputPos:       len([]rune("this is planning, let's design the architecture first")),
+		autoSkillsMode: skills.AutoSkillsSuggest,
+		skills: []skills.Skill{{
+			Name:        "brainstorming",
+			Description: "Planning and ideation",
+			Body:        "Use brainstorming first.",
+		}},
+	}
+
+	_, _ = m.submitInput(inputCh)
+	select {
+	case got := <-inputCh:
+		want := "this is planning, let's design the architecture first"
+		if got != want {
+			t.Fatalf("submitted input = %q, want %q", got, want)
+		}
+	default:
+		t.Fatal("expected suggest-mode input to be submitted")
+	}
+	if got := m.display.flash; got != "" {
+		t.Fatalf("flash = %q, want empty after submit", got)
+	}
+}
+
+func TestSubmitInputDoesNotAutoActivateForGenericInput(t *testing.T) {
+	inputCh := make(chan string, 1)
+	m := chatLiveModel{
+		inputBuf:       "hello there",
+		inputPos:       len([]rune("hello there")),
+		autoSkillsMode: skills.AutoSkillsAuto,
+		skills: []skills.Skill{{
+			Name:        "brainstorming",
+			Description: "Planning and ideation",
+			Body:        "Use brainstorming first.",
+		}},
+	}
+
+	_, _ = m.submitInput(inputCh)
+	select {
+	case got := <-inputCh:
+		if got != "hello there" {
+			t.Fatalf("submitted input = %q, want %q", got, "hello there")
+		}
+	default:
+		t.Fatal("expected generic input to be submitted")
+	}
+	if got := m.display.flash; got != "" {
+		t.Fatalf("flash = %q, want empty", got)
 	}
 }
