@@ -34,8 +34,9 @@ type ChatModel struct {
 
 	chatViewport viewport.Model
 
-	toolsBuf     string
-	toolsVisible bool
+	toolsBuf        string
+	toolsVisible    bool
+	toolsWasShowing bool
 
 	busy           bool
 	viewportDirty  bool
@@ -116,7 +117,7 @@ func (m *ChatModel) refreshViewport() {
 }
 
 func (m ChatModel) chatPaneWidth() int {
-	if !m.toolsVisible {
+	if !m.toolsVisible || m.toolsBuf == "" {
 		return m.width
 	}
 	return max(20, m.width*7/10)
@@ -138,6 +139,13 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case chatTickMsg:
 		if m.busy {
 			m.spinnerFrame = (m.spinnerFrame + 1) % 8
+		}
+		// Detect tools pane appearing/disappearing and resize chat viewport
+		toolsShowing := m.toolsVisible && m.toolsBuf != ""
+		if toolsShowing != m.toolsWasShowing {
+			m.toolsWasShowing = toolsShowing
+			m.chatViewport.Width = m.chatPaneWidth()
+			m.viewportDirty = true
 		}
 		if m.viewportDirty {
 			m.refreshViewport()
