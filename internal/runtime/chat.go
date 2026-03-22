@@ -13,8 +13,10 @@ import (
 	"forge/internal/agent"
 	"forge/internal/agent/tools"
 	"forge/internal/bootstrap"
+	"forge/internal/chatstate"
 	"forge/internal/config"
 	"forge/internal/llm"
+	"forge/internal/skills"
 	"forge/internal/tui"
 )
 
@@ -116,8 +118,10 @@ func RunChatLive(setup *ChatSetup) {
 
 	reg := tools.NewRegistry()
 	registerTools(reg, setup.WorkDir, setup.Config, approve)
+	loadedSkills := skills.Load(setup.WorkDir)
+	state := chatstate.New()
 
-	a := agent.NewAgent(setup.Driver, reg, approve, setup.WorkDir, setup.Config.Chat.MaxTurns, evRenderer)
+	a := agent.NewAgent(setup.Driver, reg, approve, setup.WorkDir, setup.Config.Chat.MaxTurns, evRenderer, loadedSkills, state)
 	inputCh := make(chan string, 1)
 	doneCh := make(chan struct{}, 1)
 
@@ -189,6 +193,8 @@ func RunChatLive(setup *ChatSetup) {
 		},
 		ApprovalCh: evRenderer.ApprovalChan(),
 		ResponseCh: evRenderer.ResponseChan(),
+		Skills:     loadedSkills,
+		State:      state,
 	}
 	tui.RunChatLive(eventsCh, liveCfg, inputCh, doneCh)
 }
@@ -204,9 +210,11 @@ func RunChatConsole(setup *ChatSetup) {
 	reg := tools.NewRegistry()
 	interactiveApprove := agent.InteractiveApproval(os.Stdin, os.Stdout)
 	registerTools(reg, setup.WorkDir, setup.Config, approve, interactiveApprove)
+	loadedSkills := skills.Load(setup.WorkDir)
 
 	renderer := agent.NewRenderer(os.Stdout, 80, true)
-	a := agent.NewAgent(setup.Driver, reg, approve, setup.WorkDir, setup.Config.Chat.MaxTurns, renderer)
+	state := chatstate.New()
+	a := agent.NewAgent(setup.Driver, reg, approve, setup.WorkDir, setup.Config.Chat.MaxTurns, renderer, loadedSkills, state)
 
 	fmt.Printf("forge chat (%s) — %s\n", setup.ChatModel, setup.WorkDir)
 	fmt.Println("type your request, or /help for commands")
@@ -313,7 +321,25 @@ func handleChatSlashCommand(input string, renderer *agent.Renderer, a *agent.Age
 	case input == "/clear":
 		a.ClearHistory()
 		renderer.Info("conversation history cleared")
+	case input == "/skills":
+		loaded := a.Skills()
+		if len(loaded) == 0 {
+			renderer.Info("no skills loaded")
+		} else {
+			fmt.Println()
+			for _, s := range loaded {
+				fmt.Printf("  /%s — %s\n", s.Name, s.Description)
+			}
+			fmt.Println()
+		}
 	default:
+		// Check for skill activation
+		cmd := strings.TrimPrefix(input, "/")
+		if s, ok := skills.Get(a.Skills(), cmd); ok {
+			a.InjectSkill(s)
+			renderer.Info(fmt.Sprintf("skill activated: %s", s.Name))
+			return true
+		}
 		renderer.Error(fmt.Sprintf("unknown command: %s (try /help)", input))
 	}
 	return true
@@ -399,6 +425,9 @@ func PrintChatHelp() {
 	fmt.Println("    /models         show available models")
 	fmt.Println("    /expand         show full output of last truncated result")
 	fmt.Println("    /clear          clear conversation history")
+	fmt.Println("    /skills         list available skills and how to activate them")
+	fmt.Println("    /<skill>        activate a loaded skill by name from /skills")
+	fmt.Println("                     example: /skills, then /tdd")
 	fmt.Println("    /help           show this help")
 	fmt.Println("    /exit           exit chat")
 	fmt.Println()

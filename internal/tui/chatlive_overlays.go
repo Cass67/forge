@@ -84,12 +84,51 @@ func (m *chatLiveModel) openModelPicker() {
 }
 
 func (m *chatLiveModel) handleHelpOverlayKey(ev *tcell.EventKey) ChatLiveResult {
+	totalTabs := 3
+	visibleLines := max(1, min(26, m.height-10))
+	headerLines := 4
+	footerLines := 2
+	pageSize := max(1, visibleLines-headerLines-footerLines)
+	maxScroll := max(0, len(m.helpLines())-pageSize)
 	switch ev.Key() {
 	case tcell.KeyEscape, tcell.KeyEnter:
 		m.overlays.helpVisible = false
+	case tcell.KeyLeft:
+		m.overlays.helpTab = (m.overlays.helpTab + totalTabs - 1) % totalTabs
+		m.overlays.helpScroll = 0
+	case tcell.KeyRight:
+		m.overlays.helpTab = (m.overlays.helpTab + 1) % totalTabs
+		m.overlays.helpScroll = 0
+	case tcell.KeyUp:
+		m.overlays.helpScroll = max(0, m.overlays.helpScroll-1)
+	case tcell.KeyDown:
+		m.overlays.helpScroll = min(maxScroll, m.overlays.helpScroll+1)
+	case tcell.KeyPgUp:
+		m.overlays.helpScroll = max(0, m.overlays.helpScroll-pageSize)
+	case tcell.KeyPgDn:
+		m.overlays.helpScroll = min(maxScroll, m.overlays.helpScroll+pageSize)
+	case tcell.KeyHome:
+		m.overlays.helpScroll = 0
+	case tcell.KeyEnd:
+		m.overlays.helpScroll = maxScroll
 	case tcell.KeyRune:
-		if ev.Rune() == '?' || ev.Rune() == 'q' || ev.Rune() == 'Q' {
+		switch ev.Rune() {
+		case '?', 'q', 'Q':
 			m.overlays.helpVisible = false
+		case '[', 'h', 'H':
+			m.overlays.helpTab = (m.overlays.helpTab + totalTabs - 1) % totalTabs
+			m.overlays.helpScroll = 0
+		case ']', 'l', 'L':
+			m.overlays.helpTab = (m.overlays.helpTab + 1) % totalTabs
+			m.overlays.helpScroll = 0
+		case 'j', 'J':
+			m.overlays.helpScroll = min(maxScroll, m.overlays.helpScroll+1)
+		case 'k', 'K':
+			m.overlays.helpScroll = max(0, m.overlays.helpScroll-1)
+		case 'g':
+			m.overlays.helpScroll = 0
+		case 'G':
+			m.overlays.helpScroll = maxScroll
 		}
 	}
 	return ChatLiveResult{}
