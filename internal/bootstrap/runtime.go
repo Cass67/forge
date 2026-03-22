@@ -101,6 +101,10 @@ func DriverForModel(cfg *config.Config, tokens *auth.Tokens, model string) llm.D
 	}
 	if ref.Provider == "openai" || (ref.Provider == "" && IsOpenAIModel(model)) {
 		if key := cfg.OpenAIKey(); key != "" {
+			apiModel := canonicalOpenAIModel(resolvedModel)
+			if apiModel != resolvedModel {
+				return drivers.NewOpenAIAlias(key, model, apiModel)
+			}
 			return drivers.NewOpenAI(key, resolvedModel)
 		}
 		return nil
@@ -111,11 +115,16 @@ func DriverForModel(cfg *config.Config, tokens *auth.Tokens, model string) llm.D
 			if ref.Provider == "" {
 				apiModel = CopilotAPIModel(model)
 			}
+			apiModel = canonicalOpenAIModel(apiModel)
 			return drivers.NewCopilot(tokens.CopilotToken, model, apiModel)
 		}
 		return nil
 	}
 	if p, ambiguous := ResolveCompatProvider(BuildCompatProviders(cfg), model); p != nil {
+		apiModel := canonicalOpenAIModel(resolvedModel)
+		if apiModel != resolvedModel {
+			return drivers.NewOpenAICompatibleAlias(p.KeyFn(), p.BaseURL, model, apiModel)
+		}
 		return drivers.NewOpenAICompatible(p.KeyFn(), p.BaseURL, resolvedModel)
 	} else if ambiguous {
 		return nil
@@ -129,7 +138,7 @@ func AvailableModels(cfg *config.Config, tokens *auth.Tokens) []string {
 		out = append(out, AnthropicModels()...)
 	}
 	if cfg.OpenAIKey() != "" {
-		out = append(out, OpenAIModels()...)
+		out = append(out, DiscoverOpenAIModels(cfg.OpenAIKey())...)
 	}
 	for _, p := range BuildCompatProviders(cfg) {
 		if p.KeyFn() != "" {
@@ -171,19 +180,6 @@ func AnthropicModels() []string {
 	}
 }
 
-func OpenAIModels() []string {
-	return []string{
-		"gpt-5.4",
-		"gpt-5-mini",
-		"gpt-4o",
-		"gpt-4o-mini",
-		"gpt-4-turbo",
-		"o1",
-		"o1-mini",
-		"o3-mini",
-	}
-}
-
 func AllModels() []string {
 	return append(AnthropicModels(), OpenAIModels()...)
 }
@@ -193,7 +189,16 @@ func IsAnthropicModel(name string) bool {
 }
 
 func IsOpenAIModel(name string) bool {
-	return strings.HasPrefix(name, "gpt") || strings.HasPrefix(name, "o1") || strings.HasPrefix(name, "o3")
+	return strings.HasPrefix(name, "gpt") || strings.HasPrefix(name, "o1") || strings.HasPrefix(name, "o3") || strings.HasPrefix(name, "o4")
+}
+
+func canonicalOpenAIModel(name string) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "gpt-5.4", "gpt5.4":
+		return "gpt-5"
+	default:
+		return strings.TrimSpace(name)
+	}
 }
 
 func IsCopilotModel(name string) bool {
