@@ -82,6 +82,20 @@ func BuildChatSetup(cfg *config.Config, tokens any, modelOverride, workDir strin
 	}, nil
 }
 
+func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, approve tools.ApprovalFunc, forcePrompt ...tools.ApprovalFunc) {
+	fp := approve
+	if len(forcePrompt) > 0 {
+		fp = forcePrompt[0]
+	}
+	reg.Register(tools.NewReadFile(workDir))
+	reg.Register(tools.NewWriteFile(workDir, approve))
+	reg.Register(tools.NewEditFile(workDir, approve))
+	reg.Register(tools.NewListDir(workDir, cfg.Chat.IgnoreDirs))
+	reg.Register(tools.NewSearch(workDir))
+	reg.Register(tools.NewRunCommand(workDir, cfg.Chat.CommandTimeout, approve, fp))
+	reg.Register(tools.NewThink())
+}
+
 func RunChatLive(setup *ChatSetup) {
 	eventsCh := make(chan llm.Event, 64)
 	evRenderer := agent.NewEventRenderer(eventsCh)
@@ -94,12 +108,7 @@ func RunChatLive(setup *ChatSetup) {
 	}
 
 	reg := tools.NewRegistry()
-	reg.Register(tools.NewReadFile(setup.WorkDir))
-	reg.Register(tools.NewWriteFile(setup.WorkDir, approve))
-	reg.Register(tools.NewEditFile(setup.WorkDir, approve))
-	reg.Register(tools.NewListDir(setup.WorkDir, setup.Config.Chat.IgnoreDirs))
-	reg.Register(tools.NewSearch(setup.WorkDir))
-	reg.Register(tools.NewRunCommand(setup.WorkDir, setup.Config.Chat.CommandTimeout, approve, approve))
+	registerTools(reg, setup.WorkDir, setup.Config, approve)
 
 	a := agent.NewAgent(setup.Driver, reg, approve, setup.WorkDir, setup.Config.Chat.MaxTurns, evRenderer)
 	inputCh := make(chan string, 1)
@@ -186,13 +195,8 @@ func RunChatConsole(setup *ChatSetup) {
 	}
 
 	reg := tools.NewRegistry()
-	reg.Register(tools.NewReadFile(setup.WorkDir))
-	reg.Register(tools.NewWriteFile(setup.WorkDir, approve))
-	reg.Register(tools.NewEditFile(setup.WorkDir, approve))
-	reg.Register(tools.NewListDir(setup.WorkDir, setup.Config.Chat.IgnoreDirs))
-	reg.Register(tools.NewSearch(setup.WorkDir))
 	interactiveApprove := agent.InteractiveApproval(os.Stdin, os.Stdout)
-	reg.Register(tools.NewRunCommand(setup.WorkDir, setup.Config.Chat.CommandTimeout, approve, interactiveApprove))
+	registerTools(reg, setup.WorkDir, setup.Config, approve, interactiveApprove)
 
 	renderer := agent.NewRenderer(os.Stdout, 80, true)
 	a := agent.NewAgent(setup.Driver, reg, approve, setup.WorkDir, setup.Config.Chat.MaxTurns, renderer)
