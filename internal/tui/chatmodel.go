@@ -1,10 +1,12 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
 	"forge/internal/chatstate"
+	"forge/internal/llm"
 	"forge/internal/skills"
 
 	"github.com/charmbracelet/bubbles/viewport"
@@ -30,6 +32,7 @@ type ChatModel struct {
 
 	chatViewport viewport.Model
 
+	toolsBuf     string
 	toolsVisible bool
 
 	busy           bool
@@ -128,6 +131,9 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case chatTickMsg:
 		return m, tickCmd()
 
+	case llm.Event:
+		return m.handleLLMEvent(msg)
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -135,6 +141,44 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.chatViewport, cmd = m.chatViewport.Update(msg)
 	return m, cmd
+}
+
+func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
+	switch ev.Kind {
+	case llm.EventToken:
+		m.AppendToLastAgent(ev.Text)
+	case llm.EventToolCall:
+		m.toolsBuf += fmt.Sprintf("● %s %s\n", ev.Text, ev.Content)
+	case llm.EventToolResult:
+		m.toolsBuf += fmt.Sprintf("  → %s\n", truncate(ev.Text, 120))
+	case llm.EventDone:
+		m.busy = false
+		m.status = "ready"
+		stamp := time.Now().Format("15:04:05")
+		m.AddMessage(ChatMessage{
+			Kind:    MsgStatus,
+			Content: "Agent complete • " + stamp,
+		})
+	case llm.EventError:
+		m.busy = false
+		m.status = "error"
+		errMsg := "unknown error"
+		if ev.Err != nil {
+			errMsg = ev.Err.Error()
+		}
+		m.AddMessage(ChatMessage{
+			Kind:    MsgStatus,
+			Content: "Error: " + errMsg,
+		})
+	}
+	return m, nil
+}
+
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "…"
 }
 
 func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
