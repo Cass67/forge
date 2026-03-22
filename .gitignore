@@ -71,6 +71,9 @@ history.jsonl
 sessions/
 log/
 
+# Local build artifacts
+/forge
+
 # OS and editor workspace noise.
 .DS_Store
 .AppleDouble
