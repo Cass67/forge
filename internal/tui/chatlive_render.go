@@ -1,0 +1,367 @@
+package tui
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/gdamore/tcell/v2"
+)
+
+func (m *chatLiveModel) render(screen tcell.Screen) {
+	w, h := screen.Size()
+	m.width, m.height = w, h
+	screen.Clear()
+
+	colorBg := tcell.GetColor("#0d1117")
+	colorPanel := tcell.GetColor("#161b22")
+	colorBorder := tcell.GetColor("#30363d")
+	colorBorderFocus := tcell.GetColor("#58a6ff")
+	colorBright := tcell.GetColor("#f0f6fc")
+	colorMid := tcell.GetColor("#b1bac4")
+	colorDim := tcell.GetColor("#8b949e")
+	colorGreen := tcell.GetColor("#56d364")
+	colorYellow := tcell.GetColor("#e3b341")
+	colorBlue := tcell.GetColor("#58a6ff")
+	colorPurple := tcell.GetColor("#d2a8ff")
+	colorOrange := tcell.GetColor("#f0883e")
+	colorCyan := tcell.GetColor("#79c0ff")
+	colorRed := tcell.GetColor("#f85149")
+	if m.themeLowContrast {
+		colorBg = tcell.GetColor("#11161c")
+		colorPanel = tcell.GetColor("#1b2128")
+		colorBorder = tcell.GetColor("#46515c")
+		colorBorderFocus = tcell.GetColor("#7aa2c9")
+		colorBright = tcell.GetColor("#d7dee5")
+		colorMid = tcell.GetColor("#b7c0c9")
+		colorDim = tcell.GetColor("#98a3ad")
+		colorGreen = tcell.GetColor("#7fbf9a")
+		colorYellow = tcell.GetColor("#c9b37a")
+		colorBlue = tcell.GetColor("#7aa2c9")
+		colorPurple = tcell.GetColor("#b3a1c9")
+		colorOrange = tcell.GetColor("#c99b73")
+		colorCyan = tcell.GetColor("#86b7c4")
+		colorRed = tcell.GetColor("#c98585")
+	}
+
+	styleStatus := tcell.StyleDefault.Background(colorBg).Foreground(colorMid)
+	styleBody := tcell.StyleDefault.Background(colorPanel).Foreground(colorBright)
+	styleBodyDim := tcell.StyleDefault.Background(colorPanel).Foreground(colorDim)
+	styleTitleDim := tcell.StyleDefault.Background(colorPanel).Foreground(colorDim)
+	styleTitleFocus := tcell.StyleDefault.Background(colorPanel).Foreground(colorGreen).Bold(true)
+	stylePrompt := tcell.StyleDefault.Background(colorPanel).Foreground(colorGreen).Bold(true)
+	styleInput := tcell.StyleDefault.Background(colorPanel).Foreground(colorBright)
+	styleApproval := tcell.StyleDefault.Background(colorPanel).Foreground(colorYellow).Bold(true)
+	styleAccent := tcell.StyleDefault.Background(colorPanel).Foreground(colorBlue)
+	styleDiffAdd := tcell.StyleDefault.Foreground(tcell.GetColor("#56d364")).Background(tcell.GetColor("#0f2d16"))
+	styleDiffRm := tcell.StyleDefault.Foreground(colorRed).Background(tcell.GetColor("#3d1117"))
+
+	fillRect(screen, 0, 0, w, h, tcell.StyleDefault.Background(colorBg))
+
+	spinnerFrames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"}
+	m.renderHeader(screen, w, styleStatus, spinnerFrames)
+
+	leftX, leftY, leftW, leftH := m.leftPaneRect()
+	rightX, rightY, rightW, rightH := m.rightPaneRect()
+	inputX, inputY, inputW, inputH := m.inputRect()
+
+	m.renderChrome(screen, colorBg, colorPanel, colorBorder, colorBorderFocus, leftX, leftY, leftW, leftH, rightX, rightY, rightW, rightH, inputX, inputY, inputW, inputH)
+	m.renderTitlesAndStatus(screen, styleTitleDim, styleTitleFocus, styleBodyDim, inputX, inputY, inputW, inputH, leftX, leftY, leftW, rightX, rightY, rightW, spinnerFrames)
+	m.renderPaneBodies(screen, styleBody, styleBodyDim, styleAccent, stylePrompt, styleTitleFocus, colorPanel, colorBright, colorDim, colorBlue, colorPurple, colorOrange, colorCyan, colorGreen, colorRed, styleDiffAdd, styleDiffRm, leftX, leftY, leftW, rightX, rightY, rightW)
+	m.renderInputArea(screen, styleBodyDim, stylePrompt, styleInput, styleApproval, inputX, inputY, inputW, inputH, colorPanel, colorYellow)
+
+	if m.overlays.models.visible {
+		m.renderModelPicker(screen)
+	}
+	if m.overlays.sessions.visible {
+		m.renderSessionsPicker(screen)
+	}
+	if m.overlays.helpVisible {
+		m.renderHelpOverlay(screen)
+	}
+	if m.overlays.search.visible {
+		m.renderSearchOverlay(screen)
+	}
+
+	screen.Show()
+}
+
+func (m *chatLiveModel) renderHeader(screen tcell.Screen, width int, styleStatus tcell.Style, spinnerFrames []string) {
+	themeLabel := "default"
+	if m.themeLowContrast {
+		themeLabel = "low"
+	}
+	headerLeft := fmt.Sprintf(" forge • %s • %s • theme:%s ", m.model, shortPath(m.workDir), themeLabel)
+	headerRight := fmt.Sprintf(" %s ", strings.ToUpper(m.status))
+	if m.busy {
+		elapsed := time.Since(m.display.turnStartedAt)
+		if m.display.turnStartedAt.IsZero() {
+			elapsed = 0
+		}
+		headerRight = fmt.Sprintf(" %s %s  ⏱ %.1fs ", spinnerFrames[m.display.spinnerFrame%len(spinnerFrames)], strings.ToUpper(m.status), elapsed.Seconds())
+	}
+	if m.display.statsDuration > 0 && !m.busy {
+		headerRight += fmt.Sprintf("  ⏱ %.1fs", m.display.statsDuration.Seconds())
+		if m.display.statsUsage.InputTokens > 0 {
+			headerRight += fmt.Sprintf("  ↑%d ↓%d", m.display.statsUsage.InputTokens, m.display.statsUsage.OutputTokens)
+		}
+	}
+	drawText(screen, 0, 0, styleStatus, fitWidth(headerLeft, width))
+	drawRightText(screen, 0, 0, width, styleStatus, headerRight)
+}
+
+func (m *chatLiveModel) renderChrome(screen tcell.Screen, colorBg, colorPanel, colorBorder, colorBorderFocus tcell.Color, leftX, leftY, leftW, leftH, rightX, rightY, rightW, rightH, inputX, inputY, inputW, inputH int) {
+	leftBorder := colorBorder
+	rightBorder := colorBorder
+	if m.panes.focusR {
+		rightBorder = colorBorderFocus
+	} else {
+		leftBorder = colorBorderFocus
+	}
+
+	drawBox(screen, leftX, leftY, leftW, leftH, tcell.StyleDefault.Background(colorPanel).Foreground(leftBorder))
+	if m.panes.layout.toolsVisible {
+		drawBox(screen, rightX, rightY, rightW, rightH, tcell.StyleDefault.Background(colorPanel).Foreground(rightBorder))
+	}
+	drawBox(screen, inputX, inputY, inputW, inputH, tcell.StyleDefault.Background(colorPanel).Foreground(colorBorder))
+	dividerStyle := tcell.StyleDefault.Background(colorBg).Foreground(colorBorder)
+	if m.panes.layout.dividerDrag {
+		dividerStyle = tcell.StyleDefault.Background(colorBg).Foreground(colorBorderFocus).Bold(true)
+	}
+	if m.panes.layout.toolsVisible {
+		for yy := leftY; yy < leftY+leftH; yy++ {
+			screen.SetContent(rightX-1, yy, '⋮', nil, dividerStyle)
+		}
+	}
+}
+
+func (m *chatLiveModel) renderTitlesAndStatus(screen tcell.Screen, styleTitleDim, styleTitleFocus, styleBodyDim tcell.Style, inputX, inputY, inputW, inputH, leftX, leftY, leftW, rightX, rightY, rightW int, spinnerFrames []string) {
+	leftTitle := styleTitleDim
+	rightTitle := styleTitleDim
+	if m.panes.focusR {
+		rightTitle = styleTitleFocus
+	} else {
+		leftTitle = styleTitleFocus
+	}
+
+	leftBadge := " Agent "
+	rightBadge := " Tools "
+	inputBadge := " Steering "
+	if m.overlays.search.pane == "left" && strings.TrimSpace(m.overlays.search.query) != "" {
+		if len(m.overlays.search.matches) > 0 {
+			leftBadge = fmt.Sprintf(" Agent • %d/%d search ", max(1, m.overlays.search.current+1), len(m.overlays.search.matches))
+		} else {
+			leftBadge = " Agent • 0 search "
+		}
+	}
+	if m.overlays.search.pane == "right" && strings.TrimSpace(m.overlays.search.query) != "" {
+		if len(m.overlays.search.matches) > 0 {
+			rightBadge = fmt.Sprintf(" Tools • %d/%d search ", max(1, m.overlays.search.current+1), len(m.overlays.search.matches))
+		} else {
+			rightBadge = " Tools • 0 search "
+		}
+	}
+	if m.panes.agent.follow {
+		leftBadge += "• follow "
+	}
+	if m.panes.tools.follow {
+		rightBadge += "• follow "
+	}
+	drawText(screen, leftX+2, leftY, leftTitle, fitWidth(leftBadge, max(1, leftW-4)))
+	if m.panes.layout.toolsVisible {
+		drawText(screen, rightX+2, rightY, rightTitle, fitWidth(rightBadge, max(1, rightW-4)))
+	}
+	statusStrip := fmt.Sprintf(" status: %s ", m.status)
+	if len(m.display.timeline) > 0 {
+		statusStrip += " • " + strings.Join(m.display.timeline[max(0, len(m.display.timeline)-3):], "  •  ")
+	}
+	if m.busy {
+		elapsed := time.Since(m.display.turnStartedAt)
+		if m.display.turnStartedAt.IsZero() {
+			elapsed = 0
+		}
+		statusStrip = fmt.Sprintf(" status: %s %s • running • %.1fs ", spinnerFrames[m.display.spinnerFrame%len(spinnerFrames)], m.status, elapsed.Seconds())
+	}
+	if m.approval != nil {
+		statusStrip = " status: approval needed "
+	}
+	if inputY > 1 {
+		drawText(screen, inputX+2, inputY-1, styleBodyDim, fitWidth(statusStrip, max(1, inputW-4)))
+	}
+	drawText(screen, inputX+2, inputY, styleBodyDim, fitWidth(inputBadge, max(1, inputW-4)))
+	footerLegend := " F1 help • F2 theme • /copy code • /copy result • /sessions "
+	if inputH > 2 {
+		drawRightText(screen, inputX+1, inputY, inputW-2, styleBodyDim, footerLegend)
+	}
+
+	leftScroll := scrollLabelWithFollow(m.panes.agent.scroll, m.agentMaxScroll(), m.panes.agent.follow)
+	rightScroll := scrollLabelWithFollow(m.panes.tools.scroll, m.toolsMaxScroll(), m.panes.tools.follow)
+	drawRightText(screen, leftX+1, leftY, leftW-2, styleBodyDim, leftScroll)
+	if m.panes.layout.toolsVisible {
+		drawRightText(screen, rightX+1, rightY, rightW-2, styleBodyDim, rightScroll)
+	}
+}
+
+func (m *chatLiveModel) renderPaneBodies(screen tcell.Screen, styleBody, styleBodyDim, styleAccent, stylePrompt, styleTitleFocus tcell.Style, colorPanel, colorBright, colorDim, colorBlue, colorPurple, colorOrange, colorCyan, colorGreen, colorRed tcell.Color, styleDiffAdd, styleDiffRm tcell.Style, leftX, leftY, leftW, rightX, rightY, rightW int) {
+	leftContentW := m.leftContentWidth()
+	rightContentW := m.rightContentWidth()
+	leftVisibleH := m.agentVisibleHeight()
+	rightVisibleH := m.toolsVisibleHeight()
+
+	leftLines := m.paneLines(m.panes.agent.buf, leftContentW, leftVisibleH, m.panes.agent.scroll)
+	rightLines := m.paneLines(m.panes.tools.buf, rightContentW, rightVisibleH, m.panes.tools.scroll)
+	leftWrapped := wrapPaneContent(m.panes.agent.buf, leftContentW)
+	rightWrapped := wrapPaneContent(m.panes.tools.buf, rightContentW)
+
+	leftQuery := ""
+	rightQuery := ""
+	if m.overlays.search.pane == "left" {
+		leftQuery = strings.TrimSpace(m.overlays.search.query)
+	}
+	if m.overlays.search.pane == "right" {
+		rightQuery = strings.TrimSpace(m.overlays.search.query)
+	}
+
+	agentCodeStyle := tcell.StyleDefault.Background(tcell.GetColor("#0d1117")).Foreground(tcell.GetColor("#c9d1d9"))
+	agentCodeBorderStyle := tcell.StyleDefault.Background(colorPanel).Foreground(tcell.GetColor("#30363d"))
+	agentCodeHeaderStyle := tcell.StyleDefault.Background(tcell.GetColor("#0d1117")).Foreground(tcell.GetColor("#7ee787")).Bold(true)
+	agentBubbleStyle := tcell.StyleDefault.Background(tcell.GetColor("#1a2332")).Foreground(colorBright)
+	agentBubbleBorderStyle := tcell.StyleDefault.Background(colorPanel).Foreground(tcell.GetColor("#58a6ff"))
+	agentBubbleDimStyle := tcell.StyleDefault.Background(tcell.GetColor("#1a2332")).Foreground(colorDim)
+	inCodeBlock := false
+	codeLang := ""
+	for row := 0; row < leftVisibleH; row++ {
+		y := leftY + 1 + row
+		line := ""
+		lineIndex := m.panes.agent.scroll + row
+		if row < len(leftLines) {
+			line = leftLines[row]
+		}
+		matchStart, isCurrent, hasMatch := 0, false, false
+		if leftQuery != "" {
+			matchStart, isCurrent, hasMatch = m.searchHighlightForLine(lineIndex)
+		}
+		trimmed := strings.TrimSpace(strings.TrimPrefix(line, " │ "))
+		if strings.HasPrefix(trimmed, "```") {
+			if !inCodeBlock {
+				codeLang = strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))
+				label := "╭─ code"
+				if codeLang != "" {
+					label = "╭─ code: " + codeLang
+				}
+				fillRect(screen, leftX+1, y, leftContentW, 1, agentCodeStyle)
+				drawText(screen, leftX+1, y, agentCodeBorderStyle, "▎")
+				drawText(screen, leftX+3, y, agentCodeHeaderStyle, fitWidth(label, max(1, leftContentW-3)))
+				inCodeBlock = true
+			} else {
+				fillRect(screen, leftX+1, y, leftContentW, 1, agentCodeStyle)
+				drawText(screen, leftX+1, y, agentCodeBorderStyle, "▎")
+				drawText(screen, leftX+3, y, agentCodeHeaderStyle, fitWidth("╰─ end code", max(1, leftContentW-3)))
+				inCodeBlock = false
+				codeLang = ""
+			}
+			continue
+		}
+		if inCodeBlock {
+			fillRect(screen, leftX+1, y, leftContentW, 1, agentCodeStyle)
+			drawText(screen, leftX+1, y, agentCodeBorderStyle, "▎")
+			codeText := strings.TrimPrefix(line, " │ ")
+			if hasMatch {
+				drawHighlightedText(screen, leftX+3, y, codeText, max(1, leftContentW-3), agentCodeStyle, leftQuery, matchStart, isCurrent)
+			} else {
+				drawChromaCodeLine(screen, leftX+3, y, codeText, max(1, leftContentW-3), codeLang, agentCodeStyle)
+			}
+			continue
+		}
+		fillRect(screen, leftX+1, y, leftContentW, 1, agentBubbleStyle)
+		if m.lineHasSelection("left", m.panes.agent.scroll+row, leftWrapped) {
+			fillRect(screen, leftX+1, y, leftContentW, 1, agentBubbleStyle.Background(tcell.GetColor("#2f81f7")).Foreground(tcell.ColorBlack))
+		}
+		content := strings.TrimPrefix(line, " │ ")
+		trimmedContent := strings.TrimSpace(content)
+		borderGlyph := "▎"
+		textStyle := agentBubbleStyle
+		if strings.HasPrefix(trimmedContent, "- ") || strings.HasPrefix(trimmedContent, "* ") {
+			borderGlyph = "•"
+			textStyle = agentBubbleDimStyle
+		} else if strings.HasSuffix(trimmedContent, ":") && len(trimmedContent) < max(12, leftContentW/2) {
+			borderGlyph = "▌"
+		}
+		drawText(screen, leftX+1, y, agentBubbleBorderStyle, borderGlyph)
+		drawStyledAgentLine(screen, leftX+3, y, content, max(1, leftContentW-2), textStyle, styleAccent, leftQuery, hasMatch, matchStart, isCurrent)
+	}
+	if m.panes.layout.toolsVisible {
+		for row := 0; row < rightVisibleH; row++ {
+			y := rightY + 1 + row
+			line := ""
+			lineIndex := m.panes.tools.scroll + row
+			if row < len(rightLines) {
+				line = rightLines[row]
+			}
+			matchStart, isCurrent, hasMatch := 0, false, false
+			if rightQuery != "" {
+				matchStart, isCurrent, hasMatch = m.searchHighlightForLine(lineIndex)
+			}
+			if m.lineHasSelection("right", m.panes.tools.scroll+row, rightWrapped) {
+				fillRect(screen, rightX+1, y, rightContentW, 1, styleBody.Background(tcell.GetColor("#2f81f7")).Foreground(tcell.ColorBlack))
+			}
+			drawStyledToolLine(screen, rightX+1, y, line, rightContentW, styleBody,
+				colorBlue, colorPurple, colorOrange, colorCyan, colorGreen, colorRed,
+				styleDiffAdd, styleDiffRm, rightQuery, hasMatch, matchStart, isCurrent)
+		}
+	}
+
+	leftThumbStyle := styleTitleFocus
+	rightThumbStyle := styleTitleFocus
+	if m.panes.layout.scrollDrag.pane == "left" {
+		leftThumbStyle = stylePrompt
+	}
+	if m.panes.layout.scrollDrag.pane == "right" {
+		rightThumbStyle = stylePrompt
+	}
+	drawScrollbar(screen, leftX+leftW-2, leftY+1, leftVisibleH, totalWrappedLines(m.panes.agent.buf, leftContentW), leftVisibleH, m.panes.agent.scroll, styleBodyDim, leftThumbStyle)
+	if m.panes.layout.toolsVisible {
+		drawScrollbar(screen, rightX+rightW-2, rightY+1, rightVisibleH, totalWrappedLines(m.panes.tools.buf, rightContentW), rightVisibleH, m.panes.tools.scroll, styleBodyDim, rightThumbStyle)
+	}
+
+	if strings.TrimSpace(m.panes.agent.buf) == "" {
+		drawText(screen, leftX+2, leftY+2, styleBodyDim, fitWidth("Waiting for agent output…", max(1, leftContentW-1)))
+	}
+	if m.panes.layout.toolsVisible && strings.TrimSpace(m.panes.tools.buf) == "" {
+		drawText(screen, rightX+2, rightY+2, styleBodyDim, fitWidth("Tool calls, diffs, and results appear here.", max(1, rightContentW-1)))
+		drawText(screen, rightX+2, rightY+3, styleBodyDim, fitWidth("Use the scrollbar, wheel, or drag the divider to resize.", max(1, rightContentW-1)))
+	}
+}
+
+func (m *chatLiveModel) renderInputArea(screen tcell.Screen, styleBodyDim, stylePrompt, styleInput, styleApproval tcell.Style, inputX, inputY, inputW, inputH int, colorPanel, colorYellow tcell.Color) {
+	if m.display.flash != "" && inputH > 0 {
+		styleFlash := tcell.StyleDefault.Background(colorPanel).Foreground(colorYellow)
+		drawText(screen, inputX+2, inputY+1, styleFlash, fitWidth("! "+m.display.flash, max(1, inputW-4)))
+	} else if inputH > 0 {
+		steer := "Steer the agent: clarify constraints, ask for changes, /copy code, /copy result, F1 help"
+		if m.busy {
+			steer = "Busy mode queues steering in runtime: send corrections, constraints, next steps, or /clear"
+		}
+		drawText(screen, inputX+2, inputY+1, styleBodyDim, fitWidth(steer, max(1, inputW-4)))
+	}
+
+	inputLineY := inputY + inputH - 1
+	if inputH >= 2 {
+		inputLineY = inputY + 1
+	}
+	if m.approval != nil {
+		approvalText := fmt.Sprintf(" %s — approve? [y/n] ", m.approval.Summary)
+		drawText(screen, inputX+1, inputLineY, styleApproval, fitWidth(approvalText, max(1, inputW-2)))
+		screen.HideCursor()
+	} else {
+		prompt := " steer> "
+		if m.busy {
+			prompt = " steer+> "
+		}
+		avail := max(1, inputW-2-stringWidth(prompt))
+		visibleInput, cursorX := inputViewport(m.inputBuf, m.inputPos, avail)
+		drawText(screen, inputX+1, inputLineY, stylePrompt, fitWidth(prompt, stringWidth(prompt)))
+		drawText(screen, inputX+1+stringWidth(prompt), inputLineY, styleInput, fitWidth(visibleInput, avail))
+		screen.ShowCursor(inputX+1+stringWidth(prompt)+cursorX, inputLineY)
+	}
+}
