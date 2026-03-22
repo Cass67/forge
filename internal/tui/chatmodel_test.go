@@ -94,3 +94,45 @@ func TestChatModelHandlesToolCallEvent(t *testing.T) {
 		t.Fatal("expected tools buffer to have content")
 	}
 }
+
+func TestChatModelSlashClear(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+	m.AddMessage(ChatMessage{Kind: MsgUser, Header: "You", Content: "hello"})
+	m.AddMessage(ChatMessage{Kind: MsgAgent, Content: "hi"})
+
+	m.inputBuf = "/clear"
+	m.inputPos = 6
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+
+	if len(m.messages) != 0 {
+		t.Fatalf("expected 0 messages after /clear, got %d", len(m.messages))
+	}
+}
+
+func TestChatModelSlashExit(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.inputBuf = "/exit"
+	m.inputPos = 5
+	_, cmd := m.submitInput()
+	if cmd == nil {
+		t.Fatal("expected quit command from /exit")
+	}
+}
+
+func TestChatModelSlashTheme(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	m.inputBuf = "/theme"
+	m.inputPos = 6
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+
+	if !m.lowContrast {
+		t.Fatal("expected lowContrast=true after /theme")
+	}
+}
