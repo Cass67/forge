@@ -77,7 +77,8 @@ type chatMouseContext struct {
 	leftX, leftY, leftW, leftH     int
 	rightX, rightY, rightW, rightH int
 	inputX, inputY, inputW, inputH int
-	inputLineY                     int
+	inputTextY                     int
+	inputTextH                     int
 	inLeft, inRight                bool
 	inLeftScroll, inRightScroll    bool
 	inDivider                      bool
@@ -90,10 +91,9 @@ func (m *chatLiveModel) mouseContext(x, y int) chatMouseContext {
 	leftScrollX := leftX + leftW - 2
 	rightScrollX := rightX + rightW - 2
 	dividerX := leftX + leftW
-	inputLineY := inputY + inputH - 1
-	if inputH >= 2 {
-		inputLineY = inputY + 1
-	}
+	layout := m.inputLayout(max(1, inputW-2))
+	inputTextY := inputY + 2
+	inputTextH := len(layout.visibleLines)
 
 	inLeft := x >= leftX && x < leftX+leftW && y >= leftY && y < leftY+leftH
 	inRight := m.panes.layout.toolsVisible && x >= rightX && x < rightX+rightW && y >= rightY && y < rightY+rightH
@@ -105,8 +105,8 @@ func (m *chatLiveModel) mouseContext(x, y int) chatMouseContext {
 		leftX: leftX, leftY: leftY, leftW: leftW, leftH: leftH,
 		rightX: rightX, rightY: rightY, rightW: rightW, rightH: rightH,
 		inputX: inputX, inputY: inputY, inputW: inputW, inputH: inputH,
-		inputLineY: inputLineY,
-		inLeft:     inLeft, inRight: inRight,
+		inputTextY: inputTextY, inputTextH: inputTextH,
+		inLeft: inLeft, inRight: inRight,
 		inLeftScroll: inLeftScroll, inRightScroll: inRightScroll,
 		inDivider: inDivider,
 	}
@@ -265,8 +265,10 @@ func (m *chatLiveModel) handleLeftClick(ctx chatMouseContext, x, y int) {
 		m.panes.focusR = true
 		m.beginSelectionFromMouse("right", x, y)
 		return
-	case !m.busy && m.approval == nil && y == ctx.inputLineY && x >= ctx.inputX+1 && x < ctx.inputX+ctx.inputW-1:
-		m.inputPos = inputCursorFromScreenX(m.inputBuf, m.inputPos, x-(ctx.inputX+1), max(1, ctx.inputW-2))
+	case m.approval == nil && y >= ctx.inputTextY && y < ctx.inputTextY+ctx.inputTextH && x >= ctx.inputX+1 && x < ctx.inputX+ctx.inputW-1:
+		layout := m.inputLayout(max(1, ctx.inputW-2))
+		promptW := stringWidth(layout.prompt)
+		m.inputPos = inputCursorFromScreenPosition(layout, x-(ctx.inputX+1)-promptW, y-ctx.inputTextY)
 		return
 	}
 }
