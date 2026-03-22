@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"forge/internal/agent/tools"
 	"forge/internal/chatstate"
 	"forge/internal/llm"
 	"forge/internal/skills"
@@ -15,6 +16,7 @@ import (
 )
 
 type chatTickMsg time.Time
+type chatApprovalMsg tools.Action
 
 // ChatModel is the Bubble Tea model for the interactive chat screen.
 type ChatModel struct {
@@ -43,7 +45,9 @@ type ChatModel struct {
 	state          *chatstate.State
 	lowContrast    bool
 
-	inputCh chan<- string
+	pendingApproval *tools.Action
+	inputCh         chan<- string
+	responseCh      chan<- bool
 }
 
 func NewChatModel(cfg ChatLiveConfig) ChatModel {
@@ -135,6 +139,11 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case llm.Event:
 		return m.handleLLMEvent(msg)
 
+	case chatApprovalMsg:
+		action := tools.Action(msg)
+		m.pendingApproval = &action
+		return m, nil
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -183,6 +192,25 @@ func truncate(s string, maxLen int) string {
 }
 
 func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Handle approval mode
+	if m.pendingApproval != nil {
+		switch msg.String() {
+		case "y":
+			if m.responseCh != nil {
+				m.responseCh <- true
+			}
+			m.pendingApproval = nil
+		case "n":
+			if m.responseCh != nil {
+				m.responseCh <- false
+			}
+			m.pendingApproval = nil
+		case "ctrl+c":
+			return m, tea.Quit
+		}
+		return m, nil
+	}
+
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
@@ -306,11 +334,23 @@ func (m ChatModel) View() string {
 		Foreground(lipgloss.Color("#c9d1d9")).
 		Width(m.width - 4)
 
-	inputContent := m.inputBuf
-	if inputContent == "" {
-		inputContent = "Type a message..."
+	var inputBox string
+	if m.pendingApproval != nil {
+		approvalStyle := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#d29922")).
+			Background(lipgloss.Color("#161b22")).
+			Foreground(lipgloss.Color("#c9d1d9")).
+			Width(m.width - 4)
+		approvalText := fmt.Sprintf("Tool: %s\n%s\n\n[y]es / [n]o", m.pendingApproval.Tool, m.pendingApproval.Summary)
+		inputBox = approvalStyle.Render(approvalText)
+	} else {
+		inputContent := m.inputBuf
+		if inputContent == "" {
+			inputContent = "Type a message..."
+		}
+		inputBox = inputStyle.Render(inputContent)
 	}
-	inputBox := inputStyle.Render(inputContent)
 
 	statusStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#484f58")).
