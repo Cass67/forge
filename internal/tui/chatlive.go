@@ -16,6 +16,7 @@ import (
 	"forge/internal/auth"
 	"forge/internal/copilot"
 	"forge/internal/llm"
+	"forge/internal/skills"
 
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/lexers"
@@ -34,6 +35,7 @@ type ChatLiveConfig struct {
 	ClearHistory    func()
 	ApprovalCh      <-chan tools.Action
 	ResponseCh      chan<- bool
+	Skills          []skills.Skill
 }
 
 type ChatLiveResult struct {
@@ -227,6 +229,7 @@ type chatLiveModel struct {
 	inputGoalX       int
 	inputGoalXSet    bool
 	exitPending      bool
+	skills           []skills.Skill
 }
 
 type chatCodeRenderCache struct {
@@ -284,6 +287,7 @@ func RunChatLive(events <-chan llm.Event, cfg ChatLiveConfig, inputCh chan<- str
 		copyFn:       copyToClipboard,
 		contextFiles: append([]string(nil), cfg.ContextFiles...),
 		copilotToken: strings.TrimSpace(tokens.CopilotToken),
+		skills:       cfg.Skills,
 		overlays: chatOverlayState{
 			models: chatModelPickerState{list: cfg.AvailableModels},
 		},
@@ -675,6 +679,24 @@ func (m *chatLiveModel) submitInput(inputCh chan<- string) (ChatLiveResult, bool
 		return ChatLiveResult{Aborted: false, Input: input}, true
 	}
 	if strings.HasPrefix(input, "/") {
+		// Check for skill activation before built-in commands
+		cmd := strings.TrimPrefix(input, "/")
+		if s, ok := skills.Get(m.skills, cmd); ok {
+			m.inputBuf = ""
+			m.inputPos = 0
+			m.display.flash = fmt.Sprintf("skill: %s", s.Name)
+			msg := fmt.Sprintf("[Skill: %s]\n\n%s", s.Name, s.Body)
+			m.display.lastExpandable = ""
+			m.display.statsDuration = 0
+			m.display.statsUsage = llm.Usage{}
+			m.display.turnStartedAt = time.Now()
+			m.appendTurnStart(fmt.Sprintf("/%s", s.Name))
+			m.busy = true
+			m.status = "running"
+			m.display.spinnerFrame = 0
+			inputCh <- msg
+			return ChatLiveResult{}, false
+		}
 		m.handleSlashCommand(input)
 		m.inputBuf = ""
 		m.inputPos = 0

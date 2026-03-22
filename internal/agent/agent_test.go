@@ -37,7 +37,7 @@ func TestAgentRunNoTools(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewRenderer(&output, 80, false)
 
-	agent := NewAgent(driver, reg, YoloApproval(), "/tmp", 10, renderer)
+	agent := NewAgent(driver, reg, YoloApproval(), "/tmp", 10, renderer, nil)
 	err := agent.Run(context.Background(), "hello")
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +60,7 @@ func TestAgentRunWithToolCall(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewRenderer(&output, 80, false)
 
-	agent := NewAgent(driver, reg, YoloApproval(), dir, 10, renderer)
+	agent := NewAgent(driver, reg, YoloApproval(), dir, 10, renderer, nil)
 	err := agent.Run(context.Background(), "list files")
 	if err != nil {
 		t.Fatal(err)
@@ -80,7 +80,7 @@ func TestAgentMaxTurns(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewRenderer(&output, 80, false)
 
-	agent := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 3, renderer)
+	agent := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 3, renderer, nil)
 	err := agent.Run(context.Background(), "loop forever")
 	if err != nil && !strings.Contains(err.Error(), "max turns") {
 		t.Fatalf("unexpected error: %v", err)
