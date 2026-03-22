@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"forge/internal/llm"
 )
 
 // PassRecord is the per-pass entry in session.json.
@@ -19,20 +21,22 @@ type PassRecord struct {
 
 // SessionMeta is the schema for session.json.
 type SessionMeta struct {
-	ID            string       `json:"id"`
-	Prompt        string       `json:"prompt"`
-	LanguageHint  string       `json:"language_hint"`
-	Writer        string       `json:"writer"`
-	Auditor       string       `json:"auditor"`
-	Summarizer    string       `json:"summarizer"`
-	RoundsPerPass int          `json:"rounds_per_pass"`
-	ContextFiles  []string     `json:"context_files"`
-	Passes        []PassRecord `json:"passes"`
-	Status        string       `json:"status"`
-	AbortReason   string       `json:"abort_reason,omitempty"`
-	Warnings      []string     `json:"warnings"`
-	StartedAt     time.Time    `json:"started_at"`
-	CompletedAt   *time.Time   `json:"completed_at"`
+	ID            string           `json:"id"`
+	Prompt        string           `json:"prompt"`
+	LanguageHint  string           `json:"language_hint"`
+	Writer        string           `json:"writer"`
+	Auditor       string           `json:"auditor"`
+	Summarizer    string           `json:"summarizer"`
+	RoundsPerPass int              `json:"rounds_per_pass"`
+	ContextFiles  []string         `json:"context_files"`
+	Passes        []PassRecord     `json:"passes"`
+	Status        string           `json:"status"`
+	AbortReason   string           `json:"abort_reason,omitempty"`
+	Warnings      []string         `json:"warnings"`
+	StartedAt     time.Time        `json:"started_at"`
+	CompletedAt   *time.Time       `json:"completed_at"`
+	TokenUsage    []llm.UsageEntry `json:"token_usage,omitempty"`
+	TotalUsage    llm.Usage        `json:"total_usage"`
 }
 
 // Writer manages a session's output directory.
@@ -130,6 +134,26 @@ func (w *Writer) SeedFrom(srcCodeDir string) error {
 		}
 		rel, _ := filepath.Rel(srcCodeDir, path)
 		dst := filepath.Join(w.dir, "code", rel)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(dst, data, 0o644)
+	})
+}
+
+// ApplyBack copies all files from code/ back to the target directory.
+func (w *Writer) ApplyBack(targetDir string) error {
+	codeDir := filepath.Join(w.dir, "code")
+	return filepath.WalkDir(codeDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, _ := filepath.Rel(codeDir, path)
+		dst := filepath.Join(targetDir, rel)
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return err
 		}

@@ -2,23 +2,40 @@ package drivers
 
 import (
 	"context"
+	"sync"
+
+	"forge/internal/llm"
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
-	"forge/internal/llm"
 )
 
 type ClaudeDriver struct {
-	client *anthropic.Client
-	model  string
+	client    *anthropic.Client
+	model     string
+	params    llm.Params
+	lastUsage llm.Usage
+	mu        sync.Mutex
 }
 
 func NewClaude(apiKey, model string) *ClaudeDriver {
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
-	return &ClaudeDriver{client: &client, model: model}
+	return &ClaudeDriver{client: &client, model: model, params: llm.Params{Temperature: -1}}
+}
+
+func (d *ClaudeDriver) SetParams(p llm.Params) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.params = p
 }
 
 func (d *ClaudeDriver) Name() string { return d.model }
+
+func (d *ClaudeDriver) LastUsage() llm.Usage {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.lastUsage
+}
 
 func (d *ClaudeDriver) Stream(ctx context.Context, messages []llm.Message, out chan<- llm.Token) error {
 	defer close(out)
@@ -50,24 +67,33 @@ func (d *ClaudeDriver) Stream(ctx context.Context, messages []llm.Message, out c
 		}
 	}
 
-	params := anthropic.MessageNewParams{
+	maxTok := int64(8096)
+	if d.params.MaxTokens > 0 {
+		maxTok = int64(d.params.MaxTokens)
+	}
+	apiParams := anthropic.MessageNewParams{
 		Model:     anthropic.ModelClaudeSonnet4_6,
-		MaxTokens: 8096,
+		MaxTokens: maxTok,
 		Messages:  chatMsgs,
 	}
 
 	if len(systemBlocks) > 0 {
-		params.System = systemBlocks
+		apiParams.System = systemBlocks
 	}
 
-	// Override model if provided
 	if d.model != "" {
-		params.Model = anthropic.Model(d.model)
+		apiParams.Model = anthropic.Model(d.model)
 	}
 
-	stream := d.client.Messages.NewStreaming(ctx, params)
+	if d.params.Temperature >= 0 {
+		apiParams.Temperature = anthropic.Float(d.params.Temperature)
+	}
+
+	var acc anthropic.Message
+	stream := d.client.Messages.NewStreaming(ctx, apiParams)
 	for stream.Next() {
 		event := stream.Current()
+		acc.Accumulate(event)
 		switch e := event.AsAny().(type) {
 		case anthropic.ContentBlockDeltaEvent:
 			if delta, ok := e.Delta.AsAny().(anthropic.TextDelta); ok {
@@ -79,5 +105,16 @@ func (d *ClaudeDriver) Stream(ctx context.Context, messages []llm.Message, out c
 			}
 		}
 	}
-	return stream.Err()
+	if err := stream.Err(); err != nil {
+		return err
+	}
+
+	d.mu.Lock()
+	d.lastUsage = llm.Usage{
+		InputTokens:  int(acc.Usage.InputTokens),
+		OutputTokens: int(acc.Usage.OutputTokens),
+	}
+	d.mu.Unlock()
+
+	return nil
 }

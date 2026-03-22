@@ -14,6 +14,7 @@ type SessionStarted struct {
 	Rounds       int
 	LangHint     string
 	ContextFiles []string
+	Interactive  bool
 }
 
 // InputModel is the Bubble Tea model for the input screen.
@@ -30,6 +31,7 @@ type InputModel struct {
 	RoundsInput   string
 	RoundsErr     string
 	Preserved     bool
+	Interactive   bool
 	Width         int
 }
 
@@ -116,6 +118,7 @@ func (m InputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					Rounds:       m.Rounds,
 					LangHint:     m.LangHint,
 					ContextFiles: m.ContextFiles,
+					Interactive:  m.Interactive,
 				}
 			}
 		}
@@ -126,8 +129,11 @@ func (m InputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	default:
-		if len(key.String()) == 1 {
-			m.Prompt += key.String()
+		ch := key.String()
+		if ch == "ctrl+t" {
+			m.Interactive = !m.Interactive
+		} else if len(ch) == 1 {
+			m.Prompt += ch
 		}
 	}
 
@@ -170,6 +176,13 @@ func (m InputModel) View() string {
 		}
 		sb.WriteString("\n")
 	}
+
+	// Interactive mode
+	interLabel := "off"
+	if m.Interactive {
+		interLabel = "on"
+	}
+	sb.WriteString("  " + styleDim.Render("Interactive ") + styleMid.Render(interLabel) + styleDim.Render("  ^T toggle") + "\n")
 
 	// Context files
 	for _, f := range m.ContextFiles {

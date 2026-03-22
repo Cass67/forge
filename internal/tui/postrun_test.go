@@ -11,6 +11,7 @@ func makePostRunApp(aborted bool) tui.PostRunApp {
 		"/tmp/out",
 		aborted,
 		"",
+		"",
 		tui.SessionStarted{WriterModel: "claude-sonnet-4-6", AuditorModel: "gpt-4o", Rounds: 3},
 		[]string{"claude-sonnet-4-6", "gpt-4o"},
 		[]string{"claude-sonnet-4-6", "gpt-4o"},
