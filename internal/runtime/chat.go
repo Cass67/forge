@@ -13,6 +13,7 @@ import (
 	"forge/internal/agent"
 	"forge/internal/agent/tools"
 	"forge/internal/bootstrap"
+	"forge/internal/chatstate"
 	"forge/internal/config"
 	"forge/internal/llm"
 	"forge/internal/skills"
@@ -118,8 +119,9 @@ func RunChatLive(setup *ChatSetup) {
 	reg := tools.NewRegistry()
 	registerTools(reg, setup.WorkDir, setup.Config, approve)
 	loadedSkills := skills.Load(setup.WorkDir)
+	state := chatstate.New()
 
-	a := agent.NewAgent(setup.Driver, reg, approve, setup.WorkDir, setup.Config.Chat.MaxTurns, evRenderer, loadedSkills)
+	a := agent.NewAgent(setup.Driver, reg, approve, setup.WorkDir, setup.Config.Chat.MaxTurns, evRenderer, loadedSkills, state)
 	inputCh := make(chan string, 1)
 	doneCh := make(chan struct{}, 1)
 
@@ -192,6 +194,7 @@ func RunChatLive(setup *ChatSetup) {
 		ApprovalCh: evRenderer.ApprovalChan(),
 		ResponseCh: evRenderer.ResponseChan(),
 		Skills:     loadedSkills,
+		State:      state,
 	}
 	tui.RunChatLive(eventsCh, liveCfg, inputCh, doneCh)
 }
@@ -210,7 +213,8 @@ func RunChatConsole(setup *ChatSetup) {
 	loadedSkills := skills.Load(setup.WorkDir)
 
 	renderer := agent.NewRenderer(os.Stdout, 80, true)
-	a := agent.NewAgent(setup.Driver, reg, approve, setup.WorkDir, setup.Config.Chat.MaxTurns, renderer, loadedSkills)
+	state := chatstate.New()
+	a := agent.NewAgent(setup.Driver, reg, approve, setup.WorkDir, setup.Config.Chat.MaxTurns, renderer, loadedSkills, state)
 
 	fmt.Printf("forge chat (%s) — %s\n", setup.ChatModel, setup.WorkDir)
 	fmt.Println("type your request, or /help for commands")

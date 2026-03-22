@@ -173,7 +173,22 @@ func (m *chatLiveModel) renderHeader(screen tcell.Screen, width int, styleStatus
 		themeLabel = "low"
 	}
 	headerLeft := fmt.Sprintf(" forge • %s • %s • theme:%s ", m.model, shortPath(m.workDir), themeLabel)
-	headerRight := fmt.Sprintf(" %s ", strings.ToUpper(m.status))
+	statusLabel := strings.ToUpper(m.status)
+	if strings.TrimSpace(statusLabel) == "" {
+		statusLabel = "READY"
+	}
+	if m.state != nil && len(m.skills) > 0 {
+		active := make([]string, 0, len(m.skills))
+		for _, s := range m.skills {
+			if m.state.SkillActivated(s.Name) {
+				active = append(active, "/"+s.Name)
+			}
+		}
+		if len(active) > 0 {
+			statusLabel += " · SKILLS " + strings.Join(active, ",")
+		}
+	}
+	headerRight := fmt.Sprintf(" %s ", statusLabel)
 	if m.busy {
 		elapsed := time.Since(m.display.turnStartedAt)
 		if m.display.turnStartedAt.IsZero() {
@@ -262,6 +277,18 @@ func (m *chatLiveModel) renderTitlesAndStatus(screen tcell.Screen, styleTitleDim
 		drawText(screen, rightX+2, rightY, rightTitle, fitWidth(rightBadge, max(1, rightW-4)))
 	}
 	statusStrip := fmt.Sprintf(" status: %s ", m.status)
+	activeSkills := ""
+	if m.state != nil && len(m.skills) > 0 {
+		active := make([]string, 0, len(m.skills))
+		for _, s := range m.skills {
+			if m.state.SkillActivated(s.Name) {
+				active = append(active, "/"+s.Name)
+			}
+		}
+		if len(active) > 0 {
+			activeSkills = " active skills: " + strings.Join(active, " ") + " "
+		}
+	}
 	if m.display.prof.enabled {
 		statusStrip += " • " + m.profileSummary()
 	}
@@ -277,6 +304,9 @@ func (m *chatLiveModel) renderTitlesAndStatus(screen tcell.Screen, styleTitleDim
 	}
 	if m.approval != nil {
 		statusStrip = " status: approval needed "
+	}
+	if inputY > 2 && activeSkills != "" {
+		drawText(screen, inputX+2, inputY-2, styleBodyDim, fitWidth(activeSkills, max(1, inputW-4)))
 	}
 	if inputY > 1 {
 		drawText(screen, inputX+2, inputY-1, styleBodyDim, fitWidth(statusStrip, max(1, inputW-4)))
@@ -386,6 +416,14 @@ func (m *chatLiveModel) renderPaneBodies(screen tcell.Screen, styleBody, styleBo
 		drawStyledAgentLine(screen, leftX+3, y, content, max(1, leftContentW-2), textStyle, styleAccent, leftQuery, hasMatch, matchStart, isCurrent)
 	}
 	if m.panes.layout.toolsVisible {
+		toolCodeStyle := tcell.StyleDefault.Background(tcell.GetColor("#0d1117")).Foreground(tcell.GetColor("#c9d1d9"))
+		toolCodeBorderStyle := tcell.StyleDefault.Background(colorPanel).Foreground(tcell.GetColor("#30363d"))
+		toolCodeHeaderStyle := tcell.StyleDefault.Background(tcell.GetColor("#0d1117")).Foreground(colorCyan).Bold(true)
+		toolBubbleStyle := tcell.StyleDefault.Background(tcell.GetColor("#11161d")).Foreground(colorBright)
+		toolBubbleBorderStyle := tcell.StyleDefault.Background(colorPanel).Foreground(colorBlue)
+		toolBubbleDimStyle := tcell.StyleDefault.Background(tcell.GetColor("#11161d")).Foreground(colorDim)
+		inToolCodeBlock := false
+		toolCodeLang := ""
 		for row := 0; row < rightVisibleH; row++ {
 			y := rightY + 1 + row
 			line := ""
@@ -397,12 +435,87 @@ func (m *chatLiveModel) renderPaneBodies(screen tcell.Screen, styleBody, styleBo
 			if rightQuery != "" {
 				matchStart, isCurrent, hasMatch = m.searchHighlightForLine(lineIndex)
 			}
-			if m.lineHasSelection("right", m.panes.tools.scroll+row, rightWrapped, rightLineStarts) {
-				fillRect(screen, rightX+1, y, rightContentW, 1, styleBody.Background(tcell.GetColor("#2f81f7")).Foreground(tcell.ColorBlack))
+			selected := m.lineHasSelection("right", m.panes.tools.scroll+row, rightWrapped, rightLineStarts)
+			trimmed := strings.TrimSpace(line)
+			content := strings.TrimLeft(line, " ")
+			isToolHeader := strings.HasPrefix(trimmed, "● ") || strings.HasPrefix(trimmed, "────────────────────────")
+			isCodeLine := strings.HasPrefix(trimmed, "result:") || strings.HasPrefix(trimmed, "+") || strings.HasPrefix(trimmed, "-") || strings.HasPrefix(trimmed, "@@") || strings.HasPrefix(trimmed, "...")
+			if strings.HasPrefix(trimmed, "result:") {
+				lang := ""
+				lower := strings.ToLower(content)
+				switch {
+				case strings.Contains(lower, "diff") || strings.Contains(lower, "patch"):
+					lang = "diff"
+				case strings.Contains(lower, ".go") || strings.Contains(lower, " go"):
+					lang = "go"
+				case strings.Contains(lower, ".json") || strings.Contains(lower, " json"):
+					lang = "json"
+				case strings.Contains(lower, ".md") || strings.Contains(lower, " markdown"):
+					lang = "markdown"
+				case strings.Contains(lower, "shell") || strings.Contains(lower, "bash") || strings.Contains(lower, "sh"):
+					lang = "bash"
+				}
+				toolCodeLang = lang
+				fillRect(screen, rightX+1, y, rightContentW, 1, toolCodeStyle)
+				if selected {
+					fillRect(screen, rightX+1, y, rightContentW, 1, toolCodeStyle.Background(tcell.GetColor("#2f81f7")).Foreground(tcell.ColorBlack))
+				}
+				drawText(screen, rightX+1, y, toolCodeBorderStyle, "▎")
+				label := "╭─ result"
+				if toolCodeLang != "" {
+					label += ": " + toolCodeLang
+				}
+				drawText(screen, rightX+3, y, toolCodeHeaderStyle, fitWidth(label, max(1, rightContentW-3)))
+				inToolCodeBlock = true
+				continue
 			}
-			drawStyledToolLine(screen, rightX+1, y, line, rightContentW, styleBody,
+			if inToolCodeBlock && !isCodeLine {
+				fillRect(screen, rightX+1, y, rightContentW, 1, toolCodeStyle)
+				if selected {
+					fillRect(screen, rightX+1, y, rightContentW, 1, toolCodeStyle.Background(tcell.GetColor("#2f81f7")).Foreground(tcell.ColorBlack))
+				}
+				drawText(screen, rightX+1, y, toolCodeBorderStyle, "▎")
+				drawText(screen, rightX+3, y, toolCodeHeaderStyle, fitWidth("╰─ end result", max(1, rightContentW-3)))
+				inToolCodeBlock = false
+				toolCodeLang = ""
+			}
+			if inToolCodeBlock && isCodeLine {
+				fillRect(screen, rightX+1, y, rightContentW, 1, toolCodeStyle)
+				if selected {
+					fillRect(screen, rightX+1, y, rightContentW, 1, toolCodeStyle.Background(tcell.GetColor("#2f81f7")).Foreground(tcell.ColorBlack))
+				}
+				drawText(screen, rightX+1, y, toolCodeBorderStyle, "▎")
+				if hasMatch {
+					drawHighlightedText(screen, rightX+3, y, content, max(1, rightContentW-3), toolCodeStyle, rightQuery, matchStart, isCurrent)
+				} else {
+					m.drawChromaCodeLine(screen, rightX+3, y, content, max(1, rightContentW-3), toolCodeLang, toolCodeStyle)
+				}
+				continue
+			}
+			fillRect(screen, rightX+1, y, rightContentW, 1, toolBubbleStyle)
+			if selected {
+				fillRect(screen, rightX+1, y, rightContentW, 1, toolBubbleStyle.Background(tcell.GetColor("#2f81f7")).Foreground(tcell.ColorBlack))
+			}
+			borderGlyph := "▎"
+			lineStyle := toolBubbleStyle
+			if isToolHeader {
+				borderGlyph = "▌"
+			} else if strings.HasPrefix(trimmed, "status:") || strings.HasPrefix(trimmed, "✓") || strings.HasPrefix(trimmed, "✗") {
+				borderGlyph = "•"
+				lineStyle = toolBubbleDimStyle
+			}
+			drawText(screen, rightX+1, y, toolBubbleBorderStyle, borderGlyph)
+			drawStyledToolLine(screen, rightX+3, y, content, max(1, rightContentW-2), lineStyle,
 				colorBlue, colorPurple, colorOrange, colorCyan, colorGreen, colorRed,
 				styleDiffAdd, styleDiffRm, rightQuery, hasMatch, matchStart, isCurrent)
+		}
+		if inToolCodeBlock {
+			y := rightY + rightVisibleH
+			if y < rightY+1+rightVisibleH {
+				fillRect(screen, rightX+1, y, rightContentW, 1, toolCodeStyle)
+				drawText(screen, rightX+1, y, toolCodeBorderStyle, "▎")
+				drawText(screen, rightX+3, y, toolCodeHeaderStyle, fitWidth("╰─ end result", max(1, rightContentW-3)))
+			}
 		}
 	}
 
@@ -429,7 +542,10 @@ func (m *chatLiveModel) renderPaneBodies(screen tcell.Screen, styleBody, styleBo
 }
 
 func (m *chatLiveModel) renderInputArea(screen tcell.Screen, styleBodyDim, stylePrompt, styleInput, styleApproval tcell.Style, inputX, inputY, inputW, inputH int, colorPanel, colorYellow tcell.Color) {
-	if m.display.flash != "" && inputH > 0 {
+	if m.display.requiredSkillWarning != "" && inputH > 0 {
+		styleFlash := tcell.StyleDefault.Background(colorPanel).Foreground(colorYellow)
+		drawText(screen, inputX+2, inputY+1, styleFlash, fitWidth("! "+m.display.requiredSkillWarning, max(1, inputW-4)))
+	} else if m.display.flash != "" && inputH > 0 {
 		styleFlash := tcell.StyleDefault.Background(colorPanel).Foreground(colorYellow)
 		drawText(screen, inputX+2, inputY+1, styleFlash, fitWidth("! "+m.display.flash, max(1, inputW-4)))
 	} else if inputH > 0 {

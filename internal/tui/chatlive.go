@@ -14,6 +14,7 @@ import (
 
 	"forge/internal/agent/tools"
 	"forge/internal/auth"
+	"forge/internal/chatstate"
 	"forge/internal/copilot"
 	"forge/internal/llm"
 	"forge/internal/skills"
@@ -37,6 +38,7 @@ type ChatLiveConfig struct {
 	ResponseCh      chan<- bool
 	Skills          []skills.Skill
 	AutoSkillsMode  string
+	State           *chatstate.State
 }
 
 type ChatLiveResult struct {
@@ -172,19 +174,20 @@ type chatSelectionState struct {
 }
 
 type chatDisplayState struct {
-	flash            string
-	lastExpandable   string
-	lastToolResult   string
-	lastCodeBlock    string
-	timeline         []string
-	turnStartedAt    time.Time
-	spinnerFrame     int
-	statsDuration    time.Duration
-	statsUsage       llm.Usage
-	liveCopilotQuota *copilot.UserQuota
-	liveQuotaLoading bool
-	liveQuotaErr     string
-	prof             chatProfileState
+	flash                string
+	requiredSkillWarning string
+	lastExpandable       string
+	lastToolResult       string
+	lastCodeBlock        string
+	timeline             []string
+	turnStartedAt        time.Time
+	spinnerFrame         int
+	statsDuration        time.Duration
+	statsUsage           llm.Usage
+	liveCopilotQuota     *copilot.UserQuota
+	liveQuotaLoading     bool
+	liveQuotaErr         string
+	prof                 chatProfileState
 }
 
 type chatProfileState struct {
@@ -225,6 +228,7 @@ type chatLiveModel struct {
 	display          chatDisplayState
 	switchModelFn    func(string) (string, error)
 	clearHistFn      func()
+	state            *chatstate.State
 	copilotToken     string
 	quotaCh          chan<- chatCopilotQuotaMsg
 	themeLowContrast bool
@@ -311,6 +315,10 @@ func RunChatLive(events <-chan llm.Event, cfg ChatLiveConfig, inputCh chan<- str
 		},
 		switchModelFn: cfg.SwitchModel,
 		clearHistFn:   cfg.ClearHistory,
+		state:         cfg.State,
+	}
+	if m.state == nil {
+		m.state = chatstate.New()
 	}
 
 	keysCh := make(chan tcell.Event, 32)
@@ -838,7 +846,11 @@ func inputPosForVisualX(line chatInputVisualLine, targetX int) int {
 
 func (m *chatLiveModel) submitInput(inputCh chan<- string) (ChatLiveResult, bool) {
 	m.exitPending = false
+	if m.state == nil {
+		m.state = chatstate.New()
+	}
 	input := strings.TrimSpace(m.inputBuf)
+	m.display.requiredSkillWarning = ""
 	if input == "" {
 		return ChatLiveResult{}, false
 	}
@@ -870,6 +882,17 @@ func (m *chatLiveModel) submitInput(inputCh chan<- string) (ChatLiveResult, bool
 				m.display.flash = fmt.Sprintf("suggested skill: /%s", s.Name)
 			}
 		}
+	}
+	requiredSkill := skills.RequiredForInput(input)
+	if requiredSkill != "" && !m.state.SkillActivated(requiredSkill) && m.autoSkillsMode != skills.AutoSkillsSuggest {
+		if _, ok := skills.Get(m.skills, requiredSkill); ok {
+			m.display.flash = fmt.Sprintf("required skill: /%s", requiredSkill)
+			m.display.requiredSkillWarning = fmt.Sprintf("activate /%s before sending", requiredSkill)
+		} else {
+			m.display.flash = fmt.Sprintf("required skill not loaded: %s", requiredSkill)
+			m.display.requiredSkillWarning = fmt.Sprintf("required skill not loaded: %s", requiredSkill)
+		}
+		return ChatLiveResult{}, false
 	}
 	if m.busy {
 		m.inputBuf = ""

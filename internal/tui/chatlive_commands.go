@@ -224,7 +224,11 @@ func (m *chatLiveModel) handleSlashCommand(input string) {
 		var sb strings.Builder
 		sb.WriteString("Skills:\n")
 		for _, s := range m.skills {
-			fmt.Fprintf(&sb, "  /%s — %s\n", s.Name, s.Description)
+			marker := "○"
+			if m.state != nil && m.state.SkillActivated(s.Name) {
+				marker = "●"
+			}
+			fmt.Fprintf(&sb, "  %s /%s — %s\n", marker, s.Name, s.Description)
 		}
 		fmt.Fprintf(&sb, "\nAuto-skills mode: %s\n", skills.NormalizeAutoMode(m.autoSkillsMode))
 		wasAtBottom := m.panes.tools.follow || m.panes.tools.scroll >= m.toolsMaxScroll()
