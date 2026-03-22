@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -414,7 +415,15 @@ func joinOrigin(repoURL, repoSubdir, name string) string {
 func run(dir string, name string, args ...string) error {
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(output.String())
+		if msg != "" {
+			return fmt.Errorf("%s %s: %w\n%s", name, strings.Join(args, " "), err, msg)
+		}
+		return fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
+	}
+	return nil
 }
