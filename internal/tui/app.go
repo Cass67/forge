@@ -80,14 +80,14 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.Kind {
 		case llm.EventDone:
 			a.Screen = ScreenDone
-			a.done = NewDoneModel(a.outputDir, false, "")
+			a.done = NewDoneModel(a.outputDir, false, "", "")
 		case llm.EventAbort, llm.EventError:
 			a.Screen = ScreenDone
 			errMsg := ""
 			if msg.Err != nil {
 				errMsg = msg.Err.Error()
 			}
-			a.done = NewDoneModel(a.outputDir, true, errMsg)
+			a.done = NewDoneModel(a.outputDir, true, errMsg, "")
 		default:
 			return a, tea.Batch(cmd, waitForEvent(a.events))
 		}

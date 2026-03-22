@@ -3,12 +3,12 @@ package tui
 import "github.com/charmbracelet/lipgloss"
 
 var (
-	styleBright   = lipgloss.NewStyle().Foreground(lipgloss.Color("#ebebeb"))
-	styleMid      = lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
-	styleDim      = lipgloss.NewStyle().Foreground(lipgloss.Color("#3a3a3a"))
-	styleGreen    = lipgloss.NewStyle().Foreground(lipgloss.Color("#4ade80"))
-	styleDimGreen = lipgloss.NewStyle().Foreground(lipgloss.Color("#1a5c30"))
-	styleRed      = lipgloss.NewStyle().Foreground(lipgloss.Color("#f87171"))
-	styleYellow   = lipgloss.NewStyle().Foreground(lipgloss.Color("#fbbf24"))
-	styleBold     = lipgloss.NewStyle().Foreground(lipgloss.Color("#ebebeb")).Bold(true)
+	styleBright   = lipgloss.NewStyle().Foreground(lipgloss.Color("#f0f6fc"))
+	styleMid      = lipgloss.NewStyle().Foreground(lipgloss.Color("#b1bac4"))
+	styleDim      = lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))
+	styleGreen    = lipgloss.NewStyle().Foreground(lipgloss.Color("#56d364"))
+	styleDimGreen = lipgloss.NewStyle().Foreground(lipgloss.Color("#2ea043"))
+	styleRed      = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff7b72"))
+	styleYellow   = lipgloss.NewStyle().Foreground(lipgloss.Color("#e3b341"))
+	styleBold     = lipgloss.NewStyle().Foreground(lipgloss.Color("#f0f6fc")).Bold(true)
 )
