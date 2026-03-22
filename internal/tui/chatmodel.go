@@ -37,6 +37,7 @@ type ChatModel struct {
 
 	busy           bool
 	status         string
+	flash          string
 	skills         []skills.Skill
 	autoSkillsMode string
 	state          *chatstate.State
@@ -221,6 +222,14 @@ func (m ChatModel) submitInput() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if input == "/exit" || input == "/quit" {
+		return m, tea.Quit
+	}
+
+	if strings.HasPrefix(input, "/") {
+		return m.handleSlashCommand(input)
+	}
+
 	stamp := time.Now().Format("15:04:05")
 	m.AddMessage(ChatMessage{
 		Kind:    MsgUser,
@@ -237,6 +246,42 @@ func (m ChatModel) submitInput() (tea.Model, tea.Cmd) {
 		m.inputCh <- input
 	}
 
+	return m, nil
+}
+
+func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
+	m.inputBuf = ""
+	m.inputPos = 0
+
+	switch input {
+	case "/clear":
+		m.messages = nil
+		m.refreshViewport()
+		m.flash = "conversation cleared"
+	case "/help":
+		m.flash = "help: /clear /exit /model /skills /theme"
+	case "/theme":
+		m.lowContrast = !m.lowContrast
+		m.refreshViewport()
+		if m.lowContrast {
+			m.flash = "theme: low contrast"
+		} else {
+			m.flash = "theme: default"
+		}
+	case "/skills":
+		var sb strings.Builder
+		sb.WriteString("Skills:\n")
+		for _, s := range m.skills {
+			marker := "○"
+			if m.state != nil && m.state.SkillActivated(s.Name) {
+				marker = "●"
+			}
+			sb.WriteString("  " + marker + " /" + s.Name + " — " + s.Description + "\n")
+		}
+		m.flash = sb.String()
+	default:
+		m.flash = "unknown command: " + input
+	}
 	return m, nil
 }
 
