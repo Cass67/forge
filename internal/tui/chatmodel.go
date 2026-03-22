@@ -253,6 +253,10 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.inputBuf = "/help"
 		m.inputPos = 5
 		return m.submitInput()
+	case tea.KeyTab:
+		m.toolsVisible = !m.toolsVisible
+		m.chatViewport.Width = m.chatPaneWidth()
+		m.refreshViewport()
 	case tea.KeySpace:
 		m.flash = ""
 		runes := []rune(m.inputBuf)
@@ -467,8 +471,12 @@ func (m ChatModel) View() string {
 	chatPane := m.chatViewport.View()
 
 	// Side-by-side with tools pane if visible
-	if m.toolsVisible && m.toolsBuf != "" {
+	if m.toolsVisible {
 		toolsWidth := m.width - m.chatPaneWidth()
+		toolsContent := m.toolsBuf
+		if toolsContent == "" {
+			toolsContent = " tools"
+		}
 		toolsStyle := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("#30363d")).
@@ -476,7 +484,7 @@ func (m ChatModel) View() string {
 			Foreground(lipgloss.Color("#8b949e")).
 			Width(toolsWidth - 4).
 			Height(m.chatViewport.Height - 2)
-		toolsPane := toolsStyle.Render(m.toolsBuf)
+		toolsPane := toolsStyle.Render(toolsContent)
 		chatPane = lipgloss.JoinHorizontal(lipgloss.Top, chatPane, toolsPane)
 	}
 
