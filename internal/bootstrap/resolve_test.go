@@ -37,6 +37,37 @@ func TestDriverForExplicitCompatProvider(t *testing.T) {
 	}
 }
 
+func TestCanonicalOpenAIModel(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{in: "gpt-5.4", want: "gpt-5"},
+		{in: "gpt5.4", want: "gpt-5"},
+		{in: " gpt-5 ", want: "gpt-5"},
+		{in: "gpt-4o", want: "gpt-4o"},
+	}
+
+	for _, tt := range tests {
+		if got := canonicalOpenAIModel(tt.in); got != tt.want {
+			t.Fatalf("canonicalOpenAIModel(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestDriverForModelMapsLegacyOpenAIAlias(t *testing.T) {
+	cfg := testConfig()
+	cfg.Keys.OpenAI = "openai-key"
+
+	d := DriverForModel(cfg, &auth.Tokens{}, "gpt-5.4")
+	if d == nil {
+		t.Fatal("expected legacy openai alias to resolve")
+	}
+	if got := d.Name(); got != "gpt-5.4" {
+		t.Fatalf("driver.Name() = %q, want %q", got, "gpt-5.4")
+	}
+}
+
 func testConfig() *config.Config {
 	cfg := &config.Config{}
 	cfg.Models.Writer = "claude-3-7-sonnet-latest"

@@ -9,6 +9,7 @@ import (
 	"forge/internal/session"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/mattn/go-runewidth"
 	"github.com/muesli/reflow/wordwrap"
 )
 
@@ -329,20 +330,22 @@ func (m *liveModel) auditorMaxScroll() int {
 }
 
 func drawText(screen tcell.Screen, x, y int, style tcell.Style, text string) {
-	for i, r := range text {
-		screen.SetContent(x+i, y, r, nil, style)
+	col := 0
+	for _, r := range text {
+		screen.SetContent(x+col, y, r, nil, style)
+		col += runewidth.RuneWidth(r)
 	}
 }
 
 func fitWidth(s string, width int) string {
-	runes := []rune(s)
-	if len(runes) > width {
-		runes = runes[:width]
+	sw := runewidth.StringWidth(s)
+	if sw > width {
+		return runewidth.Truncate(s, width, "")
 	}
-	if len(runes) < width {
-		return string(runes) + strings.Repeat(" ", width-len(runes))
+	if sw < width {
+		return s + strings.Repeat(" ", width-sw)
 	}
-	return string(runes)
+	return s
 }
 
 func wrapPlain(s string, width int) []string {

@@ -68,6 +68,19 @@ func TestEnvOverridesKeys(t *testing.T) {
 	}
 }
 
+func TestProviderKeysTrimWhitespace(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Keys.OpenAI = "  sk-test  \n"
+	if got := cfg.OpenAIKey(); got != "sk-test" {
+		t.Fatalf("OpenAIKey() = %q, want %q", got, "sk-test")
+	}
+
+	t.Setenv("OPENAI_API_KEY", "  env-openai  \n")
+	if got := cfg.OpenAIKey(); got != "env-openai" {
+		t.Fatalf("OpenAIKey() env = %q, want %q", got, "env-openai")
+	}
+}
+
 func TestCopilotClientIDUsesBundledDefault(t *testing.T) {
 	path := writeTemp(t, "")
 	cfg, err := config.Load(path)

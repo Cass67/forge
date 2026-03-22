@@ -492,6 +492,13 @@ func (m *chatLiveModel) handleKey(ev *tcell.EventKey, inputCh chan<- string) (Ch
 			m.autoSaveSession()
 			return ChatLiveResult{Aborted: false, Input: input}, true
 		}
+		// Handle slash commands locally even while a turn is running.
+		if strings.HasPrefix(input, "/") {
+			m.handleSlashCommand(input)
+			m.inputBuf = ""
+			m.inputPos = 0
+			return ChatLiveResult{}, false
+		}
 		if m.busy {
 			m.inputBuf = ""
 			m.inputPos = 0
@@ -501,13 +508,6 @@ func (m *chatLiveModel) handleKey(ev *tcell.EventKey, inputCh chan<- string) (Ch
 			case inputCh <- input:
 			default:
 			}
-			return ChatLiveResult{}, false
-		}
-		// Handle slash commands locally
-		if strings.HasPrefix(input, "/") {
-			m.handleSlashCommand(input)
-			m.inputBuf = ""
-			m.inputPos = 0
 			return ChatLiveResult{}, false
 		}
 		m.inputBuf = ""
