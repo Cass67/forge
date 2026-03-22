@@ -895,7 +895,7 @@ Live view keys:
   up/down     Scroll focused pane
   m           Toggle manual step-through mode
   space/enter Advance (in manual mode)
-  q/esc       Abort session
+  q/esc       Abort session (Esc twice when idle)
 
 Done screen keys:
   o           Open output directory

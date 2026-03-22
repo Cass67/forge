@@ -115,7 +115,6 @@ func DriverForModel(cfg *config.Config, tokens *auth.Tokens, model string) llm.D
 			if ref.Provider == "" {
 				apiModel = CopilotAPIModel(model)
 			}
-			apiModel = canonicalOpenAIModel(apiModel)
 			return drivers.NewCopilot(tokens.CopilotToken, model, apiModel)
 		}
 		return nil
