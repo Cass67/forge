@@ -82,6 +82,7 @@ type ChatConfig struct {
 	CommandTimeout int      `toml:"command_timeout"`
 	Yolo           bool     `toml:"yolo"`
 	IgnoreDirs     []string `toml:"ignore_dirs"`
+	AutoSkills     string   `toml:"auto_skills"`
 }
 
 type Config struct {
@@ -128,6 +129,7 @@ func setDefaults(c *Config) {
 	c.Chat.MaxTurns = 50
 	c.Chat.CommandTimeout = 60
 	c.Chat.IgnoreDirs = []string{".git", "node_modules", "__pycache__", ".venv", "vendor"}
+	c.Chat.AutoSkills = "suggest"
 	c.Models.WriterParams.Temperature = -1
 	c.Models.AuditorParams.Temperature = -1
 }

@@ -28,7 +28,7 @@ func TestAgentEndToEnd(t *testing.T) {
 
 	var output bytes.Buffer
 	renderer := NewRenderer(&output, 80, false)
-	a := NewAgent(driver, reg, approve, dir, 10, renderer)
+	a := NewAgent(driver, reg, approve, dir, 10, renderer, nil, nil)
 
 	err := a.Run(context.Background(), "add a hello world print to main.go")
 	if err != nil {
@@ -63,7 +63,7 @@ func TestAgentCodeFenceExample(t *testing.T) {
 
 	var output bytes.Buffer
 	renderer := NewRenderer(&output, 80, false)
-	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
 	a.Run(context.Background(), "explain how to use read_file")
 
 	if readCalled {
