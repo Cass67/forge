@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -23,14 +24,15 @@ import (
 	"forge/internal/output"
 	runtimepkg "forge/internal/runtime"
 	"forge/internal/session"
+	"forge/internal/skills"
 	"forge/internal/tui"
 )
 
 func main() {
 	cli.Dispatch(os.Args[1:], map[string]cli.Command{
-		"-h":        {Name: "help", Run: func(args []string) { printHelp() }},
-		"--help":    {Name: "help", Run: func(args []string) { printHelp() }},
-		"help":      {Name: "help", Run: func(args []string) { printHelp() }},
+		"-h":        {Name: "help", Run: func(args []string) { runHelp(args) }},
+		"--help":    {Name: "help", Run: func(args []string) { runHelp(args) }},
+		"help":      {Name: "help", Run: func(args []string) { runHelp(args) }},
 		"-v":        {Name: "version", Run: func(args []string) { fmt.Println("forge v0.1.0") }},
 		"--version": {Name: "version", Run: func(args []string) { fmt.Println("forge v0.1.0") }},
 		"version":   {Name: "version", Run: func(args []string) { fmt.Println("forge v0.1.0") }},
@@ -61,6 +63,7 @@ func main() {
 				runShow(cli.RequireArg(args, "usage: forge show <session-id>"))
 			},
 		},
+		"skills": {Name: "skills", Run: func(args []string) { runSkills(args) }},
 		"status": {Name: "status", Run: func(args []string) { runStatus() }},
 	}, func() {
 		runInteractive()
@@ -854,21 +857,46 @@ func snapshotDir(dir string) output.CodeSnapshot {
 	return snap
 }
 
+func runHelp(args []string) {
+	if len(args) == 0 {
+		printHelp()
+		return
+	}
+	switch args[0] {
+	case "skills":
+		printSkillsHelp()
+	default:
+		printHelp()
+	}
+}
+
 func printHelp() {
 	fmt.Print(`forge — terminal-based LLM code generation with writer/auditor review loops
 
 Usage:
   forge                           Launch interactive session
-  forge chat [flags]               Start interactive agent session
+  forge chat [flags]              Start interactive agent session
   forge improve <path> [flags]    Improve existing codebase
   forge list                      List past sessions
   forge show <id>                 Show session details
   forge status                    Show auth and Copilot allowance status
   forge perf [summary|list]       Show token/perf summary across sessions
   forge perf show <id>            Show token/perf details for a session
+  forge skills list               List loaded skills
+  forge skills dir                Show global/project skill directories
+  forge skills install [flags] <source>
+                                  Install skill file(s) into Forge
   forge auth copilot              Authenticate with GitHub Copilot
   forge help                      Show this help
   forge version                   Show version
+
+Skills:
+  Skills are markdown files with frontmatter loaded from:
+    project: ./.forge/skills/
+    global:  ~/.config/forge/skills/
+  Use /skills in chat to list them and /<name> to activate one.
+  You can install a local .md file, a local directory of .md files,
+  or an HTTP(S) URL to a raw skill markdown file.
 
 Improve flags:
   --prompt "..."     What to improve (required)
@@ -907,6 +935,251 @@ Done screen keys:
 Config: ~/.config/forge/config.toml
 Output: ./output/<timestamp>/
 `)
+}
+
+func printSkillsHelp() {
+	fmt.Print(`forge skills — install and inspect Forge chat skills
+
+Usage:
+  forge skills list
+  forge skills dir
+  forge skills status
+  forge skills search <query>
+  forge skills remove <name>
+  forge skills update superpowers [--scope global|project]
+  forge skills install [--scope global|project] <source>
+  forge skills install [--scope global|project] --git <repo-url> [--subdir <path>]
+  forge skills install [--scope global|project] superpowers [skill-name ...]
+
+Install sources:
+  <source> can be:
+    - a local .md skill file
+    - a local directory containing .md skill files
+    - an HTTP(S) URL to a raw markdown skill file
+
+Git installs:
+  --git clones a repository and installs .md skills from the repo root or --subdir.
+
+Superpowers shortcut:
+  forge skills install superpowers
+    installs a curated starter set:
+      brainstorming
+      systematic-debugging
+      test-driven-development
+
+  forge skills install superpowers brainstorming systematic-debugging
+    installs only the named superpowers skills from obra/superpowers.
+
+Directories:
+  project: ./.forge/skills/
+  global:  ~/.config/forge/skills/
+
+In chat:
+  /skills     list available skills
+  /<name>     activate a skill
+`)
+}
+
+func newTabWriter() *tabwriter.Writer {
+	return tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', 0)
+}
+
+func runSkills(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: forge skills [list|dir|status|search|remove|update|install]")
+		os.Exit(1)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "list":
+		loaded := skills.Load(cwd)
+		if len(loaded) == 0 {
+			fmt.Println("no skills loaded")
+			return
+		}
+		w := newTabWriter()
+		if _, err := fmt.Fprintln(w, "NAME\tDESCRIPTION\tSOURCE"); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		for _, s := range loaded {
+			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\n", s.Name, s.Description, s.Source); err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				os.Exit(1)
+			}
+		}
+		if err := w.Flush(); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	case "dir":
+		globalDir, err := skills.UserDir()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		w := newTabWriter()
+		if _, err := fmt.Fprintln(w, "SCOPE\tPATH"); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		if _, err := fmt.Fprintf(w, "global\t%s\n", globalDir); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		if _, err := fmt.Fprintf(w, "project\t%s\n", skills.ProjectDir(cwd)); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		if err := w.Flush(); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	case "status":
+		entries, err := skills.Status(cwd)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		if len(entries) == 0 {
+			fmt.Println("no skills loaded")
+			return
+		}
+		w := newTabWriter()
+		if _, err := fmt.Fprintln(w, "SCOPE\tNAME\tPROVIDER\tTRACKING\tFILE\tSOURCE"); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		for _, e := range entries {
+			provider := e.Provider
+			if provider == "" {
+				provider = "manual"
+			}
+			tracked := "untracked"
+			if e.Tracked {
+				tracked = "tracked"
+			}
+			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", e.Scope, e.Name, provider, tracked, e.File, e.Source); err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				os.Exit(1)
+			}
+		}
+		if err := w.Flush(); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	case "search":
+		query := cli.RequireArg(args[1:], "usage: forge skills search <query>")
+		matches := skills.Search(cwd, query)
+		if len(matches) == 0 {
+			fmt.Println("no matching skills")
+			return
+		}
+		w := newTabWriter()
+		if _, err := fmt.Fprintln(w, "NAME\tDESCRIPTION\tSOURCE"); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		for _, s := range matches {
+			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\n", s.Name, s.Description, s.Source); err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				os.Exit(1)
+			}
+		}
+		if err := w.Flush(); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	case "remove":
+		name := cli.RequireArg(args[1:], "usage: forge skills remove <name>")
+		removed, err := skills.RemoveByName(cwd, name)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("removed /%s from %s\n", name, removed)
+	case "update":
+		if len(args) < 2 || args[1] != "superpowers" {
+			fmt.Fprintln(os.Stderr, "usage: forge skills update superpowers [--scope global|project]")
+			os.Exit(1)
+		}
+		fs := flag.NewFlagSet("skills update", flag.ExitOnError)
+		scope := fs.String("scope", "global", "install scope: global or project")
+		if err := fs.Parse(args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		var destDir string
+		switch *scope {
+		case "global":
+			destDir, err = skills.UserDir()
+		case "project":
+			destDir = skills.ProjectDir(cwd)
+		default:
+			fmt.Fprintln(os.Stderr, "error: --scope must be global or project")
+			os.Exit(1)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		installed, err := skills.UpdateSuperpowers(cwd, destDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		for _, s := range installed {
+			fmt.Printf("updated /%s -> %s\n", s.Name, s.Source)
+		}
+	case "install":
+		fs := flag.NewFlagSet("skills install", flag.ExitOnError)
+		scope := fs.String("scope", "global", "install scope: global or project")
+		gitRepo := fs.String("git", "", "git repository URL to install from")
+		subdir := fs.String("subdir", "", "subdirectory within a git repo to install from")
+		if err := fs.Parse(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		var destDir string
+		switch *scope {
+		case "global":
+			destDir, err = skills.UserDir()
+		case "project":
+			destDir = skills.ProjectDir(cwd)
+		default:
+			fmt.Fprintln(os.Stderr, "error: --scope must be global or project")
+			os.Exit(1)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		var installed []skills.Skill
+		rest := fs.Args()
+		switch {
+		case *gitRepo != "":
+			installed, err = skills.InstallFromGitRepo(*gitRepo, *subdir, destDir)
+		case len(rest) > 0 && rest[0] == "superpowers":
+			installed, err = skills.InstallSuperpowers(destDir, rest[1:])
+		default:
+			source := cli.RequireArg(rest, "usage: forge skills install [--scope global|project] <source>\n       forge skills install [--scope global|project] --git <repo-url> [--subdir <path>]\n       forge skills install [--scope global|project] superpowers [skill-name ...]")
+			installed, err = skills.InstallFromSource(source, destDir)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		for _, s := range installed {
+			fmt.Printf("installed /%s -> %s\n", s.Name, s.Source)
+		}
+	default:
+		fmt.Fprintln(os.Stderr, "usage: forge skills [list|dir|status|search|remove|update|install]")
+		os.Exit(1)
+	}
 }
 
 func runChat() {
