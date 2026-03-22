@@ -38,6 +38,7 @@ type ChatModel struct {
 	toolsVisible bool
 
 	busy           bool
+	viewportDirty  bool
 	spinnerFrame   int
 	status         string
 	flash          string
@@ -96,7 +97,7 @@ func (m *ChatModel) AppendToLastAgent(text string) {
 		m.messages = append(m.messages, ChatMessage{Kind: MsgAgent})
 	}
 	m.messages[len(m.messages)-1].Content += text
-	m.refreshViewport()
+	m.viewportDirty = true
 }
 
 func (m *ChatModel) refreshViewport() {
@@ -138,6 +139,10 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.busy {
 			m.spinnerFrame = (m.spinnerFrame + 1) % 8
 		}
+		if m.viewportDirty {
+			m.refreshViewport()
+			m.viewportDirty = false
+		}
 		return m, tickCmd()
 
 	case llm.Event:
@@ -150,6 +155,11 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+
+	case tea.MouseMsg:
+		var cmd tea.Cmd
+		m.chatViewport, cmd = m.chatViewport.Update(msg)
+		return m, cmd
 	}
 
 	var cmd tea.Cmd
@@ -162,9 +172,22 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 	case llm.EventToken:
 		m.AppendToLastAgent(ev.Text)
 	case llm.EventToolCall:
-		m.toolsBuf += fmt.Sprintf("● %s %s\n", ev.Text, ev.Content)
+		if m.toolsBuf != "" && !strings.HasSuffix(m.toolsBuf, "\n\n") {
+			m.toolsBuf += "\n"
+		}
+		m.toolsBuf += "────────────────────────\n"
+		m.toolsBuf += fmt.Sprintf("● %s\n", ev.Agent)
+		m.toolsBuf += fmt.Sprintf("  %s\n", ev.Text)
 	case llm.EventToolResult:
-		m.toolsBuf += fmt.Sprintf("  → %s\n", truncate(ev.Text, 120))
+		if ev.IsError {
+			m.toolsBuf += fmt.Sprintf("  status: ✗ %s\n", ev.Text)
+		} else if ev.Content != "" {
+			m.toolsBuf += fmt.Sprintf("  status: ✓\n  %s\n", truncate(ev.Content, 200))
+		} else {
+			m.toolsBuf += fmt.Sprintf("  status: ✓ %s\n", truncate(ev.Text, 200))
+		}
+	case llm.EventRoundStart:
+		m.toolsBuf += fmt.Sprintf("\n── round %d ──\n", ev.Round)
 	case llm.EventDone:
 		m.busy = false
 		m.status = "ready"
@@ -173,6 +196,9 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 			Kind:    MsgStatus,
 			Content: "Agent complete • " + stamp,
 		})
+		if strings.TrimSpace(m.toolsBuf) != "" {
+			m.toolsBuf += fmt.Sprintf("status: complete • %s\n", stamp)
+		}
 	case llm.EventError:
 		m.busy = false
 		m.status = "error"
@@ -180,10 +206,19 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		if ev.Err != nil {
 			errMsg = ev.Err.Error()
 		}
+		m.toolsBuf += fmt.Sprintf("  ✗ %s\n", errMsg)
 		m.AddMessage(ChatMessage{
 			Kind:    MsgStatus,
 			Content: "Error: " + errMsg,
 		})
+	case llm.EventStats:
+		if ev.Duration > 0 {
+			m.toolsBuf += fmt.Sprintf("  %.1fs", ev.Duration.Seconds())
+			if ev.Usage.InputTokens > 0 {
+				m.toolsBuf += fmt.Sprintf(" • %d in / %d out", ev.Usage.InputTokens, ev.Usage.OutputTokens)
+			}
+			m.toolsBuf += "\n"
+		}
 	}
 	return m, nil
 }
