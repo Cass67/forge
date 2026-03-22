@@ -52,6 +52,8 @@ func (m *chatLiveModel) renderHelpOverlay(screen tcell.Screen) {
 		"/copy code       export latest code block",
 		"/copy result     export latest tool result",
 		"/expand          expand last truncated result",
+		"/skills          list available skills",
+		"/<skill>         activate a loaded skill",
 		"/clear           clear panes (and history when available)",
 		"/exit            leave live mode",
 	}

@@ -11,7 +11,7 @@ func TestBuildSystemPrompt(t *testing.T) {
 	reg := tools.NewRegistry()
 	reg.Register(tools.Tool{Name: "read_file", Description: "Read a file"})
 
-	prompt := BuildSystemPrompt("/home/user/project", reg)
+	prompt := BuildSystemPrompt("/home/user/project", reg, "")
 
 	if !strings.Contains(prompt, "/home/user/project") {
 		t.Error("missing workDir")

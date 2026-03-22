@@ -213,6 +213,23 @@ func (m *chatLiveModel) handleSlashCommand(input string) {
 			m.overlays.search.lineStarts = nil
 		}
 		m.display.flash = "tools pane cleared"
+	case input == "/skills":
+		if len(m.skills) == 0 {
+			m.display.flash = "no skills loaded"
+			return
+		}
+		var sb strings.Builder
+		sb.WriteString("Skills:\n")
+		for _, s := range m.skills {
+			fmt.Fprintf(&sb, "  /%s — %s\n", s.Name, s.Description)
+		}
+		wasAtBottom := m.panes.tools.follow || m.panes.tools.scroll >= m.toolsMaxScroll()
+		m.panes.tools.buf += sb.String()
+		m.invalidatePaneCache(&m.panes.tools)
+		if wasAtBottom {
+			m.panes.tools.scroll = m.toolsMaxScroll()
+		}
+		m.display.flash = fmt.Sprintf("%d skills available", len(m.skills))
 	default:
 		m.display.flash = fmt.Sprintf("unknown command: %s (try /help)", input)
 	}
