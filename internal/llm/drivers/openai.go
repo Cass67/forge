@@ -29,24 +29,34 @@ type OpenAIDriver struct {
 }
 
 func NewOpenAI(apiKey, model string) *OpenAIDriver {
-	client := openai.NewClient(option.WithAPIKey(apiKey))
+	return newOpenAI(strings.TrimSpace(apiKey), model, model, true, "")
+}
+
+func newOpenAI(apiKey, registryName, apiModel string, supportsResponses bool, baseURL string) *OpenAIDriver {
+	opts := []option.RequestOption{option.WithAPIKey(strings.TrimSpace(apiKey))}
+	if strings.TrimSpace(baseURL) != "" {
+		opts = append(opts, option.WithBaseURL(baseURL))
+	}
+	client := openai.NewClient(opts...)
 	return &OpenAIDriver{
 		client:            &client,
-		registryName:      model,
-		apiModel:          model,
-		supportsResponses: true,
+		registryName:      registryName,
+		apiModel:          apiModel,
+		supportsResponses: supportsResponses,
 		params:            llm.Params{Temperature: -1},
 	}
 }
 
+func NewOpenAIAlias(apiKey, registryName, apiModel string) *OpenAIDriver {
+	return newOpenAI(apiKey, registryName, apiModel, true, "")
+}
+
+func NewOpenAICompatibleAlias(apiKey, baseURL, registryName, apiModel string) *OpenAIDriver {
+	return newOpenAI(apiKey, registryName, apiModel, false, baseURL)
+}
+
 func NewOpenAICompatible(apiKey, baseURL, model string) *OpenAIDriver {
-	client := openai.NewClient(option.WithAPIKey(apiKey), option.WithBaseURL(baseURL))
-	return &OpenAIDriver{
-		client:       &client,
-		registryName: model,
-		apiModel:     model,
-		params:       llm.Params{Temperature: -1},
-	}
+	return NewOpenAICompatibleAlias(apiKey, baseURL, model, model)
 }
 
 // NewCopilot creates a driver for GitHub Copilot. registryName is the key used
@@ -54,7 +64,7 @@ func NewOpenAICompatible(apiKey, baseURL, model string) *OpenAIDriver {
 // to the Copilot API (e.g. "gpt-4o").
 func NewCopilot(token, registryName, apiModel string) *OpenAIDriver {
 	client := openai.NewClient(
-		option.WithAPIKey(token),
+		option.WithAPIKey(strings.TrimSpace(token)),
 		option.WithBaseURL("https://api.githubcopilot.com"),
 		option.WithHeader("Copilot-Integration-Id", "copilot-developer-cli"),
 		option.WithHeader("Openai-Intent", "conversation-agent"),
@@ -105,7 +115,7 @@ func (d *OpenAIDriver) streamChatCompletions(ctx context.Context, messages []llm
 	if d.params.MaxTokens > 0 {
 		params.MaxCompletionTokens = openai.Int(int64(d.params.MaxTokens))
 	}
-	if d.params.Temperature >= 0 {
+	if d.params.Temperature >= 0 && modelSupportsTemperature(d.apiModel) {
 		params.Temperature = openai.Float(d.params.Temperature)
 	}
 
@@ -162,7 +172,7 @@ func (d *OpenAIDriver) streamResponses(ctx context.Context, messages []llm.Messa
 	if d.params.MaxTokens > 0 {
 		params.MaxOutputTokens = openai.Int(int64(d.params.MaxTokens))
 	}
-	if d.params.Temperature >= 0 {
+	if d.params.Temperature >= 0 && modelSupportsTemperature(d.apiModel) {
 		params.Temperature = openai.Float(d.params.Temperature)
 	}
 
@@ -355,6 +365,18 @@ func (d *OpenAIDriver) useResponsesAPI() bool {
 }
 
 func modelRequiresResponses(model string) bool {
-	m := strings.ToLower(model)
-	return strings.HasPrefix(m, "gpt-5") || strings.HasPrefix(m, "gpt5")
+	return isReasoningModel(model)
+}
+
+func modelSupportsTemperature(model string) bool {
+	return !isReasoningModel(model)
+}
+
+func isReasoningModel(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(m, "gpt-5") ||
+		strings.HasPrefix(m, "gpt5") ||
+		strings.HasPrefix(m, "o1") ||
+		strings.HasPrefix(m, "o3") ||
+		strings.HasPrefix(m, "o4")
 }

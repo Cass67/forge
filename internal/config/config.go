@@ -133,87 +133,87 @@ func setDefaults(c *Config) {
 }
 
 func (c *Config) AnthropicKey() string {
-	if v := os.Getenv("ANTHROPIC_API_KEY"); v != "" {
+	if v := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); v != "" {
 		return v
 	}
-	return c.Keys.Anthropic
+	return strings.TrimSpace(c.Keys.Anthropic)
 }
 
 func (c *Config) OpenAIKey() string {
-	if v := os.Getenv("OPENAI_API_KEY"); v != "" {
+	if v := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); v != "" {
 		return v
 	}
-	return c.Keys.OpenAI
+	return strings.TrimSpace(c.Keys.OpenAI)
 }
 
 func (c *Config) GroqKey() string {
-	if v := os.Getenv("GROQ_API_KEY"); v != "" {
+	if v := strings.TrimSpace(os.Getenv("GROQ_API_KEY")); v != "" {
 		return v
 	}
-	return c.Keys.Groq
+	return strings.TrimSpace(c.Keys.Groq)
 }
 
 func (c *Config) MistralKey() string {
-	if v := os.Getenv("MISTRAL_API_KEY"); v != "" {
+	if v := strings.TrimSpace(os.Getenv("MISTRAL_API_KEY")); v != "" {
 		return v
 	}
-	return c.Keys.Mistral
+	return strings.TrimSpace(c.Keys.Mistral)
 }
 
 func (c *Config) XAIKey() string {
-	if v := os.Getenv("XAI_API_KEY"); v != "" {
+	if v := strings.TrimSpace(os.Getenv("XAI_API_KEY")); v != "" {
 		return v
 	}
-	return c.Keys.XAI
+	return strings.TrimSpace(c.Keys.XAI)
 }
 
 func (c *Config) NVIDIAKey() string {
-	if v := os.Getenv("NVIDIA_API_KEY"); v != "" {
+	if v := strings.TrimSpace(os.Getenv("NVIDIA_API_KEY")); v != "" {
 		return v
 	}
-	return c.Keys.NVIDIA
+	return strings.TrimSpace(c.Keys.NVIDIA)
 }
 
 func (c *Config) OpenRouterKey() string {
-	if v := os.Getenv("OPENROUTER_API_KEY"); v != "" {
+	if v := strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")); v != "" {
 		return v
 	}
-	return c.Keys.OpenRouter
+	return strings.TrimSpace(c.Keys.OpenRouter)
 }
 
 func (c *Config) TogetherKey() string {
-	if v := os.Getenv("TOGETHER_AI_API_KEY"); v != "" {
+	if v := strings.TrimSpace(os.Getenv("TOGETHER_AI_API_KEY")); v != "" {
 		return v
 	}
-	return c.Keys.Together
+	return strings.TrimSpace(c.Keys.Together)
 }
 
 func (c *Config) PerplexityKey() string {
-	if v := os.Getenv("PERPLEXITY_API_KEY"); v != "" {
+	if v := strings.TrimSpace(os.Getenv("PERPLEXITY_API_KEY")); v != "" {
 		return v
 	}
-	return c.Keys.Perplexity
+	return strings.TrimSpace(c.Keys.Perplexity)
 }
 
 func (c *Config) DeepInfraKey() string {
-	if v := os.Getenv("DEEPINFRA_API_KEY"); v != "" {
+	if v := strings.TrimSpace(os.Getenv("DEEPINFRA_API_KEY")); v != "" {
 		return v
 	}
-	return c.Keys.DeepInfra
+	return strings.TrimSpace(c.Keys.DeepInfra)
 }
 
 func (c *Config) CerebrasKey() string {
-	if v := os.Getenv("CEREBRAS_API_KEY"); v != "" {
+	if v := strings.TrimSpace(os.Getenv("CEREBRAS_API_KEY")); v != "" {
 		return v
 	}
-	return c.Keys.Cerebras
+	return strings.TrimSpace(c.Keys.Cerebras)
 }
 
 func (c *Config) BraveKey() string {
-	if v := os.Getenv("BRAVE_API_KEY"); v != "" {
+	if v := strings.TrimSpace(os.Getenv("BRAVE_API_KEY")); v != "" {
 		return v
 	}
-	return c.Keys.Brave
+	return strings.TrimSpace(c.Keys.Brave)
 }
 
 // CopilotClientID returns the GitHub OAuth App client ID used for device flow

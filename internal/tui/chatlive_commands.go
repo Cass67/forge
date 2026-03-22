@@ -265,15 +265,28 @@ func (m *chatLiveModel) handleEvent(ev llm.Event) {
 			var b strings.Builder
 			b.Grow(len(m.panes.agent.buf) + len(ev.Text) + 8)
 			b.WriteString(m.panes.agent.buf)
+			// Determine if we're continuing a line (buffer non-empty and not ending with newline)
+			midLine := len(m.panes.agent.buf) > 0 && !strings.HasSuffix(m.panes.agent.buf, "\n")
 			lines := strings.Split(ev.Text, "\n")
 			for i, line := range lines {
-				if i < len(lines)-1 {
-					b.WriteString(" │ ")
-					b.WriteString(line)
+				if i > 0 {
+					// This token contained a newline — previous segment ended a line
 					b.WriteByte('\n')
-				} else if line != "" {
-					b.WriteString(" │ ")
+					midLine = false
+				}
+				if i < len(lines)-1 {
+					// Not the last segment: write prefix (if at line start) + text
+					if !midLine {
+						b.WriteString(" │ ")
+					}
 					b.WriteString(line)
+				} else if line != "" {
+					// Last segment (no trailing newline): write prefix only if at line start
+					if !midLine {
+						b.WriteString(" │ ")
+					}
+					b.WriteString(line)
+					midLine = true
 				}
 			}
 			m.panes.agent.buf = b.String()

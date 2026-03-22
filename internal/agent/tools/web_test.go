@@ -14,7 +14,7 @@ func noSSRF(_ string) error { return nil }
 func TestWebFetchJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"key": "value"}`)
+		_, _ = fmt.Fprint(w, `{"key":"value","nested":{"a":1}}`)
 	}))
 	defer srv.Close()
 
@@ -23,8 +23,8 @@ func TestWebFetchJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result, `"key"`) {
-		t.Errorf("expected JSON content, got: %s", result)
+	if !strings.Contains(result, "\n  \"nested\"") {
+		t.Errorf("expected pretty-printed JSON content, got: %s", result)
 	}
 }
 
@@ -68,20 +68,23 @@ func TestWebFetchPlainText(t *testing.T) {
 func TestWebFetchTruncation(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
-		_, _ = fmt.Fprint(w, strings.Repeat("x", 1000))
+		_, _ = fmt.Fprint(w, "line1\nline2\nline3\n"+strings.Repeat("x", 1000))
 	}))
 	defer srv.Close()
 
 	tool := newWebFetch(noSSRF)
 	result, err := tool.Execute(context.Background(), map[string]any{
 		"url":        srv.URL,
-		"max_length": float64(100),
+		"max_length": float64(18),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(result, "truncated") {
 		t.Errorf("expected truncation, got: %s", result)
+	}
+	if !strings.Contains(result, "line3") {
+		t.Errorf("expected truncation to preserve complete lines when possible, got: %s", result)
 	}
 }
 
@@ -99,6 +102,120 @@ func TestWebFetchBinaryRejected(t *testing.T) {
 	}
 	if !strings.Contains(result, "binary") || !strings.Contains(result, "image/png") {
 		t.Errorf("expected binary rejection, got: %s", result)
+	}
+}
+
+func TestWebFetchSniffsHTMLWithoutContentType(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Del("Content-Type")
+		_, _ = fmt.Fprint(w, `<html><body><h1>Hello</h1><p>world</p></body></html>`)
+	}))
+	defer srv.Close()
+
+	tool := newWebFetch(noSSRF)
+	result, err := tool.Execute(context.Background(), map[string]any{"url": srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "Hello") || !strings.Contains(result, "world") {
+		t.Fatalf("expected HTML text extraction via sniffing, got: %s", result)
+	}
+}
+
+func TestWebFetchDecodesCharset(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=iso-8859-1")
+		_, _ = w.Write([]byte{0x63, 0x61, 0x66, 0xe9})
+	}))
+	defer srv.Close()
+
+	tool := newWebFetch(noSSRF)
+	result, err := tool.Execute(context.Background(), map[string]any{"url": srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "café") {
+		t.Fatalf("expected charset-decoded text, got: %q", result)
+	}
+}
+
+func TestWebFetchFollowsPaginationAndMergesJSONArray(t *testing.T) {
+	mux := http.NewServeMux()
+	var srv *httptest.Server
+	mux.HandleFunc("/page1", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Link", "<"+srv.URL+"/page2>; rel=\"next\"")
+		_, _ = fmt.Fprint(w, `[{"id":1},{"id":2}]`)
+	})
+	mux.HandleFunc("/page2", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `[{"id":3}]`)
+	})
+	srv = httptest.NewServer(mux)
+	defer srv.Close()
+
+	tool := newWebFetch(noSSRF)
+	result, err := tool.Execute(context.Background(), map[string]any{
+		"url":               srv.URL + "/page1",
+		"follow_pagination": true,
+		"max_pages":         float64(3),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, `"id": 1`) || !strings.Contains(result, `"id": 3`) {
+		t.Fatalf("expected merged paginated JSON array, got: %s", result)
+	}
+}
+
+func TestWebFetchLinksMode(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprint(w, `<html><body><a href="/one">One</a><a href="https://example.com/two">Two</a></body></html>`)
+	}))
+	defer srv.Close()
+
+	tool := newWebFetch(noSSRF)
+	result, err := tool.Execute(context.Background(), map[string]any{"url": srv.URL, "mode": "links"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, `"url": "`+srv.URL+`/one"`) || !strings.Contains(result, `"url": "https://example.com/two"`) {
+		t.Fatalf("expected extracted links, got: %s", result)
+	}
+}
+
+func TestWebFetchMetadataMode(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprint(w, `<html><head><title>Hello Title</title></head><body><a href="/one">One</a></body></html>`)
+	}))
+	defer srv.Close()
+
+	tool := newWebFetch(noSSRF)
+	result, err := tool.Execute(context.Background(), map[string]any{"url": srv.URL, "mode": "metadata"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, `"title": "Hello Title"`) || !strings.Contains(result, `"link_count": 1`) {
+		t.Fatalf("expected metadata output, got: %s", result)
+	}
+}
+
+func TestWebFetchRawModeReturnsHTML(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprint(w, `<html><body><h1>Hello</h1></body></html>`)
+	}))
+	defer srv.Close()
+
+	tool := newWebFetch(noSSRF)
+	result, err := tool.Execute(context.Background(), map[string]any{"url": srv.URL, "mode": "raw"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, `<html><body><h1>Hello</h1></body></html>`) {
+		t.Fatalf("expected raw HTML output, got: %s", result)
 	}
 }
 
@@ -209,5 +326,36 @@ func TestWebSearchCountLimit(t *testing.T) {
 	}
 	if !strings.Contains(result, "Result 1") {
 		t.Errorf("expected Result 1, got: %s", result)
+	}
+}
+
+func TestWebSearchFallbackProvider(t *testing.T) {
+	ddg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "rate limited", http.StatusAccepted)
+	}))
+	defer ddg.Close()
+
+	brave := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprint(w, `<html><body>
+			<a class="heading" href="https://example.com/fallback">Fallback Result</a>
+			<div class="description">Recovered via fallback provider</div>
+		</body></html>`)
+	}))
+	defer brave.Close()
+
+	tool := newWebSearchWithConfiguredEndpoints(
+		searchEndpoint{url: ddg.URL, kind: searchKindDDG},
+		searchEndpoint{url: brave.URL, kind: searchKindBrave},
+	)
+	result, err := tool.Execute(context.Background(), map[string]any{"query": "fallback test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "Fallback Result") {
+		t.Fatalf("expected fallback result, got: %s", result)
+	}
+	if !strings.Contains(result, "example.com/fallback") {
+		t.Fatalf("expected fallback URL, got: %s", result)
 	}
 }
