@@ -143,11 +143,37 @@ func TestDescribeEmpty(t *testing.T) {
 
 func TestGetSkill(t *testing.T) {
 	t.Parallel()
-	skills := []Skill{{Name: "tdd", Description: "d", Body: "b"}}
-	if _, ok := Get(skills, "tdd"); !ok {
-		t.Fatal("Get(tdd) not found")
+	skills := []Skill{
+		{Name: "test-driven-development", Description: "TDD", Body: "b"},
+		{Name: "systematic-debugging", Description: "Debug", Body: "b"},
+		{Name: "brainstorming", Description: "Plan", Body: "b"},
 	}
+	// Exact match.
+	if s, ok := Get(skills, "test-driven-development"); !ok || s.Name != "test-driven-development" {
+		t.Fatal("exact match failed")
+	}
+	// Initials match.
+	if s, ok := Get(skills, "tdd"); !ok || s.Name != "test-driven-development" {
+		t.Fatal("initials match for tdd failed")
+	}
+	if s, ok := Get(skills, "sd"); !ok || s.Name != "systematic-debugging" {
+		t.Fatal("initials match for sd failed")
+	}
+	// Prefix match.
+	if s, ok := Get(skills, "brain"); !ok || s.Name != "brainstorming" {
+		t.Fatal("prefix match for brain failed")
+	}
+	// No match.
 	if _, ok := Get(skills, "nope"); ok {
 		t.Fatal("Get(nope) should not be found")
+	}
+	// Ambiguous prefix should not match (both "systematic-debugging" and "brainstorming"
+	// would be returned if prefix checked against substrings, but only one starts with "b").
+	ambiguous := []Skill{
+		{Name: "test-alpha", Description: "a", Body: "b"},
+		{Name: "test-beta", Description: "b", Body: "b"},
+	}
+	if _, ok := Get(ambiguous, "test"); ok {
+		t.Fatal("ambiguous prefix 'test' should not match")
 	}
 }

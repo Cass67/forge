@@ -353,14 +353,35 @@ func (m *chatLiveModel) renderPaneBodies(screen tcell.Screen, styleBody, styleBo
 	agentBubbleStyle := tcell.StyleDefault.Background(tcell.GetColor("#1a2332")).Foreground(colorBright)
 	agentBubbleBorderStyle := tcell.StyleDefault.Background(colorPanel).Foreground(tcell.GetColor("#58a6ff"))
 	agentBubbleDimStyle := tcell.StyleDefault.Background(tcell.GetColor("#1a2332")).Foreground(colorDim)
+	userBg := tcell.GetColor("#1d2a1d")
+	userBorder := tcell.GetColor("#56d364")
+	if m.themeLowContrast {
+		userBg = tcell.GetColor("#202820")
+		userBorder = tcell.GetColor("#7fbf7f")
+	}
+	userBubbleStyle := tcell.StyleDefault.Background(userBg).Foreground(colorBright)
+	userBubbleBorderStyle := tcell.StyleDefault.Background(colorPanel).Foreground(userBorder)
+	userBubbleDimStyle := tcell.StyleDefault.Background(userBg).Foreground(colorDim)
+	forgeBubbleStyle := tcell.StyleDefault.Background(tcell.GetColor("#241a2f")).Foreground(colorBright)
+	forgeBubbleBorderStyle := tcell.StyleDefault.Background(colorPanel).Foreground(tcell.GetColor("#d2a8ff"))
+	forgeBubbleDimStyle := tcell.StyleDefault.Background(tcell.GetColor("#241a2f")).Foreground(colorDim)
 	inCodeBlock := false
 	codeLang := ""
+	conversationSection := "agent"
 	for row := 0; row < leftVisibleH; row++ {
 		y := leftY + 1 + row
 		line := ""
 		lineIndex := m.panes.agent.scroll + row
 		if row < len(leftLines) {
 			line = leftLines[row]
+		}
+		prevLine := ""
+		if row > 0 && row-1 < len(leftLines) {
+			prevLine = leftLines[row-1]
+		}
+		nextLine := ""
+		if row+1 < len(leftLines) {
+			nextLine = leftLines[row+1]
 		}
 		matchStart, isCurrent, hasMatch := 0, false, false
 		if leftQuery != "" {
@@ -398,22 +419,99 @@ func (m *chatLiveModel) renderPaneBodies(screen tcell.Screen, styleBody, styleBo
 			}
 			continue
 		}
-		fillRect(screen, leftX+1, y, leftContentW, 1, agentBubbleStyle)
-		if m.lineHasSelection("left", m.panes.agent.scroll+row, leftWrapped, leftLineStarts) {
-			fillRect(screen, leftX+1, y, leftContentW, 1, agentBubbleStyle.Background(tcell.GetColor("#2f81f7")).Foreground(tcell.ColorBlack))
-		}
+		selected := m.lineHasSelection("left", m.panes.agent.scroll+row, leftWrapped, leftLineStarts)
 		content := strings.TrimPrefix(line, " │ ")
 		trimmedContent := strings.TrimSpace(content)
+		bubbleStyle := agentBubbleStyle
+		bubbleBorderStyle := agentBubbleBorderStyle
+		bubbleDimStyle := agentBubbleDimStyle
 		borderGlyph := "▎"
-		textStyle := agentBubbleStyle
+		textStyle := bubbleStyle
+		trimmedLine := strings.TrimSpace(line)
+		prevTrimmed := strings.TrimSpace(strings.TrimPrefix(prevLine, " │ "))
+		bubbleX := leftX + 1
+		bubbleW := leftContentW
+		textX := leftX + 3
+		textW := max(1, leftContentW-2)
+		agentSectionStart := strings.HasPrefix(line, " │ ") && (strings.TrimSpace(prevLine) == "" || strings.HasPrefix(prevTrimmed, "You • ") || strings.HasPrefix(prevTrimmed, "Forge • ") || !strings.HasPrefix(prevLine, " │ "))
+		if strings.HasPrefix(trimmedLine, "You • ") {
+			conversationSection = "user"
+			content = "╭─ " + trimmedLine
+			trimmedContent = trimmedLine
+			bubbleStyle = userBubbleStyle
+			bubbleBorderStyle = userBubbleBorderStyle
+			bubbleDimStyle = userBubbleDimStyle
+			borderGlyph = " "
+			textStyle = bubbleDimStyle.Bold(true)
+			inset := min(6, max(2, leftContentW/6))
+			bubbleX = leftX + 1 + inset
+			bubbleW = max(1, leftContentW-inset)
+			textX = bubbleX + 1
+			textW = max(1, bubbleW-1)
+		} else if strings.HasPrefix(trimmedLine, "Forge • ") {
+			conversationSection = "forge"
+			content = "╭─ " + trimmedLine
+			trimmedContent = trimmedLine
+			bubbleStyle = forgeBubbleStyle
+			bubbleBorderStyle = forgeBubbleBorderStyle
+			bubbleDimStyle = forgeBubbleDimStyle
+			borderGlyph = " "
+			textStyle = bubbleDimStyle.Bold(true)
+			textX = bubbleX + 1
+			textW = max(1, bubbleW-1)
+		} else if agentSectionStart {
+			conversationSection = "agent"
+			content = "╭─ " + trimmedContent
+			trimmedContent = strings.TrimSpace(strings.TrimPrefix(content, "╭─ "))
+			borderGlyph = " "
+			textStyle = bubbleDimStyle.Bold(true)
+			textX = bubbleX + 1
+			textW = max(1, bubbleW-1)
+		} else if !strings.HasPrefix(line, " │ ") {
+			switch conversationSection {
+			case "user":
+				bubbleStyle = userBubbleStyle
+				bubbleBorderStyle = userBubbleBorderStyle
+				bubbleDimStyle = userBubbleDimStyle
+				borderGlyph = "▎"
+				inset := min(6, max(2, leftContentW/6))
+				bubbleX = leftX + 1 + inset
+				bubbleW = max(1, leftContentW-inset)
+				textX = bubbleX + 2
+				textW = max(1, bubbleW-2)
+			case "forge":
+				bubbleStyle = forgeBubbleStyle
+				bubbleBorderStyle = forgeBubbleBorderStyle
+				bubbleDimStyle = forgeBubbleDimStyle
+				borderGlyph = "▎"
+			default:
+				conversationSection = "agent"
+			}
+		}
+		fillRect(screen, bubbleX, y, bubbleW, 1, bubbleStyle)
+		if selected {
+			fillRect(screen, bubbleX, y, bubbleW, 1, bubbleStyle.Background(tcell.GetColor("#2f81f7")).Foreground(tcell.ColorBlack))
+		}
 		if strings.HasPrefix(trimmedContent, "- ") || strings.HasPrefix(trimmedContent, "* ") {
 			borderGlyph = "•"
-			textStyle = agentBubbleDimStyle
+			textStyle = bubbleDimStyle
 		} else if strings.HasSuffix(trimmedContent, ":") && len(trimmedContent) < max(12, leftContentW/2) {
 			borderGlyph = "▌"
 		}
-		drawText(screen, leftX+1, y, agentBubbleBorderStyle, borderGlyph)
-		drawStyledAgentLine(screen, leftX+3, y, content, max(1, leftContentW-2), textStyle, styleAccent, leftQuery, hasMatch, matchStart, isCurrent)
+		nextTrimmed := strings.TrimSpace(strings.TrimPrefix(nextLine, " │ "))
+		sectionEnds := false
+		if strings.HasPrefix(line, " │ ") {
+			sectionEnds = nextLine == "" || strings.HasPrefix(nextTrimmed, "You • ") || strings.HasPrefix(nextTrimmed, "Forge • ")
+		} else if trimmedLine != "" {
+			sectionEnds = nextLine == ""
+		}
+		drawText(screen, bubbleX, y, bubbleBorderStyle, borderGlyph)
+		drawStyledAgentLine(screen, textX, y, content, textW, textStyle, styleAccent, leftQuery, hasMatch, matchStart, isCurrent)
+		if sectionEnds && row+1 < leftVisibleH && row+1 < len(leftLines) && strings.TrimSpace(leftLines[row+1]) == "" {
+			capY := y + 1
+			fillRect(screen, bubbleX, capY, bubbleW, 1, bubbleStyle)
+			drawStyledAgentLine(screen, textX, capY, "╰─", textW, bubbleBorderStyle, styleAccent, "", false, 0, false)
+		}
 	}
 	if m.panes.layout.toolsVisible {
 		toolCodeStyle := tcell.StyleDefault.Background(tcell.GetColor("#0d1117")).Foreground(tcell.GetColor("#c9d1d9"))

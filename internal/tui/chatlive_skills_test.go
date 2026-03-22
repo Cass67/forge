@@ -10,10 +10,11 @@ import (
 func TestSubmitInputWarnsWhenRequiredSkillMissing(t *testing.T) {
 	inputCh := make(chan string, 1)
 	m := chatLiveModel{
-		inputBuf: "please plan the architecture first",
-		inputPos: len([]rune("please plan the architecture first")),
-		skills:   []skills.Skill{{Name: "brainstorming", Description: "Planning"}},
-		state:    chatstate.New(),
+		inputBuf:       "please plan the architecture first",
+		inputPos:       len([]rune("please plan the architecture first")),
+		autoSkillsMode: skills.AutoSkillsOff,
+		skills:         []skills.Skill{{Name: "brainstorming", Description: "Planning"}},
+		state:          chatstate.New(),
 	}
 
 	result, done := m.submitInput(inputCh)
