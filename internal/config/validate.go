@@ -56,6 +56,13 @@ func (c *Config) Validate() []ValidationIssue {
 	if c.Chat.CommandTimeout < 1 {
 		add("chat.command_timeout", "must be at least 1")
 	}
+	if c.Chat.AutoSkills != "" {
+		switch strings.ToLower(strings.TrimSpace(c.Chat.AutoSkills)) {
+		case "off", "suggest", "auto":
+		default:
+			add("chat.auto_skills", fmt.Sprintf("must be one of off, suggest, auto, got %q", c.Chat.AutoSkills))
+		}
+	}
 	for i, pass := range c.Pipeline {
 		if strings.TrimSpace(pass.Name) == "" {
 			add(fmt.Sprintf("pipeline[%d].name", i), "must not be empty")

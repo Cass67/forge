@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"forge/internal/agent/tools"
+	"forge/internal/chatstate"
 	"forge/internal/llm"
+	"forge/internal/skills"
 )
 
 type Agent struct {
@@ -19,9 +21,14 @@ type Agent struct {
 	workDir  string
 	maxTurns int
 	renderer RenderTarget
+	skills   []skills.Skill
+	state    *chatstate.State
 }
 
-func NewAgent(driver llm.Driver, toolReg *tools.Registry, approve tools.ApprovalFunc, workDir string, maxTurns int, renderer RenderTarget) *Agent {
+func NewAgent(driver llm.Driver, toolReg *tools.Registry, approve tools.ApprovalFunc, workDir string, maxTurns int, renderer RenderTarget, loadedSkills []skills.Skill, state *chatstate.State) *Agent {
+	if state == nil {
+		state = chatstate.New()
+	}
 	return &Agent{
 		driver:   driver,
 		tools:    toolReg,
@@ -29,8 +36,24 @@ func NewAgent(driver llm.Driver, toolReg *tools.Registry, approve tools.Approval
 		workDir:  workDir,
 		maxTurns: maxTurns,
 		renderer: renderer,
-		system:   BuildSystemPrompt(workDir, toolReg),
+		system:   BuildSystemPrompt(workDir, toolReg, skills.Describe(loadedSkills)),
+		skills:   loadedSkills,
+		state:    state,
 	}
+}
+
+// InjectSkill prepends a skill's content into the conversation as context.
+func (a *Agent) InjectSkill(s skills.Skill) {
+	a.state.ActivateSkill(s.Name)
+	a.history = append(a.history, llm.Message{
+		Role:    llm.RoleUser,
+		Content: fmt.Sprintf("[Skill: %s]\n\n%s", s.Name, s.Body),
+	})
+}
+
+// Skills returns the loaded skills.
+func (a *Agent) Skills() []skills.Skill {
+	return a.skills
 }
 
 func (a *Agent) SetDriver(d llm.Driver) {
@@ -39,6 +62,7 @@ func (a *Agent) SetDriver(d llm.Driver) {
 
 func (a *Agent) ClearHistory() {
 	a.history = nil
+	a.state.Clear()
 }
 
 func (a *Agent) Run(ctx context.Context, userMessage string) error {

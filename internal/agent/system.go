@@ -9,7 +9,7 @@ import (
 	"forge/internal/agent/tools"
 )
 
-func BuildSystemPrompt(workDir string, registry *tools.Registry) string {
+func BuildSystemPrompt(workDir string, registry *tools.Registry, skillsDesc string) string {
 	var sb strings.Builder
 	sb.WriteString("You are forge, a coding agent. You work in the user's project directory.\n\n")
 	sb.WriteString(fmt.Sprintf("Working directory: %s\n", workDir))
@@ -28,6 +28,11 @@ func BuildSystemPrompt(workDir string, registry *tools.Registry) string {
 	sb.WriteString("- Explain what you're doing and why before making changes.\n")
 	sb.WriteString("- If something fails, read the error, diagnose, and fix. Don't repeat the same failing approach.\n")
 	sb.WriteString("- Ask the user for clarification if the request is ambiguous.\n")
+
+	if skillsDesc != "" {
+		sb.WriteString("\n")
+		sb.WriteString(skillsDesc)
+	}
 
 	return sb.String()
 }

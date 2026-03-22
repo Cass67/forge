@@ -173,7 +173,22 @@ func (m *chatLiveModel) renderHeader(screen tcell.Screen, width int, styleStatus
 		themeLabel = "low"
 	}
 	headerLeft := fmt.Sprintf(" forge • %s • %s • theme:%s ", m.model, shortPath(m.workDir), themeLabel)
-	headerRight := fmt.Sprintf(" %s ", strings.ToUpper(m.status))
+	statusLabel := strings.ToUpper(m.status)
+	if strings.TrimSpace(statusLabel) == "" {
+		statusLabel = "READY"
+	}
+	if m.state != nil && len(m.skills) > 0 {
+		active := make([]string, 0, len(m.skills))
+		for _, s := range m.skills {
+			if m.state.SkillActivated(s.Name) {
+				active = append(active, "/"+s.Name)
+			}
+		}
+		if len(active) > 0 {
+			statusLabel += " · SKILLS " + strings.Join(active, ",")
+		}
+	}
+	headerRight := fmt.Sprintf(" %s ", statusLabel)
 	if m.busy {
 		elapsed := time.Since(m.display.turnStartedAt)
 		if m.display.turnStartedAt.IsZero() {
@@ -262,6 +277,18 @@ func (m *chatLiveModel) renderTitlesAndStatus(screen tcell.Screen, styleTitleDim
 		drawText(screen, rightX+2, rightY, rightTitle, fitWidth(rightBadge, max(1, rightW-4)))
 	}
 	statusStrip := fmt.Sprintf(" status: %s ", m.status)
+	activeSkills := ""
+	if m.state != nil && len(m.skills) > 0 {
+		active := make([]string, 0, len(m.skills))
+		for _, s := range m.skills {
+			if m.state.SkillActivated(s.Name) {
+				active = append(active, "/"+s.Name)
+			}
+		}
+		if len(active) > 0 {
+			activeSkills = " active skills: " + strings.Join(active, " ") + " "
+		}
+	}
 	if m.display.prof.enabled {
 		statusStrip += " • " + m.profileSummary()
 	}
@@ -277,6 +304,9 @@ func (m *chatLiveModel) renderTitlesAndStatus(screen tcell.Screen, styleTitleDim
 	}
 	if m.approval != nil {
 		statusStrip = " status: approval needed "
+	}
+	if inputY > 2 && activeSkills != "" {
+		drawText(screen, inputX+2, inputY-2, styleBodyDim, fitWidth(activeSkills, max(1, inputW-4)))
 	}
 	if inputY > 1 {
 		drawText(screen, inputX+2, inputY-1, styleBodyDim, fitWidth(statusStrip, max(1, inputW-4)))
@@ -320,17 +350,32 @@ func (m *chatLiveModel) renderPaneBodies(screen tcell.Screen, styleBody, styleBo
 	agentCodeStyle := tcell.StyleDefault.Background(tcell.GetColor("#0d1117")).Foreground(tcell.GetColor("#c9d1d9"))
 	agentCodeBorderStyle := tcell.StyleDefault.Background(colorPanel).Foreground(tcell.GetColor("#30363d"))
 	agentCodeHeaderStyle := tcell.StyleDefault.Background(tcell.GetColor("#0d1117")).Foreground(tcell.GetColor("#7ee787")).Bold(true)
-	agentBubbleStyle := tcell.StyleDefault.Background(tcell.GetColor("#1a2332")).Foreground(colorBright)
-	agentBubbleBorderStyle := tcell.StyleDefault.Background(colorPanel).Foreground(tcell.GetColor("#58a6ff"))
-	agentBubbleDimStyle := tcell.StyleDefault.Background(tcell.GetColor("#1a2332")).Foreground(colorDim)
+	// Conversation bubbles use the same background as code blocks, with colored borders.
+	bubbleBg := tcell.GetColor("#0d1117")
+	bubbleBodyStyle := tcell.StyleDefault.Background(bubbleBg).Foreground(tcell.GetColor("#c9d1d9"))
+	agentBorderColor := tcell.GetColor("#58a6ff")
+	agentHeaderColor := tcell.GetColor("#58a6ff")
+	userBorderColor := tcell.GetColor("#56d364")
+	userHeaderColor := tcell.GetColor("#56d364")
+	if m.themeLowContrast {
+		userBorderColor = tcell.GetColor("#7fbf7f")
+		userHeaderColor = tcell.GetColor("#7fbf7f")
+	}
+	forgeBorderColor := tcell.GetColor("#d2a8ff")
+	forgeHeaderColor := tcell.GetColor("#d2a8ff")
 	inCodeBlock := false
 	codeLang := ""
+	conversationSection := "agent"
 	for row := 0; row < leftVisibleH; row++ {
 		y := leftY + 1 + row
 		line := ""
 		lineIndex := m.panes.agent.scroll + row
 		if row < len(leftLines) {
 			line = leftLines[row]
+		}
+		nextLine := ""
+		if row+1 < len(leftLines) {
+			nextLine = leftLines[row+1]
 		}
 		matchStart, isCurrent, hasMatch := 0, false, false
 		if leftQuery != "" {
@@ -368,24 +413,104 @@ func (m *chatLiveModel) renderPaneBodies(screen tcell.Screen, styleBody, styleBo
 			}
 			continue
 		}
-		fillRect(screen, leftX+1, y, leftContentW, 1, agentBubbleStyle)
-		if m.lineHasSelection("left", m.panes.agent.scroll+row, leftWrapped, leftLineStarts) {
-			fillRect(screen, leftX+1, y, leftContentW, 1, agentBubbleStyle.Background(tcell.GetColor("#2f81f7")).Foreground(tcell.ColorBlack))
-		}
+		selected := m.lineHasSelection("left", m.panes.agent.scroll+row, leftWrapped, leftLineStarts)
 		content := strings.TrimPrefix(line, " │ ")
 		trimmedContent := strings.TrimSpace(content)
-		borderGlyph := "▎"
-		textStyle := agentBubbleStyle
-		if strings.HasPrefix(trimmedContent, "- ") || strings.HasPrefix(trimmedContent, "* ") {
-			borderGlyph = "•"
-			textStyle = agentBubbleDimStyle
-		} else if strings.HasSuffix(trimmedContent, ":") && len(trimmedContent) < max(12, leftContentW/2) {
-			borderGlyph = "▌"
+		trimmedLine := strings.TrimSpace(line)
+
+		// Classify the line.
+		isUserHeader := strings.HasPrefix(trimmedLine, "You • ")
+		isForgeHeader := strings.HasPrefix(trimmedLine, "Forge • ")
+		isAgentLine := strings.HasPrefix(line, " │ ")
+		isStatusLine := strings.HasPrefix(trimmedLine, "Agent complete • ") || strings.HasPrefix(trimmedLine, "status: ")
+		isSeparator := trimmedLine == "" || (len(trimmedLine) > 2 && strings.Trim(trimmedLine, "─") == "")
+
+		if isUserHeader {
+			conversationSection = "user"
+		} else if isForgeHeader {
+			conversationSection = "forge"
+		} else if isAgentLine {
+			conversationSection = "agent"
+		} else if isStatusLine || isSeparator {
+			conversationSection = "status"
 		}
-		drawText(screen, leftX+1, y, agentBubbleBorderStyle, borderGlyph)
-		drawStyledAgentLine(screen, leftX+3, y, content, max(1, leftContentW-2), textStyle, styleAccent, leftQuery, hasMatch, matchStart, isCurrent)
+
+		// Status / separator lines: dim text, no bubble.
+		if conversationSection == "status" || isSeparator {
+			if !isSeparator && trimmedLine != "" {
+				statusStyle := tcell.StyleDefault.Background(colorPanel).Foreground(colorDim)
+				drawStyledAgentLine(screen, leftX+2, y, trimmedLine, max(1, leftContentW-1), statusStyle, styleAccent, leftQuery, hasMatch, matchStart, isCurrent)
+			}
+			continue
+		}
+
+		// All bubbles same position, just different border color.
+		borderColor := agentBorderColor
+		headerColor := agentHeaderColor
+		switch conversationSection {
+		case "user":
+			borderColor = userBorderColor
+			headerColor = userHeaderColor
+		case "forge":
+			borderColor = forgeBorderColor
+			headerColor = forgeHeaderColor
+		}
+
+		bubbleX := leftX + 1
+		bubbleW := leftContentW
+		borderStyle := tcell.StyleDefault.Background(colorPanel).Foreground(borderColor)
+		headerStyle := tcell.StyleDefault.Background(bubbleBg).Foreground(headerColor).Bold(true)
+		textX := bubbleX + 2
+		textW := max(1, bubbleW-2)
+
+		// Detect section boundaries.
+		nextTrimmed := strings.TrimSpace(nextLine)
+		nextIsNewSection := nextTrimmed == "" ||
+			strings.HasPrefix(nextTrimmed, "You • ") ||
+			strings.HasPrefix(nextTrimmed, "Forge • ") ||
+			strings.HasPrefix(nextTrimmed, "Agent complete • ") ||
+			strings.HasPrefix(nextTrimmed, "status: ") ||
+			(len(nextTrimmed) > 2 && strings.Trim(nextTrimmed, "─") == "")
+		isLastInSection := nextLine == "" || nextIsNewSection
+
+		// Header lines (You •, Forge •): ╭─ label.
+		if isUserHeader || isForgeHeader {
+			fillRect(screen, bubbleX, y, bubbleW, 1, bubbleBodyStyle)
+			drawText(screen, bubbleX, y, borderStyle, "▎")
+			drawText(screen, textX, y, headerStyle, fitWidth("╭─ "+trimmedLine, textW))
+			continue
+		}
+
+		// Content line.
+		fillRect(screen, bubbleX, y, bubbleW, 1, bubbleBodyStyle)
+		if selected {
+			fillRect(screen, bubbleX, y, bubbleW, 1, bubbleBodyStyle.Background(tcell.GetColor("#2f81f7")).Foreground(tcell.ColorBlack))
+		}
+		drawText(screen, bubbleX, y, borderStyle, "▎")
+		textStyle := bubbleBodyStyle
+		if strings.HasPrefix(trimmedContent, "- ") || strings.HasPrefix(trimmedContent, "* ") {
+			textStyle = tcell.StyleDefault.Background(bubbleBg).Foreground(colorDim)
+		}
+		drawStyledAgentLine(screen, textX, y, content, textW, textStyle, styleAccent, leftQuery, hasMatch, matchStart, isCurrent)
+
+		// ╰─ footer after last line in section.
+		if isLastInSection && row+1 < leftVisibleH && row+1 < len(leftLines) && strings.TrimSpace(leftLines[row+1]) == "" {
+			capY := y + 1
+			fillRect(screen, bubbleX, capY, bubbleW, 1, bubbleBodyStyle)
+			drawText(screen, bubbleX, capY, borderStyle, "▎")
+			drawText(screen, textX, capY, borderStyle, fitWidth("╰─", textW))
+		}
 	}
 	if m.panes.layout.toolsVisible {
+		toolCodeStyle := tcell.StyleDefault.Background(tcell.GetColor("#0d1117")).Foreground(tcell.GetColor("#c9d1d9"))
+		toolCodeBorderStyle := tcell.StyleDefault.Background(colorPanel).Foreground(tcell.GetColor("#30363d"))
+		toolCodeHeaderStyle := tcell.StyleDefault.Background(tcell.GetColor("#0d1117")).Foreground(colorCyan).Bold(true)
+		toolBubbleStyle := tcell.StyleDefault.Background(tcell.GetColor("#11161d")).Foreground(colorBright)
+		toolBubbleBorderStyle := tcell.StyleDefault.Background(colorPanel).Foreground(colorBlue)
+		toolBubbleDimStyle := tcell.StyleDefault.Background(tcell.GetColor("#11161d")).Foreground(colorDim)
+		inToolCodeBlock := false
+		toolCodeLang := ""
+		inToolSection := false
 		for row := 0; row < rightVisibleH; row++ {
 			y := rightY + 1 + row
 			line := ""
@@ -393,16 +518,128 @@ func (m *chatLiveModel) renderPaneBodies(screen tcell.Screen, styleBody, styleBo
 			if row < len(rightLines) {
 				line = rightLines[row]
 			}
+			prevLine := ""
+			if row > 0 && row-1 < len(rightLines) {
+				prevLine = rightLines[row-1]
+			}
+			nextLine := ""
+			if row+1 < len(rightLines) {
+				nextLine = rightLines[row+1]
+			}
 			matchStart, isCurrent, hasMatch := 0, false, false
 			if rightQuery != "" {
 				matchStart, isCurrent, hasMatch = m.searchHighlightForLine(lineIndex)
 			}
-			if m.lineHasSelection("right", m.panes.tools.scroll+row, rightWrapped, rightLineStarts) {
-				fillRect(screen, rightX+1, y, rightContentW, 1, styleBody.Background(tcell.GetColor("#2f81f7")).Foreground(tcell.ColorBlack))
+			selected := m.lineHasSelection("right", m.panes.tools.scroll+row, rightWrapped, rightLineStarts)
+			trimmed := strings.TrimSpace(line)
+			content := strings.TrimLeft(line, " ")
+			isToolHeader := strings.HasPrefix(trimmed, "● ") || strings.HasPrefix(trimmed, "────────────────────────")
+			isCodeLine := strings.HasPrefix(trimmed, "result:") || strings.HasPrefix(trimmed, "+") || strings.HasPrefix(trimmed, "-") || strings.HasPrefix(trimmed, "@@") || strings.HasPrefix(trimmed, "...")
+			if strings.HasPrefix(trimmed, "result:") {
+				lang := ""
+				lower := strings.ToLower(content)
+				switch {
+				case strings.Contains(lower, "diff") || strings.Contains(lower, "patch"):
+					lang = "diff"
+				case strings.Contains(lower, ".go") || strings.Contains(lower, " go"):
+					lang = "go"
+				case strings.Contains(lower, ".json") || strings.Contains(lower, " json"):
+					lang = "json"
+				case strings.Contains(lower, ".md") || strings.Contains(lower, " markdown"):
+					lang = "markdown"
+				case strings.Contains(lower, "shell") || strings.Contains(lower, "bash") || strings.Contains(lower, "sh"):
+					lang = "bash"
+				}
+				toolCodeLang = lang
+				fillRect(screen, rightX+1, y, rightContentW, 1, toolCodeStyle)
+				if selected {
+					fillRect(screen, rightX+1, y, rightContentW, 1, toolCodeStyle.Background(tcell.GetColor("#2f81f7")).Foreground(tcell.ColorBlack))
+				}
+				drawText(screen, rightX+1, y, toolCodeBorderStyle, "▎")
+				label := "╭─ result"
+				if toolCodeLang != "" {
+					label += ": " + toolCodeLang
+				}
+				drawText(screen, rightX+3, y, toolCodeHeaderStyle, fitWidth(label, max(1, rightContentW-3)))
+				inToolCodeBlock = true
+				continue
 			}
-			drawStyledToolLine(screen, rightX+1, y, line, rightContentW, styleBody,
+			if inToolCodeBlock && !isCodeLine {
+				fillRect(screen, rightX+1, y, rightContentW, 1, toolCodeStyle)
+				if selected {
+					fillRect(screen, rightX+1, y, rightContentW, 1, toolCodeStyle.Background(tcell.GetColor("#2f81f7")).Foreground(tcell.ColorBlack))
+				}
+				drawText(screen, rightX+1, y, toolCodeBorderStyle, "▎")
+				drawText(screen, rightX+3, y, toolCodeHeaderStyle, fitWidth("╰─ end result", max(1, rightContentW-3)))
+				inToolCodeBlock = false
+				toolCodeLang = ""
+			}
+			if inToolCodeBlock && isCodeLine {
+				fillRect(screen, rightX+1, y, rightContentW, 1, toolCodeStyle)
+				if selected {
+					fillRect(screen, rightX+1, y, rightContentW, 1, toolCodeStyle.Background(tcell.GetColor("#2f81f7")).Foreground(tcell.ColorBlack))
+				}
+				drawText(screen, rightX+1, y, toolCodeBorderStyle, "▎")
+				if hasMatch {
+					drawHighlightedText(screen, rightX+3, y, content, max(1, rightContentW-3), toolCodeStyle, rightQuery, matchStart, isCurrent)
+				} else {
+					m.drawChromaCodeLine(screen, rightX+3, y, content, max(1, rightContentW-3), toolCodeLang, toolCodeStyle)
+				}
+				continue
+			}
+			fillRect(screen, rightX+1, y, rightContentW, 1, toolBubbleStyle)
+			if selected {
+				fillRect(screen, rightX+1, y, rightContentW, 1, toolBubbleStyle.Background(tcell.GetColor("#2f81f7")).Foreground(tcell.ColorBlack))
+			}
+			lineStyle := toolBubbleStyle
+			bubbleX := rightX + 1
+			bubbleW := rightContentW
+			textX := rightX + 3
+			textW := max(1, rightContentW-2)
+			prevTrimmed := strings.TrimSpace(prevLine)
+			nextTrimmed := strings.TrimSpace(nextLine)
+			sectionStart := isToolHeader || (!inToolSection && trimmed != "") || (trimmed != "" && prevTrimmed == "")
+			sectionEnds := trimmed != "" && (nextTrimmed == "" || strings.HasPrefix(nextTrimmed, "● ") || strings.HasPrefix(nextTrimmed, "────────────────────────") || strings.HasPrefix(nextTrimmed, "result:"))
+			if sectionStart {
+				textX = bubbleX + 1
+				textW = max(1, bubbleW-1)
+				lineStyle = toolBubbleDimStyle.Bold(true)
+				inToolSection = true
+				drawText(screen, textX, y, lineStyle, fitWidth("╭─ ", textW))
+				drawStyledToolLine(screen, textX+3, y, content, max(1, textW-3), lineStyle,
+					colorBlue, colorPurple, colorOrange, colorCyan, colorGreen, colorRed,
+					styleDiffAdd, styleDiffRm, rightQuery, hasMatch, matchStart, isCurrent)
+				if sectionEnds {
+					inToolSection = false
+					if row+1 < rightVisibleH {
+						capY := y + 1
+						fillRect(screen, bubbleX, capY, bubbleW, 1, toolBubbleStyle)
+						drawText(screen, bubbleX+1, capY, toolBubbleBorderStyle, fitWidth("╰─", max(1, bubbleW-1)))
+					}
+				}
+				continue
+			} else if strings.HasPrefix(trimmed, "status:") || strings.HasPrefix(trimmed, "✓") || strings.HasPrefix(trimmed, "✗") {
+				lineStyle = toolBubbleDimStyle
+			}
+			drawStyledToolLine(screen, textX, y, content, textW, lineStyle,
 				colorBlue, colorPurple, colorOrange, colorCyan, colorGreen, colorRed,
 				styleDiffAdd, styleDiffRm, rightQuery, hasMatch, matchStart, isCurrent)
+			if sectionEnds {
+				inToolSection = false
+				if row+1 < rightVisibleH {
+					capY := y + 1
+					fillRect(screen, bubbleX, capY, bubbleW, 1, toolBubbleStyle)
+					drawText(screen, bubbleX+1, capY, toolBubbleBorderStyle, fitWidth("╰─", max(1, bubbleW-1)))
+				}
+			}
+		}
+		if inToolCodeBlock {
+			y := rightY + rightVisibleH
+			if y < rightY+1+rightVisibleH {
+				fillRect(screen, rightX+1, y, rightContentW, 1, toolCodeStyle)
+				drawText(screen, rightX+1, y, toolCodeBorderStyle, "▎")
+				drawText(screen, rightX+3, y, toolCodeHeaderStyle, fitWidth("╰─ end result", max(1, rightContentW-3)))
+			}
 		}
 	}
 
@@ -429,7 +666,10 @@ func (m *chatLiveModel) renderPaneBodies(screen tcell.Screen, styleBody, styleBo
 }
 
 func (m *chatLiveModel) renderInputArea(screen tcell.Screen, styleBodyDim, stylePrompt, styleInput, styleApproval tcell.Style, inputX, inputY, inputW, inputH int, colorPanel, colorYellow tcell.Color) {
-	if m.display.flash != "" && inputH > 0 {
+	if m.display.requiredSkillWarning != "" && inputH > 0 {
+		styleFlash := tcell.StyleDefault.Background(colorPanel).Foreground(colorYellow)
+		drawText(screen, inputX+2, inputY+1, styleFlash, fitWidth("! "+m.display.requiredSkillWarning, max(1, inputW-4)))
+	} else if m.display.flash != "" && inputH > 0 {
 		styleFlash := tcell.StyleDefault.Background(colorPanel).Foreground(colorYellow)
 		drawText(screen, inputX+2, inputY+1, styleFlash, fitWidth("! "+m.display.flash, max(1, inputW-4)))
 	} else if inputH > 0 {

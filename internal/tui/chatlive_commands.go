@@ -7,13 +7,16 @@ import (
 	"time"
 
 	"forge/internal/llm"
+	"forge/internal/skills"
 )
 
 func (m *chatLiveModel) handleSlashCommand(input string) {
 	switch {
 	case input == "/help":
 		m.overlays.helpVisible = true
-		m.display.flash = "shortcuts help opened"
+		m.overlays.helpTab = 0
+		m.overlays.helpScroll = 0
+		m.display.flash = "help opened"
 	case input == "/find":
 		m.openSearchOverlay()
 	case strings.HasPrefix(input, "/find "):
@@ -213,6 +216,42 @@ func (m *chatLiveModel) handleSlashCommand(input string) {
 			m.overlays.search.lineStarts = nil
 		}
 		m.display.flash = "tools pane cleared"
+	case input == "/skills":
+		if len(m.skills) == 0 {
+			m.display.flash = "no skills loaded"
+			return
+		}
+		var sb strings.Builder
+		sb.WriteString("Skills:\n")
+		for _, s := range m.skills {
+			marker := "○"
+			if m.state != nil && m.state.SkillActivated(s.Name) {
+				marker = "●"
+			}
+			fmt.Fprintf(&sb, "  %s /%s — %s\n", marker, s.Name, s.Description)
+		}
+		fmt.Fprintf(&sb, "\nAuto-skills mode: %s\n", skills.NormalizeAutoMode(m.autoSkillsMode))
+		wasAtBottom := m.panes.tools.follow || m.panes.tools.scroll >= m.toolsMaxScroll()
+		m.panes.tools.buf += sb.String()
+		m.invalidatePaneCache(&m.panes.tools)
+		if wasAtBottom {
+			m.panes.tools.scroll = m.toolsMaxScroll()
+		}
+		m.display.flash = fmt.Sprintf("%d skills available", len(m.skills))
+	case input == "/auto-skills":
+		mode := skills.NormalizeAutoMode(m.autoSkillsMode)
+		if mode == "" {
+			mode = skills.AutoSkillsSuggest
+		}
+		m.display.flash = fmt.Sprintf("auto-skills: %s", mode)
+	case strings.HasPrefix(input, "/auto-skills "):
+		mode := skills.NormalizeAutoMode(strings.TrimSpace(strings.TrimPrefix(input, "/auto-skills ")))
+		if mode == "" {
+			m.display.flash = "auto-skills must be one of: off, suggest, auto"
+			return
+		}
+		m.autoSkillsMode = mode
+		m.display.flash = fmt.Sprintf("auto-skills: %s", mode)
 	default:
 		m.display.flash = fmt.Sprintf("unknown command: %s (try /help)", input)
 	}
@@ -245,7 +284,7 @@ func (m *chatLiveModel) appendTurnStart(input string) {
 	if strings.TrimSpace(m.panes.agent.buf) == "" {
 		sep = ""
 	}
-	m.panes.agent.buf += fmt.Sprintf("%sYou • %s\n%s\n", sep, stamp, input)
+	m.panes.agent.buf += fmt.Sprintf("%sYou • %s\n%s\n\n", sep, stamp, input)
 	m.invalidatePaneCache(&m.panes.agent)
 	if strings.TrimSpace(m.panes.tools.buf) != "" {
 		m.panes.tools.buf += fmt.Sprintf("\n%s\n", strings.Repeat("─", 28))
@@ -265,7 +304,6 @@ func (m *chatLiveModel) handleEvent(ev llm.Event) {
 			var b strings.Builder
 			b.Grow(len(m.panes.agent.buf) + len(ev.Text) + 8)
 			b.WriteString(m.panes.agent.buf)
-			// Determine if we're continuing a line (buffer non-empty and not ending with newline)
 			midLine := len(m.panes.agent.buf) > 0 && !strings.HasSuffix(m.panes.agent.buf, "\n")
 			lines := strings.Split(ev.Text, "\n")
 			for i, line := range lines {
