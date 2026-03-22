@@ -10,18 +10,22 @@ import (
 func TestHandleMouseRightClickCopiesAgentSelection(t *testing.T) {
 	var copied string
 	m := chatLiveModel{
-		width:        120,
-		height:       40,
-		toolsVisible: true,
-		agentBuf:     "alpha beta gamma",
+		width:  120,
+		height: 40,
+		panes: chatPaneState{
+			agent:  chatPaneBufferState{buf: "alpha beta gamma"},
+			layout: chatPaneLayoutState{toolsVisible: true},
+			selectn: chatSelectionState{
+				pane:   "left",
+				start:  6,
+				end:    9,
+				active: true,
+			},
+		},
 		copyFn: func(s string) error {
 			copied = s
 			return nil
 		},
-		selectionPane:   "left",
-		selectionStart:  6,
-		selectionEnd:    9,
-		selectionActive: true,
 	}
 
 	x, y, _, _ := m.leftPaneRect()
@@ -30,26 +34,29 @@ func TestHandleMouseRightClickCopiesAgentSelection(t *testing.T) {
 	if copied != "beta" {
 		t.Fatalf("expected selected text copied, got %q", copied)
 	}
-	if m.flash != "agent selection copied" {
-		t.Fatalf("expected selection flash, got %q", m.flash)
+	if m.display.flash != "agent selection copied" {
+		t.Fatalf("expected selection flash, got %q", m.display.flash)
 	}
 }
 
 func TestSelectedTextAcrossWrappedLines(t *testing.T) {
 	m := chatLiveModel{
-		width:           40,
-		height:          20,
-		toolsVisible:    true,
-		leftPaneWidth:   20,
-		agentBuf:        "hello world from forge",
-		selectionPane:   "left",
-		selectionActive: true,
+		width:  40,
+		height: 20,
+		panes: chatPaneState{
+			agent:  chatPaneBufferState{buf: "hello world from forge"},
+			layout: chatPaneLayoutState{toolsVisible: true, leftWidth: 20},
+			selectn: chatSelectionState{
+				pane:   "left",
+				active: true,
+			},
+		},
 	}
 
-	wrapped := wrapPaneContent(m.agentBuf, m.leftContentWidth())
+	wrapped := wrapPaneContent(m.panes.agent.buf, m.leftContentWidth())
 	joined := []rune("")
 	_ = wrapped
-	all := []rune(strings.Join(wrapPaneContent(m.agentBuf, m.leftContentWidth()), "\n"))
+	all := []rune(strings.Join(wrapPaneContent(m.panes.agent.buf, m.leftContentWidth()), "\n"))
 	var start, end int = -1, -1
 	for i := 0; i < len(all); i++ {
 		if string(all[i:min(len(all), i+5)]) == "world" && start == -1 {
@@ -61,8 +68,8 @@ func TestSelectedTextAcrossWrappedLines(t *testing.T) {
 	if start == -1 {
 		t.Fatal("failed to locate wrapped selection target")
 	}
-	m.selectionStart = start
-	m.selectionEnd = end
+	m.panes.selectn.start = start
+	m.panes.selectn.end = end
 
 	if got := m.selectedText("left"); got != "world" {
 		t.Fatalf("expected wrapped selection text %q, got %q", "world", got)
