@@ -58,6 +58,10 @@ func (r *EventRenderer) Error(msg string) {
 	r.events <- llm.Event{Kind: llm.EventError, Text: msg}
 }
 
+func (r *EventRenderer) Info(msg string) {
+	r.events <- llm.Event{Kind: llm.EventToolCall, Agent: "runtime", Text: msg}
+}
+
 // TurnDone signals the agent finished processing a user message.
 func (r *EventRenderer) TurnDone() {
 	r.events <- llm.Event{Kind: llm.EventDone}
