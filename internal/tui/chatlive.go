@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"unicode/utf8"
 
 	"forge/internal/agent/tools"
+	"forge/internal/auth"
+	"forge/internal/copilot"
 	"forge/internal/llm"
 
 	"github.com/alecthomas/chroma/v2"
@@ -26,6 +29,7 @@ type ChatLiveConfig struct {
 	Model           string
 	WorkDir         string
 	AvailableModels []string
+	ContextFiles    []string
 	SwitchModel     func(name string) (newModel string, err error)
 	ClearHistory    func()
 	ApprovalCh      <-chan tools.Action
@@ -57,6 +61,7 @@ type chatSessionSnapshot struct {
 	SearchCurrent    int       `json:"search_current"`
 	SearchMatches    []int     `json:"search_matches"`
 	SearchLineStarts []int     `json:"search_line_starts"`
+	ContextFiles     []string  `json:"context_files,omitempty"`
 	Turn             int       `json:"turn"`
 }
 
@@ -67,20 +72,28 @@ type chatSessionEntry struct {
 }
 
 type chatOverlayState struct {
-	helpVisible bool
-	search      chatSearchState
-	models      chatModelPickerState
-	sessions    chatSessionsState
+	helpVisible  bool
+	statsVisible bool
+	search       chatSearchState
+	models       chatModelPickerState
+	sessions     chatSessionsState
+	files        chatFilePickerState
 }
 
 type chatSearchState struct {
-	visible    bool
-	query      string
-	pos        int
-	pane       string
-	matches    []int
-	current    int
-	lineStarts []int
+	visible      bool
+	query        string
+	pos          int
+	pane         string
+	matches      []int
+	current      int
+	lineStarts   []int
+	lineIndexMap map[int]chatSearchLineMatch
+}
+
+type chatSearchLineMatch struct {
+	matchStart int
+	matchIndex int
 }
 
 type chatModelPickerState struct {
@@ -94,6 +107,15 @@ type chatSessionsState struct {
 	cursor  int
 	list    []chatSessionEntry
 	rename  chatRenameState
+}
+
+type chatFilePickerState struct {
+	visible  bool
+	query    string
+	pos      int
+	cursor   int
+	list     []string
+	filtered []string
 }
 
 type chatRenameState struct {
@@ -114,6 +136,14 @@ type chatPaneBufferState struct {
 	buf    string
 	scroll int
 	follow bool
+	cache  chatWrappedCache
+}
+
+type chatWrappedCache struct {
+	width      int
+	content    string
+	lines      []string
+	lineStarts []int
 }
 
 type chatPaneLayoutState struct {
@@ -137,15 +167,39 @@ type chatSelectionState struct {
 }
 
 type chatDisplayState struct {
-	flash          string
-	lastExpandable string
-	lastToolResult string
-	lastCodeBlock  string
-	timeline       []string
-	turnStartedAt  time.Time
-	spinnerFrame   int
-	statsDuration  time.Duration
-	statsUsage     llm.Usage
+	flash            string
+	lastExpandable   string
+	lastToolResult   string
+	lastCodeBlock    string
+	timeline         []string
+	turnStartedAt    time.Time
+	spinnerFrame     int
+	statsDuration    time.Duration
+	statsUsage       llm.Usage
+	liveCopilotQuota *copilot.UserQuota
+	liveQuotaLoading bool
+	liveQuotaErr     string
+	prof             chatProfileState
+}
+
+type chatProfileState struct {
+	enabled              bool
+	fullRenderCount      int
+	spinnerRenderCount   int
+	wrapHits             int
+	wrapMisses           int
+	paneCacheInvalidates int
+	eventBursts          int
+	eventsDrained        int
+	lastFullRender       time.Duration
+	lastSpinnerRender    time.Duration
+	lastWrap             time.Duration
+	maxFullRender        time.Duration
+	maxSpinnerRender     time.Duration
+	maxWrap              time.Duration
+	totalFullRender      time.Duration
+	totalSpinnerRender   time.Duration
+	totalWrap            time.Duration
 }
 
 type chatLiveModel struct {
@@ -157,6 +211,7 @@ type chatLiveModel struct {
 	panes            chatPaneState
 	inputBuf         string
 	inputPos         int
+	contextFiles     []string
 	busy             bool
 	approval         *tools.Action
 	status           string
@@ -165,7 +220,21 @@ type chatLiveModel struct {
 	display          chatDisplayState
 	switchModelFn    func(string) (string, error)
 	clearHistFn      func()
+	copilotToken     string
+	quotaCh          chan<- chatCopilotQuotaMsg
 	themeLowContrast bool
+	codeCache        chatCodeRenderCache
+}
+
+type chatCodeRenderCache struct {
+	order []string
+	lines map[string][]chatStyledRune
+}
+
+type chatStyledRune struct {
+	r     rune
+	style tcell.Style
+	width int
 }
 
 // RunChatLive runs the split-pane live view for forge chat.
@@ -185,13 +254,16 @@ func RunChatLive(events <-chan llm.Event, cfg ChatLiveConfig, inputCh chan<- str
 	screen.Clear()
 	w, h := screen.Size()
 
+	tokens, _ := auth.Load()
 	m := chatLiveModel{
-		model:   cfg.Model,
-		workDir: cfg.WorkDir,
-		width:   w,
-		height:  h,
-		status:  "ready",
-		copyFn:  copyToClipboard,
+		model:        cfg.Model,
+		workDir:      cfg.WorkDir,
+		width:        w,
+		height:       h,
+		status:       "ready",
+		copyFn:       copyToClipboard,
+		contextFiles: append([]string(nil), cfg.ContextFiles...),
+		copilotToken: strings.TrimSpace(tokens.CopilotToken),
 		overlays: chatOverlayState{
 			models: chatModelPickerState{list: cfg.AvailableModels},
 		},
@@ -221,7 +293,11 @@ func RunChatLive(events <-chan llm.Event, cfg ChatLiveConfig, inputCh chan<- str
 	spinnerTicker := time.NewTicker(120 * time.Millisecond)
 	defer spinnerTicker.Stop()
 
+	quotaCh := make(chan chatCopilotQuotaMsg, 1)
+	m.quotaCh = quotaCh
 	for {
+		fullRender := true
+		renderDelay := false
 		select {
 		case kev, ok := <-keysCh:
 			if !ok {
@@ -247,6 +323,27 @@ func RunChatLive(events <-chan llm.Event, cfg ChatLiveConfig, inputCh chan<- str
 				return ChatLiveResult{Aborted: true}
 			}
 			m.handleEvent(ev)
+			drainedCount := 1
+			for drained := 0; drained < 255; drained++ {
+				select {
+				case ev2, ok := <-events:
+					if !ok {
+						m.autoSaveSession()
+						return ChatLiveResult{Aborted: true}
+					}
+					m.handleEvent(ev2)
+					drainedCount++
+				default:
+					drained = 255
+				}
+			}
+			if drainedCount > 8 {
+				renderDelay = true
+			}
+			if drainedCount > 1 {
+				m.display.prof.eventBursts++
+				m.display.prof.eventsDrained += drainedCount
+			}
 
 		case action, ok := <-cfg.ApprovalCh:
 			if ok {
@@ -254,6 +351,10 @@ func RunChatLive(events <-chan llm.Event, cfg ChatLiveConfig, inputCh chan<- str
 				m.status = "approve? [y/n]"
 			}
 
+		case msg := <-quotaCh:
+			m.display.liveQuotaLoading = false
+			m.display.liveCopilotQuota = msg.quota
+			m.display.liveQuotaErr = msg.err
 		case <-doneCh:
 			m.busy = false
 			m.status = "ready"
@@ -261,12 +362,21 @@ func RunChatLive(events <-chan llm.Event, cfg ChatLiveConfig, inputCh chan<- str
 		case <-spinnerTicker.C:
 			if m.busy {
 				m.display.spinnerFrame = (m.display.spinnerFrame + 1) % 8
-			} else {
+				m.renderSpinnerOnly(screen)
 				continue
 			}
+			continue
 		}
 
-		m.render(screen)
+		if renderDelay {
+			select {
+			case <-time.After(8 * time.Millisecond):
+			default:
+			}
+		}
+		if fullRender {
+			m.render(screen)
+		}
 	}
 }
 
@@ -279,6 +389,16 @@ func (m *chatLiveModel) handleKey(ev *tcell.EventKey, inputCh chan<- string) (Ch
 	// Help overlay mode
 	if m.overlays.helpVisible {
 		return m.handleHelpOverlayKey(ev), false
+	}
+
+	// Stats overlay mode
+	if m.overlays.statsVisible {
+		return m.handleStatsOverlayKey(ev), false
+	}
+
+	// File picker mode
+	if m.overlays.files.visible {
+		return m.handleFilePickerKey(ev), false
 	}
 
 	// Model picker mode
@@ -312,6 +432,18 @@ func (m *chatLiveModel) handleKey(ev *tcell.EventKey, inputCh chan<- string) (Ch
 				}
 			}
 		case tcell.KeyEscape:
+			if m.busy {
+				m.approval = nil
+				m.busy = false
+				m.status = "ready"
+				m.display.flash = "turn canceled"
+				m.display.turnStartedAt = time.Time{}
+				select {
+				case inputCh <- "__cancel_turn__":
+				default:
+				}
+				return ChatLiveResult{}, false
+			}
 			m.autoSaveSession()
 			return ChatLiveResult{Aborted: true}, true
 		}
@@ -320,6 +452,17 @@ func (m *chatLiveModel) handleKey(ev *tcell.EventKey, inputCh chan<- string) (Ch
 
 	switch ev.Key() {
 	case tcell.KeyEscape:
+		if m.busy {
+			m.busy = false
+			m.status = "ready"
+			m.display.flash = "turn canceled"
+			m.display.turnStartedAt = time.Time{}
+			select {
+			case inputCh <- "__cancel_turn__":
+			default:
+			}
+			return ChatLiveResult{}, false
+		}
 		m.autoSaveSession()
 		return ChatLiveResult{Aborted: true}, true
 
@@ -434,13 +577,16 @@ func (m *chatLiveModel) handleKey(ev *tcell.EventKey, inputCh chan<- string) (Ch
 		newRunes = append(newRunes, runes[m.inputPos:]...)
 		m.inputBuf = string(newRunes)
 		m.inputPos++
+		if ev.Rune() == '@' {
+			m.openFilePicker("")
+		}
 	}
 
 	return ChatLiveResult{}, false
 }
 
-func (m *chatLiveModel) paneLines(content string, width, height, scroll int) []string {
-	bodyLines := wrapPaneContent(content, width)
+func (m *chatLiveModel) paneLines(pane *chatPaneBufferState, width, height, scroll int) []string {
+	bodyLines := m.wrappedLines(pane, width)
 	if len(bodyLines) == 0 {
 		bodyLines = []string{""}
 	}
@@ -454,6 +600,31 @@ func (m *chatLiveModel) paneLines(content string, width, height, scroll int) []s
 		lines = lines[:height]
 	}
 	return lines
+}
+
+func (m *chatLiveModel) wrappedLines(pane *chatPaneBufferState, width int) []string {
+	cache := &pane.cache
+	if cache.width != width || cache.content != pane.buf {
+		started := time.Now()
+		cache.width = width
+		cache.content = pane.buf
+		cache.lines = wrapPaneContent(pane.buf, width)
+		cache.lineStarts = wrappedLineStarts(cache.lines)
+		m.recordWrapProfile(time.Since(started), false)
+	} else {
+		m.recordWrapProfile(0, true)
+	}
+	return cache.lines
+}
+
+func (m *chatLiveModel) wrappedLineStartsForPane(pane *chatPaneBufferState, width int) []int {
+	m.wrappedLines(pane, width)
+	return pane.cache.lineStarts
+}
+
+func (m *chatLiveModel) invalidatePaneCache(pane *chatPaneBufferState) {
+	pane.cache = chatWrappedCache{}
+	m.display.prof.paneCacheInvalidates++
 }
 
 func (m *chatLiveModel) bodyHeight() int {
@@ -474,33 +645,26 @@ func (m *chatLiveModel) scrollFocused(delta int) {
 }
 
 func (m *chatLiveModel) agentMaxScroll() int {
-	return max(0, totalWrappedLines(m.panes.agent.buf, m.leftContentWidth())-m.agentVisibleHeight())
+	return max(0, len(m.wrappedLines(&m.panes.agent, m.leftContentWidth()))-m.agentVisibleHeight())
 }
 
 func (m *chatLiveModel) toolsMaxScroll() int {
-	return max(0, totalWrappedLines(m.panes.tools.buf, m.rightContentWidth())-m.toolsVisibleHeight())
+	return max(0, len(m.wrappedLines(&m.panes.tools, m.rightContentWidth()))-m.toolsVisibleHeight())
 }
 
 func (m *chatLiveModel) modelPickerLayout() (x0, y0, maxW, boxH, visibleStart, visibleCount int) {
-	maxW = 0
+	maxW = 24
 	for _, name := range m.overlays.models.list {
 		if stringWidth(name)+8 > maxW {
 			maxW = stringWidth(name) + 8
 		}
 	}
-	if maxW > m.width-4 {
-		maxW = m.width - 4
-	}
+	maxW = min(maxW, max(12, m.width-4))
 	boxH = len(m.overlays.models.list) + 4
-	if boxH > m.height-2 {
-		boxH = m.height - 2
-	}
-	x0 = (m.width - maxW) / 2
-	y0 = (m.height - boxH) / 2
-	visibleCount = boxH - 4
-	if visibleCount < 1 {
-		visibleCount = 1
-	}
+	boxH = min(boxH, max(5, m.height-2))
+	x0 = max(0, (m.width-maxW)/2)
+	y0 = max(0, (m.height-boxH)/2)
+	visibleCount = max(1, boxH-4)
 	if m.overlays.models.cursor >= visibleStart+visibleCount {
 		visibleStart = m.overlays.models.cursor - visibleCount + 1
 	}
@@ -510,24 +674,25 @@ func (m *chatLiveModel) modelPickerLayout() (x0, y0, maxW, boxH, visibleStart, v
 	return
 }
 
-func (m *chatLiveModel) searchTarget() (pane string, content string, width int, visible int, scroll *int, follow *bool) {
+func (m *chatLiveModel) searchTarget() (pane string, paneState *chatPaneBufferState, width int, visible int, scroll *int, follow *bool) {
 	if m.overlays.search.pane == "right" && m.panes.layout.toolsVisible {
-		return "right", m.panes.tools.buf, m.rightContentWidth(), m.toolsVisibleHeight(), &m.panes.tools.scroll, &m.panes.tools.follow
+		return "right", &m.panes.tools, m.rightContentWidth(), m.toolsVisibleHeight(), &m.panes.tools.scroll, &m.panes.tools.follow
 	}
-	return "left", m.panes.agent.buf, m.leftContentWidth(), m.agentVisibleHeight(), &m.panes.agent.scroll, &m.panes.agent.follow
+	return "left", &m.panes.agent, m.leftContentWidth(), m.agentVisibleHeight(), &m.panes.agent.scroll, &m.panes.agent.follow
 }
 
 func (m *chatLiveModel) updateSearchMatches(jump bool) {
-	_, content, width, visible, scroll, follow := m.searchTarget()
+	_, paneState, width, visible, scroll, follow := m.searchTarget()
 	m.overlays.search.matches = nil
 	m.overlays.search.lineStarts = nil
+	m.overlays.search.lineIndexMap = nil
 	m.overlays.search.current = -1
 	query := strings.ToLower(strings.TrimSpace(m.overlays.search.query))
 	if query == "" {
 		m.display.flash = "search cleared"
 		return
 	}
-	lines := wrapPaneContent(content, width)
+	lines := m.wrappedLines(paneState, width)
 	for i, line := range lines {
 		lower := strings.ToLower(line)
 		start := 0
@@ -548,6 +713,16 @@ func (m *chatLiveModel) updateSearchMatches(jump bool) {
 			m.overlays.search.lineStarts = append(m.overlays.search.lineStarts, 0)
 		}
 	}
+	m.overlays.search.lineIndexMap = make(map[int]chatSearchLineMatch, len(m.overlays.search.matches))
+	for i, line := range m.overlays.search.matches {
+		start := 0
+		if i < len(m.overlays.search.lineStarts) {
+			start = m.overlays.search.lineStarts[i]
+		}
+		if _, exists := m.overlays.search.lineIndexMap[line]; !exists {
+			m.overlays.search.lineIndexMap[line] = chatSearchLineMatch{matchStart: start, matchIndex: i}
+		}
+	}
 	if len(m.overlays.search.matches) == 0 {
 		m.display.flash = fmt.Sprintf("no matches for %q", m.overlays.search.query)
 		return
@@ -566,8 +741,8 @@ func (m *chatLiveModel) searchNext(delta int) bool {
 	if len(m.overlays.search.matches) == 0 {
 		return false
 	}
-	_, content, width, visible, scroll, follow := m.searchTarget()
-	lines := wrapPaneContent(content, width)
+	_, paneState, width, visible, scroll, follow := m.searchTarget()
+	lines := m.wrappedLines(paneState, width)
 	if m.overlays.search.current < 0 {
 		m.overlays.search.current = 0
 	} else {
@@ -580,27 +755,36 @@ func (m *chatLiveModel) searchNext(delta int) bool {
 	return true
 }
 
+func (m *chatLiveModel) filePickerLayout() (x0, y0, maxW, boxH, visibleStart, visibleCount int) {
+	maxW = min(72, max(32, m.width-4))
+	boxH = min(max(8, len(m.overlays.files.filtered)+4), max(8, m.height-2))
+	x0 = max(0, (m.width-maxW)/2)
+	y0 = max(0, (m.height-boxH)/2)
+	visibleCount = max(1, boxH-4)
+	visibleStart = 0
+	if m.overlays.files.cursor >= visibleStart+visibleCount {
+		visibleStart = m.overlays.files.cursor - visibleCount + 1
+	}
+	if m.overlays.files.cursor < visibleStart {
+		visibleStart = m.overlays.files.cursor
+	}
+	return
+}
+
 func (m *chatLiveModel) sessionsPickerLayout() (x0, y0, maxW, boxH, visibleStart, visibleCount int) {
-	maxW = 0
+	maxW = 36
 	for _, session := range m.overlays.sessions.list {
 		label := session.name + "  " + formatSessionTimestamp(session.modTime)
 		if stringWidth(label)+8 > maxW {
 			maxW = stringWidth(label) + 8
 		}
 	}
-	if maxW > m.width-4 {
-		maxW = m.width - 4
-	}
+	maxW = min(maxW, max(20, m.width-4))
 	boxH = len(m.overlays.sessions.list) + 4
-	if boxH > m.height-2 {
-		boxH = m.height - 2
-	}
-	x0 = (m.width - maxW) / 2
-	y0 = (m.height - boxH) / 2
-	visibleCount = boxH - 4
-	if visibleCount < 1 {
-		visibleCount = 1
-	}
+	boxH = min(boxH, max(5, m.height-2))
+	x0 = max(0, (m.width-maxW)/2)
+	y0 = max(0, (m.height-boxH)/2)
+	visibleCount = max(1, boxH-4)
 	if m.overlays.sessions.cursor >= visibleStart+visibleCount {
 		visibleStart = m.overlays.sessions.cursor - visibleCount + 1
 	}
@@ -696,16 +880,11 @@ func drawStyledToolLine(screen tcell.Screen, x, y int, text string, maxW int, bo
 }
 
 func (m *chatLiveModel) searchHighlightForLine(lineIndex int) (matchStart int, isCurrent bool, ok bool) {
-	for i, line := range m.overlays.search.matches {
-		if line == lineIndex {
-			start := 0
-			if i < len(m.overlays.search.lineStarts) {
-				start = m.overlays.search.lineStarts[i]
-			}
-			return start, i == m.overlays.search.current, true
-		}
+	match, exists := m.overlays.search.lineIndexMap[lineIndex]
+	if !exists {
+		return 0, false, false
 	}
-	return 0, false, false
+	return match.matchStart, match.matchIndex == m.overlays.search.current, true
 }
 
 func drawHighlightedText(screen tcell.Screen, x, y int, text string, maxW int, base tcell.Style, query string, matchStart int, isCurrent bool) {
@@ -746,36 +925,118 @@ func drawHighlightedText(screen tcell.Screen, x, y int, text string, maxW int, b
 
 var chromaStyle = styles.Get("github-dark")
 
-func drawChromaCodeLine(screen tcell.Screen, x, y int, text string, maxW int, lang string, base tcell.Style) {
-	text = fitWidth(text, maxW)
-	if text == "" {
-		return
-	}
-	lexer := chromaLexer(lang, text)
-	if lexer == nil || chromaStyle == nil {
-		drawText(screen, x, y, base, text)
-		return
-	}
-	it, err := lexer.Tokenise(nil, text)
-	if err != nil {
-		drawText(screen, x, y, base, text)
+func (m *chatLiveModel) drawChromaCodeLine(screen tcell.Screen, x, y int, text string, maxW int, lang string, base tcell.Style) {
+	segments := m.styledCodeLine(text, maxW, lang, base)
+	if len(segments) == 0 {
 		return
 	}
 	xPos := x
-	for token := it(); token != chroma.EOF && xPos < x+maxW; token = it() {
+	for _, seg := range segments {
+		if xPos+seg.width > x+maxW {
+			return
+		}
+		screen.SetContent(xPos, y, seg.r, nil, seg.style)
+		xPos += seg.width
+	}
+}
+
+func (m *chatLiveModel) styledCodeLine(text string, maxW int, lang string, base tcell.Style) []chatStyledRune {
+	text = fitWidth(text, maxW)
+	if text == "" {
+		return nil
+	}
+	key := fmt.Sprintf("%t|%s|%d|%#v|%s", m.themeLowContrast, strings.TrimSpace(strings.ToLower(lang)), maxW, base, text)
+	if m.codeCache.lines != nil {
+		if cached, ok := m.codeCache.lines[key]; ok {
+			return cached
+		}
+	} else {
+		m.codeCache.lines = make(map[string][]chatStyledRune)
+	}
+	segments := m.computeStyledCodeLine(text, lang, base)
+	m.cacheStyledCodeLine(key, segments)
+	return segments
+}
+
+func (m *chatLiveModel) computeStyledCodeLine(text string, lang string, base tcell.Style) []chatStyledRune {
+	lexer := chromaLexer(lang, text)
+	if lexer == nil || chromaStyle == nil {
+		return plainStyledRunes(text, base)
+	}
+	it, err := lexer.Tokenise(nil, text)
+	if err != nil {
+		return plainStyledRunes(text, base)
+	}
+	segments := make([]chatStyledRune, 0, len([]rune(text)))
+	for token := it(); token != chroma.EOF; token = it() {
 		style := chromaTokenStyle(base, chromaStyle.Get(token.Type))
 		for _, r := range token.Value {
 			w := runewidth.RuneWidth(r)
 			if w <= 0 {
 				w = 1
 			}
-			if xPos+w > x+maxW {
-				return
-			}
-			screen.SetContent(xPos, y, r, nil, style)
-			xPos += w
+			segments = append(segments, chatStyledRune{r: r, style: style, width: w})
 		}
 	}
+	return segments
+}
+
+type chatCopilotQuotaMsg struct {
+	quota *copilot.UserQuota
+	err   string
+}
+
+func (m *chatLiveModel) requestLiveCopilotQuota(ch chan<- chatCopilotQuotaMsg) {
+	if strings.TrimSpace(m.copilotToken) == "" {
+		m.display.liveQuotaLoading = false
+		m.display.liveQuotaErr = "Copilot not authenticated"
+		m.display.liveCopilotQuota = nil
+		return
+	}
+	m.display.liveQuotaLoading = true
+	m.display.liveQuotaErr = ""
+	go func(token string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		quota, err := copilot.FetchUserQuota(ctx, token)
+		msg := chatCopilotQuotaMsg{quota: quota}
+		if err != nil {
+			msg.err = err.Error()
+		}
+		select {
+		case ch <- msg:
+		default:
+		}
+	}(m.copilotToken)
+}
+
+func plainStyledRunes(text string, style tcell.Style) []chatStyledRune {
+	segments := make([]chatStyledRune, 0, len([]rune(text)))
+	for _, r := range text {
+		w := runewidth.RuneWidth(r)
+		if w <= 0 {
+			w = 1
+		}
+		segments = append(segments, chatStyledRune{r: r, style: style, width: w})
+	}
+	return segments
+}
+
+func (m *chatLiveModel) cacheStyledCodeLine(key string, segments []chatStyledRune) {
+	const maxCachedCodeLines = 1024
+	if m.codeCache.lines == nil {
+		m.codeCache.lines = make(map[string][]chatStyledRune)
+	}
+	if _, exists := m.codeCache.lines[key]; exists {
+		return
+	}
+	if len(m.codeCache.order) >= maxCachedCodeLines {
+		oldest := m.codeCache.order[0]
+		m.codeCache.order = m.codeCache.order[1:]
+		delete(m.codeCache.lines, oldest)
+	}
+	m.codeCache.order = append(m.codeCache.order, key)
+	m.codeCache.lines[key] = segments
 }
 
 func chromaLexer(lang, text string) chroma.Lexer {
@@ -905,6 +1166,7 @@ func (m *chatLiveModel) snapshot() chatSessionSnapshot {
 		SearchCurrent:    m.overlays.search.current,
 		SearchMatches:    append([]int(nil), m.overlays.search.matches...),
 		SearchLineStarts: append([]int(nil), m.overlays.search.lineStarts...),
+		ContextFiles:     append([]string(nil), m.contextFiles...),
 		Turn:             m.turn,
 	}
 }
@@ -913,7 +1175,9 @@ func (m *chatLiveModel) applySnapshot(s chatSessionSnapshot) {
 	m.model = s.Model
 	m.workDir = s.WorkDir
 	m.panes.agent.buf = s.AgentBuf
+	m.invalidatePaneCache(&m.panes.agent)
 	m.panes.tools.buf = s.ToolsBuf
+	m.invalidatePaneCache(&m.panes.tools)
 	m.inputBuf = s.InputBuf
 	m.inputPos = clamp(s.InputPos, 0, utf8.RuneCountInString(s.InputBuf))
 	m.panes.agent.scroll = max(0, s.AgentScrl)
@@ -928,6 +1192,7 @@ func (m *chatLiveModel) applySnapshot(s chatSessionSnapshot) {
 	m.overlays.search.current = s.SearchCurrent
 	m.overlays.search.matches = append([]int(nil), s.SearchMatches...)
 	m.overlays.search.lineStarts = append([]int(nil), s.SearchLineStarts...)
+	m.contextFiles = append([]string(nil), s.ContextFiles...)
 	m.turn = s.Turn
 }
 
@@ -1035,11 +1300,17 @@ func (m *chatLiveModel) selectedText(pane string) string {
 	if !m.panes.selectn.active || m.panes.selectn.pane != pane {
 		return ""
 	}
-	content, width := m.selectionContentAndWidth(pane)
+	_, width := m.selectionContentAndWidth(pane)
 	if width <= 0 {
 		return ""
 	}
-	wrapped := wrapPaneContent(content, width)
+	var paneState *chatPaneBufferState
+	if pane == "right" {
+		paneState = &m.panes.tools
+	} else {
+		paneState = &m.panes.agent
+	}
+	wrapped := m.wrappedLines(paneState, width)
 	if len(wrapped) == 0 {
 		return ""
 	}
@@ -1054,11 +1325,10 @@ func (m *chatLiveModel) selectedText(pane string) string {
 	return string(runes[start : end+1])
 }
 
-func (m *chatLiveModel) lineHasSelection(pane string, lineIndex int, wrapped []string) bool {
+func (m *chatLiveModel) lineHasSelection(pane string, lineIndex int, wrapped []string, lineStarts []int) bool {
 	if !m.panes.selectn.active || m.panes.selectn.pane != pane || lineIndex < 0 || lineIndex >= len(wrapped) {
 		return false
 	}
-	lineStarts := wrappedLineStarts(wrapped)
 	lineStart := lineStarts[lineIndex]
 	lineEnd := lineStart + len([]rune(wrapped[lineIndex])) - 1
 	if lineIndex < len(wrapped)-1 {
@@ -1085,29 +1355,29 @@ func (m *chatLiveModel) selectionContentAndWidth(pane string) (string, int) {
 func (m *chatLiveModel) paneIndexFromMouse(pane string, x, y int) (int, bool) {
 	var paneX, paneY, paneW, paneH, scroll int
 	var width int
-	var content string
+	var paneState *chatPaneBufferState
 	if pane == "right" {
 		paneX, paneY, paneW, paneH = m.rightPaneRect()
 		scroll = m.panes.tools.scroll
 		width = m.rightContentWidth()
-		content = m.panes.tools.buf
+		paneState = &m.panes.tools
 	} else {
 		paneX, paneY, paneW, paneH = m.leftPaneRect()
 		scroll = m.panes.agent.scroll
 		width = m.leftContentWidth()
-		content = m.panes.agent.buf
+		paneState = &m.panes.agent
 	}
 	if x < paneX+1 || x >= paneX+paneW-1 || y <= paneY || y >= paneY+paneH-1 {
 		return 0, false
 	}
-	wrapped := wrapPaneContent(content, width)
+	wrapped := m.wrappedLines(paneState, width)
 	if len(wrapped) == 0 {
 		wrapped = []string{""}
 	}
 	lineIndex := clamp(scroll+(y-(paneY+1)), 0, len(wrapped)-1)
 	line := wrapped[lineIndex]
 	col := clamp(x-(paneX+1), 0, len([]rune(line)))
-	lineStarts := wrappedLineStarts(wrapped)
+	lineStarts := m.wrappedLineStartsForPane(paneState, width)
 	return lineStarts[lineIndex] + col, true
 }
 
@@ -1170,6 +1440,64 @@ func (m *chatLiveModel) pushTimeline(msg string) {
 	if len(m.display.timeline) > 12 {
 		m.display.timeline = m.display.timeline[len(m.display.timeline)-12:]
 	}
+}
+
+func (m *chatLiveModel) recordFullRenderProfile(d time.Duration) {
+	p := &m.display.prof
+	p.fullRenderCount++
+	p.lastFullRender = d
+	p.totalFullRender += d
+	if d > p.maxFullRender {
+		p.maxFullRender = d
+	}
+}
+
+func (m *chatLiveModel) recordSpinnerRenderProfile(d time.Duration) {
+	p := &m.display.prof
+	p.spinnerRenderCount++
+	p.lastSpinnerRender = d
+	p.totalSpinnerRender += d
+	if d > p.maxSpinnerRender {
+		p.maxSpinnerRender = d
+	}
+}
+
+func (m *chatLiveModel) recordWrapProfile(d time.Duration, hit bool) {
+	p := &m.display.prof
+	if hit {
+		p.wrapHits++
+		return
+	}
+	p.wrapMisses++
+	p.lastWrap = d
+	p.totalWrap += d
+	if d > p.maxWrap {
+		p.maxWrap = d
+	}
+}
+
+func (m *chatLiveModel) profileSummary() string {
+	p := m.display.prof
+	avgFull := time.Duration(0)
+	if p.fullRenderCount > 0 {
+		avgFull = p.totalFullRender / time.Duration(p.fullRenderCount)
+	}
+	avgWrap := time.Duration(0)
+	if p.wrapMisses > 0 {
+		avgWrap = p.totalWrap / time.Duration(p.wrapMisses)
+	}
+	return fmt.Sprintf("full %s avg/%s max • spin %d • wrap h:%d m:%d avg:%s max:%s • inv %d • bursts %d/%d",
+		avgFull.Round(time.Millisecond),
+		p.maxFullRender.Round(time.Millisecond),
+		p.spinnerRenderCount,
+		p.wrapHits,
+		p.wrapMisses,
+		avgWrap.Round(time.Millisecond),
+		p.maxWrap.Round(time.Millisecond),
+		p.paneCacheInvalidates,
+		p.eventBursts,
+		p.eventsDrained,
+	)
 }
 
 func extractLastCodeBlock(content string) string {
@@ -1534,6 +1862,22 @@ func inputCursorFromScreenX(input string, currentPos, screenX, totalWidth int) i
 
 func stringWidth(s string) int {
 	return runewidth.StringWidth(s)
+}
+
+func chatFooterLegend(width int) string {
+	options := []string{
+		" F1 help • F2 theme • /stats • /copy code • /sessions ",
+		" F1 help • F2 theme • /stats • /sessions ",
+		" F1 help • /stats • /sessions ",
+		" F1 help • /stats ",
+		" F1 help ",
+	}
+	for _, option := range options {
+		if stringWidth(option) <= width {
+			return option
+		}
+	}
+	return ""
 }
 
 func clipToWidth(s string, width int) string {

@@ -80,14 +80,7 @@ func fetchModels(ctx context.Context, client *http.Client, baseURL, token string
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Copilot-Integration-Id", integrationID)
-	req.Header.Set("Openai-Intent", "conversation-agent")
-	req.Header.Set("X-Initiator", "user")
-	req.Header.Set("X-GitHub-Api-Version", apiVersion)
-	req.Header.Set("User-Agent", userAgent)
+	applyHeaders(req, token)
 
 	resp, err := client.Do(req)
 	if err != nil {

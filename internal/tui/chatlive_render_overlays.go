@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"forge/internal/copilot"
+
 	"github.com/gdamore/tcell/v2"
 )
 
@@ -42,6 +44,7 @@ func (m *chatLiveModel) renderHelpOverlay(screen tcell.Screen) {
 		"/save [name]     save session snapshot",
 		"/restore [name]  restore session snapshot",
 		"/toggle tools    show / hide tools pane",
+		"/stats           show latest turn stats / Copilot quota",
 		"/copy code       export latest code block",
 		"/copy result     export latest tool result",
 		"/expand          expand last truncated result",
@@ -55,6 +58,118 @@ func (m *chatLiveModel) renderHelpOverlay(screen tcell.Screen) {
 		drawText(screen, x0+2, y0+2+i, textStyle, fitWidth(line, max(1, boxW-4)))
 	}
 	drawText(screen, x0+2, y0+boxH-2, dimStyle, fitWidth("Esc / Enter / ? closes this overlay", max(1, boxW-4)))
+}
+
+func (m *chatLiveModel) renderStatsOverlay(screen tcell.Screen) {
+	boxW := min(76, max(46, m.width-10))
+	boxH := 10
+	if m.display.statsUsage.CopilotQuota != nil {
+		boxH = 14
+	}
+	if m.display.liveCopilotQuota != nil || m.display.liveQuotaLoading || m.display.liveQuotaErr != "" {
+		boxH = 20
+	}
+	x0 := (m.width - boxW) / 2
+	y0 := (m.height - boxH) / 2
+	backdrop := tcell.StyleDefault.Background(tcell.GetColor("#000000")).Foreground(tcell.GetColor("#000000"))
+	for yy := max(0, y0-1); yy < min(m.height, y0+boxH+1); yy++ {
+		for xx := max(0, x0-2); xx < min(m.width, x0+boxW+2); xx++ {
+			screen.SetContent(xx, yy, ' ', nil, backdrop)
+		}
+	}
+	boxStyle := tcell.StyleDefault.Background(tcell.GetColor("#161b22")).Foreground(tcell.GetColor("#58a6ff"))
+	titleStyle := tcell.StyleDefault.Background(tcell.GetColor("#161b22")).Foreground(tcell.GetColor("#56d364")).Bold(true)
+	textStyle := tcell.StyleDefault.Background(tcell.GetColor("#161b22")).Foreground(tcell.GetColor("#c9d1d9"))
+	dimStyle := tcell.StyleDefault.Background(tcell.GetColor("#161b22")).Foreground(tcell.GetColor("#8b949e"))
+	drawBox(screen, x0, y0, boxW, boxH, boxStyle)
+	drawText(screen, x0+2, y0, titleStyle, fitWidth(" Latest turn stats ", max(1, boxW-4)))
+
+	lines := []string{}
+	if m.display.statsDuration > 0 {
+		lines = append(lines, fmt.Sprintf("Duration: %.1fs", m.display.statsDuration.Seconds()))
+	} else {
+		lines = append(lines, "Duration: n/a")
+	}
+	lines = append(lines,
+		fmt.Sprintf("Input tokens:  %d", m.display.statsUsage.InputTokens),
+		fmt.Sprintf("Output tokens: %d", m.display.statsUsage.OutputTokens),
+	)
+	if q := m.display.statsUsage.CopilotQuota; q != nil {
+		lines = append(lines, "")
+		lines = append(lines, "Copilot premium (last turn):")
+		if q.Unlimited {
+			lines = append(lines, "  Unlimited")
+		} else {
+			if q.Remaining > 0 {
+				lines = append(lines, fmt.Sprintf("  Remaining: %d", q.Remaining))
+			} else if q.PercentRemaining > 0 {
+				lines = append(lines, fmt.Sprintf("  Remaining: %.0f%%", q.PercentRemaining))
+			}
+			if q.Used > 0 || q.Included > 0 {
+				lines = append(lines, fmt.Sprintf("  Used: %d/%d", q.Used, q.Included))
+			}
+			if q.ResetAt != "" {
+				lines = append(lines, fmt.Sprintf("  Reset: %s", q.ResetAt))
+			}
+		}
+	}
+	if m.display.liveQuotaLoading || m.display.liveQuotaErr != "" || m.display.liveCopilotQuota != nil {
+		lines = append(lines, "")
+		lines = append(lines, "Copilot allowance (live):")
+		if m.display.liveQuotaLoading {
+			lines = append(lines, "  Loading…")
+		} else if m.display.liveQuotaErr != "" {
+			lines = append(lines, "  Error: "+m.display.liveQuotaErr)
+		} else if live := m.display.liveCopilotQuota; live != nil {
+			for _, name := range []string{"chat", "completions", "premium"} {
+				if q, ok := live.Windows[name]; ok {
+					lines = append(lines, "  "+name+": "+copilot.FormatQuota(q))
+				}
+			}
+		}
+	}
+	for i, line := range lines {
+		if y0+2+i >= y0+boxH-2 {
+			break
+		}
+		drawText(screen, x0+2, y0+2+i, textStyle, fitWidth(line, max(1, boxW-4)))
+	}
+	drawText(screen, x0+2, y0+boxH-2, dimStyle, fitWidth("Esc / Enter / click closes this overlay", max(1, boxW-4)))
+}
+
+func (m *chatLiveModel) renderFilePicker(screen tcell.Screen) {
+	x0, y0, boxW, boxH, visibleStart, visibleCount := m.filePickerLayout()
+	backdrop := tcell.StyleDefault.Background(tcell.GetColor("#000000")).Foreground(tcell.GetColor("#000000"))
+	for yy := max(0, y0-1); yy < min(m.height, y0+boxH+1); yy++ {
+		for xx := max(0, x0-2); xx < min(m.width, x0+boxW+2); xx++ {
+			screen.SetContent(xx, yy, ' ', nil, backdrop)
+		}
+	}
+	boxStyle := tcell.StyleDefault.Background(tcell.GetColor("#161b22")).Foreground(tcell.GetColor("#58a6ff"))
+	titleStyle := tcell.StyleDefault.Background(tcell.GetColor("#161b22")).Foreground(tcell.GetColor("#56d364")).Bold(true)
+	textStyle := tcell.StyleDefault.Background(tcell.GetColor("#161b22")).Foreground(tcell.GetColor("#c9d1d9"))
+	dimStyle := tcell.StyleDefault.Background(tcell.GetColor("#161b22")).Foreground(tcell.GetColor("#8b949e"))
+	selectedStyle := tcell.StyleDefault.Background(tcell.GetColor("#1f6feb")).Foreground(tcell.GetColor("#ffffff")).Bold(true)
+	drawBox(screen, x0, y0, boxW, boxH, boxStyle)
+	drawText(screen, x0+2, y0, titleStyle, fitWidth(" Add context file (@...) ", max(1, boxW-4)))
+	drawText(screen, x0+2, y0+1, dimStyle, fitWidth("Type to filter, Enter to insert, Esc to close", max(1, boxW-4)))
+	drawText(screen, x0+2, y0+2, textStyle, fitWidth("Query: "+m.overlays.files.query, max(1, boxW-4)))
+	for i := 0; i < visibleCount; i++ {
+		idx := visibleStart + i
+		if idx >= len(m.overlays.files.filtered) {
+			break
+		}
+		style := textStyle
+		prefix := "  "
+		if idx == m.overlays.files.cursor {
+			style = selectedStyle
+			prefix = "› "
+		}
+		drawText(screen, x0+2, y0+3+i, style, fitWidth(prefix+m.overlays.files.filtered[idx], max(1, boxW-4)))
+	}
+	if len(m.overlays.files.filtered) == 0 {
+		drawText(screen, x0+2, y0+4, dimStyle, fitWidth("No matching files", max(1, boxW-4)))
+	}
 }
 
 func (m *chatLiveModel) renderSessionsPicker(screen tcell.Screen) {

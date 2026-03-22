@@ -3,11 +3,14 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -46,12 +49,19 @@ func main() {
 		"improve": {Name: "improve", Run: func(args []string) { runImprove() }},
 		"list":    {Name: "list", Run: func(args []string) { runList() }},
 		"ls":      {Name: "ls", Run: func(args []string) { runList() }},
+		"perf": {
+			Name: "perf",
+			Run: func(args []string) {
+				runPerf(args)
+			},
+		},
 		"show": {
 			Name: "show",
 			Run: func(args []string) {
 				runShow(cli.RequireArg(args, "usage: forge show <session-id>"))
 			},
 		},
+		"status": {Name: "status", Run: func(args []string) { runStatus() }},
 	}, func() {
 		runInteractive()
 	})
@@ -198,6 +208,470 @@ func runShow(id string) {
 		os.Exit(1)
 	}
 	fmt.Print(history.FormatDetail(detail))
+}
+
+func runStatus() {
+	cfg, err := bootstrap.LoadConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
+		os.Exit(1)
+	}
+	tokens, err := auth.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error loading auth: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("forge status")
+	if strings.TrimSpace(tokens.CopilotToken) != "" {
+		fmt.Println("copilot: authenticated")
+	} else {
+		fmt.Println("copilot: not authenticated")
+	}
+
+	if strings.TrimSpace(tokens.CopilotToken) != "" {
+		live, err := copilot.FetchUserQuota(context.Background(), tokens.CopilotToken)
+		if err == nil && live != nil {
+			printLiveCopilotQuota(live)
+			return
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: live Copilot quota lookup failed: %v\n", err)
+		}
+	}
+
+	quota, sessionID, err := latestCopilotQuota(cfg.Session.OutputDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error reading session history: %v\n", err)
+		os.Exit(1)
+	}
+	if quota == nil {
+		fmt.Println("allowance: unavailable")
+		fmt.Println("hint: run `forge auth copilot`, or run a Copilot-backed session to capture quota in session history")
+		return
+	}
+
+	fmt.Printf("allowance: %s\n", copilot.FormatQuota(*quota))
+	if sessionID != "" {
+		fmt.Printf("source: session %s\n", sessionID)
+	}
+}
+
+func printLiveCopilotQuota(live *copilot.UserQuota) {
+	if live == nil || len(live.Windows) == 0 {
+		fmt.Println("allowance: unavailable")
+		return
+	}
+	order := []string{"chat", "completions", "premium"}
+	seen := map[string]bool{}
+	for _, name := range order {
+		q, ok := live.Windows[name]
+		if !ok {
+			continue
+		}
+		seen[name] = true
+		fmt.Printf("allowance[%s]: %s\n", name, copilot.FormatQuota(q))
+	}
+	for name, q := range live.Windows {
+		if seen[name] {
+			continue
+		}
+		fmt.Printf("allowance[%s]: %s\n", name, copilot.FormatQuota(q))
+	}
+	fmt.Println("source: live github api /copilot_internal/user")
+}
+
+func latestCopilotQuota(outputDir string) (*llm.CopilotQuota, string, error) {
+	sessions, err := history.List(outputDir)
+	if err != nil {
+		return nil, "", err
+	}
+	for _, s := range sessions {
+		detail, err := history.Show(outputDir, s.ID)
+		if err != nil {
+			continue
+		}
+		for i := len(detail.Meta.TokenUsage) - 1; i >= 0; i-- {
+			if q := detail.Meta.TokenUsage[i].Usage.CopilotQuota; q != nil {
+				return q, detail.Meta.ID, nil
+			}
+		}
+		if detail.Meta.TotalUsage.CopilotQuota != nil {
+			return detail.Meta.TotalUsage.CopilotQuota, detail.Meta.ID, nil
+		}
+	}
+	return nil, "", nil
+}
+
+type perfSummaryOptions struct {
+	JSON      bool
+	Sort      string
+	Status    string
+	Model     string
+	Limit     int
+	Completed bool
+}
+
+type perfShowOptions struct {
+	JSON bool
+}
+
+type perfSessionRow struct {
+	ID           string        `json:"id"`
+	Status       string        `json:"status"`
+	Writer       string        `json:"writer"`
+	Auditor      string        `json:"auditor"`
+	InputTokens  int           `json:"input_tokens"`
+	OutputTokens int           `json:"output_tokens"`
+	TotalTokens  int           `json:"total_tokens"`
+	Calls        int           `json:"calls"`
+	StartedAt    time.Time     `json:"started_at,omitempty"`
+	CompletedAt  *time.Time    `json:"completed_at,omitempty"`
+	Elapsed      time.Duration `json:"elapsed_ns,omitempty"`
+	TokensPerSec float64       `json:"tokens_per_sec,omitempty"`
+}
+
+type perfSummaryResult struct {
+	Sessions            []perfSessionRow `json:"sessions"`
+	SessionCount        int              `json:"session_count"`
+	SessionsWithUsage   int              `json:"sessions_with_usage"`
+	InputTokens         int              `json:"input_tokens"`
+	OutputTokens        int              `json:"output_tokens"`
+	TotalTokens         int              `json:"total_tokens"`
+	AvgInputTokens      int              `json:"avg_input_tokens"`
+	AvgOutputTokens     int              `json:"avg_output_tokens"`
+	AvgTotalTokens      int              `json:"avg_total_tokens"`
+	TotalElapsed        time.Duration    `json:"total_elapsed_ns,omitempty"`
+	AvgElapsed          time.Duration    `json:"avg_elapsed_ns,omitempty"`
+	OverallTokensPerSec float64          `json:"overall_tokens_per_sec,omitempty"`
+}
+
+type perfCallRow struct {
+	Index        int    `json:"index"`
+	Agent        string `json:"agent"`
+	Model        string `json:"model"`
+	Pass         int    `json:"pass"`
+	Round        int    `json:"round"`
+	InputTokens  int    `json:"input_tokens"`
+	OutputTokens int    `json:"output_tokens"`
+	TotalTokens  int    `json:"total_tokens"`
+}
+
+type perfShowResult struct {
+	Session       perfSessionRow `json:"session"`
+	Prompt        string         `json:"prompt"`
+	RoundsPerPass int            `json:"rounds_per_pass"`
+	Calls         []perfCallRow  `json:"calls,omitempty"`
+}
+
+func runPerf(args []string) {
+	cfg, err := bootstrap.LoadConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(args) == 0 {
+		runPerfSummary(cfg.Session.OutputDir, perfSummaryOptions{Sort: "started"})
+		return
+	}
+
+	switch args[0] {
+	case "list", "summary":
+		fs := flag.NewFlagSet("perf "+args[0], flag.ExitOnError)
+		jsonOut := fs.Bool("json", false, "output JSON")
+		sortBy := fs.String("sort", "started", "sort by: started|input|output|total|elapsed|tps")
+		status := fs.String("status", "", "filter by session status")
+		model := fs.String("model", "", "filter by writer or auditor model substring")
+		limit := fs.Int("limit", 0, "max sessions to show (0 = all)")
+		completed := fs.Bool("completed", false, "show only completed sessions")
+		if err := fs.Parse(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		runPerfSummary(cfg.Session.OutputDir, perfSummaryOptions{
+			JSON:      *jsonOut,
+			Sort:      *sortBy,
+			Status:    *status,
+			Model:     *model,
+			Limit:     *limit,
+			Completed: *completed,
+		})
+		return
+	case "show":
+		fs := flag.NewFlagSet("perf show", flag.ExitOnError)
+		jsonOut := fs.Bool("json", false, "output JSON")
+		if err := fs.Parse(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		id := cli.RequireArg(fs.Args(), "usage: forge perf show [--json] <session-id>")
+		runPerfShow(cfg.Session.OutputDir, id, perfShowOptions{JSON: *jsonOut})
+		return
+	default:
+		fmt.Fprintln(os.Stderr, "usage: forge perf [summary|list] [--json] [--sort started|input|output|total|elapsed|tps] [--status STATUS] [--model SUBSTR] [--limit N] [--completed]")
+		fmt.Fprintln(os.Stderr, "       forge perf show [--json] <session-id>")
+		os.Exit(1)
+	}
+}
+
+func runPerfSummary(outputDir string, opts perfSummaryOptions) {
+	result := collectPerfSummary(outputDir, opts)
+	if opts.JSON {
+		writeJSON(result)
+		return
+	}
+	if result.SessionCount == 0 {
+		fmt.Println("No sessions found.")
+		return
+	}
+
+	fmt.Printf("%-22s %10s %10s %10s %9s %9s %s\n", "ID", "INPUT", "OUTPUT", "TOTAL", "ELAPSED", "TOK/S", "STATUS")
+	fmt.Println(strings.Repeat("─", 96))
+	for _, s := range result.Sessions {
+		fmt.Printf("%-22s %10s %10s %10s %9s %9s %s\n",
+			s.ID,
+			formatPerfCount(s.InputTokens),
+			formatPerfCount(s.OutputTokens),
+			formatPerfCount(s.TotalTokens),
+			formatPerfDuration(s.Elapsed),
+			formatPerfRate(s.TokensPerSec),
+			s.Status,
+		)
+	}
+	fmt.Println(strings.Repeat("─", 96))
+	fmt.Printf("sessions: %d  with usage: %d\n", result.SessionCount, result.SessionsWithUsage)
+	fmt.Printf("tokens:   in=%s  out=%s  total=%s\n", formatPerfCount(result.InputTokens), formatPerfCount(result.OutputTokens), formatPerfCount(result.TotalTokens))
+	fmt.Printf("average:  in=%s  out=%s  total=%s\n", formatPerfCount(result.AvgInputTokens), formatPerfCount(result.AvgOutputTokens), formatPerfCount(result.AvgTotalTokens))
+	if result.TotalElapsed > 0 {
+		fmt.Printf("time:     total=%s  avg=%s  overall=%s tok/s\n", formatPerfDuration(result.TotalElapsed), formatPerfDuration(result.AvgElapsed), formatPerfRate(result.OverallTokensPerSec))
+	}
+	if result.SessionsWithUsage == 0 {
+		fmt.Println("\nNo token usage recorded yet.")
+	}
+}
+
+func runPerfShow(outputDir, id string, opts perfShowOptions) {
+	detail, err := history.Show(outputDir, id)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	result := buildPerfShowResult(detail)
+	if opts.JSON {
+		writeJSON(result)
+		return
+	}
+
+	fmt.Printf("Session: %s\n", result.Session.ID)
+	fmt.Printf("Status:  %s\n", result.Session.Status)
+	fmt.Printf("Writer:  %s\n", result.Session.Writer)
+	fmt.Printf("Auditor: %s\n", result.Session.Auditor)
+	if !result.Session.StartedAt.IsZero() {
+		fmt.Printf("Started: %s\n", result.Session.StartedAt.Format("2006-01-02 15:04:05"))
+	}
+	if result.Session.CompletedAt != nil {
+		fmt.Printf("Ended:   %s\n", result.Session.CompletedAt.Format("2006-01-02 15:04:05"))
+	}
+	if result.Session.Elapsed > 0 {
+		fmt.Printf("Elapsed: %s\n", formatPerfDuration(result.Session.Elapsed))
+	}
+	if result.Session.TokensPerSec > 0 {
+		fmt.Printf("Rate:    %s tok/s\n", formatPerfRate(result.Session.TokensPerSec))
+	}
+	fmt.Printf("Rounds:  %d per pass\n", result.RoundsPerPass)
+	fmt.Printf("\nTotal usage:\n")
+	fmt.Printf("  input:  %s\n", formatPerfCount(result.Session.InputTokens))
+	fmt.Printf("  output: %s\n", formatPerfCount(result.Session.OutputTokens))
+	fmt.Printf("  total:  %s\n", formatPerfCount(result.Session.TotalTokens))
+	fmt.Printf("  calls:  %d\n", result.Session.Calls)
+	if len(result.Calls) == 0 {
+		fmt.Println("\nNo per-call token usage recorded.")
+		return
+	}
+	fmt.Printf("\nCalls:\n")
+	for _, entry := range result.Calls {
+		label := entry.Model
+		if label == "" {
+			label = fmt.Sprintf("call %d", entry.Index)
+		}
+		if entry.Agent != "" {
+			label = entry.Agent + "/" + label
+		}
+		fmt.Printf("  %-24s pass=%d round=%d in=%s out=%s total=%s\n",
+			label,
+			entry.Pass,
+			entry.Round,
+			formatPerfCount(entry.InputTokens),
+			formatPerfCount(entry.OutputTokens),
+			formatPerfCount(entry.TotalTokens),
+		)
+	}
+}
+
+func collectPerfSummary(outputDir string, opts perfSummaryOptions) perfSummaryResult {
+	sessions, err := history.List(outputDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	var rows []perfSessionRow
+	statusFilter := strings.ToLower(strings.TrimSpace(opts.Status))
+	modelFilter := strings.ToLower(strings.TrimSpace(opts.Model))
+	for _, s := range sessions {
+		detail, err := history.Show(outputDir, s.ID)
+		if err != nil {
+			continue
+		}
+		row := buildPerfSessionRow(detail)
+		if opts.Completed && row.Status != "complete" {
+			continue
+		}
+		if statusFilter != "" && strings.ToLower(row.Status) != statusFilter {
+			continue
+		}
+		if modelFilter != "" {
+			models := strings.ToLower(row.Writer + " " + row.Auditor)
+			if !strings.Contains(models, modelFilter) {
+				continue
+			}
+		}
+		rows = append(rows, row)
+	}
+
+	sortPerfRows(rows, opts.Sort)
+	if opts.Limit > 0 && opts.Limit < len(rows) {
+		rows = rows[:opts.Limit]
+	}
+
+	result := perfSummaryResult{Sessions: rows, SessionCount: len(rows)}
+	var elapsedCount int
+	for _, row := range rows {
+		if row.InputTokens != 0 || row.OutputTokens != 0 {
+			result.SessionsWithUsage++
+		}
+		result.InputTokens += row.InputTokens
+		result.OutputTokens += row.OutputTokens
+		result.TotalTokens += row.TotalTokens
+		if row.Elapsed > 0 {
+			result.TotalElapsed += row.Elapsed
+			elapsedCount++
+		}
+	}
+	if result.SessionCount > 0 {
+		result.AvgInputTokens = result.InputTokens / result.SessionCount
+		result.AvgOutputTokens = result.OutputTokens / result.SessionCount
+		result.AvgTotalTokens = result.TotalTokens / result.SessionCount
+	}
+	if elapsedCount > 0 {
+		result.AvgElapsed = result.TotalElapsed / time.Duration(elapsedCount)
+		seconds := result.TotalElapsed.Seconds()
+		if seconds > 0 {
+			result.OverallTokensPerSec = float64(result.TotalTokens) / seconds
+		}
+	}
+	return result
+}
+
+func buildPerfShowResult(detail *history.SessionDetail) perfShowResult {
+	result := perfShowResult{
+		Session:       buildPerfSessionRow(detail),
+		Prompt:        detail.Meta.Prompt,
+		RoundsPerPass: detail.Meta.RoundsPerPass,
+	}
+	for i, entry := range detail.Meta.TokenUsage {
+		result.Calls = append(result.Calls, perfCallRow{
+			Index:        i + 1,
+			Agent:        entry.Agent,
+			Model:        entry.Model,
+			Pass:         entry.Pass,
+			Round:        entry.Round,
+			InputTokens:  entry.Usage.InputTokens,
+			OutputTokens: entry.Usage.OutputTokens,
+			TotalTokens:  entry.Usage.InputTokens + entry.Usage.OutputTokens,
+		})
+	}
+	return result
+}
+
+func buildPerfSessionRow(detail *history.SessionDetail) perfSessionRow {
+	row := perfSessionRow{
+		ID:           detail.Meta.ID,
+		Status:       detail.Meta.Status,
+		Writer:       detail.Meta.Writer,
+		Auditor:      detail.Meta.Auditor,
+		InputTokens:  detail.Meta.TotalUsage.InputTokens,
+		OutputTokens: detail.Meta.TotalUsage.OutputTokens,
+		TotalTokens:  detail.Meta.TotalUsage.InputTokens + detail.Meta.TotalUsage.OutputTokens,
+		Calls:        len(detail.Meta.TokenUsage),
+		StartedAt:    detail.Meta.StartedAt,
+		CompletedAt:  detail.Meta.CompletedAt,
+	}
+	if detail.Meta.CompletedAt != nil && !detail.Meta.StartedAt.IsZero() {
+		row.Elapsed = detail.Meta.CompletedAt.Sub(detail.Meta.StartedAt)
+		if row.Elapsed > 0 {
+			row.TokensPerSec = float64(row.TotalTokens) / row.Elapsed.Seconds()
+		}
+	}
+	return row
+}
+
+func sortPerfRows(rows []perfSessionRow, sortBy string) {
+	switch sortBy {
+	case "input":
+		sort.Slice(rows, func(i, j int) bool { return rows[i].InputTokens > rows[j].InputTokens })
+	case "output":
+		sort.Slice(rows, func(i, j int) bool { return rows[i].OutputTokens > rows[j].OutputTokens })
+	case "total":
+		sort.Slice(rows, func(i, j int) bool { return rows[i].TotalTokens > rows[j].TotalTokens })
+	case "elapsed":
+		sort.Slice(rows, func(i, j int) bool { return rows[i].Elapsed > rows[j].Elapsed })
+	case "tps":
+		sort.Slice(rows, func(i, j int) bool { return rows[i].TokensPerSec > rows[j].TokensPerSec })
+	default:
+		sort.Slice(rows, func(i, j int) bool { return rows[i].ID > rows[j].ID })
+	}
+}
+
+func writeJSON(v any) {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(data))
+}
+
+func formatPerfCount(n int) string {
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
+	}
+	if n < 1000000 {
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	}
+	return fmt.Sprintf("%.1fM", float64(n)/1000000)
+}
+
+func formatPerfDuration(d time.Duration) string {
+	if d <= 0 {
+		return "-"
+	}
+	return d.Round(time.Second).String()
+}
+
+func formatPerfRate(v float64) string {
+	if v <= 0 {
+		return "-"
+	}
+	if v < 1000 {
+		return fmt.Sprintf("%.1f", v)
+	}
+	if v < 1000000 {
+		return fmt.Sprintf("%.1fk", v/1000)
+	}
+	return fmt.Sprintf("%.1fM", v/1000000)
 }
 
 func runImprove() {
@@ -389,6 +863,9 @@ Usage:
   forge improve <path> [flags]    Improve existing codebase
   forge list                      List past sessions
   forge show <id>                 Show session details
+  forge status                    Show auth and Copilot allowance status
+  forge perf [summary|list]       Show token/perf summary across sessions
+  forge perf show <id>            Show token/perf details for a session
   forge auth copilot              Authenticate with GitHub Copilot
   forge help                      Show this help
   forge version                   Show version
