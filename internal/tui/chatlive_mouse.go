@@ -28,6 +28,20 @@ func (m *chatLiveModel) handleMouse(ev *tcell.EventMouse) {
 		return
 	}
 
+	if m.overlays.statsVisible {
+		if buttons&tcell.Button1 != 0 {
+			m.overlays.statsVisible = false
+		}
+		return
+	}
+
+	if m.overlays.files.visible {
+		if buttons&tcell.Button1 != 0 {
+			m.overlays.files.visible = false
+		}
+		return
+	}
+
 	if m.overlays.models.visible {
 		m.handleModelPickerMouse(x, y, buttons)
 		return
@@ -261,18 +275,18 @@ func (m *chatLiveModel) handleScrollbarDrag(ctx chatMouseContext, y int) {
 	switch m.panes.layout.scrollDrag.pane {
 	case "left":
 		m.panes.focusR = false
-		m.panes.agent.scroll = scrollbarScrollForDrag(y, ctx.leftY, ctx.leftH, totalWrappedLines(m.panes.agent.buf, m.leftContentWidth()), m.agentVisibleHeight(), m.panes.layout.scrollDrag.offset)
+		m.panes.agent.scroll = scrollbarScrollForDrag(y, ctx.leftY, ctx.leftH, len(m.wrappedLines(&m.panes.agent, m.leftContentWidth())), m.agentVisibleHeight(), m.panes.layout.scrollDrag.offset)
 		m.panes.agent.follow = m.panes.agent.scroll >= m.agentMaxScroll()
 	case "right":
 		m.panes.focusR = true
-		m.panes.tools.scroll = scrollbarScrollForDrag(y, ctx.rightY, ctx.rightH, totalWrappedLines(m.panes.tools.buf, m.rightContentWidth()), m.toolsVisibleHeight(), m.panes.layout.scrollDrag.offset)
+		m.panes.tools.scroll = scrollbarScrollForDrag(y, ctx.rightY, ctx.rightH, len(m.wrappedLines(&m.panes.tools, m.rightContentWidth())), m.toolsVisibleHeight(), m.panes.layout.scrollDrag.offset)
 		m.panes.tools.follow = m.panes.tools.scroll >= m.toolsMaxScroll()
 	}
 }
 
 func (m *chatLiveModel) handleLeftScrollbarClick(ctx chatMouseContext, y int) {
 	m.panes.focusR = false
-	total := totalWrappedLines(m.panes.agent.buf, m.leftContentWidth())
+	total := len(m.wrappedLines(&m.panes.agent, m.leftContentWidth()))
 	visible := m.agentVisibleHeight()
 	thumbTop, thumbH := scrollbarThumb(ctx.leftY+2, max(1, visible-2), total, visible, m.panes.agent.scroll)
 	switch {
@@ -293,7 +307,7 @@ func (m *chatLiveModel) handleLeftScrollbarClick(ctx chatMouseContext, y int) {
 
 func (m *chatLiveModel) handleRightScrollbarClick(ctx chatMouseContext, y int) {
 	m.panes.focusR = true
-	total := totalWrappedLines(m.panes.tools.buf, m.rightContentWidth())
+	total := len(m.wrappedLines(&m.panes.tools, m.rightContentWidth()))
 	visible := m.toolsVisibleHeight()
 	thumbTop, thumbH := scrollbarThumb(ctx.rightY+2, max(1, visible-2), total, visible, m.panes.tools.scroll)
 	switch {

@@ -127,6 +127,13 @@ func RunChatLive(setup *ChatSetup) {
 				evRenderer.ResponseChan() <- true
 			case "__approve_no":
 				evRenderer.ResponseChan() <- false
+			case "__cancel_turn__":
+				if running {
+					cancel()
+					ctx, cancel = context.WithCancel(context.Background())
+					queue = nil
+					evRenderer.Info("turn canceled")
+				}
 			case "__turn_done__":
 				evRenderer.TurnDone()
 				running = false

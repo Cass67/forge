@@ -186,6 +186,65 @@ summarizer = "claude-3-5-haiku-latest"   # Anthropic
 
 Most providers have distinct model name formats. For providers that share the `vendor/model` namespace (Together, DeepInfra, OpenRouter), the first configured provider wins. Configure only one if you use namespaced model IDs.
 
+## Commands
+
+```bash
+forge chat [--model MODEL] [--yolo] [-C PATH]
+forge list
+forge show <session-id>
+forge perf [summary|list] [--json] [--sort started|input|output|total|elapsed|tps] [--status STATUS] [--model SUBSTR] [--limit N] [--completed]
+forge perf show [--json] <session-id>
+forge auth copilot
+```
+
+### Performance and usage reporting
+
+Forge records per-session token usage in session metadata and exposes it through `forge perf`.
+
+Examples:
+
+```bash
+forge perf
+forge perf --sort total --limit 20
+forge perf --status complete --completed
+forge perf --model claude --json
+forge perf show 2026-03-22T10-00-00
+forge perf show --json 2026-03-22T10-00-00
+```
+
+What `forge perf` shows:
+- input, output, and total tokens per session
+- session status
+- elapsed time
+- tokens/sec when elapsed timing is available
+- totals and averages across the filtered result set
+
+### Copilot premium request display
+
+When you use a GitHub Copilot-backed model, Forge also attempts to surface Copilot premium quota information from response metadata when Copilot provides it.
+
+Where it appears:
+- live chat header as a compact `PR` indicator
+- `/stats` in chat for a fuller session stats line
+
+Examples:
+- `PR 42` for remaining premium requests/interactions
+- `PR 87%` when only percentage is available
+- `PR ∞` for unlimited plans
+
+This is best-effort: if Copilot does not include quota snapshot metadata in a response, Forge simply omits the extra quota display.
+
+### `/stats` in chat
+
+Inside live chat, run `/stats` to print the current session stats into the tools pane.
+
+It includes:
+- current session timing
+- token usage captured for the session
+- best-effort Copilot premium quota info when available
+
+Use it when you want a quick snapshot without leaving chat or running `forge perf` in another shell.
+
 ## Keybindings
 
 | Key | Action |
