@@ -196,7 +196,7 @@ func RunChatLive(setup *ChatSetup) {
 		Skills:     loadedSkills,
 		State:      state,
 	}
-	tui.RunChatLive(eventsCh, liveCfg, inputCh, doneCh)
+	tui.RunChatLiveBubbleTea(eventsCh, liveCfg, inputCh, doneCh)
 }
 
 func RunChatConsole(setup *ChatSetup) {
