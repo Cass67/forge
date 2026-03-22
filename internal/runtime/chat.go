@@ -95,6 +95,10 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, appr
 	reg.Register(tools.NewRunCommand(workDir, cfg.Chat.CommandTimeout, approve, fp))
 	reg.Register(tools.NewThink())
 	reg.Register(tools.NewGlob(workDir, cfg.Chat.IgnoreDirs))
+	reg.Register(tools.NewGitStatus(workDir))
+	reg.Register(tools.NewGitDiff(workDir))
+	reg.Register(tools.NewGitLog(workDir))
+	reg.Register(tools.NewGitCommit(workDir, approve))
 }
 
 func RunChatLive(setup *ChatSetup) {
