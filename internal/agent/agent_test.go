@@ -119,23 +119,6 @@ func TestEstimateTokens(t *testing.T) {
 	}
 }
 
-func TestAgentRunRequiresSkillActivation(t *testing.T) {
-	driver := &mockDriver{responses: []string{"ok"}}
-	reg := tools.NewRegistry()
-	var output bytes.Buffer
-	renderer := NewRenderer(&output, 80, false)
-	loaded := []skills.Skill{{Name: "brainstorming", Description: "Planning", Body: "Plan first."}}
-
-	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, loaded, nil)
-	err := a.Run(context.Background(), "please plan the architecture first")
-	if err == nil {
-		t.Fatal("expected missing skill activation to fail")
-	}
-	if !strings.Contains(err.Error(), "/brainstorming") {
-		t.Fatalf("err = %v, want activation guidance", err)
-	}
-}
-
 func TestAgentRunAllowsActivatedSkill(t *testing.T) {
 	driver := &mockDriver{responses: []string{"planned"}}
 	reg := tools.NewRegistry()
@@ -148,25 +131,5 @@ func TestAgentRunAllowsActivatedSkill(t *testing.T) {
 	err := a.Run(context.Background(), "please plan the architecture first")
 	if err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestAgentClearHistoryResetsActivatedSkills(t *testing.T) {
-	driver := &mockDriver{responses: []string{"planned"}}
-	reg := tools.NewRegistry()
-	var output bytes.Buffer
-	renderer := NewRenderer(&output, 80, false)
-	s := skills.Skill{Name: "brainstorming", Description: "Planning", Body: "Plan first."}
-
-	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, []skills.Skill{s}, nil)
-	a.InjectSkill(s)
-	a.ClearHistory()
-
-	err := a.Run(context.Background(), "please plan the architecture first")
-	if err == nil {
-		t.Fatal("expected missing skill activation after clear history")
-	}
-	if !strings.Contains(err.Error(), "/brainstorming") {
-		t.Fatalf("err = %v, want activation guidance", err)
 	}
 }

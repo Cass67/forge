@@ -65,27 +65,7 @@ func (a *Agent) ClearHistory() {
 	a.state.Clear()
 }
 
-func (a *Agent) skillAvailable(name string) bool {
-	_, ok := skills.Get(a.skills, name)
-	return ok
-}
-
-func (a *Agent) skillActivated(name string) bool {
-	return a.state.SkillActivated(name)
-}
-
 func (a *Agent) Run(ctx context.Context, userMessage string) error {
-	requiredSkill := skills.RequiredForInput(userMessage)
-	if requiredSkill != "" && !a.skillAvailable(requiredSkill) && !a.skillActivated(requiredSkill) {
-		msg := fmt.Sprintf("This request requires the %q skill, but it is not loaded. Use /skills to inspect available skills or install it first.", requiredSkill)
-		a.renderer.Error(msg)
-		return fmt.Errorf("%s", msg)
-	}
-	if requiredSkill != "" && a.skillAvailable(requiredSkill) && !a.skillActivated(requiredSkill) {
-		msg := fmt.Sprintf("This request requires the /%s skill before proceeding. Activate it explicitly (or use auto-skills) and try again.", requiredSkill)
-		a.renderer.Error(msg)
-		return fmt.Errorf("%s", msg)
-	}
 	a.history = append(a.history, llm.Message{Role: llm.RoleUser, Content: userMessage})
 	turnStart := time.Now()
 	defer func() {
