@@ -1,0 +1,3 @@
+version: "2"
+issues:
+  new-from-rev: HEAD~1
