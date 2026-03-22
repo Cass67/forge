@@ -38,6 +38,7 @@ type ChatModel struct {
 	toolsVisible bool
 
 	busy           bool
+	spinnerFrame   int
 	status         string
 	flash          string
 	skills         []skills.Skill
@@ -134,6 +135,9 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case chatTickMsg:
+		if m.busy {
+			m.spinnerFrame = (m.spinnerFrame + 1) % 8
+		}
 		return m, tickCmd()
 
 	case llm.Event:
@@ -245,6 +249,10 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.chatViewport.HalfViewUp()
 	case tea.KeyPgDown:
 		m.chatViewport.HalfViewDown()
+	case tea.KeyF1:
+		m.inputBuf = "/help"
+		m.inputPos = 5
+		return m.submitInput()
 	case tea.KeySpace:
 		m.flash = ""
 		runes := []rune(m.inputBuf)
@@ -280,12 +288,15 @@ func (m ChatModel) submitInput() (tea.Model, tea.Cmd) {
 	}
 
 	if strings.HasPrefix(input, "/") {
-		// Check for skill activation before built-in commands
 		cmd := strings.TrimPrefix(input, "/")
+		// Built-in commands first, then skill activation
+		if m.isBuiltinCommand(input) {
+			return m.handleSlashCommand(input)
+		}
 		if s, ok := skills.Get(m.skills, cmd); ok {
 			return m.submitSkillInput(s, fmt.Sprintf("/%s", s.Name), skills.SkillMessage(s))
 		}
-		return m.handleSlashCommand(input)
+		return m.handleSlashCommand(input) // falls through to "unknown command"
 	}
 
 	// Auto-skill detection
@@ -353,6 +364,17 @@ func (m ChatModel) submitSkillInput(s skills.Skill, turnLabel, msg string) (tea.
 	return m, nil
 }
 
+var builtinCommands = []string{"/clear", "/help", "/theme", "/tools", "/models", "/model", "/skills", "/exit", "/quit"}
+
+func (m ChatModel) isBuiltinCommand(input string) bool {
+	for _, cmd := range builtinCommands {
+		if input == cmd || strings.HasPrefix(input, cmd+" ") {
+			return true
+		}
+	}
+	return false
+}
+
 func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 	m.inputBuf = ""
 	m.inputPos = 0
@@ -364,7 +386,16 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		m.flash = "conversation cleared"
 	case input == "/help":
-		m.flash = "commands: /clear /exit /model <name> /models /skills /theme /tools"
+		helpText := "Commands:\n" +
+			"  /clear       — clear conversation\n" +
+			"  /exit        — exit chat\n" +
+			"  /model <n>   — switch model\n" +
+			"  /models      — list models\n" +
+			"  /skills      — list skills\n" +
+			"  /theme       — toggle contrast\n" +
+			"  /tools       — toggle tools pane\n" +
+			"\nKeys: Esc=cancel  PgUp/PgDn=scroll"
+		m.AddMessage(ChatMessage{Kind: MsgStatus, Content: helpText})
 	case input == "/theme":
 		m.lowContrast = !m.lowContrast
 		m.refreshViewport()
@@ -392,7 +423,7 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			sb.WriteString(marker + name + "\n")
 		}
 		sb.WriteString("\nUse /model <name> to switch")
-		m.flash = sb.String()
+		m.AddMessage(ChatMessage{Kind: MsgStatus, Content: sb.String()})
 	case strings.HasPrefix(input, "/model "):
 		arg := strings.TrimSpace(strings.TrimPrefix(input, "/model "))
 		if arg != "" && m.config.SwitchModel != nil {
@@ -414,7 +445,7 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			}
 			sb.WriteString("  " + marker + " /" + s.Name + " — " + s.Description + "\n")
 		}
-		m.flash = sb.String()
+		m.AddMessage(ChatMessage{Kind: MsgStatus, Content: sb.String()})
 	default:
 		m.flash = "unknown command: " + input
 	}
@@ -474,10 +505,15 @@ func (m ChatModel) View() string {
 		inputBox = inputStyle.Render(inputContent)
 	}
 
-	// Status bar with flash message
-	statusText := m.status
+	// Status bar with spinner and flash
+	var statusText string
 	if m.flash != "" {
 		statusText = m.flash
+	} else if m.busy {
+		spinnerChars := []rune("⠋⠙⠹⠸⠼⠴⠦⠧")
+		statusText = fmt.Sprintf("%c running...", spinnerChars[m.spinnerFrame])
+	} else {
+		statusText = "ready • /help for commands"
 	}
 	statusStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#484f58")).
