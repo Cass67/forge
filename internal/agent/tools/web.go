@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -210,4 +211,81 @@ func collapseWhitespace(s string) string {
 		}
 	}
 	return strings.Join(out, "\n")
+}
+
+const braveSearchEndpoint = "https://api.search.brave.com/res/v1/web/search"
+
+func NewWebSearch(apiKey string) Tool {
+	return newWebSearchWithEndpoint(apiKey, braveSearchEndpoint)
+}
+
+func newWebSearchWithEndpoint(apiKey, endpoint string) Tool {
+	return Tool{
+		Name:        "web_search",
+		Description: "Search the web using Brave Search. Returns titles, URLs, and snippets.",
+		Parameters: []ParameterDef{
+			{Name: "query", Type: "string", Description: "search query", Required: true},
+			{Name: "count", Type: "int", Description: "number of results (default 5, max 10)", Required: false},
+		},
+		AutoApprove: true,
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			if apiKey == "" {
+				return "web_search unavailable: set BRAVE_API_KEY or keys.brave in config", nil
+			}
+
+			query, _ := args["query"].(string)
+			count := 5
+			if v, ok := args["count"].(float64); ok && v > 0 {
+				count = int(v)
+				if count > 10 {
+					count = 10
+				}
+			}
+
+			reqURL := fmt.Sprintf("%s?q=%s&count=%d", endpoint, url.QueryEscape(query), count)
+			req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
+			if err != nil {
+				return fmt.Sprintf("error: %v", err), nil
+			}
+			req.Header.Set("X-Subscription-Token", apiKey)
+			req.Header.Set("Accept", "application/json")
+
+			client := &http.Client{Timeout: 15 * time.Second}
+			resp, err := client.Do(req)
+			if err != nil {
+				return fmt.Sprintf("error: %v", err), nil
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+				return fmt.Sprintf("error: Brave API returned HTTP %d: %s", resp.StatusCode, body), nil
+			}
+
+			var result braveSearchResponse
+			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+				return fmt.Sprintf("error decoding response: %v", err), nil
+			}
+
+			if len(result.Web.Results) == 0 {
+				return "no results found", nil
+			}
+
+			var sb strings.Builder
+			for i, r := range result.Web.Results {
+				fmt.Fprintf(&sb, "%d. %s\n   %s\n   %s\n\n", i+1, r.Title, r.URL, r.Description)
+			}
+			return sb.String(), nil
+		},
+	}
+}
+
+type braveSearchResponse struct {
+	Web struct {
+		Results []struct {
+			Title       string `json:"title"`
+			URL         string `json:"url"`
+			Description string `json:"description"`
+		} `json:"results"`
+	} `json:"web"`
 }

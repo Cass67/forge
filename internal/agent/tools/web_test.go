@@ -131,3 +131,68 @@ func TestWebFetchPrivateIP(t *testing.T) {
 		}
 	}
 }
+
+func TestWebSearchNoKey(t *testing.T) {
+	tool := NewWebSearch("")
+	result, err := tool.Execute(context.Background(), map[string]any{"query": "golang"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "unavailable") {
+		t.Errorf("expected unavailable message, got: %s", result)
+	}
+}
+
+func TestWebSearchMocked(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Subscription-Token") != "test-key" {
+			t.Error("missing API key header")
+		}
+		q := r.URL.Query().Get("q")
+		if q != "golang tutorial" {
+			t.Errorf("unexpected query: %s", q)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{
+			"web": {
+				"results": [
+					{"title": "Go Tutorial", "url": "https://go.dev/tour", "description": "A tour of Go"},
+					{"title": "Learn Go", "url": "https://go.dev/learn", "description": "Getting started with Go"}
+				]
+			}
+		}`)
+	}))
+	defer srv.Close()
+
+	tool := newWebSearchWithEndpoint("test-key", srv.URL)
+	result, err := tool.Execute(context.Background(), map[string]any{"query": "golang tutorial"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "Go Tutorial") {
+		t.Errorf("expected title in results, got: %s", result)
+	}
+	if !strings.Contains(result, "go.dev/tour") {
+		t.Errorf("expected URL in results, got: %s", result)
+	}
+}
+
+func TestWebSearchCountParam(t *testing.T) {
+	requested := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count := r.URL.Query().Get("count")
+		if count != "3" {
+			t.Errorf("expected count=3, got %s", count)
+		}
+		requested++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"web":{"results":[]}}`)
+	}))
+	defer srv.Close()
+
+	tool := newWebSearchWithEndpoint("key", srv.URL)
+	_, _ = tool.Execute(context.Background(), map[string]any{"query": "test", "count": float64(3)})
+	if requested != 1 {
+		t.Error("server not called")
+	}
+}
