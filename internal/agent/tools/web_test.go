@@ -133,38 +133,44 @@ func TestWebFetchPrivateIP(t *testing.T) {
 }
 
 func TestWebSearchNoKey(t *testing.T) {
-	tool := NewWebSearch("")
-	result, err := tool.Execute(context.Background(), map[string]any{"query": "golang"})
-	if err != nil {
-		t.Fatal(err)
+	// DDG needs no key - just verify the tool is registered and works with a mock
+	tool := NewWebSearch()
+	if tool.Name != "web_search" {
+		t.Fatalf("expected name 'web_search', got %q", tool.Name)
 	}
-	if !strings.Contains(result, "unavailable") {
-		t.Errorf("expected unavailable message, got: %s", result)
+	if !tool.AutoApprove {
+		t.Fatal("web_search should be auto-approved")
 	}
 }
 
 func TestWebSearchMocked(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Subscription-Token") != "test-key" {
-			t.Error("missing API key header")
+		if r.Method != "POST" {
+			t.Errorf("expected POST, got %s", r.Method)
 		}
-		q := r.URL.Query().Get("q")
-		if q != "golang tutorial" {
-			t.Errorf("unexpected query: %s", q)
+		_ = r.ParseForm()
+		if r.Form.Get("q") != "golang tutorial" {
+			t.Errorf("unexpected query: %s", r.Form.Get("q"))
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{
-			"web": {
-				"results": [
-					{"title": "Go Tutorial", "url": "https://go.dev/tour", "description": "A tour of Go"},
-					{"title": "Learn Go", "url": "https://go.dev/learn", "description": "Getting started with Go"}
-				]
-			}
-		}`)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprint(w, `<html><body>
+            <div class="result">
+                <h2 class="result__title">
+                    <a class="result__a" href="https://go.dev/tour">Go Tutorial</a>
+                </h2>
+                <a class="result__snippet">A tour of Go programming language</a>
+            </div>
+            <div class="result">
+                <h2 class="result__title">
+                    <a class="result__a" href="https://go.dev/learn">Learn Go</a>
+                </h2>
+                <a class="result__snippet">Getting started with Go</a>
+            </div>
+        </body></html>`)
 	}))
 	defer srv.Close()
 
-	tool := newWebSearchWithEndpoint("test-key", srv.URL)
+	tool := newWebSearchWithEndpoint(srv.URL)
 	result, err := tool.Execute(context.Background(), map[string]any{"query": "golang tutorial"})
 	if err != nil {
 		t.Fatal(err)
@@ -177,22 +183,31 @@ func TestWebSearchMocked(t *testing.T) {
 	}
 }
 
-func TestWebSearchCountParam(t *testing.T) {
-	requested := 0
+func TestWebSearchCountLimit(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		count := r.URL.Query().Get("count")
-		if count != "3" {
-			t.Errorf("expected count=3, got %s", count)
+		w.Header().Set("Content-Type", "text/html")
+		var body strings.Builder
+		body.WriteString("<html><body>")
+		for i := 1; i <= 5; i++ {
+			_, _ = fmt.Fprintf(&body, `<div class="result">
+                <a class="result__a" href="https://example.com/%d">Result %d</a>
+                <a class="result__snippet">Snippet %d</a>
+            </div>`, i, i, i)
 		}
-		requested++
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"web":{"results":[]}}`)
+		body.WriteString("</body></html>")
+		_, _ = fmt.Fprint(w, body.String())
 	}))
 	defer srv.Close()
 
-	tool := newWebSearchWithEndpoint("key", srv.URL)
-	_, _ = tool.Execute(context.Background(), map[string]any{"query": "test", "count": float64(3)})
-	if requested != 1 {
-		t.Error("server not called")
+	tool := newWebSearchWithEndpoint(srv.URL)
+	result, err := tool.Execute(context.Background(), map[string]any{"query": "test", "count": float64(2)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(result, "Result 3") {
+		t.Errorf("expected max 2 results, got more: %s", result)
+	}
+	if !strings.Contains(result, "Result 1") {
+		t.Errorf("expected Result 1, got: %s", result)
 	}
 }
