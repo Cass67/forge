@@ -100,7 +100,7 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, appr
 	reg.Register(tools.NewGitLog(workDir))
 	reg.Register(tools.NewGitCommit(workDir, approve))
 	reg.Register(tools.NewWebFetch())
-	reg.Register(tools.NewWebSearch(cfg.BraveKey()))
+	reg.Register(tools.NewWebSearch())
 }
 
 func RunChatLive(setup *ChatSetup) {
