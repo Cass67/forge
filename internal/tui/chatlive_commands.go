@@ -7,13 +7,16 @@ import (
 	"time"
 
 	"forge/internal/llm"
+	"forge/internal/skills"
 )
 
 func (m *chatLiveModel) handleSlashCommand(input string) {
 	switch {
 	case input == "/help":
 		m.overlays.helpVisible = true
-		m.display.flash = "shortcuts help opened"
+		m.overlays.helpTab = 0
+		m.overlays.helpScroll = 0
+		m.display.flash = "help opened"
 	case input == "/find":
 		m.openSearchOverlay()
 	case strings.HasPrefix(input, "/find "):
@@ -223,6 +226,7 @@ func (m *chatLiveModel) handleSlashCommand(input string) {
 		for _, s := range m.skills {
 			fmt.Fprintf(&sb, "  /%s — %s\n", s.Name, s.Description)
 		}
+		fmt.Fprintf(&sb, "\nAuto-skills mode: %s\n", skills.NormalizeAutoMode(m.autoSkillsMode))
 		wasAtBottom := m.panes.tools.follow || m.panes.tools.scroll >= m.toolsMaxScroll()
 		m.panes.tools.buf += sb.String()
 		m.invalidatePaneCache(&m.panes.tools)
@@ -230,6 +234,20 @@ func (m *chatLiveModel) handleSlashCommand(input string) {
 			m.panes.tools.scroll = m.toolsMaxScroll()
 		}
 		m.display.flash = fmt.Sprintf("%d skills available", len(m.skills))
+	case input == "/auto-skills":
+		mode := skills.NormalizeAutoMode(m.autoSkillsMode)
+		if mode == "" {
+			mode = skills.AutoSkillsSuggest
+		}
+		m.display.flash = fmt.Sprintf("auto-skills: %s", mode)
+	case strings.HasPrefix(input, "/auto-skills "):
+		mode := skills.NormalizeAutoMode(strings.TrimSpace(strings.TrimPrefix(input, "/auto-skills ")))
+		if mode == "" {
+			m.display.flash = "auto-skills must be one of: off, suggest, auto"
+			return
+		}
+		m.autoSkillsMode = mode
+		m.display.flash = fmt.Sprintf("auto-skills: %s", mode)
 	default:
 		m.display.flash = fmt.Sprintf("unknown command: %s (try /help)", input)
 	}

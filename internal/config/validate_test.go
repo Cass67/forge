@@ -18,9 +18,10 @@ func TestValidate_InvalidFields(t *testing.T) {
 	cfg.Session.RoundsPerPass = 0
 	cfg.Log.Level = "verbose"
 	cfg.Retry.MaxAttempts = 0
+	cfg.Chat.AutoSkills = "maybe"
 
 	issues := cfg.Validate()
-	if len(issues) < 4 {
+	if len(issues) < 5 {
 		t.Fatalf("expected multiple validation issues, got %v", issues)
 	}
 }
