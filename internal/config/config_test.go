@@ -136,6 +136,23 @@ func TestChatModel(t *testing.T) {
 	}
 }
 
+func TestBraveKeyEnvOverride(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Keys.Brave = "from-config"
+	t.Setenv("BRAVE_API_KEY", "from-env")
+	if got := cfg.BraveKey(); got != "from-env" {
+		t.Errorf("expected env override, got %q", got)
+	}
+}
+
+func TestBraveKeyFromConfig(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Keys.Brave = "from-config"
+	if got := cfg.BraveKey(); got != "from-config" {
+		t.Errorf("expected config value, got %q", got)
+	}
+}
+
 func TestRoundsValidation(t *testing.T) {
 	for _, n := range []int{0, -1, 11} {
 		if config.ValidRounds(n) {
