@@ -181,3 +181,36 @@ func TestChatModelApprovalDeny(t *testing.T) {
 		t.Fatal("approval should be cleared after n")
 	}
 }
+
+func TestChatModelToolsPaneVisible(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 120
+	m.height = 24
+	m.toolsVisible = true
+	m.toolsBuf = "● read_file {\"path\":\"main.go\"}\nstatus: ok\n"
+
+	v := m.View()
+	if !strings.Contains(v, "read_file") {
+		t.Fatal("tools pane should show tool calls")
+	}
+}
+
+func TestChatModelToolsPaneToggle(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 120
+	m.height = 24
+
+	// Tools visible by default
+	if !m.toolsVisible {
+		t.Fatal("tools should be visible by default")
+	}
+
+	m.inputBuf = "/tools"
+	m.inputPos = len("/tools")
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+
+	if m.toolsVisible {
+		t.Fatal("tools pane should be hidden after toggle")
+	}
+}
