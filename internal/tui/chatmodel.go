@@ -245,6 +245,15 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.chatViewport.HalfViewUp()
 	case tea.KeyPgDown:
 		m.chatViewport.HalfViewDown()
+	case tea.KeySpace:
+		m.flash = ""
+		runes := []rune(m.inputBuf)
+		newRunes := make([]rune, 0, len(runes)+1)
+		newRunes = append(newRunes, runes[:m.inputPos]...)
+		newRunes = append(newRunes, ' ')
+		newRunes = append(newRunes, runes[m.inputPos:]...)
+		m.inputBuf = string(newRunes)
+		m.inputPos++
 	case tea.KeyRunes:
 		m.flash = ""
 		for _, r := range msg.Runes {
