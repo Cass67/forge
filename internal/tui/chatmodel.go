@@ -194,48 +194,64 @@ func truncate(s string, maxLen int) string {
 func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Handle approval mode
 	if m.pendingApproval != nil {
-		switch msg.String() {
-		case "y":
+		switch {
+		case msg.Type == tea.KeyRunes && string(msg.Runes) == "y":
 			if m.responseCh != nil {
 				m.responseCh <- true
 			}
 			m.pendingApproval = nil
-		case "n":
+		case msg.Type == tea.KeyRunes && string(msg.Runes) == "n":
 			if m.responseCh != nil {
 				m.responseCh <- false
 			}
 			m.pendingApproval = nil
-		case "ctrl+c":
+		case msg.Type == tea.KeyCtrlC:
 			return m, tea.Quit
 		}
 		return m, nil
 	}
 
-	switch msg.String() {
-	case "ctrl+c":
+	switch msg.Type {
+	case tea.KeyCtrlC:
 		return m, tea.Quit
-	case "enter":
+	case tea.KeyEscape:
+		if m.busy && m.inputCh != nil {
+			m.inputCh <- "__cancel_turn__"
+			m.flash = "canceling..."
+		}
+		return m, nil
+	case tea.KeyEnter:
+		m.flash = ""
 		return m.submitInput()
-	case "backspace":
+	case tea.KeyBackspace:
 		if len(m.inputBuf) > 0 && m.inputPos > 0 {
 			runes := []rune(m.inputBuf)
 			m.inputBuf = string(append(runes[:m.inputPos-1], runes[m.inputPos:]...))
 			m.inputPos--
 		}
-	case "left":
+	case tea.KeyLeft:
 		if m.inputPos > 0 {
 			m.inputPos--
 		}
-	case "right":
+	case tea.KeyRight:
 		if m.inputPos < len([]rune(m.inputBuf)) {
 			m.inputPos++
 		}
-	default:
-		if len(msg.String()) == 1 {
+	case tea.KeyHome:
+		m.inputPos = 0
+	case tea.KeyEnd:
+		m.inputPos = len([]rune(m.inputBuf))
+	case tea.KeyPgUp:
+		m.chatViewport.HalfViewUp()
+	case tea.KeyPgDown:
+		m.chatViewport.HalfViewDown()
+	case tea.KeyRunes:
+		m.flash = ""
+		for _, r := range msg.Runes {
 			runes := []rune(m.inputBuf)
 			newRunes := make([]rune, 0, len(runes)+1)
 			newRunes = append(newRunes, runes[:m.inputPos]...)
-			newRunes = append(newRunes, []rune(msg.String())...)
+			newRunes = append(newRunes, r)
 			newRunes = append(newRunes, runes[m.inputPos:]...)
 			m.inputBuf = string(newRunes)
 			m.inputPos++
@@ -332,14 +348,15 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 	m.inputBuf = ""
 	m.inputPos = 0
 
-	switch input {
-	case "/clear":
+	switch {
+	case input == "/clear":
 		m.messages = nil
+		m.toolsBuf = ""
 		m.refreshViewport()
 		m.flash = "conversation cleared"
-	case "/help":
-		m.flash = "help: /clear /exit /model /skills /theme"
-	case "/theme":
+	case input == "/help":
+		m.flash = "commands: /clear /exit /model <name> /models /skills /theme /tools"
+	case input == "/theme":
 		m.lowContrast = !m.lowContrast
 		m.refreshViewport()
 		if m.lowContrast {
@@ -347,7 +364,7 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		} else {
 			m.flash = "theme: default"
 		}
-	case "/tools":
+	case input == "/tools":
 		m.toolsVisible = !m.toolsVisible
 		m.refreshViewport()
 		if m.toolsVisible {
@@ -355,7 +372,30 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		} else {
 			m.flash = "tools pane: hidden"
 		}
-	case "/skills":
+	case input == "/models" || input == "/model":
+		var sb strings.Builder
+		sb.WriteString("Models:\n")
+		for _, name := range m.config.AvailableModels {
+			marker := "  "
+			if name == m.model {
+				marker = "● "
+			}
+			sb.WriteString(marker + name + "\n")
+		}
+		sb.WriteString("\nUse /model <name> to switch")
+		m.flash = sb.String()
+	case strings.HasPrefix(input, "/model "):
+		arg := strings.TrimSpace(strings.TrimPrefix(input, "/model "))
+		if arg != "" && m.config.SwitchModel != nil {
+			newModel, err := m.config.SwitchModel(arg)
+			if err != nil {
+				m.flash = fmt.Sprintf("error: %v", err)
+			} else {
+				m.model = newModel
+				m.flash = fmt.Sprintf("switched to %s", newModel)
+			}
+		}
+	case input == "/skills":
 		var sb strings.Builder
 		sb.WriteString("Skills:\n")
 		for _, s := range m.skills {
@@ -425,10 +465,15 @@ func (m ChatModel) View() string {
 		inputBox = inputStyle.Render(inputContent)
 	}
 
+	// Status bar with flash message
+	statusText := m.status
+	if m.flash != "" {
+		statusText = m.flash
+	}
 	statusStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#484f58")).
 		Width(m.width)
-	statusBar := statusStyle.Render(m.status)
+	statusBar := statusStyle.Render(statusText)
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		header,
