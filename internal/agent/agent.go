@@ -8,6 +8,7 @@ import (
 
 	"forge/internal/agent/tools"
 	"forge/internal/llm"
+	"forge/internal/skills"
 )
 
 type Agent struct {
@@ -19,9 +20,10 @@ type Agent struct {
 	workDir  string
 	maxTurns int
 	renderer RenderTarget
+	skills   []skills.Skill
 }
 
-func NewAgent(driver llm.Driver, toolReg *tools.Registry, approve tools.ApprovalFunc, workDir string, maxTurns int, renderer RenderTarget) *Agent {
+func NewAgent(driver llm.Driver, toolReg *tools.Registry, approve tools.ApprovalFunc, workDir string, maxTurns int, renderer RenderTarget, loadedSkills []skills.Skill) *Agent {
 	return &Agent{
 		driver:   driver,
 		tools:    toolReg,
@@ -29,8 +31,22 @@ func NewAgent(driver llm.Driver, toolReg *tools.Registry, approve tools.Approval
 		workDir:  workDir,
 		maxTurns: maxTurns,
 		renderer: renderer,
-		system:   BuildSystemPrompt(workDir, toolReg),
+		system:   BuildSystemPrompt(workDir, toolReg, skills.Describe(loadedSkills)),
+		skills:   loadedSkills,
 	}
+}
+
+// InjectSkill prepends a skill's content into the conversation as context.
+func (a *Agent) InjectSkill(s skills.Skill) {
+	a.history = append(a.history, llm.Message{
+		Role:    llm.RoleUser,
+		Content: fmt.Sprintf("[Skill: %s]\n\n%s", s.Name, s.Body),
+	})
+}
+
+// Skills returns the loaded skills.
+func (a *Agent) Skills() []skills.Skill {
+	return a.skills
 }
 
 func (a *Agent) SetDriver(d llm.Driver) {
