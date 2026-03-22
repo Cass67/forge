@@ -244,15 +244,23 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.pendingApproval != nil {
 		switch {
 		case msg.Type == tea.KeyRunes && string(msg.Runes) == "y":
-			if m.responseCh != nil {
-				m.responseCh <- true
-			}
 			m.pendingApproval = nil
+			if m.responseCh != nil {
+				ch := m.responseCh
+				return m, func() tea.Msg {
+					ch <- true
+					return nil
+				}
+			}
 		case msg.Type == tea.KeyRunes && string(msg.Runes) == "n":
-			if m.responseCh != nil {
-				m.responseCh <- false
-			}
 			m.pendingApproval = nil
+			if m.responseCh != nil {
+				ch := m.responseCh
+				return m, func() tea.Msg {
+					ch <- false
+					return nil
+				}
+			}
 		case msg.Type == tea.KeyCtrlC:
 			return m, tea.Quit
 		}
@@ -264,8 +272,12 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case tea.KeyEscape:
 		if m.busy && m.inputCh != nil {
-			m.inputCh <- "__cancel_turn__"
+			ch := m.inputCh
 			m.flash = "canceling..."
+			return m, func() tea.Msg {
+				ch <- "__cancel_turn__"
+				return nil
+			}
 		}
 		return m, nil
 	case tea.KeyEnter:
@@ -383,7 +395,11 @@ func (m ChatModel) submitInput() (tea.Model, tea.Cmd) {
 	m.status = "running"
 
 	if m.inputCh != nil {
-		m.inputCh <- input
+		ch := m.inputCh
+		return m, func() tea.Msg {
+			ch <- input
+			return nil
+		}
 	}
 
 	return m, nil
@@ -407,7 +423,11 @@ func (m ChatModel) submitSkillInput(s skills.Skill, turnLabel, msg string) (tea.
 	m.status = "running"
 
 	if m.inputCh != nil {
-		m.inputCh <- msg
+		ch := m.inputCh
+		return m, func() tea.Msg {
+			ch <- msg
+			return nil
+		}
 	}
 	return m, nil
 }
