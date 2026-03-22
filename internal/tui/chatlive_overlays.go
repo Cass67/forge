@@ -2,7 +2,12 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
+
+	"forge/internal/agent/tools"
 
 	"github.com/gdamore/tcell/v2"
 )
@@ -90,6 +95,196 @@ func (m *chatLiveModel) handleHelpOverlayKey(ev *tcell.EventKey) ChatLiveResult 
 	return ChatLiveResult{}
 }
 
+func (m *chatLiveModel) handleStatsOverlayKey(ev *tcell.EventKey) ChatLiveResult {
+	switch ev.Key() {
+	case tcell.KeyEscape, tcell.KeyEnter:
+		m.overlays.statsVisible = false
+	case tcell.KeyRune:
+		if ev.Rune() == 'q' || ev.Rune() == 'Q' {
+			m.overlays.statsVisible = false
+		}
+	}
+	return ChatLiveResult{}
+}
+
+func (m *chatLiveModel) openFilePicker(query string) {
+	list, err := discoverContextFiles(m.workDir)
+	if err != nil {
+		m.display.flash = fmt.Sprintf("file picker failed: %v", err)
+		return
+	}
+	m.overlays.files.visible = true
+	m.overlays.files.list = list
+	m.overlays.files.query = query
+	m.overlays.files.pos = len([]rune(query))
+	m.overlays.files.cursor = 0
+	m.updateFilePickerMatches()
+}
+
+func (m *chatLiveModel) updateFilePickerMatches() {
+	query := strings.TrimSpace(m.overlays.files.query)
+	filtered := make([]string, 0, len(m.overlays.files.list))
+	for _, path := range m.overlays.files.list {
+		if query == "" || strings.Contains(strings.ToLower(path), strings.ToLower(query)) {
+			filtered = append(filtered, path)
+		}
+	}
+	m.overlays.files.filtered = filtered
+	if len(filtered) == 0 {
+		m.overlays.files.cursor = 0
+	} else {
+		m.overlays.files.cursor = clamp(m.overlays.files.cursor, 0, len(filtered)-1)
+	}
+}
+
+func (m *chatLiveModel) replaceActiveAtToken(path string) {
+	runes := []rune(m.inputBuf)
+	if m.inputPos < 0 || m.inputPos > len(runes) {
+		return
+	}
+	start := m.inputPos
+	for start > 0 {
+		r := runes[start-1]
+		if r == '@' {
+			start--
+			break
+		}
+		if r == ' ' || r == '\t' || r == '\n' {
+			return
+		}
+		start--
+	}
+	if start < 0 || start >= len(runes) || runes[start] != '@' {
+		return
+	}
+	end := m.inputPos
+	for end < len(runes) {
+		r := runes[end]
+		if r == ' ' || r == '\t' || r == '\n' {
+			break
+		}
+		end++
+	}
+	repl := "@" + path + " "
+	m.inputBuf = string(runes[:start]) + repl + string(runes[end:])
+	m.inputPos = len([]rune(string(runes[:start]) + repl))
+	already := false
+	for _, existing := range m.contextFiles {
+		if existing == path {
+			already = true
+			break
+		}
+	}
+	if !already {
+		m.contextFiles = append(m.contextFiles, path)
+		sort.Strings(m.contextFiles)
+	}
+	m.overlays.files.visible = false
+	m.display.flash = fmt.Sprintf("added context %s", path)
+}
+
+func (m *chatLiveModel) handleFilePickerKey(ev *tcell.EventKey) ChatLiveResult {
+	switch ev.Key() {
+	case tcell.KeyEscape:
+		m.overlays.files.visible = false
+	case tcell.KeyEnter:
+		query := strings.TrimSpace(m.overlays.files.query)
+		if query != "" {
+			if resolved, err := tools.ResolvePath(m.workDir, query); err == nil {
+				if rel, relErr := filepath.Rel(m.workDir, resolved); relErr == nil {
+					m.replaceActiveAtToken(filepath.ToSlash(rel))
+					return ChatLiveResult{}
+				}
+			}
+		}
+		if m.overlays.files.cursor >= 0 && m.overlays.files.cursor < len(m.overlays.files.filtered) {
+			m.replaceActiveAtToken(m.overlays.files.filtered[m.overlays.files.cursor])
+		}
+	case tcell.KeyUp:
+		if m.overlays.files.cursor > 0 {
+			m.overlays.files.cursor--
+		}
+	case tcell.KeyDown:
+		if m.overlays.files.cursor < len(m.overlays.files.filtered)-1 {
+			m.overlays.files.cursor++
+		}
+	case tcell.KeyLeft:
+		if m.overlays.files.pos > 0 {
+			m.overlays.files.pos--
+		}
+	case tcell.KeyRight:
+		if m.overlays.files.pos < len([]rune(m.overlays.files.query)) {
+			m.overlays.files.pos++
+		}
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		if m.overlays.files.pos > 0 {
+			runes := []rune(m.overlays.files.query)
+			m.overlays.files.query = string(runes[:m.overlays.files.pos-1]) + string(runes[m.overlays.files.pos:])
+			m.overlays.files.pos--
+			m.updateFilePickerMatches()
+		}
+	case tcell.KeyDelete:
+		runes := []rune(m.overlays.files.query)
+		if m.overlays.files.pos < len(runes) {
+			m.overlays.files.query = string(runes[:m.overlays.files.pos]) + string(runes[m.overlays.files.pos+1:])
+			m.updateFilePickerMatches()
+		}
+	case tcell.KeyCtrlA:
+		m.overlays.files.pos = 0
+	case tcell.KeyCtrlE:
+		m.overlays.files.pos = len([]rune(m.overlays.files.query))
+	case tcell.KeyCtrlU:
+		m.overlays.files.query = ""
+		m.overlays.files.pos = 0
+		m.updateFilePickerMatches()
+	case tcell.KeyRune:
+		if ev.Rune() == 'q' || ev.Rune() == 'Q' {
+			m.overlays.files.visible = false
+			return ChatLiveResult{}
+		}
+		runes := []rune(m.overlays.files.query)
+		newRunes := make([]rune, 0, len(runes)+1)
+		newRunes = append(newRunes, runes[:m.overlays.files.pos]...)
+		newRunes = append(newRunes, ev.Rune())
+		newRunes = append(newRunes, runes[m.overlays.files.pos:]...)
+		m.overlays.files.query = string(newRunes)
+		m.overlays.files.pos++
+		m.updateFilePickerMatches()
+	}
+	return ChatLiveResult{}
+}
+
+func discoverContextFiles(workDir string) ([]string, error) {
+	var files []string
+	walkErr := filepath.WalkDir(workDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		name := d.Name()
+		if d.IsDir() {
+			switch name {
+			case ".git", "node_modules", "vendor":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasPrefix(name, ".") && strings.HasSuffix(name, ".swp") {
+			return nil
+		}
+		rel, relErr := filepath.Rel(workDir, path)
+		if relErr != nil {
+			return nil
+		}
+		files = append(files, filepath.ToSlash(rel))
+		return nil
+	})
+	if walkErr != nil {
+		return nil, walkErr
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
 func (m *chatLiveModel) handleModelPickerKey(ev *tcell.EventKey) ChatLiveResult {
 	switch ev.Key() {
 	case tcell.KeyEscape:
@@ -136,25 +331,45 @@ func resolveModelName(models []string, input string) string {
 }
 
 func (m *chatLiveModel) openSessionsPicker() {
+	if !m.refreshSessionsPicker(true) {
+		return
+	}
+	m.display.flash = "sessions opened"
+}
+
+func (m *chatLiveModel) refreshSessionsPicker(resetCursor bool) bool {
 	sessions, err := listChatSessions()
 	if err != nil {
 		m.display.flash = fmt.Sprintf("sessions failed: %v", err)
-		return
+		return false
 	}
 	if len(sessions) == 0 {
+		m.overlays.sessions.list = nil
+		m.overlays.sessions.visible = false
+		m.overlays.sessions.rename.active = false
+		m.overlays.sessions.cursor = 0
 		m.display.flash = "no saved sessions"
-		return
+		return false
+	}
+	currentName := ""
+	if !resetCursor && m.overlays.sessions.cursor >= 0 && m.overlays.sessions.cursor < len(m.overlays.sessions.list) {
+		currentName = m.overlays.sessions.list[m.overlays.sessions.cursor].name
 	}
 	m.overlays.sessions.list = sessions
 	m.overlays.sessions.visible = true
 	m.overlays.sessions.rename.active = false
-	m.overlays.sessions.cursor = 0
-	for i, session := range sessions {
-		if session.name == "last-session" {
+	if resetCursor {
+		m.overlays.sessions.cursor = 0
+		return true
+	}
+	for i, entry := range sessions {
+		if entry.name == currentName {
 			m.overlays.sessions.cursor = i
-			break
+			return true
 		}
 	}
+	m.overlays.sessions.cursor = clamp(m.overlays.sessions.cursor, 0, len(sessions)-1)
+	return true
 }
 
 func (m *chatLiveModel) handleSessionsPickerKey(ev *tcell.EventKey) ChatLiveResult {
@@ -284,9 +499,16 @@ func (m *chatLiveModel) commitRenamePickedSession() {
 		m.display.flash = fmt.Sprintf("rename failed: %v", err)
 		return
 	}
-	m.overlays.sessions.rename.active = false
 	m.display.flash = fmt.Sprintf("session renamed: %s → %s", oldName, newName)
-	m.openSessionsPicker()
+	if !m.refreshSessionsPicker(false) {
+		return
+	}
+	for i, entry := range m.overlays.sessions.list {
+		if entry.name == newName {
+			m.overlays.sessions.cursor = i
+			break
+		}
+	}
 }
 
 func (m *chatLiveModel) deletePickedSession(idx int) {
@@ -303,7 +525,10 @@ func (m *chatLiveModel) deletePickedSession(idx int) {
 		return
 	}
 	m.display.flash = fmt.Sprintf("session deleted: %s", name)
-	m.openSessionsPicker()
+	if !m.refreshSessionsPicker(false) {
+		return
+	}
+	m.overlays.sessions.cursor = clamp(idx, 0, len(m.overlays.sessions.list)-1)
 }
 
 func (m *chatLiveModel) pickModel(idx int) {

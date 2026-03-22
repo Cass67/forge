@@ -9,67 +9,144 @@ import (
 )
 
 func (m *chatLiveModel) render(screen tcell.Screen) {
+	started := time.Now()
 	w, h := screen.Size()
 	m.width, m.height = w, h
 	screen.Clear()
 
-	colorBg := tcell.GetColor("#0d1117")
-	colorPanel := tcell.GetColor("#161b22")
-	colorBorder := tcell.GetColor("#30363d")
-	colorBorderFocus := tcell.GetColor("#58a6ff")
-	colorBright := tcell.GetColor("#f0f6fc")
-	colorMid := tcell.GetColor("#b1bac4")
-	colorDim := tcell.GetColor("#8b949e")
-	colorGreen := tcell.GetColor("#56d364")
-	colorYellow := tcell.GetColor("#e3b341")
-	colorBlue := tcell.GetColor("#58a6ff")
-	colorPurple := tcell.GetColor("#d2a8ff")
-	colorOrange := tcell.GetColor("#f0883e")
-	colorCyan := tcell.GetColor("#79c0ff")
-	colorRed := tcell.GetColor("#f85149")
-	if m.themeLowContrast {
-		colorBg = tcell.GetColor("#11161c")
-		colorPanel = tcell.GetColor("#1b2128")
-		colorBorder = tcell.GetColor("#46515c")
-		colorBorderFocus = tcell.GetColor("#7aa2c9")
-		colorBright = tcell.GetColor("#d7dee5")
-		colorMid = tcell.GetColor("#b7c0c9")
-		colorDim = tcell.GetColor("#98a3ad")
-		colorGreen = tcell.GetColor("#7fbf9a")
-		colorYellow = tcell.GetColor("#c9b37a")
-		colorBlue = tcell.GetColor("#7aa2c9")
-		colorPurple = tcell.GetColor("#b3a1c9")
-		colorOrange = tcell.GetColor("#c99b73")
-		colorCyan = tcell.GetColor("#86b7c4")
-		colorRed = tcell.GetColor("#c98585")
-	}
-
-	styleStatus := tcell.StyleDefault.Background(colorBg).Foreground(colorMid)
-	styleBody := tcell.StyleDefault.Background(colorPanel).Foreground(colorBright)
-	styleBodyDim := tcell.StyleDefault.Background(colorPanel).Foreground(colorDim)
-	styleTitleDim := tcell.StyleDefault.Background(colorPanel).Foreground(colorDim)
-	styleTitleFocus := tcell.StyleDefault.Background(colorPanel).Foreground(colorGreen).Bold(true)
-	stylePrompt := tcell.StyleDefault.Background(colorPanel).Foreground(colorGreen).Bold(true)
-	styleInput := tcell.StyleDefault.Background(colorPanel).Foreground(colorBright)
-	styleApproval := tcell.StyleDefault.Background(colorPanel).Foreground(colorYellow).Bold(true)
-	styleAccent := tcell.StyleDefault.Background(colorPanel).Foreground(colorBlue)
-	styleDiffAdd := tcell.StyleDefault.Foreground(tcell.GetColor("#56d364")).Background(tcell.GetColor("#0f2d16"))
-	styleDiffRm := tcell.StyleDefault.Foreground(colorRed).Background(tcell.GetColor("#3d1117"))
-
-	fillRect(screen, 0, 0, w, h, tcell.StyleDefault.Background(colorBg))
+	colors := m.renderColors()
+	styles := m.renderStyles(colors)
+	fillRect(screen, 0, 0, w, h, tcell.StyleDefault.Background(colors.bg))
 
 	spinnerFrames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"}
-	m.renderHeader(screen, w, styleStatus, spinnerFrames)
+	m.renderHeader(screen, w, styles.status, spinnerFrames)
 
 	leftX, leftY, leftW, leftH := m.leftPaneRect()
 	rightX, rightY, rightW, rightH := m.rightPaneRect()
 	inputX, inputY, inputW, inputH := m.inputRect()
 
-	m.renderChrome(screen, colorBg, colorPanel, colorBorder, colorBorderFocus, leftX, leftY, leftW, leftH, rightX, rightY, rightW, rightH, inputX, inputY, inputW, inputH)
-	m.renderTitlesAndStatus(screen, styleTitleDim, styleTitleFocus, styleBodyDim, inputX, inputY, inputW, inputH, leftX, leftY, leftW, rightX, rightY, rightW, spinnerFrames)
-	m.renderPaneBodies(screen, styleBody, styleBodyDim, styleAccent, stylePrompt, styleTitleFocus, colorPanel, colorBright, colorDim, colorBlue, colorPurple, colorOrange, colorCyan, colorGreen, colorRed, styleDiffAdd, styleDiffRm, leftX, leftY, leftW, rightX, rightY, rightW)
-	m.renderInputArea(screen, styleBodyDim, stylePrompt, styleInput, styleApproval, inputX, inputY, inputW, inputH, colorPanel, colorYellow)
+	m.renderChrome(screen, colors.bg, colors.panel, colors.border, colors.borderFocus, leftX, leftY, leftW, leftH, rightX, rightY, rightW, rightH, inputX, inputY, inputW, inputH)
+	m.renderTitlesAndStatus(screen, styles.titleDim, styles.titleFocus, styles.bodyDim, inputX, inputY, inputW, inputH, leftX, leftY, leftW, rightX, rightY, rightW, spinnerFrames)
+	m.renderPaneBodies(screen, styles.body, styles.bodyDim, styles.accent, styles.prompt, styles.titleFocus, colors.panel, colors.bright, colors.dim, colors.blue, colors.purple, colors.orange, colors.cyan, colors.green, colors.red, styles.diffAdd, styles.diffRm, leftX, leftY, leftW, rightX, rightY, rightW)
+	m.renderInputArea(screen, styles.bodyDim, styles.prompt, styles.input, styles.approval, inputX, inputY, inputW, inputH, colors.panel, colors.yellow)
+	m.renderOverlays(screen)
+	screen.Show()
+	m.recordFullRenderProfile(time.Since(started))
+}
 
+func (m *chatLiveModel) renderSpinnerOnly(screen tcell.Screen) {
+	started := time.Now()
+	w, h := screen.Size()
+	m.width, m.height = w, h
+	colors := m.renderColors()
+	styles := m.renderStyles(colors)
+	spinnerFrames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"}
+
+	fillRect(screen, 0, 0, w, 1, tcell.StyleDefault.Background(colors.bg))
+	m.renderHeader(screen, w, styles.status, spinnerFrames)
+
+	leftX, leftY, leftW, _ := m.leftPaneRect()
+	rightX, rightY, rightW, _ := m.rightPaneRect()
+	inputX, inputY, inputW, inputH := m.inputRect()
+
+	fillRect(screen, leftX+1, leftY, max(1, leftW-2), 1, tcell.StyleDefault.Background(colors.panel))
+	if m.panes.layout.toolsVisible {
+		fillRect(screen, rightX+1, rightY, max(1, rightW-2), 1, tcell.StyleDefault.Background(colors.panel))
+	}
+	if inputY > 1 {
+		fillRect(screen, inputX+1, inputY-1, max(1, inputW-2), 1, tcell.StyleDefault.Background(colors.bg))
+	}
+	fillRect(screen, inputX+1, inputY, max(1, inputW-2), 1, tcell.StyleDefault.Background(colors.panel))
+	m.renderTitlesAndStatus(screen, styles.titleDim, styles.titleFocus, styles.bodyDim, inputX, inputY, inputW, inputH, leftX, leftY, leftW, rightX, rightY, rightW, spinnerFrames)
+	m.renderOverlays(screen)
+	screen.Show()
+	m.recordSpinnerRenderProfile(time.Since(started))
+}
+
+type chatRenderColors struct {
+	bg          tcell.Color
+	panel       tcell.Color
+	border      tcell.Color
+	borderFocus tcell.Color
+	bright      tcell.Color
+	mid         tcell.Color
+	dim         tcell.Color
+	green       tcell.Color
+	yellow      tcell.Color
+	blue        tcell.Color
+	purple      tcell.Color
+	orange      tcell.Color
+	cyan        tcell.Color
+	red         tcell.Color
+}
+
+type chatRenderStyles struct {
+	status     tcell.Style
+	body       tcell.Style
+	bodyDim    tcell.Style
+	titleDim   tcell.Style
+	titleFocus tcell.Style
+	prompt     tcell.Style
+	input      tcell.Style
+	approval   tcell.Style
+	accent     tcell.Style
+	diffAdd    tcell.Style
+	diffRm     tcell.Style
+}
+
+func (m *chatLiveModel) renderColors() chatRenderColors {
+	colors := chatRenderColors{
+		bg:          tcell.GetColor("#0d1117"),
+		panel:       tcell.GetColor("#161b22"),
+		border:      tcell.GetColor("#30363d"),
+		borderFocus: tcell.GetColor("#58a6ff"),
+		bright:      tcell.GetColor("#f0f6fc"),
+		mid:         tcell.GetColor("#b1bac4"),
+		dim:         tcell.GetColor("#8b949e"),
+		green:       tcell.GetColor("#56d364"),
+		yellow:      tcell.GetColor("#e3b341"),
+		blue:        tcell.GetColor("#58a6ff"),
+		purple:      tcell.GetColor("#d2a8ff"),
+		orange:      tcell.GetColor("#f0883e"),
+		cyan:        tcell.GetColor("#79c0ff"),
+		red:         tcell.GetColor("#f85149"),
+	}
+	if m.themeLowContrast {
+		colors.bg = tcell.GetColor("#11161c")
+		colors.panel = tcell.GetColor("#1b2128")
+		colors.border = tcell.GetColor("#46515c")
+		colors.borderFocus = tcell.GetColor("#7aa2c9")
+		colors.bright = tcell.GetColor("#d7dee5")
+		colors.mid = tcell.GetColor("#b7c0c9")
+		colors.dim = tcell.GetColor("#98a3ad")
+		colors.green = tcell.GetColor("#7fbf9a")
+		colors.yellow = tcell.GetColor("#c9b37a")
+		colors.blue = tcell.GetColor("#7aa2c9")
+		colors.purple = tcell.GetColor("#b3a1c9")
+		colors.orange = tcell.GetColor("#c99b73")
+		colors.cyan = tcell.GetColor("#86b7c4")
+		colors.red = tcell.GetColor("#c98585")
+	}
+	return colors
+}
+
+func (m *chatLiveModel) renderStyles(colors chatRenderColors) chatRenderStyles {
+	return chatRenderStyles{
+		status:     tcell.StyleDefault.Background(colors.bg).Foreground(colors.mid),
+		body:       tcell.StyleDefault.Background(colors.panel).Foreground(colors.bright),
+		bodyDim:    tcell.StyleDefault.Background(colors.panel).Foreground(colors.dim),
+		titleDim:   tcell.StyleDefault.Background(colors.panel).Foreground(colors.dim),
+		titleFocus: tcell.StyleDefault.Background(colors.panel).Foreground(colors.green).Bold(true),
+		prompt:     tcell.StyleDefault.Background(colors.panel).Foreground(colors.green).Bold(true),
+		input:      tcell.StyleDefault.Background(colors.panel).Foreground(colors.bright),
+		approval:   tcell.StyleDefault.Background(colors.panel).Foreground(colors.yellow).Bold(true),
+		accent:     tcell.StyleDefault.Background(colors.panel).Foreground(colors.blue),
+		diffAdd:    tcell.StyleDefault.Foreground(tcell.GetColor("#56d364")).Background(tcell.GetColor("#0f2d16")),
+		diffRm:     tcell.StyleDefault.Foreground(colors.red).Background(tcell.GetColor("#3d1117")),
+	}
+}
+
+func (m *chatLiveModel) renderOverlays(screen tcell.Screen) {
 	if m.overlays.models.visible {
 		m.renderModelPicker(screen)
 	}
@@ -79,11 +156,15 @@ func (m *chatLiveModel) render(screen tcell.Screen) {
 	if m.overlays.helpVisible {
 		m.renderHelpOverlay(screen)
 	}
+	if m.overlays.statsVisible {
+		m.renderStatsOverlay(screen)
+	}
 	if m.overlays.search.visible {
 		m.renderSearchOverlay(screen)
 	}
-
-	screen.Show()
+	if m.overlays.files.visible {
+		m.renderFilePicker(screen)
+	}
 }
 
 func (m *chatLiveModel) renderHeader(screen tcell.Screen, width int, styleStatus tcell.Style, spinnerFrames []string) {
@@ -104,6 +185,15 @@ func (m *chatLiveModel) renderHeader(screen tcell.Screen, width int, styleStatus
 		headerRight += fmt.Sprintf("  ⏱ %.1fs", m.display.statsDuration.Seconds())
 		if m.display.statsUsage.InputTokens > 0 {
 			headerRight += fmt.Sprintf("  ↑%d ↓%d", m.display.statsUsage.InputTokens, m.display.statsUsage.OutputTokens)
+		}
+		if q := m.display.statsUsage.CopilotQuota; q != nil {
+			if q.Unlimited {
+				headerRight += "  PR ∞"
+			} else if q.Remaining > 0 {
+				headerRight += fmt.Sprintf("  PR %d", q.Remaining)
+			} else if q.PercentRemaining > 0 {
+				headerRight += fmt.Sprintf("  PR %.0f%%", q.PercentRemaining)
+			}
 		}
 	}
 	drawText(screen, 0, 0, styleStatus, fitWidth(headerLeft, width))
@@ -172,6 +262,9 @@ func (m *chatLiveModel) renderTitlesAndStatus(screen tcell.Screen, styleTitleDim
 		drawText(screen, rightX+2, rightY, rightTitle, fitWidth(rightBadge, max(1, rightW-4)))
 	}
 	statusStrip := fmt.Sprintf(" status: %s ", m.status)
+	if m.display.prof.enabled {
+		statusStrip += " • " + m.profileSummary()
+	}
 	if len(m.display.timeline) > 0 {
 		statusStrip += " • " + strings.Join(m.display.timeline[max(0, len(m.display.timeline)-3):], "  •  ")
 	}
@@ -189,9 +282,9 @@ func (m *chatLiveModel) renderTitlesAndStatus(screen tcell.Screen, styleTitleDim
 		drawText(screen, inputX+2, inputY-1, styleBodyDim, fitWidth(statusStrip, max(1, inputW-4)))
 	}
 	drawText(screen, inputX+2, inputY, styleBodyDim, fitWidth(inputBadge, max(1, inputW-4)))
-	footerLegend := " F1 help • F2 theme • /copy code • /copy result • /sessions "
-	if inputH > 2 {
-		drawRightText(screen, inputX+1, inputY, inputW-2, styleBodyDim, footerLegend)
+	footerLegend := chatFooterLegend(max(1, inputW-4))
+	if inputH > 2 && footerLegend != "" {
+		drawText(screen, inputX+2, inputY, styleBodyDim, fitWidth(footerLegend, max(1, inputW-4)))
 	}
 
 	leftScroll := scrollLabelWithFollow(m.panes.agent.scroll, m.agentMaxScroll(), m.panes.agent.follow)
@@ -208,10 +301,12 @@ func (m *chatLiveModel) renderPaneBodies(screen tcell.Screen, styleBody, styleBo
 	leftVisibleH := m.agentVisibleHeight()
 	rightVisibleH := m.toolsVisibleHeight()
 
-	leftLines := m.paneLines(m.panes.agent.buf, leftContentW, leftVisibleH, m.panes.agent.scroll)
-	rightLines := m.paneLines(m.panes.tools.buf, rightContentW, rightVisibleH, m.panes.tools.scroll)
-	leftWrapped := wrapPaneContent(m.panes.agent.buf, leftContentW)
-	rightWrapped := wrapPaneContent(m.panes.tools.buf, rightContentW)
+	leftWrapped := m.wrappedLines(&m.panes.agent, leftContentW)
+	rightWrapped := m.wrappedLines(&m.panes.tools, rightContentW)
+	leftLineStarts := m.wrappedLineStartsForPane(&m.panes.agent, leftContentW)
+	rightLineStarts := m.wrappedLineStartsForPane(&m.panes.tools, rightContentW)
+	leftLines := m.paneLines(&m.panes.agent, leftContentW, leftVisibleH, m.panes.agent.scroll)
+	rightLines := m.paneLines(&m.panes.tools, rightContentW, rightVisibleH, m.panes.tools.scroll)
 
 	leftQuery := ""
 	rightQuery := ""
@@ -269,12 +364,12 @@ func (m *chatLiveModel) renderPaneBodies(screen tcell.Screen, styleBody, styleBo
 			if hasMatch {
 				drawHighlightedText(screen, leftX+3, y, codeText, max(1, leftContentW-3), agentCodeStyle, leftQuery, matchStart, isCurrent)
 			} else {
-				drawChromaCodeLine(screen, leftX+3, y, codeText, max(1, leftContentW-3), codeLang, agentCodeStyle)
+				m.drawChromaCodeLine(screen, leftX+3, y, codeText, max(1, leftContentW-3), codeLang, agentCodeStyle)
 			}
 			continue
 		}
 		fillRect(screen, leftX+1, y, leftContentW, 1, agentBubbleStyle)
-		if m.lineHasSelection("left", m.panes.agent.scroll+row, leftWrapped) {
+		if m.lineHasSelection("left", m.panes.agent.scroll+row, leftWrapped, leftLineStarts) {
 			fillRect(screen, leftX+1, y, leftContentW, 1, agentBubbleStyle.Background(tcell.GetColor("#2f81f7")).Foreground(tcell.ColorBlack))
 		}
 		content := strings.TrimPrefix(line, " │ ")
@@ -302,7 +397,7 @@ func (m *chatLiveModel) renderPaneBodies(screen tcell.Screen, styleBody, styleBo
 			if rightQuery != "" {
 				matchStart, isCurrent, hasMatch = m.searchHighlightForLine(lineIndex)
 			}
-			if m.lineHasSelection("right", m.panes.tools.scroll+row, rightWrapped) {
+			if m.lineHasSelection("right", m.panes.tools.scroll+row, rightWrapped, rightLineStarts) {
 				fillRect(screen, rightX+1, y, rightContentW, 1, styleBody.Background(tcell.GetColor("#2f81f7")).Foreground(tcell.ColorBlack))
 			}
 			drawStyledToolLine(screen, rightX+1, y, line, rightContentW, styleBody,
@@ -319,9 +414,9 @@ func (m *chatLiveModel) renderPaneBodies(screen tcell.Screen, styleBody, styleBo
 	if m.panes.layout.scrollDrag.pane == "right" {
 		rightThumbStyle = stylePrompt
 	}
-	drawScrollbar(screen, leftX+leftW-2, leftY+1, leftVisibleH, totalWrappedLines(m.panes.agent.buf, leftContentW), leftVisibleH, m.panes.agent.scroll, styleBodyDim, leftThumbStyle)
+	drawScrollbar(screen, leftX+leftW-2, leftY+1, leftVisibleH, len(leftWrapped), leftVisibleH, m.panes.agent.scroll, styleBodyDim, leftThumbStyle)
 	if m.panes.layout.toolsVisible {
-		drawScrollbar(screen, rightX+rightW-2, rightY+1, rightVisibleH, totalWrappedLines(m.panes.tools.buf, rightContentW), rightVisibleH, m.panes.tools.scroll, styleBodyDim, rightThumbStyle)
+		drawScrollbar(screen, rightX+rightW-2, rightY+1, rightVisibleH, len(rightWrapped), rightVisibleH, m.panes.tools.scroll, styleBodyDim, rightThumbStyle)
 	}
 
 	if strings.TrimSpace(m.panes.agent.buf) == "" {
@@ -354,9 +449,9 @@ func (m *chatLiveModel) renderInputArea(screen tcell.Screen, styleBodyDim, style
 		drawText(screen, inputX+1, inputLineY, styleApproval, fitWidth(approvalText, max(1, inputW-2)))
 		screen.HideCursor()
 	} else {
-		prompt := " steer> "
+		prompt := " forge> "
 		if m.busy {
-			prompt = " steer+> "
+			prompt = " forge> "
 		}
 		avail := max(1, inputW-2-stringWidth(prompt))
 		visibleInput, cursorX := inputViewport(m.inputBuf, m.inputPos, avail)

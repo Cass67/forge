@@ -10,6 +10,52 @@
 
 **Spec:** `docs/superpowers/specs/2026-03-22-chat-frontend-redesign.md`
 
+## Current Status Update
+
+This redesign has effectively been implemented in the live chat UI, and a follow-up performance pass has also been completed.
+
+### Implemented
+- boxed / structured tool rendering in the live chat surface
+- accent-styled agent output rendering
+- inline diff/result presentation with expansion support
+- richer status/timeline/header treatment
+- token/runtime stats surfacing
+- copy helpers, theme toggles, footer legend, and other usability polish from the follow-up chat UI work
+
+### Performance work completed after rollout
+A regression review found that the richer UI had introduced extra render cost, especially during long streaming sessions. The following fixes have now been applied in the live TUI:
+- per-pane wrapped-line caches
+- cached wrapped-line start metadata for selection/search/mouse interactions
+- lightweight spinner-only repaint path instead of full-screen redraw on every spinner tick
+- cached syntax-highlighted code-line rendering
+- indexed search-highlight lookup by wrapped line number
+- reduced string churn in hot token/tool-result event paths
+- better event burst draining/coalescing to reduce redundant renders
+
+### Current state
+- the main redesign goals are complete
+- the major live-mode performance regressions identified during follow-up testing have been addressed
+- `go test ./internal/tui/...` is passing after the optimization work
+
+### Remaining optional work
+If another performance pass is needed later, the best remaining candidates are:
+1. row-level pane body render caching
+2. dirty-region rendering for non-spinner updates
+3. frame-budgeted render coalescing under extreme streaming loads
+4. chunked transcript storage for very long sessions
+
+### New UX follow-up requested
+A new live-chat usability pass is also desired on top of the redesign work:
+- promote `/stats` from a transient flash message into a dedicated overlay/panel
+- change `Esc` semantics so first `Esc` cancels/stops the active run and returns to command-ready idle state
+- require a second `Esc` while already idle to exit the app
+- add `@file` context selection with an overlay that searches repo/current-dir files as the user types
+- support explicit full-path `@...` entries for direct context attachment
+- persist selected context files in chat session snapshots if that can be done cleanly
+- verify/fix the `/sessions` picker regression where only the last session is shown
+
+This work should be treated as follow-up UX integration on the current live TUI rather than a separate redesign track.
+
 ---
 
 ## File Map

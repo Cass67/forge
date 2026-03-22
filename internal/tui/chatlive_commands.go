@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -80,6 +81,17 @@ func (m *chatLiveModel) handleSlashCommand(input string) {
 	case input == "/theme default":
 		m.themeLowContrast = false
 		m.display.flash = "theme: default"
+	case input == "/debug perf":
+		m.display.prof.enabled = !m.display.prof.enabled
+		if m.display.prof.enabled {
+			m.display.flash = "perf debug on"
+		} else {
+			m.display.flash = "perf debug off"
+		}
+	case input == "/debug perf reset":
+		enabled := m.display.prof.enabled
+		m.display.prof = chatProfileState{enabled: enabled}
+		m.display.flash = "perf counters reset"
 	case input == "/copy agent":
 		if err := m.copyBufferToFile("agent", m.panes.agent.buf); err != nil {
 			m.display.flash = fmt.Sprintf("copy failed: %v", err)
@@ -154,12 +166,27 @@ func (m *chatLiveModel) handleSlashCommand(input string) {
 		m.display.flash = fmt.Sprintf("session restored: %s", name)
 	case input == "/sessions":
 		m.openSessionsPicker()
+	case input == "/stats":
+		hasStats := m.display.statsDuration > 0 ||
+			m.display.statsUsage.InputTokens > 0 ||
+			m.display.statsUsage.OutputTokens > 0 ||
+			m.display.statsUsage.CopilotQuota != nil ||
+			strings.TrimSpace(m.copilotToken) != ""
+		if !hasStats {
+			m.display.flash = "no stats yet"
+			return
+		}
+		m.overlays.statsVisible = true
+		m.requestLiveCopilotQuota(m.quotaCh)
+		m.display.flash = "stats opened"
 	case input == "/clear", input == "/clear all":
 		if m.clearHistFn != nil {
 			m.clearHistFn()
 		}
 		m.panes.agent.buf = ""
+		m.invalidatePaneCache(&m.panes.agent)
 		m.panes.tools.buf = ""
+		m.invalidatePaneCache(&m.panes.tools)
 		m.panes.agent.scroll = 0
 		m.panes.tools.scroll = 0
 		m.overlays.search.matches = nil
@@ -168,6 +195,7 @@ func (m *chatLiveModel) handleSlashCommand(input string) {
 		m.display.flash = "conversation cleared"
 	case input == "/clear agent":
 		m.panes.agent.buf = ""
+		m.invalidatePaneCache(&m.panes.agent)
 		m.panes.agent.scroll = 0
 		if m.overlays.search.pane == "left" {
 			m.overlays.search.matches = nil
@@ -177,6 +205,7 @@ func (m *chatLiveModel) handleSlashCommand(input string) {
 		m.display.flash = "agent pane cleared"
 	case input == "/clear tools":
 		m.panes.tools.buf = ""
+		m.invalidatePaneCache(&m.panes.tools)
 		m.panes.tools.scroll = 0
 		if m.overlays.search.pane == "right" {
 			m.overlays.search.matches = nil
@@ -191,17 +220,19 @@ func (m *chatLiveModel) handleSlashCommand(input string) {
 
 func (m *chatLiveModel) appendSteeringInput(input string) {
 	stamp := time.Now().Format("15:04:05")
-	m.panes.agent.buf += fmt.Sprintf("\nSteer • %s\n→ %s\n", stamp, input)
+	m.panes.agent.buf += fmt.Sprintf("\nForge • %s\n→ %s\n", stamp, input)
+	m.invalidatePaneCache(&m.panes.agent)
 	if m.panes.tools.buf != "" && !strings.HasSuffix(m.panes.tools.buf, "\n\n") {
 		m.panes.tools.buf += "\n"
 	}
-	m.panes.tools.buf += fmt.Sprintf("────────────────────────\n● steering\n  queued while busy • %s\n  → %s\n", stamp, input)
-	m.pushTimeline(fmt.Sprintf("steer %s", input))
+	m.panes.tools.buf += fmt.Sprintf("────────────────────────\n● forge input\n  queued while busy • %s\n  → %s\n", stamp, input)
+	m.invalidatePaneCache(&m.panes.tools)
+	m.pushTimeline(fmt.Sprintf("forge %s", input))
 	m.panes.agent.follow = true
 	m.panes.tools.follow = true
 	m.panes.agent.scroll = m.agentMaxScroll()
 	m.panes.tools.scroll = m.toolsMaxScroll()
-	m.display.flash = "steering sent"
+	m.display.flash = "forge input sent"
 }
 
 func (m *chatLiveModel) appendTurnStart(input string) {
@@ -215,8 +246,10 @@ func (m *chatLiveModel) appendTurnStart(input string) {
 		sep = ""
 	}
 	m.panes.agent.buf += fmt.Sprintf("%sYou • %s\n%s\n", sep, stamp, input)
+	m.invalidatePaneCache(&m.panes.agent)
 	if strings.TrimSpace(m.panes.tools.buf) != "" {
 		m.panes.tools.buf += fmt.Sprintf("\n%s\n", strings.Repeat("─", 28))
+		m.invalidatePaneCache(&m.panes.tools)
 	}
 	m.panes.agent.follow = true
 	m.panes.tools.follow = true
@@ -228,13 +261,23 @@ func (m *chatLiveModel) handleEvent(ev llm.Event) {
 	switch ev.Kind {
 	case llm.EventToken:
 		wasAtBottom := m.panes.agent.follow || m.panes.agent.scroll >= m.agentMaxScroll()
-		lines := strings.Split(ev.Text, "\n")
-		for i, line := range lines {
-			if i < len(lines)-1 {
-				m.panes.agent.buf += " │ " + line + "\n"
-			} else if line != "" {
-				m.panes.agent.buf += " │ " + line
+		if ev.Text != "" {
+			var b strings.Builder
+			b.Grow(len(m.panes.agent.buf) + len(ev.Text) + 8)
+			b.WriteString(m.panes.agent.buf)
+			lines := strings.Split(ev.Text, "\n")
+			for i, line := range lines {
+				if i < len(lines)-1 {
+					b.WriteString(" │ ")
+					b.WriteString(line)
+					b.WriteByte('\n')
+				} else if line != "" {
+					b.WriteString(" │ ")
+					b.WriteString(line)
+				}
 			}
+			m.panes.agent.buf = b.String()
+			m.invalidatePaneCache(&m.panes.agent)
 		}
 		if wasAtBottom {
 			m.panes.agent.scroll = m.agentMaxScroll()
@@ -249,6 +292,7 @@ func (m *chatLiveModel) handleEvent(ev llm.Event) {
 		m.panes.tools.buf += fmt.Sprintf("────────────────────────\n")
 		m.panes.tools.buf += fmt.Sprintf("● %s\n", ev.Agent)
 		m.panes.tools.buf += fmt.Sprintf("  %s\n", ev.Text)
+		m.invalidatePaneCache(&m.panes.tools)
 		if wasAtBottom {
 			m.panes.tools.scroll = m.toolsMaxScroll()
 		}
@@ -265,29 +309,42 @@ func (m *chatLiveModel) handleEvent(ev llm.Event) {
 		} else if ev.Text != "" {
 			m.display.lastToolResult = ev.Text
 		}
+		var b strings.Builder
+		b.Grow(len(m.panes.tools.buf) + len(ev.Content) + len(ev.Text) + 64)
+		b.WriteString(m.panes.tools.buf)
 		if ev.IsError {
-			m.panes.tools.buf += fmt.Sprintf("  status: ✗ %s\n", ev.Text)
+			b.WriteString("  status: ✗ ")
+			b.WriteString(ev.Text)
+			b.WriteByte('\n')
 		} else {
 			if ev.Content != "" {
 				diffLines := strings.Split(ev.Content, "\n")
 				shown := 0
-				m.panes.tools.buf += "  result:\n"
+				b.WriteString("  result:\n")
 				for _, dl := range diffLines {
 					if dl == "" {
 						continue
 					}
 					if shown >= 10 {
 						remaining := len(diffLines) - shown
-						m.panes.tools.buf += fmt.Sprintf("  ... (%d more, /expand)\n", remaining)
+						b.WriteString("  ... (")
+						b.WriteString(strconv.Itoa(remaining))
+						b.WriteString(" more, /expand)\n")
 						m.display.lastExpandable = ev.Content
 						break
 					}
-					m.panes.tools.buf += fmt.Sprintf("  %s\n", dl)
+					b.WriteString("  ")
+					b.WriteString(dl)
+					b.WriteByte('\n')
 					shown++
 				}
 			}
-			m.panes.tools.buf += fmt.Sprintf("  status: ✓ %s\n", ev.Text)
+			b.WriteString("  status: ✓ ")
+			b.WriteString(ev.Text)
+			b.WriteByte('\n')
 		}
+		m.panes.tools.buf = b.String()
+		m.invalidatePaneCache(&m.panes.tools)
 		if wasAtBottom {
 			m.panes.tools.scroll = m.toolsMaxScroll()
 		}
@@ -296,6 +353,7 @@ func (m *chatLiveModel) handleEvent(ev llm.Event) {
 		m.pushTimeline("error")
 		wasAtBottom := m.panes.tools.follow || m.panes.tools.scroll >= m.toolsMaxScroll()
 		m.panes.tools.buf += fmt.Sprintf("  ✗ %s\n", ev.Text)
+		m.invalidatePaneCache(&m.panes.tools)
 		if wasAtBottom {
 			m.panes.tools.scroll = m.toolsMaxScroll()
 		}
@@ -311,14 +369,25 @@ func (m *chatLiveModel) handleEvent(ev llm.Event) {
 		finished := time.Now()
 		stamp := finished.Format("15:04:05")
 		if strings.TrimSpace(m.panes.agent.buf) != "" {
-			m.panes.agent.buf += fmt.Sprintf("\nAgent complete • %s\n", stamp)
+			m.panes.agent.buf += "\nAgent complete • " + stamp + "\n"
+			m.invalidatePaneCache(&m.panes.agent)
 		}
 		if strings.TrimSpace(m.panes.tools.buf) != "" {
-			statusLine := fmt.Sprintf("status: complete • %s", stamp)
+			statusLine := "status: complete • " + stamp
 			if m.display.statsDuration > 0 {
 				statusLine += fmt.Sprintf(" • %.1fs", m.display.statsDuration.Seconds())
 			}
+			if q := m.display.statsUsage.CopilotQuota; q != nil {
+				if q.Unlimited {
+					statusLine += " • premium: unlimited"
+				} else if q.Remaining > 0 {
+					statusLine += fmt.Sprintf(" • premium left: %d", q.Remaining)
+				} else if q.PercentRemaining > 0 {
+					statusLine += fmt.Sprintf(" • premium left: %.0f%%", q.PercentRemaining)
+				}
+			}
 			m.panes.tools.buf += statusLine + "\n"
+			m.invalidatePaneCache(&m.panes.tools)
 		}
 	}
 }

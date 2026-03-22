@@ -3,9 +3,13 @@ package drivers
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"os"
+	"sort"
 	"strings"
 	"sync"
 
+	"forge/internal/copilot"
 	"forge/internal/llm"
 
 	"github.com/openai/openai-go"
@@ -82,6 +86,7 @@ func (d *OpenAIDriver) LastUsage() llm.Usage {
 
 func (d *OpenAIDriver) Stream(ctx context.Context, messages []llm.Message, out chan<- llm.Token) error {
 	defer close(out)
+	debugRequestSizing(d.registryName, d.apiModel, messages)
 
 	if d.useResponsesAPI() {
 		return d.streamResponses(ctx, messages, out)
@@ -109,11 +114,16 @@ func (d *OpenAIDriver) streamChatCompletions(ctx context.Context, messages []llm
 	for stream.Next() {
 		chunk := stream.Current()
 		if chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0 {
-			d.mu.Lock()
-			d.lastUsage = llm.Usage{
+			usage := llm.Usage{
 				InputTokens:  int(chunk.Usage.PromptTokens),
 				OutputTokens: int(chunk.Usage.CompletionTokens),
 			}
+			if quota := copilot.ExtractQuotaJSON(chunk.RawJSON()); quota != nil {
+				usage.CopilotQuota = quota
+				debugCopilotQuota("chat.chunk", d.apiModel, quota, chunk.RawJSON())
+			}
+			d.mu.Lock()
+			d.lastUsage = usage
 			d.mu.Unlock()
 		}
 		for _, choice := range chunk.Choices {
@@ -130,7 +140,7 @@ func (d *OpenAIDriver) streamChatCompletions(ctx context.Context, messages []llm
 		}
 	}
 	if err := stream.Err(); err != nil {
-		return fmt.Errorf("openai stream (model: %s): %w", d.apiModel, err)
+		return d.wrapStreamError("chat.completions", err)
 	}
 
 	d.mu.Lock()
@@ -158,7 +168,16 @@ func (d *OpenAIDriver) streamResponses(ctx context.Context, messages []llm.Messa
 
 	stream := d.client.Responses.NewStreaming(ctx, params)
 	for stream.Next() {
-		switch event := stream.Current().AsAny().(type) {
+		evt := stream.Current()
+		if quota := copilot.ExtractQuotaJSON(evt.RawJSON()); quota != nil {
+			debugCopilotQuota("responses.event", d.apiModel, quota, evt.RawJSON())
+			d.mu.Lock()
+			usage := d.lastUsage
+			usage.CopilotQuota = quota
+			d.lastUsage = usage
+			d.mu.Unlock()
+		}
+		switch event := evt.AsAny().(type) {
 		case responses.ResponseTextDeltaEvent:
 			if event.Delta == "" {
 				continue
@@ -168,10 +187,29 @@ func (d *OpenAIDriver) streamResponses(ctx context.Context, messages []llm.Messa
 			case <-ctx.Done():
 				return ctx.Err()
 			}
+		case responses.ResponseCompletedEvent:
+			usage := llm.Usage{}
+			if event.Response.Usage.InputTokens > 0 || event.Response.Usage.OutputTokens > 0 {
+				usage.InputTokens = int(event.Response.Usage.InputTokens)
+				usage.OutputTokens = int(event.Response.Usage.OutputTokens)
+			}
+			if quota := copilot.ExtractQuotaJSON(event.Response.RawJSON()); quota != nil {
+				usage.CopilotQuota = quota
+				debugCopilotQuota("responses.completed", d.apiModel, quota, event.Response.RawJSON())
+			}
+			if usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.CopilotQuota != nil {
+				d.mu.Lock()
+				if usage.InputTokens == 0 && usage.OutputTokens == 0 {
+					usage.InputTokens = d.lastUsage.InputTokens
+					usage.OutputTokens = d.lastUsage.OutputTokens
+				}
+				d.lastUsage = usage
+				d.mu.Unlock()
+			}
 		}
 	}
 	if err := stream.Err(); err != nil {
-		return fmt.Errorf("openai stream (model: %s): %w", d.apiModel, err)
+		return d.wrapStreamError("responses", err)
 	}
 	return nil
 }
@@ -204,6 +242,112 @@ func toResponseInput(msgs []llm.Message) []responses.ResponseInputItemUnionParam
 		}
 	}
 	return out
+}
+
+func debugCopilotQuota(source, model string, quota *llm.CopilotQuota, raw string) {
+	if strings.TrimSpace(os.Getenv("FORGE_DEBUG_COPILOT_QUOTA")) == "" || quota == nil {
+		return
+	}
+	raw = strings.TrimSpace(raw)
+	if len(raw) > 400 {
+		raw = raw[:400] + "..."
+	}
+	fmt.Fprintf(os.Stderr, "[forge] copilot quota captured source=%s model=%s type=%s included=%d used=%d remaining=%d percent=%.2f reset=%s raw=%s\n",
+		source, model, quota.Type, quota.Included, quota.Used, quota.Remaining, quota.PercentRemaining, quota.ResetAt, raw)
+}
+
+func debugRequestSizing(registryName, apiModel string, messages []llm.Message) {
+	if strings.TrimSpace(os.Getenv("FORGE_DEBUG_COPILOT_QUOTA")) == "" {
+		return
+	}
+	var totalBytes int
+	type msgInfo struct {
+		idx   int
+		role  llm.Role
+		bytes int
+	}
+	infos := make([]msgInfo, 0, len(messages))
+	for i, m := range messages {
+		sz := len([]byte(m.Content))
+		totalBytes += sz
+		infos = append(infos, msgInfo{idx: i, role: m.Role, bytes: sz})
+	}
+	sort.Slice(infos, func(i, j int) bool { return infos[i].bytes > infos[j].bytes })
+	parts := make([]string, 0, len(infos))
+	for _, info := range infos {
+		parts = append(parts, fmt.Sprintf("%d:%s=%dB", info.idx, info.role, info.bytes))
+	}
+	fmt.Fprintf(os.Stderr, "[forge] request sizing registry_model=%s api_model=%s messages=%d total_bytes=%d breakdown=%s\n",
+		registryName, apiModel, len(messages), totalBytes, strings.Join(parts, ", "))
+}
+
+func (d *OpenAIDriver) wrapStreamError(api string, err error) error {
+	msg := fmt.Sprintf("openai stream (api: %s, model: %s): %v", api, d.apiModel, err)
+	detail := extractHTTPErrorDetails(err)
+	if detail == "" {
+		return fmt.Errorf("%s", msg)
+	}
+	return fmt.Errorf("%s [%s]", msg, detail)
+}
+
+func extractHTTPErrorDetails(err error) string {
+	if err == nil {
+		return ""
+	}
+	type headerCarrier interface{ Headers() http.Header }
+	type bodyCarrier interface{ DumpRequest(bool) ([]byte, error) }
+	_ = bodyCarrier(nil)
+	parts := make([]string, 0, 6)
+	errText := strings.TrimSpace(err.Error())
+	if errText != "" {
+		parts = append(parts, "err="+truncateDebug(errText, 280))
+	}
+	if h, ok := err.(headerCarrier); ok {
+		headers := h.Headers()
+		if reqID := strings.TrimSpace(headers.Get("X-GitHub-Request-Id")); reqID != "" {
+			parts = append(parts, "request_id="+reqID)
+		}
+		if quota := copilot.ExtractQuotaHeaders(headers); quota != nil {
+			debugCopilotQuota("error.headers", "", quota, headersSummary(headers))
+			parts = append(parts, fmt.Sprintf("quota=%s remaining=%d included=%d used=%d percent=%.2f reset=%s", quota.Type, quota.Remaining, quota.Included, quota.Used, quota.PercentRemaining, quota.ResetAt))
+		}
+	}
+	if quota := copilot.ExtractQuotaJSON(errText); quota != nil {
+		debugCopilotQuota("error.body", "", quota, errText)
+		parts = append(parts, fmt.Sprintf("quota_body=%s remaining=%d included=%d used=%d percent=%.2f reset=%s", quota.Type, quota.Remaining, quota.Included, quota.Used, quota.PercentRemaining, quota.ResetAt))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func headersSummary(h http.Header) string {
+	if len(h) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(h))
+	for k := range h {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		v := strings.TrimSpace(h.Get(k))
+		if v == "" {
+			continue
+		}
+		parts = append(parts, k+"="+truncateDebug(v, 120))
+	}
+	return truncateDebug(strings.Join(parts, ", "), 400)
+}
+
+func truncateDebug(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:max]
+	}
+	return s[:max-3] + "..."
 }
 
 func (d *OpenAIDriver) useResponsesAPI() bool {
