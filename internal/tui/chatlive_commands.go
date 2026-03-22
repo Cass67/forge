@@ -284,7 +284,7 @@ func (m *chatLiveModel) appendTurnStart(input string) {
 	if strings.TrimSpace(m.panes.agent.buf) == "" {
 		sep = ""
 	}
-	m.panes.agent.buf += fmt.Sprintf("%sYou • %s\n%s\n", sep, stamp, input)
+	m.panes.agent.buf += fmt.Sprintf("%sYou • %s\n%s\n\n", sep, stamp, input)
 	m.invalidatePaneCache(&m.panes.agent)
 	if strings.TrimSpace(m.panes.tools.buf) != "" {
 		m.panes.tools.buf += fmt.Sprintf("\n%s\n", strings.Repeat("─", 28))
@@ -304,7 +304,6 @@ func (m *chatLiveModel) handleEvent(ev llm.Event) {
 			var b strings.Builder
 			b.Grow(len(m.panes.agent.buf) + len(ev.Text) + 8)
 			b.WriteString(m.panes.agent.buf)
-			// Determine if we're continuing a line (buffer non-empty and not ending with newline)
 			midLine := len(m.panes.agent.buf) > 0 && !strings.HasSuffix(m.panes.agent.buf, "\n")
 			lines := strings.Split(ev.Text, "\n")
 			for i, line := range lines {
