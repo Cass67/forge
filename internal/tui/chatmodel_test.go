@@ -1,7 +1,10 @@
 package tui
 
 import (
+	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"forge/internal/llm"
 )
@@ -134,5 +137,47 @@ func TestChatModelSlashTheme(t *testing.T) {
 
 	if !m.lowContrast {
 		t.Fatal("expected lowContrast=true after /theme")
+	}
+}
+
+func TestChatModelApprovalFlow(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	// Simulate approval request arriving
+	updated, _ := m.Update(chatApprovalMsg{Tool: "write_file", Summary: "Write test.go"})
+	m = updated.(ChatModel)
+
+	if m.pendingApproval == nil {
+		t.Fatal("expected pending approval")
+	}
+
+	v := m.View()
+	if !strings.Contains(v, "write_file") {
+		t.Fatalf("view should show pending approval tool name, got: %s", v)
+	}
+
+	// Approve with 'y'
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	m = updated.(ChatModel)
+	if m.pendingApproval != nil {
+		t.Fatal("approval should be cleared after y")
+	}
+}
+
+func TestChatModelApprovalDeny(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	updated, _ := m.Update(chatApprovalMsg{Tool: "write_file", Summary: "Write test.go"})
+	m = updated.(ChatModel)
+
+	// Deny with 'n'
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	m = updated.(ChatModel)
+	if m.pendingApproval != nil {
+		t.Fatal("approval should be cleared after n")
 	}
 }
