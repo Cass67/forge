@@ -99,6 +99,7 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, appr
 	reg.Register(tools.NewGitDiff(workDir))
 	reg.Register(tools.NewGitLog(workDir))
 	reg.Register(tools.NewGitCommit(workDir, approve))
+	reg.Register(tools.NewWebFetch())
 }
 
 func RunChatLive(setup *ChatSetup) {
