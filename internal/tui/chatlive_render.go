@@ -283,8 +283,8 @@ func (m *chatLiveModel) renderTitlesAndStatus(screen tcell.Screen, styleTitleDim
 	}
 	drawText(screen, inputX+2, inputY, styleBodyDim, fitWidth(inputBadge, max(1, inputW-4)))
 	footerLegend := chatFooterLegend(max(1, inputW-4))
-	if inputH > 2 && footerLegend != "" {
-		drawText(screen, inputX+2, inputY, styleBodyDim, fitWidth(footerLegend, max(1, inputW-4)))
+	if footerLegend != "" {
+		drawRightText(screen, inputX+1, inputY, inputW-2, styleBodyDim, footerLegend)
 	}
 
 	leftScroll := scrollLabelWithFollow(m.panes.agent.scroll, m.agentMaxScroll(), m.panes.agent.follow)
@@ -435,28 +435,29 @@ func (m *chatLiveModel) renderInputArea(screen tcell.Screen, styleBodyDim, style
 	} else if inputH > 0 {
 		steer := "Steer the agent: clarify constraints, ask for changes, /copy code, /copy result, F1 help"
 		if m.busy {
-			steer = "Busy mode queues steering in runtime: send corrections, constraints, next steps, or /clear"
+			steer = "Busy mode queues steering in runtime: Enter send, Shift-Enter newline, or use /clear"
 		}
 		drawText(screen, inputX+2, inputY+1, styleBodyDim, fitWidth(steer, max(1, inputW-4)))
 	}
 
-	inputLineY := inputY + inputH - 1
-	if inputH >= 2 {
-		inputLineY = inputY + 1
-	}
+	layout := m.inputLayout(max(1, inputW-2))
+	inputLineY := inputY + 2
 	if m.approval != nil {
 		approvalText := fmt.Sprintf(" %s — approve? [y/n] ", m.approval.Summary)
 		drawText(screen, inputX+1, inputLineY, styleApproval, fitWidth(approvalText, max(1, inputW-2)))
 		screen.HideCursor()
 	} else {
-		prompt := " forge> "
-		if m.busy {
-			prompt = " forge> "
+		promptW := stringWidth(layout.prompt)
+		for i, line := range layout.visibleLines {
+			y := inputLineY + i
+			prefix := layout.prompt
+			if i > 0 {
+				prefix = strings.Repeat(" ", promptW)
+			}
+			drawText(screen, inputX+1, y, stylePrompt, fitWidth(prefix, promptW))
+			drawText(screen, inputX+1+promptW, y, styleInput, fitWidth(line.text, layout.contentWidth))
 		}
-		avail := max(1, inputW-2-stringWidth(prompt))
-		visibleInput, cursorX := inputViewport(m.inputBuf, m.inputPos, avail)
-		drawText(screen, inputX+1, inputLineY, stylePrompt, fitWidth(prompt, stringWidth(prompt)))
-		drawText(screen, inputX+1+stringWidth(prompt), inputLineY, styleInput, fitWidth(visibleInput, avail))
-		screen.ShowCursor(inputX+1+stringWidth(prompt)+cursorX, inputLineY)
+		cursorY := inputLineY + clamp(layout.visibleCursorLine, 0, len(layout.visibleLines)-1)
+		screen.ShowCursor(inputX+1+promptW+layout.cursorX, cursorY)
 	}
 }

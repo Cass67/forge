@@ -224,6 +224,9 @@ type chatLiveModel struct {
 	quotaCh          chan<- chatCopilotQuotaMsg
 	themeLowContrast bool
 	codeCache        chatCodeRenderCache
+	inputGoalX       int
+	inputGoalXSet    bool
+	exitPending      bool
 }
 
 type chatCodeRenderCache struct {
@@ -235,6 +238,23 @@ type chatStyledRune struct {
 	r     rune
 	style tcell.Style
 	width int
+}
+
+type chatInputVisualLine struct {
+	text     string
+	startPos int
+	endPos   int
+}
+
+type chatInputLayout struct {
+	lines             []chatInputVisualLine
+	visibleLines      []chatInputVisualLine
+	startLine         int
+	cursorLine        int
+	visibleCursorLine int
+	cursorX           int
+	prompt            string
+	contentWidth      int
 }
 
 // RunChatLive runs the split-pane live view for forge chat.
@@ -381,37 +401,28 @@ func RunChatLive(events <-chan llm.Event, cfg ChatLiveConfig, inputCh chan<- str
 }
 
 func (m *chatLiveModel) handleKey(ev *tcell.EventKey, inputCh chan<- string) (ChatLiveResult, bool) {
-	// Search overlay mode
+	if ev.Key() != tcell.KeyEscape {
+		m.exitPending = false
+	}
 	if m.overlays.search.visible {
 		return m.handleSearchOverlayKey(ev), false
 	}
-
-	// Help overlay mode
 	if m.overlays.helpVisible {
 		return m.handleHelpOverlayKey(ev), false
 	}
-
-	// Stats overlay mode
 	if m.overlays.statsVisible {
 		return m.handleStatsOverlayKey(ev), false
 	}
-
-	// File picker mode
 	if m.overlays.files.visible {
 		return m.handleFilePickerKey(ev), false
 	}
-
-	// Model picker mode
 	if m.overlays.models.visible {
 		return m.handleModelPickerKey(ev), false
 	}
-
-	// Sessions picker mode
 	if m.overlays.sessions.visible {
 		return m.handleSessionsPickerKey(ev), false
 	}
 
-	// Approval mode: y/n only
 	if m.approval != nil {
 		switch ev.Key() {
 		case tcell.KeyRune:
@@ -438,12 +449,19 @@ func (m *chatLiveModel) handleKey(ev *tcell.EventKey, inputCh chan<- string) (Ch
 				m.status = "ready"
 				m.display.flash = "turn canceled"
 				m.display.turnStartedAt = time.Time{}
+				m.exitPending = false
 				select {
 				case inputCh <- "__cancel_turn__":
 				default:
 				}
 				return ChatLiveResult{}, false
 			}
+			if !m.exitPending {
+				m.exitPending = true
+				m.display.flash = "press Esc again to exit"
+				return ChatLiveResult{}, false
+			}
+			m.exitPending = false
 			m.autoSaveSession()
 			return ChatLiveResult{Aborted: true}, true
 		}
@@ -452,79 +470,90 @@ func (m *chatLiveModel) handleKey(ev *tcell.EventKey, inputCh chan<- string) (Ch
 
 	switch ev.Key() {
 	case tcell.KeyEscape:
+		m.clearInputGoal()
 		if m.busy {
 			m.busy = false
 			m.status = "ready"
 			m.display.flash = "turn canceled"
 			m.display.turnStartedAt = time.Time{}
+			m.exitPending = false
 			select {
 			case inputCh <- "__cancel_turn__":
 			default:
 			}
 			return ChatLiveResult{}, false
 		}
+		if !m.exitPending {
+			m.exitPending = true
+			m.display.flash = "press Esc again to exit"
+			return ChatLiveResult{}, false
+		}
+		m.exitPending = false
 		m.autoSaveSession()
 		return ChatLiveResult{Aborted: true}, true
 
 	case tcell.KeyLeft:
-		if !m.busy {
-			m.panes.focusR = false
+		if ev.Modifiers()&tcell.ModAlt != 0 {
+			m.clearInputGoal()
+			if !m.busy {
+				m.panes.focusR = false
+			}
+			return ChatLiveResult{}, false
 		}
+		m.moveInputCursorHorizontal(-1)
 	case tcell.KeyRight:
-		if !m.busy {
-			m.panes.focusR = true
+		if ev.Modifiers()&tcell.ModAlt != 0 {
+			m.clearInputGoal()
+			if !m.busy {
+				m.panes.focusR = true
+			}
+			return ChatLiveResult{}, false
 		}
+		m.moveInputCursorHorizontal(1)
 	case tcell.KeyUp:
-		m.scrollFocused(-1)
+		if ev.Modifiers()&tcell.ModAlt != 0 {
+			m.clearInputGoal()
+			m.scrollFocused(-1)
+			return ChatLiveResult{}, false
+		}
+		m.moveInputCursorVertical(-1)
 	case tcell.KeyDown:
-		m.scrollFocused(1)
+		if ev.Modifiers()&tcell.ModAlt != 0 {
+			m.clearInputGoal()
+			m.scrollFocused(1)
+			return ChatLiveResult{}, false
+		}
+		m.moveInputCursorVertical(1)
 	case tcell.KeyPgUp:
+		m.clearInputGoal()
 		m.scrollFocused(-(m.bodyHeight() / 2))
 	case tcell.KeyPgDn:
+		m.clearInputGoal()
 		m.scrollFocused(m.bodyHeight() / 2)
 
 	case tcell.KeyEnter:
 		input := strings.TrimSpace(m.inputBuf)
-		if input == "" {
+		if ev.Modifiers()&tcell.ModShift != 0 {
+			m.clearInputGoal()
+			m.insertInputRune('\n')
 			return ChatLiveResult{}, false
 		}
-		if input == "/exit" || input == "/quit" {
-			m.autoSaveSession()
-			return ChatLiveResult{Aborted: false, Input: input}, true
-		}
-		// Handle slash commands locally even while a turn is running.
-		if strings.HasPrefix(input, "/") {
+		if input != "" && !strings.Contains(m.inputBuf, "\n") && strings.HasPrefix(input, "/") {
+			if input == "/exit" || input == "/quit" {
+				m.autoSaveSession()
+				return ChatLiveResult{Aborted: false, Input: input}, true
+			}
 			m.handleSlashCommand(input)
 			m.inputBuf = ""
 			m.inputPos = 0
+			m.clearInputGoal()
 			return ChatLiveResult{}, false
 		}
-		if m.busy {
-			m.inputBuf = ""
-			m.inputPos = 0
-			m.display.flash = ""
-			m.appendSteeringInput(input)
-			select {
-			case inputCh <- input:
-			default:
-			}
-			return ChatLiveResult{}, false
-		}
-		m.inputBuf = ""
-		m.inputPos = 0
-		m.display.flash = ""
-		m.display.lastExpandable = ""
-		m.display.statsDuration = 0
-		m.display.statsUsage = llm.Usage{}
-		m.display.turnStartedAt = time.Now()
-		m.appendTurnStart(input)
-		m.busy = true
-		m.status = "running"
-		m.display.spinnerFrame = 0
-		inputCh <- input
-		return ChatLiveResult{}, false
+		m.clearInputGoal()
+		return m.submitInput(inputCh)
 
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		m.clearInputGoal()
 		if m.inputPos > 0 {
 			runes := []rune(m.inputBuf)
 			m.inputBuf = string(runes[:m.inputPos-1]) + string(runes[m.inputPos:])
@@ -532,25 +561,33 @@ func (m *chatLiveModel) handleKey(ev *tcell.EventKey, inputCh chan<- string) (Ch
 		}
 
 	case tcell.KeyDelete:
+		m.clearInputGoal()
 		runes := []rune(m.inputBuf)
 		if m.inputPos < len(runes) {
 			m.inputBuf = string(runes[:m.inputPos]) + string(runes[m.inputPos+1:])
 		}
 
 	case tcell.KeyCtrlA:
+		m.clearInputGoal()
 		m.inputPos = 0
 	case tcell.KeyCtrlE:
+		m.clearInputGoal()
 		m.inputPos = len([]rune(m.inputBuf))
 	case tcell.KeyCtrlU:
+		m.clearInputGoal()
 		m.inputBuf = ""
 		m.inputPos = 0
 	case tcell.KeyCtrlF:
+		m.clearInputGoal()
 		m.openSearchOverlay()
 	case tcell.KeyCtrlK:
+		m.clearInputGoal()
 		m.overlays.helpVisible = true
 	case tcell.KeyF1:
+		m.clearInputGoal()
 		m.overlays.helpVisible = true
 	case tcell.KeyF2:
+		m.clearInputGoal()
 		m.themeLowContrast = !m.themeLowContrast
 		if m.themeLowContrast {
 			m.display.flash = "theme: low contrast"
@@ -569,20 +606,114 @@ func (m *chatLiveModel) handleKey(ev *tcell.EventKey, inputCh chan<- string) (Ch
 				return ChatLiveResult{}, false
 			}
 		}
-		m.display.flash = "" // clear flash on typing
-		runes := []rune(m.inputBuf)
-		newRunes := make([]rune, 0, len(runes)+1)
-		newRunes = append(newRunes, runes[:m.inputPos]...)
-		newRunes = append(newRunes, ev.Rune())
-		newRunes = append(newRunes, runes[m.inputPos:]...)
-		m.inputBuf = string(newRunes)
-		m.inputPos++
+		m.display.flash = ""
+		m.clearInputGoal()
+		m.insertInputRune(ev.Rune())
 		if ev.Rune() == '@' {
 			m.openFilePicker("")
 		}
 	}
 
 	return ChatLiveResult{}, false
+}
+
+func (m *chatLiveModel) clearInputGoal() {
+	m.inputGoalX = 0
+	m.inputGoalXSet = false
+}
+
+func (m *chatLiveModel) moveInputCursorHorizontal(delta int) {
+	m.clearInputGoal()
+	runes := []rune(m.inputBuf)
+	m.inputPos = clamp(m.inputPos+delta, 0, len(runes))
+}
+
+func (m *chatLiveModel) moveInputCursorVertical(delta int) {
+	layout := m.inputLayout(max(1, m.width-2))
+	if len(layout.lines) == 0 {
+		return
+	}
+	lineIdx, cursorX := inputCursorLayout(layout.lines, m.inputPos)
+	goalX := cursorX
+	if m.inputGoalXSet {
+		goalX = m.inputGoalX
+	} else {
+		m.inputGoalX = cursorX
+		m.inputGoalXSet = true
+	}
+	targetLine := clamp(lineIdx+delta, 0, len(layout.lines)-1)
+	m.inputPos = inputPosForVisualX(layout.lines[targetLine], goalX)
+}
+
+func inputPosForVisualX(line chatInputVisualLine, targetX int) int {
+	if targetX <= 0 {
+		return line.startPos
+	}
+	acc := 0
+	runes := []rune(line.text)
+	for i, r := range runes {
+		rw := runewidth.RuneWidth(r)
+		if targetX <= acc+rw/2 {
+			return line.startPos + i
+		}
+		acc += rw
+		if targetX < acc {
+			return line.startPos + i + 1
+		}
+	}
+	return line.endPos
+}
+
+func (m *chatLiveModel) submitInput(inputCh chan<- string) (ChatLiveResult, bool) {
+	m.exitPending = false
+	input := strings.TrimSpace(m.inputBuf)
+	if input == "" {
+		return ChatLiveResult{}, false
+	}
+	if input == "/exit" || input == "/quit" {
+		m.autoSaveSession()
+		return ChatLiveResult{Aborted: false, Input: input}, true
+	}
+	if strings.HasPrefix(input, "/") {
+		m.handleSlashCommand(input)
+		m.inputBuf = ""
+		m.inputPos = 0
+		return ChatLiveResult{}, false
+	}
+	if m.busy {
+		m.inputBuf = ""
+		m.inputPos = 0
+		m.display.flash = ""
+		m.appendSteeringInput(input)
+		select {
+		case inputCh <- input:
+		default:
+		}
+		return ChatLiveResult{}, false
+	}
+	m.inputBuf = ""
+	m.inputPos = 0
+	m.display.flash = ""
+	m.display.lastExpandable = ""
+	m.display.statsDuration = 0
+	m.display.statsUsage = llm.Usage{}
+	m.display.turnStartedAt = time.Now()
+	m.appendTurnStart(input)
+	m.busy = true
+	m.status = "running"
+	m.display.spinnerFrame = 0
+	inputCh <- input
+	return ChatLiveResult{}, false
+}
+
+func (m *chatLiveModel) insertInputRune(r rune) {
+	runes := []rune(m.inputBuf)
+	newRunes := make([]rune, 0, len(runes)+1)
+	newRunes = append(newRunes, runes[:m.inputPos]...)
+	newRunes = append(newRunes, r)
+	newRunes = append(newRunes, runes[m.inputPos:]...)
+	m.inputBuf = string(newRunes)
+	m.inputPos++
 }
 
 func (m *chatLiveModel) paneLines(pane *chatPaneBufferState, width, height, scroll int) []string {
@@ -628,10 +759,7 @@ func (m *chatLiveModel) invalidatePaneCache(pane *chatPaneBufferState) {
 }
 
 func (m *chatLiveModel) bodyHeight() int {
-	if m.height <= 8 {
-		return max(1, m.height-4)
-	}
-	return m.height - 5
+	return max(1, m.height-m.inputBoxHeight()-2)
 }
 
 func (m *chatLiveModel) scrollFocused(delta int) {
@@ -1118,7 +1246,21 @@ func (m *chatLiveModel) rightPaneRect() (int, int, int, int) {
 }
 
 func (m *chatLiveModel) inputRect() (int, int, int, int) {
-	return 0, m.height - 3, m.width, 3
+	h := m.inputBoxHeight()
+	return 0, max(1, m.height-h), m.width, h
+}
+
+func (m *chatLiveModel) inputBoxHeight() int {
+	layout := m.inputLayout(max(1, m.width-2))
+	lines := len(layout.visibleLines)
+	if lines == 0 {
+		lines = 1
+	}
+	return min(max(4, lines+3), max(4, m.height-2))
+}
+
+func (m *chatLiveModel) maxInputVisibleLines() int {
+	return clamp(m.height-6, 1, 6)
 }
 
 func (m *chatLiveModel) setLeftPaneWidth(x int) {
@@ -1802,6 +1944,113 @@ func linePrefix(line string) (string, string) {
 	return "", line
 }
 
+func (m *chatLiveModel) inputLayout(totalWidth int) chatInputLayout {
+	prompt := " forge> "
+	promptWidth := stringWidth(prompt)
+	contentWidth := max(1, totalWidth-promptWidth)
+	lines := wrapInputVisualLines(m.inputBuf, contentWidth)
+	cursorLine, cursorX := inputCursorLayout(lines, m.inputPos)
+	visibleCount := min(max(1, m.maxInputVisibleLines()), len(lines))
+	startLine := clamp(cursorLine-visibleCount+1, 0, max(0, len(lines)-visibleCount))
+	endLine := min(len(lines), startLine+visibleCount)
+	visibleLines := append([]chatInputVisualLine(nil), lines[startLine:endLine]...)
+	return chatInputLayout{
+		lines:             lines,
+		visibleLines:      visibleLines,
+		startLine:         startLine,
+		cursorLine:        cursorLine,
+		visibleCursorLine: cursorLine - startLine,
+		cursorX:           cursorX,
+		prompt:            prompt,
+		contentWidth:      contentWidth,
+	}
+}
+
+func wrapInputVisualLines(input string, width int) []chatInputVisualLine {
+	runes := []rune(input)
+	if len(runes) == 0 {
+		return []chatInputVisualLine{{}}
+	}
+	var out []chatInputVisualLine
+	start := 0
+	for start <= len(runes) {
+		end := start
+		for end < len(runes) && runes[end] != '\n' {
+			end++
+		}
+		out = append(out, wrapInputRunes(runes[start:end], start, width)...)
+		if end == len(runes) {
+			break
+		}
+		start = end + 1
+	}
+	return out
+}
+
+func wrapInputRunes(runes []rune, startPos, width int) []chatInputVisualLine {
+	if len(runes) == 0 {
+		return []chatInputVisualLine{{startPos: startPos, endPos: startPos}}
+	}
+	var out []chatInputVisualLine
+	for i := 0; i < len(runes); {
+		used := 0
+		j := i
+		for j < len(runes) {
+			rw := runewidth.RuneWidth(runes[j])
+			if used+rw > width {
+				if j == i {
+					j++
+				}
+				break
+			}
+			used += rw
+			j++
+		}
+		out = append(out, chatInputVisualLine{
+			text:     string(runes[i:j]),
+			startPos: startPos + i,
+			endPos:   startPos + j,
+		})
+		i = j
+	}
+	return out
+}
+
+func inputCursorLayout(lines []chatInputVisualLine, cursorPos int) (int, int) {
+	if len(lines) == 0 {
+		return 0, 0
+	}
+	for i, line := range lines {
+		nextStartsHere := i+1 < len(lines) && lines[i+1].startPos == cursorPos
+		if cursorPos < line.endPos || (cursorPos == line.endPos && !nextStartsHere) {
+			offset := clamp(cursorPos-line.startPos, 0, len([]rune(line.text)))
+			return i, stringWidth(string([]rune(line.text)[:offset]))
+		}
+	}
+	last := lines[len(lines)-1]
+	return len(lines) - 1, stringWidth(last.text)
+}
+
+func inputCursorFromScreenPosition(layout chatInputLayout, screenX, screenY int) int {
+	lineIdx := clamp(screenY, 0, len(layout.visibleLines)-1)
+	line := layout.visibleLines[lineIdx]
+	if screenX <= 0 {
+		return line.startPos
+	}
+	acc := 0
+	for i, r := range []rune(line.text) {
+		rw := runewidth.RuneWidth(r)
+		if screenX <= acc+rw/2 {
+			return line.startPos + i
+		}
+		acc += rw
+		if screenX < acc {
+			return line.startPos + i + 1
+		}
+	}
+	return line.endPos
+}
+
 func inputViewport(input string, cursorPos, width int) (string, int) {
 	runes := []rune(input)
 	if cursorPos < 0 {
@@ -1827,49 +2076,17 @@ func inputViewport(input string, cursorPos, width int) (string, int) {
 	return visible, cursorX
 }
 
-func inputCursorFromScreenX(input string, currentPos, screenX, totalWidth int) int {
-	prompt := " forge> "
-	promptW := stringWidth(prompt)
-	if screenX <= promptW {
-		return 0
-	}
-	contentX := screenX - promptW
-	visible, _ := inputViewport(input, currentPos, max(1, totalWidth-promptW))
-	fullRunes := []rune(input)
-	visibleRunes := []rune(visible)
-	start := 0
-	for start < len(fullRunes) {
-		candidate := string(fullRunes[start:])
-		candidate = clipToWidth(candidate, max(1, totalWidth-promptW))
-		if candidate == visible {
-			break
-		}
-		start++
-	}
-	acc := 0
-	for i, r := range visibleRunes {
-		rw := runewidth.RuneWidth(r)
-		if contentX <= acc+rw/2 {
-			return start + i
-		}
-		acc += rw
-		if contentX < acc {
-			return start + i + 1
-		}
-	}
-	return start + len(visibleRunes)
-}
-
 func stringWidth(s string) int {
 	return runewidth.StringWidth(s)
 }
 
 func chatFooterLegend(width int) string {
 	options := []string{
-		" F1 help • F2 theme • /stats • /copy code • /sessions ",
-		" F1 help • F2 theme • /stats • /sessions ",
-		" F1 help • /stats • /sessions ",
-		" F1 help • /stats ",
+		" Enter send • Shift-Enter newline • F1 help • /stats • /sessions ",
+		" Enter send • Shift-Enter newline • F1 help • /stats ",
+		" Enter send • Shift-Enter newline • /stats ",
+		" Enter send • Shift-Enter newline ",
+		" Enter send ",
 		" F1 help ",
 	}
 	for _, option := range options {
