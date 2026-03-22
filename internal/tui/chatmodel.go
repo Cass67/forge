@@ -296,6 +296,14 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		} else {
 			m.flash = "theme: default"
 		}
+	case "/tools":
+		m.toolsVisible = !m.toolsVisible
+		m.refreshViewport()
+		if m.toolsVisible {
+			m.flash = "tools pane: visible"
+		} else {
+			m.flash = "tools pane: hidden"
+		}
 	case "/skills":
 		var sb strings.Builder
 		sb.WriteString("Skills:\n")
@@ -326,6 +334,20 @@ func (m ChatModel) View() string {
 	header := headerStyle.Render("forge • " + m.model + " • " + m.workDir)
 
 	chatPane := m.chatViewport.View()
+
+	// Side-by-side with tools pane if visible
+	if m.toolsVisible && m.toolsBuf != "" {
+		toolsWidth := m.width - m.chatPaneWidth()
+		toolsStyle := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#30363d")).
+			Background(lipgloss.Color("#0d1117")).
+			Foreground(lipgloss.Color("#8b949e")).
+			Width(toolsWidth - 4).
+			Height(m.chatViewport.Height - 2)
+		toolsPane := toolsStyle.Render(m.toolsBuf)
+		chatPane = lipgloss.JoinHorizontal(lipgloss.Top, chatPane, toolsPane)
+	}
 
 	inputStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
