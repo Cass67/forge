@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -213,26 +212,22 @@ func collapseWhitespace(s string) string {
 	return strings.Join(out, "\n")
 }
 
-const braveSearchEndpoint = "https://api.search.brave.com/res/v1/web/search"
+const ddgSearchURL = "https://html.duckduckgo.com/html/"
 
-func NewWebSearch(apiKey string) Tool {
-	return newWebSearchWithEndpoint(apiKey, braveSearchEndpoint)
+func NewWebSearch() Tool {
+	return newWebSearchWithEndpoint(ddgSearchURL)
 }
 
-func newWebSearchWithEndpoint(apiKey, endpoint string) Tool {
+func newWebSearchWithEndpoint(endpoint string) Tool {
 	return Tool{
 		Name:        "web_search",
-		Description: "Search the web using Brave Search. Returns titles, URLs, and snippets.",
+		Description: "Search the web using DuckDuckGo. Returns titles, URLs, and snippets.",
 		Parameters: []ParameterDef{
 			{Name: "query", Type: "string", Description: "search query", Required: true},
-			{Name: "count", Type: "int", Description: "number of results (default 5, max 10)", Required: false},
+			{Name: "count", Type: "int", Description: "max number of results to return (default 5)", Required: false},
 		},
 		AutoApprove: true,
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
-			if apiKey == "" {
-				return "web_search unavailable: set BRAVE_API_KEY or keys.brave in config", nil
-			}
-
 			query, _ := args["query"].(string)
 			count := 5
 			if v, ok := args["count"].(float64); ok && v > 0 {
@@ -242,13 +237,14 @@ func newWebSearchWithEndpoint(apiKey, endpoint string) Tool {
 				}
 			}
 
-			reqURL := fmt.Sprintf("%s?q=%s&count=%d", endpoint, url.QueryEscape(query), count)
-			req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
+			formData := url.Values{"q": {query}}
+			req, err := http.NewRequestWithContext(ctx, "POST", endpoint,
+				strings.NewReader(formData.Encode()))
 			if err != nil {
 				return fmt.Sprintf("error: %v", err), nil
 			}
-			req.Header.Set("X-Subscription-Token", apiKey)
-			req.Header.Set("Accept", "application/json")
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0")
 
 			client := &http.Client{Timeout: 15 * time.Second}
 			resp, err := client.Do(req)
@@ -258,34 +254,96 @@ func newWebSearchWithEndpoint(apiKey, endpoint string) Tool {
 			defer func() { _ = resp.Body.Close() }()
 
 			if resp.StatusCode != http.StatusOK {
-				body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-				return fmt.Sprintf("error: Brave API returned HTTP %d: %s", resp.StatusCode, body), nil
+				return fmt.Sprintf("error: DDG returned HTTP %d", resp.StatusCode), nil
 			}
 
-			var result braveSearchResponse
-			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-				return fmt.Sprintf("error decoding response: %v", err), nil
-			}
-
-			if len(result.Web.Results) == 0 {
+			results := parseDDGResults(resp.Body, count)
+			if len(results) == 0 {
 				return "no results found", nil
 			}
 
 			var sb strings.Builder
-			for i, r := range result.Web.Results {
-				fmt.Fprintf(&sb, "%d. %s\n   %s\n   %s\n\n", i+1, r.Title, r.URL, r.Description)
+			for i, r := range results {
+				fmt.Fprintf(&sb, "%d. %s\n   %s\n   %s\n\n", i+1, r.title, r.url, r.snippet)
 			}
 			return sb.String(), nil
 		},
 	}
 }
 
-type braveSearchResponse struct {
-	Web struct {
-		Results []struct {
-			Title       string `json:"title"`
-			URL         string `json:"url"`
-			Description string `json:"description"`
-		} `json:"results"`
-	} `json:"web"`
+type ddgResult struct {
+	title   string
+	url     string
+	snippet string
+}
+
+func parseDDGResults(r io.Reader, max int) []ddgResult {
+	var results []ddgResult
+	z := html.NewTokenizer(r)
+
+	var current ddgResult
+	var inTitle, inSnippet bool
+
+	for len(results) < max {
+		tt := z.Next()
+		if tt == html.ErrorToken {
+			break
+		}
+
+		switch tt {
+		case html.StartTagToken:
+			tn, hasAttr := z.TagName()
+			tag := string(tn)
+
+			if tag == "a" && hasAttr {
+				cls, href := "", ""
+				for {
+					k, v, more := z.TagAttr()
+					switch string(k) {
+					case "class":
+						cls = string(v)
+					case "href":
+						href = string(v)
+					}
+					if !more {
+						break
+					}
+				}
+				if strings.Contains(cls, "result__a") {
+					current = ddgResult{url: href}
+					inTitle = true
+					inSnippet = false
+				} else if strings.Contains(cls, "result__snippet") {
+					inSnippet = true
+					inTitle = false
+				}
+			}
+
+		case html.TextToken:
+			text := strings.TrimSpace(string(z.Text()))
+			if text == "" {
+				break
+			}
+			if inTitle {
+				current.title = text
+			} else if inSnippet {
+				current.snippet += text
+			}
+
+		case html.EndTagToken:
+			tn, _ := z.TagName()
+			if string(tn) == "a" {
+				if inTitle && current.title != "" && current.url != "" {
+					inTitle = false
+				} else if inSnippet {
+					inSnippet = false
+					if current.title != "" {
+						results = append(results, current)
+						current = ddgResult{}
+					}
+				}
+			}
+		}
+	}
+	return results
 }
