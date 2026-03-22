@@ -9,6 +9,7 @@ import (
 
 	"forge/internal/agent/tools"
 	"forge/internal/llm"
+	"forge/internal/skills"
 )
 
 // mockDriver returns predefined responses in sequence.
@@ -37,7 +38,7 @@ func TestAgentRunNoTools(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewRenderer(&output, 80, false)
 
-	agent := NewAgent(driver, reg, YoloApproval(), "/tmp", 10, renderer, nil)
+	agent := NewAgent(driver, reg, YoloApproval(), "/tmp", 10, renderer, nil, nil)
 	err := agent.Run(context.Background(), "hello")
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +61,7 @@ func TestAgentRunWithToolCall(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewRenderer(&output, 80, false)
 
-	agent := NewAgent(driver, reg, YoloApproval(), dir, 10, renderer, nil)
+	agent := NewAgent(driver, reg, YoloApproval(), dir, 10, renderer, nil, nil)
 	err := agent.Run(context.Background(), "list files")
 	if err != nil {
 		t.Fatal(err)
@@ -80,7 +81,7 @@ func TestAgentMaxTurns(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewRenderer(&output, 80, false)
 
-	agent := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 3, renderer, nil)
+	agent := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 3, renderer, nil, nil)
 	err := agent.Run(context.Background(), "loop forever")
 	if err != nil && !strings.Contains(err.Error(), "max turns") {
 		t.Fatalf("unexpected error: %v", err)
@@ -115,5 +116,57 @@ func TestCompressHistory(t *testing.T) {
 func TestEstimateTokens(t *testing.T) {
 	if got := estimateTokens("hello world"); got < 2 || got > 4 {
 		t.Errorf("estimateTokens('hello world') = %d", got)
+	}
+}
+
+func TestAgentRunRequiresSkillActivation(t *testing.T) {
+	driver := &mockDriver{responses: []string{"ok"}}
+	reg := tools.NewRegistry()
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	loaded := []skills.Skill{{Name: "brainstorming", Description: "Planning", Body: "Plan first."}}
+
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, loaded, nil)
+	err := a.Run(context.Background(), "please plan the architecture first")
+	if err == nil {
+		t.Fatal("expected missing skill activation to fail")
+	}
+	if !strings.Contains(err.Error(), "/brainstorming") {
+		t.Fatalf("err = %v, want activation guidance", err)
+	}
+}
+
+func TestAgentRunAllowsActivatedSkill(t *testing.T) {
+	driver := &mockDriver{responses: []string{"planned"}}
+	reg := tools.NewRegistry()
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	s := skills.Skill{Name: "brainstorming", Description: "Planning", Body: "Plan first."}
+
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, []skills.Skill{s}, nil)
+	a.InjectSkill(s)
+	err := a.Run(context.Background(), "please plan the architecture first")
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAgentClearHistoryResetsActivatedSkills(t *testing.T) {
+	driver := &mockDriver{responses: []string{"planned"}}
+	reg := tools.NewRegistry()
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	s := skills.Skill{Name: "brainstorming", Description: "Planning", Body: "Plan first."}
+
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, []skills.Skill{s}, nil)
+	a.InjectSkill(s)
+	a.ClearHistory()
+
+	err := a.Run(context.Background(), "please plan the architecture first")
+	if err == nil {
+		t.Fatal("expected missing skill activation after clear history")
+	}
+	if !strings.Contains(err.Error(), "/brainstorming") {
+		t.Fatalf("err = %v, want activation guidance", err)
 	}
 }

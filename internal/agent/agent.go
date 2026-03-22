@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"forge/internal/agent/tools"
+	"forge/internal/chatstate"
 	"forge/internal/llm"
 	"forge/internal/skills"
 )
@@ -21,9 +22,13 @@ type Agent struct {
 	maxTurns int
 	renderer RenderTarget
 	skills   []skills.Skill
+	state    *chatstate.State
 }
 
-func NewAgent(driver llm.Driver, toolReg *tools.Registry, approve tools.ApprovalFunc, workDir string, maxTurns int, renderer RenderTarget, loadedSkills []skills.Skill) *Agent {
+func NewAgent(driver llm.Driver, toolReg *tools.Registry, approve tools.ApprovalFunc, workDir string, maxTurns int, renderer RenderTarget, loadedSkills []skills.Skill, state *chatstate.State) *Agent {
+	if state == nil {
+		state = chatstate.New()
+	}
 	return &Agent{
 		driver:   driver,
 		tools:    toolReg,
@@ -33,11 +38,13 @@ func NewAgent(driver llm.Driver, toolReg *tools.Registry, approve tools.Approval
 		renderer: renderer,
 		system:   BuildSystemPrompt(workDir, toolReg, skills.Describe(loadedSkills)),
 		skills:   loadedSkills,
+		state:    state,
 	}
 }
 
 // InjectSkill prepends a skill's content into the conversation as context.
 func (a *Agent) InjectSkill(s skills.Skill) {
+	a.state.ActivateSkill(s.Name)
 	a.history = append(a.history, llm.Message{
 		Role:    llm.RoleUser,
 		Content: fmt.Sprintf("[Skill: %s]\n\n%s", s.Name, s.Body),
@@ -55,9 +62,30 @@ func (a *Agent) SetDriver(d llm.Driver) {
 
 func (a *Agent) ClearHistory() {
 	a.history = nil
+	a.state.Clear()
+}
+
+func (a *Agent) skillAvailable(name string) bool {
+	_, ok := skills.Get(a.skills, name)
+	return ok
+}
+
+func (a *Agent) skillActivated(name string) bool {
+	return a.state.SkillActivated(name)
 }
 
 func (a *Agent) Run(ctx context.Context, userMessage string) error {
+	requiredSkill := skills.RequiredForInput(userMessage)
+	if requiredSkill != "" && !a.skillAvailable(requiredSkill) && !a.skillActivated(requiredSkill) {
+		msg := fmt.Sprintf("This request requires the %q skill, but it is not loaded. Use /skills to inspect available skills or install it first.", requiredSkill)
+		a.renderer.Error(msg)
+		return fmt.Errorf("%s", msg)
+	}
+	if requiredSkill != "" && a.skillAvailable(requiredSkill) && !a.skillActivated(requiredSkill) {
+		msg := fmt.Sprintf("This request requires the /%s skill before proceeding. Activate it explicitly (or use auto-skills) and try again.", requiredSkill)
+		a.renderer.Error(msg)
+		return fmt.Errorf("%s", msg)
+	}
 	a.history = append(a.history, llm.Message{Role: llm.RoleUser, Content: userMessage})
 	turnStart := time.Now()
 	defer func() {
