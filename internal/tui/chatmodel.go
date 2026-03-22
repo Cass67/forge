@@ -255,7 +255,35 @@ func (m ChatModel) submitInput() (tea.Model, tea.Cmd) {
 	}
 
 	if strings.HasPrefix(input, "/") {
+		// Check for skill activation before built-in commands
+		cmd := strings.TrimPrefix(input, "/")
+		if s, ok := skills.Get(m.skills, cmd); ok {
+			return m.submitSkillInput(s, fmt.Sprintf("/%s", s.Name), skills.SkillMessage(s))
+		}
 		return m.handleSlashCommand(input)
+	}
+
+	// Auto-skill detection
+	if !m.busy {
+		switch m.autoSkillsMode {
+		case skills.AutoSkillsAuto:
+			if s, ok := skills.DetectAuto(m.skills, input); ok {
+				return m.submitSkillInput(s, input, skills.SkillMessageWithUserInput(s, input))
+			}
+		case "", skills.AutoSkillsSuggest:
+			if s, ok := skills.DetectAuto(m.skills, input); ok {
+				m.flash = fmt.Sprintf("suggested skill: /%s", s.Name)
+			}
+		}
+	}
+
+	// Required skill check
+	requiredSkill := skills.RequiredForInput(input)
+	if requiredSkill != "" && !m.state.SkillActivated(requiredSkill) && skills.NormalizeAutoMode(m.autoSkillsMode) != skills.AutoSkillsSuggest {
+		if _, ok := skills.Get(m.skills, requiredSkill); ok {
+			m.flash = fmt.Sprintf("required skill: /%s", requiredSkill)
+			return m, nil
+		}
 	}
 
 	stamp := time.Now().Format("15:04:05")
@@ -274,6 +302,29 @@ func (m ChatModel) submitInput() (tea.Model, tea.Cmd) {
 		m.inputCh <- input
 	}
 
+	return m, nil
+}
+
+func (m ChatModel) submitSkillInput(s skills.Skill, turnLabel, msg string) (tea.Model, tea.Cmd) {
+	if m.state != nil {
+		m.state.ActivateSkill(s.Name)
+	}
+	stamp := time.Now().Format("15:04:05")
+	m.AddMessage(ChatMessage{
+		Kind:    MsgForge,
+		Header:  "Forge • " + stamp,
+		Content: turnLabel,
+	})
+
+	m.inputBuf = ""
+	m.inputPos = 0
+	m.flash = fmt.Sprintf("skill: %s", s.Name)
+	m.busy = true
+	m.status = "running"
+
+	if m.inputCh != nil {
+		m.inputCh <- msg
+	}
 	return m, nil
 }
 
