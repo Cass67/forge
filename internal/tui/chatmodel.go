@@ -470,13 +470,9 @@ func (m ChatModel) View() string {
 
 	chatPane := m.chatViewport.View()
 
-	// Side-by-side with tools pane if visible
-	if m.toolsVisible {
+	// Side-by-side with tools pane if visible and has content
+	if m.toolsVisible && m.toolsBuf != "" {
 		toolsWidth := m.width - m.chatPaneWidth()
-		toolsContent := m.toolsBuf
-		if toolsContent == "" {
-			toolsContent = " tools"
-		}
 		toolsStyle := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("#30363d")).
@@ -484,7 +480,7 @@ func (m ChatModel) View() string {
 			Foreground(lipgloss.Color("#8b949e")).
 			Width(toolsWidth - 4).
 			Height(m.chatViewport.Height - 2)
-		toolsPane := toolsStyle.Render(toolsContent)
+		toolsPane := toolsStyle.Render(m.toolsBuf)
 		chatPane = lipgloss.JoinHorizontal(lipgloss.Top, chatPane, toolsPane)
 	}
 
