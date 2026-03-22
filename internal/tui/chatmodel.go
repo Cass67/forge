@@ -95,7 +95,8 @@ func (m *ChatModel) AddMessage(msg ChatMessage) {
 
 func (m *ChatModel) AppendToLastAgent(text string) {
 	if len(m.messages) == 0 || m.messages[len(m.messages)-1].Kind != MsgAgent {
-		m.messages = append(m.messages, ChatMessage{Kind: MsgAgent})
+		stamp := time.Now().Format("15:04:05")
+		m.messages = append(m.messages, ChatMessage{Kind: MsgAgent, Header: "Agent • " + stamp})
 	}
 	m.messages[len(m.messages)-1].Content += text
 	m.viewportDirty = true
