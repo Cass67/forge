@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"forge/internal/chatstate"
 	"forge/internal/skills"
 
 	"github.com/gdamore/tcell/v2"
@@ -98,6 +99,7 @@ func TestHandleKeyEnterSubmitsMultilineInput(t *testing.T) {
 	m := chatLiveModel{
 		inputBuf: "first line\nsecond line",
 		inputPos: len([]rune("first line\nsecond line")),
+		state:    chatstate.New(),
 	}
 
 	result, done := m.handleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0), inputCh)
