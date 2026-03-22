@@ -1,10 +1,10 @@
 package config_test
 
 import (
+	"forge/internal/config"
 	"os"
 	"path/filepath"
 	"testing"
-	"forge/internal/config"
 )
 
 func writeTemp(t *testing.T, content string) string {
@@ -68,6 +68,33 @@ func TestEnvOverridesKeys(t *testing.T) {
 	}
 }
 
+func TestCopilotClientIDUsesBundledDefault(t *testing.T) {
+	path := writeTemp(t, "")
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CopilotClientID() != "Ov23liEz8seIOGdwNY9R" {
+		t.Fatalf("unexpected bundled client id: %q", cfg.CopilotClientID())
+	}
+}
+
+func TestCopilotClientIDPrefersConfigAndEnv(t *testing.T) {
+	path := writeTemp(t, "[copilot]\nclient_id = \"from-config\"")
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CopilotClientID() != "from-config" {
+		t.Fatalf("expected config client id, got %q", cfg.CopilotClientID())
+	}
+
+	t.Setenv("FORGE_COPILOT_CLIENT_ID", "from-env")
+	if cfg.CopilotClientID() != "from-env" {
+		t.Fatalf("expected env client id, got %q", cfg.CopilotClientID())
+	}
+}
+
 func TestTildeExpansion(t *testing.T) {
 	home, _ := os.UserHomeDir()
 	toml := "[session]\noutput_dir = \"~/forge-out\""
@@ -76,6 +103,36 @@ func TestTildeExpansion(t *testing.T) {
 	expected := filepath.Join(home, "forge-out")
 	if cfg.Session.OutputDir != expected {
 		t.Errorf("expected %s, got %s", expected, cfg.Session.OutputDir)
+	}
+}
+
+func TestChatConfigDefaults(t *testing.T) {
+	cfg, err := config.Load("/nonexistent/path.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Chat.MaxTurns != 50 {
+		t.Errorf("MaxTurns = %d, want 50", cfg.Chat.MaxTurns)
+	}
+	if cfg.Chat.CommandTimeout != 60 {
+		t.Errorf("CommandTimeout = %d, want 60", cfg.Chat.CommandTimeout)
+	}
+	if cfg.Chat.Yolo {
+		t.Error("Yolo should default to false")
+	}
+	if len(cfg.Chat.IgnoreDirs) == 0 {
+		t.Error("IgnoreDirs should have defaults")
+	}
+}
+
+func TestChatModel(t *testing.T) {
+	cfg, _ := config.Load("/nonexistent/path.toml")
+	if got := cfg.ChatModel(); got != cfg.Models.Writer {
+		t.Errorf("ChatModel() = %q, want %q (writer default)", got, cfg.Models.Writer)
+	}
+	cfg.Chat.Model = "gpt-4o"
+	if got := cfg.ChatModel(); got != "gpt-4o" {
+		t.Errorf("ChatModel() = %q, want gpt-4o", got)
 	}
 }
 

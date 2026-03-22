@@ -16,13 +16,14 @@ type NewSessionRequested struct{}
 
 // DoneModel is the Bubble Tea model for both done and abort screens.
 type DoneModel struct {
-	OutputDir   string
-	Aborted     bool
-	AbortReason string
+	OutputDir    string
+	Aborted      bool
+	AbortReason  string
+	TokenSummary string
 }
 
-func NewDoneModel(outputDir string, aborted bool, reason string) DoneModel {
-	return DoneModel{OutputDir: outputDir, Aborted: aborted, AbortReason: reason}
+func NewDoneModel(outputDir string, aborted bool, reason, tokenSummary string) DoneModel {
+	return DoneModel{OutputDir: outputDir, Aborted: aborted, AbortReason: reason, TokenSummary: tokenSummary}
 }
 
 func (m DoneModel) Init() tea.Cmd { return nil }
@@ -43,6 +44,8 @@ func (m DoneModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.Aborted {
 			return m, func() tea.Msg { return FixRequested{} }
 		}
+	case "r":
+		return m, func() tea.Msg { return ReviewRequested{} }
 	}
 	return m, nil
 }
@@ -60,10 +63,13 @@ func (m DoneModel) View() string {
 		sb.WriteString(styleGreen.Render("✓") + styleBright.Render(" Session complete") + "\n")
 	}
 	sb.WriteString("\n" + styleDim.Render("Output  ") + styleMid.Render(m.OutputDir) + "\n")
+	if m.TokenSummary != "" {
+		sb.WriteString(styleDim.Render("Tokens  ") + styleMid.Render(m.TokenSummary) + "\n")
+	}
 	if m.Aborted {
-		sb.WriteString("\n" + styleDim.Render("o  open in Finder   n  new session   q  quit") + "\n")
+		sb.WriteString("\n" + styleDim.Render("o  open   r  review   n  new session   q  quit") + "\n")
 	} else {
-		sb.WriteString("\n" + styleDim.Render("o  open in Finder   n  new session   f  fix   q  quit") + "\n")
+		sb.WriteString("\n" + styleDim.Render("o  open   r  review   n  new session   f  fix   q  quit") + "\n")
 	}
 	return sb.String()
 }

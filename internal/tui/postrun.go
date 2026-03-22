@@ -9,6 +9,7 @@ type PostRunScreen int
 const (
 	PostRunScreenDone PostRunScreen = iota
 	PostRunScreenFix
+	PostRunScreenReview
 )
 
 // PostRunResult is returned by RunPostSession to tell main.go what to do next.
@@ -21,23 +22,27 @@ type PostRunResult struct {
 
 // PostRunApp is the Bubble Tea root model for the post-session UI.
 type PostRunApp struct {
-	Screen PostRunScreen
-	done   DoneModel
-	fix    FixModel
-	result PostRunResult
+	Screen    PostRunScreen
+	done      DoneModel
+	fix       FixModel
+	review    ReviewModel
+	outputDir string
+	result    PostRunResult
 }
 
 func NewPostRunApp(
 	outputDir string,
 	aborted bool,
 	reason string,
+	tokenSummary string,
 	lastStart SessionStarted,
 	writerModels, auditorModels []string,
 ) PostRunApp {
 	return PostRunApp{
-		Screen: PostRunScreenDone,
-		done:   NewDoneModel(outputDir, aborted, reason),
-		fix:    NewFixModel(outputDir, lastStart, writerModels, auditorModels),
+		Screen:    PostRunScreenDone,
+		done:      NewDoneModel(outputDir, aborted, reason, tokenSummary),
+		fix:       NewFixModel(outputDir, lastStart, writerModels, auditorModels),
+		outputDir: outputDir,
 	}
 }
 
@@ -54,6 +59,13 @@ func (a PostRunApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case FixRequested:
 		a.Screen = PostRunScreenFix
+		return a, nil
+	case ReviewRequested:
+		a.review = NewReviewModel(a.outputDir, "")
+		a.Screen = PostRunScreenReview
+		return a, nil
+	case ReviewDone:
+		a.Screen = PostRunScreenDone
 		return a, nil
 	case FixStarted:
 		a.result = PostRunResult{
@@ -76,6 +88,10 @@ func (a PostRunApp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		updated, cmd := a.fix.Update(msg)
 		a.fix = updated.(FixModel)
 		return a, cmd
+	case PostRunScreenReview:
+		updated, cmd := a.review.Update(msg)
+		a.review = updated.(ReviewModel)
+		return a, cmd
 	}
 	return a, nil
 }
@@ -86,6 +102,8 @@ func (a PostRunApp) View() string {
 		return a.done.View()
 	case PostRunScreenFix:
 		return a.fix.View()
+	case PostRunScreenReview:
+		return a.review.View()
 	}
 	return ""
 }
@@ -96,10 +114,11 @@ func RunPostSession(
 	outputDir string,
 	aborted bool,
 	reason string,
+	tokenSummary string,
 	lastStart SessionStarted,
 	writerModels, auditorModels []string,
 ) PostRunResult {
-	app := NewPostRunApp(outputDir, aborted, reason, lastStart, writerModels, auditorModels)
+	app := NewPostRunApp(outputDir, aborted, reason, tokenSummary, lastStart, writerModels, auditorModels)
 	p := tea.NewProgram(app, tea.WithAltScreen())
 	retModel, err := p.Run()
 	if err != nil {

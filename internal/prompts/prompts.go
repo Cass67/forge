@@ -14,6 +14,18 @@ var Security string
 //go:embed prod.md
 var Prod string
 
+//go:embed correctness-auditor.md
+var CorrectnessAuditor string
+
+//go:embed refactor-auditor.md
+var RefactorAuditor string
+
+//go:embed security-auditor.md
+var SecurityAuditor string
+
+//go:embed prod-auditor.md
+var ProdAuditor string
+
 //go:embed summarizer.md
 var Summarizer string
 
