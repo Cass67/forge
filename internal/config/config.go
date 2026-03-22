@@ -38,6 +38,7 @@ type Keys struct {
 	Perplexity string `toml:"perplexity"`
 	DeepInfra  string `toml:"deepinfra"`
 	Cerebras   string `toml:"cerebras"`
+	Brave      string `toml:"brave"`
 }
 
 type Copilot struct {
@@ -206,6 +207,13 @@ func (c *Config) CerebrasKey() string {
 		return v
 	}
 	return c.Keys.Cerebras
+}
+
+func (c *Config) BraveKey() string {
+	if v := os.Getenv("BRAVE_API_KEY"); v != "" {
+		return v
+	}
+	return c.Keys.Brave
 }
 
 // CopilotClientID returns the GitHub OAuth App client ID used for device flow
