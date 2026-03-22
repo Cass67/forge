@@ -134,12 +134,45 @@ func Describe(skills []Skill) string {
 	return sb.String()
 }
 
-// Get finds a skill by name. Returns the skill and true if found.
+// Get finds a skill by exact name, or by unambiguous prefix/abbreviation.
+// For example, "tdd" matches "test-driven-development" if it's the only skill
+// whose initials or name starts with "tdd".
 func Get(skills []Skill, name string) (Skill, bool) {
+	// Exact match first.
 	for _, s := range skills {
 		if s.Name == name {
 			return s, true
 		}
 	}
+	lower := strings.ToLower(name)
+	// Prefix match (e.g. "test" matches "test-driven-development").
+	var prefixMatches []Skill
+	for _, s := range skills {
+		if strings.HasPrefix(strings.ToLower(s.Name), lower) {
+			prefixMatches = append(prefixMatches, s)
+		}
+	}
+	if len(prefixMatches) == 1 {
+		return prefixMatches[0], true
+	}
+	// Initials match (e.g. "tdd" matches "test-driven-development").
+	for _, s := range skills {
+		if skillInitials(s.Name) == lower {
+			return s, true
+		}
+	}
 	return Skill{}, false
+}
+
+// skillInitials returns the lowercase initials of a hyphen-separated skill name.
+// e.g. "test-driven-development" -> "tdd", "systematic-debugging" -> "sd".
+func skillInitials(name string) string {
+	parts := strings.Split(name, "-")
+	var b strings.Builder
+	for _, p := range parts {
+		if len(p) > 0 {
+			b.WriteByte(p[0])
+		}
+	}
+	return strings.ToLower(b.String())
 }

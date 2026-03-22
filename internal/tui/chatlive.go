@@ -313,9 +313,10 @@ func RunChatLive(events <-chan llm.Event, cfg ChatLiveConfig, inputCh chan<- str
 			tools:  chatPaneBufferState{follow: true},
 			layout: chatPaneLayoutState{toolsVisible: true},
 		},
-		switchModelFn: cfg.SwitchModel,
-		clearHistFn:   cfg.ClearHistory,
-		state:         cfg.State,
+		switchModelFn:  cfg.SwitchModel,
+		clearHistFn:    cfg.ClearHistory,
+		state:          cfg.State,
+		autoSkillsMode: cfg.AutoSkillsMode,
 	}
 	if m.state == nil {
 		m.state = chatstate.New()
@@ -884,7 +885,7 @@ func (m *chatLiveModel) submitInput(inputCh chan<- string) (ChatLiveResult, bool
 		}
 	}
 	requiredSkill := skills.RequiredForInput(input)
-	if requiredSkill != "" && !m.state.SkillActivated(requiredSkill) && m.autoSkillsMode != skills.AutoSkillsSuggest {
+	if requiredSkill != "" && !m.state.SkillActivated(requiredSkill) && skills.NormalizeAutoMode(m.autoSkillsMode) != skills.AutoSkillsSuggest {
 		if _, ok := skills.Get(m.skills, requiredSkill); ok {
 			m.display.flash = fmt.Sprintf("required skill: /%s", requiredSkill)
 			m.display.requiredSkillWarning = fmt.Sprintf("activate /%s before sending", requiredSkill)
@@ -921,6 +922,9 @@ func (m *chatLiveModel) submitInput(inputCh chan<- string) (ChatLiveResult, bool
 }
 
 func (m *chatLiveModel) submitSkillInput(inputCh chan<- string, s skills.Skill, turnLabel, flash, msg string) {
+	if m.state != nil {
+		m.state.ActivateSkill(s.Name)
+	}
 	m.inputBuf = ""
 	m.inputPos = 0
 	m.display.flash = flash
