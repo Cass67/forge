@@ -109,21 +109,40 @@ func RunChatLive(setup *ChatSetup) {
 	defer cancel()
 
 	go func() {
+		var running bool
+		var queue []string
+		startRun := func(msg string) {
+			running = true
+			go func(runMsg string) {
+				err := a.Run(ctx, runMsg)
+				if err != nil {
+					evRenderer.Error(err.Error())
+				}
+				inputCh <- "__turn_done__"
+			}(msg)
+		}
 		for input := range inputCh {
 			switch input {
 			case "__approve_yes":
 				evRenderer.ResponseChan() <- true
 			case "__approve_no":
 				evRenderer.ResponseChan() <- false
+			case "__turn_done__":
+				evRenderer.TurnDone()
+				running = false
+				if len(queue) > 0 {
+					next := queue[0]
+					queue = queue[1:]
+					evRenderer.Info(fmt.Sprintf("applying queued steering (%d remaining)", len(queue)))
+					startRun(next)
+				}
 			default:
-				go func(msg string) {
-					err := a.Run(ctx, msg)
-					if err != nil {
-						evRenderer.Error(err.Error())
-					}
-					evRenderer.TurnDone()
-					doneCh <- struct{}{}
-				}(input)
+				if running {
+					queue = append(queue, input)
+					evRenderer.Info(fmt.Sprintf("queued steering: %s", input))
+					continue
+				}
+				startRun(input)
 			}
 		}
 	}()
