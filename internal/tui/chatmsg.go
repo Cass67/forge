@@ -23,16 +23,16 @@ type ChatMessage struct {
 	Content string // message body (may be multi-line)
 }
 
-func (m ChatMessage) borderColor() lipgloss.Color {
+func (m ChatMessage) borderColor(theme chatTheme) lipgloss.Color {
 	switch m.Kind {
 	case MsgUser:
-		return lipgloss.Color("#56d364")
+		return theme.Success
 	case MsgAgent:
-		return lipgloss.Color("#58a6ff")
+		return theme.AccentPrimary
 	case MsgForge:
-		return lipgloss.Color("#d2a8ff")
+		return theme.AccentSecondary
 	default:
-		return lipgloss.Color("#484f58")
+		return theme.Border
 	}
 }
 
@@ -50,15 +50,7 @@ func (m ChatMessage) Render(width int, theme chatTheme) string {
 		return style.Render(m.Content)
 	}
 
-	bc := theme.Border
-	switch m.Kind {
-	case MsgUser:
-		bc = theme.AccentPrimary
-	case MsgAgent:
-		bc = theme.AccentSecondary
-	case MsgForge:
-		bc = theme.Warning
-	}
+	bc := m.borderColor(theme)
 	boxBg := theme.PanelBG
 	headerBg := theme.HeaderBG
 	innerWidth := width - 2

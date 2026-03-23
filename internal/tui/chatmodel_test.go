@@ -225,6 +225,42 @@ func TestChatModelSlashThemeChangesRenderedViewportStyle(t *testing.T) {
 	}
 }
 
+func TestChatModelViewHeaderIncludesThemeName(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test-model", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+	m.themeID = "dusk"
+	m.AddMessage(ChatMessage{Kind: MsgUser, Header: "You • 12:00:00", Content: "hello"})
+
+	v := m.View()
+	if !strings.Contains(v, "theme: dusk") {
+		t.Fatalf("view header missing theme name: %s", v)
+	}
+}
+
+func TestChatModelHelpOverlayChangesAcrossThemes(t *testing.T) {
+	prevProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(prevProfile)
+	})
+
+	m := NewChatModel(ChatLiveConfig{Model: "test-model", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 30
+	m.helpVisible = true
+
+	defaultOverlay := m.View()
+	m.themeID = "light"
+	lightOverlay := m.View()
+	if defaultOverlay == lightOverlay {
+		t.Fatal("expected help overlay rendering to change across themes")
+	}
+	if !strings.Contains(defaultOverlay, "Help") || !strings.Contains(lightOverlay, "Help") {
+		t.Fatal("expected help overlay content to remain visible")
+	}
+}
+
 func TestChatModelSlashHelpOpensOverlay(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 100
