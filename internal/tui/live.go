@@ -8,8 +8,8 @@ import (
 	"forge/internal/output"
 	"forge/internal/session"
 
-	"github.com/gdamore/tcell/v2"
-	"github.com/mattn/go-runewidth"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/reflow/wordwrap"
 )
 
@@ -27,6 +27,8 @@ type LiveResult struct {
 	OutputDir         string
 	Err               error
 }
+
+type liveEventsClosedMsg struct{}
 
 type liveModel struct {
 	writerModel    string
@@ -49,20 +51,12 @@ type liveModel struct {
 	waitingAgent   string
 	writerTurnGap  bool
 	auditorTurnGap bool
+	gate           *session.TurnGate
+	outputDir      string
+	result         LiveResult
 }
 
 func RunLive(events <-chan llm.Event, totalPasses, totalRounds int, cfg LiveConfig, outputDir string) LiveResult {
-	screen, err := tcell.NewScreen()
-	if err != nil {
-		return LiveResult{Aborted: true, OutputDir: outputDir, Err: err}
-	}
-	if err := screen.Init(); err != nil {
-		return LiveResult{Aborted: true, OutputDir: outputDir, Err: err}
-	}
-	defer screen.Fini()
-
-	screen.Clear()
-
 	model := liveModel{
 		writerModel:  cfg.WriterModel,
 		auditorModel: cfg.AuditorModel,
@@ -71,184 +65,203 @@ func RunLive(events <-chan llm.Event, totalPasses, totalRounds int, cfg LiveConf
 		totalRounds:  totalRounds,
 		passName:     "starting",
 		phase:        "starting",
+		gate:         cfg.Gate,
+		outputDir:    outputDir,
+		result:       LiveResult{OutputDir: outputDir},
 	}
 
-	eventCh := make(chan tcell.Event, 32)
+	p := tea.NewProgram(model, tea.WithAltScreen())
 	go func() {
-		for {
-			ev := screen.PollEvent()
-			if ev == nil {
-				close(eventCh)
-				return
-			}
-			eventCh <- ev
+		for ev := range events {
+			p.Send(ev)
 		}
+		p.Send(liveEventsClosedMsg{})
 	}()
 
-	for {
-		model.render(screen)
-		select {
-		case ev, ok := <-eventCh:
-			if !ok {
-				return LiveResult{Aborted: true, OutputDir: outputDir}
+	finalModel, _ := p.Run()
+	return finalModel.(liveModel).result
+}
+
+func (m liveModel) Init() tea.Cmd {
+	return nil
+}
+
+func (m liveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		return m, nil
+	case tea.KeyMsg:
+		switch msg.Type {
+		case tea.KeyLeft:
+			m.focusRight = false
+		case tea.KeyRight:
+			m.focusRight = true
+		case tea.KeyUp:
+			m.scrollFocused(-1)
+		case tea.KeyDown:
+			m.scrollFocused(1)
+		case tea.KeyPgUp:
+			m.scrollFocused(-(m.bodyHeight() / 2))
+		case tea.KeyPgDown:
+			m.scrollFocused(m.bodyHeight() / 2)
+		case tea.KeyHome:
+			m.setFocusedScroll(0)
+		case tea.KeyEnd:
+			m.setFocusedScroll(m.focusedMaxScroll())
+		case tea.KeyEnter:
+			if m.gate != nil && m.waitingAdvance {
+				m.gate.Advance()
+				m.waitingAdvance = false
+				m.waitingAgent = ""
 			}
-			switch msg := ev.(type) {
-			case *tcell.EventResize:
-				screen.Sync()
-				model.width, model.height = msg.Size()
-			case *tcell.EventKey:
-				switch msg.Key() {
-				case tcell.KeyLeft:
-					model.focusRight = false
-				case tcell.KeyRight:
-					model.focusRight = true
-				case tcell.KeyUp:
-					model.scrollFocused(-1)
-				case tcell.KeyDown:
-					model.scrollFocused(1)
-				case tcell.KeyPgUp:
-					model.scrollFocused(-(model.bodyHeight() / 2))
-				case tcell.KeyPgDn:
-					model.scrollFocused(model.bodyHeight() / 2)
-				case tcell.KeyHome:
-					model.setFocusedScroll(0)
-				case tcell.KeyEnd:
-					model.setFocusedScroll(model.focusedMaxScroll())
-				case tcell.KeyRune:
-					switch msg.Rune() {
-					case 'q':
-						return LiveResult{Aborted: true, OutputDir: outputDir}
-					case 'm':
-						if cfg.Gate != nil {
-							model.manualMode = cfg.Gate.Toggle()
-							if !model.manualMode {
-								model.waitingAdvance = false
-								model.waitingAgent = ""
-							}
-						}
-					case ' ', 'c':
-						if cfg.Gate != nil && model.waitingAdvance {
-							cfg.Gate.Advance()
-							model.waitingAdvance = false
-							model.waitingAgent = ""
-						}
+		case tea.KeyEsc:
+			m.result = LiveResult{Aborted: true, OutputDir: m.outputDir}
+			return m, tea.Quit
+		case tea.KeyRunes:
+			switch string(msg.Runes) {
+			case "q":
+				m.result = LiveResult{Aborted: true, OutputDir: m.outputDir}
+				return m, tea.Quit
+			case "m":
+				if m.gate != nil {
+					m.manualMode = m.gate.Toggle()
+					if !m.manualMode {
+						m.waitingAdvance = false
+						m.waitingAgent = ""
 					}
-				case tcell.KeyEnter:
-					if cfg.Gate != nil && model.waitingAdvance {
-						cfg.Gate.Advance()
-						model.waitingAdvance = false
-						model.waitingAgent = ""
-					}
-				case tcell.KeyEscape:
-					return LiveResult{Aborted: true, OutputDir: outputDir}
 				}
-			}
-		case ev, ok := <-events:
-			if !ok {
-				return LiveResult{OutputDir: outputDir}
-			}
-			switch ev.Kind {
-			case llm.EventPassStart:
-				model.currentPass = ev.Pass
-				if ev.PassName != "" {
-					model.passName = ev.PassName
-				} else {
-					model.passName = llm.PassName(ev.Pass)
+			case " ", "c":
+				if m.gate != nil && m.waitingAdvance {
+					m.gate.Advance()
+					m.waitingAdvance = false
+					m.waitingAgent = ""
 				}
-				model.phase = "starting"
-			case llm.EventRoundStart:
-				model.currentPass = ev.Pass
-				model.currentRound = ev.Round
-				model.phase = "writer"
-				model.writerTurnGap = model.writerBuf != ""
-				model.auditorTurnGap = model.auditorBuf != ""
-			case llm.EventToken:
-				switch ev.Agent {
-				case "writer":
-					model.phase = "writer"
-					model.writerBuf = appendTurnText(model.writerBuf, &model.writerTurnGap, ev.Text)
-					model.writerScroll = model.writerMaxScroll()
-				case "auditor":
-					model.phase = "auditor"
-					model.auditorBuf = appendTurnText(model.auditorBuf, &model.auditorTurnGap, ev.Text)
-					model.auditorScroll = model.auditorMaxScroll()
-				case "summarizer":
-					model.phase = "summarizing"
-				}
-			case llm.EventRoundEnd:
-				model.currentPass = ev.Pass
-				model.currentRound = ev.Round
-				model.phase = "summarizing"
-			case llm.EventAgentDone:
-				if cfg.Gate != nil && cfg.Gate.Enabled() {
-					model.waitingAdvance = true
-					model.waitingAgent = ev.Agent
-				}
-			case llm.EventPassEnd:
-				model.currentPass = ev.Pass
-				model.phase = "pass done"
-			case llm.EventFeedbackRequest:
-				return LiveResult{FeedbackRequested: true, FeedbackPass: ev.Pass, FeedbackPassName: ev.PassName, OutputDir: outputDir}
-			case llm.EventDone:
-				return LiveResult{OutputDir: outputDir}
-			case llm.EventAbort, llm.EventError:
-				return LiveResult{Aborted: true, OutputDir: outputDir, Err: ev.Err}
 			}
 		}
+		return m, nil
+	case llm.Event:
+		switch msg.Kind {
+		case llm.EventPassStart:
+			m.currentPass = msg.Pass
+			if msg.PassName != "" {
+				m.passName = msg.PassName
+			} else {
+				m.passName = llm.PassName(msg.Pass)
+			}
+			m.phase = "starting"
+		case llm.EventRoundStart:
+			m.currentPass = msg.Pass
+			m.currentRound = msg.Round
+			m.phase = "writer"
+			m.writerTurnGap = m.writerBuf != ""
+			m.auditorTurnGap = m.auditorBuf != ""
+		case llm.EventToken:
+			switch msg.Agent {
+			case "writer":
+				m.phase = "writer"
+				m.writerBuf = appendTurnText(m.writerBuf, &m.writerTurnGap, msg.Text)
+				m.writerScroll = m.writerMaxScroll()
+			case "auditor":
+				m.phase = "auditor"
+				m.auditorBuf = appendTurnText(m.auditorBuf, &m.auditorTurnGap, msg.Text)
+				m.auditorScroll = m.auditorMaxScroll()
+			case "summarizer":
+				m.phase = "summarizing"
+			}
+		case llm.EventRoundEnd:
+			m.currentPass = msg.Pass
+			m.currentRound = msg.Round
+			m.phase = "summarizing"
+		case llm.EventAgentDone:
+			m.waitingAdvance = m.manualMode
+			m.waitingAgent = msg.Agent
+		case llm.EventPassEnd:
+			m.currentPass = msg.Pass
+			m.phase = "pass done"
+		case llm.EventFeedbackRequest:
+			m.result = LiveResult{
+				FeedbackRequested: true,
+				FeedbackPass:      msg.Pass,
+				FeedbackPassName:  msg.PassName,
+				OutputDir:         m.outputDir,
+			}
+			return m, tea.Quit
+		case llm.EventDone:
+			m.result = LiveResult{OutputDir: m.outputDir}
+			return m, tea.Quit
+		case llm.EventAbort, llm.EventError:
+			m.result = LiveResult{Aborted: true, OutputDir: m.outputDir, Err: fmt.Errorf("%s", eventErrorMessage(msg))}
+			return m, tea.Quit
+		}
+		return m, nil
+	case liveEventsClosedMsg:
+		return m, tea.Quit
 	}
+	return m, nil
 }
 
-func (m *liveModel) render(screen tcell.Screen) {
-	w, h := screen.Size()
-	m.width, m.height = w, h
-	screen.Clear()
+func (m liveModel) View() string {
+	if m.width == 0 || m.height == 0 {
+		return "Initializing..."
+	}
 
-	colorBright := tcell.GetColor("#f0f6fc")
-	colorMid := tcell.GetColor("#b1bac4")
-	colorDim := tcell.GetColor("#8b949e")
-	colorGreen := tcell.GetColor("#56d364")
+	header := lipgloss.NewStyle().
+		Background(lipgloss.Color("#161b22")).
+		Foreground(lipgloss.Color("#b1bac4")).
+		Width(m.width).
+		Render(m.statusLine())
 
-	styleBody := tcell.StyleDefault.Foreground(colorBright)
-	styleStatus := tcell.StyleDefault.Foreground(colorMid)
-	styleDivider := tcell.StyleDefault.Foreground(colorDim)
-	styleTitleDim := tcell.StyleDefault.Foreground(colorDim)
-	styleTitleFocus := tcell.StyleDefault.Foreground(colorGreen).Bold(true)
-
-	drawText(screen, 0, 0, styleStatus, fitWidth(m.statusLine(), w))
-
-	bodyTop := 1
+	leftWidth := max(20, (m.width-1)/2)
+	rightWidth := max(20, m.width-leftWidth)
 	bodyHeight := m.bodyHeight()
-	leftWidth := (w - 1) / 2
-	rightWidth := w - 1 - leftWidth
+	leftPane := m.renderPane("A", m.writerModel, m.writerBuf, leftWidth, bodyHeight, m.writerScroll, !m.focusRight)
+	rightPane := m.renderPane("B", m.auditorModel, m.auditorBuf, rightWidth, bodyHeight, m.auditorScroll, m.focusRight)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
 
-	leftTitleStyle := styleTitleDim
-	rightTitleStyle := styleTitleDim
-	if m.focusRight {
-		rightTitleStyle = styleTitleFocus
-	} else {
-		leftTitleStyle = styleTitleFocus
-	}
+	footer := lipgloss.NewStyle().
+		Background(lipgloss.Color("#161b22")).
+		Foreground(lipgloss.Color("#8b949e")).
+		Width(m.width).
+		Render(m.helpLine())
 
-	leftLines := m.paneLines("A", m.writerModel, m.writerBuf, leftWidth, bodyHeight, m.writerScroll)
-	rightLines := m.paneLines("B", m.auditorModel, m.auditorBuf, rightWidth, bodyHeight, m.auditorScroll)
-
-	for row := 0; row < bodyHeight; row++ {
-		drawText(screen, 0, bodyTop+row, chooseStyle(row, leftTitleStyle, styleBody), fitWidth(leftLines[row], leftWidth))
-		screen.SetContent(leftWidth, bodyTop+row, '│', nil, styleDivider)
-		drawText(screen, leftWidth+1, bodyTop+row, chooseStyle(row, rightTitleStyle, styleBody), fitWidth(rightLines[row], rightWidth))
-	}
-	if h > 1 {
-		drawText(screen, 0, h-1, styleStatus, fitWidth(m.helpLine(), w))
-	}
-
-	screen.Show()
+	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
 }
 
-func chooseStyle(row int, header, normal tcell.Style) tcell.Style {
-	if row == 0 {
-		return header
+func (m liveModel) renderPane(label, modelName, content string, width, height, scroll int, focused bool) string {
+	titleColor := lipgloss.Color("#8b949e")
+	borderColor := lipgloss.Color("#30363d")
+	if focused {
+		titleColor = lipgloss.Color("#56d364")
+		borderColor = lipgloss.Color("#56d364")
 	}
-	return normal
+
+	title := lipgloss.NewStyle().Foreground(titleColor).Bold(true).Render(label + " " + modelName)
+	bodyWidth := max(1, width-4)
+	lines := wrapPlain(foldForDisplay(content), bodyWidth)
+	if len(lines) == 0 {
+		lines = []string{""}
+	}
+	scroll = clamp(scroll, 0, max(0, len(lines)-height))
+	end := min(len(lines), scroll+height)
+	visible := append([]string(nil), lines[scroll:end]...)
+	scrollbar := scrollbarColumn(len(lines), height, scroll, height)
+	contentBody := joinWithScrollbar(visible, scrollbar, bodyWidth, height)
+
+	inner := lipgloss.JoinVertical(
+		lipgloss.Left,
+		title,
+		lipgloss.NewStyle().Width(max(1, width-2)).Height(height).Render(contentBody),
+	)
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
+		Background(lipgloss.Color("#0d1117")).
+		Foreground(lipgloss.Color("#f0f6fc")).
+		Width(max(1, width-2)).
+		Height(max(1, height+1)).
+		Render(inner)
 }
 
 func (m *liveModel) statusLine() string {
@@ -265,36 +278,16 @@ func (m *liveModel) statusLine() string {
 
 func (m *liveModel) bodyHeight() int {
 	if m.height <= 2 {
-		return 1
+		return 3
 	}
-	return m.height - 2
+	return max(3, m.height-4)
 }
 
 func (m *liveModel) helpLine() string {
 	if m.waitingAdvance {
-		return "left/right focus  up/down scroll  enter/space continue  m toggle manual  q quit"
+		return "left/right focus  up/down scroll  enter/space continue  q quit"
 	}
-	return "left/right focus  up/down scroll  m toggle manual  q quit"
-}
-
-func (m *liveModel) paneLines(label, modelName, content string, width, height, scroll int) []string {
-	lines := make([]string, 0, height)
-	lines = append(lines, label+" "+modelName)
-	bodyHeight := height - 1
-	bodyLines := wrapPlain(foldForDisplay(content), width)
-	if len(bodyLines) == 0 {
-		bodyLines = []string{""}
-	}
-	scroll = clamp(scroll, 0, max(0, len(bodyLines)-bodyHeight))
-	end := min(len(bodyLines), scroll+bodyHeight)
-	lines = append(lines, bodyLines[scroll:end]...)
-	for len(lines) < height {
-		lines = append(lines, "")
-	}
-	if len(lines) > height {
-		lines = lines[:height]
-	}
-	return lines
+	return "left/right focus  up/down scroll  q quit"
 }
 
 func (m *liveModel) scrollFocused(delta int) {
@@ -321,31 +314,11 @@ func (m *liveModel) focusedMaxScroll() int {
 }
 
 func (m *liveModel) writerMaxScroll() int {
-	return max(0, len(wrapPlain(foldForDisplay(m.writerBuf), max(1, (m.width-1)/2)))-(m.bodyHeight()-1))
+	return max(0, len(wrapPlain(foldForDisplay(m.writerBuf), max(1, max(20, (m.width-1)/2)-4)))-m.bodyHeight())
 }
 
 func (m *liveModel) auditorMaxScroll() int {
-	rightWidth := m.width - 1 - ((m.width - 1) / 2)
-	return max(0, len(wrapPlain(foldForDisplay(m.auditorBuf), max(1, rightWidth)))-(m.bodyHeight()-1))
-}
-
-func drawText(screen tcell.Screen, x, y int, style tcell.Style, text string) {
-	col := 0
-	for _, r := range text {
-		screen.SetContent(x+col, y, r, nil, style)
-		col += runewidth.RuneWidth(r)
-	}
-}
-
-func fitWidth(s string, width int) string {
-	sw := runewidth.StringWidth(s)
-	if sw > width {
-		return runewidth.Truncate(s, width, "")
-	}
-	if sw < width {
-		return s + strings.Repeat(" ", width-sw)
-	}
-	return s
+	return max(0, len(wrapPlain(foldForDisplay(m.auditorBuf), max(1, max(20, m.width-max(20, (m.width-1)/2))-4)))-m.bodyHeight())
 }
 
 func wrapPlain(s string, width int) []string {

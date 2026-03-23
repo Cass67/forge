@@ -4,15 +4,23 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"forge/internal/auth"
+	"forge/internal/chatgptauth"
 	"forge/internal/config"
 	"forge/internal/copilot"
+	"forge/internal/fsutil"
 	"forge/internal/llm"
 	"forge/internal/llm/drivers"
+)
+
+var (
+	chatGPTAuthAvailable = chatgptauth.Available
+	newChatGPTDriver     = func(registryName, apiModel string) llm.Driver { return drivers.NewChatGPT(registryName, apiModel) }
+	discoverOpenAIModels = DiscoverOpenAIModels
+	discoverCompatModels = DiscoverOpenAICompatibleModels
 )
 
 type Runtime struct {
@@ -30,8 +38,15 @@ type CompatProvider struct {
 	Models  []string
 }
 
+type ProviderBackend struct {
+	ID           string
+	Label        string
+	Status       string
+	DefaultModel string
+}
+
 func DefaultConfigPath() string {
-	return filepath.Join(os.Getenv("HOME"), ".config", "forge", "config.toml")
+	return fsutil.ForgeConfigPath("config.toml")
 }
 
 func LoadConfig() (*config.Config, error) {
@@ -99,6 +114,23 @@ func DriverForModel(cfg *config.Config, tokens *auth.Tokens, model string) llm.D
 		}
 		return nil
 	}
+	if ref.Provider == "chatgpt" || (ref.Provider == "" && canUseChatGPTForUnqualifiedModel(resolvedModel)) {
+		apiModel := canonicalChatGPTModel(resolvedModel)
+		if apiModel == "" {
+			return nil
+		}
+		registryName := model
+		if ref.Provider == "chatgpt" {
+			registryName = QualifyModel(ref)
+		}
+		if d := newChatGPTDriver(registryName, apiModel); d != nil {
+			return d
+		}
+		return nil
+	}
+	if ref.Provider == "" && IsOpenAIModel(model) && canUseCopilotForUnqualifiedModel(tokens, resolvedModel) {
+		return drivers.NewCopilot(tokens.CopilotToken, model, resolvedModel)
+	}
 	if ref.Provider == "openai" || (ref.Provider == "" && IsOpenAIModel(model)) {
 		if key := cfg.OpenAIKey(); key != "" {
 			apiModel := canonicalOpenAIModel(resolvedModel)
@@ -120,11 +152,11 @@ func DriverForModel(cfg *config.Config, tokens *auth.Tokens, model string) llm.D
 		return nil
 	}
 	if p, ambiguous := ResolveCompatProvider(BuildCompatProviders(cfg), model); p != nil {
-		apiModel := canonicalOpenAIModel(resolvedModel)
+		apiModel := compatAPIModel(p.Name, ref, resolvedModel)
 		if apiModel != resolvedModel {
-			return drivers.NewOpenAICompatibleAlias(p.KeyFn(), p.BaseURL, model, apiModel)
+			return drivers.NewOpenAICompatibleProviderAlias(p.Name, p.KeyFn(), p.BaseURL, model, apiModel)
 		}
-		return drivers.NewOpenAICompatible(p.KeyFn(), p.BaseURL, resolvedModel)
+		return drivers.NewOpenAICompatibleProviderAlias(p.Name, p.KeyFn(), p.BaseURL, model, resolvedModel)
 	} else if ambiguous {
 		return nil
 	}
@@ -136,21 +168,79 @@ func AvailableModels(cfg *config.Config, tokens *auth.Tokens) []string {
 	if cfg.AnthropicKey() != "" {
 		out = append(out, AnthropicModels()...)
 	}
+	if chatGPTAuthAvailable() {
+		out = append(out, ChatGPTModels()...)
+		out = append(out, qualifyModels("chatgpt", ChatGPTModels())...)
+	}
 	if cfg.OpenAIKey() != "" {
-		out = append(out, DiscoverOpenAIModels(cfg.OpenAIKey())...)
+		openAIModels := discoverOpenAIModels(cfg.OpenAIKey())
+		out = append(out, openAIModels...)
+		out = append(out, qualifyModels("openai", openAIModels)...)
 	}
 	for _, p := range BuildCompatProviders(cfg) {
 		if p.KeyFn() != "" {
-			out = append(out, p.Models...)
+			if useLiveCompatModelDiscovery() {
+				out = append(out, discoverCompatModels(p.BaseURL, p.KeyFn(), p.Name, p.Models, p.IsModel)...)
+			} else {
+				out = append(out, qualifyCompatibleModelList(p.Name, p.Models)...)
+			}
 		}
 	}
 	if tokens.CopilotToken != "" {
 		out = append(out, CopilotModels(tokens.CopilotToken)...)
 	}
-	if len(out) == 0 {
-		out = AllModels()
+	return sortModelsByHealth(uniqueStrings(out))
+}
+
+func useLiveCompatModelDiscovery() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("FORGE_ENABLE_LIVE_COMPAT_MODELS"))) {
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
 	}
-	return out
+}
+
+func SupportedProviderBackends(cfg *config.Config, tokens *auth.Tokens) []ProviderBackend {
+	backends := []ProviderBackend{
+		{
+			ID:           "anthropic",
+			Label:        "Anthropic",
+			Status:       providerBackendStatus(cfg.AnthropicKey() != "", "configure API key"),
+			DefaultModel: "anthropic/" + AnthropicModels()[0],
+		},
+		{
+			ID:           "chatgpt",
+			Label:        "ChatGPT subscription",
+			Status:       providerBackendStatus(chatGPTAuthAvailable(), "sign in"),
+			DefaultModel: "chatgpt/" + ChatGPTModels()[0],
+		},
+		{
+			ID:           "copilot",
+			Label:        "GitHub Copilot",
+			Status:       providerBackendStatus(tokens != nil && strings.TrimSpace(tokens.CopilotToken) != "", "sign in"),
+			DefaultModel: "copilot/gpt-5",
+		},
+		{
+			ID:           "openai",
+			Label:        "OpenAI API",
+			Status:       providerBackendStatus(cfg.OpenAIKey() != "", "configure API key"),
+			DefaultModel: "openai/" + OpenAIModels()[0],
+		},
+	}
+	for _, provider := range BuildCompatProviders(cfg) {
+		defaultModel := provider.Name
+		if len(provider.Models) > 0 {
+			defaultModel = explicitBackendModel(provider.Name, provider.Models[0])
+		}
+		backends = append(backends, ProviderBackend{
+			ID:           provider.Name,
+			Label:        strings.ToUpper(provider.Name[:1]) + provider.Name[1:],
+			Status:       providerBackendStatus(provider.KeyFn() != "", "configure API key"),
+			DefaultModel: defaultModel,
+		})
+	}
+	return backends
 }
 
 func FindCompatProvider(providers []CompatProvider, model string) *CompatProvider {
@@ -200,8 +290,22 @@ func canonicalOpenAIModel(name string) string {
 	}
 }
 
+func compatAPIModel(provider string, ref ModelRef, resolvedModel string) string {
+	return canonicalOpenAIModel(strings.TrimSpace(resolvedModel))
+}
+
 func IsCopilotModel(name string) bool {
 	return strings.HasPrefix(name, "copilot/")
+}
+
+func canonicalChatGPTModel(name string) string {
+	model := strings.TrimSpace(name)
+	switch strings.ToLower(model) {
+	case "gpt-5":
+		return "gpt-5.4"
+	default:
+		return model
+	}
 }
 
 func CopilotAPIModel(name string) string {
@@ -213,6 +317,79 @@ func CopilotModels(token string) []string {
 	defer cancel()
 	models, _ := copilot.DiscoverModels(ctx, token)
 	return models
+}
+
+func canUseCopilotForUnqualifiedModel(tokens *auth.Tokens, model string) bool {
+	if tokens == nil || strings.TrimSpace(tokens.CopilotToken) == "" {
+		return false
+	}
+	target := "copilot/" + strings.TrimSpace(model)
+	for _, known := range copilot.KnownModels() {
+		if known == target {
+			return true
+		}
+	}
+	return false
+}
+
+func canUseChatGPTForUnqualifiedModel(model string) bool {
+	if !chatGPTAuthAvailable() {
+		return false
+	}
+	target := canonicalChatGPTModel(model)
+	if target == "" {
+		return false
+	}
+	for _, known := range ChatGPTModels() {
+		if known == target {
+			return true
+		}
+	}
+	return false
+}
+
+func qualifyModels(provider string, models []string) []string {
+	out := make([]string, 0, len(models))
+	for _, model := range models {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		out = append(out, provider+"/"+model)
+	}
+	return out
+}
+
+func uniqueStrings(in []string) []string {
+	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, item := range in {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	return out
+}
+
+func providerBackendStatus(available bool, missing string) string {
+	if available {
+		return "ready"
+	}
+	return missing
+}
+
+func explicitBackendModel(providerID, model string) string {
+	ref := ParseModelRef(model)
+	if ref.Provider == providerID {
+		return QualifyModel(ref)
+	}
+	return providerID + "/" + strings.TrimSpace(model)
 }
 
 func BuildCompatProviders(cfg *config.Config) []CompatProvider {
@@ -275,8 +452,14 @@ func BuildCompatProviders(cfg *config.Config) []CompatProvider {
 			Name:    "nvidia",
 			BaseURL: "https://integrate.api.nvidia.com/v1",
 			KeyFn:   cfg.NVIDIAKey,
-			IsModel: func(m string) bool { return strings.HasPrefix(m, "nvidia/") },
-			Models:  []string{"nvidia/llama-3.1-nemotron-51b-instruct", "meta/llama-3.3-70b-instruct"},
+			IsModel: func(m string) bool { return strings.Contains(m, "/") },
+			Models: []string{
+				"moonshotai/kimi-k2-instruct-0905",
+				"moonshotai/kimi-k2.5",
+				"nvidia/llama-3.1-nemotron-51b-instruct",
+				"meta/llama-3.3-70b-instruct",
+				"google/gemma-3-27b-it",
+			},
 		},
 		{
 			Name:    "together",
@@ -304,8 +487,12 @@ func BuildCompatProviders(cfg *config.Config) []CompatProvider {
 			Name:    "openrouter",
 			BaseURL: "https://openrouter.ai/api/v1",
 			KeyFn:   cfg.OpenRouterKey,
-			IsModel: func(m string) bool { return strings.Contains(m, "/") },
+			IsModel: func(m string) bool {
+				return strings.Contains(m, "/") && !strings.HasPrefix(m, "openrouter/")
+			},
 			Models: []string{
+				"deepseek/deepseek-r1-0528",
+				"moonshotai/kimi-k2-0905",
 				"openai/gpt-4o",
 				"anthropic/claude-sonnet-4-5",
 				"meta-llama/llama-3.3-70b-instruct:free",

@@ -49,6 +49,18 @@ type Configurable interface {
 	SetParams(p Params)
 }
 
+// ConversationResetter is optionally implemented by stateful drivers that can
+// discard provider-side conversation state when local history is cleared.
+type ConversationResetter interface {
+	ResetConversation()
+}
+
+// RequestModeReporter is optionally implemented by drivers that can describe
+// the context/state path used for the most recent request.
+type RequestModeReporter interface {
+	LastRequestMode() string
+}
+
 type EventKind string
 
 const (

@@ -28,12 +28,16 @@ func Preflight(cfg *config.Config, tokens *auth.Tokens, reg *llm.Registry) []Iss
 
 	needsAnthropic := IsAnthropicModel(cfg.Models.Writer) || IsAnthropicModel(cfg.Models.Auditor) || IsAnthropicModel(cfg.Models.Summarizer)
 	needsOpenAI := IsOpenAIModel(cfg.Models.Writer) || IsOpenAIModel(cfg.Models.Auditor) || IsOpenAIModel(cfg.Models.Summarizer)
+	needsChatGPT := usesChatGPTProvider(cfg.Models.Writer) || usesChatGPTProvider(cfg.Models.Auditor) || usesChatGPTProvider(cfg.Models.Summarizer)
 
 	if needsAnthropic {
-		appendKeyIssue("ANTHROPIC_API_KEY", "not set — add to ~/.config/forge/config.toml or export in shell", cfg.AnthropicKey() != "")
+		appendKeyIssue("ANTHROPIC_API_KEY", "not set — add in Forge provider auth or export in shell", cfg.AnthropicKey() != "")
 	}
 	if needsOpenAI {
-		appendKeyIssue("OPENAI_API_KEY", "not set — add to ~/.config/forge/config.toml or export in shell", cfg.OpenAIKey() != "")
+		appendKeyIssue("OPENAI_API_KEY", "not set — add in Forge provider auth or export in shell", cfg.OpenAIKey() != "")
+	}
+	if needsChatGPT {
+		appendKeyIssue("ChatGPT/Codex auth", "not found — sign in with ChatGPT/Codex so Forge can read local ChatGPT auth state", chatGPTAuthAvailable())
 	}
 
 	compatEnvVars := map[string]string{
@@ -51,7 +55,7 @@ func Preflight(cfg *config.Config, tokens *auth.Tokens, reg *llm.Registry) []Iss
 	for _, m := range []string{cfg.Models.Writer, cfg.Models.Auditor, cfg.Models.Summarizer} {
 		if cp, ambiguous := ResolveCompatProvider(BuildCompatProviders(cfg), m); cp != nil && !seen[cp.Name] {
 			seen[cp.Name] = true
-			appendKeyIssue(compatEnvVars[cp.Name], "not set — add to ~/.config/forge/config.toml or export in shell", cp.KeyFn() != "")
+			appendKeyIssue(compatEnvVars[cp.Name], "not set — add in Forge provider auth or export in shell", cp.KeyFn() != "")
 		} else if ambiguous {
 			issues = append(issues, Issue{Name: m, OK: false, Detail: "model matches multiple configured compatible providers; use an explicit provider prefix", Severity: "error"})
 		}
@@ -84,6 +88,10 @@ func Preflight(cfg *config.Config, tokens *auth.Tokens, reg *llm.Registry) []Iss
 	}
 
 	return issues
+}
+
+func usesChatGPTProvider(model string) bool {
+	return ParseModelRef(model).Provider == "chatgpt"
 }
 
 func SendStartupChecks(p *tea.Program, issues []Issue) {
