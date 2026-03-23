@@ -52,6 +52,44 @@ func TestRegistryDescribe(t *testing.T) {
 	}
 }
 
+func TestRegistryDescribePromptHidesHiddenToolsByDefault(t *testing.T) {
+	reg := NewRegistry()
+	reg.Register(Tool{Name: "read_file", Description: "Read a file"})
+	reg.Register(Tool{Name: "tool_help", Description: "Reveal specialized tools"})
+	reg.Register(Tool{Name: "web_search", Description: "Search the web", PromptVisibility: PromptHidden})
+
+	desc := reg.DescribeForPrompt()
+	if !strings.Contains(desc, "read_file") {
+		t.Fatal("missing core tool")
+	}
+	if !strings.Contains(desc, "tool_help") {
+		t.Fatal("missing tool_help")
+	}
+	if strings.Contains(desc, "web_search") {
+		t.Fatal("hidden tool should not be shown by default")
+	}
+}
+
+func TestRegistryRevealTools(t *testing.T) {
+	reg := NewRegistry()
+	reg.Register(Tool{Name: "tool_help", Description: "Reveal specialized tools"})
+	reg.Register(Tool{Name: "git_commit", Description: "Create a git commit", PromptVisibility: PromptHidden})
+	reg.Register(Tool{Name: "web_search", Description: "Search the web", PromptVisibility: PromptHidden})
+
+	revealed := reg.RevealMatchingTools("commit changes")
+	if len(revealed) != 1 || revealed[0].Name != "git_commit" {
+		t.Fatalf("unexpected revealed tools: %#v", revealed)
+	}
+
+	desc := reg.DescribeForPrompt()
+	if !strings.Contains(desc, "git_commit") {
+		t.Fatal("revealed tool missing from prompt")
+	}
+	if strings.Contains(desc, "web_search") {
+		t.Fatal("unrevealed hidden tool should stay hidden")
+	}
+}
+
 func TestRegistryNeedsApproval(t *testing.T) {
 	reg := NewRegistry()
 	reg.Register(Tool{Name: "read_file", AutoApprove: true})

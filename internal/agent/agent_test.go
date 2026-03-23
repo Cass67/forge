@@ -32,6 +32,30 @@ func (d *mockDriver) Stream(ctx context.Context, messages []llm.Message, out cha
 	return nil
 }
 
+type inspectingDriver struct {
+	checks    []func([]llm.Message) error
+	responses []string
+	callIdx   int
+}
+
+func (d *inspectingDriver) Name() string { return "inspecting" }
+
+func (d *inspectingDriver) Stream(ctx context.Context, messages []llm.Message, out chan<- llm.Token) error {
+	defer close(out)
+	if d.callIdx < len(d.checks) && d.checks[d.callIdx] != nil {
+		if err := d.checks[d.callIdx](messages); err != nil {
+			return err
+		}
+	}
+	resp := "done"
+	if d.callIdx < len(d.responses) {
+		resp = d.responses[d.callIdx]
+	}
+	d.callIdx++
+	out <- llm.Token{Text: resp}
+	return nil
+}
+
 func TestLooksLikeActionPreamble(t *testing.T) {
 	cases := map[string]bool{
 		"I'm going to inspect the code.": true,
@@ -104,6 +128,63 @@ func TestAgentRunWithFunctionCallsDoesNotLeakRawWrapper(t *testing.T) {
 	}
 	if got := output.String(); strings.Contains(got, "<function_calls>") || strings.Contains(got, "</function_calls>") {
 		t.Fatalf("raw function_calls wrapper leaked to renderer output: %q", got)
+	}
+}
+
+func TestAgentToolHelpRevealsHiddenToolsForNextTurn(t *testing.T) {
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{
+		Name:        "read_file",
+		Description: "Read a file",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			return "ok", nil
+		},
+	})
+	reg.Register(tools.NewToolHelp(reg))
+	hiddenCalled := false
+	reg.Register(tools.Tool{
+		Name:             "web_search",
+		Description:      "Search the web",
+		PromptVisibility: tools.PromptHidden,
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			hiddenCalled = true
+			return "search results", nil
+		},
+	})
+
+	driver := &inspectingDriver{
+		checks: []func([]llm.Message) error{
+			func(messages []llm.Message) error {
+				if len(messages) == 0 || !strings.Contains(messages[0].Content, "tool_help") {
+					return fmt.Errorf("missing tool_help in initial prompt")
+				}
+				if strings.Contains(messages[0].Content, "web_search") {
+					return fmt.Errorf("hidden tool leaked into initial prompt")
+				}
+				return nil
+			},
+			func(messages []llm.Message) error {
+				if len(messages) == 0 || !strings.Contains(messages[0].Content, "web_search") {
+					return fmt.Errorf("hidden tool not disclosed after tool_help")
+				}
+				return nil
+			},
+		},
+		responses: []string{
+			"<tool_call>\n{\"name\": \"tool_help\", \"args\": {\"query\": \"search the web\"}}\n</tool_call>",
+			"<tool_call>\n{\"name\": \"web_search\", \"args\": {\"query\": \"forge repo\"}}\n</tool_call>",
+			"done",
+		},
+	}
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	agent := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	if err := agent.Run(context.Background(), "look something up"); err != nil {
+		t.Fatal(err)
+	}
+	if !hiddenCalled {
+		t.Fatal("expected hidden tool to be called after disclosure")
 	}
 }
 
@@ -268,7 +349,8 @@ func TestCompressHistoryCompactsOldSkillAndConversationMessages(t *testing.T) {
 
 func TestEnforceHistoryBudgetSkipsCompactionWhenUnderBudget(t *testing.T) {
 	a := &Agent{
-		system: "short system",
+		workDir: t.TempDir(),
+		tools:   tools.NewRegistry(),
 		history: []llm.Message{
 			{Role: llm.RoleUser, Content: "[Skill: brainstorming]\n\n" + strings.Repeat("plan ", 20)},
 			{Role: llm.RoleAssistant, Content: "short reply"},
@@ -285,7 +367,8 @@ func TestEnforceHistoryBudgetSkipsCompactionWhenUnderBudget(t *testing.T) {
 
 func TestEnforceHistoryBudgetCompactsLargestOldMessagesFirst(t *testing.T) {
 	a := &Agent{
-		system: "short system",
+		workDir: t.TempDir(),
+		tools:   tools.NewRegistry(),
 		history: []llm.Message{
 			{Role: llm.RoleUser, Content: "[Skill: brainstorming]\n\n" + strings.Repeat("plan ", 100)},
 			{Role: llm.RoleUser, Content: "Tool results:\n- " + strings.Repeat("x ", 150)},
