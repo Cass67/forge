@@ -7,6 +7,15 @@ import (
 	"testing"
 )
 
+func setTempHome(t *testing.T) {
+	t.Helper()
+	home := filepath.Join(t.TempDir(), "home")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+}
+
 func writeTemp(t *testing.T, content string) string {
 	t.Helper()
 	f, err := os.CreateTemp(t.TempDir(), "forge-*.toml")
@@ -57,6 +66,7 @@ output_dir = "/tmp/forge-out"
 }
 
 func TestEnvOverridesKeys(t *testing.T) {
+	setTempHome(t)
 	t.Setenv("ANTHROPIC_API_KEY", "env-key")
 	path := writeTemp(t, "[keys]\nanthropic = \"file-key\"")
 	cfg, err := config.Load(path)
@@ -69,6 +79,7 @@ func TestEnvOverridesKeys(t *testing.T) {
 }
 
 func TestProviderKeysTrimWhitespace(t *testing.T) {
+	setTempHome(t)
 	cfg := &config.Config{}
 	cfg.Keys.OpenAI = "  sk-test  \n"
 	if got := cfg.OpenAIKey(); got != "sk-test" {
@@ -153,6 +164,7 @@ func TestChatModel(t *testing.T) {
 }
 
 func TestBraveKeyEnvOverride(t *testing.T) {
+	setTempHome(t)
 	cfg := &config.Config{}
 	cfg.Keys.Brave = "from-config"
 	t.Setenv("BRAVE_API_KEY", "from-env")
@@ -162,6 +174,7 @@ func TestBraveKeyEnvOverride(t *testing.T) {
 }
 
 func TestBraveKeyFromConfig(t *testing.T) {
+	setTempHome(t)
 	cfg := &config.Config{}
 	cfg.Keys.Brave = "from-config"
 	if got := cfg.BraveKey(); got != "from-config" {

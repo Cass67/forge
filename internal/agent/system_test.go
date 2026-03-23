@@ -25,4 +25,13 @@ func TestBuildSystemPrompt(t *testing.T) {
 	if !strings.Contains(prompt, "tool_call") {
 		t.Error("missing tool call format instructions")
 	}
+	if !strings.Contains(prompt, "Continue working after progress updates") {
+		t.Error("missing continue-by-default instruction")
+	}
+	if !strings.Contains(prompt, "Do not narrate intent without acting") {
+		t.Error("missing anti-stalling guidance")
+	}
+	if !strings.Contains(prompt, "Do not wait for confirmation before using non-destructive tools") {
+		t.Error("missing act-first guidance")
+	}
 }

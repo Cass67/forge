@@ -12,12 +12,18 @@ import (
 
 	"forge/internal/agent"
 	"forge/internal/agent/tools"
+	"forge/internal/auth"
 	"forge/internal/bootstrap"
 	"forge/internal/chatstate"
 	"forge/internal/config"
 	"forge/internal/llm"
 	"forge/internal/skills"
 	"forge/internal/tui"
+)
+
+var (
+	loadChatConfig = bootstrap.LoadConfig
+	loadChatTokens = bootstrap.LoadTokens
 )
 
 type ChatSetup struct {
@@ -27,6 +33,7 @@ type ChatSetup struct {
 	Driver     llm.Driver
 	Yolo       bool
 	Available  []string
+	Providers  []tui.ProviderOption
 	MakeDriver func(string) llm.Driver
 }
 
@@ -43,6 +50,7 @@ func BuildChatSetup(cfg *config.Config, tokens any, modelOverride, workDir strin
 
 	authTokens, _ := bootstrap.LoadTokens()
 	available := bootstrap.AvailableModels(cfg, authTokens)
+	providers := providerOptionsFromBootstrap(bootstrap.SupportedProviderBackends(cfg, authTokens))
 	chatModel := cfg.ChatModel()
 	if modelOverride != "" {
 		chatModel = modelOverride
@@ -55,16 +63,24 @@ func BuildChatSetup(cfg *config.Config, tokens any, modelOverride, workDir strin
 
 	driverReg := llm.NewRegistry()
 	makeChatDriver := func(modelName string) llm.Driver {
-		bootstrap.EnsureDriver(cfg, authTokens, driverReg, modelName)
+		effectiveCfg := cfg
+		if latestCfg, err := loadChatConfig(); err == nil && latestCfg != nil {
+			effectiveCfg = latestCfg
+		}
+		effectiveTokens := authTokens
+		if latestTokens, err := loadChatTokens(); err == nil && latestTokens != nil {
+			effectiveTokens = latestTokens
+		}
+		bootstrap.EnsureDriver(effectiveCfg, effectiveTokens, driverReg, modelName)
 		d, err := driverReg.Lookup(modelName)
 		if err != nil {
 			return nil
 		}
 		return llm.NewRetryDriver(d,
-			cfg.Retry.MaxAttempts,
-			time.Duration(cfg.Retry.InitialWait)*time.Millisecond,
-			time.Duration(cfg.Retry.MaxWait)*time.Millisecond,
-			time.Duration(cfg.Retry.Timeout)*time.Second,
+			effectiveCfg.Retry.MaxAttempts,
+			time.Duration(effectiveCfg.Retry.InitialWait)*time.Millisecond,
+			time.Duration(effectiveCfg.Retry.MaxWait)*time.Millisecond,
+			time.Duration(effectiveCfg.Retry.Timeout)*time.Second,
 		)
 	}
 
@@ -80,8 +96,22 @@ func BuildChatSetup(cfg *config.Config, tokens any, modelOverride, workDir strin
 		Driver:     driver,
 		Yolo:       yolo,
 		Available:  available,
+		Providers:  providers,
 		MakeDriver: makeChatDriver,
 	}, nil
+}
+
+func refreshChatSetupState(setup *ChatSetup) (*config.Config, *auth.Tokens) {
+	cfg := setup.Config
+	if latestCfg, err := loadChatConfig(); err == nil && latestCfg != nil {
+		setup.Config = latestCfg
+		cfg = latestCfg
+	}
+	tokens, err := loadChatTokens()
+	if err != nil || tokens == nil {
+		tokens = &auth.Tokens{}
+	}
+	return cfg, tokens
 }
 
 func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, approve tools.ApprovalFunc, forcePrompt ...tools.ApprovalFunc) {
@@ -131,14 +161,20 @@ func RunChatLive(setup *ChatSetup) {
 	go func() {
 		var running bool
 		var queue []string
+		runOutcome := func(err error) string {
+			if err != nil {
+				bootstrap.ReportModelFailure(setup.ChatModel, err)
+				evRenderer.Error(err.Error())
+				return "__turn_failed__"
+			}
+			bootstrap.ReportModelSuccess(setup.ChatModel)
+			return "__turn_done__"
+		}
 		startRun := func(msg string) {
 			running = true
 			go func(runMsg string) {
 				err := a.Run(ctx, runMsg)
-				if err != nil {
-					evRenderer.Error(err.Error())
-				}
-				inputCh <- "__turn_done__"
+				inputCh <- runOutcome(err)
 			}(msg)
 		}
 		for input := range inputCh {
@@ -163,6 +199,9 @@ func RunChatLive(setup *ChatSetup) {
 					evRenderer.Info(fmt.Sprintf("applying queued steering (%d remaining)", len(queue)))
 					startRun(next)
 				}
+			case "__turn_failed__":
+				running = false
+				queue = nil
 			default:
 				if running {
 					queue = append(queue, input)
@@ -178,7 +217,28 @@ func RunChatLive(setup *ChatSetup) {
 		Model:           setup.ChatModel,
 		WorkDir:         setup.WorkDir,
 		AvailableModels: setup.Available,
+		Providers:       append([]tui.ProviderOption(nil), setup.Providers...),
+		RefreshModels: func() []string {
+			cfg, authTokens := refreshChatSetupState(setup)
+			setup.Available = bootstrap.AvailableModels(cfg, authTokens)
+			return append([]string(nil), setup.Available...)
+		},
+		ProbeModels: func(currentModel string, available []string) []string {
+			cfg, _ := refreshChatSetupState(setup)
+			if len(available) == 0 {
+				available = append([]string(nil), setup.Available...)
+			}
+			updated := bootstrap.ProbeProviderModels(cfg, currentModel, available)
+			setup.Available = append([]string(nil), updated...)
+			return updated
+		},
+		RefreshProviders: func() []tui.ProviderOption {
+			cfg, authTokens := refreshChatSetupState(setup)
+			setup.Providers = providerOptionsFromBootstrap(bootstrap.SupportedProviderBackends(cfg, authTokens))
+			return append([]tui.ProviderOption(nil), setup.Providers...)
+		},
 		SwitchModel: func(name string) (string, error) {
+			refreshChatSetupState(setup)
 			d := setup.MakeDriver(name)
 			if d == nil {
 				return "", fmt.Errorf("no API key found for model %q", name)
@@ -191,12 +251,26 @@ func RunChatLive(setup *ChatSetup) {
 		ClearHistory: func() {
 			a.ClearHistory()
 		},
-		ApprovalCh: evRenderer.ApprovalChan(),
-		ResponseCh: evRenderer.ResponseChan(),
-		Skills:     loadedSkills,
-		State:      state,
+		ApprovalCh:      evRenderer.ApprovalChan(),
+		ResponseCh:      evRenderer.ResponseChan(),
+		Skills:          loadedSkills,
+		State:           state,
+		CopilotClientID: setup.Config.CopilotClientID(),
 	}
 	tui.RunChatLive(eventsCh, liveCfg, inputCh, doneCh)
+}
+
+func providerOptionsFromBootstrap(backends []bootstrap.ProviderBackend) []tui.ProviderOption {
+	out := make([]tui.ProviderOption, 0, len(backends))
+	for _, backend := range backends {
+		out = append(out, tui.ProviderOption{
+			ID:           backend.ID,
+			Label:        backend.Label,
+			Status:       backend.Status,
+			DefaultModel: backend.DefaultModel,
+		})
+	}
+	return out
 }
 
 func RunChatConsole(setup *ChatSetup) {

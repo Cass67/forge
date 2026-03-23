@@ -18,6 +18,7 @@ type RenderTarget interface {
 	ToolResult(name, output, diff string, isError bool)
 	Stats(duration time.Duration, usage llm.Usage)
 	Error(msg string)
+	Info(msg string)
 }
 
 type Renderer struct {

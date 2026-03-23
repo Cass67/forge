@@ -171,8 +171,10 @@ A regression review was done after the recent chat UI changes because the live T
   - rapid token streaming
   - tool-heavy turns
 - the live header now also surfaces session timing/token stats and best-effort Copilot premium quota info when available
-- `/stats` now opens a durable overlay and shows the latest turn duration, token counts, and Copilot premium info when available
+- `/stats` now opens a durable overlay and shows the latest turn duration, token counts, cumulative session tokens, Copilot premium info, and best-effort Codex ChatGPT allowance info when available
 - `go test ./internal/tui/...` is currently passing after the performance changes
+
+See also: `docs/codex-usage.md` for the Codex private-backend allowance integration notes.
 
 ### Remaining high-value performance work
 The current implementation is much better, but there is still room for another pass if the UI needs to be pushed harder:

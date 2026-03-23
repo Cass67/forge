@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"forge/internal/auth"
+	"forge/internal/fsutil"
+
 	"github.com/BurntSushi/toml"
 )
 
@@ -114,6 +117,25 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+func Save(path string, cfg *Config) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	if err := toml.NewEncoder(f).Encode(cfg); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+func DefaultPath() string {
+	return fsutil.ForgeConfigPath("config.toml")
+}
+
 func setDefaults(c *Config) {
 	c.Models.Writer = "claude-3-7-sonnet-latest"
 	c.Models.Auditor = "gpt-4o"
@@ -138,84 +160,132 @@ func (c *Config) AnthropicKey() string {
 	if v := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); v != "" {
 		return v
 	}
-	return strings.TrimSpace(c.Keys.Anthropic)
+	if v := strings.TrimSpace(c.Keys.Anthropic); v != "" {
+		return v
+	}
+	tokens, _ := auth.Load()
+	return strings.TrimSpace(tokens.AnthropicAPIKey)
 }
 
 func (c *Config) OpenAIKey() string {
 	if v := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); v != "" {
 		return v
 	}
-	return strings.TrimSpace(c.Keys.OpenAI)
+	if v := strings.TrimSpace(c.Keys.OpenAI); v != "" {
+		return v
+	}
+	tokens, _ := auth.Load()
+	return strings.TrimSpace(tokens.OpenAIAPIKey)
 }
 
 func (c *Config) GroqKey() string {
 	if v := strings.TrimSpace(os.Getenv("GROQ_API_KEY")); v != "" {
 		return v
 	}
-	return strings.TrimSpace(c.Keys.Groq)
+	if v := strings.TrimSpace(c.Keys.Groq); v != "" {
+		return v
+	}
+	tokens, _ := auth.Load()
+	return strings.TrimSpace(tokens.GroqAPIKey)
 }
 
 func (c *Config) MistralKey() string {
 	if v := strings.TrimSpace(os.Getenv("MISTRAL_API_KEY")); v != "" {
 		return v
 	}
-	return strings.TrimSpace(c.Keys.Mistral)
+	if v := strings.TrimSpace(c.Keys.Mistral); v != "" {
+		return v
+	}
+	tokens, _ := auth.Load()
+	return strings.TrimSpace(tokens.MistralAPIKey)
 }
 
 func (c *Config) XAIKey() string {
 	if v := strings.TrimSpace(os.Getenv("XAI_API_KEY")); v != "" {
 		return v
 	}
-	return strings.TrimSpace(c.Keys.XAI)
+	if v := strings.TrimSpace(c.Keys.XAI); v != "" {
+		return v
+	}
+	tokens, _ := auth.Load()
+	return strings.TrimSpace(tokens.XAIAPIKey)
 }
 
 func (c *Config) NVIDIAKey() string {
 	if v := strings.TrimSpace(os.Getenv("NVIDIA_API_KEY")); v != "" {
 		return v
 	}
-	return strings.TrimSpace(c.Keys.NVIDIA)
+	if v := strings.TrimSpace(c.Keys.NVIDIA); v != "" {
+		return v
+	}
+	tokens, _ := auth.Load()
+	return strings.TrimSpace(tokens.NVIDIAAPIKey)
 }
 
 func (c *Config) OpenRouterKey() string {
 	if v := strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")); v != "" {
 		return v
 	}
-	return strings.TrimSpace(c.Keys.OpenRouter)
+	if v := strings.TrimSpace(c.Keys.OpenRouter); v != "" {
+		return v
+	}
+	tokens, _ := auth.Load()
+	return strings.TrimSpace(tokens.OpenRouterAPIKey)
 }
 
 func (c *Config) TogetherKey() string {
 	if v := strings.TrimSpace(os.Getenv("TOGETHER_AI_API_KEY")); v != "" {
 		return v
 	}
-	return strings.TrimSpace(c.Keys.Together)
+	if v := strings.TrimSpace(c.Keys.Together); v != "" {
+		return v
+	}
+	tokens, _ := auth.Load()
+	return strings.TrimSpace(tokens.TogetherAPIKey)
 }
 
 func (c *Config) PerplexityKey() string {
 	if v := strings.TrimSpace(os.Getenv("PERPLEXITY_API_KEY")); v != "" {
 		return v
 	}
-	return strings.TrimSpace(c.Keys.Perplexity)
+	if v := strings.TrimSpace(c.Keys.Perplexity); v != "" {
+		return v
+	}
+	tokens, _ := auth.Load()
+	return strings.TrimSpace(tokens.PerplexityAPIKey)
 }
 
 func (c *Config) DeepInfraKey() string {
 	if v := strings.TrimSpace(os.Getenv("DEEPINFRA_API_KEY")); v != "" {
 		return v
 	}
-	return strings.TrimSpace(c.Keys.DeepInfra)
+	if v := strings.TrimSpace(c.Keys.DeepInfra); v != "" {
+		return v
+	}
+	tokens, _ := auth.Load()
+	return strings.TrimSpace(tokens.DeepInfraAPIKey)
 }
 
 func (c *Config) CerebrasKey() string {
 	if v := strings.TrimSpace(os.Getenv("CEREBRAS_API_KEY")); v != "" {
 		return v
 	}
-	return strings.TrimSpace(c.Keys.Cerebras)
+	if v := strings.TrimSpace(c.Keys.Cerebras); v != "" {
+		return v
+	}
+	tokens, _ := auth.Load()
+	return strings.TrimSpace(tokens.CerebrasAPIKey)
 }
 
 func (c *Config) BraveKey() string {
 	if v := strings.TrimSpace(os.Getenv("BRAVE_API_KEY")); v != "" {
 		return v
 	}
-	return strings.TrimSpace(c.Keys.Brave)
+	if v := strings.TrimSpace(c.Keys.Brave); v != "" {
+		return v
+	}
+	tokens, _ := auth.Load()
+	return strings.TrimSpace(tokens.BraveAPIKey)
 }
 
 // CopilotClientID returns the GitHub OAuth App client ID used for device flow

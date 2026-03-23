@@ -35,6 +35,29 @@ func (d *authErrorDriver) Stream(_ context.Context, _ []llm.Message, out chan<- 
 	return fmt.Errorf("401 unauthorized: invalid_api_key")
 }
 
+type quotaErrorDriver struct {
+	called int
+}
+
+func (d *quotaErrorDriver) Name() string { return "quota-err" }
+func (d *quotaErrorDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	defer close(out)
+	d.called++
+	return fmt.Errorf(`received error while streaming: {"type":"insufficient_quota","code":"insufficient_quota","message":"quota exceeded"}`)
+}
+
+type invalidModelDriver struct {
+	called int
+	err    string
+}
+
+func (d *invalidModelDriver) Name() string { return "invalid-model" }
+func (d *invalidModelDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	defer close(out)
+	d.called++
+	return fmt.Errorf("%s", d.err)
+}
+
 type slowDriver struct {
 	delay time.Duration
 }
@@ -123,6 +146,74 @@ func TestRetryNonRetryableError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "401") {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestRetryDoesNotRetryInsufficientQuota(t *testing.T) {
+	inner := &quotaErrorDriver{}
+	rd := llm.NewRetryDriver(inner, 3, time.Millisecond, time.Millisecond, 0)
+
+	out := make(chan llm.Token, 64)
+	err := rd.Stream(context.Background(), nil, out)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "insufficient_quota") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if inner.called != 1 {
+		t.Fatalf("expected 1 call, got %d", inner.called)
+	}
+}
+
+func TestRetryDoesNotRetryInvalidModelErrors(t *testing.T) {
+	inner := &invalidModelDriver{err: `POST "https://openrouter.ai/api/v1/chat/completions": 400 Bad Request {"message":"free is not a valid model ID","code":400}`}
+	rd := llm.NewRetryDriver(inner, 3, time.Millisecond, time.Millisecond, 0)
+
+	out := make(chan llm.Token, 64)
+	err := rd.Stream(context.Background(), nil, out)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "not a valid model id") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if inner.called != 1 {
+		t.Fatalf("expected 1 call, got %d", inner.called)
+	}
+}
+
+func TestRetryDoesNotRetryPrivacyRestrictionErrors(t *testing.T) {
+	inner := &invalidModelDriver{err: `POST "https://openrouter.ai/api/v1/chat/completions": 404 Not Found {"message":"No endpoints available matching your guardrail restrictions and data policy.","code":404}`}
+	rd := llm.NewRetryDriver(inner, 3, time.Millisecond, time.Millisecond, 0)
+
+	out := make(chan llm.Token, 64)
+	err := rd.Stream(context.Background(), nil, out)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "guardrail restrictions") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if inner.called != 1 {
+		t.Fatalf("expected 1 call, got %d", inner.called)
+	}
+}
+
+func TestRetryDoesNotRetryGoneErrors(t *testing.T) {
+	inner := &invalidModelDriver{err: `POST "https://integrate.api.nvidia.com/v1/chat/completions": 410 Gone`}
+	rd := llm.NewRetryDriver(inner, 3, time.Millisecond, time.Millisecond, 0)
+
+	out := make(chan llm.Token, 64)
+	err := rd.Stream(context.Background(), nil, out)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "410 gone") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if inner.called != 1 {
+		t.Fatalf("expected 1 call, got %d", inner.called)
 	}
 }
 
