@@ -1,0 +1,51 @@
+package tui
+
+import (
+	"forge/internal/llm"
+
+	tea "github.com/charmbracelet/bubbletea"
+)
+
+// RunChatLiveBubbleTea runs the chat interface using Bubble Tea.
+// It has the same signature as RunChatLive for drop-in replacement.
+func RunChatLiveBubbleTea(events <-chan llm.Event, cfg ChatLiveConfig, inputCh chan<- string, doneCh <-chan struct{}) ChatLiveResult {
+	m := NewChatModel(cfg)
+	m.inputCh = inputCh
+	m.responseCh = cfg.ResponseCh
+
+	p := tea.NewProgram(m,
+		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
+	)
+
+	// Feed LLM events into the program
+	go func() {
+		for ev := range events {
+			p.Send(ev)
+		}
+		p.Send(llm.Event{Kind: llm.EventDone})
+	}()
+
+	// Feed approval requests
+	if cfg.ApprovalCh != nil {
+		go func() {
+			for action := range cfg.ApprovalCh {
+				p.Send(chatApprovalMsg(action))
+			}
+		}()
+	}
+
+	// Feed done signals
+	go func() {
+		for range doneCh {
+			p.Send(llm.Event{Kind: llm.EventDone})
+		}
+	}()
+
+	finalModel, _ := p.Run()
+	fm := finalModel.(ChatModel)
+
+	return ChatLiveResult{
+		Aborted: fm.status == "aborted",
+	}
+}

@@ -39,7 +39,7 @@ func DetectAuto(loaded []Skill, input string) (Skill, bool) {
 		}
 		switch name {
 		case "brainstorming":
-			if containsAny(lower, "plan", "planning", "brainstorm", "design", "architecture", "approach") {
+			if containsAny(lower, "plan", "planning", "brainstorm", "design", "architecture", "approach", "review", "code review", "audit") {
 				return s, true
 			}
 		case "systematic-debugging":

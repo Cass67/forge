@@ -1,0 +1,1653 @@
+package tui
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"forge/internal/auth"
+	"forge/internal/chatgptauth"
+	"forge/internal/copilot"
+	"forge/internal/llm"
+	"forge/internal/skills"
+)
+
+func TestChatModelInit(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test-model", WorkDir: "/tmp"})
+	cmd := m.Init()
+	if cmd == nil {
+		t.Fatal("Init should return a command")
+	}
+}
+
+func TestChatModelAddMessage(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test-model", WorkDir: "/tmp"})
+	m.AddMessage(ChatMessage{Kind: MsgUser, Header: "You • 12:00:00", Content: "hello"})
+	if len(m.messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(m.messages))
+	}
+	if m.messages[0].Content != "hello" {
+		t.Fatalf("message content = %q", m.messages[0].Content)
+	}
+}
+
+func TestChatModelViewNotEmpty(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test-model", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+	m.AddMessage(ChatMessage{Kind: MsgUser, Header: "You • 12:00:00", Content: "hello"})
+	v := m.View()
+	if v == "" {
+		t.Fatal("View() should not be empty")
+	}
+}
+
+func TestChatModelHandlesTokenEvent(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	ev := llm.Event{Kind: llm.EventToken, Text: "Hello "}
+	updated, _ := m.Update(ev)
+	m = updated.(ChatModel)
+
+	ev2 := llm.Event{Kind: llm.EventToken, Text: "world"}
+	updated, _ = m.Update(ev2)
+	m = updated.(ChatModel)
+
+	if len(m.messages) != 1 {
+		t.Fatalf("expected 1 agent message, got %d", len(m.messages))
+	}
+	if m.messages[0].Content != "Hello world" {
+		t.Fatalf("content = %q, want %q", m.messages[0].Content, "Hello world")
+	}
+}
+
+func TestChatModelHandlesDoneEvent(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+	m.busy = true
+
+	ev := llm.Event{Kind: llm.EventDone}
+	updated, _ := m.Update(ev)
+	m = updated.(ChatModel)
+
+	if m.busy {
+		t.Fatal("expected busy=false after done event")
+	}
+	found := false
+	for _, msg := range m.messages {
+		if msg.Kind == MsgStatus {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected status message after done")
+	}
+}
+
+func TestChatModelHandlesErrorEventFromText(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	ev := llm.Event{Kind: llm.EventError, Text: "max turns (3) exceeded"}
+	updated, _ := m.Update(ev)
+	m = updated.(ChatModel)
+
+	if !strings.Contains(m.toolsBuf, "max turns (3) exceeded") {
+		t.Fatalf("toolsBuf = %q", m.toolsBuf)
+	}
+	if len(m.messages) == 0 || !strings.Contains(m.messages[len(m.messages)-1].Content, "max turns (3) exceeded") {
+		t.Fatalf("messages = %#v", m.messages)
+	}
+}
+
+func TestChatModelHandlesToolCallEvent(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	ev := llm.Event{Kind: llm.EventToolCall, Text: "read_file", Content: `{"path":"main.go"}`}
+	updated, _ := m.Update(ev)
+	m = updated.(ChatModel)
+
+	if m.toolsBuf == "" {
+		t.Fatal("expected tools buffer to have content")
+	}
+}
+
+func TestChatModelSlashClear(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+	m.AddMessage(ChatMessage{Kind: MsgUser, Header: "You", Content: "hello"})
+	m.AddMessage(ChatMessage{Kind: MsgAgent, Content: "hi"})
+
+	m.inputBuf = "/clear"
+	m.inputPos = 6
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+
+	if len(m.messages) != 0 {
+		t.Fatalf("expected 0 messages after /clear, got %d", len(m.messages))
+	}
+}
+
+func TestChatModelSlashExit(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.inputBuf = "/exit"
+	m.inputPos = 5
+	_, cmd := m.submitInput()
+	if cmd == nil {
+		t.Fatal("expected quit command from /exit")
+	}
+}
+
+func TestChatModelSlashTheme(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	m.inputBuf = "/theme"
+	m.inputPos = 6
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+
+	if !m.lowContrast {
+		t.Fatal("expected lowContrast=true after /theme")
+	}
+}
+
+func TestChatModelSlashThemeVariants(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	m.inputBuf = "/theme low"
+	m.inputPos = len(m.inputBuf)
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+	if !m.lowContrast {
+		t.Fatal("expected /theme low to enable low contrast")
+	}
+
+	m.inputBuf = "/theme default"
+	m.inputPos = len(m.inputBuf)
+	updated, _ = m.submitInput()
+	m = updated.(ChatModel)
+	if m.lowContrast {
+		t.Fatal("expected /theme default to disable low contrast")
+	}
+}
+
+func TestChatModelSlashHelpOpensOverlay(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 30
+
+	m.inputBuf = "/help"
+	m.inputPos = len("/help")
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+
+	if !m.helpVisible {
+		t.Fatal("expected help overlay to be visible after /help")
+	}
+	if len(m.messages) != 0 {
+		t.Fatalf("expected /help not to append chat messages, got %d", len(m.messages))
+	}
+	v := m.View()
+	if !strings.Contains(v, "Chat Commands") || !strings.Contains(v, "CLI Skills") {
+		t.Fatalf("help overlay missing tabs: %s", v)
+	}
+}
+
+func TestChatModelSlashStatsShowsUsage(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventStats, Duration: time.Second, Usage: llm.Usage{InputTokens: 120, OutputTokens: 30}})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{Kind: llm.EventStats, Duration: 2 * time.Second, Usage: llm.Usage{InputTokens: 80, OutputTokens: 20}})
+	m = updated.(ChatModel)
+
+	m.inputBuf = "/stats"
+	m.inputPos = len("/stats")
+	updated, _ = m.submitInput()
+	m = updated.(ChatModel)
+
+	if got := m.flash; got != "stats opened" {
+		t.Fatalf("flash = %q, want %q", got, "stats opened")
+	}
+	if !m.statsVisible {
+		t.Fatal("expected stats overlay after /stats")
+	}
+	if got := m.View(); !strings.Contains(got, "Latest turn input:   80") {
+		t.Fatalf("view missing visible stats output: %s", got)
+	}
+	if got := m.View(); !strings.Contains(got, "Session total:       250") {
+		t.Fatalf("view missing session total: %s", got)
+	}
+}
+
+func TestChatModelF1OpensAndEscClosesHelpOverlay(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 30
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyF1})
+	m = updated.(ChatModel)
+	if !m.helpVisible {
+		t.Fatal("expected F1 to open help overlay")
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m = updated.(ChatModel)
+	if m.helpVisible {
+		t.Fatal("expected Esc to close help overlay")
+	}
+}
+
+func TestChatModelHelpOverlayTabNavigation(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 30
+	m.helpVisible = true
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m = updated.(ChatModel)
+	if m.helpTab != 1 {
+		t.Fatalf("expected helpTab=1, got %d", m.helpTab)
+	}
+	if !strings.Contains(m.View(), "/model <name>") {
+		t.Fatal("expected chat commands help content on second tab")
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m = updated.(ChatModel)
+	if m.helpTab != 2 {
+		t.Fatalf("expected helpTab=2, got %d", m.helpTab)
+	}
+	if !strings.Contains(strings.Join(m.helpLines(), "\n"), "forge skills install") {
+		t.Fatal("expected CLI skills help content on third tab")
+	}
+}
+
+func TestChatModelApprovalFlow(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	// Simulate approval request arriving
+	updated, _ := m.Update(chatApprovalMsg{Tool: "write_file", Summary: "Write test.go"})
+	m = updated.(ChatModel)
+
+	if m.pendingApproval == nil {
+		t.Fatal("expected pending approval")
+	}
+
+	v := m.View()
+	if !strings.Contains(v, "write_file") {
+		t.Fatalf("view should show pending approval tool name, got: %s", v)
+	}
+
+	// Approve with 'y'
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	m = updated.(ChatModel)
+	if m.pendingApproval != nil {
+		t.Fatal("approval should be cleared after y")
+	}
+}
+
+func TestChatModelApprovalDeny(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	updated, _ := m.Update(chatApprovalMsg{Tool: "write_file", Summary: "Write test.go"})
+	m = updated.(ChatModel)
+
+	// Deny with 'n'
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	m = updated.(ChatModel)
+	if m.pendingApproval != nil {
+		t.Fatal("approval should be cleared after n")
+	}
+}
+
+func TestChatModelToolsPaneVisible(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 120
+	m.height = 24
+	m.toolsVisible = true
+	m.toolsBuf = "● read_file {\"path\":\"main.go\"}\nstatus: ok\n"
+
+	v := m.View()
+	if !strings.Contains(v, "read_file") {
+		t.Fatal("tools pane should show tool calls")
+	}
+}
+
+func TestChatModelToolsPaneToggle(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 120
+	m.height = 24
+
+	// Tools visible by default
+	if !m.toolsVisible {
+		t.Fatal("tools should be visible by default")
+	}
+
+	m.inputBuf = "/tools"
+	m.inputPos = len("/tools")
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+
+	if m.toolsVisible {
+		t.Fatal("tools pane should be hidden after toggle")
+	}
+}
+
+func TestChatModelSlashToggleToolsAlias(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 120
+	m.height = 24
+	m.toolsVisible = true
+
+	m.inputBuf = "/toggle tools"
+	m.inputPos = len("/toggle tools")
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+
+	if m.toolsVisible {
+		t.Fatal("tools pane should be hidden after /toggle tools")
+	}
+}
+
+func TestChatModelSlashToggleToolsOnOff(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 120
+	m.height = 24
+	m.toolsVisible = false
+
+	m.inputBuf = "/toggle tools on"
+	m.inputPos = len(m.inputBuf)
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+	if !m.toolsVisible {
+		t.Fatal("tools pane should be visible after /toggle tools on")
+	}
+
+	m.inputBuf = "/toggle tools off"
+	m.inputPos = len(m.inputBuf)
+	updated, _ = m.submitInput()
+	m = updated.(ChatModel)
+	if m.toolsVisible {
+		t.Fatal("tools pane should be hidden after /toggle tools off")
+	}
+}
+
+func TestChatModelSlashProviderShowsProviders(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "test",
+		WorkDir: "/tmp",
+		Providers: []ProviderOption{
+			{ID: "openai", Label: "OpenAI", Status: "ready", DefaultModel: "openai/gpt-5"},
+		},
+	})
+	m.width = 100
+	m.height = 24
+
+	m.inputBuf = "/provider"
+	m.inputPos = len("/provider")
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+
+	if got := m.flash; got != "providers opened" {
+		t.Fatalf("flash = %q, want providers opened", got)
+	}
+	if !m.providersVisible {
+		t.Fatal("expected provider overlay to be visible")
+	}
+	if got := m.View(); !strings.Contains(got, "Providers") || !strings.Contains(got, "OpenAI") {
+		t.Fatalf("view missing provider overlay output: %s", got)
+	}
+}
+
+func TestChatModelSlashModelsShowsVisibleOutput(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{
+		Model:           "openai/gpt-5",
+		WorkDir:         "/tmp",
+		AvailableModels: []string{"openai/gpt-5", "anthropic/claude-sonnet-4-6"},
+	})
+	m.width = 100
+	m.height = 24
+
+	m.inputBuf = "/models"
+	m.inputPos = len("/models")
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+
+	got := m.View()
+	if !strings.Contains(got, "openai/gpt-5") || !strings.Contains(got, "anthropic/claude-sonnet-4-6") {
+		t.Fatalf("view missing models output: %s", got)
+	}
+}
+
+func TestChatModelSlashModelsOpensOverlay(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{
+		Model:           "openai/gpt-5",
+		WorkDir:         "/tmp",
+		AvailableModels: []string{"openai/gpt-5", "anthropic/claude-sonnet-4-6"},
+	})
+	m.width = 100
+	m.height = 24
+
+	m.inputBuf = "/models"
+	m.inputPos = len("/models")
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+
+	if !m.modelsVisible {
+		t.Fatal("expected models overlay to be visible")
+	}
+	if got := m.View(); !strings.Contains(got, "Models") || !strings.Contains(got, "anthropic/claude-sonnet-4-6") {
+		t.Fatalf("models overlay missing content: %s", got)
+	}
+}
+
+func TestChatModelModelsOverlayIsSearchable(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{
+		Model:           "openai/gpt-5",
+		WorkDir:         "/tmp",
+		AvailableModels: []string{"openai/gpt-5", "anthropic/claude-sonnet-4-6", "groq/llama"},
+	})
+	m.width = 100
+	m.height = 24
+	m.openModelPicker()
+
+	updated, _ := m.handleModelsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("anth")})
+	m = updated.(ChatModel)
+
+	if len(m.modelsFiltered) != 1 || m.modelsFiltered[0] != "anthropic/claude-sonnet-4-6" {
+		t.Fatalf("modelsFiltered = %#v", m.modelsFiltered)
+	}
+	if got := m.View(); !strings.Contains(got, "Query: anth") || !strings.Contains(got, "anthropic/claude-sonnet-4-6") || strings.Contains(got, "groq/llama") {
+		t.Fatalf("searchable models overlay wrong output: %s", got)
+	}
+}
+
+func TestChatModelModelsOverlaySelectsFilteredResult(t *testing.T) {
+	switched := ""
+	m := NewChatModel(ChatLiveConfig{
+		Model:           "openai/gpt-5",
+		WorkDir:         "/tmp",
+		AvailableModels: []string{"openai/gpt-5", "anthropic/claude-sonnet-4-6", "groq/llama"},
+		SwitchModel: func(name string) (string, error) {
+			switched = name
+			return name, nil
+		},
+	})
+	m.width = 100
+	m.height = 24
+	m.openModelPicker()
+
+	updated, _ := m.handleModelsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("groq")})
+	m = updated.(ChatModel)
+	updated, _ = m.handleModelsKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+
+	if switched != "groq/llama" {
+		t.Fatalf("switched = %q", switched)
+	}
+	if m.modelsVisible {
+		t.Fatal("models overlay should close after selection")
+	}
+}
+
+func TestChatModelModelsOverlayMouseSelectsModel(t *testing.T) {
+	switched := ""
+	m := NewChatModel(ChatLiveConfig{
+		Model:           "openai/gpt-5",
+		WorkDir:         "/tmp",
+		AvailableModels: []string{"openai/gpt-5", "anthropic/claude-sonnet-4-6"},
+		SwitchModel: func(name string) (string, error) {
+			switched = name
+			return name, nil
+		},
+	})
+	m.width = 100
+	m.height = 24
+	m.openModelPicker()
+	x0, _, _, _, listY, _, _ := m.modelsOverlayLayout()
+
+	updated, _ := m.Update(tea.MouseMsg{X: x0 + 2, Y: listY + 1, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m = updated.(ChatModel)
+
+	if switched != "anthropic/claude-sonnet-4-6" {
+		t.Fatalf("switched = %q", switched)
+	}
+}
+
+func TestChatModelOpenModelPickerRefreshesWhenCacheEmpty(t *testing.T) {
+	refreshCalls := 0
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "openai/gpt-5",
+		WorkDir: "/tmp",
+		RefreshModels: func() []string {
+			refreshCalls++
+			return []string{"openai/gpt-5", "openrouter/moonshotai/kimi-k2-0905"}
+		},
+	})
+	m.width = 100
+	m.height = 24
+	m.modelsList = nil
+	m.modelsFiltered = nil
+	m.openModelPicker()
+
+	if refreshCalls != 1 {
+		t.Fatalf("refreshCalls = %d, want 1", refreshCalls)
+	}
+	if len(m.modelsFiltered) != 2 {
+		t.Fatalf("modelsFiltered = %#v", m.modelsFiltered)
+	}
+	if got := m.View(); !strings.Contains(got, "openrouter/moonshotai/kimi-k2-0905") {
+		t.Fatalf("models overlay missing refreshed provider model: %s", got)
+	}
+}
+
+func TestChatModelOpenModelPickerUsesCachedModelsWithoutRefresh(t *testing.T) {
+	refreshCalls := 0
+	m := NewChatModel(ChatLiveConfig{
+		Model:           "openai/gpt-5",
+		WorkDir:         "/tmp",
+		AvailableModels: []string{"openai/gpt-5", "anthropic/claude-sonnet-4-6"},
+		RefreshModels: func() []string {
+			refreshCalls++
+			return []string{"live/provider-model"}
+		},
+	})
+	m.width = 100
+	m.height = 24
+
+	m.openModelPicker()
+
+	if refreshCalls != 0 {
+		t.Fatalf("refreshCalls = %d, want 0", refreshCalls)
+	}
+	if len(m.modelsFiltered) != 2 {
+		t.Fatalf("modelsFiltered = %#v", m.modelsFiltered)
+	}
+	if m.modelsFiltered[1] != "anthropic/claude-sonnet-4-6" {
+		t.Fatalf("modelsFiltered = %#v", m.modelsFiltered)
+	}
+}
+
+func TestChatModelOpenModelPickerStartsAtFirstRow(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{
+		Model:           "anthropic/claude-sonnet-4-6",
+		WorkDir:         "/tmp",
+		AvailableModels: []string{"openai/gpt-5", "anthropic/claude-sonnet-4-6", "copilot/gpt-5"},
+	})
+	m.width = 100
+	m.height = 24
+
+	m.openModelPicker()
+
+	if m.modelsCursor != 0 {
+		t.Fatalf("modelsCursor = %d, want 0", m.modelsCursor)
+	}
+}
+
+func TestChatModelModelsOverlayDedupesDuplicateEntries(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{
+		Model:           "openai/gpt-5",
+		WorkDir:         "/tmp",
+		AvailableModels: []string{"openai/gpt-5", "anthropic/claude-sonnet-4-6", "openai/gpt-5"},
+	})
+	m.width = 100
+	m.height = 24
+
+	m.openModelPicker()
+
+	if len(m.modelsFiltered) != 2 {
+		t.Fatalf("modelsFiltered = %#v", m.modelsFiltered)
+	}
+}
+
+func TestChatModelModelsOverlayDigitsExtendQuery(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "openai/gpt-5",
+		WorkDir: "/tmp",
+		AvailableModels: []string{
+			"openrouter/provider-model-03",
+			"openrouter/provider-model-30",
+		},
+		SwitchModel: func(name string) (string, error) {
+			t.Fatalf("SwitchModel should not be called while typing query, got %q", name)
+			return name, nil
+		},
+	})
+	m.width = 100
+	m.height = 24
+	m.openModelPicker()
+
+	updated, _ := m.handleModelsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("0")})
+	m = updated.(ChatModel)
+	updated, _ = m.handleModelsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")})
+	m = updated.(ChatModel)
+
+	if m.modelsQuery != "03" {
+		t.Fatalf("modelsQuery = %q, want %q", m.modelsQuery, "03")
+	}
+	if !m.modelsVisible {
+		t.Fatal("models overlay should remain open while typing query")
+	}
+	if len(m.modelsFiltered) != 1 || m.modelsFiltered[0] != "openrouter/provider-model-03" {
+		t.Fatalf("modelsFiltered = %#v", m.modelsFiltered)
+	}
+}
+
+func TestChatModelModelsOverlayShowsVisibleRange(t *testing.T) {
+	models := make([]string, 0, 30)
+	for i := 1; i <= 30; i++ {
+		models = append(models, fmt.Sprintf("provider/model-%02d", i))
+	}
+	m := NewChatModel(ChatLiveConfig{
+		Model:           "provider/model-01",
+		WorkDir:         "/tmp",
+		AvailableModels: models,
+	})
+	m.width = 100
+	m.height = 24
+	m.openModelPicker()
+
+	got := m.View()
+	if !strings.Contains(got, "/30") {
+		t.Fatalf("models overlay missing visible range footer: %s", got)
+	}
+}
+
+func TestChatModelProviderOverlaySaveRefreshesModelCache(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "test",
+		WorkDir: "/tmp",
+		Providers: []ProviderOption{
+			{ID: "openai", Label: "OpenAI", Status: "configure API key", DefaultModel: "openai/gpt-5"},
+		},
+		RefreshProviders: func() []ProviderOption {
+			return []ProviderOption{{ID: "openai", Label: "OpenAI", Status: "ready", DefaultModel: "openai/gpt-5"}}
+		},
+		RefreshModels: func() []string {
+			return []string{"openai/gpt-5", "openai/o3"}
+		},
+		SwitchModel: func(name string) (string, error) {
+			return name, nil
+		},
+	})
+	m.width = 100
+	m.height = 24
+	m.openProviderPicker()
+
+	updated, _ := m.handleProvidersKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+	m.providerKeyInput = "sk-test"
+	m.providerKeyPos = len(m.providerKeyInput)
+	updated, _ = m.handleProvidersKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+
+	if len(m.modelsList) != 2 || m.modelsList[1] != "openai/o3" {
+		t.Fatalf("modelsList = %#v", m.modelsList)
+	}
+}
+
+func TestChatModelProviderOverlayDeleteRefreshesModelCache(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	if err := auth.Save(&auth.Tokens{OpenAIAPIKey: "sk-test"}); err != nil {
+		t.Fatalf("auth.Save: %v", err)
+	}
+	m := NewChatModel(ChatLiveConfig{
+		Model:           "test",
+		WorkDir:         "/tmp",
+		AvailableModels: []string{"openai/gpt-5", "openai/o3"},
+		Providers: []ProviderOption{
+			{ID: "openai", Label: "OpenAI", Status: "ready", DefaultModel: "openai/gpt-5"},
+		},
+		RefreshProviders: func() []ProviderOption {
+			return []ProviderOption{{ID: "openai", Label: "OpenAI", Status: "configure API key", DefaultModel: "openai/gpt-5"}}
+		},
+		RefreshModels: func() []string {
+			return []string{"anthropic/claude-sonnet-4-6"}
+		},
+	})
+	m.width = 100
+	m.height = 24
+	m.openProviderPicker()
+
+	updated, _ := m.handleProvidersKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = updated.(ChatModel)
+
+	if len(m.modelsList) != 1 || m.modelsList[0] != "anthropic/claude-sonnet-4-6" {
+		t.Fatalf("modelsList = %#v", m.modelsList)
+	}
+}
+
+func TestChatModelProviderOverlaySavesAPIKey(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	switched := ""
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "test",
+		WorkDir: "/tmp",
+		Providers: []ProviderOption{
+			{ID: "openai", Label: "OpenAI", Status: "configure API key", DefaultModel: "openai/gpt-5"},
+		},
+		RefreshProviders: func() []ProviderOption {
+			return []ProviderOption{{ID: "openai", Label: "OpenAI", Status: "ready", DefaultModel: "openai/gpt-5"}}
+		},
+		SwitchModel: func(name string) (string, error) {
+			switched = name
+			return name, nil
+		},
+	})
+	m.width = 100
+	m.height = 24
+	m.openProviderPicker()
+
+	updated, _ := m.handleProvidersKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+	if !m.providerPromptingKey {
+		t.Fatal("expected API key prompt")
+	}
+	m.providerKeyInput = "sk-test"
+	m.providerKeyPos = len(m.providerKeyInput)
+	updated, _ = m.handleProvidersKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+
+	tokens, err := auth.Load()
+	if err != nil {
+		t.Fatalf("auth.Load: %v", err)
+	}
+	if tokens.OpenAIAPIKey != "sk-test" {
+		t.Fatalf("OpenAI key = %q", tokens.OpenAIAPIKey)
+	}
+	if switched != "openai/gpt-5" {
+		t.Fatalf("switched = %q", switched)
+	}
+}
+
+func TestChatModelProviderOverlayDeletesAPIKey(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	if err := auth.Save(&auth.Tokens{OpenAIAPIKey: "sk-test"}); err != nil {
+		t.Fatalf("auth.Save: %v", err)
+	}
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "test",
+		WorkDir: "/tmp",
+		Providers: []ProviderOption{
+			{ID: "openai", Label: "OpenAI", Status: "ready", DefaultModel: "openai/gpt-5"},
+		},
+	})
+	m.width = 100
+	m.height = 24
+	m.openProviderPicker()
+
+	updated, _ := m.handleProvidersKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = updated.(ChatModel)
+
+	tokens, err := auth.Load()
+	if err != nil {
+		t.Fatalf("auth.Load: %v", err)
+	}
+	if tokens.OpenAIAPIKey != "" {
+		t.Fatalf("expected OpenAI key deleted, got %q", tokens.OpenAIAPIKey)
+	}
+}
+
+func TestChatModelProviderOverlayChatGPTLoginFlow(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	prevStart := startChatGPTDeviceAuth
+	prevWait := waitChatGPTDeviceAuth
+	startChatGPTDeviceAuth = func(ctx context.Context) (*chatgptauth.DeviceFlow, error) {
+		return &chatgptauth.DeviceFlow{}, nil
+	}
+	waitChatGPTDeviceAuth = func(ctx context.Context, flow *chatgptauth.DeviceFlow) (chatgptauth.Session, error) {
+		return chatgptauth.Session{
+			AccessToken:  "access-token",
+			RefreshToken: "refresh-token",
+			AccountID:    "acct",
+			ExpiresAt:    time.Now().Add(time.Hour),
+		}, nil
+	}
+	t.Cleanup(func() {
+		startChatGPTDeviceAuth = prevStart
+		waitChatGPTDeviceAuth = prevWait
+	})
+
+	authenticated := false
+	switched := ""
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "test",
+		WorkDir: "/tmp",
+		Providers: []ProviderOption{
+			{ID: "chatgpt", Label: "ChatGPT subscription", Status: "sign in", DefaultModel: "chatgpt/gpt-5.4"},
+		},
+		RefreshProviders: func() []ProviderOption {
+			status := "sign in"
+			if authenticated {
+				status = "ready"
+			}
+			return []ProviderOption{{ID: "chatgpt", Label: "ChatGPT subscription", Status: status, DefaultModel: "chatgpt/gpt-5.4"}}
+		},
+		RefreshModels: func() []string {
+			return []string{"chatgpt/gpt-5.4"}
+		},
+		SwitchModel: func(name string) (string, error) {
+			switched = name
+			return name, nil
+		},
+	})
+	m.width = 100
+	m.height = 24
+	m.openProviderPicker()
+
+	updated, cmd := m.handleProvidersKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+	if cmd == nil {
+		t.Fatal("expected login start command")
+	}
+	startMsg := cmd().(providerAuthStartedMsg)
+	startMsg.verifyURL = "https://auth.openai.com/codex/device"
+	startMsg.userCode = "ABCD-1234"
+	updated, cmd = m.Update(startMsg)
+	m = updated.(ChatModel)
+	if !m.providerAuthWaiting {
+		t.Fatal("expected provider auth waiting state")
+	}
+	if got := m.View(); !strings.Contains(got, "ABCD-1234") {
+		t.Fatalf("view missing device code: %s", got)
+	}
+	authenticated = true
+	successMsg := cmd().(providerAuthSucceededMsg)
+	updated, _ = m.Update(successMsg)
+	m = updated.(ChatModel)
+
+	tokens, err := auth.Load()
+	if err != nil {
+		t.Fatalf("auth.Load: %v", err)
+	}
+	if tokens.ChatGPTAccessToken != "access-token" || tokens.ChatGPTRefreshToken != "refresh-token" {
+		t.Fatal("expected ChatGPT tokens to be saved")
+	}
+	if switched != "chatgpt/gpt-5.4" {
+		t.Fatalf("switched = %q", switched)
+	}
+}
+
+func TestChatModelProviderOverlayCopilotLoginFlow(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	prevStart := startCopilotDeviceAuth
+	prevWait := waitCopilotDeviceAuth
+	startCopilotDeviceAuth = func(ctx context.Context, clientID string) (*copilot.DeviceCode, error) {
+		return &copilot.DeviceCode{VerificationURI: "https://github.com/login/device", UserCode: "GH-1234"}, nil
+	}
+	waitCopilotDeviceAuth = func(ctx context.Context, clientID string, dc *copilot.DeviceCode) (string, error) {
+		return "copilot-token", nil
+	}
+	t.Cleanup(func() {
+		startCopilotDeviceAuth = prevStart
+		waitCopilotDeviceAuth = prevWait
+	})
+
+	authenticated := false
+	switched := ""
+	m := NewChatModel(ChatLiveConfig{
+		Model:           "test",
+		WorkDir:         "/tmp",
+		CopilotClientID: "client-id",
+		Providers: []ProviderOption{
+			{ID: "copilot", Label: "GitHub Copilot", Status: "sign in", DefaultModel: "copilot/gpt-5"},
+		},
+		RefreshProviders: func() []ProviderOption {
+			status := "sign in"
+			if authenticated {
+				status = "ready"
+			}
+			return []ProviderOption{{ID: "copilot", Label: "GitHub Copilot", Status: status, DefaultModel: "copilot/gpt-5"}}
+		},
+		RefreshModels: func() []string {
+			return []string{"copilot/gpt-5"}
+		},
+		SwitchModel: func(name string) (string, error) {
+			switched = name
+			return name, nil
+		},
+	})
+	m.width = 100
+	m.height = 24
+	m.openProviderPicker()
+
+	updated, cmd := m.handleProvidersKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+	startMsg := cmd().(providerAuthStartedMsg)
+	updated, cmd = m.Update(startMsg)
+	m = updated.(ChatModel)
+	authenticated = true
+	successMsg := cmd().(providerAuthSucceededMsg)
+	updated, _ = m.Update(successMsg)
+	m = updated.(ChatModel)
+
+	tokens, err := auth.Load()
+	if err != nil {
+		t.Fatalf("auth.Load: %v", err)
+	}
+	if tokens.CopilotToken != "copilot-token" {
+		t.Fatalf("expected copilot token saved, got %q", tokens.CopilotToken)
+	}
+	if switched != "copilot/gpt-5" {
+		t.Fatalf("switched = %q", switched)
+	}
+}
+
+func TestChatModelProviderOverlayDeletesCopilotCredential(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	if err := auth.Save(&auth.Tokens{CopilotToken: "copilot-token"}); err != nil {
+		t.Fatalf("auth.Save: %v", err)
+	}
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "test",
+		WorkDir: "/tmp",
+		Providers: []ProviderOption{
+			{ID: "copilot", Label: "GitHub Copilot", Status: "ready", DefaultModel: "copilot/gpt-5"},
+		},
+	})
+	m.width = 100
+	m.height = 24
+	m.openProviderPicker()
+
+	updated, _ := m.handleProvidersKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = updated.(ChatModel)
+
+	tokens, err := auth.Load()
+	if err != nil {
+		t.Fatalf("auth.Load: %v", err)
+	}
+	if tokens.CopilotToken != "" {
+		t.Fatalf("expected Copilot token deleted, got %q", tokens.CopilotToken)
+	}
+}
+
+func TestChatModelSlashModelSwitchesModel(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "openai/gpt-5",
+		WorkDir: "/tmp",
+		AvailableModels: []string{
+			"openai/gpt-5",
+			"anthropic/claude-sonnet-4-6",
+			"chatgpt/gpt-5.1-codex-mini",
+		},
+		SwitchModel: func(name string) (string, error) {
+			if name == "bad" {
+				return "", errors.New("boom")
+			}
+			return name, nil
+		},
+	})
+	m.width = 100
+	m.height = 24
+
+	m.inputBuf = "/model anthropic/claude-sonnet-4-6"
+	m.inputPos = len(m.inputBuf)
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+	if m.model != "anthropic/claude-sonnet-4-6" {
+		t.Fatalf("model = %q", m.model)
+	}
+	if m.flash != "switched to anthropic/claude-sonnet-4-6" {
+		t.Fatalf("flash = %q", m.flash)
+	}
+}
+
+func TestChatModelSlashModelResolvesPartialName(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "openai/gpt-5",
+		WorkDir: "/tmp",
+		AvailableModels: []string{
+			"openai/gpt-5",
+			"anthropic/claude-sonnet-4-6",
+			"chatgpt/gpt-5.1-codex-mini",
+		},
+		SwitchModel: func(name string) (string, error) {
+			return name, nil
+		},
+	})
+	m.width = 100
+	m.height = 24
+
+	m.inputBuf = "/model codex-mini"
+	m.inputPos = len(m.inputBuf)
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+	if m.model != "chatgpt/gpt-5.1-codex-mini" {
+		t.Fatalf("model = %q", m.model)
+	}
+}
+
+func TestChatModelSlashModelResolvesNumericIndex(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "openai/gpt-5",
+		WorkDir: "/tmp",
+		AvailableModels: []string{
+			"openai/gpt-5",
+			"anthropic/claude-sonnet-4-6",
+			"chatgpt/gpt-5.1-codex-mini",
+		},
+		SwitchModel: func(name string) (string, error) {
+			return name, nil
+		},
+	})
+	m.width = 100
+	m.height = 24
+
+	m.inputBuf = "/model 2"
+	m.inputPos = len(m.inputBuf)
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+	if m.model != "anthropic/claude-sonnet-4-6" {
+		t.Fatalf("model = %q", m.model)
+	}
+}
+
+func TestChatModelSlashModelRejectsUnknownName(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{
+		Model:           "openai/gpt-5",
+		WorkDir:         "/tmp",
+		AvailableModels: []string{"openai/gpt-5"},
+		SwitchModel: func(name string) (string, error) {
+			t.Fatalf("SwitchModel should not be called for unknown model %q", name)
+			return name, nil
+		},
+	})
+	m.width = 100
+	m.height = 24
+
+	m.inputBuf = "/model does-not-exist"
+	m.inputPos = len(m.inputBuf)
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+	if got := m.flash; got != `unknown model "does-not-exist" — try /models` {
+		t.Fatalf("flash = %q", got)
+	}
+}
+
+func TestChatModelSlashSkillsShowsVisibleOutput(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "test",
+		WorkDir: "/tmp",
+		Skills: []skills.Skill{
+			{Name: "tdd", Description: "Test driven development"},
+		},
+	})
+	m.width = 100
+	m.height = 24
+
+	m.inputBuf = "/skills"
+	m.inputPos = len("/skills")
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+
+	got := m.View()
+	if !strings.Contains(got, "/tdd") || !strings.Contains(got, "Test driven development") {
+		t.Fatalf("view missing skills output: %s", got)
+	}
+}
+
+func TestChatModelAutoSkillsCommands(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+
+	m.inputBuf = "/auto-skills"
+	m.inputPos = len(m.inputBuf)
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+	if got := m.flash; got != "auto-skills: suggest" {
+		t.Fatalf("flash = %q", got)
+	}
+
+	m.inputBuf = "/auto-skills auto"
+	m.inputPos = len(m.inputBuf)
+	updated, _ = m.submitInput()
+	m = updated.(ChatModel)
+	if got := m.flash; got != "auto-skills: auto" {
+		t.Fatalf("flash = %q", got)
+	}
+}
+
+func TestChatModelSlashClearVariants(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+	m.AddMessage(ChatMessage{Kind: MsgUser, Header: "You", Content: "hello"})
+	m.toolsBuf = "tool output"
+
+	m.inputBuf = "/clear tools"
+	m.inputPos = len(m.inputBuf)
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+	if m.toolsBuf != "" {
+		t.Fatalf("toolsBuf = %q, want empty", m.toolsBuf)
+	}
+	if len(m.messages) == 0 {
+		t.Fatal("conversation should remain after /clear tools")
+	}
+
+	m.inputBuf = "/clear agent"
+	m.inputPos = len(m.inputBuf)
+	updated, _ = m.submitInput()
+	m = updated.(ChatModel)
+	if len(m.messages) != 0 {
+		t.Fatalf("messages = %#v, want empty after /clear agent", m.messages)
+	}
+}
+
+func TestChatModelSlashFindOpensOverlayAndTracksMatches(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Agent", Content: "hello world"})
+	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Agent", Content: "another world"})
+
+	m.inputBuf = "/find world"
+	m.inputPos = len(m.inputBuf)
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+	if !m.searchVisible {
+		t.Fatal("expected search overlay")
+	}
+	if m.searchQuery != "world" {
+		t.Fatalf("searchQuery = %q", m.searchQuery)
+	}
+	if len(m.searchMatches) == 0 {
+		t.Fatal("expected search matches")
+	}
+	if got := m.View(); !strings.Contains(got, "Search") || !strings.Contains(got, "Query: world") {
+		t.Fatalf("view missing search overlay: %s", got)
+	}
+}
+
+func TestChatModelAtOpensFilePickerAndInsertsSelection(t *testing.T) {
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: workDir})
+	m.width = 100
+	m.height = 24
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("@")})
+	m = updated.(ChatModel)
+	if !m.filesVisible {
+		t.Fatal("expected file picker to open after typing @")
+	}
+	if got := m.View(); !strings.Contains(got, "Add context file (@...)") {
+		t.Fatalf("view missing file picker overlay: %s", got)
+	}
+
+	updated, _ = m.handleFilePickerKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("main")})
+	m = updated.(ChatModel)
+	updated, _ = m.handleFilePickerKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+
+	if m.filesVisible {
+		t.Fatal("expected file picker to close after selection")
+	}
+	if m.inputBuf != "@main.go " {
+		t.Fatalf("inputBuf = %q", m.inputBuf)
+	}
+	if len(m.contextFiles) != 1 || m.contextFiles[0] != "main.go" {
+		t.Fatalf("contextFiles = %#v", m.contextFiles)
+	}
+}
+
+func TestChatModelFilePickerAcceptsExplicitRelativePath(t *testing.T) {
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, "pkg.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: workDir})
+	m.width = 100
+	m.height = 24
+	m.inputBuf = "@pkg.go"
+	m.inputPos = len([]rune(m.inputBuf))
+	m.openFilePicker("pkg.go")
+
+	updated, _ := m.handleFilePickerKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+	if m.inputBuf != "@pkg.go " {
+		t.Fatalf("inputBuf = %q", m.inputBuf)
+	}
+}
+
+func TestChatModelSlashExpandShowsFullResult(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+	m.lastExpandable = "full expanded output"
+
+	m.inputBuf = "/expand"
+	m.inputPos = len(m.inputBuf)
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+
+	if m.lastExpandable != "" {
+		t.Fatal("expected expand buffer to be cleared")
+	}
+	if got := m.View(); !strings.Contains(got, "full expanded output") {
+		t.Fatalf("view missing expanded output: %s", got)
+	}
+}
+
+func TestChatModelCopyCommands(t *testing.T) {
+	var copied []string
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+	m.copyFn = func(s string) error {
+		copied = append(copied, s)
+		return nil
+	}
+	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Agent", Content: "hello"})
+	m.AppendToLastAgent("\n```go\nfmt.Println(\"hi\")\n```\n")
+	m.toolsBuf = "tool output"
+	m.lastToolResult = "result output"
+
+	for _, input := range []string{"/copy agent", "/copy tools", "/copy code", "/copy result"} {
+		m.inputBuf = input
+		m.inputPos = len(input)
+		updated, _ := m.submitInput()
+		m = updated.(ChatModel)
+	}
+
+	if len(copied) != 4 {
+		t.Fatalf("copied = %#v", copied)
+	}
+	if !strings.Contains(copied[0], "hello") {
+		t.Fatalf("agent copy = %q", copied[0])
+	}
+	if copied[1] != "tool output" {
+		t.Fatalf("tools copy = %q", copied[1])
+	}
+	if copied[2] != `fmt.Println("hi")` {
+		t.Fatalf("code copy = %q", copied[2])
+	}
+	if copied[3] != "result output" {
+		t.Fatalf("result copy = %q", copied[3])
+	}
+}
+
+func TestChatModelTabCompletesSlashCommand(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+	m.inputBuf = "/pro"
+	m.inputPos = len("/pro")
+	m.toolsVisible = true
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(ChatModel)
+
+	if m.inputBuf != "/provider" {
+		t.Fatalf("inputBuf = %q, want /provider", m.inputBuf)
+	}
+	if !m.toolsVisible {
+		t.Fatal("tools pane should not toggle while slash-completing")
+	}
+}
+
+func TestChatModelTabCyclesSlashCommandMatches(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+	m.inputBuf = "/th"
+	m.inputPos = len("/th")
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(ChatModel)
+	if m.inputBuf != "/theme" {
+		t.Fatalf("first tab inputBuf = %q", m.inputBuf)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(ChatModel)
+	if m.inputBuf != "/theme low" {
+		t.Fatalf("second tab inputBuf = %q", m.inputBuf)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(ChatModel)
+	if m.inputBuf != "/theme default" {
+		t.Fatalf("third tab inputBuf = %q", m.inputBuf)
+	}
+}
+
+func TestChatModelTabTogglesToolsWhenNotCompletingSlashCommand(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+	m.toolsVisible = true
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(ChatModel)
+
+	if m.toolsVisible {
+		t.Fatal("tools pane should toggle when tab is not completing a slash command")
+	}
+}
+
+func TestChatModelViewShowsChatScrollbarWhenOverflowing(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 16
+	m.chatViewport.Width = m.chatPaneWidth()
+	m.chatViewport.Height = 8
+
+	for i := 0; i < 20; i++ {
+		m.AddMessage(ChatMessage{Kind: MsgUser, Header: "You", Content: strings.Repeat("line ", 8)})
+	}
+	v := m.View()
+	if !strings.Contains(v, "█") {
+		t.Fatal("expected visible scrollbar thumb in chat pane")
+	}
+}
+
+func TestChatModelViewShowsToolsScrollbarWhenOverflowing(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 120
+	m.height = 16
+	m.toolsVisible = true
+	m.toolsBuf = strings.Repeat("tool output line\n", 40)
+	v := m.View()
+	if !strings.Contains(v, "█") {
+		t.Fatal("expected visible scrollbar thumb in tools pane")
+	}
+}
+
+func TestChatModelAgentPaneStillRendersWhenToolsVisible(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 120
+	m.height = 24
+	m.toolsVisible = true
+	m.toolsBuf = "tool output"
+	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Forge", Content: "agent text should remain visible"})
+
+	v := m.View()
+	if !strings.Contains(v, "agent text should remain visible") {
+		t.Fatalf("expected agent pane content to render with tools visible, got: %s", v)
+	}
+}
+
+func TestChatModelAgentPaneStillRendersAfterToolsToggleOn(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+	m = updated.(ChatModel)
+	m.toolsVisible = false
+	m.toolsBuf = "tool output"
+	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Forge", Content: "agent text should remain visible after toggle"})
+
+	m.inputBuf = "/tools"
+	m.inputPos = len(m.inputBuf)
+	updated, _ = m.submitInput()
+	m = updated.(ChatModel)
+	updated, _ = m.Update(chatTickMsg(time.Now()))
+	m = updated.(ChatModel)
+
+	v := m.View()
+	if !strings.Contains(v, "agent text should remain visible after toggle") {
+		t.Fatalf("expected agent pane content after tools toggle, got: %s", v)
+	}
+}
+
+func TestChatModelSlashSessionsOpensOverlay(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+	if err := m.saveSession("example-session"); err != nil {
+		t.Fatalf("saveSession: %v", err)
+	}
+
+	m.inputBuf = "/sessions"
+	m.inputPos = len("/sessions")
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+
+	if !m.sessionsVisible {
+		t.Fatal("expected sessions overlay to be visible")
+	}
+	if len(m.sessionsList) < 2 || m.sessionsList[0].name != "last-session" || m.sessionsList[1].name != "example-session" {
+		t.Fatalf("expected sessions picker to show last-session first and saved session next, got %#v", m.sessionsList)
+	}
+}
+
+func TestChatModelSessionsOverlayRenamesSession(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+	if err := m.saveSession("rename-me"); err != nil {
+		t.Fatalf("saveSession: %v", err)
+	}
+	if !m.refreshSessionsPicker(true) {
+		t.Fatal("expected sessions picker to load")
+	}
+	for i, entry := range m.sessionsList {
+		if entry.name == "rename-me" {
+			m.sessionsCursor = i
+			break
+		}
+	}
+
+	updated, _ := m.handleSessionsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	m = updated.(ChatModel)
+	if !m.sessionRenaming {
+		t.Fatal("expected rename mode")
+	}
+	m.sessionRenameBuf = "renamed-session"
+	m.sessionRenamePos = len(m.sessionRenameBuf)
+	updated, _ = m.handleSessionsKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+
+	path, err := chatSessionFile("renamed-session")
+	if err != nil {
+		t.Fatalf("chatSessionFile: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected renamed session file: %v", err)
+	}
+}
+
+func TestChatModelSessionsOverlayDeletesSession(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+	if err := m.saveSession("delete-me"); err != nil {
+		t.Fatalf("saveSession: %v", err)
+	}
+	if !m.refreshSessionsPicker(true) {
+		t.Fatal("expected sessions picker to load")
+	}
+	for i, entry := range m.sessionsList {
+		if entry.name == "delete-me" {
+			m.sessionsCursor = i
+			break
+		}
+	}
+
+	updated, _ := m.handleSessionsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = updated.(ChatModel)
+
+	path, err := chatSessionFile("delete-me")
+	if err != nil {
+		t.Fatalf("chatSessionFile: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected session to be deleted, stat err=%v", err)
+	}
+}
+
+func TestChatModelSessionsOverlayMouseRestoresSession(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+	m.inputBuf = "draft input"
+	if err := m.saveSession("restore-me"); err != nil {
+		t.Fatalf("saveSession: %v", err)
+	}
+	m.inputBuf = ""
+	if !m.refreshSessionsPicker(true) {
+		t.Fatal("expected sessions picker to load")
+	}
+	for i, entry := range m.sessionsList {
+		if entry.name == "restore-me" {
+			m.sessionsCursor = i
+			break
+		}
+	}
+	x0, _, _, _, listY, _, start := m.sessionsOverlayLayout()
+	y := listY + (m.sessionsCursor - start)
+
+	updated, _ := m.Update(tea.MouseMsg{X: x0 + 2, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m = updated.(ChatModel)
+
+	if m.sessionsVisible {
+		t.Fatal("expected sessions overlay to close after restore")
+	}
+	if m.inputBuf != "draft input" {
+		t.Fatalf("inputBuf = %q", m.inputBuf)
+	}
+}
+
+func TestChatModelMouseClickFocusesToolsPane(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+	m = updated.(ChatModel)
+	m.toolsVisible = true
+	m.toolsBuf = strings.Repeat("tool output line\n", 20)
+
+	x := m.chatPaneWidth() + 1
+	y := 2
+	updated, _ = m.Update(tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m = updated.(ChatModel)
+
+	if m.paneFocus != focusTools {
+		t.Fatal("expected mouse click in tools pane to focus tools")
+	}
+}
+
+func TestChatModelMouseWheelScrollsToolsPane(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 16})
+	m = updated.(ChatModel)
+	m.toolsVisible = true
+	m.toolsBuf = strings.Repeat("tool output line\n", 80)
+
+	x := m.chatPaneWidth() + 1
+	y := 2
+	updated, _ = m.Update(tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown})
+	m = updated.(ChatModel)
+
+	if m.toolsScroll == 0 {
+		t.Fatal("expected mouse wheel in tools pane to scroll tools")
+	}
+}
+
+func TestChatModelMouseClickScrollbarScrollsToolsPane(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 16})
+	m = updated.(ChatModel)
+	m.toolsVisible = true
+	m.toolsBuf = strings.Repeat("tool output line\n", 80)
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 16})
+	m = updated.(ChatModel)
+
+	toolsX := m.chatPaneWidth()
+	toolsW := m.width - m.chatPaneWidth()
+	scrollbarX := toolsX + max(1, toolsW-2)
+	clickY := m.chatViewport.Height
+	updated, _ = m.Update(tea.MouseMsg{X: scrollbarX, Y: clickY, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m = updated.(ChatModel)
+
+	if m.toolsScroll == 0 {
+		t.Fatal("expected clicking tools scrollbar to change tools scroll")
+	}
+}
+
+func TestChatModelSaveAndRestoreSessionCommands(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+	m.toolsBuf = "tool output"
+	m.AddMessage(ChatMessage{Kind: MsgUser, Header: "You", Content: "hello"})
+
+	m.inputBuf = "/save named-session"
+	m.inputPos = len(m.inputBuf)
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+
+	path, err := chatSessionFile("named-session")
+	if err != nil {
+		t.Fatalf("chatSessionFile: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected saved session file at %s: %v", path, err)
+	}
+
+	m.messages = nil
+	m.chatContent = ""
+	m.chatViewport.SetContent("")
+	m.toolsBuf = ""
+	m.inputBuf = "/restore named-session"
+	m.inputPos = len(m.inputBuf)
+	updated, _ = m.submitInput()
+	m = updated.(ChatModel)
+
+	if !strings.Contains(m.chatContent, "hello") {
+		t.Fatal("expected restored chat content to include saved conversation")
+	}
+	if m.toolsBuf != "tool output" {
+		t.Fatalf("expected restored toolsBuf, got %q", m.toolsBuf)
+	}
+}
