@@ -7,6 +7,67 @@ import (
 	"github.com/gdamore/tcell/v2"
 )
 
+func TestHandleMouseClickFocusesToolsPane(t *testing.T) {
+	m := chatLiveModel{
+		width:  120,
+		height: 24,
+		panes: chatPaneState{
+			layout: chatPaneLayoutState{toolsVisible: true},
+			tools:  chatPaneBufferState{buf: strings.Repeat("tool output line\n", 20)},
+		},
+	}
+
+	x, y, _, _ := m.rightPaneRect()
+	m.handleMouse(tcell.NewEventMouse(x+2, y+2, tcell.Button1, 0))
+
+	if !m.panes.focusR {
+		t.Fatal("expected click in tools pane to focus tools pane")
+	}
+}
+
+func TestHandleMouseWheelScrollsToolsPane(t *testing.T) {
+	m := chatLiveModel{
+		width:  120,
+		height: 16,
+		panes: chatPaneState{
+			layout: chatPaneLayoutState{toolsVisible: true},
+			tools: chatPaneBufferState{
+				buf:    strings.Repeat("tool output line\n", 80),
+				follow: true,
+			},
+		},
+	}
+
+	x, y, _, _ := m.rightPaneRect()
+	m.handleMouse(tcell.NewEventMouse(x+2, y+2, tcell.WheelDown, 0))
+
+	if m.panes.tools.scroll == 0 {
+		t.Fatal("expected mouse wheel in tools pane to scroll tools pane")
+	}
+	if m.panes.tools.follow {
+		t.Fatal("expected wheel scrolling away from bottom to disable follow mode")
+	}
+}
+
+func TestHandleMouseClickFocusesAgentPane(t *testing.T) {
+	m := chatLiveModel{
+		width:  120,
+		height: 24,
+		panes: chatPaneState{
+			focusR: true,
+			layout: chatPaneLayoutState{toolsVisible: true},
+			agent:  chatPaneBufferState{buf: strings.Repeat("agent output line\n", 20)},
+		},
+	}
+
+	x, y, _, _ := m.leftPaneRect()
+	m.handleMouse(tcell.NewEventMouse(x+2, y+2, tcell.Button1, 0))
+
+	if m.panes.focusR {
+		t.Fatal("expected click in agent pane to focus agent pane")
+	}
+}
+
 func TestHandleMouseRightClickCopiesAgentSelection(t *testing.T) {
 	var copied string
 	m := chatLiveModel{

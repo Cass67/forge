@@ -350,7 +350,7 @@ func (m *chatLiveModel) renderPaneBodies(screen tcell.Screen, styleBody, styleBo
 	agentCodeStyle := tcell.StyleDefault.Background(tcell.GetColor("#0d1117")).Foreground(tcell.GetColor("#c9d1d9"))
 	agentCodeBorderStyle := tcell.StyleDefault.Background(colorPanel).Foreground(tcell.GetColor("#30363d"))
 	agentCodeHeaderStyle := tcell.StyleDefault.Background(tcell.GetColor("#0d1117")).Foreground(tcell.GetColor("#7ee787")).Bold(true)
-	// Conversation bubbles use the same background as code blocks, with colored borders.
+	// Box-style conversation bubbles with headers
 	bubbleBg := tcell.GetColor("#0d1117")
 	bubbleBodyStyle := tcell.StyleDefault.Background(bubbleBg).Foreground(tcell.GetColor("#c9d1d9"))
 	agentBorderColor := tcell.GetColor("#58a6ff")
@@ -365,17 +365,12 @@ func (m *chatLiveModel) renderPaneBodies(screen tcell.Screen, styleBody, styleBo
 	forgeHeaderColor := tcell.GetColor("#d2a8ff")
 	inCodeBlock := false
 	codeLang := ""
-	conversationSection := "agent"
 	for row := 0; row < leftVisibleH; row++ {
 		y := leftY + 1 + row
 		line := ""
 		lineIndex := m.panes.agent.scroll + row
 		if row < len(leftLines) {
 			line = leftLines[row]
-		}
-		nextLine := ""
-		if row+1 < len(leftLines) {
-			nextLine = leftLines[row+1]
 		}
 		matchStart, isCurrent, hasMatch := 0, false, false
 		if leftQuery != "" {
@@ -415,90 +410,68 @@ func (m *chatLiveModel) renderPaneBodies(screen tcell.Screen, styleBody, styleBo
 		}
 		selected := m.lineHasSelection("left", m.panes.agent.scroll+row, leftWrapped, leftLineStarts)
 		content := strings.TrimPrefix(line, " │ ")
-		trimmedContent := strings.TrimSpace(content)
 		trimmedLine := strings.TrimSpace(line)
 
-		// Classify the line.
+		// Classify line type
 		isUserHeader := strings.HasPrefix(trimmedLine, "You • ")
 		isForgeHeader := strings.HasPrefix(trimmedLine, "Forge • ")
 		isAgentLine := strings.HasPrefix(line, " │ ")
-		isStatusLine := strings.HasPrefix(trimmedLine, "Agent complete • ") || strings.HasPrefix(trimmedLine, "status: ")
+		isStatusLine := strings.HasPrefix(trimmedLine, "Agent complete • ")
 		isSeparator := trimmedLine == "" || (len(trimmedLine) > 2 && strings.Trim(trimmedLine, "─") == "")
 
-		if isUserHeader {
-			conversationSection = "user"
-		} else if isForgeHeader {
-			conversationSection = "forge"
-		} else if isAgentLine {
-			conversationSection = "agent"
-		} else if isStatusLine || isSeparator {
-			conversationSection = "status"
-		}
-
-		// Status / separator lines: dim text, no bubble.
-		if conversationSection == "status" || isSeparator {
-			if !isSeparator && trimmedLine != "" {
-				statusStyle := tcell.StyleDefault.Background(colorPanel).Foreground(colorDim)
-				drawStyledAgentLine(screen, leftX+2, y, trimmedLine, max(1, leftContentW-1), statusStyle, styleAccent, leftQuery, hasMatch, matchStart, isCurrent)
-			}
+		// Skip status and separator lines entirely
+		if isStatusLine || isSeparator {
 			continue
 		}
 
-		// All bubbles same position, just different border color.
+		boxX := leftX + 1
+		boxW := leftContentW
+		textX := boxX + 2
+		textW := max(1, boxW-2)
+
+		// Determine styling based on message type
 		borderColor := agentBorderColor
 		headerColor := agentHeaderColor
-		switch conversationSection {
-		case "user":
+		if isUserHeader {
 			borderColor = userBorderColor
 			headerColor = userHeaderColor
-		case "forge":
+		} else if isForgeHeader {
 			borderColor = forgeBorderColor
 			headerColor = forgeHeaderColor
 		}
 
-		bubbleX := leftX + 1
-		bubbleW := leftContentW
 		borderStyle := tcell.StyleDefault.Background(colorPanel).Foreground(borderColor)
 		headerStyle := tcell.StyleDefault.Background(bubbleBg).Foreground(headerColor).Bold(true)
-		textX := bubbleX + 2
-		textW := max(1, bubbleW-2)
 
-		// Detect section boundaries.
-		nextTrimmed := strings.TrimSpace(nextLine)
-		nextIsNewSection := nextTrimmed == "" ||
-			strings.HasPrefix(nextTrimmed, "You • ") ||
-			strings.HasPrefix(nextTrimmed, "Forge • ") ||
-			strings.HasPrefix(nextTrimmed, "Agent complete • ") ||
-			strings.HasPrefix(nextTrimmed, "status: ") ||
-			(len(nextTrimmed) > 2 && strings.Trim(nextTrimmed, "─") == "")
-		isLastInSection := nextLine == "" || nextIsNewSection
-
-		// Header lines (You •, Forge •): ╭─ label.
+		// Render header with separator line below it
 		if isUserHeader || isForgeHeader {
-			fillRect(screen, bubbleX, y, bubbleW, 1, bubbleBodyStyle)
-			drawText(screen, bubbleX, y, borderStyle, "▎")
-			drawText(screen, textX, y, headerStyle, fitWidth("╭─ "+trimmedLine, textW))
+			fillRect(screen, boxX, y, boxW, 1, bubbleBodyStyle)
+			drawText(screen, boxX, y, borderStyle, "▎")
+			drawStyledAgentLine(screen, textX, y, trimmedLine, textW, headerStyle, styleAccent, leftQuery, false, 0, false)
 			continue
 		}
 
-		// Content line.
-		fillRect(screen, bubbleX, y, bubbleW, 1, bubbleBodyStyle)
-		if selected {
-			fillRect(screen, bubbleX, y, bubbleW, 1, bubbleBodyStyle.Background(tcell.GetColor("#2f81f7")).Foreground(tcell.ColorBlack))
+		// Check if next line is a new message
+		nextIsNewMsg := row+1 >= len(leftLines)
+		if row+1 < len(leftLines) {
+			nextTrimmed := strings.TrimSpace(leftLines[row+1])
+			nextIsNewMsg = nextTrimmed == "" || strings.HasPrefix(nextTrimmed, "You • ") || strings.HasPrefix(nextTrimmed, "Forge • ") || strings.HasPrefix(nextTrimmed, "Agent complete • ")
 		}
-		drawText(screen, bubbleX, y, borderStyle, "▎")
-		textStyle := bubbleBodyStyle
-		if strings.HasPrefix(trimmedContent, "- ") || strings.HasPrefix(trimmedContent, "* ") {
-			textStyle = tcell.StyleDefault.Background(bubbleBg).Foreground(colorDim)
-		}
-		drawStyledAgentLine(screen, textX, y, content, textW, textStyle, styleAccent, leftQuery, hasMatch, matchStart, isCurrent)
 
-		// ╰─ footer after last line in section.
-		if isLastInSection && row+1 < leftVisibleH && row+1 < len(leftLines) && strings.TrimSpace(leftLines[row+1]) == "" {
-			capY := y + 1
-			fillRect(screen, bubbleX, capY, bubbleW, 1, bubbleBodyStyle)
-			drawText(screen, bubbleX, capY, borderStyle, "▎")
-			drawText(screen, textX, capY, borderStyle, fitWidth("╰─", textW))
+		// Render content line with bottom separator if last in message
+		if isAgentLine {
+			fillRect(screen, boxX, y, boxW, 1, bubbleBodyStyle)
+			if selected {
+				fillRect(screen, boxX, y, boxW, 1, bubbleBodyStyle.Background(tcell.GetColor("#2f81f7")).Foreground(tcell.ColorBlack))
+			}
+			drawText(screen, boxX, y, borderStyle, "▎")
+			drawStyledAgentLine(screen, textX, y, content, textW, bubbleBodyStyle, styleAccent, leftQuery, false, 0, false)
+
+			// Draw separator line after last content line
+			if nextIsNewMsg {
+				fillRect(screen, boxX, y+1, boxW, 1, bubbleBodyStyle)
+				drawText(screen, boxX, y+1, borderStyle, fitWidth(strings.Repeat("─", boxW), boxW))
+			}
 		}
 	}
 	if m.panes.layout.toolsVisible {

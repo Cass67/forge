@@ -63,7 +63,8 @@ func parse(content, source string) (Skill, error) {
 	return s, nil
 }
 
-// LoadDir loads all .md files from a directory. Non-skill files are silently skipped.
+// LoadDir loads skills from a directory. It handles both flat .md files and
+// subdirectories containing a SKILL.md file. Non-skill files are silently skipped.
 func LoadDir(dir string) ([]Skill, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -74,10 +75,19 @@ func LoadDir(dir string) ([]Skill, error) {
 	}
 	var out []Skill
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+		var path string
+		if e.IsDir() {
+			// Check for SKILL.md inside the subdirectory
+			path = filepath.Join(dir, e.Name(), "SKILL.md")
+			if _, err := os.Stat(path); err != nil {
+				continue
+			}
+		} else if strings.HasSuffix(e.Name(), ".md") {
+			path = filepath.Join(dir, e.Name())
+		} else {
 			continue
 		}
-		s, err := LoadFile(filepath.Join(dir, e.Name()))
+		s, err := LoadFile(path)
 		if err != nil {
 			continue
 		}
@@ -86,27 +96,31 @@ func LoadDir(dir string) ([]Skill, error) {
 	return out, nil
 }
 
-// Load discovers skills from project-local and user-global directories.
-// Project-local skills take precedence over user-global on name conflict.
+// Load discovers skills from plugin, user-global, and project-local directories.
+// Later sources take precedence over earlier ones on name conflict.
 func Load(workDir string) []Skill {
 	projectDir := filepath.Join(workDir, ".forge", "skills")
-	homeDir := ""
-	if h, err := os.UserHomeDir(); err == nil {
-		homeDir = filepath.Join(h, ".config", "forge", "skills")
-	}
-
 	byName := make(map[string]Skill)
 
-	// Load user-global first (lower priority)
-	if homeDir != "" {
-		if global, err := LoadDir(homeDir); err == nil {
+	if h, err := os.UserHomeDir(); err == nil {
+		// Load plugin skills (lowest priority)
+		pluginDir := filepath.Join(h, ".forge", "superpowers", "skills")
+		if plugins, err := LoadDir(pluginDir); err == nil {
+			for _, s := range plugins {
+				byName[s.Name] = s
+			}
+		}
+
+		// Load user-global skills (medium priority)
+		globalDir := filepath.Join(h, ".config", "forge", "skills")
+		if global, err := LoadDir(globalDir); err == nil {
 			for _, s := range global {
 				byName[s.Name] = s
 			}
 		}
 	}
 
-	// Load project-local second (higher priority, overwrites)
+	// Load project-local (highest priority, overwrites)
 	if local, err := LoadDir(projectDir); err == nil {
 		for _, s := range local {
 			byName[s.Name] = s

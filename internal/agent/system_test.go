@@ -25,4 +25,7 @@ func TestBuildSystemPrompt(t *testing.T) {
 	if !strings.Contains(prompt, "tool_call") {
 		t.Error("missing tool call format instructions")
 	}
+	if !strings.Contains(prompt, "Continue working after progress updates") {
+		t.Error("missing continue-by-default instruction")
+	}
 }
