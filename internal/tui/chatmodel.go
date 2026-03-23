@@ -734,12 +734,6 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 			m.AddWorkingMessage(ev.Text)
 			return m, nil
 		}
-		summary := strings.TrimSpace(ev.Text)
-		if summary != "" {
-			m.AddWorkingMessage(fmt.Sprintf("%s: %s", ev.Agent, summary))
-		} else {
-			m.AddWorkingMessage(ev.Agent)
-		}
 		if m.toolsBuf != "" && !strings.HasSuffix(m.toolsBuf, "\n\n") {
 			m.toolsBuf += "\n"
 		}
