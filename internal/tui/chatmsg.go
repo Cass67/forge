@@ -73,7 +73,12 @@ func (m ChatMessage) Render(width int, lowContrast bool) string {
 		Background(boxBg).
 		Foreground(lipgloss.Color("#c9d1d9")).
 		Width(innerWidth)
-	contentBlock := contentStyle.Render(m.Content)
+	// Strip trailing blank lines so boxes hug their last content line
+	contentLines := strings.Split(m.Content, "\n")
+	for len(contentLines) > 0 && strings.TrimSpace(contentLines[len(contentLines)-1]) == "" {
+		contentLines = contentLines[:len(contentLines)-1]
+	}
+	contentBlock := contentStyle.Render(strings.Join(contentLines, "\n"))
 
 	var inner string
 	if headerBlock != "" {
