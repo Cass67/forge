@@ -11,6 +11,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"forge/internal/auth"
 	"forge/internal/chatgptauth"
@@ -189,18 +191,37 @@ func TestChatModelSlashThemeVariants(t *testing.T) {
 	}
 }
 
-func TestChatModelSlashThemeViewReflectsSelection(t *testing.T) {
+func TestChatModelSlashThemeChangesRenderedViewportStyle(t *testing.T) {
+	prevProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(prevProfile)
+	})
+
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 80
 	m.height = 24
+
+	m.AddMessage(ChatMessage{Kind: MsgUser, Header: "You • 12:00:00", Content: "hello world"})
+	defaultRendered := m.chatViewport.View()
+	if defaultRendered == "" {
+		t.Fatal("expected rendered viewport content")
+	}
 
 	m.inputBuf = "/theme light"
 	m.inputPos = len(m.inputBuf)
 	updated, _ := m.submitInput()
 	m = updated.(ChatModel)
 
-	if got := m.View(); !strings.Contains(got, "theme: light") {
-		t.Fatalf("view = %q", got)
+	lightRendered := m.chatViewport.View()
+	if lightRendered == "" {
+		t.Fatal("expected rendered viewport content after theme change")
+	}
+	if defaultRendered == lightRendered {
+		t.Fatal("expected viewport rendering to change across themes")
+	}
+	if !strings.Contains(defaultRendered, "hello world") || !strings.Contains(lightRendered, "hello world") {
+		t.Fatal("expected message content to remain visible")
 	}
 }
 
