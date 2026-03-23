@@ -232,6 +232,25 @@ func (m *ChatModel) AddMessage(msg ChatMessage) {
 	m.refreshViewport()
 }
 
+func (m *ChatModel) AddWorkingMessage(content string) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return
+	}
+	if len(m.messages) > 0 {
+		last := m.messages[len(m.messages)-1]
+		if last.Kind == MsgWorking && strings.TrimSpace(last.Content) == content {
+			return
+		}
+	}
+	m.messages = append(m.messages, ChatMessage{
+		Kind:    MsgWorking,
+		Header:  "Working",
+		Content: content,
+	})
+	m.refreshViewport()
+}
+
 func (m *ChatModel) AppendToLastAgent(text string) {
 	if len(m.messages) == 0 || m.messages[len(m.messages)-1].Kind != MsgAgent {
 		stamp := time.Now().Format("15:04:05")
@@ -711,6 +730,16 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 	case llm.EventToken:
 		m.AppendToLastAgent(ev.Text)
 	case llm.EventToolCall:
+		if ev.Agent == "runtime" {
+			m.AddWorkingMessage(ev.Text)
+			return m, nil
+		}
+		summary := strings.TrimSpace(ev.Text)
+		if summary != "" {
+			m.AddWorkingMessage(fmt.Sprintf("%s: %s", ev.Agent, summary))
+		} else {
+			m.AddWorkingMessage(ev.Agent)
+		}
 		if m.toolsBuf != "" && !strings.HasSuffix(m.toolsBuf, "\n\n") {
 			m.toolsBuf += "\n"
 		}

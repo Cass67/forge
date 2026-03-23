@@ -127,6 +127,33 @@ func TestChatModelHandlesToolCallEvent(t *testing.T) {
 	if m.toolsBuf == "" {
 		t.Fatal("expected tools buffer to have content")
 	}
+	foundWorking := false
+	for _, msg := range m.messages {
+		if msg.Kind == MsgWorking && strings.Contains(msg.Content, "read_file") {
+			foundWorking = true
+			break
+		}
+	}
+	if !foundWorking {
+		t.Fatal("expected inline working message for tool call")
+	}
+}
+
+func TestChatModelShowsInlineWorkingMessageForRuntimeInfo(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "runtime", Text: "Inspecting repository structure"})
+	m = updated.(ChatModel)
+
+	if len(m.messages) == 0 {
+		t.Fatal("expected working message")
+	}
+	last := m.messages[len(m.messages)-1]
+	if last.Kind != MsgWorking || !strings.Contains(last.Content, "Inspecting repository structure") {
+		t.Fatalf("unexpected last message: %#v", last)
+	}
 }
 
 func TestChatModelSlashClear(t *testing.T) {

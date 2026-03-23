@@ -10,10 +10,11 @@ import (
 type MsgKind int
 
 const (
-	MsgUser   MsgKind = iota // User input
-	MsgAgent                 // Agent response
-	MsgForge                 // Forge steering input
-	MsgStatus                // Status line (e.g. "Agent complete")
+	MsgUser    MsgKind = iota // User input
+	MsgAgent                  // Agent response
+	MsgForge                  // Forge steering input
+	MsgWorking                // Inline progress / working-state update
+	MsgStatus                 // Status line (e.g. "Agent complete")
 )
 
 // ChatMessage is a single message in the conversation.
@@ -31,6 +32,8 @@ func (m ChatMessage) borderColor(theme chatTheme) lipgloss.Color {
 		return theme.AccentPrimary
 	case MsgForge:
 		return theme.AccentSecondary
+	case MsgWorking:
+		return theme.TextDim
 	default:
 		return theme.Border
 	}
@@ -48,6 +51,26 @@ func (m ChatMessage) Render(width int, theme chatTheme) string {
 			Width(width).
 			Align(lipgloss.Center)
 		return style.Render(m.Content)
+	}
+
+	if m.Kind == MsgWorking {
+		header := strings.TrimSpace(m.Header)
+		if header == "" {
+			header = "Working"
+		}
+		titleStyle := lipgloss.NewStyle().
+			Foreground(theme.TextDim).
+			Bold(true)
+		contentStyle := lipgloss.NewStyle().
+			Foreground(theme.TextDim).
+			Width(width)
+		if strings.TrimSpace(m.Content) == "" {
+			return titleStyle.Render(header)
+		}
+		return lipgloss.JoinVertical(lipgloss.Left,
+			titleStyle.Render(header),
+			contentStyle.Render(m.Content),
+		)
 	}
 
 	bc := m.borderColor(theme)
