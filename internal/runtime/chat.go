@@ -152,6 +152,11 @@ func RunChatLive(setup *ChatSetup) {
 	state := chatstate.New()
 
 	a := agent.NewAgent(setup.Driver, reg, approve, setup.WorkDir, setup.Config.Chat.MaxTurns, evRenderer, loadedSkills, state)
+
+	if setup.Config.Chat.Agents.Enabled {
+		configureMultiAgent(a, reg, setup)
+	}
+
 	inputCh := make(chan string, 1)
 	doneCh := make(chan struct{}, 1)
 
@@ -260,6 +265,29 @@ func RunChatLive(setup *ChatSetup) {
 	tui.RunChatLive(eventsCh, liveCfg, inputCh, doneCh)
 }
 
+func configureMultiAgent(a *agent.Agent, baseReg *tools.Registry, setup *ChatSetup) {
+	mac := agent.MultiAgentConfig{
+		Enabled:    true,
+		RoleModels: setup.Config.AgentRoleModels(),
+		MakeDriver: setup.MakeDriver,
+		BaseTools:  baseReg,
+	}
+
+	// Register scratchpad tools on the base registry.
+	baseReg.Register(tools.NewScratchpadWrite(setup.WorkDir))
+	baseReg.Register(tools.NewScratchpadRead(setup.WorkDir))
+
+	// Register the delegate tool (calls back into the agent).
+	baseReg.Register(tools.NewDelegate(func(ctx context.Context, role, task string) (string, error) {
+		return a.SpawnSubAgent(ctx, role, task, mac)
+	}))
+
+	// Switch the primary agent to dispatch role.
+	dispatchRole := agent.Roles["dispatch"]
+	a.SetSystem(agent.BuildSystemPrompt(setup.WorkDir, baseReg.Filter(dispatchRole.AllowTools), "") + "\n\n" + dispatchRole.System)
+	a.SetTools(baseReg.Filter(dispatchRole.AllowTools))
+}
+
 func providerOptionsFromBootstrap(backends []bootstrap.ProviderBackend) []tui.ProviderOption {
 	out := make([]tui.ProviderOption, 0, len(backends))
 	for _, backend := range backends {
@@ -289,6 +317,10 @@ func RunChatConsole(setup *ChatSetup) {
 	renderer := agent.NewRenderer(os.Stdout, 80, true)
 	state := chatstate.New()
 	a := agent.NewAgent(setup.Driver, reg, approve, setup.WorkDir, setup.Config.Chat.MaxTurns, renderer, loadedSkills, state)
+
+	if setup.Config.Chat.Agents.Enabled {
+		configureMultiAgent(a, reg, setup)
+	}
 
 	fmt.Printf("forge chat (%s) — %s\n", setup.ChatModel, setup.WorkDir)
 	fmt.Println("type your request, or /help for commands")
