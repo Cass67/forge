@@ -73,6 +73,20 @@ func TestChatMessageRenderChangesAcrossThemes(t *testing.T) {
 	}
 }
 
+func TestChatMessageAccentRoles(t *testing.T) {
+	theme := lookupThemeForTest(t, "default")
+
+	if got := (ChatMessage{Kind: MsgUser}).borderColor(theme); got != theme.Success {
+		t.Fatalf("user accent = %q, want %q", got, theme.Success)
+	}
+	if got := (ChatMessage{Kind: MsgAgent}).borderColor(theme); got != theme.AccentPrimary {
+		t.Fatalf("agent accent = %q, want %q", got, theme.AccentPrimary)
+	}
+	if got := (ChatMessage{Kind: MsgForge}).borderColor(theme); got != theme.AccentSecondary {
+		t.Fatalf("forge accent = %q, want %q", got, theme.AccentSecondary)
+	}
+}
+
 func lookupThemeForTest(t *testing.T, name string) chatTheme {
 	t.Helper()
 	theme, ok := lookupChatTheme(name)
