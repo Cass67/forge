@@ -67,6 +67,29 @@ func (r *Registry) All() []Tool {
 	return result
 }
 
+// Filter returns a new registry containing only the named tools.
+// If allowed is nil, a copy of the full registry is returned.
+func (r *Registry) Filter(allowed []string) *Registry {
+	if allowed == nil {
+		filtered := NewRegistry()
+		for _, name := range r.order {
+			filtered.Register(r.tools[name])
+		}
+		return filtered
+	}
+	allowSet := make(map[string]bool, len(allowed))
+	for _, name := range allowed {
+		allowSet[name] = true
+	}
+	filtered := NewRegistry()
+	for _, name := range r.order {
+		if allowSet[name] {
+			filtered.Register(r.tools[name])
+		}
+	}
+	return filtered
+}
+
 // Describe formats all tools for injection into the system prompt.
 func (r *Registry) Describe() string {
 	names := make([]string, 0, len(r.tools))

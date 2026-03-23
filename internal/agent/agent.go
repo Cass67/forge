@@ -63,6 +63,16 @@ func (a *Agent) SetDriver(d llm.Driver) {
 	a.driver = d
 }
 
+// SetSystem replaces the agent's system prompt.
+func (a *Agent) SetSystem(system string) {
+	a.system = system
+}
+
+// SetTools replaces the agent's tool registry.
+func (a *Agent) SetTools(reg *tools.Registry) {
+	a.tools = reg
+}
+
 func (a *Agent) ClearHistory() {
 	a.history = nil
 	a.state.Clear()
@@ -153,13 +163,15 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		// Parse tool calls
 		calls, visibleText := ParseToolCalls(response)
 
-		// No tool calls — final answer.
+		// No tool calls — final answer, or stalled narration.
 		if len(calls) == 0 {
-			if looksLikeActionPreamble(response) && actionPreambleRetries < 2 && turn+1 < a.maxTurns {
+			isShort := len(strings.TrimSpace(response)) < 300
+			isPreamble := looksLikeActionPreamble(response)
+			if (isPreamble || isShort) && actionPreambleRetries < 4 && turn+1 < a.maxTurns {
 				actionPreambleRetries++
 				a.history = append(a.history, llm.Message{
 					Role:    llm.RoleUser,
-					Content: "Continue by acting. Call the next tool now, ask one blocker question, or give the final answer.",
+					Content: nudgeMessage(actionPreambleRetries),
 				})
 				continue
 			}
@@ -284,22 +296,54 @@ func looksLikeActionPreamble(text string) bool {
 	if trimmed == "" {
 		return false
 	}
-	phrases := []string{
+	// Normalize smart quotes/apostrophes to ASCII.
+	trimmed = strings.NewReplacer("\u2018", "'", "\u2019", "'", "\u201c", "\"", "\u201d", "\"").Replace(trimmed)
+	// Phrases that indicate narration when they start the response.
+	prefixes := []string{
 		"i'm going to",
-		"i’m going to",
 		"i noticed we need to",
 		"next i'll",
-		"next i’ll",
 		"i'll ",
-		"i’ll ",
 		"let me ",
+		"first,", "first i", "to accomplish", "to do this",
+		"based on", "here's my plan", "here's what",
+		"looking at", "the next step", "we need to", "we should",
+		"i can ", "i need to", "i want to",
+		"ok,", "okay,", "sure,", "alright,",
+		"to start", "to begin", "my approach",
+		"so,", "now,", "now i",
 	}
-	for _, phrase := range phrases {
-		if strings.HasPrefix(trimmed, phrase) {
+	for _, p := range prefixes {
+		if strings.HasPrefix(trimmed, p) {
+			return true
+		}
+	}
+	// Phrases that indicate narration anywhere in the response.
+	contains := []string{
+		"i'll start by", "i'll begin by", "let's start",
+		"steps to take", "here is my plan", "here are the steps",
+		"i will now", "i will first", "shall i proceed",
+		"would you like me to", "should i proceed", "should i continue",
+	}
+	for _, c := range contains {
+		if strings.Contains(trimmed, c) {
 			return true
 		}
 	}
 	return false
+}
+
+func nudgeMessage(attempt int) string {
+	switch attempt {
+	case 1:
+		return "Continue by acting. Call the next tool now, or give the final answer."
+	case 2:
+		return "You must call a tool or give a final answer. Do not describe what you plan to do."
+	case 3:
+		return "STOP NARRATING. Either call a tool right now or say DONE if the task is complete."
+	default:
+		return "Call a tool now. No more text without a tool call."
+	}
 }
 
 // estimateTokens returns a rough token count (~4 chars per token).

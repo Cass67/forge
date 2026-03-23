@@ -79,13 +79,27 @@ type PipelinePass struct {
 	Rounds        int    `toml:"rounds"`         // 0 = use default
 }
 
+type AgentModels struct {
+	Dispatch  string `toml:"dispatch"`
+	Scout     string `toml:"scout"`
+	Builder   string `toml:"builder"`
+	Doctor    string `toml:"doctor"`
+	Architect string `toml:"architect"`
+}
+
+type AgentsConfig struct {
+	Enabled bool        `toml:"enabled"`
+	Models  AgentModels `toml:"models"`
+}
+
 type ChatConfig struct {
-	Model          string   `toml:"model"`
-	MaxTurns       int      `toml:"max_turns"`
-	CommandTimeout int      `toml:"command_timeout"`
-	Yolo           bool     `toml:"yolo"`
-	IgnoreDirs     []string `toml:"ignore_dirs"`
-	AutoSkills     string   `toml:"auto_skills"`
+	Model          string       `toml:"model"`
+	MaxTurns       int          `toml:"max_turns"`
+	CommandTimeout int          `toml:"command_timeout"`
+	Yolo           bool         `toml:"yolo"`
+	IgnoreDirs     []string     `toml:"ignore_dirs"`
+	AutoSkills     string       `toml:"auto_skills"`
+	Agents         AgentsConfig `toml:"agents"`
 }
 
 type Config struct {
@@ -309,6 +323,27 @@ func (c *Config) CopilotClientID() string {
 		return c.Copilot.ClientID
 	}
 	return defaultCopilotClientID
+}
+
+// AgentRoleModels returns a map of role name to model name for multi-agent mode.
+func (c *Config) AgentRoleModels() map[string]string {
+	m := make(map[string]string)
+	if v := c.Chat.Agents.Models.Dispatch; v != "" {
+		m["dispatch"] = v
+	}
+	if v := c.Chat.Agents.Models.Scout; v != "" {
+		m["scout"] = v
+	}
+	if v := c.Chat.Agents.Models.Builder; v != "" {
+		m["builder"] = v
+	}
+	if v := c.Chat.Agents.Models.Doctor; v != "" {
+		m["doctor"] = v
+	}
+	if v := c.Chat.Agents.Models.Architect; v != "" {
+		m["architect"] = v
+	}
+	return m
 }
 
 func ValidRounds(n int) bool {

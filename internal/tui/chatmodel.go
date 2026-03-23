@@ -845,10 +845,10 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.inputPos = len([]rune(m.inputBuf))
 	case tea.KeyPgUp:
 		m.resetSlashCompletion()
-		m.chatViewport.HalfViewUp()
+		m.chatViewport.HalfPageUp()
 	case tea.KeyPgDown:
 		m.resetSlashCompletion()
-		m.chatViewport.HalfViewDown()
+		m.chatViewport.HalfPageDown()
 	case tea.KeyF1:
 		m.helpVisible = true
 		m.helpTab = 0
