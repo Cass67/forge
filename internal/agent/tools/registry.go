@@ -7,14 +7,22 @@ import (
 	"strings"
 )
 
+type PromptVisibility int
+
+const (
+	PromptCore PromptVisibility = iota
+	PromptHidden
+)
+
 // Tool defines a single tool the agent can call.
 type Tool struct {
-	Name        string
-	Description string
-	Parameters  []ParameterDef
-	AutoApprove bool
-	Execute     func(ctx context.Context, args map[string]any) (string, error)
-	LastDiff    func() string // optional: returns diff from last execution, nil if not applicable
+	Name             string
+	Description      string
+	Parameters       []ParameterDef
+	PromptVisibility PromptVisibility
+	AutoApprove      bool
+	Execute          func(ctx context.Context, args map[string]any) (string, error)
+	LastDiff         func() string // optional: returns diff from last execution, nil if not applicable
 }
 
 // ParameterDef describes one parameter.
@@ -37,13 +45,17 @@ type ApprovalFunc func(action Action) (bool, error)
 
 // Registry holds available tools.
 type Registry struct {
-	tools map[string]Tool
-	order []string
+	tools     map[string]Tool
+	order     []string
+	disclosed map[string]bool
 }
 
 // NewRegistry creates an empty tool registry.
 func NewRegistry() *Registry {
-	return &Registry{tools: make(map[string]Tool)}
+	return &Registry{
+		tools:     make(map[string]Tool),
+		disclosed: make(map[string]bool),
+	}
 }
 
 // Register adds a tool to the registry.
@@ -69,28 +81,91 @@ func (r *Registry) All() []Tool {
 
 // Describe formats all tools for injection into the system prompt.
 func (r *Registry) Describe() string {
-	names := make([]string, 0, len(r.tools))
-	for n := range r.tools {
-		names = append(names, n)
+	return r.describeTools(r.All(), true)
+}
+
+func (r *Registry) DescribeForPrompt() string {
+	tools := make([]Tool, 0, len(r.order))
+	for _, name := range r.order {
+		tool := r.tools[name]
+		if tool.PromptVisibility == PromptHidden && !r.disclosed[name] {
+			continue
+		}
+		tools = append(tools, tool)
 	}
-	sort.Strings(names)
 
 	var sb strings.Builder
-	sb.WriteString("You have access to the following tools:\n\n")
-	for _, name := range names {
-		t := r.tools[name]
-		sb.WriteString(fmt.Sprintf("## %s\n%s\n", t.Name, t.Description))
-		if len(t.Parameters) > 0 {
-			sb.WriteString("Parameters:\n")
-			for _, p := range t.Parameters {
-				req := "optional"
-				if p.Required {
-					req = "required"
-				}
-				sb.WriteString(fmt.Sprintf("  - %s (%s, %s): %s\n", p.Name, p.Type, req, p.Description))
-			}
+	sb.WriteString(r.describeTools(tools, false))
+	if len(r.hiddenToolNames()) > 0 {
+		sb.WriteString("\nSpecialized tools are hidden by default to save context. Use tool_help(query) to reveal only what you need.\n")
+	}
+	return sb.String()
+}
+
+func (r *Registry) RevealMatchingTools(query string) []Tool {
+	query = strings.TrimSpace(strings.ToLower(query))
+	if query == "" {
+		return nil
+	}
+
+	var matched []Tool
+	for _, name := range r.order {
+		tool := r.tools[name]
+		if tool.PromptVisibility != PromptHidden {
+			continue
 		}
-		sb.WriteString("\n")
+		if hiddenToolMatches(tool, query) {
+			r.disclosed[tool.Name] = true
+			matched = append(matched, tool)
+		}
+	}
+	return matched
+}
+
+func (r *Registry) ResetDisclosure() {
+	clear(r.disclosed)
+}
+
+func (r *Registry) DescribeNamedTools(names []string) string {
+	tools := make([]Tool, 0, len(names))
+	for _, name := range names {
+		if tool, ok := r.tools[name]; ok {
+			tools = append(tools, tool)
+		}
+	}
+	return r.describeTools(tools, true)
+}
+
+func (r *Registry) hiddenToolNames() []string {
+	names := make([]string, 0, len(r.tools))
+	for _, name := range r.order {
+		if r.tools[name].PromptVisibility == PromptHidden && !r.disclosed[name] {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func (r *Registry) describeTools(tools []Tool, detailed bool) string {
+	var sb strings.Builder
+	sb.WriteString("You have access to the following tools:\n\n")
+	for _, t := range sortToolsByName(tools) {
+		if detailed {
+			_, _ = fmt.Fprintf(&sb, "## %s\n%s\n", t.Name, t.Description)
+			if len(t.Parameters) > 0 {
+				sb.WriteString("Parameters:\n")
+				for _, p := range t.Parameters {
+					req := "optional"
+					if p.Required {
+						req = "required"
+					}
+					_, _ = fmt.Fprintf(&sb, "  - %s (%s, %s): %s\n", p.Name, p.Type, req, p.Description)
+				}
+			}
+			sb.WriteString("\n")
+			continue
+		}
+		_, _ = fmt.Fprintf(&sb, "- %s: %s\n", formatToolSignature(t), t.Description)
 	}
 	sb.WriteString(`To call a tool, use this exact format:
 
@@ -102,4 +177,58 @@ You may call multiple tools. After tool results are returned, continue your work
 Wait for results before making decisions based on them.
 `)
 	return sb.String()
+}
+
+func sortToolsByName(tools []Tool) []Tool {
+	out := append([]Tool(nil), tools...)
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+func formatToolSignature(t Tool) string {
+	if len(t.Parameters) == 0 {
+		return t.Name
+	}
+	params := make([]string, 0, len(t.Parameters))
+	for _, p := range t.Parameters {
+		name := p.Name
+		if !p.Required {
+			name = "[" + name + "]"
+		}
+		params = append(params, name)
+	}
+	return fmt.Sprintf("%s(%s)", t.Name, strings.Join(params, ", "))
+}
+
+func hiddenToolMatches(tool Tool, query string) bool {
+	query = strings.TrimSpace(strings.ToLower(query))
+	if query == "" {
+		return false
+	}
+	if strings.Contains(strings.ToLower(tool.Name), query) {
+		return true
+	}
+	if strings.Contains(strings.ToLower(tool.Description), query) {
+		return true
+	}
+
+	matchesAny := func(terms ...string) bool {
+		for _, term := range terms {
+			if strings.Contains(query, term) {
+				return true
+			}
+		}
+		return false
+	}
+
+	switch tool.Name {
+	case "git_commit":
+		return matchesAny("commit", "checkpoint", "save changes")
+	case "web_fetch":
+		return matchesAny("fetch", "url", "http", "https", "web page", "website", "download")
+	case "web_search":
+		return matchesAny("search", "lookup", "research", "internet", "web")
+	default:
+		return false
+	}
 }

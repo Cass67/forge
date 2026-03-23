@@ -133,9 +133,16 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, appr
 	reg.Register(tools.NewGitStatus(workDir))
 	reg.Register(tools.NewGitDiff(workDir))
 	reg.Register(tools.NewGitLog(workDir))
-	reg.Register(tools.NewGitCommit(workDir, approve))
-	reg.Register(tools.NewWebFetch())
-	reg.Register(tools.NewWebSearch())
+	gitCommit := tools.NewGitCommit(workDir, approve)
+	gitCommit.PromptVisibility = tools.PromptHidden
+	reg.Register(gitCommit)
+	webFetch := tools.NewWebFetch()
+	webFetch.PromptVisibility = tools.PromptHidden
+	reg.Register(webFetch)
+	webSearch := tools.NewWebSearch()
+	webSearch.PromptVisibility = tools.PromptHidden
+	reg.Register(webSearch)
+	reg.Register(tools.NewToolHelp(reg))
 }
 
 func RunChatLive(setup *ChatSetup) {
