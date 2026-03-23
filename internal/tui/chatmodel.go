@@ -14,6 +14,7 @@ import (
 	"forge/internal/auth"
 	"forge/internal/chatgptauth"
 	"forge/internal/chatstate"
+	"forge/internal/codexusage"
 	"forge/internal/copilot"
 	"forge/internal/llm"
 	"forge/internal/skills"
@@ -39,6 +40,16 @@ type providerAuthSucceededMsg struct {
 type providerAuthFailedMsg struct {
 	providerID string
 	err        error
+}
+type statsCopilotQuotaMsg struct {
+	model string
+	quota *copilot.UserQuota
+	err   error
+}
+type statsCodexUsageMsg struct {
+	model    string
+	snapshot *codexusage.Snapshot
+	err      error
 }
 type chatSlashCompletionState struct {
 	baseInput string
@@ -115,7 +126,11 @@ type ChatModel struct {
 	helpTab     int
 	helpScroll  int
 
-	statsVisible bool
+	statsVisible        bool
+	statsCopilotLoading bool
+	statsCopilotErr     string
+	statsCodexLoading   bool
+	statsCodexErr       string
 
 	searchVisible bool
 	searchQuery   string
@@ -200,6 +215,7 @@ func (m ChatModel) Init() tea.Cmd {
 	return tea.Batch(
 		m.chatViewport.Init(),
 		tickCmd(),
+		m.beginProviderDiagnosticsFetch(false),
 	)
 }
 
@@ -495,7 +511,7 @@ func (m ChatModel) handleModelsMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				idx := start + (msg.Y - listY)
 				if idx >= 0 && idx < len(m.modelsFiltered) {
 					m.modelsCursor = idx
-					m.pickModel(idx)
+					return m, m.pickModel(idx)
 				}
 			}
 			return m, nil
@@ -651,6 +667,32 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case providerAuthFailedMsg:
 		return m.handleProviderAuthFailed(msg)
 
+	case statsCopilotQuotaMsg:
+		if msg.model != m.model {
+			return m, nil
+		}
+		m.statsCopilotLoading = false
+		m.statusData.CopilotLive = msg.quota
+		if msg.err != nil {
+			m.statsCopilotErr = msg.err.Error()
+		} else {
+			m.statsCopilotErr = ""
+		}
+		return m, nil
+
+	case statsCodexUsageMsg:
+		if msg.model != m.model {
+			return m, nil
+		}
+		m.statsCodexLoading = false
+		m.statusData.CodexUsage = msg.snapshot
+		if msg.err != nil {
+			m.statsCodexErr = msg.err.Error()
+		} else {
+			m.statsCodexErr = ""
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 
@@ -757,6 +799,51 @@ func latestFencedCodeBlock(content string) string {
 		}
 	}
 	return ""
+}
+
+func (m *ChatModel) resetProviderDiagnostics() {
+	m.statusData.CopilotLive = nil
+	m.statusData.CodexUsage = nil
+	m.statsCopilotLoading = false
+	m.statsCodexLoading = false
+	m.statsCopilotErr = ""
+	m.statsCodexErr = ""
+}
+
+func (m *ChatModel) beginProviderDiagnosticsFetch(force bool) tea.Cmd {
+	provider := providerFromModel(m.model)
+	var cmds []tea.Cmd
+
+	if provider == "copilot" && m.config.FetchLiveCopilotQuota != nil && (force || (m.statusData.CopilotLive == nil && !m.statsCopilotLoading)) {
+		m.statsCopilotLoading = true
+		if force {
+			m.statsCopilotErr = ""
+		}
+		model := m.model
+		fetch := m.config.FetchLiveCopilotQuota
+		cmds = append(cmds, func() tea.Msg {
+			quota, err := fetch(context.Background())
+			return statsCopilotQuotaMsg{model: model, quota: quota, err: err}
+		})
+	}
+
+	if (provider == "chatgpt" || provider == "openai" || provider == "codex") && m.config.FetchCodexUsage != nil && (force || (m.statusData.CodexUsage == nil && !m.statsCodexLoading)) {
+		m.statsCodexLoading = true
+		if force {
+			m.statsCodexErr = ""
+		}
+		model := m.model
+		fetch := m.config.FetchCodexUsage
+		cmds = append(cmds, func() tea.Msg {
+			snapshot, err := fetch(context.Background())
+			return statsCodexUsageMsg{model: model, snapshot: snapshot, err: err}
+		})
+	}
+
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1173,17 +1260,9 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.helpScroll = 0
 		m.flash = "help opened"
 	case input == "/stats":
-		hasStats := m.statsDuration > 0 ||
-			m.statsUsage.InputTokens > 0 ||
-			m.statsUsage.OutputTokens > 0 ||
-			m.sessionUsage.InputTokens > 0 ||
-			m.sessionUsage.OutputTokens > 0
-		if !hasStats {
-			m.flash = "no stats yet"
-			break
-		}
 		m.statsVisible = true
 		m.flash = "stats opened"
+		return m, m.beginProviderDiagnosticsFetch(false)
 	case input == "/theme":
 		m.cycleTheme()
 	case strings.HasPrefix(input, "/theme "):
@@ -1282,8 +1361,10 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				m.flash = fmt.Sprintf("error: %v", err)
 			} else {
 				m.model = newModel
+				m.resetProviderDiagnostics()
 				m.syncStatusData()
 				m.flash = fmt.Sprintf("switched to %s", newModel)
+				return m, m.beginProviderDiagnosticsFetch(false)
 			}
 		}
 	case input == "/skills":
@@ -2059,7 +2140,7 @@ func (m ChatModel) handleModelsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.modelsQueryPos = 0
 		m.updateModelFilter()
 	case tea.KeyEnter:
-		m.pickModel(m.modelsCursor)
+		return m, m.pickModel(m.modelsCursor)
 	case tea.KeyRunes:
 		if len(msg.Runes) == 1 && strings.TrimSpace(m.modelsQuery) == "" {
 			r := msg.Runes[0]
@@ -2067,7 +2148,7 @@ func (m ChatModel) handleModelsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				idx := int(r - '1')
 				if idx < len(m.modelsFiltered) {
 					m.modelsCursor = idx
-					m.pickModel(idx)
+					return m, m.pickModel(idx)
 				}
 				return m, nil
 			}
@@ -2109,22 +2190,24 @@ func (m *ChatModel) refreshModelList() {
 	m.updateModelFilter()
 }
 
-func (m *ChatModel) pickModel(idx int) {
+func (m *ChatModel) pickModel(idx int) tea.Cmd {
 	if idx < 0 || idx >= len(m.modelsFiltered) {
-		return
+		return nil
 	}
 	picked := m.modelsFiltered[idx]
 	if m.config.SwitchModel != nil {
 		newModel, err := m.config.SwitchModel(picked)
 		if err != nil {
 			m.flash = fmt.Sprintf("error: %v", err)
-			return
+			return nil
 		}
 		m.model = newModel
+		m.resetProviderDiagnostics()
 		m.syncStatusData()
 		m.flash = fmt.Sprintf("switched to %s", newModel)
 	}
 	m.modelsVisible = false
+	return m.beginProviderDiagnosticsFetch(false)
 }
 
 func (m *ChatModel) openProviderPicker() {
@@ -2244,8 +2327,11 @@ func (m ChatModel) activateProviderSelection() (tea.Model, tea.Cmd) {
 			m.flash = fmt.Sprintf("error: %v", err)
 		} else {
 			m.model = newModel
+			m.resetProviderDiagnostics()
 			m.syncStatusData()
 			m.flash = fmt.Sprintf("switched to %s", newModel)
+			m.providersVisible = false
+			return m, m.beginProviderDiagnosticsFetch(false)
 		}
 	}
 	m.providersVisible = false
@@ -2330,8 +2416,10 @@ func (m ChatModel) saveProviderKey() (tea.Model, tea.Cmd) {
 	if provider.DefaultModel != "" && m.config.SwitchModel != nil {
 		if newModel, err := m.config.SwitchModel(provider.DefaultModel); err == nil {
 			m.model = newModel
+			m.resetProviderDiagnostics()
 			m.syncStatusData()
 			m.flash = fmt.Sprintf("saved key and switched to %s", newModel)
+			return m, m.beginProviderDiagnosticsFetch(false)
 		} else {
 			m.flash = "saved key"
 		}
@@ -2414,8 +2502,10 @@ func (m ChatModel) handleProviderAuthSucceeded(msg providerAuthSucceededMsg) (te
 		if provider.DefaultModel != "" && m.config.SwitchModel != nil {
 			if newModel, err := m.config.SwitchModel(provider.DefaultModel); err == nil {
 				m.model = newModel
+				m.resetProviderDiagnostics()
 				m.syncStatusData()
 				m.flash = fmt.Sprintf("authenticated and switched to %s", newModel)
+				return m, m.beginProviderDiagnosticsFetch(false)
 			} else {
 				m.flash = "authenticated"
 			}
@@ -2579,46 +2669,7 @@ func joinWithScrollbar(lines []string, scrollbar []string, width, height int) st
 }
 
 func (m ChatModel) renderStatsOverlay() string {
-	theme := m.theme()
-	boxW := min(76, max(46, m.width-10))
-	boxH := 12
-
-	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true)
-	textStyle := lipgloss.NewStyle().Foreground(theme.Text)
-	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
-
-	duration := "n/a"
-	if m.statsDuration > 0 {
-		duration = fmt.Sprintf("%.1fs", m.statsDuration.Seconds())
-	}
-	lines := []string{
-		"Duration: " + duration,
-		fmt.Sprintf("Latest turn input:   %d", m.statsUsage.InputTokens),
-		fmt.Sprintf("Latest turn output:  %d", m.statsUsage.OutputTokens),
-		fmt.Sprintf("Session input:       %d", m.sessionUsage.InputTokens),
-		fmt.Sprintf("Session output:      %d", m.sessionUsage.OutputTokens),
-		fmt.Sprintf("Session total:       %d", m.sessionUsage.InputTokens+m.sessionUsage.OutputTokens),
-	}
-	innerLines := make([]string, 0, len(lines))
-	for _, line := range lines {
-		innerLines = append(innerLines, textStyle.Render(line))
-	}
-	inner := lipgloss.JoinVertical(lipgloss.Left,
-		titleStyle.Render("Latest turn stats"),
-		"",
-		strings.Join(innerLines, "\n"),
-		"",
-		dimStyle.Render("Esc / Enter closes this overlay"),
-	)
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.BorderFocus).
-		Background(theme.HeaderBG).
-		Padding(1, 2).
-		Width(boxW - 6).
-		Height(boxH - 4).
-		Render(inner)
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+	return renderStatsOverlayPanel(m.theme(), m.statsSnapshot(), m.width, m.height)
 }
 
 func (m ChatModel) renderSearchOverlay() string {
@@ -2994,6 +3045,7 @@ func (m *ChatModel) applySnapshot(s chatSessionSnapshot) {
 	m.toolsVisible = toolsVisible
 	m.contextFiles = append([]string(nil), s.ContextFiles...)
 	m.sessionUsage = s.SessionUsage
+	m.resetProviderDiagnostics()
 	m.syncStatusData()
 	m.messages = nil
 	if strings.TrimSpace(s.AgentBuf) != "" {

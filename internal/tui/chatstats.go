@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"forge/internal/codexusage"
 	"forge/internal/copilot"
@@ -18,6 +19,7 @@ type chatStatusData struct {
 	ThemeID      string
 	WorkDir      string
 	Status       string
+	Duration     time.Duration
 	LastUsage    llm.Usage
 	SessionUsage llm.Usage
 	RequestMode  string
@@ -26,6 +28,19 @@ type chatStatusData struct {
 	CopilotLive  *copilot.UserQuota
 	CodexUsage   *codexusage.Snapshot
 	ModelInfo    *modelcatalog.ModelInfo
+}
+
+type chatStatsData struct {
+	chatStatusData
+	CopilotLoading bool
+	CopilotErr     string
+	CodexLoading   bool
+	CodexErr       string
+}
+
+type statsSection struct {
+	Title string
+	Lines []string
 }
 
 func buildStatusLine1(data chatStatusData) string {
@@ -40,6 +55,16 @@ func buildStatusLine1(data chatStatusData) string {
 		parts = append(parts, "theme: "+theme)
 	}
 	return strings.Join(parts, " • ")
+}
+
+func (m ChatModel) statsSnapshot() chatStatsData {
+	return chatStatsData{
+		chatStatusData: m.statusSnapshot(),
+		CopilotLoading: m.statsCopilotLoading,
+		CopilotErr:     m.statsCopilotErr,
+		CodexLoading:   m.statsCodexLoading,
+		CodexErr:       m.statsCodexErr,
+	}
 }
 
 func buildStatusLine2(data chatStatusData) string {
@@ -112,6 +137,169 @@ func buildContextSummary(data chatStatusData) string {
 	return strings.Join(parts, " • ")
 }
 
+func buildStatsSections(data chatStatsData) []statsSection {
+	return []statsSection{
+		{Title: "Turn", Lines: []string{buildTurnStatsLine(data)}},
+		{Title: "Session", Lines: []string{buildSessionStatsLine(data)}},
+		{Title: "Provider", Lines: []string{buildProviderStatsLine(data)}},
+		{Title: "Model", Lines: []string{buildModelStatsLine(data)}},
+		{Title: "Diagnostics", Lines: []string{buildDiagnosticsStatsLine(data)}},
+	}
+}
+
+func renderStatsOverlayPanel(theme chatTheme, data chatStatsData, width, height int) string {
+	if theme.ID == "" {
+		theme, _ = lookupChatTheme("default")
+	}
+
+	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true)
+	sectionTitleStyle := lipgloss.NewStyle().Foreground(theme.AccentSecondary).Bold(true)
+	textStyle := lipgloss.NewStyle().Foreground(theme.Text)
+	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
+
+	sections := buildStatsSections(data)
+	lines := []string{titleStyle.Render("Session stats"), ""}
+	for idx, section := range sections {
+		lines = append(lines, sectionTitleStyle.Render(section.Title))
+		if len(section.Lines) == 0 {
+			lines = append(lines, textStyle.Render("unavailable"))
+		} else {
+			for _, line := range section.Lines {
+				lines = append(lines, textStyle.Render(line))
+			}
+		}
+		if idx < len(sections)-1 {
+			lines = append(lines, "")
+		}
+	}
+	lines = append(lines, "", dimStyle.Render("Esc / Enter closes this overlay"))
+
+	boxW := min(96, max(56, width-10))
+	boxH := min(max(16, len(lines)+4), max(14, height-4))
+	contentHeight := max(1, boxH-4)
+	if len(lines) > contentHeight {
+		lines = lines[:contentHeight]
+	}
+	content := lipgloss.NewStyle().
+		Width(max(1, boxW-6)).
+		Height(contentHeight).
+		Render(strings.Join(lines, "\n"))
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(theme.BorderFocus).
+		Background(theme.HeaderBG).
+		Padding(1, 2).
+		Width(boxW - 6).
+		Height(contentHeight).
+		Render(content)
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, box)
+}
+
+func buildTurnStatsLine(data chatStatsData) string {
+	parts := []string{}
+	if data.Duration > 0 {
+		parts = append(parts, fmt.Sprintf("duration %.1fs", data.Duration.Seconds()))
+	} else {
+		parts = append(parts, "duration unavailable")
+	}
+	parts = append(parts, fmt.Sprintf("%d in / %d out", data.LastUsage.InputTokens, data.LastUsage.OutputTokens))
+	if summary := buildQuotaSummary(data.LastUsage.CopilotQuota); summary != "" {
+		parts = append(parts, summary)
+	}
+	return joinStatsParts(parts...)
+}
+
+func buildSessionStatsLine(data chatStatsData) string {
+	total := data.SessionUsage.InputTokens + data.SessionUsage.OutputTokens
+	parts := []string{
+		fmt.Sprintf("%d in / %d out", data.SessionUsage.InputTokens, data.SessionUsage.OutputTokens),
+		fmt.Sprintf("total %d", total),
+	}
+	if summary := buildContextSummary(data.chatStatusData); summary != "" {
+		parts = append(parts, summary)
+	}
+	return joinStatsParts(parts...)
+}
+
+func buildProviderStatsLine(data chatStatsData) string {
+	provider := strings.ToLower(strings.TrimSpace(providerFromModel(data.Model)))
+	switch provider {
+	case "copilot":
+		if data.CopilotLoading {
+			return "Copilot • loading"
+		}
+		if summary := buildCopilotQuotaSummary(data.CopilotLive); summary != "" {
+			return joinStatsParts("Copilot", summary)
+		}
+		if data.CopilotErr != "" {
+			return joinStatsParts("Copilot", "unavailable", data.CopilotErr)
+		}
+		if summary := buildQuotaSummary(data.LastUsage.CopilotQuota); summary != "" {
+			return joinStatsParts("Copilot", summary)
+		}
+		return joinStatsParts("Copilot", "unavailable")
+	case "chatgpt", "openai", "codex":
+		if data.CodexLoading {
+			return "OpenAI/Codex • loading"
+		}
+		if summary := buildCodexUsageSummary(data.CodexUsage); summary != "" {
+			return joinStatsParts("OpenAI/Codex", summary)
+		}
+		if data.CodexErr != "" {
+			return joinStatsParts("OpenAI/Codex", "unavailable", data.CodexErr)
+		}
+		return joinStatsParts("OpenAI/Codex", "unavailable")
+	default:
+		if provider == "" {
+			return "Provider unavailable"
+		}
+		if summary := buildProviderStatusSummary(data.chatStatusData); summary != "" {
+			return joinStatsParts(provider, summary)
+		}
+		return provider
+	}
+}
+
+func buildModelStatsLine(data chatStatsData) string {
+	parts := []string{}
+	if model := strings.TrimSpace(data.Model); model != "" {
+		parts = append(parts, model)
+	} else {
+		parts = append(parts, "unavailable")
+	}
+	if summary := buildModelMetadataSummary(data.ModelInfo); summary != "" {
+		parts = append(parts, summary)
+	}
+	return joinStatsParts(parts...)
+}
+
+func buildDiagnosticsStatsLine(data chatStatsData) string {
+	parts := []string{}
+	if summary := buildContextSummary(data.chatStatusData); summary != "" {
+		parts = append(parts, summary)
+	}
+	if workDir := strings.TrimSpace(data.WorkDir); workDir != "" {
+		parts = append(parts, "workdir "+workDir)
+	}
+	if status := strings.TrimSpace(data.Status); status != "" {
+		parts = append(parts, "status "+status)
+	}
+	return joinStatsParts(parts...)
+}
+
+func joinStatsParts(parts ...string) string {
+	filtered := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			filtered = append(filtered, part)
+		}
+	}
+	if len(filtered) == 0 {
+		return "unavailable"
+	}
+	return strings.Join(filtered, " • ")
+}
+
 func renderStatusHeader(theme chatTheme, data chatStatusData, width int) string {
 	headerStyle := lipgloss.NewStyle().
 		Background(theme.HeaderBG).
@@ -133,6 +321,7 @@ func (m *ChatModel) syncStatusData() {
 	m.statusData.ThemeID = m.themeID
 	m.statusData.WorkDir = m.workDir
 	m.statusData.Status = m.status
+	m.statusData.Duration = m.statsDuration
 	m.statusData.LastUsage = m.statsUsage
 	m.statusData.SessionUsage = m.sessionUsage
 	if m.config.RequestMode != nil {
@@ -149,6 +338,7 @@ func (m ChatModel) statusSnapshot() chatStatusData {
 	data.ThemeID = m.themeID
 	data.WorkDir = m.workDir
 	data.Status = m.status
+	data.Duration = m.statsDuration
 	data.LastUsage = m.statsUsage
 	data.SessionUsage = m.sessionUsage
 	if m.config.RequestMode != nil {
