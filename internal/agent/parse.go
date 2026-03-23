@@ -94,6 +94,8 @@ func toolCallBlockTags(line string) (openTag, closeTag string, ok bool) {
 		return "<tool_call>", "</tool_call>", true
 	case strings.Contains(line, "<function_calls>"):
 		return "<function_calls>", "</function_calls>", true
+	case strings.Contains(line, "<invoke>"):
+		return "<invoke>", "</invoke>", true
 	default:
 		return "", "", false
 	}

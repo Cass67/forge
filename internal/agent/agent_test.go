@@ -131,6 +131,28 @@ func TestAgentRunWithFunctionCallsDoesNotLeakRawWrapper(t *testing.T) {
 	}
 }
 
+func TestAgentRunWithInvokeDoesNotLeakRawWrapper(t *testing.T) {
+	dir := t.TempDir()
+	driver := &mockDriver{responses: []string{
+		"Let me inspect that.\n\n<invoke>\n{\"name\": \"list_dir\", \"args\": {}}\n</invoke>",
+		"Done.",
+	}}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.NewListDir(dir, nil))
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+
+	agent := NewAgent(driver, reg, YoloApproval(), dir, 10, renderer, nil, nil)
+	if err := agent.Run(context.Background(), "list files"); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); strings.Contains(got, "<invoke>") || strings.Contains(got, "</invoke>") {
+		t.Fatalf("raw invoke wrapper leaked to renderer output: %q", got)
+	}
+}
+
 func TestAgentToolHelpRevealsHiddenToolsForNextTurn(t *testing.T) {
 	reg := tools.NewRegistry()
 	reg.Register(tools.Tool{

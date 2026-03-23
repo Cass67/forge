@@ -45,6 +45,16 @@ func TestParseToolCalls(t *testing.T) {
 			input: "```xml\n<function_calls>\n[{\"name\": \"read_file\", \"args\": {\"path\": \"main.go\"}}]\n</function_calls>\n```",
 			want:  0,
 		},
+		{
+			name:  "invoke wrapper with single call",
+			input: "Let me inspect that.\n<invoke>\n{\"name\": \"list_dir\", \"args\": {}}\n</invoke>",
+			want:  1,
+		},
+		{
+			name:  "invoke wrapper inside code fence ignored",
+			input: "```xml\n<invoke>\n{\"name\": \"list_dir\", \"args\": {}}\n</invoke>\n```",
+			want:  0,
+		},
 	}
 
 	for _, tt := range tests {
@@ -79,6 +89,23 @@ func TestParseToolCallArgs(t *testing.T) {
 
 func TestParseFunctionCallsArgs(t *testing.T) {
 	input := "<function_calls>\n[{\"name\": \"edit_file\", \"args\": {\"path\": \"main.go\", \"old_text\": \"foo\", \"new_text\": \"bar\"}}]\n</function_calls>"
+	calls, visible := ParseToolCalls(input)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if visible != "" {
+		t.Fatalf("expected no visible text, got %q", visible)
+	}
+	if calls[0].Name != "edit_file" {
+		t.Errorf("name = %q", calls[0].Name)
+	}
+	if calls[0].Args["path"] != "main.go" {
+		t.Errorf("path = %v", calls[0].Args["path"])
+	}
+}
+
+func TestParseInvokeArgs(t *testing.T) {
+	input := "<invoke>\n{\"name\": \"edit_file\", \"args\": {\"path\": \"main.go\", \"old_text\": \"foo\", \"new_text\": \"bar\"}}\n</invoke>"
 	calls, visible := ParseToolCalls(input)
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 call, got %d", len(calls))
