@@ -771,6 +771,7 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 			}
 			m.toolsBuf += "\n"
 		}
+		return m, m.beginProviderDiagnosticsFetch(false)
 	}
 	return m, nil
 }

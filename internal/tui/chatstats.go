@@ -267,6 +267,9 @@ func buildModelStatsLine(data chatStatsData) string {
 	} else {
 		parts = append(parts, "unavailable")
 	}
+	if summary := buildModelLimitsSummary(data.ModelInfo); summary != "" {
+		parts = append(parts, summary)
+	}
 	if summary := buildModelMetadataSummary(data.ModelInfo); summary != "" {
 		parts = append(parts, summary)
 	}
@@ -330,6 +333,7 @@ func (m *ChatModel) syncStatusData() {
 	if m.config.ModelInfo != nil {
 		m.statusData.ModelInfo = m.config.ModelInfo(m.model)
 	}
+	m.statusData.ContextUsed, m.statusData.ContextLimit = deriveContextUsage(m.statusData.SessionUsage, m.statusData.ModelInfo, m.statusData.ContextUsed, m.statusData.ContextLimit)
 }
 
 func (m ChatModel) statusSnapshot() chatStatusData {
@@ -347,14 +351,27 @@ func (m ChatModel) statusSnapshot() chatStatusData {
 	if m.config.ModelInfo != nil {
 		data.ModelInfo = m.config.ModelInfo(m.model)
 	}
+	data.ContextUsed, data.ContextLimit = deriveContextUsage(data.SessionUsage, data.ModelInfo, data.ContextUsed, data.ContextLimit)
 	return data
+}
+
+func deriveContextUsage(session llm.Usage, info *modelcatalog.ModelInfo, existingUsed, existingLimit int) (used, limit int) {
+	used = existingUsed
+	if approx := session.InputTokens + session.OutputTokens; approx > used {
+		used = approx
+	}
+	limit = existingLimit
+	if info != nil && info.ContextWindow > 0 {
+		limit = info.ContextWindow
+	}
+	return used, limit
 }
 
 func buildTurnSummary(usage llm.Usage) string {
 	if usage.InputTokens == 0 && usage.OutputTokens == 0 {
 		return ""
 	}
-	return fmt.Sprintf("turn %d/%d", usage.InputTokens, usage.OutputTokens)
+	return fmt.Sprintf("last %d in / %d out", usage.InputTokens, usage.OutputTokens)
 }
 
 func buildSessionSummary(usage llm.Usage) string {
@@ -362,7 +379,7 @@ func buildSessionSummary(usage llm.Usage) string {
 	if total == 0 {
 		return ""
 	}
-	return fmt.Sprintf("session %d", total)
+	return fmt.Sprintf("session %d tok", total)
 }
 
 func providerFromModel(model string) string {
@@ -509,6 +526,20 @@ func buildModelMetadataSummary(info *modelcatalog.ModelInfo) string {
 	}
 	if info.ToolCall {
 		parts = append(parts, "tools")
+	}
+	return strings.Join(parts, " • ")
+}
+
+func buildModelLimitsSummary(info *modelcatalog.ModelInfo) string {
+	if info == nil {
+		return ""
+	}
+	parts := make([]string, 0, 2)
+	if info.ContextWindow > 0 {
+		parts = append(parts, fmt.Sprintf("ctx %d", info.ContextWindow))
+	}
+	if info.OutputLimit > 0 {
+		parts = append(parts, fmt.Sprintf("out %d", info.OutputLimit))
 	}
 	return strings.Join(parts, " • ")
 }
