@@ -301,7 +301,7 @@ func TestChatModelViewShowsContextSummaryInHeader(t *testing.T) {
 	if len(lines) < 2 {
 		t.Fatalf("view missing second status line: %q", got)
 	}
-	if !strings.Contains(lines[1], "session 120 tok") || !strings.Contains(lines[1], "ctx 120/8000") {
+	if !strings.Contains(lines[1], "session 120 tok") || !strings.Contains(lines[1], "est ctx 120/8000") {
 		t.Fatalf("header line 2 missing context summary: %q", lines[1])
 	}
 }
@@ -322,7 +322,7 @@ func TestChatModelViewShowsBaselineSessionStatsBeforeFirstResponse(t *testing.T)
 	if len(lines) < 2 {
 		t.Fatalf("view missing second status line: %q", got)
 	}
-	if !strings.Contains(lines[1], "session 0 tok") || !strings.Contains(lines[1], "ctx 0/8000") {
+	if !strings.Contains(lines[1], "session 0 tok") || !strings.Contains(lines[1], "est ctx 0/8000") {
 		t.Fatalf("header line 2 missing baseline session stats: %q", lines[1])
 	}
 }

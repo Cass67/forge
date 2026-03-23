@@ -128,9 +128,9 @@ func buildContextSummary(data chatStatusData) string {
 	parts := make([]string, 0, 2)
 	switch {
 	case limit > 0:
-		parts = append(parts, fmt.Sprintf("ctx %d/%d", used, limit))
+		parts = append(parts, fmt.Sprintf("est ctx %d/%d", used, limit))
 	case used > 0:
-		parts = append(parts, fmt.Sprintf("ctx %d", used))
+		parts = append(parts, fmt.Sprintf("est ctx %d", used))
 	}
 	if mode := strings.TrimSpace(data.RequestMode); mode != "" {
 		parts = append(parts, mode)
