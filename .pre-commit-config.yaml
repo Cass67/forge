@@ -44,7 +44,7 @@ repos:
     hooks:
       - id: gofmt
         name: gofmt
-        entry: bash -lc 'gofmt -w "$@"'
+        entry: bash -lc 'gofmt -w -- "$@"' --
         language: system
         files: \.go$
       - id: goimports

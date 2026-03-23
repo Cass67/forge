@@ -1,6 +1,9 @@
 package chatstate
 
-import "sync"
+import (
+	"sort"
+	"sync"
+)
 
 // State holds shared chat-session state that multiple layers can reference.
 type State struct {
@@ -22,6 +25,17 @@ func (s *State) SkillActivated(name string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.activatedSkills[name]
+}
+
+func (s *State) ActiveSkills() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var names []string
+	for name := range s.activatedSkills {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func (s *State) Clear() {
