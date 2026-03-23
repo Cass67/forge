@@ -14,16 +14,16 @@ import (
 )
 
 type Agent struct {
-	driver   llm.Driver
-	tools    *tools.Registry
-	approve  tools.ApprovalFunc
-	history  []llm.Message
-	system   string
-	workDir  string
-	maxTurns int
-	renderer RenderTarget
-	skills   []skills.Skill
-	state    *chatstate.State
+	driver     llm.Driver
+	tools      *tools.Registry
+	approve    tools.ApprovalFunc
+	history    []llm.Message
+	workDir    string
+	maxTurns   int
+	renderer   RenderTarget
+	skills     []skills.Skill
+	skillsDesc string
+	state      *chatstate.State
 }
 
 const targetHistoryTokens = 12000
@@ -33,15 +33,15 @@ func NewAgent(driver llm.Driver, toolReg *tools.Registry, approve tools.Approval
 		state = chatstate.New()
 	}
 	return &Agent{
-		driver:   driver,
-		tools:    toolReg,
-		approve:  approve,
-		workDir:  workDir,
-		maxTurns: maxTurns,
-		renderer: renderer,
-		system:   BuildSystemPrompt(workDir, toolReg, skills.Describe(loadedSkills)),
-		skills:   loadedSkills,
-		state:    state,
+		driver:     driver,
+		tools:      toolReg,
+		approve:    approve,
+		workDir:    workDir,
+		maxTurns:   maxTurns,
+		renderer:   renderer,
+		skills:     loadedSkills,
+		skillsDesc: skills.Describe(loadedSkills),
+		state:      state,
 	}
 }
 
@@ -66,6 +66,7 @@ func (a *Agent) SetDriver(d llm.Driver) {
 func (a *Agent) ClearHistory() {
 	a.history = nil
 	a.state.Clear()
+	a.tools.ResetDisclosure()
 	if resetter, ok := a.driver.(llm.ConversationResetter); ok {
 		resetter.ResetConversation()
 	}
@@ -84,7 +85,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		a.enforceHistoryBudget(targetHistoryTokens)
 
 		messages := make([]llm.Message, 0, len(a.history)+1)
-		messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: a.system})
+		messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: a.systemPrompt()})
 		messages = append(messages, a.history...)
 
 		// Stream response
@@ -376,11 +377,15 @@ func (a *Agent) enforceHistoryBudget(tokenBudget int) {
 }
 
 func (a *Agent) estimatedRequestTokens() int {
-	total := estimateTokens(a.system)
+	total := estimateTokens(a.systemPrompt())
 	for _, m := range a.history {
 		total += estimateTokens(m.Content)
 	}
 	return total
+}
+
+func (a *Agent) systemPrompt() string {
+	return BuildSystemPrompt(a.workDir, a.tools, a.skillsDesc)
 }
 
 func compactOldHistoryMessage(m llm.Message) (string, bool) {
