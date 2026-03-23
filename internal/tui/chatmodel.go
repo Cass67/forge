@@ -2564,12 +2564,13 @@ func joinWithScrollbar(lines []string, scrollbar []string, width, height int) st
 }
 
 func (m ChatModel) renderStatsOverlay() string {
+	theme := m.theme()
 	boxW := min(76, max(46, m.width-10))
 	boxH := 12
 
-	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#56d364")).Bold(true)
-	textStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#c9d1d9"))
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))
+	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true)
+	textStyle := lipgloss.NewStyle().Foreground(theme.Text)
+	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
 
 	duration := "n/a"
 	if m.statsDuration > 0 {
@@ -2596,8 +2597,8 @@ func (m ChatModel) renderStatsOverlay() string {
 	)
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#58a6ff")).
-		Background(lipgloss.Color("#161b22")).
+		BorderForeground(theme.BorderFocus).
+		Background(theme.HeaderBG).
 		Padding(1, 2).
 		Width(boxW - 6).
 		Height(boxH - 4).
@@ -2606,13 +2607,14 @@ func (m ChatModel) renderStatsOverlay() string {
 }
 
 func (m ChatModel) renderSearchOverlay() string {
+	theme := m.theme()
 	boxW := min(72, max(42, m.width-10))
 	boxH := 7
 
-	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#56d364")).Bold(true)
-	textStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#c9d1d9"))
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))
-	inputStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#c9d1d9")).Background(lipgloss.Color("#0d1117"))
+	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true)
+	textStyle := lipgloss.NewStyle().Foreground(theme.Text)
+	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
+	inputStyle := lipgloss.NewStyle().Foreground(theme.Text).Background(theme.PanelBG)
 
 	paneName := "agent"
 	if m.searchPane == focusTools {
@@ -2634,8 +2636,8 @@ func (m ChatModel) renderSearchOverlay() string {
 	)
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#58a6ff")).
-		Background(lipgloss.Color("#161b22")).
+		BorderForeground(theme.BorderFocus).
+		Background(theme.HeaderBG).
 		Padding(1, 2).
 		Width(boxW - 6).
 		Height(boxH - 4).
@@ -2644,15 +2646,16 @@ func (m ChatModel) renderSearchOverlay() string {
 }
 
 func (m ChatModel) renderFilesOverlay() string {
+	theme := m.theme()
 	boxW := min(72, max(42, m.width-6))
 	boxH := min(24, max(12, m.height-4))
 	contentHeight := max(1, boxH-8)
 
-	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#56d364")).Bold(true)
-	selectedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Background(lipgloss.Color("#1f6feb")).Bold(true)
-	textStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#c9d1d9"))
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))
-	inputStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#c9d1d9")).Background(lipgloss.Color("#0d1117"))
+	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true)
+	selectedStyle := lipgloss.NewStyle().Foreground(theme.HeaderFG).Background(theme.AccentPrimary).Bold(true)
+	textStyle := lipgloss.NewStyle().Foreground(theme.Text)
+	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
+	inputStyle := lipgloss.NewStyle().Foreground(theme.Text).Background(theme.PanelBG)
 
 	lines := make([]string, 0, min(len(m.filesFiltered), contentHeight))
 	start := 0
@@ -2681,8 +2684,8 @@ func (m ChatModel) renderFilesOverlay() string {
 	)
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#58a6ff")).
-		Background(lipgloss.Color("#161b22")).
+		BorderForeground(theme.BorderFocus).
+		Background(theme.HeaderBG).
 		Padding(1, 2).
 		Width(boxW - 6).
 		Height(boxH - 4).
@@ -2691,11 +2694,12 @@ func (m ChatModel) renderFilesOverlay() string {
 }
 
 func (m ChatModel) renderSessionRenameOverlay() string {
+	theme := m.theme()
 	boxW := min(64, max(38, m.width-10))
 	boxH := 7
-	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#56d364")).Bold(true)
-	textStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#c9d1d9"))
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))
+	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true)
+	textStyle := lipgloss.NewStyle().Foreground(theme.Text)
+	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
 	inner := lipgloss.JoinVertical(lipgloss.Left,
 		titleStyle.Render("Rename session"),
 		textStyle.Render("name> "+m.sessionRenameBuf),
@@ -2704,8 +2708,8 @@ func (m ChatModel) renderSessionRenameOverlay() string {
 	)
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#58a6ff")).
-		Background(lipgloss.Color("#161b22")).
+		BorderForeground(theme.BorderFocus).
+		Background(theme.HeaderBG).
 		Padding(1, 2).
 		Width(boxW - 6).
 		Height(boxH - 4).
@@ -2714,14 +2718,15 @@ func (m ChatModel) renderSessionRenameOverlay() string {
 }
 
 func (m ChatModel) renderSessionsOverlay() string {
+	theme := m.theme()
 	boxW := min(88, max(56, m.width-6))
 	boxH := min(28, max(12, m.height-4))
 	contentHeight := max(1, boxH-6)
 
-	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#56d364")).Bold(true)
-	selectedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Background(lipgloss.Color("#1f6feb")).Bold(true)
-	textStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#c9d1d9"))
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))
+	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true)
+	selectedStyle := lipgloss.NewStyle().Foreground(theme.HeaderFG).Background(theme.AccentPrimary).Bold(true)
+	textStyle := lipgloss.NewStyle().Foreground(theme.Text)
+	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
 
 	lines := make([]string, 0, min(len(m.sessionsList), contentHeight))
 	start := 0
@@ -2748,8 +2753,8 @@ func (m ChatModel) renderSessionsOverlay() string {
 	)
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#58a6ff")).
-		Background(lipgloss.Color("#161b22")).
+		BorderForeground(theme.BorderFocus).
+		Background(theme.HeaderBG).
 		Padding(1, 2).
 		Width(boxW - 6).
 		Height(boxH - 4).
@@ -2761,6 +2766,7 @@ func (m ChatModel) renderSessionsOverlay() string {
 }
 
 func (m ChatModel) renderHelpOverlay() string {
+	theme := m.theme()
 	boxW := min(108, max(72, m.width-6))
 	boxH := min(32, max(20, m.height-4))
 	contentHeight := max(1, boxH-7)
@@ -2770,11 +2776,11 @@ func (m ChatModel) renderHelpOverlay() string {
 		m.helpScroll = maxScroll
 	}
 
-	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#56d364")).Bold(true)
-	activeTabStyle := lipgloss.NewStyle().Background(lipgloss.Color("#1f6feb")).Foreground(lipgloss.Color("#ffffff")).Bold(true).Padding(0, 1)
-	inactiveTabStyle := lipgloss.NewStyle().Background(lipgloss.Color("#22272e")).Foreground(lipgloss.Color("#8b949e")).Padding(0, 1)
-	textStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#c9d1d9"))
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))
+	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true)
+	activeTabStyle := lipgloss.NewStyle().Background(theme.AccentPrimary).Foreground(theme.HeaderFG).Bold(true).Padding(0, 1)
+	inactiveTabStyle := lipgloss.NewStyle().Background(theme.HeaderBG).Foreground(theme.TextDim).Padding(0, 1)
+	textStyle := lipgloss.NewStyle().Foreground(theme.Text)
+	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
 
 	tabs := m.helpTabs()
 	renderedTabs := make([]string, 0, len(tabs))
@@ -2808,8 +2814,8 @@ func (m ChatModel) renderHelpOverlay() string {
 
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#58a6ff")).
-		Background(lipgloss.Color("#161b22")).
+		BorderForeground(theme.BorderFocus).
+		Background(theme.HeaderBG).
 		Padding(1, 2).
 		Width(boxW - 6).
 		Height(boxH - 4).
@@ -2819,15 +2825,16 @@ func (m ChatModel) renderHelpOverlay() string {
 }
 
 func (m ChatModel) renderModelsOverlay() string {
+	theme := m.theme()
 	boxW := min(96, max(56, m.width-6))
 	boxH := min(28, max(14, m.height-4))
 	contentHeight := max(1, boxH-8)
 
-	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#56d364")).Bold(true)
-	selectedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Background(lipgloss.Color("#1f6feb")).Bold(true)
-	textStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#c9d1d9"))
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))
-	inputStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#c9d1d9")).Background(lipgloss.Color("#0d1117"))
+	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true)
+	selectedStyle := lipgloss.NewStyle().Foreground(theme.HeaderFG).Background(theme.AccentPrimary).Bold(true)
+	textStyle := lipgloss.NewStyle().Foreground(theme.Text)
+	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
+	inputStyle := lipgloss.NewStyle().Foreground(theme.Text).Background(theme.PanelBG)
 
 	lines := make([]string, 0, min(len(m.modelsFiltered), contentHeight))
 	start := 0
@@ -2862,8 +2869,8 @@ func (m ChatModel) renderModelsOverlay() string {
 	)
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#58a6ff")).
-		Background(lipgloss.Color("#161b22")).
+		BorderForeground(theme.BorderFocus).
+		Background(theme.HeaderBG).
 		Padding(1, 2).
 		Width(boxW - 6).
 		Height(boxH - 4).
@@ -2872,14 +2879,15 @@ func (m ChatModel) renderModelsOverlay() string {
 }
 
 func (m ChatModel) renderProvidersOverlay() string {
+	theme := m.theme()
 	boxW := min(96, max(64, m.width-6))
 	boxH := min(30, max(14, m.height-4))
 	contentHeight := max(1, boxH-9)
 
-	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#56d364")).Bold(true)
-	selectedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Background(lipgloss.Color("#1f6feb")).Bold(true)
-	textStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#c9d1d9"))
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))
+	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true)
+	selectedStyle := lipgloss.NewStyle().Foreground(theme.HeaderFG).Background(theme.AccentPrimary).Bold(true)
+	textStyle := lipgloss.NewStyle().Foreground(theme.Text)
+	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
 
 	lines := make([]string, 0, min(len(m.providersList), contentHeight))
 	start := 0
@@ -2933,8 +2941,8 @@ func (m ChatModel) renderProvidersOverlay() string {
 	)
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#58a6ff")).
-		Background(lipgloss.Color("#161b22")).
+		BorderForeground(theme.BorderFocus).
+		Background(theme.HeaderBG).
 		Padding(1, 2).
 		Width(boxW - 6).
 		Height(boxH - 4).
@@ -3021,7 +3029,7 @@ func (m ChatModel) View() string {
 		Foreground(theme.HeaderFG).
 		Width(m.width).
 		Bold(true)
-	headerText := "forge • " + m.model + " • " + m.workDir
+	headerText := "forge • " + m.model + " • " + m.workDir + " • theme: " + theme.ID
 	if m.state != nil {
 		active := m.state.ActiveSkills()
 		if len(active) > 0 {
