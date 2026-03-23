@@ -152,7 +152,7 @@ func TestBuildStatusLine2ShowsContextForOpenRouterModels(t *testing.T) {
 		},
 	})
 
-	for _, want := range []string{"ready", "session 150 tok", "ctx 150/131072"} {
+	for _, want := range []string{"ready", "session 150 tok", "est ctx 150/131072"} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("status line missing %q: %s", want, line)
 		}
