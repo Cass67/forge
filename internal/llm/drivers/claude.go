@@ -15,6 +15,7 @@ type ClaudeDriver struct {
 	model     string
 	params    llm.Params
 	lastUsage llm.Usage
+	lastMode  string
 	mu        sync.Mutex
 }
 
@@ -35,6 +36,12 @@ func (d *ClaudeDriver) LastUsage() llm.Usage {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.lastUsage
+}
+
+func (d *ClaudeDriver) LastRequestMode() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.lastMode
 }
 
 func (d *ClaudeDriver) Stream(ctx context.Context, messages []llm.Message, out chan<- llm.Token) error {
@@ -75,6 +82,9 @@ func (d *ClaudeDriver) Stream(ctx context.Context, messages []llm.Message, out c
 		Model:     anthropic.ModelClaudeSonnet4_6,
 		MaxTokens: maxTok,
 		Messages:  chatMsgs,
+		CacheControl: anthropic.CacheControlEphemeralParam{
+			TTL: anthropic.CacheControlEphemeralTTLTTL5m,
+		},
 	}
 
 	if len(systemBlocks) > 0 {
@@ -88,6 +98,9 @@ func (d *ClaudeDriver) Stream(ctx context.Context, messages []llm.Message, out c
 	if d.params.Temperature >= 0 {
 		apiParams.Temperature = anthropic.Float(d.params.Temperature)
 	}
+	d.mu.Lock()
+	d.lastMode = "claude prompt cache (ephemeral 5m)"
+	d.mu.Unlock()
 
 	var acc anthropic.Message
 	stream := d.client.Messages.NewStreaming(ctx, apiParams)

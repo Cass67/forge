@@ -2,6 +2,8 @@ package drivers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
@@ -9,8 +11,10 @@ import (
 	"strings"
 	"sync"
 
+	"forge/internal/chatgptauth"
 	"forge/internal/copilot"
 	"forge/internal/llm"
+	"forge/internal/modelcatalog"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -20,26 +24,42 @@ import (
 
 type OpenAIDriver struct {
 	client            *openai.Client
+	providerLabel     string
 	registryName      string // Name() — used for registry lookup; may include provider prefix
 	apiModel          string // model ID sent to the API
 	supportsResponses bool
 	params            llm.Params
 	lastUsage         llm.Usage
+	prevResponseID    string
+	lastMessages      []llm.Message
+	lastRequestMode   string
 	mu                sync.Mutex
 }
 
+const (
+	responseStateCompactionThreshold = 8000
+	responseStatePreserveMessages    = 6
+	openRouterReferer                = "https://github.com/cass/forge"
+	openRouterTitle                  = "forge"
+)
+
 func NewOpenAI(apiKey, model string) *OpenAIDriver {
-	return newOpenAI(strings.TrimSpace(apiKey), model, model, true, "")
+	return newOpenAI(strings.TrimSpace(apiKey), "openai", model, model, true, "", nil)
 }
 
-func newOpenAI(apiKey, registryName, apiModel string, supportsResponses bool, baseURL string) *OpenAIDriver {
+func newOpenAI(apiKey, providerLabel, registryName, apiModel string, supportsResponses bool, baseURL string, httpClient *http.Client) *OpenAIDriver {
 	opts := []option.RequestOption{option.WithAPIKey(strings.TrimSpace(apiKey))}
 	if strings.TrimSpace(baseURL) != "" {
 		opts = append(opts, option.WithBaseURL(baseURL))
 	}
+	if httpClient != nil {
+		opts = append(opts, option.WithHTTPClient(httpClient))
+	}
+	opts = append(opts, providerHeaders(providerLabel)...)
 	client := openai.NewClient(opts...)
 	return &OpenAIDriver{
 		client:            &client,
+		providerLabel:     providerLabel,
 		registryName:      registryName,
 		apiModel:          apiModel,
 		supportsResponses: supportsResponses,
@@ -48,11 +68,15 @@ func newOpenAI(apiKey, registryName, apiModel string, supportsResponses bool, ba
 }
 
 func NewOpenAIAlias(apiKey, registryName, apiModel string) *OpenAIDriver {
-	return newOpenAI(apiKey, registryName, apiModel, true, "")
+	return newOpenAI(apiKey, "openai", registryName, apiModel, true, "", nil)
 }
 
 func NewOpenAICompatibleAlias(apiKey, baseURL, registryName, apiModel string) *OpenAIDriver {
-	return newOpenAI(apiKey, registryName, apiModel, false, baseURL)
+	return newOpenAI(apiKey, "openai", registryName, apiModel, false, baseURL, nil)
+}
+
+func NewOpenAICompatibleProviderAlias(providerLabel, apiKey, baseURL, registryName, apiModel string) *OpenAIDriver {
+	return newOpenAI(apiKey, providerLabel, registryName, apiModel, false, baseURL, nil)
 }
 
 func NewOpenAICompatible(apiKey, baseURL, model string) *OpenAIDriver {
@@ -73,11 +97,20 @@ func NewCopilot(token, registryName, apiModel string) *OpenAIDriver {
 	)
 	return &OpenAIDriver{
 		client:            &client,
+		providerLabel:     "copilot",
 		registryName:      registryName,
 		apiModel:          apiModel,
-		supportsResponses: true,
+		supportsResponses: false, // Copilot only supports chat completions, not the Responses API
 		params:            llm.Params{Temperature: -1},
 	}
+}
+
+func NewChatGPT(registryName, apiModel string) *OpenAIDriver {
+	authMgr, err := chatgptauth.NewManager()
+	if err != nil {
+		return nil
+	}
+	return newOpenAI("chatgpt-oauth", "chatgpt", registryName, apiModel, true, authMgr.BaseURL(), authMgr.HTTPClient())
 }
 
 func (d *OpenAIDriver) SetParams(p llm.Params) {
@@ -94,6 +127,20 @@ func (d *OpenAIDriver) LastUsage() llm.Usage {
 	return d.lastUsage
 }
 
+func (d *OpenAIDriver) LastRequestMode() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.lastRequestMode
+}
+
+func (d *OpenAIDriver) ResetConversation() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.prevResponseID = ""
+	d.lastMessages = nil
+	d.lastRequestMode = ""
+}
+
 func (d *OpenAIDriver) Stream(ctx context.Context, messages []llm.Message, out chan<- llm.Token) error {
 	defer close(out)
 	debugRequestSizing(d.registryName, d.apiModel, messages)
@@ -105,19 +152,7 @@ func (d *OpenAIDriver) Stream(ctx context.Context, messages []llm.Message, out c
 }
 
 func (d *OpenAIDriver) streamChatCompletions(ctx context.Context, messages []llm.Message, out chan<- llm.Token) error {
-	params := openai.ChatCompletionNewParams{
-		Model:    shared.ChatModel(d.apiModel),
-		Messages: toOpenAIMessages(messages),
-		StreamOptions: openai.ChatCompletionStreamOptionsParam{
-			IncludeUsage: openai.Bool(true),
-		},
-	}
-	if d.params.MaxTokens > 0 {
-		params.MaxCompletionTokens = openai.Int(int64(d.params.MaxTokens))
-	}
-	if d.params.Temperature >= 0 && modelSupportsTemperature(d.apiModel) {
-		params.Temperature = openai.Float(d.params.Temperature)
-	}
+	params := d.chatCompletionParams(messages)
 
 	var outputChars int
 	stream := d.client.Chat.Completions.NewStreaming(ctx, params)
@@ -150,7 +185,13 @@ func (d *OpenAIDriver) streamChatCompletions(ctx context.Context, messages []llm
 		}
 	}
 	if err := stream.Err(); err != nil {
+		if d.shouldFallbackToNonStreaming(err) {
+			return d.chatCompletionsFallback(ctx, messages, out)
+		}
 		return d.wrapStreamError("chat.completions", err)
+	}
+	if outputChars == 0 && d.shouldFallbackAfterEmptyStream() {
+		return d.chatCompletionsFallback(ctx, messages, out)
 	}
 
 	d.mu.Lock()
@@ -162,21 +203,99 @@ func (d *OpenAIDriver) streamChatCompletions(ctx context.Context, messages []llm
 	return nil
 }
 
+func (d *OpenAIDriver) chatCompletionParams(messages []llm.Message) openai.ChatCompletionNewParams {
+	params := openai.ChatCompletionNewParams{
+		Model:    shared.ChatModel(d.apiModel),
+		Messages: toOpenAIMessages(messages),
+	}
+	if providerSupportsStreamUsageOptions(d.providerLabel) {
+		params.StreamOptions = openai.ChatCompletionStreamOptionsParam{
+			IncludeUsage: openai.Bool(true),
+		}
+	}
+	if d.params.MaxTokens > 0 {
+		if providerUsesLegacyMaxTokensField(d.providerLabel) {
+			params.MaxTokens = openai.Int(int64(d.params.MaxTokens))
+		} else {
+			params.MaxCompletionTokens = openai.Int(int64(d.params.MaxTokens))
+		}
+	}
+	if d.params.Temperature >= 0 && d.modelSupportsTemperature() {
+		params.Temperature = openai.Float(d.params.Temperature)
+	}
+	if d.providerLabel == "openrouter" {
+		params.PromptCacheKey = openai.String(responsePromptCacheKey(d.apiModel, chatPromptCacheSeed(messages)))
+	}
+	return params
+}
+
+func (d *OpenAIDriver) chatCompletionsFallback(ctx context.Context, messages []llm.Message, out chan<- llm.Token) error {
+	res, err := d.client.Chat.Completions.New(ctx, d.chatCompletionParams(messages))
+	if err != nil {
+		return d.wrapStreamError("chat.completions", err)
+	}
+	outputChars := 0
+	for _, choice := range res.Choices {
+		text := choice.Message.Content
+		if text == "" {
+			continue
+		}
+		outputChars += len(text)
+		select {
+		case out <- llm.Token{Text: text}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	usage := llm.Usage{}
+	if res.Usage.PromptTokens > 0 || res.Usage.CompletionTokens > 0 {
+		usage.InputTokens = int(res.Usage.PromptTokens)
+		usage.OutputTokens = int(res.Usage.CompletionTokens)
+	}
+	if usage.OutputTokens == 0 && outputChars > 0 {
+		usage.OutputTokens = (outputChars + 3) / 4
+	}
+	d.mu.Lock()
+	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
+		d.lastUsage = usage
+	}
+	d.mu.Unlock()
+	return nil
+}
+
 func (d *OpenAIDriver) streamResponses(ctx context.Context, messages []llm.Message, out chan<- llm.Token) error {
+	instructions, inputMessages, previousResponseID, requestMode, err := d.responsesRequestState(ctx, messages)
+	if err != nil {
+		return err
+	}
+	d.mu.Lock()
+	d.lastRequestMode = requestMode
+	d.mu.Unlock()
 	params := responses.ResponseNewParams{
 		Model: d.apiModel,
 		Input: responses.ResponseNewParamsInputUnion{
-			OfInputItemList: toResponseInput(messages),
+			OfInputItemList: toResponseInput(inputMessages),
 		},
 	}
+	if providerSupportsResponseStore(d.providerLabel) {
+		params.Store = openai.Bool(true)
+	}
+	if instructions != "" {
+		params.Instructions = openai.String(instructions)
+	}
+	if previousResponseID != "" {
+		params.PreviousResponseID = openai.String(previousResponseID)
+	}
+	params.PromptCacheKey = openai.String(responsePromptCacheKey(d.apiModel, instructions))
 	if d.params.MaxTokens > 0 {
 		params.MaxOutputTokens = openai.Int(int64(d.params.MaxTokens))
 	}
-	if d.params.Temperature >= 0 && modelSupportsTemperature(d.apiModel) {
+	if d.params.Temperature >= 0 && d.modelSupportsTemperature() {
 		params.Temperature = openai.Float(d.params.Temperature)
 	}
 
 	stream := d.client.Responses.NewStreaming(ctx, params)
+	var responseID string
 	for stream.Next() {
 		evt := stream.Current()
 		if quota := copilot.ExtractQuotaJSON(evt.RawJSON()); quota != nil {
@@ -198,6 +317,7 @@ func (d *OpenAIDriver) streamResponses(ctx context.Context, messages []llm.Messa
 				return ctx.Err()
 			}
 		case responses.ResponseCompletedEvent:
+			responseID = event.Response.ID
 			usage := llm.Usage{}
 			if event.Response.Usage.InputTokens > 0 || event.Response.Usage.OutputTokens > 0 {
 				usage.InputTokens = int(event.Response.Usage.InputTokens)
@@ -221,7 +341,200 @@ func (d *OpenAIDriver) streamResponses(ctx context.Context, messages []llm.Messa
 	if err := stream.Err(); err != nil {
 		return d.wrapStreamError("responses", err)
 	}
+	if responseID != "" {
+		d.mu.Lock()
+		d.prevResponseID = responseID
+		d.lastMessages = append([]llm.Message(nil), messages...)
+		d.mu.Unlock()
+	}
 	return nil
+}
+
+func (d *OpenAIDriver) responsesRequestState(ctx context.Context, messages []llm.Message) (instructions string, inputMessages []llm.Message, previousResponseID string, requestMode string, err error) {
+	instructions = responseInstructions(messages)
+	d.mu.Lock()
+	prevID := d.prevResponseID
+	lastMessages := append([]llm.Message(nil), d.lastMessages...)
+	d.mu.Unlock()
+
+	if prevID != "" && isAppendOnlyMessageHistory(lastMessages, messages) {
+		return instructions, stripSystemMessages(messages[len(lastMessages):]), prevID, "responses append-only reuse", nil
+	}
+	if estimatedMessageTokens(messages) <= responseStateCompactionThreshold {
+		return instructions, stripSystemMessages(messages), "", "responses full input", nil
+	}
+	if !providerSupportsResponseCompaction(d.providerLabel) {
+		return instructions, stripSystemMessages(messages), "", "responses full input", nil
+	}
+	prefix := compactibleMessagePrefix(messages, responseStatePreserveMessages)
+	if len(stripSystemMessages(prefix)) < 2 {
+		return instructions, stripSystemMessages(messages), "", "responses full input", nil
+	}
+	compactionID, compactErr := d.compactResponseState(ctx, prefix)
+	if compactErr != nil {
+		return instructions, stripSystemMessages(messages), "", "responses full input (compact fallback)", nil
+	}
+	d.mu.Lock()
+	d.prevResponseID = compactionID
+	d.lastMessages = append([]llm.Message(nil), prefix...)
+	d.mu.Unlock()
+	return instructions, stripSystemMessages(messages[len(prefix):]), compactionID, "responses native compact", nil
+}
+
+func responseInstructions(messages []llm.Message) string {
+	var parts []string
+	for _, m := range messages {
+		if m.Role != llm.RoleSystem {
+			continue
+		}
+		text := strings.TrimSpace(m.Content)
+		if text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func stripSystemMessages(messages []llm.Message) []llm.Message {
+	out := make([]llm.Message, 0, len(messages))
+	for _, m := range messages {
+		if m.Role == llm.RoleSystem {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+func isAppendOnlyMessageHistory(prev, current []llm.Message) bool {
+	if len(current) < len(prev) {
+		return false
+	}
+	for i := range prev {
+		if prev[i].Role != current[i].Role || prev[i].Content != current[i].Content {
+			return false
+		}
+	}
+	return true
+}
+
+func compactibleMessagePrefix(messages []llm.Message, preserve int) []llm.Message {
+	if len(messages) <= preserve {
+		return nil
+	}
+	cutoff := len(messages) - preserve
+	if cutoff <= 0 {
+		return nil
+	}
+	return append([]llm.Message(nil), messages[:cutoff]...)
+}
+
+func estimatedMessageTokens(messages []llm.Message) int {
+	total := 0
+	for _, m := range messages {
+		total += llm.EstimateTokens(m.Content)
+	}
+	return total
+}
+
+type responseCompaction struct {
+	ID string `json:"id"`
+}
+
+func (d *OpenAIDriver) compactResponseState(ctx context.Context, prefix []llm.Message) (string, error) {
+	body := map[string]any{
+		"model": d.apiModel,
+		"input": toResponseInput(stripSystemMessages(prefix)),
+	}
+	var res responseCompaction
+	if err := d.client.Post(ctx, "responses/compact", body, &res); err != nil {
+		return "", d.wrapStreamError("responses/compact", err)
+	}
+	if strings.TrimSpace(res.ID) == "" {
+		return "", fmt.Errorf("openai stream (api: responses/compact, model: %s): missing compaction response id", d.apiModel)
+	}
+	return res.ID, nil
+}
+
+func responsePromptCacheKey(model, instructions string) string {
+	sum := sha256.Sum256([]byte(model + "\n" + strings.TrimSpace(instructions)))
+	return "forge:" + model + ":" + hex.EncodeToString(sum[:8])
+}
+
+func chatPromptCacheSeed(messages []llm.Message) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	limit := len(messages)
+	if limit > 4 {
+		limit = 4
+	}
+	var parts []string
+	for i := 0; i < limit; i++ {
+		text := strings.TrimSpace(messages[i].Content)
+		if text == "" {
+			continue
+		}
+		parts = append(parts, string(messages[i].Role)+":"+truncateDebug(text, 200))
+	}
+	return strings.Join(parts, "\n")
+}
+
+func providerHeaders(providerLabel string) []option.RequestOption {
+	switch strings.TrimSpace(strings.ToLower(providerLabel)) {
+	case "openrouter":
+		return []option.RequestOption{
+			option.WithHeader("HTTP-Referer", openRouterReferer),
+			option.WithHeader("X-Title", openRouterTitle),
+			option.WithHeader("X-OpenRouter-Title", openRouterTitle),
+		}
+	default:
+		return nil
+	}
+}
+
+func providerSupportsStreamUsageOptions(providerLabel string) bool {
+	switch strings.TrimSpace(strings.ToLower(providerLabel)) {
+	case "anthropic", "chatgpt", "copilot", "openai":
+		return true
+	default:
+		return false
+	}
+}
+
+func providerUsesLegacyMaxTokensField(providerLabel string) bool {
+	switch strings.TrimSpace(strings.ToLower(providerLabel)) {
+	case "anthropic", "chatgpt", "copilot", "openai":
+		return false
+	default:
+		return true
+	}
+}
+
+func providerSupportsResponseStore(providerLabel string) bool {
+	switch strings.TrimSpace(strings.ToLower(providerLabel)) {
+	case "openai", "chatgpt":
+		return true
+	default:
+		return false
+	}
+}
+
+func providerSupportsResponseCompaction(providerLabel string) bool {
+	switch strings.TrimSpace(strings.ToLower(providerLabel)) {
+	case "openai", "chatgpt":
+		return true
+	default:
+		return false
+	}
+}
+
+func (d *OpenAIDriver) shouldFallbackToNonStreaming(err error) bool {
+	if err == nil || !providerUsesLegacyMaxTokensField(d.providerLabel) {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "502") || strings.Contains(msg, "503") || strings.Contains(msg, "504") || strings.Contains(msg, "bad gateway") || strings.Contains(msg, "gateway timeout")
 }
 
 func toOpenAIMessages(msgs []llm.Message) []openai.ChatCompletionMessageParamUnion {
@@ -237,6 +550,10 @@ func toOpenAIMessages(msgs []llm.Message) []openai.ChatCompletionMessageParamUni
 		}
 	}
 	return out
+}
+
+func (d *OpenAIDriver) shouldFallbackAfterEmptyStream() bool {
+	return providerUsesLegacyMaxTokensField(d.providerLabel)
 }
 
 func toResponseInput(msgs []llm.Message) []responses.ResponseInputItemUnionParam {
@@ -292,12 +609,26 @@ func debugRequestSizing(registryName, apiModel string, messages []llm.Message) {
 }
 
 func (d *OpenAIDriver) wrapStreamError(api string, err error) error {
-	msg := fmt.Sprintf("openai stream (api: %s, model: %s): %v", api, d.apiModel, err)
+	label := strings.TrimSpace(d.providerLabel)
+	if label == "" {
+		label = "openai"
+	}
+	msg := fmt.Sprintf("%s stream (api: %s, model: %s): %s", label, api, d.apiModel, normalizeStreamError(err))
 	detail := extractHTTPErrorDetails(err)
 	if detail == "" {
 		return fmt.Errorf("%s", msg)
 	}
 	return fmt.Errorf("%s [%s]", msg, detail)
+}
+
+func normalizeStreamError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.TrimSpace(err.Error())
+	msg = strings.TrimPrefix(msg, "received error while streaming: ")
+	msg = strings.TrimSpace(msg)
+	return msg
 }
 
 func extractHTTPErrorDetails(err error) string {
@@ -308,8 +639,8 @@ func extractHTTPErrorDetails(err error) string {
 	type bodyCarrier interface{ DumpRequest(bool) ([]byte, error) }
 	_ = bodyCarrier(nil)
 	parts := make([]string, 0, 6)
-	errText := strings.TrimSpace(err.Error())
-	if errText != "" {
+	errText := normalizeStreamError(err)
+	if errText != "" && !looksLikeStructuredProviderError(errText) {
 		parts = append(parts, "err="+truncateDebug(errText, 280))
 	}
 	if h, ok := err.(headerCarrier); ok {
@@ -327,6 +658,11 @@ func extractHTTPErrorDetails(err error) string {
 		parts = append(parts, fmt.Sprintf("quota_body=%s remaining=%d included=%d used=%d percent=%.2f reset=%s", quota.Type, quota.Remaining, quota.Included, quota.Used, quota.PercentRemaining, quota.ResetAt))
 	}
 	return strings.Join(parts, "; ")
+}
+
+func looksLikeStructuredProviderError(s string) bool {
+	s = strings.TrimSpace(s)
+	return strings.HasPrefix(s, "{") || strings.HasPrefix(s, "[")
 }
 
 func headersSummary(h http.Header) string {
@@ -364,19 +700,35 @@ func (d *OpenAIDriver) useResponsesAPI() bool {
 	return d.supportsResponses && modelRequiresResponses(d.apiModel)
 }
 
+// modelSupportsTemperature returns true when the given model accepts a
+// temperature parameter. It consults the models.dev catalog first; when the
+// model is not in the catalog it falls back to the name-based heuristic
+// (reasoning models generally don't support temperature).
+func (d *OpenAIDriver) modelSupportsTemperature() bool {
+	return modelSupportsTemperature(d.providerLabel, d.apiModel)
+}
+
+func modelSupportsTemperature(providerLabel, model string) bool {
+	if info := modelcatalog.Lookup(providerLabel, model); info != nil {
+		return info.Temperature
+	}
+	return !isReasoningModel(model)
+}
+
 func modelRequiresResponses(model string) bool {
 	return isReasoningModel(model)
 }
 
-func modelSupportsTemperature(model string) bool {
-	return !isReasoningModel(model)
-}
-
 func isReasoningModel(model string) bool {
 	m := strings.ToLower(strings.TrimSpace(model))
-	return strings.HasPrefix(m, "gpt-5") ||
-		strings.HasPrefix(m, "gpt5") ||
-		strings.HasPrefix(m, "o1") ||
+	// Only the exact gpt-5 alias and o-series are true reasoning models that
+	// require the Responses API. gpt-5.x variants (ChatGPT/Codex) and
+	// gpt-5-mini are regular chat models that work fine via chat completions.
+	switch m {
+	case "gpt-5", "gpt5":
+		return true
+	}
+	return strings.HasPrefix(m, "o1") ||
 		strings.HasPrefix(m, "o3") ||
 		strings.HasPrefix(m, "o4")
 }

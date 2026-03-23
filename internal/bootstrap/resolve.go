@@ -50,7 +50,7 @@ func QualifyModel(ref ModelRef) string {
 
 func isProviderName(name string) bool {
 	switch name {
-	case "anthropic", "openai", "copilot", "xai", "mistral", "perplexity", "cerebras", "groq", "nvidia", "together", "deepinfra", "openrouter":
+	case "anthropic", "openai", "chatgpt", "copilot", "xai", "mistral", "perplexity", "cerebras", "groq", "nvidia", "together", "deepinfra", "openrouter":
 		return true
 	default:
 		return false

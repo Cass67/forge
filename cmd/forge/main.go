@@ -1187,7 +1187,7 @@ func runChat() {
 	yolo := fs.Bool("yolo", false, "skip all approval prompts")
 	model := fs.String("model", "", "model override")
 	workDir := fs.String("C", "", "working directory (default: cwd)")
-	live := fs.Bool("live", false, "use split-pane live view")
+	live := fs.Bool("live", true, "use split-pane live view")
 	autoSkills := fs.String("auto-skills", "", "auto skill mode: off, suggest, or auto")
 	fs.Parse(os.Args[2:])
 
@@ -1216,11 +1216,8 @@ func runChat() {
 		return
 	}
 
-	if *live {
-		runtimepkg.RunChatLive(setup)
-	} else {
-		runtimepkg.RunChatConsole(setup)
-	}
+	_ = live
+	runtimepkg.RunChatLive(setup)
 }
 
 func runCopilotAuth() {

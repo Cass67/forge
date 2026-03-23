@@ -106,7 +106,23 @@ func isRetryable(err error) bool {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	for _, s := range []string{"401", "403", "invalid_api_key", "authentication"} {
+	for _, s := range []string{
+		"400 bad request",
+		"404 not found",
+		"410 gone",
+		"401",
+		"403",
+		"invalid_api_key",
+		"authentication",
+		"insufficient_quota",
+		"quota exceeded",
+		"billing",
+		"context_length_exceeded",
+		"maximum context length",
+		"not a valid model id",
+		"no endpoints available matching your guardrail restrictions",
+		"data policy",
+	} {
 		if strings.Contains(msg, s) {
 			return false
 		}

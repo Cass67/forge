@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,6 +25,8 @@ type Agent struct {
 	skills   []skills.Skill
 	state    *chatstate.State
 }
+
+const targetHistoryTokens = 12000
 
 func NewAgent(driver llm.Driver, toolReg *tools.Registry, approve tools.ApprovalFunc, workDir string, maxTurns int, renderer RenderTarget, loadedSkills []skills.Skill, state *chatstate.State) *Agent {
 	if state == nil {
@@ -63,18 +66,22 @@ func (a *Agent) SetDriver(d llm.Driver) {
 func (a *Agent) ClearHistory() {
 	a.history = nil
 	a.state.Clear()
+	if resetter, ok := a.driver.(llm.ConversationResetter); ok {
+		resetter.ResetConversation()
+	}
 }
 
 func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	a.history = append(a.history, llm.Message{Role: llm.RoleUser, Content: userMessage})
 	turnStart := time.Now()
+	actionPreambleRetries := 0
 	defer func() {
 		a.renderer.Stats(time.Since(turnStart), a.getUsage())
 	}()
 
 	for turn := 0; turn < a.maxTurns; turn++ {
-		// Compress history if growing too large (~100K chars ≈ ~25K tokens)
-		a.compressHistory(100000)
+		// Re-sent full history is expensive; compact only when the estimated request is too large.
+		a.enforceHistoryBudget(targetHistoryTokens)
 
 		messages := make([]llm.Message, 0, len(a.history)+1)
 		messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: a.system})
@@ -131,21 +138,35 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			}
 		}
 
+		if modeReporter, ok := a.driver.(llm.RequestModeReporter); ok {
+			if mode := strings.TrimSpace(modeReporter.LastRequestMode()); mode != "" {
+				a.renderer.Info("context: " + mode)
+			}
+		}
+
 		if err := <-errCh; err != nil {
-			a.renderer.Error(err.Error())
 			return err
 		}
 
 		response := sb.String()
 
 		// Parse tool calls
-		calls, _ := ParseToolCalls(response)
+		calls, visibleText := ParseToolCalls(response)
 
-		// No tool calls — final answer
+		// No tool calls — final answer.
 		if len(calls) == 0 {
+			if looksLikeActionPreamble(response) && actionPreambleRetries < 2 && turn+1 < a.maxTurns {
+				actionPreambleRetries++
+				a.history = append(a.history, llm.Message{
+					Role:    llm.RoleUser,
+					Content: "Continue by acting. Call the next tool now, ask one blocker question, or give the final answer.",
+				})
+				continue
+			}
 			a.history = append(a.history, llm.Message{Role: llm.RoleAssistant, Content: response})
 			return nil
 		}
+		actionPreambleRetries = 0
 
 		// Execute tool calls
 		var results []string
@@ -175,14 +196,17 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			results = append(results, fmt.Sprintf("[%s] %s", call.Name, result))
 		}
 
-		// Append to history
-		a.history = append(a.history, llm.Message{Role: llm.RoleAssistant, Content: response})
-
-		toolResultContent := strings.Join(results, "\n\n")
-		if len(toolResultContent) > 30*1024 {
-			toolResultContent = toolResultContent[:30*1024] + "\n... (truncated)"
+		// Append compact history entries; preserve UI output separately via the renderer only.
+		if assistantSummary := compactAssistantHistory(visibleText); assistantSummary != "" {
+			a.history = append(a.history, llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: assistantSummary,
+			})
 		}
-		a.history = append(a.history, llm.Message{Role: llm.RoleUser, Content: "Tool results:\n\n" + toolResultContent})
+		a.history = append(a.history, llm.Message{
+			Role:    llm.RoleUser,
+			Content: compactToolResults(results),
+		})
 	}
 
 	return fmt.Errorf("max turns (%d) exceeded", a.maxTurns)
@@ -219,6 +243,65 @@ func truncateResult(result string) string {
 	return result
 }
 
+func compactAssistantHistory(visibleText string) string {
+	visibleText = strings.TrimSpace(visibleText)
+	if visibleText == "" {
+		return ""
+	}
+	return clipForHistory(oneLine(visibleText), 240)
+}
+
+func compactToolResults(results []string) string {
+	if len(results) == 0 {
+		return "Tool results:\n- none"
+	}
+	lines := make([]string, 0, len(results)+1)
+	lines = append(lines, "Tool results:")
+	for _, result := range results {
+		line := clipForHistory(oneLine(result), 220)
+		lines = append(lines, "- "+line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(s)), " ")
+}
+
+func clipForHistory(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:max]
+	}
+	return s[:max-3] + "..."
+}
+
+func looksLikeActionPreamble(text string) bool {
+	trimmed := strings.TrimSpace(strings.ToLower(text))
+	if trimmed == "" {
+		return false
+	}
+	phrases := []string{
+		"i'm going to",
+		"i’m going to",
+		"i noticed we need to",
+		"next i'll",
+		"next i’ll",
+		"i'll ",
+		"i’ll ",
+		"let me ",
+	}
+	for _, phrase := range phrases {
+		if strings.HasPrefix(trimmed, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
 // estimateTokens returns a rough token count (~4 chars per token).
 func estimateTokens(text string) int {
 	return (len(text) + 3) / 4
@@ -227,38 +310,106 @@ func estimateTokens(text string) int {
 // compressHistory replaces old tool results with one-line summaries
 // when total content exceeds the threshold.
 func (a *Agent) compressHistory(charThreshold int) {
-	total := 0
-	for _, m := range a.history {
-		total += len(m.Content)
-	}
-	if total <= charThreshold {
+	a.enforceHistoryBudget((charThreshold + 3) / 4)
+}
+
+func (a *Agent) enforceHistoryBudget(tokenBudget int) {
+	if a.estimatedRequestTokens() <= tokenBudget {
 		return
 	}
 
-	// Keep the most recent 4 messages intact
-	preserve := 4
+	// Keep the most recent 3 messages intact.
+	preserve := 3
 	if preserve > len(a.history) {
 		preserve = len(a.history)
 	}
 	cutoff := len(a.history) - preserve
 
+	type candidate struct {
+		idx       int
+		current   int
+		compacted string
+		savings   int
+	}
+
+	var candidates []candidate
 	for i := 0; i < cutoff; i++ {
-		m := &a.history[i]
-		if m.Role == llm.RoleUser && strings.HasPrefix(m.Content, "Tool results:") {
-			lines := strings.Split(m.Content, "\n")
-			var summary []string
-			for _, line := range lines {
-				if strings.HasPrefix(line, "[") {
-					bracket := strings.Index(line, "]")
-					if bracket > 0 && len(line) > bracket+2 {
-						toolName := line[1:bracket]
-						summary = append(summary, fmt.Sprintf("[%s: result truncated]", toolName))
-					}
-				}
+		m := a.history[i]
+		compacted, ok := compactOldHistoryMessage(m)
+		if !ok {
+			continue
+		}
+		current := estimateTokens(m.Content)
+		compactedTokens := estimateTokens(compacted)
+		if compactedTokens >= current {
+			continue
+		}
+		candidates = append(candidates, candidate{
+			idx:       i,
+			current:   current,
+			compacted: compacted,
+			savings:   current - compactedTokens,
+		})
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].savings == candidates[j].savings {
+			return candidates[i].idx < candidates[j].idx
+		}
+		return candidates[i].savings > candidates[j].savings
+	})
+
+	for _, c := range candidates {
+		if a.estimatedRequestTokens() <= tokenBudget {
+			break
+		}
+		a.history[c.idx].Content = c.compacted
+	}
+}
+
+func (a *Agent) estimatedRequestTokens() int {
+	total := estimateTokens(a.system)
+	for _, m := range a.history {
+		total += estimateTokens(m.Content)
+	}
+	return total
+}
+
+func compactOldHistoryMessage(m llm.Message) (string, bool) {
+	content := strings.TrimSpace(m.Content)
+	if content == "" {
+		return "", false
+	}
+	if strings.HasPrefix(content, "[Skill: ") {
+		name := content
+		if nl := strings.Index(name, "\n"); nl >= 0 {
+			name = name[:nl]
+		}
+		return name, true
+	}
+	if m.Role == llm.RoleUser && strings.HasPrefix(content, "Tool results:") {
+		lines := strings.Split(content, "\n")
+		var summary []string
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" || line == "Tool results:" {
+				continue
 			}
-			if len(summary) > 0 {
-				m.Content = "Tool results (summarized):\n" + strings.Join(summary, "\n")
-			}
+			summary = append(summary, clipForHistory(oneLine(line), 80))
+		}
+		if len(summary) == 0 {
+			return "Tool results summarized.", true
+		}
+		if len(summary) > 4 {
+			summary = append(summary[:4], "...")
+		}
+		return "Tool results (summarized): " + strings.Join(summary, " | "), true
+	}
+	if m.Role == llm.RoleAssistant || m.Role == llm.RoleUser {
+		flat := oneLine(content)
+		if len(flat) > 240 {
+			return clipForHistory(flat, 240), true
 		}
 	}
+	return "", false
 }
