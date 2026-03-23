@@ -224,6 +224,7 @@ func (m *ChatModel) refreshViewport() {
 	if contentWidth < 10 {
 		contentWidth = 60
 	}
+	theme := m.theme()
 
 	var blocks []string
 	for _, msg := range m.messages {
@@ -232,7 +233,7 @@ func (m *ChatModel) refreshViewport() {
 		if (msg.Kind == MsgAgent || msg.Kind == MsgForge) && strings.TrimSpace(msg.Content) == "" {
 			continue
 		}
-		blocks = append(blocks, msg.Render(contentWidth, m.theme().LowContrast))
+		blocks = append(blocks, msg.Render(contentWidth, theme))
 	}
 	content := strings.Join(blocks, "\n")
 	m.chatContent = content
@@ -3013,10 +3014,11 @@ func (m ChatModel) View() string {
 	if m.width == 0 || m.height == 0 {
 		return "Initializing..."
 	}
+	theme := m.theme()
 
 	headerStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color("#161b22")).
-		Foreground(lipgloss.Color("#c9d1d9")).
+		Background(theme.HeaderBG).
+		Foreground(theme.HeaderFG).
 		Width(m.width).
 		Bold(true)
 	headerText := "forge • " + m.model + " • " + m.workDir
@@ -3049,13 +3051,15 @@ func (m ChatModel) View() string {
 	chatBody := joinWithScrollbar(chatLines, chatScrollbar, chatContentWidth, chatBodyHeight)
 	chatBorder := lipgloss.Color("#30363d")
 	if m.paneFocus == focusChat {
-		chatBorder = lipgloss.Color("#58a6ff")
+		chatBorder = theme.BorderFocus
+	} else {
+		chatBorder = theme.Border
 	}
 	chatPane := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(chatBorder).
-		Background(lipgloss.Color("#0d1117")).
-		Foreground(lipgloss.Color("#c9d1d9")).
+		Background(theme.PanelBG).
+		Foreground(theme.Text).
 		Width(chatInnerWidth).
 		Height(chatBodyHeight).
 		Render(chatBody)
@@ -3076,13 +3080,15 @@ func (m ChatModel) View() string {
 		toolsBody := joinWithScrollbar(visibleToolLines, toolScrollbar, toolsContentWidth, chatBodyHeight)
 		toolsBorder := lipgloss.Color("#30363d")
 		if m.paneFocus == focusTools {
-			toolsBorder = lipgloss.Color("#58a6ff")
+			toolsBorder = theme.BorderFocus
+		} else {
+			toolsBorder = theme.Border
 		}
 		toolsStyle := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(toolsBorder).
-			Background(lipgloss.Color("#0d1117")).
-			Foreground(lipgloss.Color("#8b949e")).
+			Background(theme.PanelBG).
+			Foreground(theme.TextDim).
 			Width(toolsInnerWidth).
 			Height(max(1, m.chatViewport.Height-2))
 		toolsPane := toolsStyle.Render(toolsBody)
@@ -3091,18 +3097,18 @@ func (m ChatModel) View() string {
 
 	inputStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#30363d")).
-		Background(lipgloss.Color("#0d1117")).
-		Foreground(lipgloss.Color("#c9d1d9")).
+		BorderForeground(theme.Border).
+		Background(theme.PanelBG).
+		Foreground(theme.Text).
 		Width(m.width - 4)
 
 	var inputBox string
 	if m.pendingApproval != nil {
 		approvalStyle := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#d29922")).
-			Background(lipgloss.Color("#161b22")).
-			Foreground(lipgloss.Color("#c9d1d9")).
+			BorderForeground(theme.Warning).
+			Background(theme.HeaderBG).
+			Foreground(theme.Text).
 			Width(m.width - 4)
 		approvalText := fmt.Sprintf("Tool: %s\n%s\n\n[y]es / [n]o", m.pendingApproval.Tool, m.pendingApproval.Summary)
 		inputBox = approvalStyle.Render(approvalText)
@@ -3125,7 +3131,7 @@ func (m ChatModel) View() string {
 		statusText = "ready • /help for commands"
 	}
 	statusStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#484f58")).
+		Foreground(theme.TextDim).
 		Width(m.width)
 	statusBar := statusStyle.Render(statusText)
 

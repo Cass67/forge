@@ -12,15 +12,16 @@ func TestChatThemeLookupSupportsNamedThemes(t *testing.T) {
 }
 
 func TestChatThemeLookupSupportsLegacyAliases(t *testing.T) {
-	theme, ok := lookupChatTheme("default")
-	if !ok {
-		t.Fatal("default theme missing")
+	alias, ok := lookupChatTheme("dark")
+	if !ok || alias.ID != "default" {
+		t.Fatalf("dark alias = %#v, ok=%v", alias, ok)
 	}
-	alias, ok := lookupChatTheme("low")
+	alias, ok = lookupChatTheme("low-contrast")
 	if !ok || alias.ID != "low" {
-		t.Fatalf("low alias = %#v, ok=%v", alias, ok)
+		t.Fatalf("low-contrast alias = %#v, ok=%v", alias, ok)
 	}
-	if theme.ID != "default" {
-		t.Fatalf("default theme = %#v", theme)
+	alias, ok = lookupChatTheme("lowcontrast")
+	if !ok || alias.ID != "low" {
+		t.Fatalf("lowcontrast alias = %#v, ok=%v", alias, ok)
 	}
 }
