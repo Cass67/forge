@@ -139,3 +139,22 @@ func TestBuildStatsOverlayShowsModelLimits(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildStatusLine2ShowsContextForOpenRouterModels(t *testing.T) {
+	line := buildStatusLine2(chatStatusData{
+		Model:        "openrouter/arcee-ai/trinity-large-preview:free",
+		Status:       "ready",
+		SessionUsage: llm.Usage{InputTokens: 120, OutputTokens: 30},
+		ModelInfo: &modelcatalog.ModelInfo{
+			ContextWindow: 131072,
+			Temperature:   true,
+			ToolCall:      true,
+		},
+	})
+
+	for _, want := range []string{"ready", "session 150 tok", "ctx 150/131072"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("status line missing %q: %s", want, line)
+		}
+	}
+}
