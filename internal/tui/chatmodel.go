@@ -215,7 +215,6 @@ func (m ChatModel) Init() tea.Cmd {
 	return tea.Batch(
 		m.chatViewport.Init(),
 		tickCmd(),
-		m.beginProviderDiagnosticsFetch(false),
 	)
 }
 
@@ -1364,7 +1363,6 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				m.resetProviderDiagnostics()
 				m.syncStatusData()
 				m.flash = fmt.Sprintf("switched to %s", newModel)
-				return m, m.beginProviderDiagnosticsFetch(false)
 			}
 		}
 	case input == "/skills":
@@ -2207,7 +2205,7 @@ func (m *ChatModel) pickModel(idx int) tea.Cmd {
 		m.flash = fmt.Sprintf("switched to %s", newModel)
 	}
 	m.modelsVisible = false
-	return m.beginProviderDiagnosticsFetch(false)
+	return nil
 }
 
 func (m *ChatModel) openProviderPicker() {
@@ -2331,7 +2329,7 @@ func (m ChatModel) activateProviderSelection() (tea.Model, tea.Cmd) {
 			m.syncStatusData()
 			m.flash = fmt.Sprintf("switched to %s", newModel)
 			m.providersVisible = false
-			return m, m.beginProviderDiagnosticsFetch(false)
+			return m, nil
 		}
 	}
 	m.providersVisible = false
@@ -2419,7 +2417,7 @@ func (m ChatModel) saveProviderKey() (tea.Model, tea.Cmd) {
 			m.resetProviderDiagnostics()
 			m.syncStatusData()
 			m.flash = fmt.Sprintf("saved key and switched to %s", newModel)
-			return m, m.beginProviderDiagnosticsFetch(false)
+			return m, nil
 		} else {
 			m.flash = "saved key"
 		}
@@ -2505,7 +2503,7 @@ func (m ChatModel) handleProviderAuthSucceeded(msg providerAuthSucceededMsg) (te
 				m.resetProviderDiagnostics()
 				m.syncStatusData()
 				m.flash = fmt.Sprintf("authenticated and switched to %s", newModel)
-				return m, m.beginProviderDiagnosticsFetch(false)
+				return m, nil
 			} else {
 				m.flash = "authenticated"
 			}
