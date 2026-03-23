@@ -1066,6 +1066,59 @@ func TestChatModelProviderOverlaySavesAPIKey(t *testing.T) {
 	}
 }
 
+func TestChatModelProviderOverlaySavesAPIKeyPreservesSelectedProviderAcrossRefresh(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	t.Setenv("HOME", configDir)
+	switched := ""
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "test",
+		WorkDir: "/tmp",
+		Providers: []ProviderOption{
+			{ID: "openrouter", Label: "OpenRouter", Status: "configure API key", DefaultModel: "openrouter/openai/gpt-5"},
+			{ID: "openai", Label: "OpenAI", Status: "ready", DefaultModel: "openai/gpt-5"},
+		},
+		RefreshProviders: func() []ProviderOption {
+			return []ProviderOption{
+				{ID: "openai", Label: "OpenAI", Status: "ready", DefaultModel: "openai/gpt-5"},
+				{ID: "openrouter", Label: "OpenRouter", Status: "ready", DefaultModel: "openrouter/openai/gpt-5"},
+			}
+		},
+		SwitchModel: func(name string) (string, error) {
+			switched = name
+			return name, nil
+		},
+	})
+	m.width = 100
+	m.height = 24
+	m.openProviderPicker()
+	m.providersCursor = 1
+
+	updated, _ := m.handleProvidersKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+	if !m.providerPromptingKey {
+		t.Fatal("expected API key prompt")
+	}
+	m.providerKeyInput = "sk-openrouter"
+	m.providerKeyPos = len(m.providerKeyInput)
+	updated, _ = m.handleProvidersKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+
+	tokens, err := auth.Load()
+	if err != nil {
+		t.Fatalf("auth.Load: %v", err)
+	}
+	if tokens.OpenRouterAPIKey != "sk-openrouter" {
+		t.Fatalf("OpenRouter key = %q", tokens.OpenRouterAPIKey)
+	}
+	if switched != "openrouter/openai/gpt-5" {
+		t.Fatalf("switched = %q", switched)
+	}
+	if m.providersCursor != 1 {
+		t.Fatalf("providersCursor = %d, want 1", m.providersCursor)
+	}
+}
+
 func TestChatModelProviderOverlayDeletesAPIKey(t *testing.T) {
 	configDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configDir)
@@ -1239,6 +1292,192 @@ func TestChatModelProviderOverlayCopilotLoginFlow(t *testing.T) {
 	}
 	if switched != "copilot/gpt-5" {
 		t.Fatalf("switched = %q", switched)
+	}
+}
+
+func TestChatModelProviderOverlaySaveDoesNotFetchCodexUsageAutomatically(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	codexCalls := 0
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "test",
+		WorkDir: "/tmp",
+		Providers: []ProviderOption{
+			{ID: "openai", Label: "OpenAI", Status: "configure API key", DefaultModel: "openai/gpt-5"},
+		},
+		RefreshProviders: func() []ProviderOption {
+			return []ProviderOption{{ID: "openai", Label: "OpenAI", Status: "ready", DefaultModel: "openai/gpt-5"}}
+		},
+		SwitchModel: func(name string) (string, error) {
+			return name, nil
+		},
+		FetchCodexUsage: func(ctx context.Context) (*codexusage.Snapshot, error) {
+			codexCalls++
+			return &codexusage.Snapshot{Plan: "pro"}, nil
+		},
+	})
+	m.width = 100
+	m.height = 24
+	m.openProviderPicker()
+
+	updated, _ := m.handleProvidersKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+	m.providerKeyInput = "sk-test"
+	m.providerKeyPos = len(m.providerKeyInput)
+	updated, cmd := m.handleProvidersKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+
+	if cmd != nil {
+		if msg := cmd(); msg != nil {
+			updated, _ = m.Update(msg)
+			m = updated.(ChatModel)
+		}
+	}
+	if codexCalls != 0 {
+		t.Fatalf("codexCalls = %d, want 0 after provider save", codexCalls)
+	}
+}
+
+func TestChatModelProviderOverlayCopilotAuthDoesNotFetchQuotaAutomatically(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	prevStart := startCopilotDeviceAuth
+	prevWait := waitCopilotDeviceAuth
+	startCopilotDeviceAuth = func(ctx context.Context, clientID string) (*copilot.DeviceCode, error) {
+		return &copilot.DeviceCode{VerificationURI: "https://github.com/login/device", UserCode: "GH-1234"}, nil
+	}
+	waitCopilotDeviceAuth = func(ctx context.Context, clientID string, dc *copilot.DeviceCode) (string, error) {
+		return "copilot-token", nil
+	}
+	t.Cleanup(func() {
+		startCopilotDeviceAuth = prevStart
+		waitCopilotDeviceAuth = prevWait
+	})
+
+	copilotCalls := 0
+	authenticated := false
+	m := NewChatModel(ChatLiveConfig{
+		Model:           "test",
+		WorkDir:         "/tmp",
+		CopilotClientID: "client-id",
+		Providers: []ProviderOption{
+			{ID: "copilot", Label: "GitHub Copilot", Status: "sign in", DefaultModel: "copilot/gpt-5"},
+		},
+		RefreshProviders: func() []ProviderOption {
+			status := "sign in"
+			if authenticated {
+				status = "ready"
+			}
+			return []ProviderOption{{ID: "copilot", Label: "GitHub Copilot", Status: status, DefaultModel: "copilot/gpt-5"}}
+		},
+		RefreshModels: func() []string {
+			return []string{"copilot/gpt-5"}
+		},
+		SwitchModel: func(name string) (string, error) {
+			return name, nil
+		},
+		FetchLiveCopilotQuota: func(ctx context.Context) (*copilot.UserQuota, error) {
+			copilotCalls++
+			return &copilot.UserQuota{}, nil
+		},
+	})
+	m.width = 100
+	m.height = 24
+	m.openProviderPicker()
+
+	updated, cmd := m.handleProvidersKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+	startMsg := cmd().(providerAuthStartedMsg)
+	updated, cmd = m.Update(startMsg)
+	m = updated.(ChatModel)
+	authenticated = true
+	successMsg := cmd().(providerAuthSucceededMsg)
+	updated, cmd = m.Update(successMsg)
+	m = updated.(ChatModel)
+
+	if cmd != nil {
+		if msg := cmd(); msg != nil {
+			updated, _ = m.Update(msg)
+			m = updated.(ChatModel)
+		}
+	}
+	if copilotCalls != 0 {
+		t.Fatalf("copilotCalls = %d, want 0 after provider auth", copilotCalls)
+	}
+}
+
+func TestChatModelProviderOverlayCopilotLoginPreservesSelectedProviderAcrossRefresh(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	t.Setenv("HOME", configDir)
+	prevStart := startCopilotDeviceAuth
+	prevWait := waitCopilotDeviceAuth
+	startCopilotDeviceAuth = func(ctx context.Context, clientID string) (*copilot.DeviceCode, error) {
+		return &copilot.DeviceCode{VerificationURI: "https://github.com/login/device", UserCode: "GH-1234"}, nil
+	}
+	waitCopilotDeviceAuth = func(ctx context.Context, clientID string, dc *copilot.DeviceCode) (string, error) {
+		return "copilot-token", nil
+	}
+	t.Cleanup(func() {
+		startCopilotDeviceAuth = prevStart
+		waitCopilotDeviceAuth = prevWait
+	})
+
+	authenticated := false
+	switched := ""
+	m := NewChatModel(ChatLiveConfig{
+		Model:           "test",
+		WorkDir:         "/tmp",
+		CopilotClientID: "client-id",
+		Providers: []ProviderOption{
+			{ID: "copilot", Label: "GitHub Copilot", Status: "sign in", DefaultModel: "copilot/gpt-5"},
+			{ID: "openai", Label: "OpenAI", Status: "ready", DefaultModel: "openai/gpt-5"},
+		},
+		RefreshProviders: func() []ProviderOption {
+			status := "sign in"
+			if authenticated {
+				status = "ready"
+			}
+			return []ProviderOption{
+				{ID: "openai", Label: "OpenAI", Status: "ready", DefaultModel: "openai/gpt-5"},
+				{ID: "copilot", Label: "GitHub Copilot", Status: status, DefaultModel: "copilot/gpt-5"},
+			}
+		},
+		RefreshModels: func() []string {
+			return []string{"copilot/gpt-5", "openai/gpt-5"}
+		},
+		SwitchModel: func(name string) (string, error) {
+			switched = name
+			return name, nil
+		},
+	})
+	m.width = 100
+	m.height = 24
+	m.openProviderPicker()
+	m.providersCursor = 1
+
+	updated, cmd := m.handleProvidersKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+	startMsg := cmd().(providerAuthStartedMsg)
+	updated, cmd = m.Update(startMsg)
+	m = updated.(ChatModel)
+	authenticated = true
+	successMsg := cmd().(providerAuthSucceededMsg)
+	updated, _ = m.Update(successMsg)
+	m = updated.(ChatModel)
+
+	tokens, err := auth.Load()
+	if err != nil {
+		t.Fatalf("auth.Load: %v", err)
+	}
+	if tokens.CopilotToken != "copilot-token" {
+		t.Fatalf("expected copilot token saved, got %q", tokens.CopilotToken)
+	}
+	if switched != "copilot/gpt-5" {
+		t.Fatalf("switched = %q", switched)
+	}
+	if m.providersCursor != 1 {
+		t.Fatalf("providersCursor = %d, want 1", m.providersCursor)
 	}
 }
 
