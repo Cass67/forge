@@ -17,9 +17,11 @@ var snapshotData []byte
 
 // ModelInfo holds capability flags for a single model.
 type ModelInfo struct {
-	Reasoning   bool
-	Temperature bool
-	ToolCall    bool
+	Reasoning     bool
+	Temperature   bool
+	ToolCall      bool
+	ContextWindow int
+	OutputLimit   int
 }
 
 // providerData mirrors the relevant fields from models.dev's JSON structure.
@@ -31,6 +33,10 @@ type modelEntry struct {
 	Reasoning   bool `json:"reasoning"`
 	Temperature bool `json:"temperature"`
 	ToolCall    bool `json:"tool_call"`
+	Limit       struct {
+		Context int `json:"context"`
+		Output  int `json:"output"`
+	} `json:"limit"`
 }
 
 // forgeToModelsDev maps forge provider labels to models.dev provider IDs.
@@ -164,9 +170,11 @@ func Lookup(providerID, modelID string) *ModelInfo {
 
 	if entry, ok := provider.Models[modelID]; ok {
 		return &ModelInfo{
-			Reasoning:   entry.Reasoning,
-			Temperature: entry.Temperature,
-			ToolCall:    entry.ToolCall,
+			Reasoning:     entry.Reasoning,
+			Temperature:   entry.Temperature,
+			ToolCall:      entry.ToolCall,
+			ContextWindow: entry.Limit.Context,
+			OutputLimit:   entry.Limit.Output,
 		}
 	}
 	return nil

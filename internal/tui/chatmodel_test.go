@@ -268,8 +268,72 @@ func TestChatModelViewShowsSecondStatusLine(t *testing.T) {
 	if len(lines) < 2 {
 		t.Fatalf("view missing second status line: %q", got)
 	}
-	if !strings.Contains(lines[1], "ready") || !strings.Contains(lines[1], "turn 100/20") {
+	if !strings.Contains(lines[1], "ready") || !strings.Contains(lines[1], "last 100 in / 20 out") {
 		t.Fatalf("header line 2 missing status summary: %q", lines[1])
+	}
+}
+
+func TestChatModelViewShowsContextSummaryInHeader(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "openai/gpt-5",
+		WorkDir: "/tmp",
+		ModelInfo: func(model string) *modelcatalog.ModelInfo {
+			return &modelcatalog.ModelInfo{ContextWindow: 8000}
+		},
+	})
+	m.width = 120
+	m.height = 30
+	m.sessionUsage = llm.Usage{InputTokens: 100, OutputTokens: 20}
+
+	got := m.View()
+	lines := strings.Split(got, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("view missing second status line: %q", got)
+	}
+	if !strings.Contains(lines[1], "session 120 tok") || !strings.Contains(lines[1], "ctx 120/8000") {
+		t.Fatalf("header line 2 missing context summary: %q", lines[1])
+	}
+}
+
+func TestChatModelEventStatsFetchesProviderDiagnosticsForHeader(t *testing.T) {
+	codexCalls := 0
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "openai/gpt-5",
+		WorkDir: "/tmp",
+		FetchCodexUsage: func(ctx context.Context) (*codexusage.Snapshot, error) {
+			codexCalls++
+			return &codexusage.Snapshot{
+				Plan: "pro",
+				Primary: &codexusage.Window{
+					UsedPercent: 20,
+					ResetIn:     "5h",
+				},
+			}, nil
+		},
+	})
+	m.width = 120
+	m.height = 30
+
+	updated, cmd := m.Update(llm.Event{
+		Kind:     llm.EventStats,
+		Duration: time.Second,
+		Usage:    llm.Usage{InputTokens: 100, OutputTokens: 20},
+	})
+	m = updated.(ChatModel)
+	if cmd == nil {
+		t.Fatal("expected stats event to trigger provider diagnostics fetch")
+	}
+	if msg := cmd(); msg != nil {
+		updated, _ = m.Update(msg)
+		m = updated.(ChatModel)
+	}
+
+	if codexCalls != 1 {
+		t.Fatalf("codexCalls = %d, want 1", codexCalls)
+	}
+	lines := strings.Split(m.View(), "\n")
+	if len(lines) < 2 || !strings.Contains(lines[1], "Codex") {
+		t.Fatalf("header line 2 missing codex summary: %q", strings.Join(lines, "\n"))
 	}
 }
 
@@ -371,19 +435,24 @@ func TestChatModelSlashStatsShowsSectionedOverlay(t *testing.T) {
 	m.width = 100
 	m.height = 24
 
-	updated, _ := m.Update(llm.Event{Kind: llm.EventStats, Duration: time.Second, Usage: llm.Usage{InputTokens: 120, OutputTokens: 30}})
+	updated, cmd := m.Update(llm.Event{Kind: llm.EventStats, Duration: time.Second, Usage: llm.Usage{InputTokens: 120, OutputTokens: 30}})
 	m = updated.(ChatModel)
+	if cmd != nil {
+		if msg := cmd(); msg != nil {
+			updated, _ = m.Update(msg)
+			m = updated.(ChatModel)
+		}
+	}
 
 	m.inputBuf = "/stats"
 	m.inputPos = len("/stats")
-	updated, cmd := m.submitInput()
+	updated, cmd = m.submitInput()
 	m = updated.(ChatModel)
-	if cmd == nil {
-		t.Fatal("expected /stats to return fetch command")
-	}
-	if msg := cmd(); msg != nil {
-		updated, _ = m.Update(msg)
-		m = updated.(ChatModel)
+	if cmd != nil {
+		if msg := cmd(); msg != nil {
+			updated, _ = m.Update(msg)
+			m = updated.(ChatModel)
+		}
 	}
 
 	if got := m.flash; got != "stats opened" {
