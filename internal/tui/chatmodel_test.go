@@ -444,6 +444,79 @@ func TestChatModelSlashStatsFetchesCodexUsageLazily(t *testing.T) {
 	}
 }
 
+func TestChatModelSlashStatsReusesCachedProviderDiagnostics(t *testing.T) {
+	copilotCalls := 0
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "copilot/gpt-5",
+		WorkDir: "/tmp",
+		FetchLiveCopilotQuota: func(ctx context.Context) (*copilot.UserQuota, error) {
+			copilotCalls++
+			return &copilot.UserQuota{
+				Windows: map[string]llm.CopilotQuota{
+					"premium": {Type: "premium_interactions", Remaining: 143},
+				},
+			}, nil
+		},
+	})
+	m.width = 100
+	m.height = 24
+
+	m.inputBuf = "/stats"
+	m.inputPos = len("/stats")
+	updated, cmd := m.submitInput()
+	m = updated.(ChatModel)
+	if cmd == nil {
+		t.Fatal("expected first /stats to return fetch command")
+	}
+	if msg := cmd(); msg != nil {
+		updated, _ = m.Update(msg)
+		m = updated.(ChatModel)
+	}
+	if copilotCalls != 1 {
+		t.Fatalf("copilotCalls after first open = %d, want 1", copilotCalls)
+	}
+
+	m.statsVisible = false
+	m.inputBuf = "/stats"
+	m.inputPos = len("/stats")
+	updated, cmd = m.submitInput()
+	m = updated.(ChatModel)
+	if cmd != nil {
+		if msg := cmd(); msg != nil {
+			updated, _ = m.Update(msg)
+			m = updated.(ChatModel)
+		}
+	}
+	if copilotCalls != 1 {
+		t.Fatalf("copilotCalls after second open = %d, want cached 1", copilotCalls)
+	}
+}
+
+func TestChatModelApplySnapshotClearsProviderDiagnostics(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "copilot/gpt-5", WorkDir: "/tmp"})
+	m.statusData.CopilotLive = &copilot.UserQuota{
+		Windows: map[string]llm.CopilotQuota{
+			"premium": {Type: "premium_interactions", Remaining: 143},
+		},
+	}
+	m.statusData.CodexUsage = &codexusage.Snapshot{Plan: "pro"}
+	m.statsCopilotErr = "temporary failure"
+	m.statsCodexErr = "temporary failure"
+
+	m.applySnapshot(chatSessionSnapshot{
+		Model:        "anthropic/claude-sonnet-4-6",
+		WorkDir:      "/tmp/restored",
+		SessionUsage: llm.Usage{InputTokens: 20, OutputTokens: 10},
+	})
+
+	if m.statusData.CopilotLive != nil || m.statusData.CodexUsage != nil {
+		t.Fatalf("expected restored snapshot to clear provider diagnostics: %#v", m.statusData)
+	}
+	if m.statsCopilotErr != "" || m.statsCodexErr != "" {
+		t.Fatalf("expected restored snapshot to clear provider errors: copilot=%q codex=%q", m.statsCopilotErr, m.statsCodexErr)
+	}
+}
+
 func TestChatModelF1OpensAndEscClosesHelpOverlay(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 100
