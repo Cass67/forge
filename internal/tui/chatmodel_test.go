@@ -256,6 +256,17 @@ func TestChatModelViewShowsActiveModelAndThemeInHeader(t *testing.T) {
 	}
 }
 
+func TestChatModelViewFitsWithinWindowHeight(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "copilot/gpt-5", WorkDir: "/tmp"})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+	m = updated.(ChatModel)
+
+	lines := strings.Split(m.View(), "\n")
+	if len(lines) > 24 {
+		t.Fatalf("view has %d lines, want <= 24", len(lines))
+	}
+}
+
 func TestChatModelViewShowsSecondStatusLine(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "copilot/gpt-5", WorkDir: "/tmp"})
 	m.width = 120
@@ -292,6 +303,27 @@ func TestChatModelViewShowsContextSummaryInHeader(t *testing.T) {
 	}
 	if !strings.Contains(lines[1], "session 120 tok") || !strings.Contains(lines[1], "ctx 120/8000") {
 		t.Fatalf("header line 2 missing context summary: %q", lines[1])
+	}
+}
+
+func TestChatModelViewShowsBaselineSessionStatsBeforeFirstResponse(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "openai/gpt-5",
+		WorkDir: "/tmp",
+		ModelInfo: func(model string) *modelcatalog.ModelInfo {
+			return &modelcatalog.ModelInfo{ContextWindow: 8000}
+		},
+	})
+	m.width = 120
+	m.height = 30
+
+	got := m.View()
+	lines := strings.Split(got, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("view missing second status line: %q", got)
+	}
+	if !strings.Contains(lines[1], "session 0 tok") || !strings.Contains(lines[1], "ctx 0/8000") {
+		t.Fatalf("header line 2 missing baseline session stats: %q", lines[1])
 	}
 }
 

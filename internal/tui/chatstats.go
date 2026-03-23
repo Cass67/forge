@@ -124,12 +124,13 @@ func buildProviderStatusSummary(data chatStatusData) string {
 }
 
 func buildContextSummary(data chatStatusData) string {
+	used, limit := deriveContextUsage(data.SessionUsage, data.ModelInfo, data.ContextUsed, data.ContextLimit)
 	parts := make([]string, 0, 2)
 	switch {
-	case data.ContextLimit > 0:
-		parts = append(parts, fmt.Sprintf("ctx %d/%d", data.ContextUsed, data.ContextLimit))
-	case data.ContextUsed > 0:
-		parts = append(parts, fmt.Sprintf("ctx %d", data.ContextUsed))
+	case limit > 0:
+		parts = append(parts, fmt.Sprintf("ctx %d/%d", used, limit))
+	case used > 0:
+		parts = append(parts, fmt.Sprintf("ctx %d", used))
 	}
 	if mode := strings.TrimSpace(data.RequestMode); mode != "" {
 		parts = append(parts, mode)
@@ -376,9 +377,6 @@ func buildTurnSummary(usage llm.Usage) string {
 
 func buildSessionSummary(usage llm.Usage) string {
 	total := usage.InputTokens + usage.OutputTokens
-	if total == 0 {
-		return ""
-	}
 	return fmt.Sprintf("session %d tok", total)
 }
 

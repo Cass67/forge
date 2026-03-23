@@ -81,6 +81,9 @@ const (
 )
 
 const chatHeaderHeight = 2
+const chatPaneBorderHeight = 2
+const chatInputHeight = 3
+const chatStatusHeight = 1
 
 type ChatModel struct {
 	config  ChatLiveConfig
@@ -625,8 +628,7 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		headerH := chatHeaderHeight
-		inputH := 4
-		bodyH := max(3, m.height-headerH-inputH)
+		bodyH := max(3, m.height-headerH-chatPaneBorderHeight-chatInputHeight-chatStatusHeight)
 		m.chatViewport.Width = m.chatContentWidth()
 		m.chatViewport.Height = bodyH
 		m.refreshViewport()
