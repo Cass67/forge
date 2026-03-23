@@ -152,18 +152,18 @@ func TestChatModelSlashExit(t *testing.T) {
 	}
 }
 
-func TestChatModelSlashTheme(t *testing.T) {
+func TestChatModelSlashThemeSelectsLight(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 80
 	m.height = 24
 
-	m.inputBuf = "/theme"
-	m.inputPos = 6
+	m.inputBuf = "/theme light"
+	m.inputPos = len(m.inputBuf)
 	updated, _ := m.submitInput()
 	m = updated.(ChatModel)
 
-	if !m.lowContrast {
-		t.Fatal("expected lowContrast=true after /theme")
+	if m.themeID != "light" {
+		t.Fatalf("themeID = %q, want %q", m.themeID, "light")
 	}
 }
 
@@ -176,16 +176,31 @@ func TestChatModelSlashThemeVariants(t *testing.T) {
 	m.inputPos = len(m.inputBuf)
 	updated, _ := m.submitInput()
 	m = updated.(ChatModel)
-	if !m.lowContrast {
-		t.Fatal("expected /theme low to enable low contrast")
+	if m.themeID != "low" {
+		t.Fatalf("themeID = %q, want %q", m.themeID, "low")
 	}
 
 	m.inputBuf = "/theme default"
 	m.inputPos = len(m.inputBuf)
 	updated, _ = m.submitInput()
 	m = updated.(ChatModel)
-	if m.lowContrast {
-		t.Fatal("expected /theme default to disable low contrast")
+	if m.themeID != "default" {
+		t.Fatalf("themeID = %q, want %q", m.themeID, "default")
+	}
+}
+
+func TestChatModelSlashThemeViewReflectsSelection(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	m.inputBuf = "/theme light"
+	m.inputPos = len(m.inputBuf)
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+
+	if got := m.View(); !strings.Contains(got, "theme: light") {
+		t.Fatalf("view = %q", got)
 	}
 }
 

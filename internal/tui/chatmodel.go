@@ -106,7 +106,7 @@ type ChatModel struct {
 	skills         []skills.Skill
 	autoSkillsMode string
 	state          *chatstate.State
-	lowContrast    bool
+	themeID        string
 
 	helpVisible bool
 	helpTab     int
@@ -176,6 +176,7 @@ func NewChatModel(cfg ChatLiveConfig) ChatModel {
 		model:          cfg.Model,
 		workDir:        cfg.WorkDir,
 		copyFn:         copyToClipboard,
+		themeID:        "default",
 		chatViewport:   vp,
 		status:         "ready",
 		skills:         cfg.Skills,
@@ -231,7 +232,7 @@ func (m *ChatModel) refreshViewport() {
 		if (msg.Kind == MsgAgent || msg.Kind == MsgForge) && strings.TrimSpace(msg.Content) == "" {
 			continue
 		}
-		blocks = append(blocks, msg.Render(contentWidth, m.lowContrast))
+		blocks = append(blocks, msg.Render(contentWidth, m.theme().LowContrast))
 	}
 	content := strings.Join(blocks, "\n")
 	m.chatContent = content
@@ -1121,7 +1122,7 @@ func (m ChatModel) submitSkillInput(s skills.Skill, turnLabel, msg string) (tea.
 var builtinCommands = []string{
 	"/clear", "/clear all", "/clear agent", "/clear tools",
 	"/help", "/stats",
-	"/theme", "/theme low", "/theme default",
+	"/theme", "/theme low", "/theme default", "/theme light", "/theme dusk",
 	"/tools", "/toggle tools", "/toggle tools on", "/toggle tools off",
 	"/models", "/model", "/provider",
 	"/skills", "/auto-skills", "/sessions", "/save", "/restore",
@@ -1173,21 +1174,14 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.statsVisible = true
 		m.flash = "stats opened"
 	case input == "/theme":
-		m.lowContrast = !m.lowContrast
-		m.refreshViewport()
-		if m.lowContrast {
-			m.flash = "theme: low contrast"
-		} else {
-			m.flash = "theme: default"
+		m.cycleTheme()
+	case strings.HasPrefix(input, "/theme "):
+		name := strings.TrimSpace(strings.TrimPrefix(input, "/theme "))
+		if name == "" {
+			m.flash = "unknown theme \"\""
+			break
 		}
-	case input == "/theme low":
-		m.lowContrast = true
-		m.refreshViewport()
-		m.flash = "theme: low contrast"
-	case input == "/theme default":
-		m.lowContrast = false
-		m.refreshViewport()
-		m.flash = "theme: default"
+		m.applyTheme(name)
 	case input == "/sessions":
 		_ = m.saveSession("last-session")
 		if ok := m.refreshSessionsPicker(true); ok {
@@ -1384,7 +1378,8 @@ func (m ChatModel) helpLines() []string {
 			"Layout and display:",
 			"  /tools             show / hide tools pane",
 			"  /toggle tools      show / hide tools pane",
-			"  /theme             toggle low-contrast theme",
+			"  /theme             cycle chat themes",
+			"  /theme <name>      select default, low, light, or dusk",
 			"  /expand            expand last truncated result",
 			"",
 			"Export and cleanup:",
