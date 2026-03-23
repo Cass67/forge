@@ -120,3 +120,22 @@ func TestBuildStatsOverlayShowsRequestModeAndMetadata(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildStatsOverlayShowsModelLimits(t *testing.T) {
+	rendered := renderStatsOverlayPanel(chatTheme{}, chatStatsData{
+		chatStatusData: chatStatusData{
+			Model: "openai/gpt-5",
+			ModelInfo: &modelcatalog.ModelInfo{
+				ContextWindow: 128000,
+				OutputLimit:   8192,
+				Reasoning:     true,
+			},
+		},
+	}, 100, 24)
+
+	for _, want := range []string{"128000", "8192", "reasoning"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("rendered overlay missing %q: %s", want, rendered)
+		}
+	}
+}

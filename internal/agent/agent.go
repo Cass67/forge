@@ -115,13 +115,20 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 					if strings.HasPrefix(trimmed, "```") {
 						inCodeFence = !inCodeFence
 					}
-					if !inCodeFence && strings.Contains(trimmed, "<tool_call>") {
-						inToolCall = true
-						continue
-					}
-					if !inCodeFence && strings.Contains(trimmed, "</tool_call>") {
-						inToolCall = false
-						continue
+					if !inCodeFence {
+						if openTag, closeTag, ok := toolCallBlockTags(trimmed); ok {
+							hasClose := strings.Contains(trimmed, closeTag)
+							if strings.Contains(trimmed, openTag) && !hasClose {
+								inToolCall = true
+							} else if hasClose {
+								inToolCall = false
+							}
+							continue
+						}
+						if strings.Contains(trimmed, "</tool_call>") || strings.Contains(trimmed, "</function_calls>") {
+							inToolCall = false
+							continue
+						}
 					}
 					if !inToolCall {
 						a.renderer.AgentToken(line)
@@ -133,7 +140,8 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		remaining := lineBuf.String()
 		if remaining != "" && !inToolCall {
 			trimmed := strings.TrimSpace(remaining)
-			if !strings.Contains(trimmed, "<tool_call>") && !strings.Contains(trimmed, "</tool_call>") {
+			if !strings.Contains(trimmed, "<tool_call>") && !strings.Contains(trimmed, "</tool_call>") &&
+				!strings.Contains(trimmed, "<function_calls>") && !strings.Contains(trimmed, "</function_calls>") {
 				a.renderer.AgentToken(remaining)
 			}
 		}
