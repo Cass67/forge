@@ -183,6 +183,78 @@ func TestInputLayoutWrapsAndTracksCursor(t *testing.T) {
 	}
 }
 
+func TestInputBoxHeightStaysCompactForSingleLine(t *testing.T) {
+	m := chatLiveModel{
+		width:    80,
+		height:   24,
+		inputBuf: "hello",
+		inputPos: len([]rune("hello")),
+	}
+
+	if got := m.inputBoxHeight(); got != 4 {
+		t.Fatalf("inputBoxHeight = %d, want 4", got)
+	}
+}
+
+func TestInputBoxHeightGrowsForMultilineInput(t *testing.T) {
+	m := chatLiveModel{
+		width:    80,
+		height:   24,
+		inputBuf: "one\ntwo\nthree\nfour\nfive",
+		inputPos: len([]rune("one\ntwo\nthree\nfour\nfive")),
+	}
+
+	if got := m.inputBoxHeight(); got <= 4 {
+		t.Fatalf("inputBoxHeight = %d, want > 4", got)
+	}
+}
+
+func TestInputBoxHeightGrowsForWrappedInput(t *testing.T) {
+	m := chatLiveModel{
+		width:    12,
+		height:   24,
+		inputBuf: "abcdefghijklmnopqrstuvwxyz",
+		inputPos: len([]rune("abcdefghijklmnopqrstuvwxyz")),
+	}
+
+	if got := m.inputBoxHeight(); got <= 4 {
+		t.Fatalf("inputBoxHeight = %d, want > 4 for wrapped input", got)
+	}
+}
+
+func TestInputBoxHeightCapsAtHalfTerminalHeight(t *testing.T) {
+	m := chatLiveModel{
+		width:    40,
+		height:   24,
+		inputBuf: "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\nline16",
+		inputPos: len([]rune("line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\nline16")),
+	}
+
+	if got := m.inputBoxHeight(); got != 12 {
+		t.Fatalf("inputBoxHeight = %d, want 12 for half-height cap on a 24-row terminal", got)
+	}
+}
+
+func TestInputLayoutScrollsToKeepCursorVisiblePastVisibleLimit(t *testing.T) {
+	m := chatLiveModel{
+		width:    40,
+		height:   24,
+		inputBuf: "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\nline16",
+		inputPos: len([]rune("line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\nline16")),
+	}
+
+	layout := m.inputLayout(max(1, m.width-2))
+	if len(layout.lines) <= len(layout.visibleLines) {
+		t.Fatalf("expected input to require scrolling, got %d total lines and %d visible", len(layout.lines), len(layout.visibleLines))
+	}
+	if layout.startLine == 0 {
+		t.Fatalf("startLine = %d, want > 0 when cursor is near end of oversized input", layout.startLine)
+	}
+	if layout.visibleCursorLine < 0 || layout.visibleCursorLine >= len(layout.visibleLines) {
+		t.Fatalf("visibleCursorLine = %d out of bounds for %d visible lines", layout.visibleCursorLine, len(layout.visibleLines))
+	}
+}
+
 func TestHandleKeyArrowMovesInputCursorHorizontally(t *testing.T) {
 	inputCh := make(chan string, 1)
 	m := chatLiveModel{

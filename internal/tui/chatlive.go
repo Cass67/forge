@@ -57,7 +57,7 @@ type chatSessionSnapshot struct {
 	AgentScrl        int       `json:"agent_scrl"`
 	ToolsScrl        int       `json:"tools_scrl"`
 	LeftPaneWidth    int       `json:"left_pane_width"`
-	ToolsVisible     bool      `json:"tools_visible"`
+	ToolsVisible     *bool     `json:"tools_visible,omitempty"`
 	FocusRight       bool      `json:"focus_right"`
 	AgentFollow      bool      `json:"agent_follow"`
 	ToolsFollow      bool      `json:"tools_follow"`
@@ -289,7 +289,7 @@ func RunChatLive(events <-chan llm.Event, cfg ChatLiveConfig, inputCh chan<- str
 	}
 	defer screen.Fini()
 
-	screen.EnableMouse()
+	screen.EnableMouse(tcell.MouseButtonEvents | tcell.MouseDragEvents | tcell.MouseMotionEvents)
 	screen.EnablePaste()
 	screen.Clear()
 	w, h := screen.Size()
@@ -1493,7 +1493,9 @@ func (m *chatLiveModel) inputBoxHeight() int {
 }
 
 func (m *chatLiveModel) maxInputVisibleLines() int {
-	return clamp(m.height-6, 1, 6)
+	maxBoxHeight := max(4, m.height/2)
+	maxVisibleLines := maxBoxHeight - 3
+	return clamp(maxVisibleLines, 1, max(1, m.height-6))
 }
 
 func (m *chatLiveModel) setLeftPaneWidth(x int) {
@@ -1532,7 +1534,7 @@ func (m *chatLiveModel) snapshot() chatSessionSnapshot {
 		AgentScrl:        m.panes.agent.scroll,
 		ToolsScrl:        m.panes.tools.scroll,
 		LeftPaneWidth:    m.panes.layout.leftWidth,
-		ToolsVisible:     m.panes.layout.toolsVisible,
+		ToolsVisible:     boolPtr(m.panes.layout.toolsVisible),
 		FocusRight:       m.panes.focusR,
 		AgentFollow:      m.panes.agent.follow,
 		ToolsFollow:      m.panes.tools.follow,
@@ -1544,6 +1546,10 @@ func (m *chatLiveModel) snapshot() chatSessionSnapshot {
 		ContextFiles:     append([]string(nil), m.contextFiles...),
 		Turn:             m.turn,
 	}
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }
 
 func (m *chatLiveModel) applySnapshot(s chatSessionSnapshot) {
@@ -1558,8 +1564,12 @@ func (m *chatLiveModel) applySnapshot(s chatSessionSnapshot) {
 	m.panes.agent.scroll = max(0, s.AgentScrl)
 	m.panes.tools.scroll = max(0, s.ToolsScrl)
 	m.panes.layout.leftWidth = s.LeftPaneWidth
-	m.panes.layout.toolsVisible = s.ToolsVisible
-	m.panes.focusR = s.FocusRight && s.ToolsVisible
+	toolsVisible := true
+	if s.ToolsVisible != nil {
+		toolsVisible = *s.ToolsVisible
+	}
+	m.panes.layout.toolsVisible = toolsVisible
+	m.panes.focusR = s.FocusRight && toolsVisible
 	m.panes.agent.follow = s.AgentFollow
 	m.panes.tools.follow = s.ToolsFollow
 	m.overlays.search.query = s.SearchQuery

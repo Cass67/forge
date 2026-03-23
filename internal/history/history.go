@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"forge/internal/output"
 )
@@ -34,6 +35,7 @@ func List(outputDir string) ([]SessionSummary, error) {
 	}
 
 	var sessions []SessionSummary
+	sessionTimes := make(map[string]time.Time, len(entries))
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -47,6 +49,7 @@ func List(outputDir string) ([]SessionSummary, error) {
 				Dir:    dir,
 				Status: "unknown",
 			})
+			sessionTimes[dir] = parseSessionDirTime(e.Name())
 			continue
 		}
 		var meta output.SessionMeta
@@ -70,12 +73,30 @@ func List(outputDir string) ([]SessionSummary, error) {
 			Status:    meta.Status,
 			StartedAt: started,
 		})
+		if !meta.StartedAt.IsZero() {
+			sessionTimes[dir] = meta.StartedAt.UTC()
+		} else {
+			sessionTimes[dir] = parseSessionDirTime(e.Name())
+		}
 	}
 
 	sort.Slice(sessions, func(i, j int) bool {
-		return sessions[i].ID > sessions[j].ID
+		ti := sessionTimes[sessions[i].Dir]
+		tj := sessionTimes[sessions[j].Dir]
+		if !ti.Equal(tj) {
+			return ti.After(tj)
+		}
+		return sessions[i].Dir > sessions[j].Dir
 	})
 	return sessions, nil
+}
+
+func parseSessionDirTime(name string) time.Time {
+	t, err := time.Parse("2006-01-02T15-04-05", name)
+	if err != nil {
+		return time.Time{}
+	}
+	return t.UTC()
 }
 
 // SessionDetail holds full metadata and file listings for a single session.
