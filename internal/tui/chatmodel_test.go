@@ -127,15 +127,10 @@ func TestChatModelHandlesToolCallEvent(t *testing.T) {
 	if m.toolsBuf == "" {
 		t.Fatal("expected tools buffer to have content")
 	}
-	foundWorking := false
 	for _, msg := range m.messages {
-		if msg.Kind == MsgWorking && strings.Contains(msg.Content, "read_file") {
-			foundWorking = true
-			break
+		if msg.Kind == MsgWorking {
+			t.Fatalf("unexpected inline working message for tool call: %#v", msg)
 		}
-	}
-	if !foundWorking {
-		t.Fatal("expected inline working message for tool call")
 	}
 }
 
