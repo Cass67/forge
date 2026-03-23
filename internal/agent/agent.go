@@ -126,7 +126,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 							}
 							continue
 						}
-						if strings.Contains(trimmed, "</tool_call>") || strings.Contains(trimmed, "</function_calls>") {
+						if strings.Contains(trimmed, "</tool_call>") || strings.Contains(trimmed, "</function_calls>") || strings.Contains(trimmed, "</invoke>") {
 							inToolCall = false
 							continue
 						}
@@ -142,7 +142,8 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		if remaining != "" && !inToolCall {
 			trimmed := strings.TrimSpace(remaining)
 			if !strings.Contains(trimmed, "<tool_call>") && !strings.Contains(trimmed, "</tool_call>") &&
-				!strings.Contains(trimmed, "<function_calls>") && !strings.Contains(trimmed, "</function_calls>") {
+				!strings.Contains(trimmed, "<function_calls>") && !strings.Contains(trimmed, "</function_calls>") &&
+				!strings.Contains(trimmed, "<invoke>") && !strings.Contains(trimmed, "</invoke>") {
 				a.renderer.AgentToken(remaining)
 			}
 		}
