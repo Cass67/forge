@@ -74,6 +74,17 @@ func (d *slowDriver) Stream(ctx context.Context, _ []llm.Message, out chan<- llm
 	}
 }
 
+type usageDriver struct {
+	failNDriver
+	usage llm.Usage
+	mode  string
+	reset bool
+}
+
+func (d *usageDriver) LastUsage() llm.Usage    { return d.usage }
+func (d *usageDriver) LastRequestMode() string { return d.mode }
+func (d *usageDriver) ResetConversation()      { d.reset = true }
+
 func collect(out <-chan llm.Token) []llm.Token {
 	var tokens []llm.Token
 	for tok := range out {
@@ -257,5 +268,46 @@ func TestRetryDelegatesName(t *testing.T) {
 	rd := llm.NewRetryDriver(inner, 1, time.Millisecond, time.Millisecond, 0)
 	if rd.Name() != "fail-n" {
 		t.Errorf("expected fail-n, got %s", rd.Name())
+	}
+}
+
+func TestRetryDelegatesUsageReporter(t *testing.T) {
+	inner := &usageDriver{usage: llm.Usage{InputTokens: 120, OutputTokens: 30}}
+	rd := llm.NewRetryDriver(inner, 1, time.Millisecond, time.Millisecond, 0)
+
+	reporter, ok := any(rd).(llm.UsageReporter)
+	if !ok {
+		t.Fatal("RetryDriver should implement UsageReporter")
+	}
+	got := reporter.LastUsage()
+	if got.InputTokens != 120 || got.OutputTokens != 30 {
+		t.Fatalf("usage = %+v", got)
+	}
+}
+
+func TestRetryDelegatesRequestModeReporter(t *testing.T) {
+	inner := &usageDriver{mode: "responses full input"}
+	rd := llm.NewRetryDriver(inner, 1, time.Millisecond, time.Millisecond, 0)
+
+	reporter, ok := any(rd).(llm.RequestModeReporter)
+	if !ok {
+		t.Fatal("RetryDriver should implement RequestModeReporter")
+	}
+	if got := reporter.LastRequestMode(); got != "responses full input" {
+		t.Fatalf("LastRequestMode = %q", got)
+	}
+}
+
+func TestRetryDelegatesConversationResetter(t *testing.T) {
+	inner := &usageDriver{}
+	rd := llm.NewRetryDriver(inner, 1, time.Millisecond, time.Millisecond, 0)
+
+	resetter, ok := any(rd).(llm.ConversationResetter)
+	if !ok {
+		t.Fatal("RetryDriver should implement ConversationResetter")
+	}
+	resetter.ResetConversation()
+	if !inner.reset {
+		t.Fatal("ResetConversation not forwarded")
 	}
 }
