@@ -51,6 +51,21 @@ func TestChatMessageRenderStatus(t *testing.T) {
 	}
 }
 
+func TestChatMessageRenderWorking(t *testing.T) {
+	m := ChatMessage{
+		Kind:    MsgWorking,
+		Header:  "Working",
+		Content: "Reading repository structure",
+	}
+	got := m.Render(60, lookupThemeForTest(t, "default"))
+	if got == "" {
+		t.Fatal("expected non-empty render")
+	}
+	if !strings.Contains(got, "Working") || !strings.Contains(got, "Reading repository structure") {
+		t.Fatalf("working render missing content: %s", got)
+	}
+}
+
 func TestChatMessageRenderChangesAcrossThemes(t *testing.T) {
 	prevProfile := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
@@ -84,6 +99,9 @@ func TestChatMessageAccentRoles(t *testing.T) {
 	}
 	if got := (ChatMessage{Kind: MsgForge}).borderColor(theme); got != theme.AccentSecondary {
 		t.Fatalf("forge accent = %q, want %q", got, theme.AccentSecondary)
+	}
+	if got := (ChatMessage{Kind: MsgWorking}).borderColor(theme); got != theme.TextDim {
+		t.Fatalf("working accent = %q, want %q", got, theme.TextDim)
 	}
 }
 
