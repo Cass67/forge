@@ -15,8 +15,11 @@ import (
 	"forge/internal/auth"
 	"forge/internal/bootstrap"
 	"forge/internal/chatstate"
+	"forge/internal/codexusage"
 	"forge/internal/config"
+	"forge/internal/copilot"
 	"forge/internal/llm"
+	"forge/internal/modelcatalog"
 	"forge/internal/skills"
 	"forge/internal/tui"
 )
@@ -218,6 +221,45 @@ func RunChatLive(setup *ChatSetup) {
 		WorkDir:         setup.WorkDir,
 		AvailableModels: setup.Available,
 		Providers:       append([]tui.ProviderOption(nil), setup.Providers...),
+		FetchLiveCopilotQuota: func(ctx context.Context) (*copilot.UserQuota, error) {
+			if provider := bootstrap.ParseModelRef(setup.ChatModel).Provider; provider != "copilot" {
+				return nil, nil
+			}
+			_, tokens := refreshChatSetupState(setup)
+			if tokens == nil || strings.TrimSpace(tokens.CopilotToken) == "" {
+				return nil, nil
+			}
+			ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			quota, err := copilot.FetchUserQuota(ctx, tokens.CopilotToken)
+			if err != nil {
+				return nil, err
+			}
+			return quota, nil
+		},
+		FetchCodexUsage: func(ctx context.Context) (*codexusage.Snapshot, error) {
+			provider := bootstrap.ParseModelRef(setup.ChatModel).Provider
+			if provider != "chatgpt" && provider != "openai" && provider != "codex" {
+				return nil, nil
+			}
+			ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			snapshot, err := codexusage.FetchUsage(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return snapshot, nil
+		},
+		ModelInfo: func(model string) *modelcatalog.ModelInfo {
+			ref := bootstrap.ParseModelRef(model)
+			return modelcatalog.Lookup(ref.Provider, ref.Model)
+		},
+		RequestMode: func() string {
+			if reporter, ok := setup.Driver.(llm.RequestModeReporter); ok {
+				return reporter.LastRequestMode()
+			}
+			return ""
+		},
 		RefreshModels: func() []string {
 			cfg, authTokens := refreshChatSetupState(setup)
 			setup.Available = bootstrap.AvailableModels(cfg, authTokens)
