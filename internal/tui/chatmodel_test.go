@@ -238,6 +238,71 @@ func TestChatModelViewHeaderIncludesThemeName(t *testing.T) {
 	}
 }
 
+func TestChatModelViewShowsActiveModelAndThemeInHeader(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "copilot/gpt-5", WorkDir: "/tmp"})
+	m.width = 120
+	m.height = 30
+	m.themeID = "light"
+
+	got := m.View()
+	lines := strings.Split(got, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("view missing two-line header: %q", got)
+	}
+	if !strings.Contains(lines[0], "copilot/gpt-5") || !strings.Contains(lines[0], "theme: light") {
+		t.Fatalf("header line 1 missing model or theme: %q", lines[0])
+	}
+}
+
+func TestChatModelViewShowsSecondStatusLine(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "copilot/gpt-5", WorkDir: "/tmp"})
+	m.width = 120
+	m.height = 30
+	m.statsUsage = llm.Usage{InputTokens: 100, OutputTokens: 20}
+	m.sessionUsage = llm.Usage{InputTokens: 100, OutputTokens: 20}
+
+	got := m.View()
+	lines := strings.Split(got, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("view missing second status line: %q", got)
+	}
+	if !strings.Contains(lines[1], "ready") || !strings.Contains(lines[1], "turn 100/20") {
+		t.Fatalf("header line 2 missing status summary: %q", lines[1])
+	}
+}
+
+func TestChatModelViewShowsCopilotSummaryOnlyForCopilotModel(t *testing.T) {
+	quota := &copilot.UserQuota{
+		Windows: map[string]llm.CopilotQuota{
+			"premium": {Type: "premium", Remaining: 3, Included: 10},
+		},
+	}
+
+	copilotModel := NewChatModel(ChatLiveConfig{Model: "copilot/gpt-5", WorkDir: "/tmp"})
+	copilotModel.width = 120
+	copilotModel.height = 30
+	copilotModel.statusData.CopilotLive = quota
+	copilotLines := strings.Split(copilotModel.View(), "\n")
+	if len(copilotLines) < 2 {
+		t.Fatalf("copilot view missing second status line: %q", copilotModel.View())
+	}
+	if !strings.Contains(copilotLines[1], "Copilot") {
+		t.Fatalf("expected Copilot summary for copilot model: %q", copilotLines[1])
+	}
+
+	otherModel := NewChatModel(ChatLiveConfig{Model: "anthropic/claude-sonnet-4-6", WorkDir: "/tmp"})
+	otherModel.width = 120
+	otherModel.height = 30
+	otherModel.statusData.CopilotLive = quota
+	otherLines := strings.Split(otherModel.View(), "\n")
+	if len(otherLines) < 2 {
+		t.Fatalf("other view missing second status line: %q", otherModel.View())
+	}
+	if strings.Contains(otherLines[1], "Copilot") {
+		t.Fatalf("did not expect Copilot summary for non-Copilot model: %q", otherLines[1])
+	}
+}
+
 func TestChatModelHelpOverlayChangesAcrossThemes(t *testing.T) {
 	prevProfile := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
