@@ -69,6 +69,8 @@ const (
 	focusTools
 )
 
+const chatHeaderHeight = 2
+
 type ChatModel struct {
 	config  ChatLiveConfig
 	model   string
@@ -103,6 +105,7 @@ type ChatModel struct {
 	statsDuration  time.Duration
 	statsUsage     llm.Usage
 	sessionUsage   llm.Usage
+	statusData     chatStatusData
 	skills         []skills.Skill
 	autoSkillsMode string
 	state          *chatstate.State
@@ -171,7 +174,7 @@ func NewChatModel(cfg ChatLiveConfig) ChatModel {
 		state = chatstate.New()
 	}
 
-	return ChatModel{
+	m := ChatModel{
 		config:         cfg,
 		model:          cfg.Model,
 		workDir:        cfg.WorkDir,
@@ -189,6 +192,8 @@ func NewChatModel(cfg ChatLiveConfig) ChatModel {
 		providersList:  append([]ProviderOption(nil), cfg.Providers...),
 		contextFiles:   append([]string(nil), cfg.ContextFiles...),
 	}
+	m.syncStatusData()
+	return m
 }
 
 func (m ChatModel) Init() tea.Cmd {
@@ -264,7 +269,7 @@ type chatLayoutMouseContext struct {
 }
 
 func (m ChatModel) mouseContext() chatLayoutMouseContext {
-	headerH := 1
+	headerH := chatHeaderHeight
 	chatPaneWidth := m.chatPaneWidth()
 	chatBodyHeight := max(1, m.chatViewport.Height)
 	chatH := chatBodyHeight + 2
@@ -604,7 +609,7 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		headerH := 1
+		headerH := chatHeaderHeight
 		inputH := 4
 		bodyH := max(3, m.height-headerH-inputH)
 		m.chatViewport.Width = m.chatContentWidth()
@@ -692,6 +697,7 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 	case llm.EventDone:
 		m.busy = false
 		m.status = "ready"
+		m.syncStatusData()
 		stamp := time.Now().Format("15:04:05")
 		m.AddMessage(ChatMessage{
 			Kind:    MsgStatus,
@@ -703,6 +709,7 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 	case llm.EventError:
 		m.busy = false
 		m.status = "error"
+		m.syncStatusData()
 		errMsg := eventErrorMessage(ev)
 		m.toolsBuf += fmt.Sprintf("  ✗ %s\n", errMsg)
 		m.flash = "error: " + errMsg
@@ -715,6 +722,7 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		m.statsUsage = ev.Usage
 		m.sessionUsage.InputTokens += ev.Usage.InputTokens
 		m.sessionUsage.OutputTokens += ev.Usage.OutputTokens
+		m.syncStatusData()
 		if ev.Duration > 0 {
 			m.toolsBuf += fmt.Sprintf("  %.1fs", ev.Duration.Seconds())
 			if ev.Usage.InputTokens > 0 {
@@ -961,6 +969,7 @@ func (m ChatModel) submitInput() (tea.Model, tea.Cmd) {
 	m.inputPos = 0
 	m.busy = true
 	m.status = "running"
+	m.syncStatusData()
 
 	if m.inputCh != nil {
 		ch := m.inputCh
@@ -1109,6 +1118,7 @@ func (m ChatModel) submitSkillInput(s skills.Skill, turnLabel, msg string) (tea.
 	m.flash = fmt.Sprintf("skill: %s", s.Name)
 	m.busy = true
 	m.status = "running"
+	m.syncStatusData()
 
 	if m.inputCh != nil {
 		ch := m.inputCh
@@ -1272,6 +1282,7 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				m.flash = fmt.Sprintf("error: %v", err)
 			} else {
 				m.model = newModel
+				m.syncStatusData()
 				m.flash = fmt.Sprintf("switched to %s", newModel)
 			}
 		}
@@ -2110,6 +2121,7 @@ func (m *ChatModel) pickModel(idx int) {
 			return
 		}
 		m.model = newModel
+		m.syncStatusData()
 		m.flash = fmt.Sprintf("switched to %s", newModel)
 	}
 	m.modelsVisible = false
@@ -2232,6 +2244,7 @@ func (m ChatModel) activateProviderSelection() (tea.Model, tea.Cmd) {
 			m.flash = fmt.Sprintf("error: %v", err)
 		} else {
 			m.model = newModel
+			m.syncStatusData()
 			m.flash = fmt.Sprintf("switched to %s", newModel)
 		}
 	}
@@ -2317,6 +2330,7 @@ func (m ChatModel) saveProviderKey() (tea.Model, tea.Cmd) {
 	if provider.DefaultModel != "" && m.config.SwitchModel != nil {
 		if newModel, err := m.config.SwitchModel(provider.DefaultModel); err == nil {
 			m.model = newModel
+			m.syncStatusData()
 			m.flash = fmt.Sprintf("saved key and switched to %s", newModel)
 		} else {
 			m.flash = "saved key"
@@ -2400,6 +2414,7 @@ func (m ChatModel) handleProviderAuthSucceeded(msg providerAuthSucceededMsg) (te
 		if provider.DefaultModel != "" && m.config.SwitchModel != nil {
 			if newModel, err := m.config.SwitchModel(provider.DefaultModel); err == nil {
 				m.model = newModel
+				m.syncStatusData()
 				m.flash = fmt.Sprintf("authenticated and switched to %s", newModel)
 			} else {
 				m.flash = "authenticated"
@@ -2979,6 +2994,7 @@ func (m *ChatModel) applySnapshot(s chatSessionSnapshot) {
 	m.toolsVisible = toolsVisible
 	m.contextFiles = append([]string(nil), s.ContextFiles...)
 	m.sessionUsage = s.SessionUsage
+	m.syncStatusData()
 	m.messages = nil
 	if strings.TrimSpace(s.AgentBuf) != "" {
 		m.messages = append(m.messages, ChatMessage{Kind: MsgStatus, Content: s.AgentBuf})
@@ -3023,20 +3039,8 @@ func (m ChatModel) View() string {
 		return "Initializing..."
 	}
 	theme := m.theme()
-
-	headerStyle := lipgloss.NewStyle().
-		Background(theme.HeaderBG).
-		Foreground(theme.HeaderFG).
-		Width(m.width).
-		Bold(true)
-	headerText := "forge • " + m.model + " • " + m.workDir + " • theme: " + theme.ID
-	if m.state != nil {
-		active := m.state.ActiveSkills()
-		if len(active) > 0 {
-			headerText += " • skills: " + strings.Join(active, ", ")
-		}
-	}
-	header := headerStyle.Render(headerText)
+	headerData := m.statusSnapshot()
+	header := renderStatusHeader(theme, headerData, m.width)
 
 	chatPaneWidth := m.chatPaneWidth()
 	chatBodyHeight := max(1, m.chatViewport.Height)
