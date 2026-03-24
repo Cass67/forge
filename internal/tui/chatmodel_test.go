@@ -23,6 +23,13 @@ import (
 	"forge/internal/skills"
 )
 
+func setToolsContent(m *ChatModel, content string) {
+	m.toolsSections = nil
+	if content != "" {
+		m.toolsSections = []toolsSection{{buf: content}}
+	}
+}
+
 func TestChatModelInit(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test-model", WorkDir: "/tmp"})
 	cmd := m.Init()
@@ -107,8 +114,8 @@ func TestChatModelHandlesErrorEventFromText(t *testing.T) {
 	updated, _ := m.Update(ev)
 	m = updated.(ChatModel)
 
-	if !strings.Contains(m.toolsBuf, "max turns (3) exceeded") {
-		t.Fatalf("toolsBuf = %q", m.toolsBuf)
+	if !strings.Contains(m.renderedToolsBuf(), "max turns (3) exceeded") {
+		t.Fatalf("tools = %q", m.renderedToolsBuf())
 	}
 	if len(m.messages) == 0 || !strings.Contains(m.messages[len(m.messages)-1].Content, "max turns (3) exceeded") {
 		t.Fatalf("messages = %#v", m.messages)
@@ -124,7 +131,7 @@ func TestChatModelHandlesToolCallEvent(t *testing.T) {
 	updated, _ := m.Update(ev)
 	m = updated.(ChatModel)
 
-	if m.toolsBuf == "" {
+	if m.renderedToolsBuf() == "" {
 		t.Fatal("expected tools buffer to have content")
 	}
 	for _, msg := range m.messages {
@@ -730,7 +737,7 @@ func TestChatModelToolsPaneVisible(t *testing.T) {
 	m.width = 120
 	m.height = 24
 	m.toolsVisible = true
-	m.toolsBuf = "● read_file {\"path\":\"main.go\"}\nstatus: ok\n"
+	setToolsContent(&m, "● read_file {\"path\":\"main.go\"}\nstatus: ok\n")
 
 	v := m.View()
 	if !strings.Contains(v, "read_file") {
@@ -863,6 +870,136 @@ func TestChatModelSlashModelsOpensOverlay(t *testing.T) {
 	}
 	if got := m.View(); !strings.Contains(got, "Models") || !strings.Contains(got, "anthropic/claude-sonnet-4-6") {
 		t.Fatalf("models overlay missing content: %s", got)
+	}
+}
+
+func TestChatModelSlashAgentsTogglesState(t *testing.T) {
+	var toggles []bool
+	m := NewChatModel(ChatLiveConfig{
+		Model:         "openai/gpt-5",
+		WorkDir:       "/tmp",
+		AgentsEnabled: true,
+		ToggleAgents: func(enabled bool) error {
+			toggles = append(toggles, enabled)
+			return nil
+		},
+	})
+	m.width = 100
+	m.height = 24
+
+	m.inputBuf = "/agents"
+	m.inputPos = len(m.inputBuf)
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+	if m.agentsEnabled {
+		t.Fatal("expected /agents to disable agents")
+	}
+	if got := m.flash; got != "agents: disabled" {
+		t.Fatalf("flash = %q", got)
+	}
+
+	m.inputBuf = "/agents"
+	m.inputPos = len(m.inputBuf)
+	updated, _ = m.submitInput()
+	m = updated.(ChatModel)
+	if !m.agentsEnabled {
+		t.Fatal("expected /agents to enable agents")
+	}
+	if got := m.flash; got != "agents: enabled" {
+		t.Fatalf("flash = %q", got)
+	}
+	if want := []bool{false, true}; fmt.Sprint(toggles) != fmt.Sprint(want) {
+		t.Fatalf("toggles = %#v, want %#v", toggles, want)
+	}
+}
+
+func TestChatModelSlashAgentsModelsOpensOverlay(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{
+		Model:           "openai/gpt-5",
+		WorkDir:         "/tmp",
+		AvailableModels: []string{"openai/gpt-5", "anthropic/claude-sonnet-4-6"},
+		GetAgentModels:  func() map[string]string { return map[string]string{"scout": "anthropic/claude-sonnet-4-6"} },
+		SaveAgentModels: func(map[string]string) error { return nil },
+		ToggleAgents:    func(bool) error { return nil },
+		AgentsEnabled:   true,
+	})
+	m.width = 100
+	m.height = 24
+
+	m.inputBuf = "/agents models"
+	m.inputPos = len(m.inputBuf)
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+
+	if !m.agentModelsVisible {
+		t.Fatal("expected agent models overlay to be visible")
+	}
+	if got := m.View(); !strings.Contains(got, "Agent Models") || !strings.Contains(got, "scout") || !strings.Contains(got, "(default)") {
+		t.Fatalf("agent models overlay missing content: %s", got)
+	}
+}
+
+func TestChatModelAgentModelsOverlaySelectsRoleModel(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{
+		Model:           "openai/gpt-5",
+		WorkDir:         "/tmp",
+		AvailableModels: []string{"openai/gpt-5", "anthropic/claude-sonnet-4-6", "groq/llama"},
+		GetAgentModels:  func() map[string]string { return map[string]string{} },
+	})
+	m.width = 100
+	m.height = 24
+	m.agentModelsVisible = true
+	m.agentModelsCursor = 1
+
+	updated, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+	if !m.modelsVisible {
+		t.Fatal("expected Enter to open model picker from agent models overlay")
+	}
+	if got := m.agentModelsPickingRole; got != "scout" {
+		t.Fatalf("agentModelsPickingRole = %q", got)
+	}
+
+	updated, _ = m.handleModelsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("groq")})
+	m = updated.(ChatModel)
+	updated, _ = m.handleModelsKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+
+	if got := m.agentModelsMap["scout"]; got != "groq/llama" {
+		t.Fatalf("agentModelsMap[scout] = %q", got)
+	}
+	if !m.agentModelsVisible {
+		t.Fatal("expected agent models overlay to remain visible after picking a role model")
+	}
+	if m.modelsVisible {
+		t.Fatal("expected main models picker to close after role selection")
+	}
+}
+
+func TestChatModelAgentModelsOverlaySavesAssignments(t *testing.T) {
+	var saved map[string]string
+	m := NewChatModel(ChatLiveConfig{
+		Model:          "openai/gpt-5",
+		WorkDir:        "/tmp",
+		GetAgentModels: func() map[string]string { return map[string]string{"scout": "groq/llama"} },
+		SaveAgentModels: func(models map[string]string) error {
+			saved = models
+			return nil
+		},
+	})
+	m.width = 100
+	m.height = 24
+	m.agentModelsVisible = true
+	m.agentModelsMap = map[string]string{"scout": "groq/llama", "builder": "anthropic/claude-sonnet-4-6"}
+
+	updated, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	m = updated.(ChatModel)
+
+	if saved["scout"] != "groq/llama" || saved["builder"] != "anthropic/claude-sonnet-4-6" {
+		t.Fatalf("saved = %#v", saved)
+	}
+	if got := m.flash; got != "agent models saved to config" {
+		t.Fatalf("flash = %q", got)
 	}
 }
 
@@ -1785,14 +1922,14 @@ func TestChatModelSlashClearVariants(t *testing.T) {
 	m.width = 100
 	m.height = 24
 	m.AddMessage(ChatMessage{Kind: MsgUser, Header: "You", Content: "hello"})
-	m.toolsBuf = "tool output"
+	setToolsContent(&m, "tool output")
 
 	m.inputBuf = "/clear tools"
 	m.inputPos = len(m.inputBuf)
 	updated, _ := m.submitInput()
 	m = updated.(ChatModel)
-	if m.toolsBuf != "" {
-		t.Fatalf("toolsBuf = %q, want empty", m.toolsBuf)
+	if m.renderedToolsBuf() != "" {
+		t.Fatalf("tools = %q, want empty", m.renderedToolsBuf())
 	}
 	if len(m.messages) == 0 {
 		t.Fatal("conversation should remain after /clear tools")
@@ -1920,7 +2057,7 @@ func TestChatModelCopyCommands(t *testing.T) {
 	}
 	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Agent", Content: "hello"})
 	m.AppendToLastAgent("\n```go\nfmt.Println(\"hi\")\n```\n")
-	m.toolsBuf = "tool output"
+	setToolsContent(&m, "tool output")
 	m.lastToolResult = "result output"
 
 	for _, input := range []string{"/copy agent", "/copy tools", "/copy code", "/copy result"} {
@@ -2006,6 +2143,28 @@ func TestChatModelTabTogglesToolsWhenNotCompletingSlashCommand(t *testing.T) {
 	}
 }
 
+func TestChatModelTabTogglesCollapsedToolsSectionWhenToolsFocused(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 120
+	m.height = 24
+	m.toolsVisible = true
+	m.paneFocus = focusTools
+	m.toolsSections = []toolsSection{
+		{buf: "main tool output\n"},
+		{role: "scout", buf: "full scout output\n", summary: "scout summary\n", collapsed: true},
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(ChatModel)
+
+	if m.toolsSections[1].collapsed {
+		t.Fatal("expected tab to expand the last collapsible tools section")
+	}
+	if got := m.renderedToolsBuf(); !strings.Contains(got, "full scout output") {
+		t.Fatalf("expected expanded tools output, got %q", got)
+	}
+}
+
 func TestChatModelViewShowsChatScrollbarWhenOverflowing(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 100
@@ -2027,7 +2186,7 @@ func TestChatModelViewShowsToolsScrollbarWhenOverflowing(t *testing.T) {
 	m.width = 120
 	m.height = 16
 	m.toolsVisible = true
-	m.toolsBuf = strings.Repeat("tool output line\n", 40)
+	setToolsContent(&m, strings.Repeat("tool output line\n", 40))
 	v := m.View()
 	if !strings.Contains(v, "█") {
 		t.Fatal("expected visible scrollbar thumb in tools pane")
@@ -2039,7 +2198,7 @@ func TestChatModelAgentPaneStillRendersWhenToolsVisible(t *testing.T) {
 	m.width = 120
 	m.height = 24
 	m.toolsVisible = true
-	m.toolsBuf = "tool output"
+	setToolsContent(&m, "tool output")
 	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Forge", Content: "agent text should remain visible"})
 
 	v := m.View()
@@ -2053,7 +2212,7 @@ func TestChatModelAgentPaneStillRendersAfterToolsToggleOn(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
 	m = updated.(ChatModel)
 	m.toolsVisible = false
-	m.toolsBuf = "tool output"
+	setToolsContent(&m, "tool output")
 	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Forge", Content: "agent text should remain visible after toggle"})
 
 	m.inputBuf = "/tools"
@@ -2200,7 +2359,7 @@ func TestChatModelMouseClickFocusesToolsPane(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
 	m = updated.(ChatModel)
 	m.toolsVisible = true
-	m.toolsBuf = strings.Repeat("tool output line\n", 20)
+	setToolsContent(&m, strings.Repeat("tool output line\n", 20))
 
 	x := m.chatPaneWidth() + 1
 	y := 2
@@ -2217,7 +2376,7 @@ func TestChatModelMouseWheelScrollsToolsPane(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 16})
 	m = updated.(ChatModel)
 	m.toolsVisible = true
-	m.toolsBuf = strings.Repeat("tool output line\n", 80)
+	setToolsContent(&m, strings.Repeat("tool output line\n", 80))
 
 	x := m.chatPaneWidth() + 1
 	y := 2
@@ -2236,7 +2395,7 @@ func TestChatModelMouseClickScrollbarScrollsToolsPane(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 16})
 	m = updated.(ChatModel)
 	m.toolsVisible = true
-	m.toolsBuf = strings.Repeat("tool output line\n", 80)
+	setToolsContent(&m, strings.Repeat("tool output line\n", 80))
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 16})
 	m = updated.(ChatModel)
 
@@ -2258,7 +2417,7 @@ func TestChatModelSaveAndRestoreSessionCommands(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 100
 	m.height = 24
-	m.toolsBuf = "tool output"
+	setToolsContent(&m, "tool output")
 	m.AddMessage(ChatMessage{Kind: MsgUser, Header: "You", Content: "hello"})
 
 	m.inputBuf = "/save named-session"
@@ -2277,7 +2436,7 @@ func TestChatModelSaveAndRestoreSessionCommands(t *testing.T) {
 	m.messages = nil
 	m.chatContent = ""
 	m.chatViewport.SetContent("")
-	m.toolsBuf = ""
+	setToolsContent(&m, "")
 	m.inputBuf = "/restore named-session"
 	m.inputPos = len(m.inputBuf)
 	updated, _ = m.submitInput()
@@ -2286,7 +2445,7 @@ func TestChatModelSaveAndRestoreSessionCommands(t *testing.T) {
 	if !strings.Contains(m.chatContent, "hello") {
 		t.Fatal("expected restored chat content to include saved conversation")
 	}
-	if m.toolsBuf != "tool output" {
-		t.Fatalf("expected restored toolsBuf, got %q", m.toolsBuf)
+	if m.renderedToolsBuf() != "tool output" {
+		t.Fatalf("expected restored tools, got %q", m.renderedToolsBuf())
 	}
 }

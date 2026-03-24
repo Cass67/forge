@@ -146,6 +146,83 @@ func Save(path string, cfg *Config) error {
 	return f.Close()
 }
 
+// SaveAgentModels updates only the [chat.agents.models] section in the config file.
+func SaveAgentModels(path string, models AgentModels) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	lines := []string{}
+	if len(data) > 0 {
+		lines = strings.Split(string(data), "\n")
+	}
+
+	filtered := make([]string, 0, len(lines))
+	inSection := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			if trimmed == "[chat.agents.models]" {
+				inSection = true
+				continue
+			}
+			inSection = false
+		}
+		if inSection {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+
+	for len(filtered) > 0 && strings.TrimSpace(filtered[len(filtered)-1]) == "" {
+		filtered = filtered[:len(filtered)-1]
+	}
+
+	section := renderAgentModelsSection(models)
+	if section != "" {
+		if len(filtered) > 0 {
+			filtered = append(filtered, "")
+		}
+		filtered = append(filtered, strings.Split(section, "\n")...)
+	}
+
+	content := strings.Join(filtered, "\n")
+	if content != "" && !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	return os.WriteFile(path, []byte(content), 0o600)
+}
+
+func renderAgentModelsSection(models AgentModels) string {
+	type pair struct {
+		key string
+		val string
+	}
+	pairs := []pair{
+		{key: "dispatch", val: models.Dispatch},
+		{key: "scout", val: models.Scout},
+		{key: "builder", val: models.Builder},
+		{key: "doctor", val: models.Doctor},
+		{key: "architect", val: models.Architect},
+	}
+	lines := []string{"[chat.agents.models]"}
+	for _, pair := range pairs {
+		if strings.TrimSpace(pair.val) == "" {
+			continue
+		}
+		lines = append(lines, pair.key+` = "`+pair.val+`"`)
+	}
+	if len(lines) == 1 {
+		return ""
+	}
+	return strings.Join(lines, "\n")
+}
+
 func DefaultPath() string {
 	return fsutil.ForgeConfigPath("config.toml")
 }
