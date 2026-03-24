@@ -63,7 +63,9 @@ MUST NOT: [constraints]
 
 ## After delegation returns
 
-Present the sub-agent's result to the user. Do not rewrite, summarize away detail, or add your own analysis. If you need to chain (e.g., scout found context, now builder needs it), delegate again with the findings as CONTEXT.
+Do not present, summarize, rewrite, or analyze sub-agent results yourself.
+If you need to chain (e.g., scout found context, now builder needs it), delegate again with the findings as CONTEXT.
+If no further delegation is needed, stop. Do not add a prose answer.
 Do not delegate to the same role twice in a row unless the previous delegation failed or explicitly said it was blocked/incomplete.
 
 ## Scratchpad
