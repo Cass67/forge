@@ -29,12 +29,13 @@ func TestDispatchPromptDoesNotTellDispatchToPresentResults(t *testing.T) {
 func TestScoutPromptKeepsRecommendationsOutOfScoutResponses(t *testing.T) {
 	for _, want := range []string{
 		"Do not recommend code changes, plans, or prioritization.",
-		"FOLLOW-UP: [what information is still needed or which role should handle synthesis]",
 		"For repo-review tasks, gather a bounded evidence set and then stop.",
 		"Never inspect runtime-generated conversation artifacts such as debug logs, scratchpad files, session histories, or session logs unless the task explicitly asks for them.",
 		"Your first working turn for an evidence-gathering task must contain tool calls, not a search plan.",
 		"Do not return a blocked or \"I couldn't verify\" answer before using the relevant search/read tools available to you.",
 		"If a delegated search is yours, own it to completion.",
+		`{"status":"complete|blocked","message":"concise user-visible summary","artifact_kind":"evidence","artifact":"detailed evidence with file paths and line numbers","next_role":"","next_task":""}`,
+		`Set next_role and next_task only when another role must act immediately in the same user turn.`,
 	} {
 		if !strings.Contains(scoutPrompt, want) {
 			t.Fatalf("scout prompt missing %q", want)
@@ -52,6 +53,7 @@ func TestBuilderPromptRequiresActionFirstAndVerificationDiscipline(t *testing.T)
 		"End-to-end verification is part of the task, not optional cleanup.",
 		"Do not claim a fix without evidence from commands or test output.",
 		"Do not restart a repo-wide search if scout or architect already handed you the relevant files or findings.",
+		`{"status":"complete|blocked","message":"concise user-visible summary","artifact_kind":"implementation","artifact":"files changed, verification run, and any details the next role needs","next_role":"","next_task":""}`,
 	} {
 		if !strings.Contains(builderPrompt, want) {
 			t.Fatalf("builder prompt missing %q", want)
@@ -66,6 +68,8 @@ func TestDoctorPromptRequiresEvidenceBeforeDiagnosis(t *testing.T) {
 		"Do not hand back a debugging plan when you still have read-only tools available to investigate.",
 		"Recommend a fix only after you can state a root cause tied to concrete evidence.",
 		"If you cannot reach root cause, return a blocked diagnostic result that says exactly what evidence is missing.",
+		`{"status":"complete|blocked","message":"concise user-visible diagnosis","artifact_kind":"diagnosis","artifact":"ROOT CAUSE, EVIDENCE, FIX, and RISK in a compact markdown block","next_role":"","next_task":""}`,
+		`Set next_role:"builder" and a concrete next_task only when a builder should act immediately in the same user turn.`,
 	} {
 		if !strings.Contains(doctorPrompt, want) {
 			t.Fatalf("doctor prompt missing %q", want)
@@ -81,6 +85,8 @@ func TestArchitectPromptRequiresBlockedResultWhenEvidenceIsIncomplete(t *testing
 		"Produce the minimum viable plan that gets the job done.",
 		"If the evidence is incomplete, stale, placeholder-only, or derived from an agent error, do not synthesize recommendations.",
 		"Return a short blocked result that states exactly what evidence is missing.",
+		`{"status":"complete|blocked","message":"concise user-visible summary","artifact_kind":"plan","artifact":"GOAL, ASSUMPTIONS, STEPS, PARALLEL, and RISKS as markdown","next_role":"","next_task":""}`,
+		`Set next_role and next_task only when the current task explicitly requires immediate builder follow-through.`,
 	} {
 		if !strings.Contains(architectPrompt, want) {
 			t.Fatalf("architect prompt missing %q", want)

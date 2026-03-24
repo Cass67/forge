@@ -1296,9 +1296,9 @@ func TestDispatchRoutesInterpretiveFollowUpToArchitectAfterScoutEvidence(t *test
 			role, _ := args["role"].(string)
 			delegated = append(delegated, role)
 			if role == "scout" {
-				return "FINDINGS:\n- alert comes from /repo/util-rancid/update_cerner_daily.sh:753\nKEY FILES: /repo/util-rancid/update_cerner_daily.sh\nFOLLOW-UP: architect\nUNKNOWNS: none", nil
+				return `{"status":"complete","message":"Found the source of the alert.","artifact_kind":"evidence","artifact":"alert comes from /repo/util-rancid/update_cerner_daily.sh:753","next_role":"","next_task":""}`, nil
 			}
-			return "1. No code fix is indicated.\n2. Restore the missing runtime dependency.", nil
+			return `{"status":"complete","message":"No code fix is indicated. Restore the missing runtime dependency.","artifact_kind":"analysis","artifact":"1. No code fix is indicated.\n2. Restore the missing runtime dependency.","next_role":"","next_task":""}`, nil
 		},
 	})
 
@@ -1321,6 +1321,99 @@ func TestDispatchRoutesInterpretiveFollowUpToArchitectAfterScoutEvidence(t *test
 	}
 }
 
+func TestDispatchAutoChainsTypedDelegateNextRoleWithoutSecondDispatchTurn(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"trace the alert source\"}}\n</tool_call>",
+		"This second dispatch turn should not happen.",
+	}}
+	reg := tools.NewRegistry()
+	var delegated []string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			delegated = append(delegated, role)
+			switch role {
+			case "scout":
+				return `{"status":"complete","message":"Found the source of the alert.","artifact_kind":"evidence","artifact":"alert comes from /repo/util-rancid/update_cerner_daily.sh:753","next_role":"architect","next_task":"Explain what the scout evidence means in plain language using the evidence only."}`, nil
+			case "architect":
+				return `{"status":"complete","message":"This is a warning about missing verification coverage, not proof of a code change.","artifact_kind":"analysis","artifact":"No code fix is indicated by the evidence."}`, nil
+			default:
+				return "unexpected", nil
+			}
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "where did this alert come from and what does it mean"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(delegated, ","); got != "scout,architect" {
+		t.Fatalf("delegated roles = %q, want scout,architect", got)
+	}
+	if driver.callIdx != 1 {
+		t.Fatalf("driver call count = %d, want 1", driver.callIdx)
+	}
+	if strings.Contains(output.String(), `{"status":"complete"`) {
+		t.Fatalf("typed delegate envelope leaked to renderer output: %q", output.String())
+	}
+	if !strings.Contains(output.String(), "missing verification coverage") {
+		t.Fatalf("expected final architect message in renderer output, got %q", output.String())
+	}
+}
+
+func TestDispatchInjectsTypedScoutArtifactIntoLaterArchitectTask(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"trace the alert source\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"explain what it means\"}}\n</tool_call>",
+	}}
+	reg := tools.NewRegistry()
+	var architectTask string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			task, _ := args["task"].(string)
+			switch role {
+			case "scout":
+				return `{"status":"complete","message":"Found the source of the alert.","artifact_kind":"evidence","artifact":"alert comes from /repo/util-rancid/update_cerner_daily.sh:753","next_role":"","next_task":""}`, nil
+			case "architect":
+				architectTask = task
+				return `{"status":"complete","message":"It is a warning, not a code change.","artifact_kind":"analysis","artifact":"No code fix is indicated."}`, nil
+			default:
+				return "unexpected", nil
+			}
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "where did this alert come from"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Run(context.Background(), "what should we do about that?"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(architectTask, "alert comes from /repo/util-rancid/update_cerner_daily.sh:753") {
+		t.Fatalf("architect task missing scout artifact: %q", architectTask)
+	}
+	if strings.Contains(architectTask, `{"status":"complete"`) {
+		t.Fatalf("architect task should receive typed artifact, not raw json envelope: %q", architectTask)
+	}
+	if strings.Contains(output.String(), `{"status":"complete"`) {
+		t.Fatalf("typed delegate envelope leaked to renderer output: %q", output.String())
+	}
+}
+
 func TestDispatchRoutesPlainLanguageMeaningFollowUpToArchitect(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"trace the alert source\"}}\n</tool_call>",
@@ -1336,9 +1429,9 @@ func TestDispatchRoutesPlainLanguageMeaningFollowUpToArchitect(t *testing.T) {
 			role, _ := args["role"].(string)
 			delegated = append(delegated, role)
 			if role == "scout" {
-				return "FINDINGS:\n- alert comes from /repo/util-rancid/update_cerner_daily.sh:753\nKEY FILES: /repo/util-rancid/update_cerner_daily.sh\nFOLLOW-UP: architect\nUNKNOWNS: none", nil
+				return `{"status":"complete","message":"Found the source of the alert.","artifact_kind":"evidence","artifact":"alert comes from /repo/util-rancid/update_cerner_daily.sh:753","next_role":"","next_task":""}`, nil
 			}
-			return "The alert means the runtime verification helper was missing, not that production is down.", nil
+			return `{"status":"complete","message":"The alert means the runtime verification helper was missing, not that production is down.","artifact_kind":"analysis","artifact":"The alert means the runtime verification helper was missing, not that production is down.","next_role":"","next_task":""}`, nil
 		},
 	})
 
@@ -1381,9 +1474,9 @@ func TestDispatchAllowsRepeatedArchitectFollowUpsAcrossTurns(t *testing.T) {
 			delegated = append(delegated, role)
 			switch role {
 			case "scout":
-				return "FINDINGS:\n- alert comes from /repo/util-rancid/update_cerner_daily.sh:753\nKEY FILES: /repo/util-rancid/update_cerner_daily.sh\nFOLLOW-UP: architect\nUNKNOWNS: none", nil
+				return `{"status":"complete","message":"Found the source of the alert.","artifact_kind":"evidence","artifact":"alert comes from /repo/util-rancid/update_cerner_daily.sh:753","next_role":"","next_task":""}`, nil
 			case "architect":
-				return "No code fix is indicated; confirm the runtime script exists and is executable.", nil
+				return `{"status":"complete","message":"No code fix is indicated; confirm the runtime script exists and is executable.","artifact_kind":"analysis","artifact":"No code fix is indicated; confirm the runtime script exists and is executable.","next_role":"","next_task":""}`, nil
 			default:
 				return "unexpected", nil
 			}
@@ -1700,7 +1793,7 @@ func TestDispatchAllowsArchitectRetryAfterBlockedResultWhenScratchpadContextArri
 	}
 }
 
-func TestDispatchAllowsBuilderRetryAfterBlockedResultWithSmartQuotes(t *testing.T) {
+func TestDispatchAllowsBuilderRetryAfterTypedBlockedResult(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"builder\", \"task\": \"TASK: Write the recovered remediation plan to improvments_cleanup.md. OUTCOME: file exists.\"}}\n</tool_call>",
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"builder\", \"task\": \"TASK: Write the recovered remediation plan to improvments_cleanup.md. OUTCOME: file exists.\"}}\n</tool_call>",
@@ -1714,9 +1807,9 @@ func TestDispatchAllowsBuilderRetryAfterBlockedResultWithSmartQuotes(t *testing.
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			builderCalls++
 			if builderCalls == 1 {
-				return "I don’t have access to the earlier tool output in this current context, so I can’t reliably reconstruct the exact markdown content without inventing or altering it.", nil
+				return `{"status":"blocked","message":"Need the earlier plan content before writing the file.","artifact_kind":"implementation","artifact":"Missing the previously generated remediation plan text needed to write improvments_cleanup.md.","next_role":"","next_task":""}`, nil
 			}
-			return "file written", nil
+			return `{"status":"complete","message":"file written","artifact_kind":"implementation","artifact":"improvments_cleanup.md written successfully.","next_role":"","next_task":""}`, nil
 		},
 	})
 
@@ -1729,7 +1822,7 @@ func TestDispatchAllowsBuilderRetryAfterBlockedResultWithSmartQuotes(t *testing.
 		t.Fatal(err)
 	}
 	if builderCalls != 2 {
-		t.Fatalf("expected builder to be retried after blocked smart-quote result, got %d calls", builderCalls)
+		t.Fatalf("expected builder to be retried after typed blocked result, got %d calls", builderCalls)
 	}
 }
 
