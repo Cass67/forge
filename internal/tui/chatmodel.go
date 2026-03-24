@@ -123,21 +123,24 @@ type ChatModel struct {
 	lastToolResult  string
 	lastCodeBlock   string
 
-	busy           bool
-	viewportDirty  bool
-	spinnerFrame   int
-	status         string
-	activeSubAgent string
-	lastEscapeTime time.Time
-	flash          string
-	statsDuration  time.Duration
-	statsUsage     llm.Usage
-	sessionUsage   llm.Usage
-	statusData     chatStatusData
-	skills         []skills.Skill
-	autoSkillsMode string
-	state          *chatstate.State
-	themeID        string
+	busy                bool
+	viewportDirty       bool
+	spinnerFrame        int
+	status              string
+	activeSubAgent      string
+	lastEscapeTime      time.Time
+	flash               string
+	statsDuration       time.Duration
+	statsUsage          llm.Usage
+	sessionUsage        llm.Usage
+	statusData          chatStatusData
+	recentActivityRole  string
+	recentActivityLines []string
+	recentActivityIndex int
+	skills              []skills.Skill
+	autoSkillsMode      string
+	state               *chatstate.State
+	themeID             string
 
 	helpVisible bool
 	helpTab     int
@@ -214,25 +217,26 @@ func NewChatModel(cfg ChatLiveConfig) ChatModel {
 	}
 
 	m := ChatModel{
-		config:           cfg,
-		model:            cfg.Model,
-		workDir:          cfg.WorkDir,
-		copyFn:           copyToClipboard,
-		themeID:          "default",
-		chatViewport:     vp,
-		status:           "ready",
-		skills:           cfg.Skills,
-		autoSkillsMode:   cfg.AutoSkillsMode,
-		state:            state,
-		toolsVisible:     true,
-		paneFocus:        focusChat,
-		agentsEnabled:    cfg.AgentsEnabled,
-		modelsList:       uniqueStringsPreserveOrder(cfg.AvailableModels),
-		modelsFiltered:   uniqueStringsPreserveOrder(cfg.AvailableModels),
-		providersList:    append([]ProviderOption(nil), cfg.Providers...),
-		contextFiles:     append([]string(nil), cfg.ContextFiles...),
-		agentModelsRoles: []string{"dispatch", "scout", "builder", "doctor", "architect"},
-		agentModelsMap:   copyStringMap(cfg.GetAgentModels),
+		config:              cfg,
+		model:               cfg.Model,
+		workDir:             cfg.WorkDir,
+		copyFn:              copyToClipboard,
+		themeID:             "default",
+		chatViewport:        vp,
+		status:              "ready",
+		skills:              cfg.Skills,
+		autoSkillsMode:      cfg.AutoSkillsMode,
+		state:               state,
+		toolsVisible:        true,
+		paneFocus:           focusChat,
+		agentsEnabled:       cfg.AgentsEnabled,
+		recentActivityIndex: -1,
+		modelsList:          uniqueStringsPreserveOrder(cfg.AvailableModels),
+		modelsFiltered:      uniqueStringsPreserveOrder(cfg.AvailableModels),
+		providersList:       append([]ProviderOption(nil), cfg.Providers...),
+		contextFiles:        append([]string(nil), cfg.ContextFiles...),
+		agentModelsRoles:    []string{"dispatch", "scout", "builder", "doctor", "architect"},
+		agentModelsMap:      copyStringMap(cfg.GetAgentModels),
 	}
 	m.syncStatusData()
 	return m
@@ -285,6 +289,67 @@ func (m *ChatModel) AddWorkingMessage(content string) {
 		Content: content,
 	})
 	m.refreshViewport()
+}
+
+const recentActivityLimit = 3
+
+func (m *ChatModel) UpdateRecentActivity(role, content string) {
+	role = strings.TrimSpace(role)
+	content = formatRecentActivityLine(role, content)
+	if role == "" || content == "" {
+		return
+	}
+
+	if role != m.recentActivityRole || !m.hasLiveRecentActivityBlock() {
+		m.recentActivityRole = role
+		m.recentActivityLines = []string{content}
+		m.messages = append(m.messages, ChatMessage{
+			Kind:    MsgWorking,
+			Header:  "Recent activity • " + role,
+			Content: renderRecentActivityLines(m.recentActivityLines),
+		})
+		m.recentActivityIndex = len(m.messages) - 1
+		m.refreshViewport()
+		return
+	}
+
+	if len(m.recentActivityLines) > 0 && m.recentActivityLines[len(m.recentActivityLines)-1] == content {
+		return
+	}
+	m.recentActivityLines = append(m.recentActivityLines, content)
+	if len(m.recentActivityLines) > recentActivityLimit {
+		m.recentActivityLines = m.recentActivityLines[len(m.recentActivityLines)-recentActivityLimit:]
+	}
+	m.messages[m.recentActivityIndex].Content = renderRecentActivityLines(m.recentActivityLines)
+	m.refreshViewport()
+}
+
+func (m *ChatModel) hasLiveRecentActivityBlock() bool {
+	if m.recentActivityIndex < 0 || m.recentActivityIndex >= len(m.messages) {
+		return false
+	}
+	msg := m.messages[m.recentActivityIndex]
+	return msg.Kind == MsgWorking && msg.Header == "Recent activity • "+m.recentActivityRole
+}
+
+func (m *ChatModel) resetRecentActivity() {
+	m.recentActivityRole = ""
+	m.recentActivityLines = nil
+	m.recentActivityIndex = -1
+}
+
+func formatRecentActivityLine(role, content string) string {
+	content = strings.TrimSpace(content)
+	prefix := role + ": "
+	content = strings.TrimPrefix(content, prefix)
+	if content == "" {
+		return ""
+	}
+	return "• " + content
+}
+
+func renderRecentActivityLines(lines []string) string {
+	return strings.Join(lines, "\n")
 }
 
 func (m *ChatModel) AppendToLastAgent(text string) {
@@ -877,6 +942,7 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 	case llm.EventDone:
 		m.busy = false
 		m.activeSubAgent = ""
+		m.resetRecentActivity()
 		m.status = "ready"
 		m.syncStatusData()
 		stamp := time.Now().Format("15:04:05")
@@ -889,6 +955,7 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		}
 	case llm.EventError:
 		m.busy = false
+		m.resetRecentActivity()
 		m.status = "error"
 		m.syncStatusData()
 		errMsg := eventErrorMessage(ev)
@@ -913,7 +980,7 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		}
 		return m, m.beginProviderDiagnosticsFetch(false)
 	case llm.EventProgress:
-		m.AddWorkingMessage(ev.Text)
+		m.UpdateRecentActivity(ev.Agent, ev.Text)
 	}
 	// Auto-scroll tools pane when content is added.
 	if ev.Kind == llm.EventToolCall || ev.Kind == llm.EventToolResult || ev.Kind == llm.EventStats {
@@ -1492,11 +1559,13 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 	switch {
 	case input == "/clear" || input == "/clear all":
 		m.messages = nil
+		m.resetRecentActivity()
 		m.clearToolsSections()
 		m.refreshViewport()
 		m.flash = "conversation cleared"
 	case input == "/clear agent":
 		m.messages = nil
+		m.resetRecentActivity()
 		m.refreshViewport()
 		m.flash = "conversation cleared"
 	case input == "/clear tools":
@@ -3401,6 +3470,7 @@ func (m ChatModel) snapshot() chatSessionSnapshot {
 }
 
 func (m *ChatModel) applySnapshot(s chatSessionSnapshot) {
+	m.resetRecentActivity()
 	m.model = s.Model
 	m.workDir = s.WorkDir
 	m.chatContent = s.AgentBuf

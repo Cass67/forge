@@ -158,6 +158,67 @@ func TestChatModelShowsInlineWorkingMessageForRuntimeInfo(t *testing.T) {
 	}
 }
 
+func TestChatModelProgressUpdatesActiveSubAgentInPlace(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	for _, text := range []string{
+		"scout: reading README.md",
+		"scout: finding \"**/*.go\"",
+		"scout: reading main.go",
+		"scout: reading app.go",
+	} {
+		updated, _ := m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: text})
+		m = updated.(ChatModel)
+	}
+
+	if len(m.messages) != 1 {
+		t.Fatalf("expected one recent-activity block, got %#v", m.messages)
+	}
+	msg := m.messages[0]
+	if msg.Kind != MsgWorking {
+		t.Fatalf("expected working message, got %#v", msg)
+	}
+	if msg.Header != "Recent activity • scout" {
+		t.Fatalf("header = %q", msg.Header)
+	}
+	if strings.Contains(msg.Content, "README.md") {
+		t.Fatalf("expected oldest activity to be trimmed, got %q", msg.Content)
+	}
+	for _, want := range []string{"finding \"**/*.go\"", "reading main.go", "reading app.go"} {
+		if !strings.Contains(msg.Content, want) {
+			t.Fatalf("content = %q, want %q", msg.Content, want)
+		}
+	}
+}
+
+func TestChatModelProgressHandoffFreezesPreviousActivityBlock(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "scout: reading README.md"})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "runtime", Text: "delegating to builder"})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{Kind: llm.EventProgress, Agent: "builder", Text: "builder: editing main.go"})
+	m = updated.(ChatModel)
+
+	if len(m.messages) != 3 {
+		t.Fatalf("messages = %#v", m.messages)
+	}
+	if got := m.messages[0]; got.Header != "Recent activity • scout" || !strings.Contains(got.Content, "reading README.md") {
+		t.Fatalf("unexpected scout activity block: %#v", got)
+	}
+	if got := m.messages[1]; got.Kind != MsgStatus || got.Content != "delegating to builder" {
+		t.Fatalf("unexpected handoff status: %#v", got)
+	}
+	if got := m.messages[2]; got.Header != "Recent activity • builder" || !strings.Contains(got.Content, "editing main.go") {
+		t.Fatalf("unexpected builder activity block: %#v", got)
+	}
+}
+
 func TestChatModelSlashClear(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 80
