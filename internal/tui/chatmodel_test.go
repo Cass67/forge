@@ -1611,6 +1611,106 @@ func TestChatModelProviderOverlayDeletesAPIKey(t *testing.T) {
 	}
 }
 
+func TestChatModelCustomProviderSavesAPIKey(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+
+	switched := ""
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "test",
+		WorkDir: "/tmp",
+		Providers: []ProviderOption{
+			{ID: "oca", Label: "My New Provider", Status: "configure API key", DefaultModel: "oca/gpt-5.4"},
+		},
+		RefreshProviders: func() []ProviderOption {
+			return []ProviderOption{{ID: "oca", Label: "My New Provider", Status: "ready", DefaultModel: "oca/gpt-5.4"}}
+		},
+		RefreshModels: func() []string {
+			return []string{"oca/gpt-5.4", "oca/gpt-5.4-mini"}
+		},
+		SwitchModel: func(name string) (string, error) {
+			switched = name
+			return name, nil
+		},
+	})
+	m.width = 100
+	m.height = 24
+	m.openProviderPicker()
+
+	updated, _ := m.handleProvidersKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+	if !m.providerPromptingKey {
+		t.Fatal("expected API key prompt for custom provider")
+	}
+
+	m.providerKeyInput = "sk-oca"
+	m.providerKeyPos = len(m.providerKeyInput)
+	updated, _ = m.handleProvidersKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+
+	tokens, err := auth.Load()
+	if err != nil {
+		t.Fatalf("auth.Load: %v", err)
+	}
+	if got := tokens.CustomProviderKey("oca"); got != "sk-oca" {
+		t.Fatalf("custom provider key = %q, want %q", got, "sk-oca")
+	}
+	if switched != "oca/gpt-5.4" {
+		t.Fatalf("switched = %q, want %q", switched, "oca/gpt-5.4")
+	}
+	if len(m.providersList) != 1 || m.providersList[0].Status != "ready" {
+		t.Fatalf("providersList = %#v", m.providersList)
+	}
+	if len(m.modelsList) != 2 || m.modelsList[0] != "oca/gpt-5.4" {
+		t.Fatalf("modelsList = %#v", m.modelsList)
+	}
+}
+
+func TestChatModelCustomProviderDeletesAPIKey(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	if err := auth.Save(&auth.Tokens{
+		ProviderAPIKeys: map[string]string{"oca": "sk-oca"},
+	}); err != nil {
+		t.Fatalf("auth.Save: %v", err)
+	}
+
+	m := NewChatModel(ChatLiveConfig{
+		Model:           "oca/gpt-5.4",
+		WorkDir:         "/tmp",
+		AvailableModels: []string{"oca/gpt-5.4"},
+		Providers: []ProviderOption{
+			{ID: "oca", Label: "My New Provider", Status: "ready", DefaultModel: "oca/gpt-5.4"},
+		},
+		RefreshProviders: func() []ProviderOption {
+			return []ProviderOption{{ID: "oca", Label: "My New Provider", Status: "configure API key", DefaultModel: "oca/gpt-5.4"}}
+		},
+		RefreshModels: func() []string {
+			return []string{"openai/gpt-5"}
+		},
+	})
+	m.width = 100
+	m.height = 24
+	m.openProviderPicker()
+
+	updated, _ := m.handleProvidersKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = updated.(ChatModel)
+
+	tokens, err := auth.Load()
+	if err != nil {
+		t.Fatalf("auth.Load: %v", err)
+	}
+	if got := tokens.CustomProviderKey("oca"); got != "" {
+		t.Fatalf("custom provider key = %q, want empty", got)
+	}
+	if len(m.providersList) != 1 || m.providersList[0].Status != "configure API key" {
+		t.Fatalf("providersList = %#v", m.providersList)
+	}
+	if len(m.modelsList) != 1 || m.modelsList[0] != "openai/gpt-5" {
+		t.Fatalf("modelsList = %#v", m.modelsList)
+	}
+}
+
 func TestChatModelProviderOverlayChatGPTLoginFlow(t *testing.T) {
 	configDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configDir)
