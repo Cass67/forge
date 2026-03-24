@@ -188,8 +188,10 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 						}
 					}
 					if !inToolCall {
-						if a.role == "dispatch" && !seenToolCall {
-							dispatchBuf = append(dispatchBuf, line)
+						if a.role == "dispatch" {
+							if !seenToolCall {
+								dispatchBuf = append(dispatchBuf, line)
+							}
 						} else {
 							a.renderer.AgentToken(line)
 						}
@@ -204,8 +206,10 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			if _, ok := isToolCallOpen(trimmed); !ok {
 				if _, ok := isToolCallClose(trimmed); !ok {
 					if !strings.HasPrefix(trimmed, "<invoke") && !strings.Contains(trimmed, "</invoke>") {
-						if a.role == "dispatch" && !seenToolCall {
-							dispatchBuf = append(dispatchBuf, remaining)
+						if a.role == "dispatch" {
+							if !seenToolCall {
+								dispatchBuf = append(dispatchBuf, remaining)
+							}
 						} else {
 							a.renderer.AgentToken(remaining)
 						}
