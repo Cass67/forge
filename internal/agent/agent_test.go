@@ -461,3 +461,34 @@ func TestEnforceHistoryBudgetCompactsLargestOldMessagesFirst(t *testing.T) {
 		t.Fatalf("expected estimated tokens to decrease: before=%d after=%d", before, after)
 	}
 }
+
+func TestDispatchProseFilteredOnToolCallTurns(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"Let me delegate to scout.\n\n<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"find it\"}}\n</tool_call>",
+		"Here are the results from scout.",
+	}}
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			return "scout found stuff", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "find something"); err != nil {
+		t.Fatal(err)
+	}
+	got := output.String()
+	if strings.Contains(got, "Let me delegate") {
+		t.Errorf("dispatch prose before tool call leaked: %q", got)
+	}
+	if !strings.Contains(got, "Here are the results") {
+		t.Errorf("dispatch result presentation missing from output: %q", got)
+	}
+}
