@@ -116,6 +116,7 @@ type ChatModel struct {
 	spinnerFrame   int
 	status         string
 	activeSubAgent string
+	lastEscapeTime time.Time
 	flash          string
 	statsDuration  time.Duration
 	statsUsage     llm.Usage
@@ -1027,6 +1028,15 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEscape:
 		if m.busy && m.inputCh != nil {
 			ch := m.inputCh
+			if m.activeSubAgent != "" && time.Since(m.lastEscapeTime) > 2*time.Second {
+				m.lastEscapeTime = time.Now()
+				m.flash = fmt.Sprintf("cancelling %s... (Esc again to cancel turn)", m.activeSubAgent)
+				return m, func() tea.Msg {
+					ch <- "__cancel_subagent__"
+					return nil
+				}
+			}
+			m.lastEscapeTime = time.Now()
 			m.flash = "canceling..."
 			return m, func() tea.Msg {
 				ch <- "__cancel_turn__"

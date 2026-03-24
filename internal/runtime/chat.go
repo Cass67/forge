@@ -199,6 +199,9 @@ func RunChatLive(setup *ChatSetup) {
 				evRenderer.ResponseChan() <- true
 			case "__approve_no":
 				evRenderer.ResponseChan() <- false
+			case "__cancel_subagent__":
+				a.CancelSubAgent()
+				evRenderer.Info("sub-agent cancelled")
 			case "__cancel_turn__":
 				if running {
 					cancel()
