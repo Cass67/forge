@@ -828,7 +828,11 @@ func TestDispatchPersistsScoutRepoReviewEvidenceToScratchpad(t *testing.T) {
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"TASK: Synthesize the repo review into prioritized recommendations. OUTCOME: Final review.\"}}\n</tool_call>",
 	}}
 	reg := tools.NewRegistry()
-	var wroteTopic, wroteContent string
+	type scratchWrite struct {
+		topic   string
+		content string
+	}
+	var writes []scratchWrite
 	reg.Register(tools.Tool{
 		Name:        "delegate",
 		Description: "Delegate",
@@ -844,8 +848,9 @@ func TestDispatchPersistsScoutRepoReviewEvidenceToScratchpad(t *testing.T) {
 		Name:        "scratchpad_write",
 		Description: "Write scratchpad",
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
-			wroteTopic, _ = args["topic"].(string)
-			wroteContent, _ = args["content"].(string)
+			topic, _ := args["topic"].(string)
+			content, _ := args["content"].(string)
+			writes = append(writes, scratchWrite{topic: topic, content: content})
 			return "written", nil
 		},
 	})
@@ -858,11 +863,20 @@ func TestDispatchPersistsScoutRepoReviewEvidenceToScratchpad(t *testing.T) {
 	if err := a.Run(context.Background(), "review this repo and suggest improvements"); err != nil {
 		t.Fatal(err)
 	}
-	if wroteTopic != "repo_review_evidence" {
-		t.Fatalf("scratchpad topic = %q, want repo_review_evidence", wroteTopic)
+	if len(writes) != 2 {
+		t.Fatalf("scratchpad writes = %d, want 2", len(writes))
 	}
-	if !strings.Contains(wroteContent, "FINDINGS:\n- docs are thin") {
-		t.Fatalf("scratchpad content missing scout findings: %q", wroteContent)
+	if writes[0].topic != "repo_review_evidence" {
+		t.Fatalf("first scratchpad topic = %q, want repo_review_evidence", writes[0].topic)
+	}
+	if !strings.Contains(writes[0].content, "FINDINGS:\n- docs are thin") {
+		t.Fatalf("evidence scratchpad content missing scout findings: %q", writes[0].content)
+	}
+	if writes[1].topic != "repo_review_recommendations" {
+		t.Fatalf("second scratchpad topic = %q, want repo_review_recommendations", writes[1].topic)
+	}
+	if !strings.Contains(writes[1].content, "Prioritized recommendations") {
+		t.Fatalf("recommendation scratchpad content missing architect result: %q", writes[1].content)
 	}
 }
 
@@ -882,9 +896,6 @@ func TestDispatchAllowsArchitectRetryAfterBlockedResultWhenScratchpadContextArri
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			architectCalls++
 			task, _ := args["task"].(string)
-			if architectCalls == 1 {
-				return "I don't have the referenced scratchpad content in this chat, and I'm constrained not to gather new evidence or inspect the repo further.", nil
-			}
 			secondArchitectTask = task
 			return "GOAL: prioritized recommendations", nil
 		},
@@ -905,11 +916,14 @@ func TestDispatchAllowsArchitectRetryAfterBlockedResultWhenScratchpadContextArri
 	if err := a.Run(context.Background(), "review this repo"); err != nil {
 		t.Fatal(err)
 	}
-	if architectCalls != 2 {
-		t.Fatalf("expected architect to be retried after blocked result, got %d calls", architectCalls)
+	if architectCalls != 1 {
+		t.Fatalf("expected architect to run once after scratchpad evidence arrives, got %d calls", architectCalls)
 	}
 	if !strings.Contains(secondArchitectTask, "FINDINGS:\n- docs are thin") {
 		t.Fatalf("retry architect task missing scratchpad findings: %q", secondArchitectTask)
+	}
+	if !strings.Contains(output.String(), "delegate to architect for repo-review synthesis requires a successful scout evidence pass") {
+		t.Fatalf("expected initial architect attempt to be blocked before evidence, got %q", output.String())
 	}
 }
 
@@ -1079,6 +1093,48 @@ func TestDispatchRejectsSynthesizedScratchpadWriteContent(t *testing.T) {
 	}
 	if strings.Contains(architectTask, "invented summary") {
 		t.Fatalf("architect task should not include synthesized dispatch summary: %q", architectTask)
+	}
+}
+
+func TestDispatchRequiresUsableScoutEvidenceBeforeArchitectRepoReview(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Gather evidence only for a repo review. OUTCOME: Evidence-backed findings only.\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"TASK: Synthesize the repo review into prioritized recommendations. OUTCOME: Final review.\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Narrow the repo review evidence pass to a smaller, file-backed set of findings. OUTCOME: Evidence-backed findings only.\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"TASK: Synthesize the repo review into prioritized recommendations. OUTCOME: Final review.\"}}\n</tool_call>",
+	}}
+	reg := tools.NewRegistry()
+	var delegated []string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			delegated = append(delegated, role)
+			switch len(delegated) {
+			case 1:
+				return "AGENT ERROR (scout): max turns (25) exceeded\n\nPartial output:\nFINDINGS:\n- incomplete", nil
+			case 2:
+				return "FINDINGS:\n- tests are sparse\nKEY FILES: /repo/tests\nFOLLOW-UP: architect", nil
+			default:
+				return "Prioritized recommendations", nil
+			}
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "review repo improvements"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(delegated, ","); got != "scout,scout,architect" {
+		t.Fatalf("delegated roles = %q, want scout,scout,architect (driver calls=%d output=%q)", got, driver.callIdx, output.String())
+	}
+	if strings.Contains(output.String(), "delegate to architect for repo-review synthesis requires a successful scout evidence pass") == false {
+		t.Fatalf("expected dispatch guard error to be surfaced, got %q", output.String())
 	}
 }
 
