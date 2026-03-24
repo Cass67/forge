@@ -259,7 +259,9 @@ func providerUsesAPIKey(id string) bool {
 }
 
 func setProviderToken(t *auth.Tokens, id, value string) {
-	switch strings.ToLower(strings.TrimSpace(id)) {
+	id = strings.ToLower(strings.TrimSpace(id))
+	value = strings.TrimSpace(value)
+	switch id {
 	case "anthropic":
 		t.AnthropicAPIKey = value
 	case "openai":
@@ -284,11 +286,18 @@ func setProviderToken(t *auth.Tokens, id, value string) {
 		t.CerebrasAPIKey = value
 	case "brave":
 		t.BraveAPIKey = value
+	default:
+		if value == "" {
+			t.ClearCustomProviderKey(id)
+			return
+		}
+		t.SetCustomProviderKey(id, value)
 	}
 }
 
 func clearProviderToken(t *auth.Tokens, id string) {
-	switch strings.ToLower(strings.TrimSpace(id)) {
+	id = strings.ToLower(strings.TrimSpace(id))
+	switch id {
 	case "chatgpt":
 		t.ChatGPTAccessToken = ""
 		t.ChatGPTRefreshToken = ""
@@ -301,7 +310,9 @@ func clearProviderToken(t *auth.Tokens, id string) {
 	case "copilot":
 		t.CopilotToken = ""
 	default:
-		setProviderToken(t, id, "")
+		if providerUsesAPIKey(id) {
+			setProviderToken(t, id, "")
+		}
 	}
 }
 
@@ -309,7 +320,8 @@ func providerHasStoredCredential(t *auth.Tokens, id string) bool {
 	if t == nil {
 		return false
 	}
-	switch strings.ToLower(strings.TrimSpace(id)) {
+	id = strings.ToLower(strings.TrimSpace(id))
+	switch id {
 	case "chatgpt":
 		return strings.TrimSpace(t.ChatGPTAccessToken) != "" || strings.TrimSpace(t.ChatGPTRefreshToken) != ""
 	case "claude":
@@ -341,6 +353,9 @@ func providerHasStoredCredential(t *auth.Tokens, id string) bool {
 	case "brave":
 		return strings.TrimSpace(t.BraveAPIKey) != ""
 	default:
-		return false
+		if !providerUsesAPIKey(id) {
+			return false
+		}
+		return strings.TrimSpace(t.CustomProviderKey(id)) != ""
 	}
 }
