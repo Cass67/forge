@@ -38,6 +38,26 @@ func (d *RetryDriver) SetParams(p Params) {
 	}
 }
 
+func (d *RetryDriver) LastUsage() Usage {
+	if reporter, ok := d.inner.(UsageReporter); ok {
+		return reporter.LastUsage()
+	}
+	return Usage{}
+}
+
+func (d *RetryDriver) LastRequestMode() string {
+	if reporter, ok := d.inner.(RequestModeReporter); ok {
+		return reporter.LastRequestMode()
+	}
+	return ""
+}
+
+func (d *RetryDriver) ResetConversation() {
+	if resetter, ok := d.inner.(ConversationResetter); ok {
+		resetter.ResetConversation()
+	}
+}
+
 func (d *RetryDriver) Stream(ctx context.Context, messages []Message, out chan<- Token) error {
 	defer close(out)
 

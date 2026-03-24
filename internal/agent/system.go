@@ -10,6 +10,9 @@ import (
 )
 
 func BuildSystemPrompt(workDir string, registry *tools.Registry, skillsDesc string) string {
+	if registry == nil {
+		registry = tools.NewRegistry()
+	}
 	var sb strings.Builder
 	sb.WriteString("You are forge, a coding agent. You work in the user's project directory.\n\n")
 	sb.WriteString(fmt.Sprintf("Working directory: %s\n", workDir))
@@ -20,7 +23,7 @@ func BuildSystemPrompt(workDir string, registry *tools.Registry, skillsDesc stri
 	}
 
 	sb.WriteString("\n")
-	sb.WriteString(registry.Describe())
+	sb.WriteString(registry.DescribeForPrompt())
 	sb.WriteString("\nGuidelines:\n")
 	sb.WriteString("- Read files before editing them. Understand what you're changing.\n")
 	sb.WriteString("- Use edit_file for surgical changes to existing files. Use write_file only for new files or complete rewrites.\n")
