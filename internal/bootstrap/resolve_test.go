@@ -465,6 +465,49 @@ func TestAvailableModelsUsesLiveCompatCatalogWhenExplicitlyEnabled(t *testing.T)
 	}
 }
 
+func TestAvailableModelsUsesLiveAnthropicModelsWhenAPIKeyPresent(t *testing.T) {
+	prevDiscover := discoverAnthropicModels
+	discoverAnthropicModels = func(_ string) []string {
+		return []string{"claude-sonnet-4-20250514", "claude-3-5-haiku-20241022"}
+	}
+	defer func() { discoverAnthropicModels = prevDiscover }()
+
+	cfg := testConfig()
+	cfg.Keys.Anthropic = "anthropic-key"
+
+	models := AvailableModels(cfg, &auth.Tokens{})
+
+	if !containsTestString(models, "claude-sonnet-4-20250514") || !containsTestString(models, "anthropic/claude-sonnet-4-20250514") {
+		t.Fatalf("expected live anthropic model in available models, got %#v", models)
+	}
+	if containsTestString(models, "anthropic/claude-opus-4-1-20250805") {
+		t.Fatalf("unexpected fallback anthropic catalog entry when live discovery succeeded: %#v", models)
+	}
+}
+
+func TestAvailableModelsUsesLiveClaudeModelsWhenLoginPresent(t *testing.T) {
+	prevAvail := claudeAuthAvailable
+	prevDiscover := discoverClaudeModels
+	claudeAuthAvailable = func() bool { return true }
+	discoverClaudeModels = func() []string {
+		return []string{"claude-sonnet-4-20250514", "claude-3-5-haiku-20241022"}
+	}
+	defer func() {
+		claudeAuthAvailable = prevAvail
+		discoverClaudeModels = prevDiscover
+	}()
+
+	cfg := testConfig()
+	models := AvailableModels(cfg, &auth.Tokens{})
+
+	if !containsTestString(models, "claude-sonnet-4-20250514") || !containsTestString(models, "claude/claude-sonnet-4-20250514") {
+		t.Fatalf("expected live claude model in available models, got %#v", models)
+	}
+	if containsTestString(models, "claude/claude-opus-4-1-20250805") {
+		t.Fatalf("unexpected fallback claude catalog entry when live discovery succeeded: %#v", models)
+	}
+}
+
 func TestModelDisplayLabelShowsResolvedProviderForUnqualifiedModel(t *testing.T) {
 	cfg := testConfig()
 	cfg.Keys.OpenAI = "openai-key"
