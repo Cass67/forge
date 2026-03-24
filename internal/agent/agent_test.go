@@ -1321,6 +1321,49 @@ func TestDispatchRoutesInterpretiveFollowUpToArchitectAfterScoutEvidence(t *test
 	}
 }
 
+func TestDispatchRoutesPlainLanguageMeaningFollowUpToArchitect(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"trace the alert source\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"explain what the alert means in plain language\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"this retry should not happen\"}}\n</tool_call>",
+	}}
+	reg := tools.NewRegistry()
+	var delegated []string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			delegated = append(delegated, role)
+			if role == "scout" {
+				return "FINDINGS:\n- alert comes from /repo/util-rancid/update_cerner_daily.sh:753\nKEY FILES: /repo/util-rancid/update_cerner_daily.sh\nFOLLOW-UP: architect\nUNKNOWNS: none", nil
+			}
+			return "The alert means the runtime verification helper was missing, not that production is down.", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 2, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "where did this alert come from"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Run(context.Background(), "i dont understand what the email means"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(delegated, ","); got != "scout,architect" {
+		t.Fatalf("delegated roles = %q, want scout,architect", got)
+	}
+	if driver.callIdx != 2 {
+		t.Fatalf("driver call count = %d, want 2", driver.callIdx)
+	}
+	if strings.Contains(output.String(), "dispatch cannot delegate to architect twice in a row") {
+		t.Fatalf("plain-language follow-up should stop after architect, got %q", output.String())
+	}
+}
+
 func TestDispatchAllowsRepeatedArchitectFollowUpsAcrossTurns(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"trace the alert source\"}}\n</tool_call>",
