@@ -722,6 +722,43 @@ func TestSpawnSubAgentScoutFirstTurnUsesSingleToolCall(t *testing.T) {
 	}
 }
 
+func TestSpawnSubAgentScoutRetriesAfterEmptyFinalOutput(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"search\", \"args\": {\"pattern\": \"Rancid f5 objstor verify script missing\", \"path\": \".\", \"glob\": \"**/*\"}}\n</tool_call>",
+		"",
+		"FINDINGS:\n- /repo/util-rancid/update_cerner_daily.sh:753 emits the alert\nKEY FILES: /repo/util-rancid/update_cerner_daily.sh\nFOLLOW-UP: none\nUNKNOWNS: none",
+	}}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{
+		Name:        "search",
+		Description: "Search",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			return "/repo/util-rancid/update_cerner_daily.sh:753: run_or_warn \"f5 objstor verify missing-script alert email\"", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	parent := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+
+	result, err := parent.SpawnSubAgent(context.Background(), "scout", "TASK: Trace the alert source and return evidence-backed findings only. OUTCOME: file path plus trigger. MUST NOT: Do not speculate.", MultiAgentConfig{
+		BaseTools: reg,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if driver.callIdx != 3 {
+		t.Fatalf("expected empty final output to trigger a retry, got %d driver calls", driver.callIdx)
+	}
+	if strings.Contains(result, "AGENT ERROR") {
+		t.Fatalf("expected scout to recover from empty final output, got %q", result)
+	}
+	if !strings.Contains(result, "FINDINGS:") {
+		t.Fatalf("expected scout findings after empty output retry, got %q", result)
+	}
+}
+
 func TestScoutFiltersRuntimeArtifactsFromSearchResultsByDefault(t *testing.T) {
 	driver := &inspectingDriver{
 		responses: []string{
@@ -780,6 +817,68 @@ func TestScoutFiltersRuntimeArtifactsFromSearchResultsByDefault(t *testing.T) {
 	}
 }
 
+func TestReadOnlySubAgentsFilterRuntimeArtifactsFromSearchResultsByDefault(t *testing.T) {
+	for _, role := range []string{"architect", "doctor"} {
+		t.Run(role, func(t *testing.T) {
+			driver := &inspectingDriver{
+				responses: []string{
+					"<tool_call>\n{\"name\": \"search\", \"args\": {\"pattern\": \"Rancid f5 objstor verify script missing\", \"path\": \".\"}}\n</tool_call>",
+					"done",
+				},
+				checks: []func([]llm.Message) error{
+					nil,
+					func(messages []llm.Message) error {
+						joined := ""
+						for _, msg := range messages {
+							joined += msg.Content + "\n"
+						}
+						for _, forbidden := range []string{
+							"artifact-log.jsonl",
+							"runtime-owned-log.jsonl",
+							".forge/scratchpad/email_origin_investigation_raw.md",
+							"history.jsonl",
+							"sessions/run-123/log/agent.log",
+						} {
+							if strings.Contains(joined, forbidden) {
+								return fmt.Errorf("runtime artifact leaked into %s context: %s", role, forbidden)
+							}
+						}
+						if !strings.Contains(joined, "util-rancid/update_cerner_daily.sh:753") {
+							return fmt.Errorf("real source hit missing from %s context: %s", role, joined)
+						}
+						return nil
+					},
+				},
+			}
+			reg := tools.NewRegistry()
+			reg.Register(tools.Tool{
+				Name:        "search",
+				Description: "Search",
+				Execute: func(ctx context.Context, args map[string]any) (string, error) {
+					return strings.Join([]string{
+						"./artifact-log.jsonl:2:{\"msg\":\"chat.input\"}",
+						"./runtime-owned-log.jsonl:3:{\"msg\":\"llm.request\"}",
+						"./.forge/scratchpad/email_origin_investigation_raw.md:1:cached prior finding",
+						"./history.jsonl:8:{\"msg\":\"session history\"}",
+						"./sessions/run-123/log/agent.log:4:delegating to scout",
+						"./util-rancid/update_cerner_daily.sh:753:\trun_or_warn \"f5 objstor verify missing-script alert email\" mailx -s \"Rancid f5 objstor verify script missing\" martin.cassidy@oracle.com </dev/null",
+					}, "\n"), nil
+				},
+			})
+
+			var output bytes.Buffer
+			renderer := NewRenderer(&output, 80, false)
+			a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+			a.SetRole(role)
+			a.isSubAgent = true
+
+			if err := a.Run(context.Background(), "Investigate where the email came from in this codebase."); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestScoutAllowsRuntimeArtifactsWhenTaskExplicitlyRequestsDebugLogInspection(t *testing.T) {
 	driver := &inspectingDriver{
 		responses: []string{
@@ -819,6 +918,48 @@ func TestScoutAllowsRuntimeArtifactsWhenTaskExplicitlyRequestsDebugLogInspection
 	a.isSubAgent = true
 
 	if err := a.Run(context.Background(), "Inspect the debug log and tell me why dispatch delegated twice."); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSubAgentKeepsFreshToolResultsUnclippedBetweenTurns(t *testing.T) {
+	const marker = "VERY_IMPORTANT_MARKER_AT_END"
+
+	driver := &inspectingDriver{
+		responses: []string{
+			"<tool_call>\n{\"name\": \"read_file\", \"args\": {\"path\": \"alert-source.sh\"}}\n</tool_call>",
+			"FINDINGS:\n- preserved full tool output\nKEY FILES: /repo/alert-source.sh\nFOLLOW-UP: none\nUNKNOWNS: none",
+		},
+		checks: []func([]llm.Message) error{
+			nil,
+			func(messages []llm.Message) error {
+				joined := ""
+				for _, msg := range messages {
+					joined += msg.Content + "\n"
+				}
+				if !strings.Contains(joined, marker) {
+					return fmt.Errorf("fresh tool result marker missing from second turn context: %s", joined)
+				}
+				return nil
+			},
+		},
+	}
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{
+		Name:        "read_file",
+		Description: "Read file",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			return strings.Repeat("abcdefghij", 30) + marker, nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("scout")
+	a.isSubAgent = true
+
+	if err := a.Run(context.Background(), "Inspect the alert source and return evidence-backed findings."); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1177,6 +1318,57 @@ func TestDispatchRoutesInterpretiveFollowUpToArchitectAfterScoutEvidence(t *test
 	}
 	if strings.Contains(output.String(), "what should we do about that?") {
 		t.Fatalf("dispatch should not render the follow-up prompt: %q", output.String())
+	}
+}
+
+func TestDispatchAllowsRepeatedArchitectFollowUpsAcrossTurns(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"trace the alert source\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"explain what the scout findings mean and what should happen next\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"decide whether the user is good to ignore this now\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"this turn should not happen\"}}\n</tool_call>",
+	}}
+	reg := tools.NewRegistry()
+	var delegated []string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			delegated = append(delegated, role)
+			switch role {
+			case "scout":
+				return "FINDINGS:\n- alert comes from /repo/util-rancid/update_cerner_daily.sh:753\nKEY FILES: /repo/util-rancid/update_cerner_daily.sh\nFOLLOW-UP: architect\nUNKNOWNS: none", nil
+			case "architect":
+				return "No code fix is indicated; confirm the runtime script exists and is executable.", nil
+			default:
+				return "unexpected", nil
+			}
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 2, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "where did this alert come from"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Run(context.Background(), "do i need to fix something? if so how, do not change anything yet"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Run(context.Background(), "so im good then ?"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(delegated, ","); got != "scout,architect,architect" {
+		t.Fatalf("delegated roles = %q, want scout,architect,architect", got)
+	}
+	if driver.callIdx != 3 {
+		t.Fatalf("driver call count = %d, want 3", driver.callIdx)
+	}
+	if strings.Contains(output.String(), "dispatch cannot delegate to architect twice in a row") {
+		t.Fatalf("architect follow-up should not trip same-role guard, got %q", output.String())
 	}
 }
 

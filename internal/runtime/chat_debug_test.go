@@ -178,3 +178,32 @@ func TestEnableChatDebugTruncatesExistingLogFile(t *testing.T) {
 		t.Fatalf("debug log missing enable event after truncation: %q", text)
 	}
 }
+
+func TestEnableChatDebugDefaultsOutsideWorkDir(t *testing.T) {
+	workDir := t.TempDir()
+	setup := &ChatSetup{
+		ChatModel: "openai/gpt-5",
+		WorkDir:   workDir,
+		Driver:    &debugMockDriver{response: "ok"},
+	}
+
+	gotPath, err := EnableChatDebug(setup, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cleanPath := filepath.Clean(gotPath)
+	cleanWorkDir := filepath.Clean(workDir)
+	if strings.HasPrefix(cleanPath, cleanWorkDir+string(os.PathSeparator)) {
+		t.Fatalf("default debug path should not live under work dir: path=%q workdir=%q", cleanPath, cleanWorkDir)
+	}
+
+	cleanTempDir := filepath.Clean(os.TempDir())
+	if !strings.HasPrefix(cleanPath, cleanTempDir+string(os.PathSeparator)) && cleanPath != cleanTempDir {
+		t.Fatalf("default debug path should live under temp dir: path=%q tempdir=%q", cleanPath, cleanTempDir)
+	}
+
+	if _, err := os.Stat(gotPath); err != nil {
+		t.Fatalf("expected debug log to be created at %q: %v", gotPath, err)
+	}
+}

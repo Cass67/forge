@@ -72,7 +72,7 @@ func EnableChatDebug(setup *ChatSetup, path string) (string, error) {
 }
 
 func defaultChatDebugPath(workDir string) string {
-	base := workDir
+	base := os.TempDir()
 	if strings.TrimSpace(base) == "" {
 		base = "."
 	}
