@@ -10,26 +10,45 @@ import (
 )
 
 type Tokens struct {
-	CopilotToken        string    `json:"copilot_token,omitempty"`
-	ChatGPTAccessToken  string    `json:"chatgpt_access_token,omitempty"`
-	ChatGPTRefreshToken string    `json:"chatgpt_refresh_token,omitempty"`
-	ChatGPTAccountID    string    `json:"chatgpt_account_id,omitempty"`
-	ChatGPTExpiresAt    time.Time `json:"chatgpt_expires_at,omitempty"`
-	ClaudeAccessToken   string    `json:"claude_access_token,omitempty"`
-	ClaudeRefreshToken  string    `json:"claude_refresh_token,omitempty"`
-	ClaudeExpiresAt     time.Time `json:"claude_expires_at,omitempty"`
-	AnthropicAPIKey     string    `json:"anthropic_api_key,omitempty"`
-	OpenAIAPIKey        string    `json:"openai_api_key,omitempty"`
-	GroqAPIKey          string    `json:"groq_api_key,omitempty"`
-	MistralAPIKey       string    `json:"mistral_api_key,omitempty"`
-	XAIAPIKey           string    `json:"xai_api_key,omitempty"`
-	NVIDIAAPIKey        string    `json:"nvidia_api_key,omitempty"`
-	OpenRouterAPIKey    string    `json:"openrouter_api_key,omitempty"`
-	TogetherAPIKey      string    `json:"together_api_key,omitempty"`
-	PerplexityAPIKey    string    `json:"perplexity_api_key,omitempty"`
-	DeepInfraAPIKey     string    `json:"deepinfra_api_key,omitempty"`
-	CerebrasAPIKey      string    `json:"cerebras_api_key,omitempty"`
-	BraveAPIKey         string    `json:"brave_api_key,omitempty"`
+	CopilotToken        string            `json:"copilot_token,omitempty"`
+	ChatGPTAccessToken  string            `json:"chatgpt_access_token,omitempty"`
+	ChatGPTRefreshToken string            `json:"chatgpt_refresh_token,omitempty"`
+	ChatGPTAccountID    string            `json:"chatgpt_account_id,omitempty"`
+	ChatGPTExpiresAt    time.Time         `json:"chatgpt_expires_at,omitempty"`
+	ClaudeAccessToken   string            `json:"claude_access_token,omitempty"`
+	ClaudeRefreshToken  string            `json:"claude_refresh_token,omitempty"`
+	ClaudeExpiresAt     time.Time         `json:"claude_expires_at,omitempty"`
+	AnthropicAPIKey     string            `json:"anthropic_api_key,omitempty"`
+	OpenAIAPIKey        string            `json:"openai_api_key,omitempty"`
+	GroqAPIKey          string            `json:"groq_api_key,omitempty"`
+	MistralAPIKey       string            `json:"mistral_api_key,omitempty"`
+	XAIAPIKey           string            `json:"xai_api_key,omitempty"`
+	NVIDIAAPIKey        string            `json:"nvidia_api_key,omitempty"`
+	OpenRouterAPIKey    string            `json:"openrouter_api_key,omitempty"`
+	TogetherAPIKey      string            `json:"together_api_key,omitempty"`
+	PerplexityAPIKey    string            `json:"perplexity_api_key,omitempty"`
+	DeepInfraAPIKey     string            `json:"deepinfra_api_key,omitempty"`
+	CerebrasAPIKey      string            `json:"cerebras_api_key,omitempty"`
+	BraveAPIKey         string            `json:"brave_api_key,omitempty"`
+	ProviderAPIKeys     map[string]string `json:"provider_api_keys,omitempty"`
+}
+
+func (t *Tokens) CustomProviderKey(id string) string {
+	if t.ProviderAPIKeys == nil {
+		return ""
+	}
+	return t.ProviderAPIKeys[id]
+}
+
+func (t *Tokens) SetCustomProviderKey(id, key string) {
+	if t.ProviderAPIKeys == nil {
+		t.ProviderAPIKeys = make(map[string]string)
+	}
+	t.ProviderAPIKeys[id] = key
+}
+
+func (t *Tokens) ClearCustomProviderKey(id string) {
+	delete(t.ProviderAPIKeys, id)
 }
 
 func defaultPath() string {
@@ -143,6 +162,16 @@ func merge(dst, src *Tokens) *Tokens {
 	}
 	if src.BraveAPIKey != "" {
 		dst.BraveAPIKey = src.BraveAPIKey
+	}
+	if len(src.ProviderAPIKeys) > 0 {
+		if dst.ProviderAPIKeys == nil {
+			dst.ProviderAPIKeys = make(map[string]string)
+		}
+		for k, v := range src.ProviderAPIKeys {
+			if v != "" {
+				dst.ProviderAPIKeys[k] = v
+			}
+		}
 	}
 	return dst
 }
