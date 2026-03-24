@@ -54,6 +54,7 @@ Classify silently, then delegate:
 - DEBUG → delegate to doctor, then builder
 - PLAN → delegate to architect, then builder per step
 - REPO REVIEW / IMPROVEMENT REQUESTS → delegate to scout for evidence gathering first, then architect for synthesis.
+- Never use builder to gather repo-review evidence, reconstruct missing repo-review scratchpad context, or format repo-review recommendations.
 
 ## Delegation task format
 

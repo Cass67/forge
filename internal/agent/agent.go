@@ -232,13 +232,19 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 					continue
 				}
 				if dispatchRoleRequiresFreshState(role) && dispatchReadOnlyRolesSinceBuilder[role] {
-					msg := fmt.Sprintf("[delegate] error: dispatch already delegated to %s in this pass; use that result or delegate to builder", role)
+					msg := fmt.Sprintf("[delegate] error: dispatch already delegated to %s in this pass; use that result or choose another appropriate role", role)
 					results = append(results, msg)
 					a.renderer.Error(strings.TrimPrefix(msg, "[delegate] "))
 					continue
 				}
 				if dispatchScoutMustStayEvidenceOnly(role, task) {
 					msg := "[delegate] error: repo-review and improvement requests must use scout for evidence gathering only, then architect for recommendations"
+					results = append(results, msg)
+					a.renderer.Error(strings.TrimPrefix(msg, "[delegate] "))
+					continue
+				}
+				if dispatchBuilderRepoReviewEvidenceTaskForbidden(role, task) {
+					msg := "[delegate] error: repo-review evidence gathering and scratchpad recovery must stay on scout; builder must not be used for repo-review analysis or evidence reconstruction"
 					results = append(results, msg)
 					a.renderer.Error(strings.TrimPrefix(msg, "[delegate] "))
 					continue
@@ -488,6 +494,32 @@ func dispatchBuilderPresentationShimForbidden(role, task string, delegateResults
 	return containsAny(lower, presentationSignals) && containsAny(lower, repoReviewSignals)
 }
 
+func dispatchBuilderRepoReviewEvidenceTaskForbidden(role, task string) bool {
+	if strings.TrimSpace(role) != "builder" {
+		return false
+	}
+	lower := strings.ToLower(task)
+	repoReviewSignals := []string{
+		"repo review",
+		"repository review",
+		"repository evidence",
+		"repository findings",
+		"review this repo",
+		"review the repository",
+	}
+	evidenceSignals := []string{
+		"gather evidence",
+		"evidence-based raw findings",
+		"raw findings",
+		"collect factual findings",
+		"scratchpad",
+		"repo_review_evidence",
+		"reconstruct",
+		"recover",
+	}
+	return containsAny(lower, repoReviewSignals) && containsAny(lower, evidenceSignals)
+}
+
 func dispatchRepoReviewArchitectSynthesisTask(task string) bool {
 	lower := strings.ToLower(task)
 	repoReviewSignals := []string{
@@ -547,6 +579,9 @@ func dispatchRepoReviewEvidenceUsable(result string) bool {
 		return false
 	}
 	lower := strings.ToLower(trimmed)
+	if looksLikeActionPreamble(trimmed) {
+		return false
+	}
 	if !containsAny(lower, []string{"findings:", "key files:", "repository evidence", "evidence-backed findings"}) {
 		return false
 	}
@@ -557,6 +592,13 @@ func dispatchRepoReviewEvidenceUsable(result string) bool {
 		return false
 	}
 	if strings.Contains(lower, "i do not have enough codebase evidence") {
+		return false
+	}
+	if containsAny(lower, []string{
+		"i'll inspect the repository structure",
+		"i'm going to inspect the repository structure",
+		"summarize concrete evidence only",
+	}) {
 		return false
 	}
 	return true

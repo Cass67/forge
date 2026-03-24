@@ -13,6 +13,9 @@ var safeTopicRe = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
 
 func sanitizeTopic(topic string) string {
 	s := strings.TrimSpace(topic)
+	if strings.HasSuffix(strings.ToLower(s), ".md") {
+		s = strings.TrimSpace(s[:len(s)-3])
+	}
 	s = safeTopicRe.ReplaceAllString(s, "-")
 	if s == "" {
 		s = "scratch"

@@ -13,6 +13,7 @@ func TestDispatchPromptDoesNotTellDispatchToPresentResults(t *testing.T) {
 		"Do not present, summarize, rewrite, or analyze sub-agent results yourself.",
 		"If no further delegation is needed, stop. Do not add a prose answer.",
 		"REPO REVIEW / IMPROVEMENT REQUESTS → delegate to scout for evidence gathering first, then architect for synthesis.",
+		"Never use builder to gather repo-review evidence, reconstruct missing repo-review scratchpad context, or format repo-review recommendations.",
 		"Take one orchestration action per turn.",
 		"scratchpad_write may only persist raw sub-agent output or raw scratchpad content.",
 		"Never delegate architect for repo-review synthesis if the latest scout result was blocked, incomplete, cancelled, or errored.",
