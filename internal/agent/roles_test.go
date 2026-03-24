@@ -14,6 +14,7 @@ func TestDispatchPromptDoesNotTellDispatchToPresentResults(t *testing.T) {
 		"If no further delegation is needed, stop. Do not add a prose answer.",
 		"REPO REVIEW / IMPROVEMENT REQUESTS → delegate to scout for evidence gathering first, then architect for synthesis.",
 		"SEARCH / TRACE / ORIGIN QUESTIONS → delegate to scout",
+		"Do not turn scout search results into a new architect or builder task unless the flow explicitly requires it.",
 		"Never use builder to gather repo-review evidence, reconstruct missing repo-review scratchpad context, or format repo-review recommendations.",
 		"Take one orchestration action per turn.",
 		"scratchpad_write may only persist raw sub-agent output or raw scratchpad content.",
@@ -31,6 +32,9 @@ func TestScoutPromptKeepsRecommendationsOutOfScoutResponses(t *testing.T) {
 		"FOLLOW-UP: [what information is still needed or which role should handle synthesis]",
 		"For repo-review tasks, gather a bounded evidence set and then stop.",
 		"Never inspect runtime-generated conversation artifacts such as debug logs, scratchpad files, session histories, or session logs unless the task explicitly asks for them.",
+		"Your first working turn for an evidence-gathering task must contain tool calls, not a search plan.",
+		"Do not return a blocked or \"I couldn't verify\" answer before using the relevant search/read tools available to you.",
+		"If a delegated search is yours, own it to completion.",
 	} {
 		if !strings.Contains(scoutPrompt, want) {
 			t.Fatalf("scout prompt missing %q", want)

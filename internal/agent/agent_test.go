@@ -718,6 +718,43 @@ func TestScoutAllowsRuntimeArtifactsWhenTaskExplicitlyRequestsDebugLogInspection
 	}
 }
 
+func TestScoutRetriesBlockedAnswerUntilItUsesEvidenceTools(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"I couldn’t verify the origin yet. If you want, I can do a narrow repository search next.",
+		"<tool_call>\n{\"name\": \"search\", \"args\": {\"pattern\": \"Rancid f5 objstor verify script missing\", \"path\": \".\"}}\n</tool_call>",
+		"FINDINGS:\n- /repo/util-rancid/update_cerner_daily.sh:753 sends the alert email\nKEY FILES: /repo/util-rancid/update_cerner_daily.sh\nFOLLOW-UP: none\nUNKNOWNS: none",
+	}}
+	reg := tools.NewRegistry()
+	var searchCalls int
+	reg.Register(tools.Tool{
+		Name:        "search",
+		Description: "Search",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			searchCalls++
+			return "/repo/util-rancid/update_cerner_daily.sh:753: run_or_warn \"f5 objstor verify missing-script alert email\"", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("scout")
+	a.isSubAgent = true
+
+	if err := a.Run(context.Background(), "TASK: Trace the origin of the email subject and identify why it would be sent. OUTCOME: Evidence-backed findings with file path and triggering condition. MUST NOT: Do not speculate."); err != nil {
+		t.Fatal(err)
+	}
+	if searchCalls != 1 {
+		t.Fatalf("expected scout to be nudged into at least one evidence tool call, got %d search calls", searchCalls)
+	}
+	if driver.callIdx != 3 {
+		t.Fatalf("expected blocked scout answer to be retried before final findings, got %d driver calls", driver.callIdx)
+	}
+	if got := output.String(); strings.Contains(got, "If you want, I can do a narrow repository search next.") {
+		t.Fatalf("blocked scout prose should not be rendered when tools are still available: %q", got)
+	}
+}
+
 func TestArchitectRetriesInsteadOfMixingToolCallsWithVisibleProse(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"read_file\", \"args\": {\"path\": \"repo_review_evidence.md\"}}\n</tool_call>\nI need the actual scout evidence contents to synthesize recommendations.",
