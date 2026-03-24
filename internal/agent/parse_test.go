@@ -149,3 +149,20 @@ func TestParseToolCallWithoutOpeningTag(t *testing.T) {
 		t.Fatalf("visible = %q, want empty", visible)
 	}
 }
+
+func TestParseInlineToolCallWithVisiblePrefix(t *testing.T) {
+	input := "Reviewing the repo structure now.<tool_call>{\"name\":\"list_dir\",\"args\":{\"path\":\".\",\"recursive\":false}}</tool_call>"
+	calls, visible := ParseToolCalls(input)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if calls[0].Name != "list_dir" {
+		t.Fatalf("name = %q", calls[0].Name)
+	}
+	if got := calls[0].Args["path"]; got != "." {
+		t.Fatalf("path = %v", got)
+	}
+	if visible != "Reviewing the repo structure now." {
+		t.Fatalf("visible = %q, want %q", visible, "Reviewing the repo structure now.")
+	}
+}

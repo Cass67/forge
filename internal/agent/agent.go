@@ -288,6 +288,12 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			if tool.LastDiff != nil {
 				diff = tool.LastDiff()
 			}
+			if call.Name == "delegate" && err == nil {
+				role, _ := call.Args["role"].(string)
+				if normalized, malformed := normalizeDelegateResult(role, result); malformed {
+					result = normalized
+				}
+			}
 			if err != nil {
 				result = fmt.Sprintf("error: %v", err)
 				a.renderer.ToolResult(call.Name, result, diff, true)
@@ -641,6 +647,32 @@ func delegateResultBlocked(result string) bool {
 		"incomplete",
 	}
 	return containsAny(trimmed, blockedSignals)
+}
+
+func normalizeDelegateResult(role, result string) (string, bool) {
+	if !containsRawToolMarkup(result) {
+		return result, false
+	}
+	_, visible := ParseToolCalls(result)
+	msg := fmt.Sprintf("AGENT ERROR (%s): delegate result contained raw tool markup; retry with a narrower task", strings.TrimSpace(role))
+	if strings.TrimSpace(visible) != "" {
+		msg += "\n\nVisible text:\n" + strings.TrimSpace(visible)
+	}
+	return msg, true
+}
+
+func containsRawToolMarkup(text string) bool {
+	for _, opener := range toolCallOpeners {
+		if strings.Contains(text, opener) {
+			return true
+		}
+	}
+	for _, closer := range toolCallClosers {
+		if strings.Contains(text, closer) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizePromptText(text string) string {
