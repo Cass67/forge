@@ -128,6 +128,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	dispatchReadOnlyRolesSinceBuilder := make(map[string]bool)
 	dispatchLastDelegateResult := make(map[string]string)
 	dispatchLastScratchpadRead := ""
+	dispatchStopAfterTurn := false
 	defer func() {
 		a.renderer.Stats(time.Since(turnStart), a.getUsage())
 	}()
@@ -165,6 +166,15 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 
 		// Parse tool calls
 		calls, visibleText := ParseToolCalls(response)
+		if a.role == "scout" && len(calls) > 0 && strings.TrimSpace(visibleText) != "" {
+			if turn+1 < a.maxTurns {
+				a.history = append(a.history, llm.Message{
+					Role:    llm.RoleUser,
+					Content: scoutNudgeMessage(),
+				})
+				continue
+			}
+		}
 
 		// No tool calls — final answer, or stalled narration.
 		if len(calls) == 0 {
@@ -221,6 +231,10 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 					results = append(results, "[delegate] error: repo-review and improvement requests must use scout for evidence gathering only, then architect for recommendations")
 					continue
 				}
+				if dispatchBuilderPresentationShimForbidden(role, task, dispatchLastDelegateResult) {
+					results = append(results, "[delegate] error: repo-review presentation must end after architect synthesis; do not delegate to builder just to format the answer")
+					continue
+				}
 				if enriched := enrichDispatchDelegateTask(role, task, dispatchLastDelegateResult, dispatchLastScratchpadRead); enriched != task {
 					task = enriched
 					call.Args["task"] = task
@@ -254,6 +268,10 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 						lastDispatchDelegateBlocked = delegateResultBlocked(result)
 						dispatchLastDelegateResult[lastDispatchDelegateRole] = result
 						if delegateResultCompleted(result) && !lastDispatchDelegateBlocked {
+							task, _ := call.Args["task"].(string)
+							if dispatchRepoReviewArchitectSynthesisTask(task) {
+								dispatchStopAfterTurn = true
+							}
 							if role == "builder" {
 								clear(dispatchReadOnlyRolesSinceBuilder)
 							} else if dispatchRoleRequiresFreshState(role) {
@@ -287,6 +305,9 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			Role:    llm.RoleUser,
 			Content: compactToolResults(results),
 		})
+		if a.role == "dispatch" && dispatchStopAfterTurn {
+			return nil
+		}
 	}
 
 	return fmt.Errorf("max turns (%d) exceeded", a.maxTurns)
@@ -364,6 +385,46 @@ func dispatchScoutMustStayEvidenceOnly(role, task string) bool {
 		"improvement list",
 	}
 	return containsAny(lower, repoSignals) && containsAny(lower, recommendationSignals)
+}
+
+func dispatchBuilderPresentationShimForbidden(role, task string, delegateResults map[string]string) bool {
+	if strings.TrimSpace(role) != "builder" {
+		return false
+	}
+	if strings.TrimSpace(delegateResults["architect"]) == "" {
+		return false
+	}
+	lower := strings.ToLower(task)
+	presentationSignals := []string{
+		"present the architect",
+		"user-facing response",
+		"final concise review answer",
+		"format the review",
+		"package the response",
+		"present recommendations",
+	}
+	repoReviewSignals := []string{
+		"repo review",
+		"repository improvement",
+		"improvement recommendations",
+	}
+	return containsAny(lower, presentationSignals) && containsAny(lower, repoReviewSignals)
+}
+
+func dispatchRepoReviewArchitectSynthesisTask(task string) bool {
+	lower := strings.ToLower(task)
+	if !strings.Contains(lower, "architect") && !strings.Contains(lower, "synthesize") {
+		return false
+	}
+	repoReviewSignals := []string{
+		"repo review",
+		"repository review",
+		"improvement recommendations",
+		"prioritized recommendations",
+		"synthesize the repo review",
+		"synthesize repository review",
+	}
+	return containsAny(lower, repoReviewSignals)
 }
 
 func enrichDispatchDelegateTask(role, task string, delegateResults map[string]string, scratchpadResult string) string {
@@ -518,6 +579,10 @@ func nudgeMessage(attempt int) string {
 	default:
 		return "Call a tool now. No more text without a tool call."
 	}
+}
+
+func scoutNudgeMessage() string {
+	return "Scout must not mix visible prose with tool calls. Use tool calls only while gathering evidence, and never ask for pasted outputs."
 }
 
 func dispatchNudgeMessage(attempt int) string {
