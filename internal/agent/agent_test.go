@@ -985,6 +985,103 @@ func TestDispatchCarriesPriorArchitectResultIntoLaterBuilderTurn(t *testing.T) {
 	}
 }
 
+func TestDispatchExecutesOnlyFirstToolCallPerTurn(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"find evidence\"}}\n</tool_call>\n<tool_call>\n{\"name\": \"scratchpad_write\", \"args\": {\"topic\": \"ignored\", \"content\": \"invented\"}}\n</tool_call>\n<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"should not run yet\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"now synthesize\"}}\n</tool_call>",
+		"Done.",
+	}}
+	reg := tools.NewRegistry()
+	var delegated []string
+	var scratchWrites int
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			delegated = append(delegated, role)
+			if role == "scout" {
+				return "FINDINGS:\n- evidence", nil
+			}
+			return "GOAL: synthesize", nil
+		},
+	})
+	reg.Register(tools.Tool{
+		Name:        "scratchpad_write",
+		Description: "Write scratchpad",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			scratchWrites++
+			return "written", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "review repo"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(delegated, ","); got != "scout,architect" {
+		t.Fatalf("delegated roles = %q, want scout,architect", got)
+	}
+	if scratchWrites != 0 {
+		t.Fatalf("unexpected dispatch scratchpad write execution count = %d", scratchWrites)
+	}
+}
+
+func TestDispatchRejectsSynthesizedScratchpadWriteContent(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Gather evidence only.\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"scratchpad_write\", \"args\": {\"topic\": \"repo-review-scout-findings\", \"content\": \"Scout findings to carry into recommendation synthesis:\\n- invented summary\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"TASK: Synthesize recommendations.\"}}\n</tool_call>",
+		"Done.",
+	}}
+	reg := tools.NewRegistry()
+	var scratchWrites int
+	var architectTask string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			task, _ := args["task"].(string)
+			if role == "scout" {
+				return "FINDINGS:\n- real evidence\nKEY FILES: /repo/README.md", nil
+			}
+			architectTask = task
+			return "GOAL: prioritized recommendations", nil
+		},
+	})
+	reg.Register(tools.Tool{
+		Name:        "scratchpad_write",
+		Description: "Write scratchpad",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			scratchWrites++
+			return "written", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "review repo"); err != nil {
+		t.Fatal(err)
+	}
+	if scratchWrites != 0 {
+		t.Fatalf("dispatch should not write synthesized scratchpad content, got %d writes", scratchWrites)
+	}
+	if !strings.Contains(architectTask, "FINDINGS:\n- real evidence") {
+		t.Fatalf("architect task missing real scout evidence: %q", architectTask)
+	}
+	if strings.Contains(architectTask, "invented summary") {
+		t.Fatalf("architect task should not include synthesized dispatch summary: %q", architectTask)
+	}
+}
+
 func TestDispatchRejectsBuilderPresentationShimAfterArchitectRepoReview(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Gather evidence only.\"}}\n</tool_call>",
