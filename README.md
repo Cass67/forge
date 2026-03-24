@@ -143,6 +143,48 @@ Provider intent:
 - `chatgpt` means ChatGPT subscription login
 - `openai` means OpenAI API key
 
+### Custom OpenAI-Compatible Providers
+
+Forge can load additional OpenAI-compatible providers from config files without a code change.
+
+Supported file locations:
+
+- `~/.config/forge/providers/*.toml`
+- `~/.config/forge/*.toml` when the file contains `[model_providers.<id>]`
+
+Example:
+
+```toml
+[model_providers.oca]
+name = "My New Provider"
+base_url = "https://example.com/v1"
+wire_api = "responses"
+http_headers = { client = "codex-cli", client-version = "0" }
+default_model = "gpt-5.4"
+models = ["gpt-5.4", "gpt-5.4-mini"]
+```
+
+How Forge uses this:
+
+- `oca` becomes the provider id and model prefix, for example `oca/gpt-5.4`
+- `name` becomes the provider-picker label
+- `base_url` points Forge at the provider's OpenAI-compatible endpoint
+- `wire_api = "responses"` opts that provider into the Responses API path
+- `http_headers` are attached to every request for that provider
+- `default_model` and `models` drive the provider/model picker entries
+
+Auth behavior:
+
+- selecting the provider in the provider picker prompts for an API key
+- Forge stores custom-provider API keys in its own `auth.json`
+- you can also set an environment override using `<PROVIDER_ID>_API_KEY`, for example `OCA_API_KEY`
+
+Current v1 limits:
+
+- custom providers are OpenAI-compatible only
+- picker entries appear only when the provider has `models = [...]` or `default_model`
+- interactive OAuth/sign-in flows are not supported for custom providers
+
 Model picker entries are labeled with the resolved auth path, for example:
 
 - `gpt-5.4 [chatgpt]`

@@ -158,6 +158,8 @@ The token schema is defined in [internal/auth/store.go](/Users/cass/git/forge/in
 
 Forge now owns ChatGPT and Claude subscription auth state directly. It does not depend on Codex-auth files as a source of truth.
 
+Custom API-key providers also use Forge-owned auth storage. Their credentials are stored in the dynamic `provider_api_keys` map inside `auth.json`, keyed by provider id.
+
 ### Config precedence
 
 In practice, Forge resolves configuration from multiple layers:
@@ -168,6 +170,29 @@ In practice, Forge resolves configuration from multiple layers:
 4. built-in defaults
 
 That precedence is especially relevant for provider keys and default model selection.
+
+### Custom provider config files
+
+File-backed OpenAI-compatible providers are loaded by [internal/bootstrap/custom_providers.go](/Users/cass/git/forge/internal/bootstrap/custom_providers.go).
+
+The loader scans:
+
+- `~/.config/forge/providers/*.toml`
+- `~/.config/forge/*.toml` for files containing `[model_providers.<id>]`
+
+The accepted v1 shape is:
+
+```toml
+[model_providers.oca]
+name = "My New Provider"
+base_url = "https://example.com/v1"
+wire_api = "responses"
+http_headers = { client = "codex-cli" }
+default_model = "gpt-5.4"
+models = ["gpt-5.4", "gpt-5.4-mini"]
+```
+
+The loader intentionally ignores unrelated top-level Codex-style keys such as `model`, `profile`, `sandbox_mode`, and `[profiles.*]`. This lets Forge reuse the provider block without needing to understand the rest of the file.
 
 ## Model And Provider Resolution
 
@@ -194,6 +219,7 @@ It resolves, in priority order:
 - `openai`
 - `copilot`
 - configured OpenAI-compatible providers
+- file-backed custom OpenAI-compatible providers
 
 This file is one of the highest-leverage points in the codebase. If model routing feels wrong in the UI, the bug is often here rather than in the TUI itself.
 
@@ -205,6 +231,22 @@ Forge supports both:
 - unqualified names such as `gpt-5.4` or `claude-sonnet-4-6`
 
 For unqualified names, Forge resolves to the most appropriate available provider. The UI uses `ModelDisplayLabel(...)` to surface the effective auth path in the picker.
+
+### Custom provider bootstrap path
+
+`BuildCompatProviders(...)` appends file-backed providers after the built-in compat-provider catalog.
+
+Each loaded provider definition becomes a `CompatProvider` carrying:
+
+- provider id
+- display label
+- base URL
+- model list
+- optional request headers
+- optional `wire_api` preference
+- a key lookup that checks Forge auth first, then `<PROVIDER_ID>_API_KEY`
+
+This design keeps custom providers on the existing compat-provider path instead of introducing a second routing stack.
 
 ### Live model discovery
 
@@ -257,6 +299,8 @@ Notable behavior:
 
 - ChatGPT subscription-backed GPT-5/Codex-family requests are routed through a ChatGPT/Codex-compatible responses path
 - model display labels show whether the chosen auth path is `chatgpt`, `openai`, or another provider
+- file-backed custom providers can attach provider-specific headers and opt into the Responses API with `wire_api = "responses"`
+- custom providers stay generic: they do not inherit ChatGPT-only stateless responses behavior, response-store behavior, or response compaction
 
 ### Claude family
 
@@ -305,6 +349,8 @@ Chat setup is assembled in [internal/runtime/chat.go](/Users/cass/git/forge/inte
 - chat state and skills
 - agent construction
 - live callbacks used by the TUI for provider/model refresh and switching
+
+The provider picker in [internal/tui/chatmodel.go](/Users/cass/git/forge/internal/tui/chatmodel.go) stays generic for these providers. Unknown non-interactive provider ids are treated as API-key providers, and their credentials flow through the dynamic token helpers in [internal/tui/chatshared.go](/Users/cass/git/forge/internal/tui/chatshared.go).
 
 ### Tool registration
 
