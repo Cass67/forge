@@ -11,11 +11,15 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"forge/internal/auth"
 	"forge/internal/chatgptauth"
+	"forge/internal/codexusage"
 	"forge/internal/copilot"
 	"forge/internal/llm"
+	"forge/internal/modelcatalog"
 	"forge/internal/skills"
 )
 
@@ -123,6 +127,28 @@ func TestChatModelHandlesToolCallEvent(t *testing.T) {
 	if m.toolsBuf == "" {
 		t.Fatal("expected tools buffer to have content")
 	}
+	for _, msg := range m.messages {
+		if msg.Kind == MsgWorking {
+			t.Fatalf("unexpected inline working message for tool call: %#v", msg)
+		}
+	}
+}
+
+func TestChatModelShowsInlineWorkingMessageForRuntimeInfo(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "runtime", Text: "Inspecting repository structure"})
+	m = updated.(ChatModel)
+
+	if len(m.messages) == 0 {
+		t.Fatal("expected working message")
+	}
+	last := m.messages[len(m.messages)-1]
+	if last.Kind != MsgWorking || !strings.Contains(last.Content, "Inspecting repository structure") {
+		t.Fatalf("unexpected last message: %#v", last)
+	}
 }
 
 func TestChatModelSlashClear(t *testing.T) {
@@ -152,18 +178,18 @@ func TestChatModelSlashExit(t *testing.T) {
 	}
 }
 
-func TestChatModelSlashTheme(t *testing.T) {
+func TestChatModelSlashThemeSelectsLight(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 80
 	m.height = 24
 
-	m.inputBuf = "/theme"
-	m.inputPos = 6
+	m.inputBuf = "/theme light"
+	m.inputPos = len(m.inputBuf)
 	updated, _ := m.submitInput()
 	m = updated.(ChatModel)
 
-	if !m.lowContrast {
-		t.Fatal("expected lowContrast=true after /theme")
+	if m.themeID != "light" {
+		t.Fatalf("themeID = %q, want %q", m.themeID, "light")
 	}
 }
 
@@ -176,16 +202,247 @@ func TestChatModelSlashThemeVariants(t *testing.T) {
 	m.inputPos = len(m.inputBuf)
 	updated, _ := m.submitInput()
 	m = updated.(ChatModel)
-	if !m.lowContrast {
-		t.Fatal("expected /theme low to enable low contrast")
+	if m.themeID != "low" {
+		t.Fatalf("themeID = %q, want %q", m.themeID, "low")
 	}
 
 	m.inputBuf = "/theme default"
 	m.inputPos = len(m.inputBuf)
 	updated, _ = m.submitInput()
 	m = updated.(ChatModel)
-	if m.lowContrast {
-		t.Fatal("expected /theme default to disable low contrast")
+	if m.themeID != "default" {
+		t.Fatalf("themeID = %q, want %q", m.themeID, "default")
+	}
+}
+
+func TestChatModelSlashThemeChangesRenderedViewportStyle(t *testing.T) {
+	prevProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(prevProfile)
+	})
+
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	m.AddMessage(ChatMessage{Kind: MsgUser, Header: "You • 12:00:00", Content: "hello world"})
+	defaultRendered := m.chatViewport.View()
+	if defaultRendered == "" {
+		t.Fatal("expected rendered viewport content")
+	}
+
+	m.inputBuf = "/theme light"
+	m.inputPos = len(m.inputBuf)
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+
+	lightRendered := m.chatViewport.View()
+	if lightRendered == "" {
+		t.Fatal("expected rendered viewport content after theme change")
+	}
+	if defaultRendered == lightRendered {
+		t.Fatal("expected viewport rendering to change across themes")
+	}
+	if !strings.Contains(defaultRendered, "hello world") || !strings.Contains(lightRendered, "hello world") {
+		t.Fatal("expected message content to remain visible")
+	}
+}
+
+func TestChatModelViewHeaderIncludesThemeName(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test-model", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+	m.themeID = "dusk"
+	m.AddMessage(ChatMessage{Kind: MsgUser, Header: "You • 12:00:00", Content: "hello"})
+
+	v := m.View()
+	if !strings.Contains(v, "theme: dusk") {
+		t.Fatalf("view header missing theme name: %s", v)
+	}
+}
+
+func TestChatModelViewShowsActiveModelAndThemeInHeader(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "copilot/gpt-5", WorkDir: "/tmp"})
+	m.width = 120
+	m.height = 30
+	m.themeID = "light"
+
+	got := m.View()
+	lines := strings.Split(got, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("view missing two-line header: %q", got)
+	}
+	if !strings.Contains(lines[0], "copilot/gpt-5") || !strings.Contains(lines[0], "theme: light") {
+		t.Fatalf("header line 1 missing model or theme: %q", lines[0])
+	}
+}
+
+func TestChatModelViewFitsWithinWindowHeight(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "copilot/gpt-5", WorkDir: "/tmp"})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+	m = updated.(ChatModel)
+
+	lines := strings.Split(m.View(), "\n")
+	if len(lines) > 24 {
+		t.Fatalf("view has %d lines, want <= 24", len(lines))
+	}
+}
+
+func TestChatModelViewShowsSecondStatusLine(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "copilot/gpt-5", WorkDir: "/tmp"})
+	m.width = 120
+	m.height = 30
+	m.statsUsage = llm.Usage{InputTokens: 100, OutputTokens: 20}
+	m.sessionUsage = llm.Usage{InputTokens: 100, OutputTokens: 20}
+
+	got := m.View()
+	lines := strings.Split(got, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("view missing second status line: %q", got)
+	}
+	if !strings.Contains(lines[1], "ready") || !strings.Contains(lines[1], "last 100 in / 20 out") {
+		t.Fatalf("header line 2 missing status summary: %q", lines[1])
+	}
+}
+
+func TestChatModelViewShowsContextSummaryInHeader(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "openai/gpt-5",
+		WorkDir: "/tmp",
+		ModelInfo: func(model string) *modelcatalog.ModelInfo {
+			return &modelcatalog.ModelInfo{ContextWindow: 8000}
+		},
+	})
+	m.width = 120
+	m.height = 30
+	m.sessionUsage = llm.Usage{InputTokens: 100, OutputTokens: 20}
+
+	got := m.View()
+	lines := strings.Split(got, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("view missing second status line: %q", got)
+	}
+	if !strings.Contains(lines[1], "session 120 tok") || !strings.Contains(lines[1], "est ctx 120/8000") {
+		t.Fatalf("header line 2 missing context summary: %q", lines[1])
+	}
+}
+
+func TestChatModelViewShowsBaselineSessionStatsBeforeFirstResponse(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "openai/gpt-5",
+		WorkDir: "/tmp",
+		ModelInfo: func(model string) *modelcatalog.ModelInfo {
+			return &modelcatalog.ModelInfo{ContextWindow: 8000}
+		},
+	})
+	m.width = 120
+	m.height = 30
+
+	got := m.View()
+	lines := strings.Split(got, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("view missing second status line: %q", got)
+	}
+	if !strings.Contains(lines[1], "session 0 tok") || !strings.Contains(lines[1], "est ctx 0/8000") {
+		t.Fatalf("header line 2 missing baseline session stats: %q", lines[1])
+	}
+}
+
+func TestChatModelEventStatsFetchesProviderDiagnosticsForHeader(t *testing.T) {
+	codexCalls := 0
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "openai/gpt-5",
+		WorkDir: "/tmp",
+		FetchCodexUsage: func(ctx context.Context) (*codexusage.Snapshot, error) {
+			codexCalls++
+			return &codexusage.Snapshot{
+				Plan: "pro",
+				Primary: &codexusage.Window{
+					UsedPercent: 20,
+					ResetIn:     "5h",
+				},
+			}, nil
+		},
+	})
+	m.width = 120
+	m.height = 30
+
+	updated, cmd := m.Update(llm.Event{
+		Kind:     llm.EventStats,
+		Duration: time.Second,
+		Usage:    llm.Usage{InputTokens: 100, OutputTokens: 20},
+	})
+	m = updated.(ChatModel)
+	if cmd == nil {
+		t.Fatal("expected stats event to trigger provider diagnostics fetch")
+	}
+	if msg := cmd(); msg != nil {
+		updated, _ = m.Update(msg)
+		m = updated.(ChatModel)
+	}
+
+	if codexCalls != 1 {
+		t.Fatalf("codexCalls = %d, want 1", codexCalls)
+	}
+	lines := strings.Split(m.View(), "\n")
+	if len(lines) < 2 || !strings.Contains(lines[1], "Codex") {
+		t.Fatalf("header line 2 missing codex summary: %q", strings.Join(lines, "\n"))
+	}
+}
+
+func TestChatModelViewShowsCopilotSummaryOnlyForCopilotModel(t *testing.T) {
+	quota := &copilot.UserQuota{
+		Windows: map[string]llm.CopilotQuota{
+			"premium": {Type: "premium", Remaining: 3, Included: 10},
+		},
+	}
+
+	copilotModel := NewChatModel(ChatLiveConfig{Model: "copilot/gpt-5", WorkDir: "/tmp"})
+	copilotModel.width = 120
+	copilotModel.height = 30
+	copilotModel.statusData.CopilotLive = quota
+	copilotLines := strings.Split(copilotModel.View(), "\n")
+	if len(copilotLines) < 2 {
+		t.Fatalf("copilot view missing second status line: %q", copilotModel.View())
+	}
+	if !strings.Contains(copilotLines[1], "Copilot") {
+		t.Fatalf("expected Copilot summary for copilot model: %q", copilotLines[1])
+	}
+
+	otherModel := NewChatModel(ChatLiveConfig{Model: "anthropic/claude-sonnet-4-6", WorkDir: "/tmp"})
+	otherModel.width = 120
+	otherModel.height = 30
+	otherModel.statusData.CopilotLive = quota
+	otherLines := strings.Split(otherModel.View(), "\n")
+	if len(otherLines) < 2 {
+		t.Fatalf("other view missing second status line: %q", otherModel.View())
+	}
+	if strings.Contains(otherLines[1], "Copilot") {
+		t.Fatalf("did not expect Copilot summary for non-Copilot model: %q", otherLines[1])
+	}
+}
+
+func TestChatModelHelpOverlayChangesAcrossThemes(t *testing.T) {
+	prevProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(prevProfile)
+	})
+
+	m := NewChatModel(ChatLiveConfig{Model: "test-model", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 30
+	m.helpVisible = true
+
+	defaultOverlay := m.View()
+	m.themeID = "light"
+	lightOverlay := m.View()
+	if defaultOverlay == lightOverlay {
+		t.Fatal("expected help overlay rendering to change across themes")
+	}
+	if !strings.Contains(defaultOverlay, "Help") || !strings.Contains(lightOverlay, "Help") {
+		t.Fatal("expected help overlay content to remain visible")
 	}
 }
 
@@ -211,20 +468,46 @@ func TestChatModelSlashHelpOpensOverlay(t *testing.T) {
 	}
 }
 
-func TestChatModelSlashStatsShowsUsage(t *testing.T) {
-	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+func TestChatModelSlashStatsShowsSectionedOverlay(t *testing.T) {
+	copilotCalls := 0
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "copilot/gpt-5",
+		WorkDir: "/tmp",
+		FetchLiveCopilotQuota: func(ctx context.Context) (*copilot.UserQuota, error) {
+			copilotCalls++
+			return &copilot.UserQuota{
+				Windows: map[string]llm.CopilotQuota{
+					"premium": {Type: "premium_interactions", Remaining: 143},
+				},
+			}, nil
+		},
+		RequestMode: func() string { return "responses" },
+		ModelInfo: func(model string) *modelcatalog.ModelInfo {
+			return &modelcatalog.ModelInfo{Reasoning: true, ToolCall: true}
+		},
+	})
 	m.width = 100
 	m.height = 24
 
-	updated, _ := m.Update(llm.Event{Kind: llm.EventStats, Duration: time.Second, Usage: llm.Usage{InputTokens: 120, OutputTokens: 30}})
+	updated, cmd := m.Update(llm.Event{Kind: llm.EventStats, Duration: time.Second, Usage: llm.Usage{InputTokens: 120, OutputTokens: 30}})
 	m = updated.(ChatModel)
-	updated, _ = m.Update(llm.Event{Kind: llm.EventStats, Duration: 2 * time.Second, Usage: llm.Usage{InputTokens: 80, OutputTokens: 20}})
-	m = updated.(ChatModel)
+	if cmd != nil {
+		if msg := cmd(); msg != nil {
+			updated, _ = m.Update(msg)
+			m = updated.(ChatModel)
+		}
+	}
 
 	m.inputBuf = "/stats"
 	m.inputPos = len("/stats")
-	updated, _ = m.submitInput()
+	updated, cmd = m.submitInput()
 	m = updated.(ChatModel)
+	if cmd != nil {
+		if msg := cmd(); msg != nil {
+			updated, _ = m.Update(msg)
+			m = updated.(ChatModel)
+		}
+	}
 
 	if got := m.flash; got != "stats opened" {
 		t.Fatalf("flash = %q, want %q", got, "stats opened")
@@ -232,11 +515,128 @@ func TestChatModelSlashStatsShowsUsage(t *testing.T) {
 	if !m.statsVisible {
 		t.Fatal("expected stats overlay after /stats")
 	}
-	if got := m.View(); !strings.Contains(got, "Latest turn input:   80") {
-		t.Fatalf("view missing visible stats output: %s", got)
+	if copilotCalls != 1 {
+		t.Fatalf("copilotCalls = %d, want 1", copilotCalls)
 	}
-	if got := m.View(); !strings.Contains(got, "Session total:       250") {
-		t.Fatalf("view missing session total: %s", got)
+	got := m.View()
+	for _, want := range []string{"Turn", "Session", "Provider", "Model", "Diagnostics", "143", "responses", "reasoning"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("view missing %q: %s", want, got)
+		}
+	}
+}
+
+func TestChatModelSlashStatsFetchesCodexUsageLazily(t *testing.T) {
+	codexCalls := 0
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "openai/gpt-5",
+		WorkDir: "/tmp",
+		FetchCodexUsage: func(ctx context.Context) (*codexusage.Snapshot, error) {
+			codexCalls++
+			return &codexusage.Snapshot{
+				Plan: "pro",
+				Primary: &codexusage.Window{
+					UsedPercent: 20,
+					ResetIn:     "5h",
+				},
+			}, nil
+		},
+		RequestMode: func() string { return "responses" },
+	})
+	m.width = 100
+	m.height = 24
+
+	m.inputBuf = "/stats"
+	m.inputPos = len("/stats")
+	updated, cmd := m.submitInput()
+	m = updated.(ChatModel)
+	if cmd == nil {
+		t.Fatal("expected /stats to return fetch command")
+	}
+	if msg := cmd(); msg != nil {
+		updated, _ = m.Update(msg)
+		m = updated.(ChatModel)
+	}
+
+	if codexCalls != 1 {
+		t.Fatalf("codexCalls = %d, want 1", codexCalls)
+	}
+	got := m.View()
+	if !strings.Contains(got, "OpenAI/Codex") || !strings.Contains(got, "pro") || !strings.Contains(got, "5h") {
+		t.Fatalf("view missing codex usage overlay content: %s", got)
+	}
+}
+
+func TestChatModelSlashStatsReusesCachedProviderDiagnostics(t *testing.T) {
+	copilotCalls := 0
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "copilot/gpt-5",
+		WorkDir: "/tmp",
+		FetchLiveCopilotQuota: func(ctx context.Context) (*copilot.UserQuota, error) {
+			copilotCalls++
+			return &copilot.UserQuota{
+				Windows: map[string]llm.CopilotQuota{
+					"premium": {Type: "premium_interactions", Remaining: 143},
+				},
+			}, nil
+		},
+	})
+	m.width = 100
+	m.height = 24
+
+	m.inputBuf = "/stats"
+	m.inputPos = len("/stats")
+	updated, cmd := m.submitInput()
+	m = updated.(ChatModel)
+	if cmd == nil {
+		t.Fatal("expected first /stats to return fetch command")
+	}
+	if msg := cmd(); msg != nil {
+		updated, _ = m.Update(msg)
+		m = updated.(ChatModel)
+	}
+	if copilotCalls != 1 {
+		t.Fatalf("copilotCalls after first open = %d, want 1", copilotCalls)
+	}
+
+	m.statsVisible = false
+	m.inputBuf = "/stats"
+	m.inputPos = len("/stats")
+	updated, cmd = m.submitInput()
+	m = updated.(ChatModel)
+	if cmd != nil {
+		if msg := cmd(); msg != nil {
+			updated, _ = m.Update(msg)
+			m = updated.(ChatModel)
+		}
+	}
+	if copilotCalls != 1 {
+		t.Fatalf("copilotCalls after second open = %d, want cached 1", copilotCalls)
+	}
+}
+
+func TestChatModelApplySnapshotClearsProviderDiagnostics(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "copilot/gpt-5", WorkDir: "/tmp"})
+	m.statusData.CopilotLive = &copilot.UserQuota{
+		Windows: map[string]llm.CopilotQuota{
+			"premium": {Type: "premium_interactions", Remaining: 143},
+		},
+	}
+	m.statusData.CodexUsage = &codexusage.Snapshot{Plan: "pro"}
+	m.statsCopilotErr = "temporary failure"
+	m.statsCodexErr = "temporary failure"
+
+	m.applySnapshot(chatSessionSnapshot{
+		Model:        "anthropic/claude-sonnet-4-6",
+		WorkDir:      "/tmp/restored",
+		SessionUsage: llm.Usage{InputTokens: 20, OutputTokens: 10},
+	})
+
+	if m.statusData.CopilotLive != nil || m.statusData.CodexUsage != nil {
+		t.Fatalf("expected restored snapshot to clear provider diagnostics: %#v", m.statusData)
+	}
+	if m.statsCopilotErr != "" || m.statsCodexErr != "" {
+		t.Fatalf("expected restored snapshot to clear provider errors: copilot=%q codex=%q", m.statsCopilotErr, m.statsCodexErr)
 	}
 }
 
@@ -789,6 +1189,59 @@ func TestChatModelProviderOverlaySavesAPIKey(t *testing.T) {
 	}
 }
 
+func TestChatModelProviderOverlaySavesAPIKeyPreservesSelectedProviderAcrossRefresh(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	t.Setenv("HOME", configDir)
+	switched := ""
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "test",
+		WorkDir: "/tmp",
+		Providers: []ProviderOption{
+			{ID: "openrouter", Label: "OpenRouter", Status: "configure API key", DefaultModel: "openrouter/openai/gpt-5"},
+			{ID: "openai", Label: "OpenAI", Status: "ready", DefaultModel: "openai/gpt-5"},
+		},
+		RefreshProviders: func() []ProviderOption {
+			return []ProviderOption{
+				{ID: "openai", Label: "OpenAI", Status: "ready", DefaultModel: "openai/gpt-5"},
+				{ID: "openrouter", Label: "OpenRouter", Status: "ready", DefaultModel: "openrouter/openai/gpt-5"},
+			}
+		},
+		SwitchModel: func(name string) (string, error) {
+			switched = name
+			return name, nil
+		},
+	})
+	m.width = 100
+	m.height = 24
+	m.openProviderPicker()
+	m.providersCursor = 1
+
+	updated, _ := m.handleProvidersKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+	if !m.providerPromptingKey {
+		t.Fatal("expected API key prompt")
+	}
+	m.providerKeyInput = "sk-openrouter"
+	m.providerKeyPos = len(m.providerKeyInput)
+	updated, _ = m.handleProvidersKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+
+	tokens, err := auth.Load()
+	if err != nil {
+		t.Fatalf("auth.Load: %v", err)
+	}
+	if tokens.OpenRouterAPIKey != "sk-openrouter" {
+		t.Fatalf("OpenRouter key = %q", tokens.OpenRouterAPIKey)
+	}
+	if switched != "openrouter/openai/gpt-5" {
+		t.Fatalf("switched = %q", switched)
+	}
+	if m.providersCursor != 1 {
+		t.Fatalf("providersCursor = %d, want 1", m.providersCursor)
+	}
+}
+
 func TestChatModelProviderOverlayDeletesAPIKey(t *testing.T) {
 	configDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configDir)
@@ -962,6 +1415,192 @@ func TestChatModelProviderOverlayCopilotLoginFlow(t *testing.T) {
 	}
 	if switched != "copilot/gpt-5" {
 		t.Fatalf("switched = %q", switched)
+	}
+}
+
+func TestChatModelProviderOverlaySaveDoesNotFetchCodexUsageAutomatically(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	codexCalls := 0
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "test",
+		WorkDir: "/tmp",
+		Providers: []ProviderOption{
+			{ID: "openai", Label: "OpenAI", Status: "configure API key", DefaultModel: "openai/gpt-5"},
+		},
+		RefreshProviders: func() []ProviderOption {
+			return []ProviderOption{{ID: "openai", Label: "OpenAI", Status: "ready", DefaultModel: "openai/gpt-5"}}
+		},
+		SwitchModel: func(name string) (string, error) {
+			return name, nil
+		},
+		FetchCodexUsage: func(ctx context.Context) (*codexusage.Snapshot, error) {
+			codexCalls++
+			return &codexusage.Snapshot{Plan: "pro"}, nil
+		},
+	})
+	m.width = 100
+	m.height = 24
+	m.openProviderPicker()
+
+	updated, _ := m.handleProvidersKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+	m.providerKeyInput = "sk-test"
+	m.providerKeyPos = len(m.providerKeyInput)
+	updated, cmd := m.handleProvidersKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+
+	if cmd != nil {
+		if msg := cmd(); msg != nil {
+			updated, _ = m.Update(msg)
+			m = updated.(ChatModel)
+		}
+	}
+	if codexCalls != 0 {
+		t.Fatalf("codexCalls = %d, want 0 after provider save", codexCalls)
+	}
+}
+
+func TestChatModelProviderOverlayCopilotAuthDoesNotFetchQuotaAutomatically(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	prevStart := startCopilotDeviceAuth
+	prevWait := waitCopilotDeviceAuth
+	startCopilotDeviceAuth = func(ctx context.Context, clientID string) (*copilot.DeviceCode, error) {
+		return &copilot.DeviceCode{VerificationURI: "https://github.com/login/device", UserCode: "GH-1234"}, nil
+	}
+	waitCopilotDeviceAuth = func(ctx context.Context, clientID string, dc *copilot.DeviceCode) (string, error) {
+		return "copilot-token", nil
+	}
+	t.Cleanup(func() {
+		startCopilotDeviceAuth = prevStart
+		waitCopilotDeviceAuth = prevWait
+	})
+
+	copilotCalls := 0
+	authenticated := false
+	m := NewChatModel(ChatLiveConfig{
+		Model:           "test",
+		WorkDir:         "/tmp",
+		CopilotClientID: "client-id",
+		Providers: []ProviderOption{
+			{ID: "copilot", Label: "GitHub Copilot", Status: "sign in", DefaultModel: "copilot/gpt-5"},
+		},
+		RefreshProviders: func() []ProviderOption {
+			status := "sign in"
+			if authenticated {
+				status = "ready"
+			}
+			return []ProviderOption{{ID: "copilot", Label: "GitHub Copilot", Status: status, DefaultModel: "copilot/gpt-5"}}
+		},
+		RefreshModels: func() []string {
+			return []string{"copilot/gpt-5"}
+		},
+		SwitchModel: func(name string) (string, error) {
+			return name, nil
+		},
+		FetchLiveCopilotQuota: func(ctx context.Context) (*copilot.UserQuota, error) {
+			copilotCalls++
+			return &copilot.UserQuota{}, nil
+		},
+	})
+	m.width = 100
+	m.height = 24
+	m.openProviderPicker()
+
+	updated, cmd := m.handleProvidersKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+	startMsg := cmd().(providerAuthStartedMsg)
+	updated, cmd = m.Update(startMsg)
+	m = updated.(ChatModel)
+	authenticated = true
+	successMsg := cmd().(providerAuthSucceededMsg)
+	updated, cmd = m.Update(successMsg)
+	m = updated.(ChatModel)
+
+	if cmd != nil {
+		if msg := cmd(); msg != nil {
+			updated, _ = m.Update(msg)
+			m = updated.(ChatModel)
+		}
+	}
+	if copilotCalls != 0 {
+		t.Fatalf("copilotCalls = %d, want 0 after provider auth", copilotCalls)
+	}
+}
+
+func TestChatModelProviderOverlayCopilotLoginPreservesSelectedProviderAcrossRefresh(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	t.Setenv("HOME", configDir)
+	prevStart := startCopilotDeviceAuth
+	prevWait := waitCopilotDeviceAuth
+	startCopilotDeviceAuth = func(ctx context.Context, clientID string) (*copilot.DeviceCode, error) {
+		return &copilot.DeviceCode{VerificationURI: "https://github.com/login/device", UserCode: "GH-1234"}, nil
+	}
+	waitCopilotDeviceAuth = func(ctx context.Context, clientID string, dc *copilot.DeviceCode) (string, error) {
+		return "copilot-token", nil
+	}
+	t.Cleanup(func() {
+		startCopilotDeviceAuth = prevStart
+		waitCopilotDeviceAuth = prevWait
+	})
+
+	authenticated := false
+	switched := ""
+	m := NewChatModel(ChatLiveConfig{
+		Model:           "test",
+		WorkDir:         "/tmp",
+		CopilotClientID: "client-id",
+		Providers: []ProviderOption{
+			{ID: "copilot", Label: "GitHub Copilot", Status: "sign in", DefaultModel: "copilot/gpt-5"},
+			{ID: "openai", Label: "OpenAI", Status: "ready", DefaultModel: "openai/gpt-5"},
+		},
+		RefreshProviders: func() []ProviderOption {
+			status := "sign in"
+			if authenticated {
+				status = "ready"
+			}
+			return []ProviderOption{
+				{ID: "openai", Label: "OpenAI", Status: "ready", DefaultModel: "openai/gpt-5"},
+				{ID: "copilot", Label: "GitHub Copilot", Status: status, DefaultModel: "copilot/gpt-5"},
+			}
+		},
+		RefreshModels: func() []string {
+			return []string{"copilot/gpt-5", "openai/gpt-5"}
+		},
+		SwitchModel: func(name string) (string, error) {
+			switched = name
+			return name, nil
+		},
+	})
+	m.width = 100
+	m.height = 24
+	m.openProviderPicker()
+	m.providersCursor = 1
+
+	updated, cmd := m.handleProvidersKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+	startMsg := cmd().(providerAuthStartedMsg)
+	updated, cmd = m.Update(startMsg)
+	m = updated.(ChatModel)
+	authenticated = true
+	successMsg := cmd().(providerAuthSucceededMsg)
+	updated, _ = m.Update(successMsg)
+	m = updated.(ChatModel)
+
+	tokens, err := auth.Load()
+	if err != nil {
+		t.Fatalf("auth.Load: %v", err)
+	}
+	if tokens.CopilotToken != "copilot-token" {
+		t.Fatalf("expected copilot token saved, got %q", tokens.CopilotToken)
+	}
+	if switched != "copilot/gpt-5" {
+		t.Fatalf("switched = %q", switched)
+	}
+	if m.providersCursor != 1 {
+		t.Fatalf("providersCursor = %d, want 1", m.providersCursor)
 	}
 }
 

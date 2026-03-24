@@ -17,9 +17,11 @@ var snapshotData []byte
 
 // ModelInfo holds capability flags for a single model.
 type ModelInfo struct {
-	Reasoning   bool
-	Temperature bool
-	ToolCall    bool
+	Reasoning     bool
+	Temperature   bool
+	ToolCall      bool
+	ContextWindow int
+	OutputLimit   int
 }
 
 // providerData mirrors the relevant fields from models.dev's JSON structure.
@@ -31,6 +33,10 @@ type modelEntry struct {
 	Reasoning   bool `json:"reasoning"`
 	Temperature bool `json:"temperature"`
 	ToolCall    bool `json:"tool_call"`
+	Limit       struct {
+		Context int `json:"context"`
+		Output  int `json:"output"`
+	} `json:"limit"`
 }
 
 // forgeToModelsDev maps forge provider labels to models.dev provider IDs.
@@ -56,12 +62,13 @@ var forgeToModelsDev = map[string]string{
 }
 
 var (
-	mu      sync.RWMutex
-	catalog map[string]providerData // keyed by models.dev provider ID
+	mu             sync.RWMutex
+	bundledCatalog = parseSnapshot(snapshotData)
+	catalog        map[string]providerData // keyed by models.dev provider ID
 )
 
 func init() {
-	catalog = parseSnapshot(snapshotData)
+	catalog = bundledCatalog
 	go refreshLoop()
 }
 
@@ -158,18 +165,56 @@ func Lookup(providerID, modelID string) *ModelInfo {
 	mu.RLock()
 	provider, ok := catalog[mdevID]
 	mu.RUnlock()
-	if !ok {
+	liveInfo, liveOK := lookupModelInfo(provider, ok, modelID)
+	bundledInfo, bundledOK := lookupModelInfo(bundledCatalog[mdevID], bundledCatalog != nil, modelID)
+
+	switch {
+	case liveOK && bundledOK:
+		return mergeModelInfo(liveInfo, bundledInfo)
+	case liveOK:
+		return liveInfo
+	case bundledOK:
+		return bundledInfo
+	default:
 		return nil
 	}
+}
 
-	if entry, ok := provider.Models[modelID]; ok {
-		return &ModelInfo{
-			Reasoning:   entry.Reasoning,
-			Temperature: entry.Temperature,
-			ToolCall:    entry.ToolCall,
-		}
+func lookupModelInfo(provider providerData, providerOK bool, modelID string) (*ModelInfo, bool) {
+	if !providerOK {
+		return nil, false
 	}
-	return nil
+	entry, ok := provider.Models[modelID]
+	if !ok {
+		return nil, false
+	}
+	return &ModelInfo{
+		Reasoning:     entry.Reasoning,
+		Temperature:   entry.Temperature,
+		ToolCall:      entry.ToolCall,
+		ContextWindow: entry.Limit.Context,
+		OutputLimit:   entry.Limit.Output,
+	}, true
+}
+
+func mergeModelInfo(primary, fallback *ModelInfo) *ModelInfo {
+	if primary == nil {
+		return fallback
+	}
+	if fallback == nil {
+		return primary
+	}
+	out := *primary
+	out.Reasoning = out.Reasoning || fallback.Reasoning
+	out.Temperature = out.Temperature || fallback.Temperature
+	out.ToolCall = out.ToolCall || fallback.ToolCall
+	if out.ContextWindow <= 0 {
+		out.ContextWindow = fallback.ContextWindow
+	}
+	if out.OutputLimit <= 0 {
+		out.OutputLimit = fallback.OutputLimit
+	}
+	return &out
 }
 
 // ProviderModels returns all tool-callable model IDs for a forge provider.
