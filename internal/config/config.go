@@ -228,9 +228,9 @@ func DefaultPath() string {
 }
 
 func setDefaults(c *Config) {
-	c.Models.Writer = "claude-3-7-sonnet-latest"
+	c.Models.Writer = "claude-sonnet-4-20250514"
 	c.Models.Auditor = "gpt-4o"
-	c.Models.Summarizer = "claude-3-5-haiku-latest"
+	c.Models.Summarizer = "claude-3-5-haiku-20241022"
 	c.Session.RoundsPerPass = 5
 	c.Session.OutputDir = "./output"
 	c.Log.Level = "info"
