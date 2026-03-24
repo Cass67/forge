@@ -138,6 +138,8 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		var lineBuf strings.Builder
 		inToolCall := false
 		inCodeFence := false
+		seenToolCall := false
+		var dispatchBuf []string // buffered lines before first tool call for dispatch
 		for tok := range out {
 			sb.WriteString(tok.Text)
 
@@ -158,6 +160,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 					if !inCodeFence {
 						if _, ok := isToolCallOpen(trimmed); ok {
 							inToolCall = true
+							seenToolCall = true
 							continue
 						}
 						if _, ok := isToolCallClose(trimmed); ok {
@@ -167,6 +170,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 						// Standalone <invoke> blocks (not wrapped in <function_calls>).
 						if strings.HasPrefix(trimmed, "<invoke") {
 							inToolCall = true
+							seenToolCall = true
 							continue
 						}
 						if strings.Contains(trimmed, "</invoke>") {
@@ -175,7 +179,11 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 						}
 					}
 					if !inToolCall {
-						a.renderer.AgentToken(line)
+						if a.role == "dispatch" && !seenToolCall {
+							dispatchBuf = append(dispatchBuf, line)
+						} else {
+							a.renderer.AgentToken(line)
+						}
 					}
 				}
 			}
@@ -187,9 +195,19 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			if _, ok := isToolCallOpen(trimmed); !ok {
 				if _, ok := isToolCallClose(trimmed); !ok {
 					if !strings.HasPrefix(trimmed, "<invoke") && !strings.Contains(trimmed, "</invoke>") {
-						a.renderer.AgentToken(remaining)
+						if a.role == "dispatch" && !seenToolCall {
+							dispatchBuf = append(dispatchBuf, remaining)
+						} else {
+							a.renderer.AgentToken(remaining)
+						}
 					}
 				}
+			}
+		}
+		// If dispatch had no tool calls this turn, flush buffered prose (final answer).
+		if a.role == "dispatch" && !seenToolCall && len(dispatchBuf) > 0 {
+			for _, line := range dispatchBuf {
+				a.renderer.AgentToken(line)
 			}
 		}
 
@@ -256,7 +274,11 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 
 		// Append compact history entries; preserve UI output separately via the renderer only.
 		a.lastFullResponse = visibleText
-		if assistantSummary := compactAssistantHistory(visibleText); assistantSummary != "" {
+		assistantText := visibleText
+		if a.role == "dispatch" && len(calls) > 0 {
+			assistantText = ""
+		}
+		if assistantSummary := compactAssistantHistory(assistantText); assistantSummary != "" {
 			a.history = append(a.history, llm.Message{
 				Role:    llm.RoleAssistant,
 				Content: assistantSummary,
