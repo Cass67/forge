@@ -45,8 +45,40 @@ func TestScoutPromptKeepsRecommendationsOutOfScoutResponses(t *testing.T) {
 	}
 }
 
+func TestBuilderPromptRequiresActionFirstAndVerificationDiscipline(t *testing.T) {
+	for _, want := range []string{
+		"Your first working turn must contain tool calls or edits, not a plan.",
+		"If task context already contains scout or architect findings, use that context as your starting point instead of re-running the same broad discovery.",
+		"End-to-end verification is part of the task, not optional cleanup.",
+		"Do not claim a fix without evidence from commands or test output.",
+		"Do not restart a repo-wide search if scout or architect already handed you the relevant files or findings.",
+	} {
+		if !strings.Contains(builderPrompt, want) {
+			t.Fatalf("builder prompt missing %q", want)
+		}
+	}
+}
+
+func TestDoctorPromptRequiresEvidenceBeforeDiagnosis(t *testing.T) {
+	for _, want := range []string{
+		"Core rule: no diagnosis without evidence.",
+		"Your first working turn for a debugging task must contain tool calls, not a theory.",
+		"Do not hand back a debugging plan when you still have read-only tools available to investigate.",
+		"Recommend a fix only after you can state a root cause tied to concrete evidence.",
+		"If you cannot reach root cause, return a blocked diagnostic result that says exactly what evidence is missing.",
+	} {
+		if !strings.Contains(doctorPrompt, want) {
+			t.Fatalf("doctor prompt missing %q", want)
+		}
+	}
+}
+
 func TestArchitectPromptRequiresBlockedResultWhenEvidenceIsIncomplete(t *testing.T) {
 	for _, want := range []string{
+		"Your first working turn should use read/search tools unless the provided context is already sufficient to plan from directly.",
+		"If scout or doctor already produced the relevant evidence, synthesize from that evidence instead of reopening the investigation.",
+		"Do not turn gathered findings into generic user-facing prose; your job is plan structure, prioritization, and decision framing.",
+		"Produce the minimum viable plan that gets the job done.",
 		"If the evidence is incomplete, stale, placeholder-only, or derived from an agent error, do not synthesize recommendations.",
 		"Return a short blocked result that states exactly what evidence is missing.",
 	} {
