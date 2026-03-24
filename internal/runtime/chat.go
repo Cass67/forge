@@ -336,6 +336,7 @@ func configureMultiAgent(a *agent.Agent, baseReg *tools.Registry, setup *ChatSet
 	dispatchRole := agent.Roles["dispatch"]
 	a.SetSystem(agent.BuildSystemPrompt(setup.WorkDir, baseReg.Filter(dispatchRole.AllowTools), "") + "\n\n" + dispatchRole.System)
 	a.SetTools(baseReg.Filter(dispatchRole.AllowTools))
+	a.SetRole("dispatch")
 }
 
 func providerOptionsFromBootstrap(backends []bootstrap.ProviderBackend) []tui.ProviderOption {
