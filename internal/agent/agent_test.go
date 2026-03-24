@@ -16,12 +16,14 @@ import (
 type mockDriver struct {
 	responses []string
 	callIdx   int
+	callCount int
 }
 
 func (d *mockDriver) Name() string { return "mock" }
 
 func (d *mockDriver) Stream(ctx context.Context, messages []llm.Message, out chan<- llm.Token) error {
 	defer close(out)
+	d.callCount++
 	if d.callIdx >= len(d.responses) {
 		out <- llm.Token{Text: "done"}
 		return nil
@@ -390,6 +392,42 @@ func TestEnforceHistoryBudgetSkipsCompactionWhenUnderBudget(t *testing.T) {
 
 	if a.history[0].Content != before[0] || a.history[1].Content != before[1] {
 		t.Fatalf("history should not change under budget: %#v", a.history)
+	}
+}
+
+func TestSubAgentSkipsNudgeOnShortResponse(t *testing.T) {
+	driver := &mockDriver{responses: []string{"FINDINGS:\n- found 3 files"}}
+	reg := tools.NewRegistry()
+	reg.Register(tools.NewListDir(t.TempDir(), nil))
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.isSubAgent = true
+
+	if err := a.Run(context.Background(), "find files"); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callCount != 1 {
+		t.Errorf("expected 1 LLM call, got %d (sub-agent was nudged)", driver.callCount)
+	}
+}
+
+func TestLastFullResponsePreserved(t *testing.T) {
+	longResponse := strings.Repeat("x", 500)
+	driver := &mockDriver{responses: []string{longResponse}}
+	reg := tools.NewRegistry()
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.isSubAgent = true
+
+	if err := a.Run(context.Background(), "do something"); err != nil {
+		t.Fatal(err)
+	}
+	if a.lastFullResponse != longResponse {
+		t.Errorf("lastFullResponse length = %d, want %d", len(a.lastFullResponse), len(longResponse))
 	}
 }
 
