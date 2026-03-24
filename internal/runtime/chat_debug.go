@@ -35,6 +35,13 @@ func EnableChatDebug(setup *ChatSetup, path string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
 		return "", err
 	}
+	f, err := os.OpenFile(resolved, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
 	log, err := logger.NewFileLogger(resolved, logger.LevelDebug)
 	if err != nil {
 		return "", err
