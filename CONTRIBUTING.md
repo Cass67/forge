@@ -7,7 +7,7 @@ This document explains how to work effectively in the Forge repository.
 If you are orienting yourself for the first time, read these in order:
 
 1. [README.md](/Users/cass/git/forge/README.md)
-2. [docs/architecture.md](/Users/cass/git/forge/docs/architecture.md)
+2. [ARCHITECTURE.md](/Users/cass/git/forge/ARCHITECTURE.md)
 3. [cmd/forge/main.go](/Users/cass/git/forge/cmd/forge/main.go)
 4. [internal/bootstrap/runtime.go](/Users/cass/git/forge/internal/bootstrap/runtime.go)
 5. [internal/runtime/chat.go](/Users/cass/git/forge/internal/runtime/chat.go)
@@ -158,8 +158,8 @@ If you change delegation behavior, verify both:
 If behavior changes in any of these areas, update docs in the same change:
 
 - user-facing commands or setup: [README.md](/Users/cass/git/forge/README.md)
-- architectural behavior: [docs/architecture.md](/Users/cass/git/forge/docs/architecture.md)
-- build workflow: [docs/build.md](/Users/cass/git/forge/docs/build.md)
+- architectural behavior: [ARCHITECTURE.md](/Users/cass/git/forge/ARCHITECTURE.md)
+- build workflow: [BUILD.md](/Users/cass/git/forge/BUILD.md)
 
 For larger feature work, also check whether there is already a spec or plan under [docs/superpowers/specs/](/Users/cass/git/forge/docs/superpowers/specs) or [docs/superpowers/plans/](/Users/cass/git/forge/docs/superpowers/plans).
 
