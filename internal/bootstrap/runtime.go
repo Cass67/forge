@@ -176,6 +176,52 @@ func DriverForModel(cfg *config.Config, tokens *auth.Tokens, model string) llm.D
 	return nil
 }
 
+func ResolvedProviderID(cfg *config.Config, tokens *auth.Tokens, model string) string {
+	ref := ParseModelRef(model)
+	resolvedModel := ref.Model
+	if ref.Provider == "claude" || (ref.Provider == "" && canUseClaudeForUnqualifiedModel(resolvedModel)) {
+		return "claude"
+	}
+	if ref.Provider == "anthropic" || (ref.Provider == "" && IsAnthropicModel(model) && cfg.AnthropicKey() != "") {
+		return "anthropic"
+	}
+	if ref.Provider == "chatgpt" || (ref.Provider == "" && canUseChatGPTForUnqualifiedModel(resolvedModel)) {
+		return "chatgpt"
+	}
+	if ref.Provider == "" && IsOpenAIModel(model) && canUseCopilotForUnqualifiedModel(tokens, resolvedModel) {
+		return "copilot"
+	}
+	if ref.Provider == "openai" || (ref.Provider == "" && IsOpenAIModel(model) && cfg.OpenAIKey() != "") {
+		return "openai"
+	}
+	if ref.Provider == "copilot" || (ref.Provider == "" && IsCopilotModel(model) && tokens != nil && strings.TrimSpace(tokens.CopilotToken) != "") {
+		return "copilot"
+	}
+	if p, ambiguous := ResolveCompatProvider(BuildCompatProviders(cfg), model); p != nil {
+		return p.Name
+	} else if ambiguous && ref.Provider != "" {
+		return ref.Provider
+	}
+	return ref.Provider
+}
+
+func ModelDisplayLabel(cfg *config.Config, tokens *auth.Tokens, model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return ""
+	}
+	ref := ParseModelRef(model)
+	name := strings.TrimSpace(ref.Model)
+	if name == "" {
+		name = model
+	}
+	provider := ResolvedProviderID(cfg, tokens, model)
+	if provider == "" {
+		return name
+	}
+	return fmt.Sprintf("%s [%s]", name, provider)
+}
+
 func AvailableModels(cfg *config.Config, tokens *auth.Tokens) []string {
 	var out []string
 	if claudeAuthAvailable() {

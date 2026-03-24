@@ -956,6 +956,16 @@ func TestChatModelSlashModelsOpensOverlay(t *testing.T) {
 		Model:           "openai/gpt-5",
 		WorkDir:         "/tmp",
 		AvailableModels: []string{"openai/gpt-5", "anthropic/claude-sonnet-4-6"},
+		DescribeModel: func(model string) string {
+			switch model {
+			case "openai/gpt-5":
+				return "gpt-5 [openai]"
+			case "anthropic/claude-sonnet-4-6":
+				return "claude-sonnet-4-6 [anthropic]"
+			default:
+				return model
+			}
+		},
 	})
 	m.width = 100
 	m.height = 24
@@ -968,8 +978,35 @@ func TestChatModelSlashModelsOpensOverlay(t *testing.T) {
 	if !m.modelsVisible {
 		t.Fatal("expected models overlay to be visible")
 	}
-	if got := m.View(); !strings.Contains(got, "Models") || !strings.Contains(got, "anthropic/claude-sonnet-4-6") {
+	if got := m.View(); !strings.Contains(got, "Models") || !strings.Contains(got, "claude-sonnet-4-6 [anthropic]") || !strings.Contains(got, "gpt-5 [openai]") {
 		t.Fatalf("models overlay missing content: %s", got)
+	}
+}
+
+func TestChatModelModelFilterMatchesDisplayLabel(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{
+		Model:           "gpt-5.4",
+		WorkDir:         "/tmp",
+		AvailableModels: []string{"gpt-5.4", "openai/gpt-5.4"},
+		DescribeModel: func(model string) string {
+			switch model {
+			case "gpt-5.4":
+				return "gpt-5.4 [chatgpt]"
+			case "openai/gpt-5.4":
+				return "gpt-5.4 [openai]"
+			default:
+				return model
+			}
+		},
+	})
+	m.width = 100
+	m.height = 24
+	m.openModelPicker()
+
+	updated, _ := m.handleModelsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("chatgpt")})
+	m = updated.(ChatModel)
+	if len(m.modelsFiltered) != 1 || m.modelsFiltered[0] != "gpt-5.4" {
+		t.Fatalf("modelsFiltered = %#v", m.modelsFiltered)
 	}
 }
 

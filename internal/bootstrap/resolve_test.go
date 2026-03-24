@@ -428,6 +428,29 @@ func TestAvailableModelsUsesLiveCompatCatalogWhenExplicitlyEnabled(t *testing.T)
 	}
 }
 
+func TestModelDisplayLabelShowsResolvedProviderForUnqualifiedModel(t *testing.T) {
+	cfg := testConfig()
+	cfg.Keys.OpenAI = "openai-key"
+	prevAvail := chatGPTAuthAvailable
+	defer func() { chatGPTAuthAvailable = prevAvail }()
+	chatGPTAuthAvailable = func() bool { return true }
+
+	got := ModelDisplayLabel(cfg, &auth.Tokens{}, "gpt-5.4")
+	if got != "gpt-5.4 [chatgpt]" {
+		t.Fatalf("ModelDisplayLabel() = %q, want %q", got, "gpt-5.4 [chatgpt]")
+	}
+}
+
+func TestModelDisplayLabelPreservesExplicitProvider(t *testing.T) {
+	cfg := testConfig()
+	cfg.Keys.OpenAI = "openai-key"
+
+	got := ModelDisplayLabel(cfg, &auth.Tokens{}, "openai/gpt-5.4")
+	if got != "gpt-5.4 [openai]" {
+		t.Fatalf("ModelDisplayLabel() = %q, want %q", got, "gpt-5.4 [openai]")
+	}
+}
+
 func TestDiscoverOpenAICompatibleModelsFiltersInvalidLiveIDs(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
