@@ -170,17 +170,13 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 
 		// Parse tool calls
 		calls, visibleText := ParseToolCalls(response)
-		if a.isSubAgent && len(calls) > 0 && strings.TrimSpace(visibleText) != "" {
-			if turn+1 < a.maxTurns {
-				subAgentMixedProseRetries++
-				a.history = append(a.history, llm.Message{
-					Role:    llm.RoleUser,
-					Content: subAgentToolCallNudgeMessage(a.role, subAgentMixedProseRetries),
-				})
-				continue
-			}
+		mixedSubAgentToolCallProse := a.isSubAgent && len(calls) > 0 && strings.TrimSpace(visibleText) != ""
+		if mixedSubAgentToolCallProse {
+			subAgentMixedProseRetries++
+			visibleText = ""
+		} else {
+			subAgentMixedProseRetries = 0
 		}
-		subAgentMixedProseRetries = 0
 
 		// No tool calls — final answer, or stalled narration.
 		if len(calls) == 0 {
@@ -354,6 +350,12 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			Role:    llm.RoleUser,
 			Content: compactToolResults(results),
 		})
+		if mixedSubAgentToolCallProse && turn+1 < a.maxTurns {
+			a.history = append(a.history, llm.Message{
+				Role:    llm.RoleUser,
+				Content: subAgentToolCallNudgeMessage(a.role, subAgentMixedProseRetries),
+			})
+		}
 		if a.role == "dispatch" && dispatchStopAfterTurn {
 			return nil
 		}
