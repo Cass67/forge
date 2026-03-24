@@ -132,6 +132,7 @@ func (r *SubAgentRenderer) AgentText(text string) {
 
 func (r *SubAgentRenderer) ToolCall(name, summary string) {
 	r.parent.events <- llm.Event{Kind: llm.EventToolCall, Agent: name, Text: summary, SubAgent: r.role}
+	r.parent.events <- llm.Event{Kind: llm.EventProgress, Agent: r.role, Text: progressLine(r.role, name, summary)}
 }
 
 func (r *SubAgentRenderer) ToolResult(name, output, diff string, isError bool) {
@@ -142,6 +143,9 @@ func (r *SubAgentRenderer) ToolResult(name, output, diff string, isError bool) {
 		Content:  diff,
 		IsError:  isError,
 		SubAgent: r.role,
+	}
+	if isError {
+		r.parent.events <- llm.Event{Kind: llm.EventProgress, Agent: r.role, Text: fmt.Sprintf("%s: %s failed", r.role, name)}
 	}
 }
 
