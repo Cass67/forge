@@ -133,6 +133,24 @@ func TestAnthropicModelsUseStableAPINames(t *testing.T) {
 	}
 }
 
+func TestPreferredClaudeModelsKeepsLatestVisibleFamilies(t *testing.T) {
+	got := preferredClaudeModels([]string{
+		"claude-sonnet-4-6",
+		"claude-opus-4-6",
+		"claude-opus-4-5-20251101",
+		"claude-sonnet-4-5-20250929",
+		"claude-haiku-4-5",
+	})
+	want := []string{
+		"claude-opus-4-6",
+		"claude-sonnet-4-6",
+		"claude-haiku-4-5",
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("preferredClaudeModels() = %#v, want %#v", got, want)
+	}
+}
+
 func TestDriverForModelMapsLegacyOpenAIAlias(t *testing.T) {
 	cfg := testConfig()
 	cfg.Keys.OpenAI = "openai-key"
