@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -106,6 +108,62 @@ func TestSessionFromTokens(t *testing.T) {
 	}
 	if session.AccountID != "acct" {
 		t.Fatalf("AccountID = %q", session.AccountID)
+	}
+}
+
+func TestLoadUsesForgeAuthStore(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
+	t.Setenv("CODEX_HOME", filepath.Join(t.TempDir(), "codex"))
+
+	expiresAt := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	err := auth.SaveExact(&auth.Tokens{
+		ChatGPTAccessToken:  testJWT(map[string]any{"exp": expiresAt.Unix(), "chatgpt_account_id": "acct_forge"}),
+		ChatGPTRefreshToken: "refresh_forge",
+		ChatGPTAccountID:    "acct_forge",
+		ChatGPTExpiresAt:    expiresAt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	session, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.AccountID != "acct_forge" {
+		t.Fatalf("AccountID = %q, want %q", session.AccountID, "acct_forge")
+	}
+	if session.RefreshToken != "refresh_forge" {
+		t.Fatalf("RefreshToken = %q, want %q", session.RefreshToken, "refresh_forge")
+	}
+}
+
+func TestLoadDoesNotFallBackToExternalAuthFiles(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
+
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+
+	err := os.WriteFile(filepath.Join(codexHome, "auth.json"), []byte(`{
+  "tokens": {
+    "access_token": "external_access",
+    "refresh_token": "external_refresh"
+  }
+}`), 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = Load()
+	if err == nil {
+		t.Fatal("expected Load to require Forge auth")
+	}
+	if !strings.Contains(err.Error(), "sign in with Forge first") {
+		t.Fatalf("Load() error = %q, want Forge sign-in guidance", err.Error())
 	}
 }
 

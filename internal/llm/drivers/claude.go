@@ -12,6 +12,7 @@ import (
 
 type ClaudeDriver struct {
 	client    *anthropic.Client
+	name      string
 	model     string
 	params    llm.Params
 	lastUsage llm.Usage
@@ -21,7 +22,7 @@ type ClaudeDriver struct {
 
 func NewClaude(apiKey, model string) *ClaudeDriver {
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
-	return &ClaudeDriver{client: &client, model: model, params: llm.Params{Temperature: -1}}
+	return &ClaudeDriver{client: &client, name: model, model: model, params: llmDefaultParams()}
 }
 
 func (d *ClaudeDriver) SetParams(p llm.Params) {
@@ -30,7 +31,7 @@ func (d *ClaudeDriver) SetParams(p llm.Params) {
 	d.params = p
 }
 
-func (d *ClaudeDriver) Name() string { return d.model }
+func (d *ClaudeDriver) Name() string { return d.name }
 
 func (d *ClaudeDriver) LastUsage() llm.Usage {
 	d.mu.Lock()

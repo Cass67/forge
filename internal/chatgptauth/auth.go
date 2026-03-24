@@ -9,8 +9,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -31,19 +29,6 @@ const (
 	defaultAuthUserAgent = "forge"
 	pollingSafetyMargin  = 3 * time.Second
 )
-
-type fileTokens struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	IDToken      string `json:"id_token"`
-	AccountID    string `json:"account_id"`
-}
-
-type authFile struct {
-	AuthMode    string     `json:"auth_mode"`
-	Tokens      fileTokens `json:"tokens"`
-	LastRefresh string     `json:"last_refresh"`
-}
 
 type tokenClaims struct {
 	Exp              int64  `json:"exp"`
@@ -113,63 +98,7 @@ func Load() (Session, error) {
 			return session, nil
 		}
 	}
-	path, err := AuthFilePath()
-	if err != nil {
-		return Session{}, err
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return Session{}, errors.New("ChatGPT auth not found; sign in with ChatGPT/Codex first")
-		}
-		return Session{}, fmt.Errorf("reading ChatGPT auth: %w", err)
-	}
-	var auth authFile
-	if err := json.Unmarshal(data, &auth); err != nil {
-		return Session{}, fmt.Errorf("parsing ChatGPT auth: %w", err)
-	}
-	access := strings.TrimSpace(auth.Tokens.AccessToken)
-	refresh := strings.TrimSpace(auth.Tokens.RefreshToken)
-	if access == "" || refresh == "" {
-		return Session{}, errors.New("ChatGPT auth is missing required OAuth tokens")
-	}
-	expiresAt := tokenExpiry(access)
-	if expiresAt.IsZero() {
-		expiresAt = fallbackExpiry(auth.LastRefresh)
-	}
-	accountID := strings.TrimSpace(auth.Tokens.AccountID)
-	if accountID == "" {
-		accountID = extractAccountID(auth.Tokens.IDToken)
-	}
-	if accountID == "" {
-		accountID = extractAccountID(access)
-	}
-	return Session{
-		AccessToken:  access,
-		RefreshToken: refresh,
-		AccountID:    accountID,
-		ExpiresAt:    expiresAt,
-	}, nil
-}
-
-func AuthFilePath() (string, error) {
-	if home := strings.TrimSpace(os.Getenv("CODEX_HOME")); home != "" {
-		return filepath.Join(home, "auth.json"), nil
-	}
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	paths := []string{
-		filepath.Join(homeDir, ".config", "codex", "auth.json"),
-		filepath.Join(homeDir, ".codex", "auth.json"),
-	}
-	for _, path := range paths {
-		if _, err := os.Stat(path); err == nil {
-			return path, nil
-		}
-	}
-	return paths[len(paths)-1], nil
+	return Session{}, errors.New("ChatGPT auth not found; sign in with Forge first")
 }
 
 func NewManager() (*Manager, error) {
@@ -327,16 +256,6 @@ func parseClaims(jwtToken string) (tokenClaims, bool) {
 		return claims, false
 	}
 	return claims, true
-}
-
-func fallbackExpiry(lastRefresh string) time.Time {
-	if strings.TrimSpace(lastRefresh) == "" {
-		return time.Now().Add(defaultTokenLifetime)
-	}
-	if ts, err := time.Parse(time.RFC3339, strings.TrimSpace(lastRefresh)); err == nil {
-		return ts.Add(defaultTokenLifetime)
-	}
-	return time.Now().Add(defaultTokenLifetime)
 }
 
 func sessionFromTokens(tokens *auth.Tokens) (Session, bool) {

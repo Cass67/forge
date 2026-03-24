@@ -26,18 +26,38 @@ func Preflight(cfg *config.Config, tokens *auth.Tokens, reg *llm.Registry) []Iss
 		issues = append(issues, Issue{Name: name, OK: ok, Detail: detail, Severity: severity(ok)})
 	}
 
-	needsAnthropic := IsAnthropicModel(cfg.Models.Writer) || IsAnthropicModel(cfg.Models.Auditor) || IsAnthropicModel(cfg.Models.Summarizer)
+	models := []string{cfg.Models.Writer, cfg.Models.Auditor, cfg.Models.Summarizer}
+	needsAnthropic := false
+	needsClaude := false
+	needsEitherClaude := false
+	for _, model := range models {
+		ref := ParseModelRef(model)
+		switch {
+		case ref.Provider == "anthropic":
+			needsAnthropic = true
+		case ref.Provider == "claude":
+			needsClaude = true
+		case ref.Provider == "" && IsAnthropicModel(model):
+			needsEitherClaude = true
+		}
+	}
 	needsOpenAI := IsOpenAIModel(cfg.Models.Writer) || IsOpenAIModel(cfg.Models.Auditor) || IsOpenAIModel(cfg.Models.Summarizer)
 	needsChatGPT := usesChatGPTProvider(cfg.Models.Writer) || usesChatGPTProvider(cfg.Models.Auditor) || usesChatGPTProvider(cfg.Models.Summarizer)
 
 	if needsAnthropic {
 		appendKeyIssue("ANTHROPIC_API_KEY", "not set — add in Forge provider auth or export in shell", cfg.AnthropicKey() != "")
 	}
+	if needsClaude {
+		appendKeyIssue("Claude auth", "not found — sign in with Forge to authorize Claude.ai", claudeAuthAvailable())
+	}
+	if needsEitherClaude {
+		appendKeyIssue("Claude model auth", "not set — sign in with Forge for Claude.ai or configure an Anthropic API key", claudeAuthAvailable() || cfg.AnthropicKey() != "")
+	}
 	if needsOpenAI {
 		appendKeyIssue("OPENAI_API_KEY", "not set — add in Forge provider auth or export in shell", cfg.OpenAIKey() != "")
 	}
 	if needsChatGPT {
-		appendKeyIssue("ChatGPT/Codex auth", "not found — sign in with ChatGPT/Codex so Forge can read local ChatGPT auth state", chatGPTAuthAvailable())
+		appendKeyIssue("ChatGPT auth", "not found — sign in with Forge to authorize ChatGPT", chatGPTAuthAvailable())
 	}
 
 	compatEnvVars := map[string]string{

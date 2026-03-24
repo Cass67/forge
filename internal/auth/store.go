@@ -15,6 +15,9 @@ type Tokens struct {
 	ChatGPTRefreshToken string    `json:"chatgpt_refresh_token,omitempty"`
 	ChatGPTAccountID    string    `json:"chatgpt_account_id,omitempty"`
 	ChatGPTExpiresAt    time.Time `json:"chatgpt_expires_at,omitempty"`
+	ClaudeAccessToken   string    `json:"claude_access_token,omitempty"`
+	ClaudeRefreshToken  string    `json:"claude_refresh_token,omitempty"`
+	ClaudeExpiresAt     time.Time `json:"claude_expires_at,omitempty"`
 	AnthropicAPIKey     string    `json:"anthropic_api_key,omitempty"`
 	OpenAIAPIKey        string    `json:"openai_api_key,omitempty"`
 	GroqAPIKey          string    `json:"groq_api_key,omitempty"`
@@ -95,6 +98,15 @@ func merge(dst, src *Tokens) *Tokens {
 	}
 	if !src.ChatGPTExpiresAt.IsZero() {
 		dst.ChatGPTExpiresAt = src.ChatGPTExpiresAt
+	}
+	if src.ClaudeAccessToken != "" {
+		dst.ClaudeAccessToken = src.ClaudeAccessToken
+	}
+	if src.ClaudeRefreshToken != "" {
+		dst.ClaudeRefreshToken = src.ClaudeRefreshToken
+	}
+	if !src.ClaudeExpiresAt.IsZero() {
+		dst.ClaudeExpiresAt = src.ClaudeExpiresAt
 	}
 	if src.AnthropicAPIKey != "" {
 		dst.AnthropicAPIKey = src.AnthropicAPIKey

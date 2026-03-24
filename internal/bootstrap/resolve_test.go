@@ -197,13 +197,65 @@ func TestDriverForExplicitChatGPTUsesChatGPTProvider(t *testing.T) {
 	}
 }
 
+func TestDriverForExplicitClaudeUsesClaudeProvider(t *testing.T) {
+	cfg := testConfig()
+
+	prevAvail := claudeAuthAvailable
+	prevDriver := newClaudeOAuthDriver
+	defer func() {
+		claudeAuthAvailable = prevAvail
+		newClaudeOAuthDriver = prevDriver
+	}()
+	claudeAuthAvailable = func() bool { return true }
+	newClaudeOAuthDriver = func(registryName, apiModel string) llm.Driver {
+		return drivers.NewClaudeOAuthAlias(registryName, apiModel, nil)
+	}
+
+	d := DriverForModel(cfg, &auth.Tokens{}, "claude/claude-sonnet-4-6")
+	if d == nil {
+		t.Fatal("expected driver")
+	}
+	if got := d.Name(); got != "claude/claude-sonnet-4-6" {
+		t.Fatalf("driver.Name() = %q, want %q", got, "claude/claude-sonnet-4-6")
+	}
+}
+
+func TestDriverForUnqualifiedClaudePrefersClaudeLoginWhenAvailable(t *testing.T) {
+	cfg := testConfig()
+	cfg.Keys.Anthropic = "anthropic-key"
+
+	prevAvail := claudeAuthAvailable
+	prevDriver := newClaudeOAuthDriver
+	defer func() {
+		claudeAuthAvailable = prevAvail
+		newClaudeOAuthDriver = prevDriver
+	}()
+	claudeAuthAvailable = func() bool { return true }
+	newClaudeOAuthDriver = func(registryName, apiModel string) llm.Driver {
+		return drivers.NewClaudeOAuthAlias(registryName, apiModel, nil)
+	}
+
+	d := DriverForModel(cfg, &auth.Tokens{}, "claude-sonnet-4-6")
+	if d == nil {
+		t.Fatal("expected driver")
+	}
+	if got := d.Name(); got != "claude-sonnet-4-6" {
+		t.Fatalf("driver.Name() = %q, want %q", got, "claude-sonnet-4-6")
+	}
+}
+
 func TestSupportedProviderBackendsIncludesConfiguredAndLoginBackends(t *testing.T) {
 	cfg := testConfig()
 	cfg.Keys.OpenAI = "openai-key"
 	cfg.Keys.Anthropic = "anthropic-key"
 
+	prevClaudeAvail := claudeAuthAvailable
 	prevAvail := chatGPTAuthAvailable
-	defer func() { chatGPTAuthAvailable = prevAvail }()
+	defer func() {
+		claudeAuthAvailable = prevClaudeAvail
+		chatGPTAuthAvailable = prevAvail
+	}()
+	claudeAuthAvailable = func() bool { return true }
 	chatGPTAuthAvailable = func() bool { return true }
 
 	backends := SupportedProviderBackends(cfg, &auth.Tokens{CopilotToken: "copilot-token"})
@@ -214,7 +266,14 @@ func TestSupportedProviderBackendsIncludesConfiguredAndLoginBackends(t *testing.
 		t.Fatalf("first backend = %q, want anthropic", backends[0].ID)
 	}
 	foundChatGPT := false
+	foundClaude := false
 	for _, backend := range backends {
+		if backend.ID == "claude" {
+			foundClaude = true
+			if backend.Status != "ready" {
+				t.Fatalf("claude status = %q, want ready", backend.Status)
+			}
+		}
 		if backend.ID == "chatgpt" {
 			foundChatGPT = true
 			if backend.Status != "ready" {
@@ -224,6 +283,9 @@ func TestSupportedProviderBackendsIncludesConfiguredAndLoginBackends(t *testing.
 	}
 	if !foundChatGPT {
 		t.Fatal("expected chatgpt backend to be present")
+	}
+	if !foundClaude {
+		t.Fatal("expected claude backend to be present")
 	}
 }
 
