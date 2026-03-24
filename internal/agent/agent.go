@@ -111,8 +111,8 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		for tok := range out {
 			sb.WriteString(tok.Text)
 
-			// Filter tool_call blocks line-by-line.
-			// Each complete line is emitted immediately for streaming display.
+			// Filter tool call blocks line-by-line.
+			// Suppresses <tool_call>, <function_calls>, <tool_calls> and their contents.
 			for i := 0; i < len(tok.Text); i++ {
 				ch := tok.Text[i]
 				lineBuf.WriteByte(ch)
@@ -125,13 +125,15 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 					if strings.HasPrefix(trimmed, "```") {
 						inCodeFence = !inCodeFence
 					}
-					if !inCodeFence && strings.Contains(trimmed, "<tool_call>") {
-						inToolCall = true
-						continue
-					}
-					if !inCodeFence && strings.Contains(trimmed, "</tool_call>") {
-						inToolCall = false
-						continue
+					if !inCodeFence {
+						if _, ok := isToolCallOpen(trimmed); ok {
+							inToolCall = true
+							continue
+						}
+						if _, ok := isToolCallClose(trimmed); ok {
+							inToolCall = false
+							continue
+						}
 					}
 					if !inToolCall {
 						a.renderer.AgentToken(line)
@@ -143,8 +145,10 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		remaining := lineBuf.String()
 		if remaining != "" && !inToolCall {
 			trimmed := strings.TrimSpace(remaining)
-			if !strings.Contains(trimmed, "<tool_call>") && !strings.Contains(trimmed, "</tool_call>") {
-				a.renderer.AgentToken(remaining)
+			if _, ok := isToolCallOpen(trimmed); !ok {
+				if _, ok := isToolCallClose(trimmed); !ok {
+					a.renderer.AgentToken(remaining)
+				}
 			}
 		}
 
@@ -232,6 +236,13 @@ func (a *Agent) getUsage() llm.Usage {
 }
 
 func formatCallSummary(call ToolCall) string {
+	if role, ok := call.Args["role"].(string); ok && call.Name == "delegate" {
+		task, _ := call.Args["task"].(string)
+		if len(task) > 80 {
+			task = task[:80] + "..."
+		}
+		return fmt.Sprintf("→ %s: %s", role, task)
+	}
 	if path, ok := call.Args["path"].(string); ok {
 		return path
 	}

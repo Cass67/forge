@@ -315,6 +315,31 @@ Phases 4-8 are independent enhancements that can land in any order.
 
 ---
 
+## TUI Rendering
+
+Sub-agent events are tagged with a `SubAgent` field on `llm.Event`. The TUI routes
+these entirely to the **tools pane** rather than the main chat. This means:
+
+- Dispatch agent text appears in the chat (it's the primary agent)
+- When dispatch delegates to e.g. `scout`, the tools pane shows:
+  - A `delegate` tool call header: `● delegate → scout: <task summary>`
+  - All scout activity streams below with `┊` prefix markers
+  - Scout's tool calls show as `┊ scout › read_file` / `┊ scout › search`
+  - Token output from the sub-agent streams into the tools pane
+  - Stats and errors are also routed to tools pane
+
+The `SubAgentRenderer` in `event_render.go` wraps the parent `EventRenderer` and
+sets `SubAgent: role` on every event it sends. The TUI's `handleSubAgentEvent()`
+processes these separately from normal events.
+
+### Reliability
+
+- Event channel buffer: 256 (up from 64) to handle sub-agent token volume
+- Approval timeout: 5 minutes to prevent permanent deadlocks
+- Sub-agents share the parent's approval flow (approvalCh/responseCh)
+
+---
+
 ## Reference: oh-my-openagent Mapping
 
 | Forge Agent | oh-my-openagent Equivalent | What We Took | What We Skipped |

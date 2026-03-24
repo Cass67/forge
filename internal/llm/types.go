@@ -110,4 +110,5 @@ type Event struct {
 	Content  string        // diff content or full tool output (for /expand)
 	Duration time.Duration // turn duration (EventStats)
 	Usage    Usage         // token usage (EventStats)
+	SubAgent string        // non-empty when event comes from a delegated sub-agent
 }
