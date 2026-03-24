@@ -1,255 +1,139 @@
 # Forge
 
-Write code with one LLM, audit it with another. Repeat until it's production-ready.
+Forge is a terminal-first coding agent for local repositories.
 
-## How it works
+It has two primary modes:
 
-Forge runs your idea through four sequential passes:
+- `forge chat`: an interactive coding loop with tool use, provider switching, approvals, and optional multi-agent delegation
+- `forge` / `forge improve`: a pass-based improvement pipeline that iterates writer, auditor, and summarizer models over a codebase
 
-1. **Correctness** — implement the goal
-2. **Refactor** — clean the code
-3. **Security** — harden against OWASP top 10
-4. **Prod-ready** — logging, shutdown, config, README
+Forge is designed to run against your local working tree, use multiple model providers, and keep the user in control of destructive actions.
 
-Each pass runs N writer → auditor → summarizer rounds. Output lands in `./output/<timestamp>/`.
+## Highlights
 
-## Install
+- local coding agent with file, search, git, command, and web tools
+- provider-aware model routing across ChatGPT, Claude.ai, OpenAI, Anthropic, Copilot, and OpenAI-compatible backends
+- optional multi-agent delegation with `dispatch`, `scout`, `builder`, `doctor`, and `architect` roles
+- live chat TUI with model picker, provider picker, approvals, recent activity, and runtime stats
+- pass-based improvement pipeline for correctness, refactor, security, and production-readiness work
+- session artifacts, summaries, audit logs, and usage tracking
 
-Build from source:
+## Quick Start
+
+Build locally:
 
 ```bash
-git clone ...
-cd forge
-go build -o forge ./cmd/forge
+go build -o ./bin/forge ./cmd/forge
+```
+
+Run chat in the current repository:
+
+```bash
+./bin/forge chat
+```
+
+Run the pass-based improvement pipeline:
+
+```bash
+./bin/forge improve
 ```
 
 ## Configuration
 
-Config file lives at `~/.config/forge/config.toml`. All keys can also be set as environment variables — env vars take precedence.
+Forge reads config from:
+
+- `~/.config/forge/config.toml`
+- or `$XDG_CONFIG_HOME/forge/config.toml` when `XDG_CONFIG_HOME` is set
+
+Auth/token storage lives in:
+
+- `~/.config/forge/auth.json`
+- or `$XDG_CONFIG_HOME/forge/auth.json`
+
+Environment variables override file-based keys where supported.
+
+Minimal example:
 
 ```toml
 [models]
 writer     = "claude-sonnet-4-6"
 auditor    = "gpt-4o"
-summarizer = "claude-haiku-4-5-20251001"
+summarizer = "claude-haiku-4-5"
 
-[session]
-rounds_per_pass = 3
-output_dir = "~/forge-output"
+[chat]
+model = "claude/claude-sonnet-4-6"
 
-[keys]
-anthropic  = "sk-ant-..."
-openai     = "sk-..."
+[chat.agents]
+enabled = true
 ```
 
 ## Providers
 
-Forge supports mixing models from different providers for writer, auditor, and summarizer roles.
+Forge supports both API-key and subscription-backed providers.
 
-### Anthropic
+Interactive login providers:
 
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-```
+- `chatgpt`
+- `claude`
+- `copilot`
 
-Models: `claude-sonnet-4-6`, `claude-opus-4-6`, `claude-3-7-sonnet-latest`, `claude-3-5-haiku-latest`
+API-key providers:
 
-### OpenAI
+- `openai`
+- `anthropic`
+- `groq`
+- `mistral`
+- `xai`
+- `nvidia`
+- `openrouter`
+- `together`
+- `perplexity`
+- `deepinfra`
+- `cerebras`
 
-```bash
-export OPENAI_API_KEY=sk-...
-```
+Model picker entries are labeled with the resolved auth path, for example:
 
-Models: `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`, `o1`, `o1-mini`, `o3-mini`
-
-### GitHub Copilot
-
-Authenticate with your GitHub account using the bundled GitHub OAuth App client ID. Your Copilot subscription covers usage — no separate API key.
-
-If you want to override the bundled client ID, set one of:
-
-```bash
-export FORGE_COPILOT_CLIENT_ID=<your-client-id>
-```
-
-```toml
-[copilot]
-client_id = "<your-client-id>"
-```
-
-**Authenticate:**
-
-```bash
-forge auth copilot
-# Visit the URL shown, enter the code, done.
-# Token stored in ~/.config/forge/auth.json
-```
-
-Models are prefixed with `copilot/` to distinguish them from the same model names on other providers:
-
-```toml
-[models]
-writer  = "copilot/gpt-4o"
-auditor = "copilot/claude-3.7-sonnet"
-```
-
-Forge queries Copilot's live `/models` endpoint and merges that with a curated alias list, so the picker still shows the common names people expect even when Copilot only returns versioned snapshots.
-
-Typical available models include: `copilot/gpt-4o`, `copilot/gpt-4.1`, `copilot/gpt-5`, `copilot/o3`, `copilot/o4-mini`, `copilot/claude-3.7-sonnet`, `copilot/claude-sonnet-4.5`, `copilot/gemini-2.5-pro`
-
-### Groq
-
-```bash
-export GROQ_API_KEY=gsk_...
-```
-
-Models: `llama-3.3-70b-versatile`, `llama-3.1-8b-instant`, `gemma2-9b-it`, `mixtral-8x7b-32768`, `qwen-qwq-32b`
-
-### Mistral
-
-```bash
-export MISTRAL_API_KEY=...
-```
-
-Models: `mistral-large-latest`, `mistral-small-latest`, `codestral-latest`
-
-### xAI (Grok)
-
-```bash
-export XAI_API_KEY=xai-...
-```
-
-Models: `grok-3`, `grok-3-mini`, `grok-3-fast`
-
-### NVIDIA NIM
-
-```bash
-export NVIDIA_API_KEY=nvapi-...
-```
-
-Models use namespaced IDs: `nvidia/llama-3.1-nemotron-51b-instruct`, `meta/llama-3.3-70b-instruct`
-
-### Perplexity
-
-```bash
-export PERPLEXITY_API_KEY=pplx-...
-```
-
-Models: `sonar-pro`, `sonar`, `sonar-reasoning-pro`
-
-### Cerebras
-
-```bash
-export CEREBRAS_API_KEY=csk-...
-```
-
-Models: `llama3.1-8b`, `llama3.3-70b`
-
-### OpenRouter
-
-Single key for access to hundreds of models:
-
-```bash
-export OPENROUTER_API_KEY=sk-or-...
-```
-
-Models use `provider/model` format: `openai/gpt-4o`, `anthropic/claude-sonnet-4-5`, `meta-llama/llama-3.3-70b-instruct:free`
-
-### Together AI
-
-```bash
-export TOGETHER_AI_API_KEY=...
-```
-
-Models: `meta-llama/Llama-3.3-70B-Instruct-Turbo`, `deepseek-ai/DeepSeek-R1`
-
-### DeepInfra
-
-```bash
-export DEEPINFRA_API_KEY=...
-```
-
-Models: `meta-llama/Meta-Llama-3.1-8B-Instruct`, `deepseek-ai/DeepSeek-R1-Turbo`
-
-### Mixing providers
-
-Writer and auditor can use completely different providers:
-
-```toml
-[models]
-writer     = "llama-3.3-70b-versatile"   # Groq
-auditor    = "grok-3-mini"               # xAI
-summarizer = "claude-3-5-haiku-latest"   # Anthropic
-```
-
-### Model disambiguation
-
-Most providers have distinct model name formats. For providers that share the `vendor/model` namespace (Together, DeepInfra, OpenRouter), the first configured provider wins. Configure only one if you use namespaced model IDs.
+- `gpt-5.4 [chatgpt]`
+- `gpt-5.4 [openai]`
+- `claude-sonnet-4-6 [claude]`
+- `claude-sonnet-4-6 [anthropic]`
 
 ## Commands
 
+Core commands:
+
 ```bash
 forge chat [--model MODEL] [--yolo] [-C PATH]
+forge improve
 forge list
 forge show <session-id>
-forge perf [summary|list] [--json] [--sort started|input|output|total|elapsed|tps] [--status STATUS] [--model SUBSTR] [--limit N] [--completed]
-forge perf show [--json] <session-id>
-forge auth copilot
-```
-
-### Performance and usage reporting
-
-Forge records per-session token usage in session metadata and exposes it through `forge perf`.
-
-Examples:
-
-```bash
 forge perf
-forge perf --sort total --limit 20
-forge perf --status complete --completed
-forge perf --model claude --json
-forge perf show 2026-03-22T10-00-00
-forge perf show --json 2026-03-22T10-00-00
+forge perf show <session-id>
+forge auth copilot
+forge status
+forge skills
 ```
 
-What `forge perf` shows:
-- input, output, and total tokens per session
-- session status
-- elapsed time
-- tokens/sec when elapsed timing is available
-- totals and averages across the filtered result set
+## Output
 
-### Copilot premium request display
+Pipeline sessions write artifacts into `./output/<timestamp>/` by default, including:
 
-When you use a GitHub Copilot-backed model, Forge also attempts to surface Copilot premium quota information from response metadata when Copilot provides it.
+- generated code under `code/`
+- `summary-store.md`
+- `audit-log.md`
+- `session.log`
 
-Where it appears:
-- live chat header as a compact `PR` indicator
-- `/stats` in chat for a fuller session stats line
+Chat mode is interactive and works directly against the current working tree.
 
-Examples:
-- `PR 42` for remaining premium requests/interactions
-- `PR 87%` when only percentage is available
-- `PR ∞` for unlimited plans
+## Documentation
 
-This is best-effort: if Copilot does not include quota snapshot metadata in a response, Forge simply omits the extra quota display.
+- [docs/architecture.md](/Users/cass/git/forge/docs/architecture.md): detailed internal architecture
+- [docs/build.md](/Users/cass/git/forge/docs/build.md): local builds and cross-compilation
+- [docs/contributing.md](/Users/cass/git/forge/docs/contributing.md): contributor workflow and repo conventions
+- [LOCAL_TOOLING.md](/Users/cass/git/forge/LOCAL_TOOLING.md): local toolchain requirements for hooks
+- [docs/multi-agent.md](/Users/cass/git/forge/docs/multi-agent.md): older multi-agent design notes
 
-### `/stats` in chat
+## Notes
 
-Inside live chat, run `/stats` to print the current session stats into the tools pane.
-
-It includes:
-- current session timing
-- token usage captured for the session
-- best-effort Copilot premium quota info when available
-
-Use it when you want a quick snapshot without leaving chat or running `forge perf` in another shell.
-
-## Keybindings
-
-| Key | Action |
-|-----|--------|
-| `v` | Toggle split pane / yolo view |
-| `p` | Pause / resume |
-| `s` | Snapshot current code |
-| `q` | Quit |
+- Forge does not currently produce one native binary that runs unchanged on every OS. Build one binary per target OS/architecture pair.
+- `forge chat` currently uses the Bubble Tea chat frontend through [internal/tui/chatmodel.go](/Users/cass/git/forge/internal/tui/chatmodel.go).
