@@ -25,6 +25,22 @@ Run it:
 ./bin/forge
 ```
 
+## Fast Dev Loop
+
+For an edit-build-run loop on the current machine:
+
+```bash
+go build -o ./bin/forge ./cmd/forge
+./bin/forge chat
+```
+
+For a stricter verification loop:
+
+```bash
+go build ./...
+go test ./...
+```
+
 ## Common Local Builds
 
 ### macOS
@@ -84,6 +100,25 @@ GOOS=windows GOARCH=amd64 go build -o ./bin/forge-windows-amd64.exe ./cmd/forge
 GOOS=windows GOARCH=arm64 go build -o ./bin/forge-windows-arm64.exe ./cmd/forge
 ```
 
+If you want smaller shell snippets, treat these as the primary target set:
+
+- `darwin/arm64`
+- `darwin/amd64`
+- `linux/amd64`
+- `linux/arm64`
+- `windows/amd64`
+- `windows/arm64`
+
+## Optional Build Flags
+
+You can add common Go release flags if you want a smaller artifact:
+
+```bash
+go build -trimpath -ldflags="-s -w" -o ./bin/forge ./cmd/forge
+```
+
+Use that only if it helps your local workflow. It is not required for normal development.
+
 ## Verification
 
 Before treating a build as release-ready, run:
@@ -101,6 +136,12 @@ If you are preparing code for commit, also expect the repo hooks to run:
 - `golangci-lint`
 - `govulncheck`
 - `gitleaks`
+
+If you want to mirror commit behavior more closely, run:
+
+```bash
+pre-commit run --all-files
+```
 
 ## Build Output Conventions
 
@@ -152,6 +193,15 @@ Forge currently declares Go `1.25.0` in [go.mod](/Users/cass/git/forge/go.mod).
 The build only proves the binary compiles. The repo hooks also enforce formatting, linting, vulnerability checks, and secret scanning.
 
 See [LOCAL_TOOLING.md](/Users/cass/git/forge/LOCAL_TOOLING.md) for the required local tools.
+
+### Cross-compiled binary starts but behaves differently
+
+Double-check the platform assumptions around:
+
+- path separators
+- shell commands used by tools
+- terminal capabilities
+- approval and TUI behavior on that target OS
 
 ### Built binary works on one machine but not another
 

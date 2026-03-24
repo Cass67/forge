@@ -2,6 +2,28 @@
 
 This document explains how Forge works today at the code level: entrypoints, runtime composition, model/provider routing, the agent loop, multi-agent delegation, the TUI event flow, and the pass-based session runner.
 
+## System Overview
+
+```mermaid
+flowchart TD
+    CLI["cmd/forge/main.go"] --> Bootstrap["internal/bootstrap"]
+    CLI --> RuntimeSession["internal/runtime/session.go"]
+    CLI --> RuntimeChat["internal/runtime/chat.go"]
+
+    Bootstrap --> Config["internal/config"]
+    Bootstrap --> Auth["internal/auth + provider auth packages"]
+    Bootstrap --> Drivers["internal/llm/drivers"]
+
+    RuntimeChat --> Agent["internal/agent"]
+    RuntimeChat --> TUI["internal/tui"]
+    Agent --> Tools["internal/agent/tools"]
+    Agent --> Drivers
+
+    RuntimeSession --> SessionRunner["internal/session/runner.go"]
+    SessionRunner --> Drivers
+    SessionRunner --> Output["internal/output"]
+```
+
 ## Top-Level Shape
 
 Forge has two distinct execution models:
@@ -80,6 +102,31 @@ Even though the repository still contains multiple UI layers, the current chat r
 
 That last point matters: the current live chat surface is the Bubble Tea model in [internal/tui/chatmodel.go](/Users/cass/git/forge/internal/tui/chatmodel.go).
 
+### Chat call path
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant CLI as cmd/forge
+    participant Bootstrap
+    participant Runtime as runtime/chat.go
+    participant Agent
+    participant Driver
+    participant TUI
+
+    User->>CLI: forge chat
+    CLI->>Bootstrap: load config/tokens/models
+    CLI->>Runtime: BuildChatSetup + RunChatLive
+    Runtime->>Agent: construct top-level agent
+    Runtime->>TUI: start chat program
+    User->>TUI: submit prompt
+    TUI->>Runtime: inputCh <- prompt
+    Runtime->>Agent: Run(ctx, prompt)
+    Agent->>Driver: Stream(messages)
+    Driver-->>Agent: streamed tokens / tool-call text
+    Agent-->>TUI: llm.Event stream via EventRenderer
+```
+
 ## Configuration And State
 
 Forge configuration lives in [internal/config/config.go](/Users/cass/git/forge/internal/config/config.go).
@@ -109,6 +156,17 @@ The token schema is defined in [internal/auth/store.go](/Users/cass/git/forge/in
 
 Forge now owns ChatGPT and Claude subscription auth state directly. It does not depend on Codex-auth files as a source of truth.
 
+### Config precedence
+
+In practice, Forge resolves configuration from multiple layers:
+
+1. environment variables
+2. `config.toml`
+3. Forge auth storage for provider credentials
+4. built-in defaults
+
+That precedence is especially relevant for provider keys and default model selection.
+
 ## Model And Provider Resolution
 
 Provider and model routing live in [internal/bootstrap/runtime.go](/Users/cass/git/forge/internal/bootstrap/runtime.go).
@@ -135,6 +193,8 @@ It resolves, in priority order:
 - `copilot`
 - configured OpenAI-compatible providers
 
+This file is one of the highest-leverage points in the codebase. If model routing feels wrong in the UI, the bug is often here rather than in the TUI itself.
+
 ### Qualified vs unqualified model names
 
 Forge supports both:
@@ -159,6 +219,8 @@ For Claude subscription logins, Forge normalizes the discovered feed down to the
 - `claude-opus-4-6`
 - `claude-sonnet-4-6`
 - `claude-haiku-4-5`
+
+That normalization exists because provider feeds may expose multiple snapshots or dated variants, while the chat picker should present one clear entry per current family model.
 
 ## LLM Driver Layer
 
@@ -231,6 +293,17 @@ Chat setup is assembled in [internal/runtime/chat.go](/Users/cass/git/forge/inte
 - the top-level `agent.Agent`
 - the TUI config
 
+### Chat runtime responsibilities
+
+`RunChatLive(...)` is the seam where several subsystems are glued together:
+
+- model/provider state from bootstrap
+- approval flow from the renderer
+- live tool registry construction
+- chat state and skills
+- agent construction
+- live callbacks used by the TUI for provider/model refresh and switching
+
 ### Tool registration
 
 `registerTools(...)` in [internal/runtime/chat.go](/Users/cass/git/forge/internal/runtime/chat.go) registers the chat toolset:
@@ -253,6 +326,8 @@ Chat setup is assembled in [internal/runtime/chat.go](/Users/cass/git/forge/inte
 
 Some tools are prompt-hidden and are only exposed through `tool_help`.
 
+This is one of the mechanisms Forge uses to reduce prompt bloat without giving up capability.
+
 ## Agent Loop
 
 The main execution engine is [internal/agent/agent.go](/Users/cass/git/forge/internal/agent/agent.go).
@@ -273,6 +348,23 @@ At a high level, `Agent.Run(...)` does this:
 7. if there are no tool calls:
    - treat the response as final
    - stop unless it is an actual action preamble
+
+### Agent turn lifecycle
+
+```mermaid
+flowchart TD
+    A["append user message to history"] --> B["build request: system + history"]
+    B --> C["stream provider response"]
+    C --> D["parse visible text and tool-call wrappers"]
+    D --> E{"tool calls found?"}
+    E -- yes --> F["execute tools"]
+    F --> G["append compact tool-result history"]
+    G --> B
+    E -- no --> H{"looks like action preamble?"}
+    H -- yes --> I["append nudge and retry"]
+    I --> B
+    H -- no --> J["treat as final answer"]
+```
 
 ### Tool-call format
 
@@ -295,6 +387,8 @@ Important properties:
 - old assistant/tool content is compressed to short summaries when needed
 - hidden-tool disclosure is handled by the tool registry
 - stateful provider-side conversation state can be reset if the driver supports it
+
+The important architectural tradeoff here is that Forge keeps enough history to preserve context, but is willing to compress older turns aggressively to stay within model budgets.
 
 ### Preamble retry behavior
 
@@ -330,6 +424,24 @@ When enabled:
    - a role prompt appended to the base system prompt
    - its own model if configured
 5. sub-agent events are tagged and routed back through the shared renderer
+
+### Delegation flow
+
+```mermaid
+sequenceDiagram
+    participant Dispatch
+    participant Runtime
+    participant Sub as Sub-agent
+    participant Driver
+    participant TUI
+
+    Dispatch->>Runtime: delegate(role, task)
+    Runtime->>Sub: SpawnSubAgent(role, task)
+    Sub->>Driver: Stream(role-specific system + task)
+    Driver-->>Sub: tokens / tool calls
+    Sub-->>TUI: tagged llm.Event{SubAgent: role}
+    Sub-->>Dispatch: final response text
+```
 
 ### Event handling for sub-agents
 
@@ -368,6 +480,17 @@ Current responsibilities include:
 - recent activity blocks for sub-agents
 - concise error distillation for provider errors
 
+### TUI data model
+
+The TUI is not just a renderer. It also owns interactive state for:
+
+- model/provider overlays
+- agent role model selection
+- approvals
+- saved chat sessions
+- per-turn stats and request-mode displays
+- recent-activity summarization for sub-agents
+
 ### Model picker behavior
 
 The model picker:
@@ -391,6 +514,21 @@ The runner:
 6. emits `llm.Event` progress to the UI
 7. writes summary and audit artifacts
 8. optionally initializes and commits a Git repository in the generated code output
+
+### Pipeline flow
+
+```mermaid
+flowchart LR
+    Prompt["user prompt"] --> Writer
+    Writer --> Auditor
+    Auditor --> Summarizer
+    Summarizer --> Store["summary store"]
+    Store --> Writer
+
+    Writer --> Output["output/code"]
+    Auditor --> Events["llm.Event stream"]
+    Summarizer --> Audit["audit-log.md"]
+```
 
 The default conceptual passes are:
 
@@ -449,3 +587,16 @@ If you change runtime behavior, re-check:
 - chat request mode reporting
 - TUI error rendering
 - agent retry behavior
+
+## Reading Order For New Contributors
+
+If you are new to the codebase, the fastest useful reading order is:
+
+1. [cmd/forge/main.go](/Users/cass/git/forge/cmd/forge/main.go)
+2. [internal/bootstrap/runtime.go](/Users/cass/git/forge/internal/bootstrap/runtime.go)
+3. [internal/runtime/chat.go](/Users/cass/git/forge/internal/runtime/chat.go)
+4. [internal/agent/agent.go](/Users/cass/git/forge/internal/agent/agent.go)
+5. [internal/tui/chatmodel.go](/Users/cass/git/forge/internal/tui/chatmodel.go)
+6. [internal/session/runner.go](/Users/cass/git/forge/internal/session/runner.go)
+
+That path gives you the current control flow before you dive into provider-specific or UI-specific details.
