@@ -34,13 +34,19 @@ func (d *mockDriver) Stream(ctx context.Context, messages []llm.Message, out cha
 
 func TestLooksLikeActionPreamble(t *testing.T) {
 	cases := map[string]bool{
-		"I'm going to inspect the code.": true,
-		"I’m going to inspect the code.": true,
-		"Next I'll read the file.":       true,
-		"Let me check that.":             true,
-		"I'll fix it.":                   true,
-		"Here is the fix.":               false,
-		"The issue is in chatmodel.go.":  false,
+		"I’m going to inspect the code.":                  true,
+		"I\u2019m going to inspect the code":              true, // smart quote
+		"Next I’ll read the file.":                        true,
+		"Let me check that.":                              true,
+		"I’ll fix it.":                                    true,
+		"First, I need to read the config.":               true,
+		"Based on the error, we should fix the handler.":  true,
+		"Looking at the code, there are two issues.":      true,
+		"To accomplish this, I’ll start by reading main.": true,
+		"Would you like me to continue?":                  true,
+		"Here is the fix.":                                false,
+		"The issue is in chatmodel.go.":                   false,
+		"Done. All tests pass.":                           false,
 	}
 	for input, want := range cases {
 		if got := looksLikeActionPreamble(input); got != want {

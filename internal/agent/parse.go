@@ -10,6 +10,32 @@ type ToolCall struct {
 	Args map[string]any
 }
 
+// toolCallOpeners are XML-style tags the LLM may use to wrap tool calls.
+// We handle both our instructed format (<tool_call>) and formats that leak
+// through from the model's training (<function_calls>, <tool_calls>).
+var toolCallOpeners = []string{"<tool_call>", "<function_calls>", "<tool_calls>"}
+var toolCallClosers = []string{"</tool_call>", "</function_calls>", "</tool_calls>"}
+
+func isToolCallOpen(line string) (after string, ok bool) {
+	for _, tag := range toolCallOpeners {
+		if strings.Contains(line, tag) {
+			parts := strings.SplitN(line, tag, 2)
+			return strings.TrimSpace(parts[1]), true
+		}
+	}
+	return "", false
+}
+
+func isToolCallClose(line string) (before string, ok bool) {
+	for _, tag := range toolCallClosers {
+		if strings.Contains(line, tag) {
+			parts := strings.SplitN(line, tag, 2)
+			return strings.TrimSpace(parts[0]), true
+		}
+	}
+	return "", false
+}
+
 func ParseToolCalls(text string) ([]ToolCall, string) {
 	var calls []ToolCall
 	var textParts []string
@@ -41,10 +67,7 @@ func ParseToolCalls(text string) ([]ToolCall, string) {
 		}
 
 		lineTrimmed := strings.TrimSpace(line)
-		if strings.Contains(lineTrimmed, "<tool_call>") {
-			// Handle <tool_call> with JSON on the same line
-			after := strings.SplitN(lineTrimmed, "<tool_call>", 2)[1]
-			after = strings.TrimSpace(after)
+		if after, ok := isToolCallOpen(lineTrimmed); ok {
 			i++
 			var block strings.Builder
 			if after != "" {
@@ -53,9 +76,8 @@ func ParseToolCalls(text string) ([]ToolCall, string) {
 			}
 			for i < len(lines) {
 				lt := strings.TrimSpace(lines[i])
-				if strings.Contains(lt, "</tool_call>") {
-					before := strings.SplitN(lt, "</tool_call>", 2)[0]
-					before = strings.TrimSpace(before)
+				if _, ok := isToolCallClose(lt); ok {
+					before, _ := isToolCallClose(lt)
 					if before != "" {
 						block.WriteString(before)
 						block.WriteByte('\n')
@@ -68,10 +90,8 @@ func ParseToolCalls(text string) ([]ToolCall, string) {
 				i++
 			}
 
-			call := parseCallJSON(block.String())
-			if call.Name != "" {
-				calls = append(calls, call)
-			}
+			parsed := parseBlock(block.String())
+			calls = append(calls, parsed...)
 			continue
 		}
 
@@ -80,6 +100,48 @@ func ParseToolCalls(text string) ([]ToolCall, string) {
 	}
 
 	return calls, strings.Join(textParts, "\n")
+}
+
+// parseBlock tries to parse the inner content of a tool call block.
+// Supports single JSON object, JSON array, and <invoke> XML format.
+func parseBlock(raw string) []ToolCall {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+
+	// Try single JSON object: {"name": "...", "args": {...}}
+	if strings.HasPrefix(raw, "{") {
+		if call := parseCallJSON(raw); call.Name != "" {
+			return []ToolCall{call}
+		}
+	}
+
+	// Try JSON array: [{"name": "...", "args": {...}}, ...]
+	if strings.HasPrefix(raw, "[") {
+		var arr []json.RawMessage
+		if err := json.Unmarshal([]byte(raw), &arr); err == nil {
+			var calls []ToolCall
+			for _, item := range arr {
+				if call := parseCallJSON(string(item)); call.Name != "" {
+					calls = append(calls, call)
+				}
+			}
+			if len(calls) > 0 {
+				return calls
+			}
+		}
+	}
+
+	// Try <invoke> XML format:
+	//   <invoke name="tool_name">
+	//   <parameter name="key">value</parameter>
+	//   </invoke>
+	if strings.Contains(raw, "<invoke") {
+		return parseInvokeXML(raw)
+	}
+
+	return nil
 }
 
 func parseCallJSON(raw string) ToolCall {
@@ -95,4 +157,91 @@ func parseCallJSON(raw string) ToolCall {
 		parsed.Args = make(map[string]any)
 	}
 	return ToolCall{Name: parsed.Name, Args: parsed.Args}
+}
+
+func parseInvokeXML(raw string) []ToolCall {
+	var calls []ToolCall
+	remaining := raw
+
+	for {
+		// Find <invoke name="...">
+		idx := strings.Index(remaining, "<invoke")
+		if idx < 0 {
+			break
+		}
+		remaining = remaining[idx:]
+
+		// Extract tool name from name="..."
+		nameStart := strings.Index(remaining, `name="`)
+		if nameStart < 0 {
+			break
+		}
+		nameStart += len(`name="`)
+		nameEnd := strings.Index(remaining[nameStart:], `"`)
+		if nameEnd < 0 {
+			break
+		}
+		toolName := remaining[nameStart : nameStart+nameEnd]
+
+		// Find closing </invoke>
+		closeIdx := strings.Index(remaining, "</invoke>")
+		if closeIdx < 0 {
+			break
+		}
+
+		// Extract parameters between > and </invoke>
+		bodyStart := strings.Index(remaining, ">")
+		if bodyStart < 0 || bodyStart >= closeIdx {
+			break
+		}
+		body := remaining[bodyStart+1 : closeIdx]
+
+		args := parseInvokeParams(body)
+		if toolName != "" {
+			calls = append(calls, ToolCall{Name: toolName, Args: args})
+		}
+
+		remaining = remaining[closeIdx+len("</invoke>"):]
+	}
+
+	return calls
+}
+
+func parseInvokeParams(body string) map[string]any {
+	args := make(map[string]any)
+	remaining := body
+
+	for {
+		idx := strings.Index(remaining, `<parameter name="`)
+		if idx < 0 {
+			break
+		}
+		remaining = remaining[idx+len(`<parameter name="`):]
+
+		nameEnd := strings.Index(remaining, `"`)
+		if nameEnd < 0 {
+			break
+		}
+		paramName := remaining[:nameEnd]
+		remaining = remaining[nameEnd:]
+
+		// Skip past the >
+		gt := strings.Index(remaining, ">")
+		if gt < 0 {
+			break
+		}
+		remaining = remaining[gt+1:]
+
+		// Find </parameter>
+		closeIdx := strings.Index(remaining, "</parameter>")
+		if closeIdx < 0 {
+			break
+		}
+		paramValue := remaining[:closeIdx]
+		args[paramName] = paramValue
+
+		remaining = remaining[closeIdx+len("</parameter>"):]
+	}
+
+	return args
 }
