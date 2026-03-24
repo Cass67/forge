@@ -191,9 +191,9 @@ flowchart LR
 
 ## Documentation
 
-- [docs/architecture.md](/Users/cass/git/forge/docs/architecture.md): detailed internal architecture
-- [docs/build.md](/Users/cass/git/forge/docs/build.md): local builds and cross-compilation
-- [docs/contributing.md](/Users/cass/git/forge/docs/contributing.md): contributor workflow and repo conventions
+- [ARCHITECTURE.md](/Users/cass/git/forge/ARCHITECTURE.md): detailed internal architecture
+- [BUILD.md](/Users/cass/git/forge/BUILD.md): local builds and cross-compilation
+- [CONTRIBUTING.md](/Users/cass/git/forge/CONTRIBUTING.md): contributor workflow and repo conventions
 - [LOCAL_TOOLING.md](/Users/cass/git/forge/LOCAL_TOOLING.md): local toolchain requirements for hooks
 - [docs/multi-agent.md](/Users/cass/git/forge/docs/multi-agent.md): older multi-agent design notes
 
