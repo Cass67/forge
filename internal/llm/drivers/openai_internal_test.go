@@ -548,6 +548,101 @@ func TestCompatibleProviderFallsBackToNonStreamingOnGatewayErrors(t *testing.T) 
 	}
 }
 
+func TestCustomCompatProviderSendsCustomHeaders(t *testing.T) {
+	t.Parallel()
+
+	var gotHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	headers := map[string]string{
+		"X-Custom-Auth":  "token-abc",
+		"X-Workspace-ID": "ws-123",
+	}
+	d := NewCustomCompatProvider("mycorp", "sk-test", srv.URL, "mycorp/my-model", "my-model", false, headers)
+	out := make(chan llm.Token, 4)
+	if err := d.Stream(context.Background(), []llm.Message{{Role: llm.RoleUser, Content: "hi"}}, out); err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	for range out {
+	}
+
+	if got := gotHeaders.Get("X-Custom-Auth"); got != "token-abc" {
+		t.Fatalf("X-Custom-Auth = %q, want %q", got, "token-abc")
+	}
+	if got := gotHeaders.Get("X-Workspace-ID"); got != "ws-123" {
+		t.Fatalf("X-Workspace-ID = %q, want %q", got, "ws-123")
+	}
+	if got := gotHeaders.Get("Authorization"); got != "Bearer sk-test" {
+		t.Fatalf("Authorization = %q, want %q", got, "Bearer sk-test")
+	}
+}
+
+func TestCustomCompatProviderResponsesModeEnabled(t *testing.T) {
+	d := NewCustomCompatProvider("mycorp", "sk-test", "https://api.mycorp.com/v1", "mycorp/o3-mini", "o3-mini", true, nil)
+	if !d.useResponsesAPI() {
+		t.Fatal("expected useResponsesAPI() = true for custom provider with supportsResponses=true and reasoning model")
+	}
+}
+
+func TestCustomCompatProviderResponsesModeDisabledByDefault(t *testing.T) {
+	// Default compat providers (via NewOpenAICompatibleProviderAlias) never support responses.
+	d := NewOpenAICompatibleProviderAlias("someprovider", "sk-test", "https://example.com/v1", "someprovider/o3-mini", "o3-mini")
+	if d.useResponsesAPI() {
+		t.Fatal("expected useResponsesAPI() = false for default compat provider")
+	}
+}
+
+func TestCustomCompatProviderNoStatelessResponses(t *testing.T) {
+	// Custom providers must NOT inherit ChatGPT-specific stateless responses behavior.
+	d := NewCustomCompatProvider("mycorp", "sk-test", "https://api.mycorp.com/v1", "mycorp/gpt-5.4", "gpt-5.4", true, nil)
+	if d.providerRequiresStatelessResponses() {
+		t.Fatal("custom provider should not require stateless responses")
+	}
+}
+
+func TestCustomCompatProviderNoResponseStore(t *testing.T) {
+	// Custom providers must NOT get response store (only "openai" and "chatgpt" do).
+	if providerSupportsResponseStore("mycorp") {
+		t.Fatal("custom provider should not support response store")
+	}
+}
+
+func TestCustomCompatProviderNoResponseCompaction(t *testing.T) {
+	// Custom providers must NOT get response compaction (only "openai" and "chatgpt" do).
+	if providerSupportsResponseCompaction("mycorp") {
+		t.Fatal("custom provider should not support response compaction")
+	}
+}
+
+func TestCustomCompatProviderResponsesParamsNoStoreNoStateless(t *testing.T) {
+	// When a custom provider uses responses mode, verify the params don't set
+	// Store=false (ChatGPT stateless) or Store=true (OpenAI store).
+	d := NewCustomCompatProvider("mycorp", "sk-test", "https://api.mycorp.com/v1", "mycorp/o3-mini", "o3-mini", true, nil)
+	msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: "sys"},
+		{Role: llm.RoleUser, Content: "hello"},
+	}
+	got, err := d.responsesParams(context.Background(), msgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.params.Store.Valid() {
+		t.Fatalf("Store = %v, want unset for custom provider", got.params.Store.Value)
+	}
+	for _, inc := range got.params.Include {
+		if string(inc) == "reasoning.encrypted_content" {
+			t.Fatal("custom provider should not include reasoning.encrypted_content")
+		}
+	}
+}
+
 func assertErr(msg string) error { return simpleErr(msg) }
 
 type simpleErr string
