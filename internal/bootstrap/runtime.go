@@ -18,12 +18,14 @@ import (
 )
 
 var (
-	claudeAuthAvailable  = claudeauth.Available
-	newClaudeOAuthDriver = func(registryName, apiModel string) llm.Driver { return drivers.NewClaudeOAuth(registryName, apiModel) }
-	chatGPTAuthAvailable = chatgptauth.Available
-	newChatGPTDriver     = func(registryName, apiModel string) llm.Driver { return drivers.NewChatGPT(registryName, apiModel) }
-	discoverOpenAIModels = DiscoverOpenAIModels
-	discoverCompatModels = DiscoverOpenAICompatibleModels
+	claudeAuthAvailable     = claudeauth.Available
+	newClaudeOAuthDriver    = func(registryName, apiModel string) llm.Driver { return drivers.NewClaudeOAuth(registryName, apiModel) }
+	chatGPTAuthAvailable    = chatgptauth.Available
+	newChatGPTDriver        = func(registryName, apiModel string) llm.Driver { return drivers.NewChatGPT(registryName, apiModel) }
+	discoverAnthropicModels = DiscoverAnthropicModels
+	discoverClaudeModels    = DiscoverClaudeModels
+	discoverOpenAIModels    = DiscoverOpenAIModels
+	discoverCompatModels    = DiscoverOpenAICompatibleModels
 )
 
 type Runtime struct {
@@ -226,12 +228,14 @@ func ModelDisplayLabel(cfg *config.Config, tokens *auth.Tokens, model string) st
 func AvailableModels(cfg *config.Config, tokens *auth.Tokens) []string {
 	var out []string
 	if claudeAuthAvailable() {
-		out = append(out, AnthropicModels()...)
-		out = append(out, qualifyModels("claude", AnthropicModels())...)
+		claudeModels := discoverClaudeModels()
+		out = append(out, claudeModels...)
+		out = append(out, qualifyModels("claude", claudeModels)...)
 	}
 	if cfg.AnthropicKey() != "" {
-		out = append(out, AnthropicModels()...)
-		out = append(out, qualifyModels("anthropic", AnthropicModels())...)
+		anthropicModels := discoverAnthropicModels(cfg.AnthropicKey())
+		out = append(out, anthropicModels...)
+		out = append(out, qualifyModels("anthropic", anthropicModels)...)
 	}
 	if chatGPTAuthAvailable() {
 		out = append(out, ChatGPTModels()...)
