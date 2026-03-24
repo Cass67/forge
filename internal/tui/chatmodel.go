@@ -97,6 +97,12 @@ const chatPaneBorderHeight = 2
 const chatInputHeight = 3
 const chatStatusHeight = 1
 
+type subAgentSummary struct {
+	role  string
+	turns int
+	tools int
+}
+
 type ChatModel struct {
 	config  ChatLiveConfig
 	model   string
@@ -123,24 +129,25 @@ type ChatModel struct {
 	lastToolResult  string
 	lastCodeBlock   string
 
-	busy                bool
-	viewportDirty       bool
-	spinnerFrame        int
-	status              string
-	activeSubAgent      string
-	lastEscapeTime      time.Time
-	flash               string
-	statsDuration       time.Duration
-	statsUsage          llm.Usage
-	sessionUsage        llm.Usage
-	statusData          chatStatusData
-	recentActivityRole  string
-	recentActivityLines []string
-	recentActivityIndex int
-	skills              []skills.Skill
-	autoSkillsMode      string
-	state               *chatstate.State
-	themeID             string
+	busy                   bool
+	viewportDirty          bool
+	spinnerFrame           int
+	status                 string
+	activeSubAgent         string
+	lastEscapeTime         time.Time
+	flash                  string
+	statsDuration          time.Duration
+	statsUsage             llm.Usage
+	sessionUsage           llm.Usage
+	statusData             chatStatusData
+	recentActivityRole     string
+	recentActivityLines    []string
+	recentActivityIndex    int
+	pendingSubAgentSummary *subAgentSummary
+	skills                 []skills.Skill
+	autoSkillsMode         string
+	state                  *chatstate.State
+	themeID                string
 
 	helpVisible bool
 	helpTab     int
@@ -336,6 +343,15 @@ func (m *ChatModel) resetRecentActivity() {
 	m.recentActivityRole = ""
 	m.recentActivityLines = nil
 	m.recentActivityIndex = -1
+	m.pendingSubAgentSummary = nil
+}
+
+func compactStatusText(content string) string {
+	content = strings.Join(strings.Fields(strings.TrimSpace(content)), " ")
+	if content == "" {
+		return ""
+	}
+	return truncate(content, 200)
 }
 
 func formatRecentActivityLine(role, content string) string {
@@ -925,6 +941,20 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		} else if ev.Text != "" {
 			m.lastToolResult = ev.Text
 		}
+		if ev.Agent == "delegate" && m.pendingSubAgentSummary != nil {
+			summary := m.pendingSubAgentSummary
+			m.AddMessage(ChatMessage{
+				Kind:    MsgStatus,
+				Content: fmt.Sprintf("%s complete • %d turns • %d tools", summary.role, summary.turns, summary.tools),
+			})
+			if status := compactStatusText(ev.Text); status != "" {
+				m.AddMessage(ChatMessage{
+					Kind:    MsgStatus,
+					Content: "status: " + status,
+				})
+			}
+			m.pendingSubAgentSummary = nil
+		}
 		if ev.IsError {
 			m.appendTools("", fmt.Sprintf("  status: ✗ %s\n", ev.Text))
 		} else if ev.Content != "" {
@@ -1018,6 +1048,11 @@ func (m ChatModel) handleSubAgentEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 					sec.buf += fmt.Sprintf("└─ %s %s ────────\n\n", label, status)
 					sec.summary = fmt.Sprintf("─ %s (%d turns, %d tools) %s ─\n", label, sec.turnCount, sec.toolCount, status)
 					sec.collapsed = true
+					m.pendingSubAgentSummary = &subAgentSummary{
+						role:  label,
+						turns: sec.turnCount,
+						tools: sec.toolCount,
+					}
 					break
 				}
 			}
