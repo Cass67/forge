@@ -615,6 +615,41 @@ func TestDispatchRejectsRepeatedScoutDelegation(t *testing.T) {
 	}
 }
 
+func TestDispatchRejectsScoutArchitectScoutLoop(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"describe repo\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"organize findings\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"look for more problems\"}}\n</tool_call>",
+		"Done.",
+	}}
+	reg := tools.NewRegistry()
+	var delegated []string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			delegated = append(delegated, role)
+			return role + " result", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "review repo and suggest improvements"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(delegated, ","); got != "scout,architect" {
+		t.Fatalf("delegated roles = %q, want scout,architect", got)
+	}
+	if strings.Contains(output.String(), "look for more problems") {
+		t.Fatalf("unexpected repeated scout loop rendered: %q", output.String())
+	}
+}
+
 func TestDispatchFailsClosedWhenItNeverDelegates(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"Repo overview\n- Purpose",
