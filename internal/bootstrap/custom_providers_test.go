@@ -20,6 +20,7 @@ func TestLoadCustomCompatProviders(t *testing.T) {
 name = "My New Provider"
 base_url = "https://example.com/v1"
 wire_api = "responses"
+model_info_url = "https://example.com/v1/model/info"
 http_headers = { client = "codex-cli" }
 default_model = "gpt-5.4"
 models = ["gpt-5.4", "gpt-5.4-mini"]
@@ -48,6 +49,9 @@ models = ["gpt-5.4", "gpt-5.4-mini"]
 		}
 		if d.WireAPI != "responses" {
 			t.Errorf("WireAPI = %q, want %q", d.WireAPI, "responses")
+		}
+		if d.ModelInfoURL != "https://example.com/v1/model/info" {
+			t.Errorf("ModelInfoURL = %q, want %q", d.ModelInfoURL, "https://example.com/v1/model/info")
 		}
 		if d.DefaultModel != "gpt-5.4" {
 			t.Errorf("DefaultModel = %q, want %q", d.DefaultModel, "gpt-5.4")

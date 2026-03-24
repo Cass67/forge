@@ -591,6 +591,13 @@ func TestCustomCompatProviderResponsesModeEnabled(t *testing.T) {
 	}
 }
 
+func TestCustomCompatProviderResponsesModeForcesChatModels(t *testing.T) {
+	d := NewCustomCompatProvider("mycorp", "sk-test", "https://api.mycorp.com/v1", "mycorp/gpt-5.4-pro", "gpt-5.4-pro", true, nil)
+	if !d.useResponsesAPI() {
+		t.Fatal("expected useResponsesAPI() = true for custom provider with wire_api=responses")
+	}
+}
+
 func TestCustomCompatProviderResponsesModeDisabledByDefault(t *testing.T) {
 	// Default compat providers (via NewOpenAICompatibleProviderAlias) never support responses.
 	d := NewOpenAICompatibleProviderAlias("someprovider", "sk-test", "https://example.com/v1", "someprovider/o3-mini", "o3-mini")
