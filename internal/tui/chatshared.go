@@ -26,11 +26,15 @@ type ChatLiveConfig struct {
 	WorkDir               string
 	AvailableModels       []string
 	Providers             []ProviderOption
+	AgentsEnabled         bool
 	RefreshModels         func() []string
 	ProbeModels           func(currentModel string, available []string) []string
 	RefreshProviders      func() []ProviderOption
 	ContextFiles          []string
 	SwitchModel           func(name string) (newModel string, err error)
+	ToggleAgents          func(enabled bool) error
+	GetAgentModels        func() map[string]string
+	SaveAgentModels       func(models map[string]string) error
 	ClearHistory          func()
 	ApprovalCh            <-chan tools.Action
 	ResponseCh            chan<- bool

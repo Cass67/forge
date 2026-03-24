@@ -72,6 +72,18 @@ var (
 	}
 )
 
+// toolsSection represents a contiguous block in the tools pane, either from
+// the main agent or a sub-agent. Sub-agent sections can be collapsed once
+// the sub-agent completes, showing only a one-line summary.
+type toolsSection struct {
+	role      string // "" for main agent tools
+	buf       string // full detail
+	summary   string // collapsed summary (set on completion)
+	collapsed bool   // true after sub-agent completes
+	turnCount int
+	toolCount int
+}
+
 // ChatModel is the Bubble Tea model for the interactive chat screen.
 type chatPaneFocus int
 
@@ -104,7 +116,7 @@ type ChatModel struct {
 	paneFocus    chatPaneFocus
 	toolsScroll  int
 
-	toolsBuf        string
+	toolsSections   []toolsSection
 	toolsVisible    bool
 	toolsWasShowing bool
 	lastExpandable  string
@@ -151,6 +163,13 @@ type ChatModel struct {
 	modelsQuery    string
 	modelsQueryPos int
 
+	agentsEnabled          bool
+	agentModelsVisible     bool
+	agentModelsCursor      int
+	agentModelsRoles       []string
+	agentModelsMap         map[string]string
+	agentModelsPickingRole string
+
 	providersVisible     bool
 	providersCursor      int
 	providersList        []ProviderOption
@@ -195,25 +214,40 @@ func NewChatModel(cfg ChatLiveConfig) ChatModel {
 	}
 
 	m := ChatModel{
-		config:         cfg,
-		model:          cfg.Model,
-		workDir:        cfg.WorkDir,
-		copyFn:         copyToClipboard,
-		themeID:        "default",
-		chatViewport:   vp,
-		status:         "ready",
-		skills:         cfg.Skills,
-		autoSkillsMode: cfg.AutoSkillsMode,
-		state:          state,
-		toolsVisible:   true,
-		paneFocus:      focusChat,
-		modelsList:     uniqueStringsPreserveOrder(cfg.AvailableModels),
-		modelsFiltered: uniqueStringsPreserveOrder(cfg.AvailableModels),
-		providersList:  append([]ProviderOption(nil), cfg.Providers...),
-		contextFiles:   append([]string(nil), cfg.ContextFiles...),
+		config:           cfg,
+		model:            cfg.Model,
+		workDir:          cfg.WorkDir,
+		copyFn:           copyToClipboard,
+		themeID:          "default",
+		chatViewport:     vp,
+		status:           "ready",
+		skills:           cfg.Skills,
+		autoSkillsMode:   cfg.AutoSkillsMode,
+		state:            state,
+		toolsVisible:     true,
+		paneFocus:        focusChat,
+		agentsEnabled:    cfg.AgentsEnabled,
+		modelsList:       uniqueStringsPreserveOrder(cfg.AvailableModels),
+		modelsFiltered:   uniqueStringsPreserveOrder(cfg.AvailableModels),
+		providersList:    append([]ProviderOption(nil), cfg.Providers...),
+		contextFiles:     append([]string(nil), cfg.ContextFiles...),
+		agentModelsRoles: []string{"dispatch", "scout", "builder", "doctor", "architect"},
+		agentModelsMap:   copyStringMap(cfg.GetAgentModels),
 	}
 	m.syncStatusData()
 	return m
+}
+
+func copyStringMap(fn func() map[string]string) map[string]string {
+	if fn == nil {
+		return make(map[string]string)
+	}
+	src := fn()
+	dst := make(map[string]string, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }
 
 func (m ChatModel) Init() tea.Cmd {
@@ -340,14 +374,44 @@ func (m ChatModel) mouseContext() chatLayoutMouseContext {
 	return ctx
 }
 
+func (m *ChatModel) currentToolsSection(role string) *toolsSection {
+	if len(m.toolsSections) == 0 || m.toolsSections[len(m.toolsSections)-1].role != role {
+		m.toolsSections = append(m.toolsSections, toolsSection{role: role})
+	}
+	return &m.toolsSections[len(m.toolsSections)-1]
+}
+
+func (m *ChatModel) appendTools(role, text string) {
+	sec := m.currentToolsSection(role)
+	sec.buf += text
+}
+
+func (m ChatModel) renderedToolsBuf() string {
+	var sb strings.Builder
+	for _, sec := range m.toolsSections {
+		if sec.collapsed && sec.summary != "" {
+			sb.WriteString(sec.summary)
+			sb.WriteByte('\n')
+		} else {
+			sb.WriteString(sec.buf)
+		}
+	}
+	return sb.String()
+}
+
+func (m *ChatModel) clearToolsSections() {
+	m.toolsSections = nil
+}
+
 func (m ChatModel) toolsWrappedLines() []string {
-	if strings.TrimSpace(m.toolsBuf) == "" {
+	rendered := m.renderedToolsBuf()
+	if strings.TrimSpace(rendered) == "" {
 		return nil
 	}
 	toolsWidth := m.width - m.chatPaneWidth()
 	toolsInnerWidth := max(1, toolsWidth-2)
 	toolsContentWidth := max(1, toolsInnerWidth-1)
-	wrappedTools := lipgloss.NewStyle().Width(toolsContentWidth).Render(m.toolsBuf)
+	wrappedTools := lipgloss.NewStyle().Width(toolsContentWidth).Render(rendered)
 	return strings.Split(wrappedTools, "\n")
 }
 
@@ -376,6 +440,12 @@ func (m ChatModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.filesVisible {
 		return m.handleFilesMouse(msg)
+	}
+	if m.agentModelsVisible {
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			m.agentModelsVisible = false
+		}
+		return m, nil
 	}
 	if m.modelsVisible {
 		return m.handleModelsMouse(msg)
@@ -489,6 +559,19 @@ func (m ChatModel) modelsOverlayLayout() (x0, y0, boxW, boxH, listY, contentHeig
 	listY = y0 + 5
 	if m.modelsCursor >= contentHeight {
 		start = m.modelsCursor - contentHeight + 1
+	}
+	return
+}
+
+func (m ChatModel) agentModelsOverlayLayout() (x0, y0, boxW, boxH, listY, contentHeight, start int) {
+	boxW = min(72, max(42, m.width-6))
+	boxH = min(18, max(12, m.height-4))
+	contentHeight = max(1, boxH-6)
+	x0 = max(0, (m.width-boxW)/2)
+	y0 = max(0, (m.height-boxH)/2)
+	listY = y0 + 3
+	if m.agentModelsCursor >= contentHeight {
+		start = m.agentModelsCursor - contentHeight + 1
 	}
 	return
 }
@@ -764,12 +847,13 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if m.toolsBuf != "" && !strings.HasSuffix(m.toolsBuf, "\n\n") {
-			m.toolsBuf += "\n"
+		sec := m.currentToolsSection("")
+		if sec.buf != "" && !strings.HasSuffix(sec.buf, "\n\n") {
+			sec.buf += "\n"
 		}
-		m.toolsBuf += "────────────────────────\n"
-		m.toolsBuf += fmt.Sprintf("● %s\n", ev.Agent)
-		m.toolsBuf += fmt.Sprintf("  %s\n", ev.Text)
+		m.appendTools("", "────────────────────────\n")
+		m.appendTools("", fmt.Sprintf("● %s\n", ev.Agent))
+		m.appendTools("", fmt.Sprintf("  %s\n", ev.Text))
 	case llm.EventToolResult:
 		if ev.Content != "" {
 			m.lastToolResult = ev.Content
@@ -777,19 +861,19 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 			m.lastToolResult = ev.Text
 		}
 		if ev.IsError {
-			m.toolsBuf += fmt.Sprintf("  status: ✗ %s\n", ev.Text)
+			m.appendTools("", fmt.Sprintf("  status: ✗ %s\n", ev.Text))
 		} else if ev.Content != "" {
 			truncated := truncate(ev.Content, 200)
 			if truncated != ev.Content {
 				m.lastExpandable = ev.Content
 				truncated += "\n  ... (/expand)"
 			}
-			m.toolsBuf += fmt.Sprintf("  status: ✓\n  %s\n", truncated)
+			m.appendTools("", fmt.Sprintf("  status: ✓\n  %s\n", truncated))
 		} else {
-			m.toolsBuf += fmt.Sprintf("  status: ✓ %s\n", truncate(ev.Text, 200))
+			m.appendTools("", fmt.Sprintf("  status: ✓ %s\n", truncate(ev.Text, 200)))
 		}
 	case llm.EventRoundStart:
-		m.toolsBuf += fmt.Sprintf("\n── round %d ──\n", ev.Round)
+		m.appendTools("", fmt.Sprintf("\n── round %d ──\n", ev.Round))
 	case llm.EventDone:
 		m.busy = false
 		m.activeSubAgent = ""
@@ -800,15 +884,15 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 			Kind:    MsgStatus,
 			Content: "Agent complete • " + stamp,
 		})
-		if strings.TrimSpace(m.toolsBuf) != "" {
-			m.toolsBuf += fmt.Sprintf("status: complete • %s\n", stamp)
+		if len(m.toolsSections) > 0 {
+			m.appendTools("", fmt.Sprintf("status: complete • %s\n", stamp))
 		}
 	case llm.EventError:
 		m.busy = false
 		m.status = "error"
 		m.syncStatusData()
 		errMsg := eventErrorMessage(ev)
-		m.toolsBuf += fmt.Sprintf("  ✗ %s\n", errMsg)
+		m.appendTools("", fmt.Sprintf("  ✗ %s\n", errMsg))
 		m.flash = "error: " + errMsg
 		m.AddMessage(ChatMessage{
 			Kind:    MsgStatus,
@@ -821,11 +905,11 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		m.sessionUsage.OutputTokens += ev.Usage.OutputTokens
 		m.syncStatusData()
 		if ev.Duration > 0 {
-			m.toolsBuf += fmt.Sprintf("  %.1fs", ev.Duration.Seconds())
+			m.appendTools("", fmt.Sprintf("  %.1fs", ev.Duration.Seconds()))
 			if ev.Usage.InputTokens > 0 {
-				m.toolsBuf += fmt.Sprintf(" • %d in / %d out", ev.Usage.InputTokens, ev.Usage.OutputTokens)
+				m.appendTools("", fmt.Sprintf(" • %d in / %d out", ev.Usage.InputTokens, ev.Usage.OutputTokens))
 			}
-			m.toolsBuf += "\n"
+			m.appendTools("", "\n")
 		}
 		return m, m.beginProviderDiagnosticsFetch(false)
 	case llm.EventProgress:
@@ -846,19 +930,30 @@ func (m ChatModel) handleSubAgentEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 	m.toolsVisible = true
 	m.activeSubAgent = label
 
-	// Detect start/done lifecycle messages from the sub-agent renderer.
+	// Detect start/done/cancelled lifecycle messages from the sub-agent renderer.
 	if ev.Kind == llm.EventToolCall && ev.Agent == "runtime" {
 		if strings.Contains(ev.Text, "] starting") {
-			if m.toolsBuf != "" && !strings.HasSuffix(m.toolsBuf, "\n") {
-				m.toolsBuf += "\n"
-			}
-			m.toolsBuf += fmt.Sprintf("┌─ %s ─────────────────\n", label)
+			m.toolsSections = append(m.toolsSections, toolsSection{role: label})
+			sec := &m.toolsSections[len(m.toolsSections)-1]
+			sec.buf = fmt.Sprintf("┌─ %s ─────────────────\n", label)
 			m.status = label
 			m.toolsScroll = m.toolsMaxScroll()
 			return m, nil
 		}
-		if strings.Contains(ev.Text, "] done") {
-			m.toolsBuf += fmt.Sprintf("└─ %s complete ────────\n\n", label)
+		if strings.Contains(ev.Text, "] done") || strings.Contains(ev.Text, "] cancelled") {
+			for i := len(m.toolsSections) - 1; i >= 0; i-- {
+				if m.toolsSections[i].role == label {
+					sec := &m.toolsSections[i]
+					status := "complete"
+					if strings.Contains(ev.Text, "cancelled") {
+						status = "cancelled"
+					}
+					sec.buf += fmt.Sprintf("└─ %s %s ────────\n\n", label, status)
+					sec.summary = fmt.Sprintf("─ %s (%d turns, %d tools) %s ─\n", label, sec.turnCount, sec.toolCount, status)
+					sec.collapsed = true
+					break
+				}
+			}
 			m.activeSubAgent = ""
 			m.status = "running"
 			m.toolsScroll = m.toolsMaxScroll()
@@ -868,31 +963,39 @@ func (m ChatModel) handleSubAgentEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 
 	switch ev.Kind {
 	case llm.EventToken:
-		m.toolsBuf += ev.Text
+		m.appendTools(label, ev.Text)
 	case llm.EventToolCall:
-		if m.toolsBuf != "" && !strings.HasSuffix(m.toolsBuf, "\n\n") {
-			m.toolsBuf += "\n"
+		sec := m.currentToolsSection(label)
+		if sec.buf != "" && !strings.HasSuffix(sec.buf, "\n\n") {
+			sec.buf += "\n"
 		}
-		m.toolsBuf += fmt.Sprintf("  │ %s › %s\n", label, ev.Agent)
-		m.toolsBuf += fmt.Sprintf("  │   %s\n", ev.Text)
+		m.appendTools(label, fmt.Sprintf("  │ %s › %s\n", label, ev.Agent))
+		m.appendTools(label, fmt.Sprintf("  │   %s\n", ev.Text))
+		sec.toolCount++
 	case llm.EventToolResult:
 		if ev.IsError {
-			m.toolsBuf += fmt.Sprintf("  │   ✗ %s\n", truncate(ev.Text, 200))
+			m.appendTools(label, fmt.Sprintf("  │   ✗ %s\n", truncate(ev.Text, 200)))
 		} else {
-			m.toolsBuf += fmt.Sprintf("  │   ✓ %s\n", truncate(ev.Text, 200))
+			m.appendTools(label, fmt.Sprintf("  │   ✓ %s\n", truncate(ev.Text, 200)))
 		}
 	case llm.EventStats:
 		m.sessionUsage.InputTokens += ev.Usage.InputTokens
 		m.sessionUsage.OutputTokens += ev.Usage.OutputTokens
 		if ev.Duration > 0 {
-			m.toolsBuf += fmt.Sprintf("  │ %.1fs", ev.Duration.Seconds())
+			m.appendTools(label, fmt.Sprintf("  │ %.1fs", ev.Duration.Seconds()))
 			if ev.Usage.InputTokens > 0 {
-				m.toolsBuf += fmt.Sprintf(" • %d in / %d out", ev.Usage.InputTokens, ev.Usage.OutputTokens)
+				m.appendTools(label, fmt.Sprintf(" • %d in / %d out", ev.Usage.InputTokens, ev.Usage.OutputTokens))
 			}
-			m.toolsBuf += "\n"
+			m.appendTools(label, "\n")
+		}
+		for i := len(m.toolsSections) - 1; i >= 0; i-- {
+			if m.toolsSections[i].role == label {
+				m.toolsSections[i].turnCount++
+				break
+			}
 		}
 	case llm.EventError:
-		m.toolsBuf += fmt.Sprintf("  │ ✗ [%s] %s\n", label, ev.Text)
+		m.appendTools(label, fmt.Sprintf("  │ ✗ [%s] %s\n", label, ev.Text))
 	}
 	// Auto-scroll tools pane to follow new output.
 	m.toolsScroll = m.toolsMaxScroll()
@@ -981,6 +1084,9 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.filesVisible {
 		return m.handleFilePickerKey(msg)
+	}
+	if m.agentModelsVisible {
+		return m.handleAgentModelsKey(msg)
 	}
 	if m.modelsVisible {
 		return m.handleModelsKey(msg)
@@ -1086,6 +1192,15 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyTab:
 		if m.completeSlashCommand() {
+			return m, nil
+		}
+		if m.paneFocus == focusTools && len(m.toolsSections) > 0 {
+			for i := len(m.toolsSections) - 1; i >= 0; i-- {
+				if m.toolsSections[i].role != "" && m.toolsSections[i].summary != "" {
+					m.toolsSections[i].collapsed = !m.toolsSections[i].collapsed
+					break
+				}
+			}
 			return m, nil
 		}
 		m.toolsVisible = !m.toolsVisible
@@ -1354,6 +1469,7 @@ var builtinCommands = []string{
 	"/help", "/stats",
 	"/theme", "/theme low", "/theme default", "/theme light", "/theme dusk",
 	"/tools", "/toggle tools", "/toggle tools on", "/toggle tools off",
+	"/agents", "/agents models",
 	"/models", "/model", "/provider",
 	"/skills", "/auto-skills", "/sessions", "/save", "/restore",
 	"/find", "/copy agent", "/copy tools", "/copy code", "/copy result", "/expand",
@@ -1376,7 +1492,7 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 	switch {
 	case input == "/clear" || input == "/clear all":
 		m.messages = nil
-		m.toolsBuf = ""
+		m.clearToolsSections()
 		m.refreshViewport()
 		m.flash = "conversation cleared"
 	case input == "/clear agent":
@@ -1384,7 +1500,7 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		m.flash = "conversation cleared"
 	case input == "/clear tools":
-		m.toolsBuf = ""
+		m.clearToolsSections()
 		m.flash = "tools pane cleared"
 	case input == "/help":
 		m.helpVisible = true
@@ -1470,6 +1586,28 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.toolsVisible = false
 		m.refreshViewport()
 		m.flash = "tools pane: hidden"
+	case input == "/agents":
+		if m.config.ToggleAgents == nil {
+			m.flash = "agents not available (no config)"
+			break
+		}
+		next := !m.agentsEnabled
+		if err := m.config.ToggleAgents(next); err != nil {
+			m.flash = fmt.Sprintf("agents toggle failed: %v", err)
+			break
+		}
+		m.agentsEnabled = next
+		if m.agentsEnabled {
+			m.flash = "agents: enabled"
+		} else {
+			m.flash = "agents: disabled"
+		}
+	case input == "/agents models":
+		m.agentModelsMap = copyStringMap(m.config.GetAgentModels)
+		m.agentModelsVisible = true
+		m.agentModelsCursor = 0
+		m.agentModelsPickingRole = ""
+		m.flash = "agent models opened"
 	case input == "/provider":
 		m.openProviderPicker()
 		m.flash = "providers opened"
@@ -1536,7 +1674,7 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			m.flash = "agent copied"
 		}
 	case input == "/copy tools":
-		if err := m.copyFn(m.toolsBuf); err != nil {
+		if err := m.copyFn(m.renderedToolsBuf()); err != nil {
 			m.flash = fmt.Sprintf("copy failed: %v", err)
 		} else {
 			m.flash = "tools copied"
@@ -1602,6 +1740,8 @@ func (m ChatModel) helpLines() []string {
 			"Layout and display:",
 			"  /tools             show / hide tools pane",
 			"  /toggle tools      show / hide tools pane",
+			"  /agents            toggle multi-agent mode",
+			"  /agents models     configure per-role agent models",
 			"  /theme             cycle chat themes",
 			"  /theme <name>      select default, low, light, or dusk",
 			"  /expand            expand last truncated result",
@@ -1668,7 +1808,7 @@ func (m ChatModel) helpLines() []string {
 			"",
 			"Pane navigation:",
 			"  PgUp / PgDn        scroll conversation",
-			"  Tab                toggle tools pane",
+			"  Tab                toggle tools pane or expand tools section",
 			"  Mouse wheel        scroll conversation",
 			"  Ctrl-F             open search for current pane",
 			"  n / N              next / previous search hit",
@@ -2229,10 +2369,50 @@ func (m *ChatModel) updateModelFilter() {
 	m.modelsCursor = clamp(m.modelsCursor, 0, len(m.modelsFiltered)-1)
 }
 
+func (m ChatModel) handleAgentModelsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEscape:
+		m.agentModelsVisible = false
+	case tea.KeyUp:
+		if m.agentModelsCursor > 0 {
+			m.agentModelsCursor--
+		}
+	case tea.KeyDown:
+		if m.agentModelsCursor < len(m.agentModelsRoles)-1 {
+			m.agentModelsCursor++
+		}
+	case tea.KeyEnter:
+		m.ensureModelListLoaded()
+		m.modelsQuery = ""
+		m.modelsQueryPos = 0
+		m.updateModelFilter()
+		m.agentModelsVisible = false
+		m.modelsVisible = true
+		m.agentModelsPickingRole = m.agentModelsRoles[m.agentModelsCursor]
+	case tea.KeyRunes:
+		if string(msg.Runes) == "s" {
+			if m.config.SaveAgentModels == nil {
+				m.flash = "save failed: no config writer"
+				return m, nil
+			}
+			if err := m.config.SaveAgentModels(m.agentModelsMap); err != nil {
+				m.flash = "save failed: " + err.Error()
+			} else {
+				m.flash = "agent models saved to config"
+			}
+		}
+	}
+	return m, nil
+}
+
 func (m ChatModel) handleModelsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEscape:
 		m.modelsVisible = false
+		if m.agentModelsPickingRole != "" {
+			m.agentModelsVisible = true
+			m.agentModelsPickingRole = ""
+		}
 	case tea.KeyUp:
 		if m.modelsCursor > 0 {
 			m.modelsCursor--
@@ -2326,6 +2506,18 @@ func (m *ChatModel) pickModel(idx int) tea.Cmd {
 		return nil
 	}
 	picked := m.modelsFiltered[idx]
+	if m.agentModelsPickingRole != "" {
+		if picked == m.model {
+			delete(m.agentModelsMap, m.agentModelsPickingRole)
+		} else {
+			m.agentModelsMap[m.agentModelsPickingRole] = picked
+		}
+		m.flash = fmt.Sprintf("%s model: %s", m.agentModelsPickingRole, picked)
+		m.modelsVisible = false
+		m.agentModelsVisible = true
+		m.agentModelsPickingRole = ""
+		return nil
+	}
 	if m.config.SwitchModel != nil {
 		newModel, err := m.config.SwitchModel(picked)
 		if err != nil {
@@ -3075,6 +3267,52 @@ func (m ChatModel) renderModelsOverlay() string {
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
 
+func (m ChatModel) renderAgentModelsOverlay() string {
+	theme := m.theme()
+	_, _, boxW, boxH, _, contentHeight, start := m.agentModelsOverlayLayout()
+
+	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true)
+	selectedStyle := lipgloss.NewStyle().Foreground(theme.HeaderFG).Background(theme.AccentPrimary).Bold(true)
+	textStyle := lipgloss.NewStyle().Foreground(theme.Text)
+	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
+
+	lines := make([]string, 0, min(len(m.agentModelsRoles), contentHeight))
+	for i := 0; i < contentHeight && start+i < len(m.agentModelsRoles); i++ {
+		idx := start + i
+		role := m.agentModelsRoles[idx]
+		model := m.agentModelsMap[role]
+		label := ""
+		if model == "" {
+			model = m.model
+			label = "  (default)"
+		}
+		line := fmt.Sprintf("%-12s %s%s", role, model, label)
+		if idx == m.agentModelsCursor {
+			lines = append(lines, selectedStyle.Render(line))
+		} else {
+			lines = append(lines, textStyle.Render(line))
+		}
+	}
+	footer := dimStyle.Render("↑/↓ select • Enter pick model • s save • Esc close")
+	inner := lipgloss.JoinVertical(
+		lipgloss.Left,
+		titleStyle.Render("Agent Models"),
+		"",
+		lipgloss.NewStyle().Width(boxW-6).Height(contentHeight).Render(strings.Join(lines, "\n")),
+		"",
+		footer,
+	)
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(theme.BorderFocus).
+		Background(theme.HeaderBG).
+		Padding(1, 2).
+		Width(boxW - 6).
+		Height(boxH - 4).
+		Render(inner)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+}
+
 func (m ChatModel) renderProvidersOverlay() string {
 	theme := m.theme()
 	boxW := min(96, max(64, m.width-6))
@@ -3153,7 +3391,7 @@ func (m ChatModel) snapshot() chatSessionSnapshot {
 		Model:        m.model,
 		WorkDir:      m.workDir,
 		AgentBuf:     m.chatContent,
-		ToolsBuf:     m.toolsBuf,
+		ToolsBuf:     m.renderedToolsBuf(),
 		InputBuf:     m.inputBuf,
 		InputPos:     m.inputPos,
 		ToolsVisible: boolPtr(m.toolsVisible),
@@ -3166,7 +3404,10 @@ func (m *ChatModel) applySnapshot(s chatSessionSnapshot) {
 	m.model = s.Model
 	m.workDir = s.WorkDir
 	m.chatContent = s.AgentBuf
-	m.toolsBuf = s.ToolsBuf
+	m.toolsSections = nil
+	if s.ToolsBuf != "" {
+		m.toolsSections = []toolsSection{{buf: s.ToolsBuf}}
+	}
 	m.inputBuf = s.InputBuf
 	m.inputPos = s.InputPos
 	toolsVisible := true
@@ -3260,11 +3501,11 @@ func (m ChatModel) View() string {
 		Render(chatBody)
 
 	// Side-by-side with tools pane if visible and has content
-	if m.toolsVisible && m.toolsBuf != "" {
+	if m.toolsVisible && len(m.toolsSections) > 0 {
 		toolsWidth := m.width - chatPaneWidth
 		toolsInnerWidth := max(1, toolsWidth-2)
 		toolsContentWidth := max(1, toolsInnerWidth-1)
-		wrappedTools := lipgloss.NewStyle().Width(toolsContentWidth).Render(m.toolsBuf)
+		wrappedTools := lipgloss.NewStyle().Width(toolsContentWidth).Render(m.renderedToolsBuf())
 		toolLines := strings.Split(wrappedTools, "\n")
 		toolOffset := min(m.toolsScroll, max(0, len(toolLines)-chatBodyHeight))
 		visibleToolLines := toolLines
@@ -3351,6 +3592,9 @@ func (m ChatModel) View() string {
 	}
 	if m.filesVisible {
 		return m.renderFilesOverlay()
+	}
+	if m.agentModelsVisible {
+		return m.renderAgentModelsOverlay()
 	}
 	if m.modelsVisible {
 		return m.renderModelsOverlay()

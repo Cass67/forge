@@ -158,13 +158,14 @@ func RunChatLive(setup *ChatSetup) {
 
 	reg := tools.NewRegistry()
 	registerTools(reg, setup.WorkDir, setup.Config, approve)
+	baseReg := reg.Filter(nil)
 	loadedSkills := skills.Load(setup.WorkDir)
 	state := chatstate.New()
 
 	a := agent.NewAgent(setup.Driver, reg, approve, setup.WorkDir, setup.Config.Chat.MaxTurns, evRenderer, loadedSkills, state)
 
 	if setup.Config.Chat.Agents.Enabled {
-		configureMultiAgent(a, reg, setup)
+		configureMultiAgent(a, baseReg, setup)
 		evRenderer.SetLabel("dispatch")
 	}
 
@@ -237,6 +238,7 @@ func RunChatLive(setup *ChatSetup) {
 		WorkDir:         setup.WorkDir,
 		AvailableModels: setup.Available,
 		Providers:       append([]tui.ProviderOption(nil), setup.Providers...),
+		AgentsEnabled:   setup.Config.Chat.Agents.Enabled,
 		FetchLiveCopilotQuota: func(ctx context.Context) (*copilot.UserQuota, error) {
 			if provider := bootstrap.ParseModelRef(setup.ChatModel).Provider; provider != "copilot" {
 				return nil, nil
@@ -306,6 +308,36 @@ func RunChatLive(setup *ChatSetup) {
 			a.SetDriver(setup.Driver)
 			return name, nil
 		},
+		ToggleAgents: func(enabled bool) error {
+			setup.Config.Chat.Agents.Enabled = enabled
+			if enabled {
+				configureMultiAgent(a, baseReg, setup)
+				evRenderer.SetLabel("dispatch")
+				return nil
+			}
+			a.SetTools(baseReg.Filter(nil))
+			a.UseGeneratedSystem()
+			a.SetRole("")
+			evRenderer.SetLabel("agent")
+			return nil
+		},
+		GetAgentModels: func() map[string]string {
+			return setup.Config.AgentRoleModels()
+		},
+		SaveAgentModels: func(models map[string]string) error {
+			agentModels := config.AgentModels{
+				Dispatch:  models["dispatch"],
+				Scout:     models["scout"],
+				Builder:   models["builder"],
+				Doctor:    models["doctor"],
+				Architect: models["architect"],
+			}
+			if err := config.SaveAgentModels(config.DefaultPath(), agentModels); err != nil {
+				return err
+			}
+			setup.Config.Chat.Agents.Models = agentModels
+			return nil
+		},
 		ClearHistory: func() {
 			a.ClearHistory()
 		},
@@ -319,26 +351,27 @@ func RunChatLive(setup *ChatSetup) {
 }
 
 func configureMultiAgent(a *agent.Agent, baseReg *tools.Registry, setup *ChatSetup) {
+	reg := baseReg.Filter(nil)
 	mac := agent.MultiAgentConfig{
 		Enabled:    true,
 		RoleModels: setup.Config.AgentRoleModels(),
 		MakeDriver: setup.MakeDriver,
-		BaseTools:  baseReg,
+		BaseTools:  reg,
 	}
 
 	// Register scratchpad tools on the base registry.
-	baseReg.Register(tools.NewScratchpadWrite(setup.WorkDir))
-	baseReg.Register(tools.NewScratchpadRead(setup.WorkDir))
+	reg.Register(tools.NewScratchpadWrite(setup.WorkDir))
+	reg.Register(tools.NewScratchpadRead(setup.WorkDir))
 
 	// Register the delegate tool (calls back into the agent).
-	baseReg.Register(tools.NewDelegate(func(ctx context.Context, role, task string) (string, error) {
+	reg.Register(tools.NewDelegate(func(ctx context.Context, role, task string) (string, error) {
 		return a.SpawnSubAgent(ctx, role, task, mac)
 	}))
 
 	// Switch the primary agent to dispatch role.
 	dispatchRole := agent.Roles["dispatch"]
-	a.SetSystem(agent.BuildSystemPrompt(setup.WorkDir, baseReg.Filter(dispatchRole.AllowTools), "") + "\n\n" + dispatchRole.System)
-	a.SetTools(baseReg.Filter(dispatchRole.AllowTools))
+	a.SetSystem(agent.BuildSystemPrompt(setup.WorkDir, reg.Filter(dispatchRole.AllowTools), "") + "\n\n" + dispatchRole.System)
+	a.SetTools(reg.Filter(dispatchRole.AllowTools))
 	a.SetRole("dispatch")
 }
 
