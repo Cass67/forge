@@ -7,8 +7,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"forge/internal/agent/tools"
 	"forge/internal/chatstate"
@@ -251,10 +249,9 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				role, _ := call.Args["role"].(string)
 				role = strings.TrimSpace(role)
 				task, _ := call.Args["task"].(string)
-				if role == "scout" && dispatchFlowKind == dispatchFlowAssessCodebase && dispatchFlowPhase == dispatchPhaseNeedEvidence {
-					if normalized, changed := normalizeDispatchScoutRepoReviewTask(task); changed {
-						task = normalized
-						call.Args["task"] = task
+				if dispatchFlowKind == dispatchFlowAssessCodebase {
+					if canonical, ok := canonicalAssessCodebaseDelegateTask(dispatchFlowPhase, role, userMessage, a.dispatchResults, a.dispatchScratch); ok {
+						task = canonical
 					}
 				}
 				if role != "" && role == lastDispatchDelegateRole && !lastDispatchDelegateBlocked {
@@ -269,22 +266,12 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 					a.renderer.Error(strings.TrimPrefix(msg, "[delegate] "))
 					continue
 				}
-				if dispatchBuilderRepoReviewEvidenceTaskForbidden(role, task) {
-					msg := "[delegate] error: repo-review evidence gathering and scratchpad recovery must stay on scout; builder must not be used for repo-review analysis or evidence reconstruction"
-					results = append(results, msg)
-					a.renderer.Error(strings.TrimPrefix(msg, "[delegate] "))
-					continue
+				if dispatchFlowKind != dispatchFlowAssessCodebase {
+					if enriched := enrichDispatchDelegateTask(role, task, a.dispatchResults, a.dispatchScratch); enriched != task {
+						task = enriched
+					}
 				}
-				if dispatchBuilderPresentationShimForbidden(role, task, a.dispatchResults) {
-					msg := "[delegate] error: repo-review presentation must end after architect synthesis; do not delegate to builder just to format the answer"
-					results = append(results, msg)
-					a.renderer.Error(strings.TrimPrefix(msg, "[delegate] "))
-					continue
-				}
-				if enriched := enrichDispatchDelegateTask(role, task, a.dispatchResults, a.dispatchScratch); enriched != task {
-					task = enriched
-					call.Args["task"] = task
-				}
+				call.Args["task"] = task
 			}
 			if a.role == "dispatch" && call.Name == "scratchpad_write" {
 				content, _ := call.Args["content"].(string)
@@ -651,177 +638,27 @@ func looksLikeImplementationRequest(lower string) bool {
 	})
 }
 
-func dispatchBuilderPresentationShimForbidden(role, task string, delegateResults map[string]string) bool {
-	if strings.TrimSpace(role) != "builder" {
-		return false
-	}
-	if strings.TrimSpace(delegateResults["architect"]) == "" {
-		return false
-	}
-	lower := strings.ToLower(task)
-	presentationSignals := []string{
-		"present the architect",
-		"user-facing response",
-		"final concise review answer",
-		"format the review",
-		"package the response",
-		"present recommendations",
-	}
-	repoReviewSignals := []string{
-		"repo review",
-		"repository improvement",
-		"improvement recommendations",
-	}
-	return containsAny(lower, presentationSignals) && containsAny(lower, repoReviewSignals)
-}
-
-func dispatchBuilderRepoReviewEvidenceTaskForbidden(role, task string) bool {
-	if strings.TrimSpace(role) != "builder" {
-		return false
-	}
-	lower := strings.ToLower(task)
-	repoReviewSignals := []string{
-		"repo review",
-		"repository review",
-		"repository evidence",
-		"repository findings",
-		"review this repo",
-		"review the repository",
-	}
-	evidenceSignals := []string{
-		"gather evidence",
-		"evidence-based raw findings",
-		"raw findings",
-		"collect factual findings",
-		"scratchpad",
-		"repo_review_evidence",
-		"reconstruct",
-		"recover",
-	}
-	return containsAny(lower, repoReviewSignals) && containsAny(lower, evidenceSignals)
-}
-
-func dispatchRepoReviewArchitectSynthesisTask(task string) bool {
-	lower := strings.ToLower(task)
-	synthesisSignals := []string{
-		"repository improvement recommendations",
-		"improvement recommendations for the user",
-		"improvement recommendations",
-		"prioritized recommendations",
-		"synthesize the repo review",
-		"synthesize repository review",
-		"recommendations",
-		"produce prioritized",
-		"produce recommendations",
-		"final review",
-	}
-	return dispatchRepoReviewLikeTask(lower) && containsAny(lower, synthesisSignals)
-}
-
-func dispatchRepoReviewScoutEvidenceTask(task string) bool {
-	lower := strings.ToLower(task)
-	evidenceSignals := []string{
-		"gather evidence",
-		"evidence only",
-		"findings only",
-		"evidence-backed findings",
-		"descriptive only",
-	}
-	return dispatchRepoReviewLikeTask(lower) && containsAny(lower, evidenceSignals)
-}
-
-func dispatchRepoReviewLikeTask(lower string) bool {
-	repoSignals := []string{
-		"repo review",
-		"repository review",
-		"repository findings",
-		"repository evidence",
-		"repository improvement",
-		"review this repo",
-		"review the repository",
-		"review this repository",
-		"inspect the repository",
-		"inspect this repository",
-		"inspect this repo",
-		"look at this repo",
-		"take a look at this repo",
-	}
-	return containsAny(lower, repoSignals)
-}
-
-func dispatchRepoReviewRecommendationLikeTask(lower string) bool {
-	recommendationSignals := []string{
-		"improvement opportunit",
-		"recommended improvement",
-		"recommend improvements",
-		"suggest improvements",
-		"prioritized recommendations",
-		"recommended changes",
-		"improvement list",
-		"changes i should make",
-		"changes should i make",
-		"issues, opportunities for improvement",
-		"candidate changes",
-	}
-	return containsAny(lower, recommendationSignals)
-}
-
-func normalizeDispatchScoutRepoReviewTask(task string) (string, bool) {
-	lower := strings.ToLower(task)
-	if !dispatchRepoReviewLikeTask(lower) || !dispatchRepoReviewRecommendationLikeTask(lower) {
-		return task, false
-	}
-	normalized := task
-	replacements := []struct {
-		old string
-		new string
-	}{
-		{"opportunities for improvement, and recommended changes", "code-quality and maintainability signals"},
-		{"opportunities for improvement and recommended changes", "code-quality and maintainability signals"},
-		{"identify practical improvement opportunities", "collect factual findings"},
-		{"recommended improvements", "evidence-backed findings"},
-		{"recommended changes", "file-level findings"},
-		{"specific candidate changes", "specific evidence points"},
-		{"recommend improvements", "report evidence"},
-		{"suggest improvements", "report evidence"},
-	}
-	for _, replacement := range replacements {
-		normalized = strings.ReplaceAll(normalized, replacement.old, replacement.new)
-		normalized = strings.ReplaceAll(normalized, upperFirst(replacement.old), upperFirst(replacement.new))
-	}
-	if !strings.Contains(strings.ToLower(normalized), "evidence") {
-		if strings.Contains(normalized, "OUTCOME:") {
-			normalized = strings.Replace(normalized, "OUTCOME:", "OUTCOME: Evidence-backed findings only. ", 1)
-		} else {
-			normalized += " OUTCOME: Evidence-backed findings only."
+func canonicalAssessCodebaseDelegateTask(phase dispatchFlowPhase, role, userMessage string, delegateResults map[string]string, scratchpadResult string) (string, bool) {
+	role = strings.TrimSpace(role)
+	switch {
+	case phase == dispatchPhaseNeedEvidence && role == "scout":
+		return fmt.Sprintf("TASK: Gather evidence for a codebase assessment of the current workspace. OUTCOME: Evidence-only findings with concrete file paths, code/config/tooling signals, and notable risks or inconsistencies that can support later recommendations. CONTEXT: User asked: %q. Repository root is the current working directory. MUST NOT: Do not provide final recommendations, prioritization, or implementation steps. Do not modify files.", userMessage), true
+	case phase == dispatchPhaseNeedSynthesis && role == "architect":
+		var contextParts []string
+		if scout := strings.TrimSpace(delegateResults["scout"]); scout != "" {
+			contextParts = append(contextParts, "SCOUT FINDINGS:\n"+scout)
 		}
+		if scratch := strings.TrimSpace(scratchpadResult); scratch != "" && !strings.Contains(strings.Join(contextParts, "\n\n"), scratch) {
+			contextParts = append(contextParts, "SCRATCHPAD CONTEXT:\n"+scratch)
+		}
+		context := strings.Join(contextParts, "\n\n")
+		if context == "" {
+			context = "No usable evidence is currently available."
+		}
+		return fmt.Sprintf("TASK: Synthesize actionable codebase assessment recommendations from the latest evidence only. OUTCOME: A concise prioritized list of suggested changes with rationale and confidence notes. CONTEXT: User asked: %q.\n\n%s\n\nMUST NOT: Do not gather new repository evidence. Do not invent findings. Do not modify files.", userMessage, context), true
+	default:
+		return "", false
 	}
-	lowerNormalized := strings.ToLower(normalized)
-	mustNotClause := "MUST NOT: Recommend changes or prioritize work."
-	if !strings.Contains(lowerNormalized, "must not:") {
-		normalized += " " + mustNotClause
-	} else if !strings.Contains(lowerNormalized, "recommend changes or prioritize work") {
-		normalized += " Recommend changes or prioritize work."
-	}
-	return normalized, normalized != task
-}
-
-func upperFirst(s string) string {
-	if s == "" {
-		return s
-	}
-	r, size := utf8.DecodeRuneInString(s)
-	if r == utf8.RuneError && size == 0 {
-		return s
-	}
-	return string(unicode.ToUpper(r)) + s[size:]
-}
-
-func dispatchArchitectRepoReviewRequiresUsableEvidence(role, task, scoutResult, scratchpadResult string) bool {
-	if strings.TrimSpace(role) != "architect" || !dispatchRepoReviewArchitectSynthesisTask(task) {
-		return false
-	}
-	return !dispatchRepoReviewEvidenceUsable(scoutResult) && !dispatchRepoReviewEvidenceUsable(scratchpadResult)
 }
 
 func dispatchRepoReviewEvidenceUsable(result string) bool {
