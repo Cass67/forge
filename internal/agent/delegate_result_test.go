@@ -1,0 +1,48 @@
+package agent
+
+import "testing"
+
+func TestParseDelegateOutcomeStructuredEnvelope(t *testing.T) {
+	outcome := parseDelegateOutcome(`{"status":"complete","message":"done","artifact_kind":"plan","artifact":"plan body","next_role":"builder","next_task":"implement it"}`)
+	if !outcome.Structured {
+		t.Fatalf("expected structured outcome")
+	}
+	if !outcome.Completed() {
+		t.Fatalf("expected completed outcome")
+	}
+	if outcome.DisplayText() != "done" {
+		t.Fatalf("display text = %q, want %q", outcome.DisplayText(), "done")
+	}
+	if outcome.ContextText() != "plan body" {
+		t.Fatalf("context text = %q, want %q", outcome.ContextText(), "plan body")
+	}
+	if outcome.NextRole != "builder" || outcome.NextTask != "implement it" {
+		t.Fatalf("unexpected next step: role=%q task=%q", outcome.NextRole, outcome.NextTask)
+	}
+}
+
+func TestParseDelegateOutcomePlainTextIsTerminalComplete(t *testing.T) {
+	outcome := parseDelegateOutcome("No code change is indicated.")
+	if outcome.Structured {
+		t.Fatalf("plain text outcome should not be structured")
+	}
+	if !outcome.Completed() {
+		t.Fatalf("plain text outcome should be complete")
+	}
+	if outcome.Blocked() {
+		t.Fatalf("plain text outcome should not be blocked")
+	}
+	if outcome.ContextText() != "No code change is indicated." {
+		t.Fatalf("context text = %q", outcome.ContextText())
+	}
+}
+
+func TestParseDelegateOutcomeAgentErrorIsBlocked(t *testing.T) {
+	outcome := parseDelegateOutcome("AGENT ERROR (scout): malformed tool call")
+	if !outcome.Blocked() {
+		t.Fatalf("agent error should be blocked")
+	}
+	if outcome.Completed() {
+		t.Fatalf("agent error should not be complete")
+	}
+}
