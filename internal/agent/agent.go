@@ -235,9 +235,8 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		// No tool calls — final answer, or stalled narration.
 		if len(calls) == 0 {
 			a.lastFullResponse = response
-			isShort := len(strings.TrimSpace(response)) < 300
 			isPreamble := looksLikeActionPreamble(response)
-			if !a.isSubAgent && (isPreamble || isShort) && actionPreambleRetries < 4 && turn+1 < a.maxTurns {
+			if !a.isSubAgent && isPreamble && actionPreambleRetries < 4 && turn+1 < a.maxTurns {
 				actionPreambleRetries++
 				a.history = append(a.history, llm.Message{
 					Role:    llm.RoleUser,
