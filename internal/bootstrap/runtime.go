@@ -36,11 +36,14 @@ type Runtime struct {
 }
 
 type CompatProvider struct {
-	Name    string
-	BaseURL string
-	KeyFn   func() string
-	IsModel func(string) bool
-	Models  []string
+	Name        string
+	Label       string
+	BaseURL     string
+	KeyFn       func() string
+	IsModel     func(string) bool
+	Models      []string
+	WireAPI     string
+	HTTPHeaders map[string]string
 }
 
 type ProviderBackend struct {
@@ -167,7 +170,7 @@ func DriverForModel(cfg *config.Config, tokens *auth.Tokens, model string) llm.D
 		}
 		return nil
 	}
-	if p, ambiguous := ResolveCompatProvider(BuildCompatProviders(cfg), model); p != nil {
+	if p, ambiguous := ResolveCompatProvider(BuildCompatProviders(cfg, tokens), model); p != nil {
 		apiModel := compatAPIModel(p.Name, ref, resolvedModel)
 		if apiModel != resolvedModel {
 			return drivers.NewOpenAICompatibleProviderAlias(p.Name, p.KeyFn(), p.BaseURL, model, apiModel)
@@ -200,7 +203,7 @@ func ResolvedProviderID(cfg *config.Config, tokens *auth.Tokens, model string) s
 	if ref.Provider == "copilot" || (ref.Provider == "" && IsCopilotModel(model) && tokens != nil && strings.TrimSpace(tokens.CopilotToken) != "") {
 		return "copilot"
 	}
-	if p, ambiguous := ResolveCompatProvider(BuildCompatProviders(cfg), model); p != nil {
+	if p, ambiguous := ResolveCompatProvider(BuildCompatProviders(cfg, tokens), model); p != nil {
 		return p.Name
 	} else if ambiguous && ref.Provider != "" {
 		return ref.Provider
@@ -246,7 +249,7 @@ func AvailableModels(cfg *config.Config, tokens *auth.Tokens) []string {
 		out = append(out, openAIModels...)
 		out = append(out, qualifyModels("openai", openAIModels)...)
 	}
-	for _, p := range BuildCompatProviders(cfg) {
+	for _, p := range BuildCompatProviders(cfg, tokens) {
 		if p.KeyFn() != "" {
 			if useLiveCompatModelDiscovery() {
 				out = append(out, discoverCompatModels(p.BaseURL, p.KeyFn(), p.Name, p.Models, p.IsModel)...)
@@ -303,14 +306,18 @@ func SupportedProviderBackends(cfg *config.Config, tokens *auth.Tokens) []Provid
 			DefaultModel: "openai/" + OpenAIModels()[0],
 		},
 	}
-	for _, provider := range BuildCompatProviders(cfg) {
+	for _, provider := range BuildCompatProviders(cfg, tokens) {
 		defaultModel := provider.Name
 		if len(provider.Models) > 0 {
 			defaultModel = explicitBackendModel(provider.Name, provider.Models[0])
 		}
+		label := provider.Label
+		if label == "" {
+			label = strings.ToUpper(provider.Name[:1]) + provider.Name[1:]
+		}
 		backends = append(backends, ProviderBackend{
 			ID:           provider.Name,
-			Label:        strings.ToUpper(provider.Name[:1]) + provider.Name[1:],
+			Label:        label,
 			Status:       providerBackendStatus(provider.KeyFn() != "", "configure API key"),
 			DefaultModel: defaultModel,
 		})
@@ -479,8 +486,8 @@ func explicitBackendModel(providerID, model string) string {
 	return providerID + "/" + strings.TrimSpace(model)
 }
 
-func BuildCompatProviders(cfg *config.Config) []CompatProvider {
-	return []CompatProvider{
+func BuildCompatProviders(cfg *config.Config, tokens *auth.Tokens) []CompatProvider {
+	providers := []CompatProvider{
 		{
 			Name:    "xai",
 			BaseURL: "https://api.x.ai/v1",
@@ -586,4 +593,29 @@ func BuildCompatProviders(cfg *config.Config) []CompatProvider {
 			},
 		},
 	}
+
+	customDefs, _ := LoadCustomCompatProviders(fsutil.ForgeConfigDir())
+	for _, def := range customDefs {
+		RegisterCustomProviderName(def.ID)
+		defID := def.ID
+		providers = append(providers, CompatProvider{
+			Name:    def.ID,
+			Label:   def.Name,
+			BaseURL: def.BaseURL,
+			KeyFn: func() string {
+				if tokens != nil {
+					if k := tokens.CustomProviderKey(defID); k != "" {
+						return k
+					}
+				}
+				return os.Getenv(strings.ToUpper(defID) + "_API_KEY")
+			},
+			IsModel:     func(string) bool { return false },
+			Models:      def.Models,
+			WireAPI:     def.WireAPI,
+			HTTPHeaders: def.HTTPHeaders,
+		})
+	}
+
+	return providers
 }
