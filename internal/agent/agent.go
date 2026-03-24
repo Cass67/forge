@@ -413,12 +413,11 @@ func dispatchBuilderPresentationShimForbidden(role, task string, delegateResults
 
 func dispatchRepoReviewArchitectSynthesisTask(task string) bool {
 	lower := strings.ToLower(task)
-	if !strings.Contains(lower, "architect") && !strings.Contains(lower, "synthesize") {
-		return false
-	}
 	repoReviewSignals := []string{
 		"repo review",
 		"repository review",
+		"repository improvement recommendations",
+		"improvement recommendations for the user",
 		"improvement recommendations",
 		"prioritized recommendations",
 		"synthesize the repo review",
