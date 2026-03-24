@@ -1002,7 +1002,12 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 	case llm.EventToolCall:
 		if ev.Agent == "runtime" {
 			if strings.HasPrefix(ev.Text, "delegating to ") {
-				m.AddMessage(ChatMessage{Kind: MsgStatus, Content: ev.Text})
+				stamp := time.Now().Format("15:04:05")
+				m.AddMessage(ChatMessage{
+					Kind:    MsgAgent,
+					Header:  "Dispatch • " + stamp,
+					Content: ev.Text,
+				})
 			} else {
 				m.AddWorkingMessage(ev.Text)
 			}
