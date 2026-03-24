@@ -511,6 +511,62 @@ func TestDispatchProseFilteredOnToolCallTurns(t *testing.T) {
 	}
 }
 
+func TestDispatchRetriesDirectAnswerUntilItDelegates(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"Repo overview\n- Purpose\n- Structure",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"find it\"}}\n</tool_call>",
+		"Here are the results from scout.",
+	}}
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			return "scout found stuff", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "describe this repo"); err != nil {
+		t.Fatal(err)
+	}
+	got := output.String()
+	if strings.Contains(got, "Repo overview") {
+		t.Fatalf("dispatch should not leak direct answers before delegating: %q", got)
+	}
+	if !strings.Contains(got, "Here are the results from scout.") {
+		t.Fatalf("dispatch final presentation missing from output: %q", got)
+	}
+	if driver.callIdx != 3 {
+		t.Fatalf("expected dispatch retry plus delegate flow, got %d driver calls", driver.callIdx)
+	}
+}
+
+func TestDispatchFailsClosedWhenItNeverDelegates(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"Repo overview\n- Purpose",
+		"Still summarizing the repo.",
+	}}
+	reg := tools.NewRegistry()
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 2, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	err := a.Run(context.Background(), "describe this repo")
+	if err == nil || !strings.Contains(err.Error(), "dispatch") {
+		t.Fatalf("expected dispatch failure, got %v", err)
+	}
+	if got := output.String(); strings.Contains(got, "Repo overview") || strings.Contains(got, "Still summarizing") {
+		t.Fatalf("dispatch should not render direct answers when it never delegates: %q", got)
+	}
+}
+
 func TestCancelSubAgentSafe(t *testing.T) {
 	a := &Agent{}
 	// Should not panic when no sub-agent is active.
