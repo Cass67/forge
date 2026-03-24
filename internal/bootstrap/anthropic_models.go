@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -59,7 +61,7 @@ func DiscoverClaudeModels() []string {
 	if err != nil || len(live) == 0 {
 		return AnthropicModels()
 	}
-	return live
+	return preferredClaudeModels(live)
 }
 
 func fetchAnthropicModels(ctx context.Context, client *http.Client, apiKey, bearer string, oauth bool) ([]string, error) {
@@ -104,4 +106,116 @@ func fetchAnthropicModels(ctx context.Context, client *http.Client, apiKey, bear
 		out = append(out, id)
 	}
 	return out, nil
+}
+
+func preferredClaudeModels(models []string) []string {
+	type candidate struct {
+		name    string
+		family  string
+		version []int
+		dated   bool
+	}
+
+	parse := func(name string) (candidate, bool) {
+		parts := strings.Split(strings.TrimSpace(name), "-")
+		if len(parts) < 4 || parts[0] != "claude" {
+			return candidate{}, false
+		}
+		family := parts[1]
+		switch family {
+		case "opus", "sonnet", "haiku":
+		default:
+			return candidate{}, false
+		}
+		versionParts := parts[2:]
+		dated := false
+		if len(versionParts) > 1 {
+			last := versionParts[len(versionParts)-1]
+			if len(last) == 8 {
+				if _, err := strconv.Atoi(last); err == nil {
+					dated = true
+					versionParts = versionParts[:len(versionParts)-1]
+				}
+			}
+		}
+		version := make([]int, 0, len(versionParts))
+		for _, part := range versionParts {
+			n, err := strconv.Atoi(part)
+			if err != nil {
+				return candidate{}, false
+			}
+			version = append(version, n)
+		}
+		return candidate{name: strings.TrimSpace(name), family: family, version: version, dated: dated}, true
+	}
+
+	compareVersion := func(a, b []int) int {
+		n := len(a)
+		if len(b) > n {
+			n = len(b)
+		}
+		for i := 0; i < n; i++ {
+			av := 0
+			if i < len(a) {
+				av = a[i]
+			}
+			bv := 0
+			if i < len(b) {
+				bv = b[i]
+			}
+			switch {
+			case av > bv:
+				return 1
+			case av < bv:
+				return -1
+			}
+		}
+		return 0
+	}
+
+	bestByFamily := map[string]candidate{}
+	for _, raw := range uniqueStrings(models) {
+		name := strings.TrimSpace(raw)
+		cand, ok := parse(name)
+		if !ok {
+			continue
+		}
+		best, exists := bestByFamily[cand.family]
+		if !exists {
+			bestByFamily[cand.family] = cand
+			continue
+		}
+		switch cmp := compareVersion(cand.version, best.version); {
+		case cmp > 0:
+			bestByFamily[cand.family] = cand
+		case cmp == 0 && best.dated && !cand.dated:
+			bestByFamily[cand.family] = cand
+		}
+	}
+
+	order := map[string]int{"opus": 0, "sonnet": 1, "haiku": 2}
+	families := make([]string, 0, len(bestByFamily))
+	for family := range bestByFamily {
+		families = append(families, family)
+	}
+	sort.Slice(families, func(i, j int) bool {
+		oi, iok := order[families[i]]
+		oj, jok := order[families[j]]
+		if iok && jok {
+			return oi < oj
+		}
+		if iok != jok {
+			return iok
+		}
+		return families[i] < families[j]
+	})
+
+	out := make([]string, 0, len(families))
+	for _, family := range families {
+		out = append(out, bestByFamily[family].name)
+	}
+	if len(out) == 0 {
+		return AnthropicModels()
+	}
+	return out
 }

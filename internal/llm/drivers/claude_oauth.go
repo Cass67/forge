@@ -16,6 +16,11 @@ var claudeOAuthBetaHeader = strings.Join([]string{
 	"interleaved-thinking-" + "2025-05-14",
 }, ", ")
 
+const (
+	claudeOAuthUserAgent    = "claude-cli/2.1.2 (external, cli)"
+	claudeOAuthSystemPrefix = "You are Claude Code, Anthropic's official CLI for Claude."
+)
+
 type claudeAuthTransport struct {
 	base http.RoundTripper
 	mgr  *claudeauth.Manager
@@ -39,8 +44,16 @@ func NewClaudeOAuthAlias(registryName, apiModel string, mgr *claudeauth.Manager)
 		}),
 		option.WithHeaderDel("X-Api-Key"),
 		option.WithHeader("anthropic-beta", claudeOAuthBetaHeader),
+		option.WithHeader("user-agent", claudeOAuthUserAgent),
 	)
-	return &ClaudeDriver{client: &client, name: registryName, model: apiModel, params: llmDefaultParams()}
+	return &ClaudeDriver{
+		client:       &client,
+		name:         registryName,
+		model:        apiModel,
+		promptCache:  false,
+		systemPrefix: claudeOAuthSystemPrefix,
+		params:       llmDefaultParams(),
+	}
 }
 
 func (t *claudeAuthTransport) RoundTrip(req *http.Request) (*http.Response, error) {

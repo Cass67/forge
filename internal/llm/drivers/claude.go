@@ -2,6 +2,7 @@ package drivers
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	"forge/internal/llm"
@@ -11,18 +12,20 @@ import (
 )
 
 type ClaudeDriver struct {
-	client    *anthropic.Client
-	name      string
-	model     string
-	params    llm.Params
-	lastUsage llm.Usage
-	lastMode  string
-	mu        sync.Mutex
+	client       *anthropic.Client
+	name         string
+	model        string
+	promptCache  bool
+	systemPrefix string
+	params       llm.Params
+	lastUsage    llm.Usage
+	lastMode     string
+	mu           sync.Mutex
 }
 
 func NewClaude(apiKey, model string) *ClaudeDriver {
 	client := anthropic.NewClient(option.WithAPIKey(apiKey))
-	return &ClaudeDriver{client: &client, name: model, model: model, params: llmDefaultParams()}
+	return &ClaudeDriver{client: &client, name: model, model: model, promptCache: true, params: llmDefaultParams()}
 }
 
 func (d *ClaudeDriver) SetParams(p llm.Params) {
@@ -52,9 +55,16 @@ func (d *ClaudeDriver) Stream(ctx context.Context, messages []llm.Message, out c
 	if d.params.MaxTokens > 0 {
 		maxTok = int64(d.params.MaxTokens)
 	}
-	apiParams := buildClaudeBetaParams(d.model, d.params, messages, maxTok)
+	apiParams := buildClaudeBetaParams(d.model, d.params, messages, maxTok, claudeRequestOptions{
+		promptCache:  d.promptCache,
+		systemPrefix: d.systemPrefix,
+	})
 	d.mu.Lock()
-	d.lastMode = "claude prompt cache (ephemeral 5m)"
+	if d.promptCache {
+		d.lastMode = "claude prompt cache (ephemeral 5m)"
+	} else {
+		d.lastMode = "claude oauth"
+	}
 	d.mu.Unlock()
 
 	var acc anthropic.BetaMessage
@@ -89,9 +99,19 @@ func (d *ClaudeDriver) Stream(ctx context.Context, messages []llm.Message, out c
 	return nil
 }
 
-func buildClaudeBetaMessages(messages []llm.Message) ([]anthropic.BetaTextBlockParam, []anthropic.BetaMessageParam) {
+type claudeRequestOptions struct {
+	promptCache  bool
+	systemPrefix string
+}
+
+func buildClaudeBetaMessages(messages []llm.Message, systemPrefix string) ([]anthropic.BetaTextBlockParam, []anthropic.BetaMessageParam) {
 	var systemBlocks []anthropic.BetaTextBlockParam
 	var chatMsgs []anthropic.BetaMessageParam
+	if strings.TrimSpace(systemPrefix) != "" {
+		systemBlocks = append(systemBlocks, anthropic.BetaTextBlockParam{
+			Text: strings.TrimSpace(systemPrefix),
+		})
+	}
 	for _, m := range messages {
 		switch m.Role {
 		case llm.RoleSystem:
@@ -122,18 +142,20 @@ func buildClaudeBetaMessages(messages []llm.Message) ([]anthropic.BetaTextBlockP
 	return systemBlocks, chatMsgs
 }
 
-func buildClaudeBetaParams(model string, params llm.Params, messages []llm.Message, maxTokens int64) anthropic.BetaMessageNewParams {
-	systemBlocks, chatMsgs := buildClaudeBetaMessages(messages)
+func buildClaudeBetaParams(model string, params llm.Params, messages []llm.Message, maxTokens int64, opts claudeRequestOptions) anthropic.BetaMessageNewParams {
+	systemBlocks, chatMsgs := buildClaudeBetaMessages(messages, opts.systemPrefix)
 	apiParams := anthropic.BetaMessageNewParams{
 		Model:     anthropic.ModelClaudeSonnet4_6,
 		MaxTokens: maxTokens,
 		Messages:  chatMsgs,
-		CacheControl: anthropic.BetaCacheControlEphemeralParam{
+	}
+	if opts.promptCache {
+		apiParams.CacheControl = anthropic.BetaCacheControlEphemeralParam{
 			TTL: anthropic.BetaCacheControlEphemeralTTLTTL5m,
-		},
-		Betas: []anthropic.AnthropicBeta{
+		}
+		apiParams.Betas = []anthropic.AnthropicBeta{
 			anthropic.AnthropicBetaPromptCaching2024_07_31,
-		},
+		}
 	}
 	if len(systemBlocks) > 0 {
 		apiParams.System = systemBlocks

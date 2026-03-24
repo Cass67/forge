@@ -1364,6 +1364,40 @@ func TestChatModelModelsOverlayLeadingDigitStartsSearch(t *testing.T) {
 	}
 }
 
+func TestChatModelModelsOverlayDedupesEquivalentLabels(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "claude/claude-sonnet-4-6",
+		WorkDir: "/tmp",
+		AvailableModels: []string{
+			"claude-sonnet-4-6",
+			"claude/claude-sonnet-4-6",
+			"claude-opus-4-6",
+			"claude/claude-opus-4-6",
+		},
+		DescribeModel: func(model string) string {
+			switch model {
+			case "claude-sonnet-4-6", "claude/claude-sonnet-4-6":
+				return "claude-sonnet-4-6 [claude]"
+			case "claude-opus-4-6", "claude/claude-opus-4-6":
+				return "claude-opus-4-6 [claude]"
+			default:
+				return model
+			}
+		},
+	})
+	m.width = 100
+	m.height = 24
+
+	m.openModelPicker()
+
+	if len(m.modelsFiltered) != 2 {
+		t.Fatalf("modelsFiltered = %#v", m.modelsFiltered)
+	}
+	if m.modelsFiltered[0] != "claude/claude-sonnet-4-6" || m.modelsFiltered[1] != "claude/claude-opus-4-6" {
+		t.Fatalf("modelsFiltered = %#v", m.modelsFiltered)
+	}
+}
+
 func TestChatModelModelsOverlayShowsVisibleRange(t *testing.T) {
 	models := make([]string, 0, 30)
 	for i := 1; i <= 30; i++ {
