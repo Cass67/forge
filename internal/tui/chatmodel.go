@@ -827,6 +827,8 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 			m.toolsBuf += "\n"
 		}
 		return m, m.beginProviderDiagnosticsFetch(false)
+	case llm.EventProgress:
+		m.AddWorkingMessage(ev.Text)
 	}
 	// Auto-scroll tools pane when content is added.
 	if ev.Kind == llm.EventToolCall || ev.Kind == llm.EventToolResult || ev.Kind == llm.EventStats {
