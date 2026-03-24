@@ -218,6 +218,10 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		dispatchDirectAnswerRetries = 0
 		sawToolCallThisRun = true
 
+		if a.role == "dispatch" && len(calls) > 1 {
+			calls = calls[:1]
+		}
+
 		// Execute tool calls
 		var results []string
 		for _, call := range calls {
@@ -244,6 +248,13 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				if enriched := enrichDispatchDelegateTask(role, task, a.dispatchResults, a.dispatchScratch); enriched != task {
 					task = enriched
 					call.Args["task"] = task
+				}
+			}
+			if a.role == "dispatch" && call.Name == "scratchpad_write" {
+				content, _ := call.Args["content"].(string)
+				if !dispatchScratchpadWriteAllowed(content, a.dispatchResults, a.dispatchScratch) {
+					results = append(results, "[scratchpad_write] error: dispatch may only persist raw delegate or scratchpad content without rewriting it")
+					continue
 				}
 			}
 			tool, ok := a.tools.Get(call.Name)
@@ -487,6 +498,22 @@ func dispatchRepoReviewScoutEvidenceTask(task string) bool {
 		"descriptive only",
 	}
 	return containsAny(lower, repoSignals) && containsAny(lower, evidenceSignals)
+}
+
+func dispatchScratchpadWriteAllowed(content string, delegateResults map[string]string, scratchpadResult string) bool {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return false
+	}
+	if strings.TrimSpace(scratchpadResult) == content {
+		return true
+	}
+	for _, result := range delegateResults {
+		if strings.TrimSpace(result) == content {
+			return true
+		}
+	}
+	return false
 }
 
 func enrichDispatchDelegateTask(role, task string, delegateResults map[string]string, scratchpadResult string) string {
