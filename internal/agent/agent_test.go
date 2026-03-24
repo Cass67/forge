@@ -833,6 +833,78 @@ func TestDispatchAllowsArchitectRetryAfterBlockedResultWhenScratchpadContextArri
 	}
 }
 
+func TestDispatchAllowsBuilderRetryAfterBlockedResultWithSmartQuotes(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"builder\", \"task\": \"TASK: Write the recovered remediation plan to improvments_cleanup.md. OUTCOME: file exists.\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"builder\", \"task\": \"TASK: Write the recovered remediation plan to improvments_cleanup.md. OUTCOME: file exists.\"}}\n</tool_call>",
+		"Done.",
+	}}
+	reg := tools.NewRegistry()
+	var builderCalls int
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			builderCalls++
+			if builderCalls == 1 {
+				return "I don’t have access to the earlier tool output in this current context, so I can’t reliably reconstruct the exact markdown content without inventing or altering it.", nil
+			}
+			return "file written", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "write that prior plan into a file"); err != nil {
+		t.Fatal(err)
+	}
+	if builderCalls != 2 {
+		t.Fatalf("expected builder to be retried after blocked smart-quote result, got %d calls", builderCalls)
+	}
+}
+
+func TestDispatchCarriesPriorArchitectResultIntoLaterBuilderTurn(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"TASK: Write a remediation plan. OUTCOME: markdown plan.\"}}\n</tool_call>",
+		"Done.",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"builder\", \"task\": \"TASK: Create improvments_cleanup.md with the previously recovered remediation plan text. OUTCOME: file exists.\"}}\n</tool_call>",
+		"Done.",
+	}}
+	reg := tools.NewRegistry()
+	var builderTask string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			task, _ := args["task"].(string)
+			if role == "architect" {
+				return "# Repository Cleanup and Contribution Readiness Plan\n\nExact remediation content.", nil
+			}
+			builderTask = task
+			return "file written", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "write up a remediation plan"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Run(context.Background(), "pop that in an improvments_cleanup.md file"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(builderTask, "# Repository Cleanup and Contribution Readiness Plan") {
+		t.Fatalf("builder task missing prior architect result: %q", builderTask)
+	}
+}
+
 func TestDispatchRejectsBuilderPresentationShimAfterArchitectRepoReview(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Gather evidence only.\"}}\n</tool_call>",
