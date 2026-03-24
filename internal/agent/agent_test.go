@@ -569,29 +569,53 @@ func TestSubAgentProseAfterToolCallInSameResponseIsFiltered(t *testing.T) {
 	}
 }
 
-func TestScoutRetriesInsteadOfMixingToolCallsWithVisibleProse(t *testing.T) {
-	driver := &mockDriver{responses: []string{
-		"<tool_call>\n{\"name\": \"list_dir\", \"args\": {}}\n</tool_call>\nPlease provide the pending tool results for the repo root.",
-		"<tool_call>\n{\"name\": \"list_dir\", \"args\": {}}\n</tool_call>",
-		"FINDINGS:\n- found files",
-	}}
+func TestScoutExecutesToolCallsAndSuppressesVisibleProse(t *testing.T) {
+	dir := t.TempDir()
+	driver := &inspectingDriver{
+		responses: []string{
+			"<tool_call>\n{\"name\": \"list_dir\", \"args\": {}}\n</tool_call>\nPlease provide the pending tool results for the repo root.",
+			"FINDINGS:\n- found files",
+		},
+		checks: []func([]llm.Message) error{
+			nil,
+			func(messages []llm.Message) error {
+				var sawToolResults bool
+				var sawNudge bool
+				for _, msg := range messages {
+					if strings.Contains(msg.Content, "[list_dir]") {
+						sawToolResults = true
+					}
+					if strings.Contains(msg.Content, scoutNudgeMessage()) {
+						sawNudge = true
+					}
+				}
+				if !sawToolResults {
+					return fmt.Errorf("second turn missing executed tool results")
+				}
+				if !sawNudge {
+					return fmt.Errorf("second turn missing scout mixed-prose nudge")
+				}
+				return nil
+			},
+		},
+	}
 	reg := tools.NewRegistry()
-	reg.Register(tools.NewListDir(t.TempDir(), nil))
+	reg.Register(tools.NewListDir(dir, nil))
 
 	var output bytes.Buffer
 	renderer := NewRenderer(&output, 80, false)
-	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a := NewAgent(driver, reg, YoloApproval(), dir, 10, renderer, nil, nil)
 	a.SetRole("scout")
 	a.isSubAgent = true
 
 	if err := a.Run(context.Background(), "inspect repo"); err != nil {
 		t.Fatal(err)
 	}
-	if driver.callIdx != 3 {
-		t.Fatalf("expected scout retry flow, got %d driver calls", driver.callIdx)
+	if driver.callIdx != 2 {
+		t.Fatalf("expected scout mixed-prose flow to keep executed tool results, got %d driver calls", driver.callIdx)
 	}
 	if got := output.String(); strings.Contains(got, "Please provide the pending tool results") {
-		t.Fatalf("scout prose leak should trigger retry, got %q", got)
+		t.Fatalf("scout prose leak should be suppressed, got %q", got)
 	}
 }
 
