@@ -1697,6 +1697,7 @@ func TestChatModelProviderOverlayClaudeLoginFlow(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", configDir)
 	prevStart := startClaudeAuth
 	prevExchange := exchangeClaudeAuth
+	prevOpen := openProviderAuthURL
 	startClaudeAuth = func() (*claudeauth.Flow, error) {
 		return &claudeauth.Flow{
 			AuthorizationURL: "https://claude.ai/oauth/authorize?code=true",
@@ -1717,6 +1718,7 @@ func TestChatModelProviderOverlayClaudeLoginFlow(t *testing.T) {
 	t.Cleanup(func() {
 		startClaudeAuth = prevStart
 		exchangeClaudeAuth = prevExchange
+		openProviderAuthURL = prevOpen
 	})
 
 	authenticated := false
@@ -1759,8 +1761,10 @@ func TestChatModelProviderOverlayClaudeLoginFlow(t *testing.T) {
 	}
 	if got := m.View(); !strings.Contains(got, "Open URL:") || !strings.Contains(got, "Paste callback/code:") {
 		t.Fatalf("view missing Claude auth labels: %s", got)
-	} else if !strings.Contains(got, "claude.ai/oauth/authorize") {
-		t.Fatalf("view missing Claude auth URL: %s", got)
+	} else if !strings.Contains(got, "Open Claude sign-in page") {
+		t.Fatalf("view missing Claude auth link label: %s", got)
+	} else if !strings.Contains(got, "\x1b]8;;https://claude.ai/oauth/authorize?code=true") {
+		t.Fatalf("view missing Claude auth hyperlink: %q", got)
 	}
 
 	m.providerKeyInput = "https://console.anthropic.com/oauth/code/callback?code=abc&state=xyz"
@@ -1787,6 +1791,36 @@ func TestChatModelProviderOverlayClaudeLoginFlow(t *testing.T) {
 	}
 }
 
+func TestChatModelProviderOverlayClaudeCtrlOOpensURL(t *testing.T) {
+	prevOpen := openProviderAuthURL
+	openProviderAuthURL = func(target string) tea.Cmd {
+		return func() tea.Msg { return providerAuthURLOpenedMsg{target: target} }
+	}
+	t.Cleanup(func() {
+		openProviderAuthURL = prevOpen
+	})
+
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "test",
+		WorkDir: "/tmp",
+	})
+	m.providersVisible = true
+	m.providerPromptingKey = true
+	m.providerAuthProvider = "claude"
+	m.providerAuthURL = "https://claude.ai/oauth/authorize?code=true"
+
+	updated, cmd := m.handleProvidersKey(tea.KeyMsg{Type: tea.KeyCtrlO})
+	m = updated.(ChatModel)
+	if cmd == nil {
+		t.Fatal("expected open URL command")
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(ChatModel)
+	if m.providerStatus != "opened browser" {
+		t.Fatalf("providerStatus = %q", m.providerStatus)
+	}
+}
+
 func TestWrapProviderAuthValueBreaksLongURLs(t *testing.T) {
 	got := wrapProviderAuthValue("https://claude.ai/oauth/authorize?code=true&state=abcdefghijklmnopqrstuvwxyz", 20)
 	if !strings.Contains(got, "\n") {
@@ -1796,6 +1830,16 @@ func TestWrapProviderAuthValueBreaksLongURLs(t *testing.T) {
 		if lipgloss.Width(line) > 20 {
 			t.Fatalf("wrapped line width = %d, want <= 20 for %q", lipgloss.Width(line), line)
 		}
+	}
+}
+
+func TestProviderAuthHyperlink(t *testing.T) {
+	got := providerAuthHyperlink("Open Claude sign-in page", "https://claude.ai/oauth/authorize?code=true")
+	if !strings.Contains(got, "\x1b]8;;https://claude.ai/oauth/authorize?code=true") {
+		t.Fatalf("missing hyperlink target: %q", got)
+	}
+	if !strings.Contains(got, "Open Claude sign-in page") {
+		t.Fatalf("missing hyperlink label: %q", got)
 	}
 }
 
