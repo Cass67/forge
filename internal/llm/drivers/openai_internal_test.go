@@ -217,6 +217,37 @@ func TestResponsesRequestStateFallsBackToFullInputWhenHistoryDiverges(t *testing
 	}
 }
 
+func TestResponsesRequestStateUsesFullInputForCustomResponsesProvider(t *testing.T) {
+	d := NewCustomCompatProvider("mycorp", "sk-test", "https://api.mycorp.com/v1", "mycorp/gpt-5.4", "gpt-5.4", true, nil)
+	d.prevResponseID = "resp_123"
+	d.lastMessages = []llm.Message{
+		{Role: llm.RoleSystem, Content: "sys"},
+		{Role: llm.RoleUser, Content: "u1"},
+	}
+	msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: "sys"},
+		{Role: llm.RoleUser, Content: "u1"},
+		{Role: llm.RoleAssistant, Content: "a1"},
+	}
+
+	instructions, input, prevID, mode, err := d.responsesRequestState(context.Background(), msgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instructions != "sys" {
+		t.Fatalf("instructions = %q", instructions)
+	}
+	if prevID != "" {
+		t.Fatalf("prevID = %q, want empty for custom provider", prevID)
+	}
+	if mode != "responses full input" {
+		t.Fatalf("mode = %q", mode)
+	}
+	if len(input) != 2 {
+		t.Fatalf("input = %#v", input)
+	}
+}
+
 func TestResponsesRequestStateUsesFullInputForChatGPTStatelessMode(t *testing.T) {
 	d := &OpenAIDriver{
 		providerLabel:     "chatgpt",
