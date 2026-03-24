@@ -2473,7 +2473,8 @@ func (m *ChatModel) updateModelFilter() {
 	query := strings.TrimSpace(strings.ToLower(m.modelsQuery))
 	m.modelsFiltered = m.modelsFiltered[:0]
 	for _, name := range m.modelsList {
-		if query == "" || strings.Contains(strings.ToLower(name), query) {
+		label := strings.ToLower(m.modelOptionLabel(name))
+		if query == "" || strings.Contains(strings.ToLower(name), query) || strings.Contains(label, query) {
 			m.modelsFiltered = append(m.modelsFiltered, name)
 		}
 	}
@@ -2482,6 +2483,15 @@ func (m *ChatModel) updateModelFilter() {
 		return
 	}
 	m.modelsCursor = clamp(m.modelsCursor, 0, len(m.modelsFiltered)-1)
+}
+
+func (m ChatModel) modelOptionLabel(name string) string {
+	if m.config.DescribeModel != nil {
+		if label := strings.TrimSpace(m.config.DescribeModel(name)); label != "" {
+			return label
+		}
+	}
+	return name
 }
 
 func (m ChatModel) handleAgentModelsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -3421,7 +3431,7 @@ func (m ChatModel) renderModelsOverlay() string {
 	}
 	for i := 0; i < contentHeight && start+i < len(m.modelsFiltered); i++ {
 		idx := start + i
-		line := fmt.Sprintf("%d. %s", idx+1, m.modelsFiltered[idx])
+		line := fmt.Sprintf("%d. %s", idx+1, m.modelOptionLabel(m.modelsFiltered[idx]))
 		if idx == m.modelsCursor {
 			lines = append(lines, selectedStyle.Render(line))
 		} else {
