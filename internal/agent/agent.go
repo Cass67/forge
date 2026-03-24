@@ -16,24 +16,25 @@ import (
 )
 
 type Agent struct {
-	driver           llm.Driver
-	tools            *tools.Registry
-	approve          tools.ApprovalFunc
-	history          []llm.Message
-	system           string
-	systemOverride   bool // true when SetSystem was called; suppresses rebuild
-	workDir          string
-	maxTurns         int
-	renderer         RenderTarget
-	skills           []skills.Skill
-	state            *chatstate.State
-	isSubAgent       bool
-	lastFullResponse string
-	role             string
-	dispatchResults  map[string]string
-	dispatchScratch  string
-	mu               sync.Mutex
-	activeSubCancel  context.CancelFunc
+	driver            llm.Driver
+	tools             *tools.Registry
+	approve           tools.ApprovalFunc
+	history           []llm.Message
+	system            string
+	systemOverride    bool // true when SetSystem was called; suppresses rebuild
+	workDir           string
+	maxTurns          int
+	renderer          RenderTarget
+	skills            []skills.Skill
+	state             *chatstate.State
+	isSubAgent        bool
+	lastFullResponse  string
+	role              string
+	dispatchResults   map[string]string
+	dispatchArtifacts map[string]string
+	dispatchScratch   string
+	mu                sync.Mutex
+	activeSubCancel   context.CancelFunc
 }
 
 const targetHistoryTokens = 12000
@@ -67,16 +68,17 @@ func NewAgent(driver llm.Driver, toolReg *tools.Registry, approve tools.Approval
 		state = chatstate.New()
 	}
 	return &Agent{
-		driver:          driver,
-		tools:           toolReg,
-		approve:         approve,
-		workDir:         workDir,
-		maxTurns:        maxTurns,
-		renderer:        renderer,
-		system:          BuildSystemPrompt(workDir, toolReg, skills.Describe(loadedSkills)),
-		skills:          loadedSkills,
-		state:           state,
-		dispatchResults: make(map[string]string),
+		driver:            driver,
+		tools:             toolReg,
+		approve:           approve,
+		workDir:           workDir,
+		maxTurns:          maxTurns,
+		renderer:          renderer,
+		system:            BuildSystemPrompt(workDir, toolReg, skills.Describe(loadedSkills)),
+		skills:            loadedSkills,
+		state:             state,
+		dispatchResults:   make(map[string]string),
+		dispatchArtifacts: make(map[string]string),
 	}
 }
 
@@ -141,6 +143,7 @@ func (a *Agent) ClearHistory() {
 	a.history = nil
 	a.state.Clear()
 	clear(a.dispatchResults)
+	clear(a.dispatchArtifacts)
 	a.dispatchScratch = ""
 	if resetter, ok := a.driver.(llm.ConversationResetter); ok {
 		resetter.ResetConversation()
@@ -159,11 +162,6 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	lastDispatchDelegateRole := ""
 	lastDispatchDelegateBlocked := false
 	dispatchFlowKind, dispatchFlowPhase := classifyDispatchFlow(userMessage)
-	if dispatchFlowKind == dispatchFlowUnknown {
-		if followUpKind, followUpPhase, ok := classifyDispatchFollowUp(userMessage, a.dispatchResults); ok {
-			dispatchFlowKind, dispatchFlowPhase = followUpKind, followUpPhase
-		}
-	}
 	dispatchStopAfterTurn := false
 	defer func() {
 		a.renderer.Stats(time.Since(turnStart), a.getUsage())
@@ -290,7 +288,9 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 
 		// Execute tool calls
 		var results []string
-		for _, call := range calls {
+		callQueue := append([]ToolCall(nil), calls...)
+		for idx := 0; idx < len(callQueue); idx++ {
+			call := callQueue[idx]
 			if a.isSubAgent && subAgentFiltersRuntimeArtifacts(a.role) && !subAgentAllowsRuntimeArtifactInspection(a.role, userMessage) && toolTargetsRuntimeArtifact(call) {
 				msg := fmt.Sprintf("[%s] error: %s may not inspect runtime-generated conversation artifacts unless the task explicitly asks for them", call.Name, a.role)
 				results = append(results, msg)
@@ -301,7 +301,8 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				role, _ := call.Args["role"].(string)
 				role = strings.TrimSpace(role)
 				task, _ := call.Args["task"].(string)
-				if dispatchFlowKind == dispatchFlowAssessCodebase {
+				autoChained, _ := call.Args["_auto_chain"].(bool)
+				if !autoChained && dispatchFlowKind == dispatchFlowAssessCodebase {
 					if canonical, ok := canonicalAssessCodebaseDelegateTask(dispatchFlowPhase, role, userMessage, a.dispatchResults, a.dispatchScratch); ok {
 						task = canonical
 					}
@@ -312,14 +313,14 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 					a.renderer.Error(strings.TrimPrefix(msg, "[delegate] "))
 					continue
 				}
-				if !dispatchRoleAllowedForFlow(dispatchFlowKind, dispatchFlowPhase, role) {
+				if !autoChained && !dispatchRoleAllowedForFlow(dispatchFlowKind, dispatchFlowPhase, role) {
 					msg := dispatchIllegalRoleMessage(dispatchFlowKind, dispatchFlowPhase, role)
 					results = append(results, msg)
 					a.renderer.Error(strings.TrimPrefix(msg, "[delegate] "))
 					continue
 				}
-				if dispatchFlowKind != dispatchFlowAssessCodebase {
-					if enriched := enrichDispatchDelegateTask(role, task, a.dispatchResults, a.dispatchScratch); enriched != task {
+				if autoChained || dispatchFlowKind != dispatchFlowAssessCodebase {
+					if enriched := enrichDispatchDelegateTask(role, task, a.dispatchResults, a.dispatchArtifacts, a.dispatchScratch); enriched != task {
 						task = enriched
 					}
 				}
@@ -327,7 +328,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			}
 			if a.role == "dispatch" && call.Name == "scratchpad_write" {
 				content, _ := call.Args["content"].(string)
-				if !dispatchScratchpadWriteAllowed(content, a.dispatchResults, a.dispatchScratch) {
+				if !dispatchScratchpadWriteAllowed(content, a.dispatchResults, a.dispatchArtifacts, a.dispatchScratch) {
 					msg := "[scratchpad_write] error: dispatch may only persist raw delegate or scratchpad content without rewriting it"
 					results = append(results, msg)
 					a.renderer.Error(strings.TrimPrefix(msg, "[scratchpad_write] "))
@@ -364,30 +365,48 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			} else {
 				displayResult := truncateResult(result)
 				if call.Name == "delegate" {
-					displayResult = result
+					outcome := parseDelegateOutcome(result)
+					displayResult = outcome.DisplayText()
+					result = displayResult
 					if a.role == "dispatch" {
 						role, _ := call.Args["role"].(string)
 						lastDispatchDelegateRole = strings.TrimSpace(role)
-						lastDispatchDelegateBlocked = delegateResultBlocked(result) || !delegateResultCompleted(result)
-						a.dispatchResults[lastDispatchDelegateRole] = result
-						if delegateResultCompleted(result) && !lastDispatchDelegateBlocked {
-							task, _ := call.Args["task"].(string)
+						lastDispatchDelegateBlocked = outcome.Blocked()
+						contextText := outcome.ContextText()
+						a.dispatchResults[lastDispatchDelegateRole] = contextText
+						if contextText != "" {
+							a.dispatchArtifacts[lastDispatchDelegateRole] = contextText
+						}
+						if outcome.Structured {
+							if outcome.Completed() && outcome.NextRole != "" && outcome.NextTask != "" {
+								nextTask := enrichDispatchDelegateTask(outcome.NextRole, outcome.NextTask, a.dispatchResults, a.dispatchArtifacts, a.dispatchScratch)
+								callQueue = append(callQueue, ToolCall{
+									Name: "delegate",
+									Args: map[string]any{
+										"role":        outcome.NextRole,
+										"task":        nextTask,
+										"_auto_chain": true,
+									},
+								})
+							} else if outcome.Completed() {
+								dispatchStopAfterTurn = true
+							}
+						} else if delegateResultCompleted(contextText) && !lastDispatchDelegateBlocked {
 							prevPhase := dispatchFlowPhase
 							dispatchFlowPhase = advanceDispatchFlowPhase(dispatchFlowKind, dispatchFlowPhase, role)
 							if dispatchFlowKind == dispatchFlowAssessCodebase && role == "scout" && prevPhase == dispatchPhaseNeedEvidence && dispatchFlowPhase == dispatchPhaseNeedSynthesis {
-								if persisted, ok := a.writeDispatchScratchpad(ctx, "repo_review_evidence", result); ok {
+								if persisted, ok := a.writeDispatchScratchpad(ctx, "repo_review_evidence", contextText); ok {
 									results = append(results, persisted)
 								}
 							}
 							if dispatchFlowKind == dispatchFlowAssessCodebase && role == "architect" && dispatchFlowPhase == dispatchPhaseDone {
-								if persisted, ok := a.writeDispatchScratchpad(ctx, "repo_review_recommendations", result); ok {
+								if persisted, ok := a.writeDispatchScratchpad(ctx, "repo_review_recommendations", contextText); ok {
 									results = append(results, persisted)
 								}
 							}
 							if shouldStopDispatchFlow(dispatchFlowKind, dispatchFlowPhase) {
 								dispatchStopAfterTurn = true
 							}
-							_ = task
 						}
 					}
 				}
@@ -519,17 +538,6 @@ func classifyDispatchFlow(userMessage string) (dispatchFlowKind, dispatchFlowPha
 	default:
 		return dispatchFlowUnknown, dispatchPhaseIdle
 	}
-}
-
-func classifyDispatchFollowUp(userMessage string, delegateResults map[string]string) (dispatchFlowKind, dispatchFlowPhase, bool) {
-	if !delegateResultCompleted(delegateResults["scout"]) || delegateResultBlocked(delegateResults["scout"]) {
-		return dispatchFlowUnknown, dispatchPhaseIdle, false
-	}
-	lower := strings.ToLower(normalizePromptText(userMessage))
-	if !looksLikeInterpretiveFollowUp(lower) {
-		return dispatchFlowUnknown, dispatchPhaseIdle, false
-	}
-	return dispatchFlowPlan, dispatchPhaseNeedPlan, true
 }
 
 func dispatchRoleAllowedForFlow(kind dispatchFlowKind, phase dispatchFlowPhase, role string) bool {
@@ -679,31 +687,6 @@ func looksLikePlanningRequest(lower string) bool {
 	})
 }
 
-func looksLikeInterpretiveFollowUp(lower string) bool {
-	if strings.Contains(lower, "?") {
-		return true
-	}
-	return containsAny(lower, []string{
-		"i don't understand",
-		"i dont understand",
-		"what should",
-		"what do we do",
-		"what now",
-		"what it means",
-		"what this means",
-		"what the email means",
-		"next step",
-		"should we",
-		"does that mean",
-		"is that expected",
-		"is that a problem",
-		"need fixed",
-		"needs fixed",
-		"need changed",
-		"needs changed",
-	})
-}
-
 func looksLikeDebugRequest(lower string) bool {
 	return containsAny(lower, []string{
 		"why is this happening",
@@ -805,7 +788,7 @@ func dispatchRepoReviewEvidenceUsable(result string) bool {
 	return true
 }
 
-func dispatchScratchpadWriteAllowed(content string, delegateResults map[string]string, scratchpadResult string) bool {
+func dispatchScratchpadWriteAllowed(content string, delegateResults map[string]string, delegateArtifacts map[string]string, scratchpadResult string) bool {
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return false
@@ -818,23 +801,39 @@ func dispatchScratchpadWriteAllowed(content string, delegateResults map[string]s
 			return true
 		}
 	}
+	for _, artifact := range delegateArtifacts {
+		if strings.TrimSpace(artifact) == content {
+			return true
+		}
+	}
 	return false
 }
 
-func enrichDispatchDelegateTask(role, task string, delegateResults map[string]string, scratchpadResult string) string {
+func enrichDispatchDelegateTask(role, task string, delegateResults map[string]string, delegateArtifacts map[string]string, scratchpadResult string) string {
 	role = strings.TrimSpace(role)
 	var contextParts []string
 	switch role {
 	case "architect":
-		if scout := strings.TrimSpace(delegateResults["scout"]); scout != "" && !strings.Contains(task, scout) {
+		scout := strings.TrimSpace(delegateArtifacts["scout"])
+		if scout == "" {
+			scout = strings.TrimSpace(delegateResults["scout"])
+		}
+		if scout != "" && !strings.Contains(task, scout) {
 			contextParts = append(contextParts, "SCOUT FINDINGS:\n"+scout)
 		}
 		if scratch := strings.TrimSpace(scratchpadResult); scratch != "" && !strings.Contains(task, scratch) {
 			contextParts = append(contextParts, "SCRATCHPAD CONTEXT:\n"+scratch)
 		}
 	case "builder":
-		if architect := strings.TrimSpace(delegateResults["architect"]); architect != "" && !strings.Contains(task, architect) {
+		architect := strings.TrimSpace(delegateArtifacts["architect"])
+		if architect == "" {
+			architect = strings.TrimSpace(delegateResults["architect"])
+		}
+		if architect != "" && !strings.Contains(task, architect) {
 			contextParts = append(contextParts, "ARCHITECT OUTPUT:\n"+architect)
+		}
+		if doctor := strings.TrimSpace(delegateArtifacts["doctor"]); doctor != "" && !strings.Contains(task, doctor) {
+			contextParts = append(contextParts, "DOCTOR OUTPUT:\n"+doctor)
 		}
 		if scratch := strings.TrimSpace(scratchpadResult); scratch != "" && !strings.Contains(task, scratch) {
 			contextParts = append(contextParts, "SCRATCHPAD CONTEXT:\n"+scratch)
