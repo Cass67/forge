@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -44,6 +46,13 @@ type providerAuthFailedMsg struct {
 	providerID string
 	err        error
 }
+type providerAuthURLOpenedMsg struct {
+	target string
+}
+type providerAuthURLOpenFailedMsg struct {
+	target string
+	err    error
+}
 type statsCopilotQuotaMsg struct {
 	model string
 	quota *copilot.UserQuota
@@ -68,6 +77,18 @@ func wrapProviderAuthValue(value string, width int) string {
 	return wrap.String(value, max(1, width))
 }
 
+func providerAuthHyperlink(label, target string) string {
+	label = strings.TrimSpace(label)
+	target = strings.TrimSpace(target)
+	if label == "" {
+		label = target
+	}
+	if target == "" {
+		return label
+	}
+	return "\x1b]8;;" + target + "\x1b\\" + label + "\x1b]8;;\x1b\\"
+}
+
 var (
 	startChatGPTDeviceAuth = func(ctx context.Context) (*chatgptauth.DeviceFlow, error) {
 		return chatgptauth.StartDeviceAuth(ctx)
@@ -87,7 +108,32 @@ var (
 	waitCopilotDeviceAuth = func(ctx context.Context, clientID string, dc *copilot.DeviceCode) (string, error) {
 		return copilot.PollForToken(ctx, clientID, dc)
 	}
+	openProviderAuthURL = func(target string) tea.Cmd {
+		return func() tea.Msg {
+			if err := openExternalURL(target); err != nil {
+				return providerAuthURLOpenFailedMsg{target: target, err: err}
+			}
+			return providerAuthURLOpenedMsg{target: target}
+		}
+	}
 )
+
+func openExternalURL(target string) error {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return fmt.Errorf("missing URL")
+	}
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", target)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", target)
+	default:
+		cmd = exec.Command("xdg-open", target)
+	}
+	return cmd.Start()
+}
 
 // toolsSection represents a contiguous block in the tools pane, either from
 // the main agent or a sub-agent. Sub-agent sections can be collapsed once
@@ -891,6 +937,18 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case providerAuthFailedMsg:
 		return m.handleProviderAuthFailed(msg)
+
+	case providerAuthURLOpenedMsg:
+		m.providerStatus = "opened browser"
+		return m, nil
+
+	case providerAuthURLOpenFailedMsg:
+		if msg.err != nil {
+			m.providerStatus = fmt.Sprintf("open failed: %v", msg.err)
+		} else {
+			m.providerStatus = "open failed"
+		}
+		return m, nil
 
 	case statsCopilotQuotaMsg:
 		if msg.model != m.model {
@@ -2703,6 +2761,16 @@ func (m ChatModel) handleProvidersKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.providerPromptingKey {
+		if m.providerAuthProvider == "claude" && strings.TrimSpace(m.providerAuthURL) != "" {
+			switch msg.Type {
+			case tea.KeyCtrlO:
+				return m, openProviderAuthURL(m.providerAuthURL)
+			case tea.KeyRunes:
+				if len(msg.Runes) == 1 && (msg.Runes[0] == 'o' || msg.Runes[0] == 'O') && strings.TrimSpace(m.providerKeyInput) == "" {
+					return m, openProviderAuthURL(m.providerAuthURL)
+				}
+			}
+		}
 		switch msg.Type {
 		case tea.KeyEscape:
 			m.providerPromptingKey = false
@@ -3566,7 +3634,7 @@ func (m ChatModel) renderProvidersOverlay() string {
 	footerText := "↑/↓ select • Enter configure/select • d delete credential • Esc close"
 	if m.providerPromptingKey {
 		if m.providerAuthProvider == "claude" {
-			footerText = "Enter submit pasted callback/code • Esc cancel"
+			footerText = "Ctrl+O open browser • Enter submit pasted callback/code • Esc cancel"
 		} else {
 			footerText = "Enter save key • Esc cancel"
 		}
@@ -3578,7 +3646,7 @@ func (m ChatModel) renderProvidersOverlay() string {
 	if m.providerAuthWaiting || (m.providerPromptingKey && m.providerAuthProvider == "claude" && m.providerAuthURL != "") {
 		if m.providerAuthURL != "" {
 			authLines = append(authLines, textStyle.Render("Open URL:"))
-			authLines = append(authLines, textStyle.Render(wrapProviderAuthValue(m.providerAuthURL, authWidth)))
+			authLines = append(authLines, textStyle.Render(providerAuthHyperlink("Open Claude sign-in page", m.providerAuthURL)))
 		}
 		if m.providerAuthCode != "" {
 			authLines = append(authLines, textStyle.Render("Code:"))
