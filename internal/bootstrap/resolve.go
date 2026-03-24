@@ -1,6 +1,9 @@
 package bootstrap
 
-import "strings"
+import (
+	"strings"
+	"sync"
+)
 
 type ModelRef struct {
 	Provider string
@@ -48,11 +51,25 @@ func QualifyModel(ref ModelRef) string {
 	return ref.Provider + "/" + ref.Model
 }
 
+var (
+	customProviderMu    sync.RWMutex
+	customProviderNames = make(map[string]bool)
+)
+
+func RegisterCustomProviderName(name string) {
+	customProviderMu.Lock()
+	customProviderNames[name] = true
+	customProviderMu.Unlock()
+}
+
 func isProviderName(name string) bool {
 	switch name {
 	case "anthropic", "claude", "openai", "chatgpt", "copilot", "xai", "mistral", "perplexity", "cerebras", "groq", "nvidia", "together", "deepinfra", "openrouter":
 		return true
 	default:
-		return false
+		customProviderMu.RLock()
+		found := customProviderNames[name]
+		customProviderMu.RUnlock()
+		return found
 	}
 }
