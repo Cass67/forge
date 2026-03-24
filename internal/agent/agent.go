@@ -121,6 +121,8 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	a.history = append(a.history, llm.Message{Role: llm.RoleUser, Content: userMessage})
 	turnStart := time.Now()
 	actionPreambleRetries := 0
+	dispatchDirectAnswerRetries := 0
+	sawToolCallThisRun := false
 	defer func() {
 		a.renderer.Stats(time.Since(turnStart), a.getUsage())
 	}()
@@ -210,13 +212,6 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				}
 			}
 		}
-		// If dispatch had no tool calls this turn, flush buffered prose (final answer).
-		if a.role == "dispatch" && !seenToolCall && len(dispatchBuf) > 0 {
-			for _, line := range dispatchBuf {
-				a.renderer.AgentToken(line)
-			}
-		}
-
 		if modeReporter, ok := a.driver.(llm.RequestModeReporter); ok {
 			if mode := strings.TrimSpace(modeReporter.LastRequestMode()); mode != "" {
 				a.renderer.Info("context: " + mode)
@@ -235,6 +230,17 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		// No tool calls — final answer, or stalled narration.
 		if len(calls) == 0 {
 			a.lastFullResponse = response
+			if a.role == "dispatch" && !sawToolCallThisRun {
+				if turn+1 < a.maxTurns {
+					dispatchDirectAnswerRetries++
+					a.history = append(a.history, llm.Message{
+						Role:    llm.RoleUser,
+						Content: dispatchNudgeMessage(dispatchDirectAnswerRetries),
+					})
+					continue
+				}
+				return fmt.Errorf("dispatch produced no delegate call before answering")
+			}
 			isPreamble := looksLikeActionPreamble(response)
 			if !a.isSubAgent && isPreamble && actionPreambleRetries < 4 && turn+1 < a.maxTurns {
 				actionPreambleRetries++
@@ -244,10 +250,15 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				})
 				continue
 			}
+			if a.role == "dispatch" && strings.TrimSpace(visibleText) != "" {
+				a.renderer.AgentToken(visibleText)
+			}
 			a.history = append(a.history, llm.Message{Role: llm.RoleAssistant, Content: response})
 			return nil
 		}
 		actionPreambleRetries = 0
+		dispatchDirectAnswerRetries = 0
+		sawToolCallThisRun = true
 
 		// Execute tool calls
 		var results []string
@@ -424,6 +435,19 @@ func nudgeMessage(attempt int) string {
 		return "STOP NARRATING. Either call a tool right now or say DONE if the task is complete."
 	default:
 		return "Call a tool now. No more text without a tool call."
+	}
+}
+
+func dispatchNudgeMessage(attempt int) string {
+	switch attempt {
+	case 1:
+		return "Dispatch must delegate. Call delegate now; do not answer directly."
+	case 2:
+		return "You are dispatch. Do not analyze or summarize. Emit a delegate tool call now."
+	case 3:
+		return "STOP. Dispatch cannot answer this itself. Call delegate immediately."
+	default:
+		return "Delegate now. No direct answer."
 	}
 }
 
