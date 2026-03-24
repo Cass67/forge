@@ -31,7 +31,7 @@ For an edit-build-run loop on the current machine:
 
 ```bash
 go build -o ./bin/forge ./cmd/forge
-./bin/forge chat
+./bin/forge
 ```
 
 For a stricter verification loop:

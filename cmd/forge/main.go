@@ -28,8 +28,19 @@ import (
 	"forge/internal/tui"
 )
 
+var (
+	runMakeInteractiveFn = runMakeInteractive
+	runImproveArgsFn     = runImproveArgs
+)
+
 func main() {
-	cli.Dispatch(os.Args[1:], map[string]cli.Command{
+	args := os.Args[1:]
+	if len(args) == 0 || startsWithFlag(args[0]) {
+		runChatArgs(args)
+		return
+	}
+
+	commands := map[string]cli.Command{
 		"-h":        {Name: "help", Run: func(args []string) { runHelp(args) }},
 		"--help":    {Name: "help", Run: func(args []string) { runHelp(args) }},
 		"help":      {Name: "help", Run: func(args []string) { runHelp(args) }},
@@ -47,10 +58,13 @@ func main() {
 				os.Exit(1)
 			},
 		},
-		"chat":    {Name: "chat", Run: func(args []string) { runChat() }},
-		"improve": {Name: "improve", Run: func(args []string) { runImprove() }},
-		"list":    {Name: "list", Run: func(args []string) { runList() }},
-		"ls":      {Name: "ls", Run: func(args []string) { runList() }},
+		"chat": {Name: "chat", Run: func(args []string) { runChatArgs(args) }},
+		"make": {Name: "make", Run: func(args []string) { runMake(args) }},
+		"improve": {Name: "improve", Run: func(args []string) {
+			runImproveArgsFn("improve", args)
+		}},
+		"list": {Name: "list", Run: func(args []string) { runList() }},
+		"ls":   {Name: "ls", Run: func(args []string) { runList() }},
 		"perf": {
 			Name: "perf",
 			Run: func(args []string) {
@@ -65,12 +79,30 @@ func main() {
 		},
 		"skills": {Name: "skills", Run: func(args []string) { runSkills(args) }},
 		"status": {Name: "status", Run: func(args []string) { runStatus() }},
-	}, func() {
-		runInteractive()
-	})
+	}
+	if cmd, ok := commands[args[0]]; ok {
+		cmd.Run(args[1:])
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "error: unknown command %q\n\n", args[0])
+	printHelp()
+	os.Exit(1)
 }
 
-func runInteractive() {
+func startsWithFlag(arg string) bool {
+	return strings.HasPrefix(arg, "-")
+}
+
+func runMake(args []string) {
+	if len(args) == 0 {
+		runMakeInteractiveFn()
+		return
+	}
+	runImproveArgsFn("make", args)
+}
+
+func runMakeInteractive() {
 	rt, err := bootstrap.LoadRuntime()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
@@ -677,25 +709,26 @@ func formatPerfRate(v float64) string {
 	return fmt.Sprintf("%.1fM", v/1000000)
 }
 
-func runImprove() {
-	fs := flag.NewFlagSet("improve", flag.ExitOnError)
+func runImproveArgs(commandName string, args []string) {
+	fs := flag.NewFlagSet(commandName, flag.ExitOnError)
 	prompt := fs.String("prompt", "", "what to improve (required)")
 	writer := fs.String("writer", "", "writer model override")
 	auditor := fs.String("auditor", "", "auditor model override")
 	rounds := fs.Int("rounds", 0, "rounds per pass (0 = use config default)")
 	apply := fs.Bool("apply", false, "apply changes back without prompting")
 
-	args := os.Args[2:]
 	var targetDir string
 	// Extract positional arg (the directory path) before flag parsing
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		targetDir = args[0]
 		args = args[1:]
 	}
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
+	}
 
 	if targetDir == "" {
-		fmt.Fprintln(os.Stderr, "usage: forge improve <path> --prompt \"...\"")
+		fmt.Fprintf(os.Stderr, "usage: forge %s <path> --prompt \"...\"\n", commandName)
 		os.Exit(1)
 	}
 	if *prompt == "" {
@@ -742,7 +775,7 @@ func runImprove() {
 		LangHint:     "auto",
 	}
 
-	fmt.Printf("forge improve: %s\n", absTarget)
+	fmt.Printf("forge %s: %s\n", commandName, absTarget)
 	fmt.Printf("writer: %s  auditor: %s  rounds: %d\n", writerModel, auditorModel, rpp)
 	fmt.Printf("prompt: %s\n\n", *prompt)
 
@@ -871,12 +904,14 @@ func runHelp(args []string) {
 }
 
 func printHelp() {
-	fmt.Print(`forge — terminal-based LLM code generation with writer/auditor review loops
+	fmt.Print(`forge — terminal-first coding agent with chat and writer/auditor pipeline modes
 
 Usage:
-  forge                           Launch interactive session
+  forge                           Start interactive chat session
   forge chat [flags]              Start interactive agent session
-  forge improve <path> [flags]    Improve existing codebase
+  forge make                      Launch the legacy writer/auditor pipeline UI
+  forge make <path> [flags]       Run the writer/auditor pipeline against a path
+  forge improve <path> [flags]    Compatibility alias for forge make <path> [flags]
   forge list                      List past sessions
   forge show <id>                 Show session details
   forge status                    Show auth and Copilot allowance status
@@ -898,8 +933,8 @@ Skills:
   You can install a local .md file, a local directory of .md files,
   or an HTTP(S) URL to a raw skill markdown file.
 
-Improve flags:
-  --prompt "..."     What to improve (required)
+Pipeline flags:
+  --prompt "..."     What to build or improve (required)
   --writer MODEL     Writer model override
   --auditor MODEL    Auditor model override
   --rounds N         Rounds per pass (default: from config)
@@ -1182,14 +1217,16 @@ func runSkills(args []string) {
 	}
 }
 
-func runChat() {
+func runChatArgs(args []string) {
 	fs := flag.NewFlagSet("chat", flag.ExitOnError)
 	yolo := fs.Bool("yolo", false, "skip all approval prompts")
 	model := fs.String("model", "", "model override")
 	workDir := fs.String("C", "", "working directory (default: cwd)")
 	live := fs.Bool("live", true, "use split-pane live view")
 	autoSkills := fs.String("auto-skills", "", "auto skill mode: off, suggest, or auto")
-	fs.Parse(os.Args[2:])
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
+	}
 
 	cfg, err := bootstrap.LoadConfig()
 	if err != nil {
