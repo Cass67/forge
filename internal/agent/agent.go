@@ -29,6 +29,8 @@ type Agent struct {
 	isSubAgent       bool
 	lastFullResponse string
 	role             string
+	dispatchResults  map[string]string
+	dispatchScratch  string
 	mu               sync.Mutex
 	activeSubCancel  context.CancelFunc
 }
@@ -49,6 +51,7 @@ func NewAgent(driver llm.Driver, toolReg *tools.Registry, approve tools.Approval
 		system:   BuildSystemPrompt(workDir, toolReg, skills.Describe(loadedSkills)),
 		skills:   loadedSkills,
 		state:    state,
+		dispatchResults: make(map[string]string),
 	}
 }
 
@@ -112,6 +115,8 @@ func (a *Agent) CancelSubAgent() {
 func (a *Agent) ClearHistory() {
 	a.history = nil
 	a.state.Clear()
+	clear(a.dispatchResults)
+	a.dispatchScratch = ""
 	if resetter, ok := a.driver.(llm.ConversationResetter); ok {
 		resetter.ResetConversation()
 	}
@@ -126,8 +131,6 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	lastDispatchDelegateRole := ""
 	lastDispatchDelegateBlocked := false
 	dispatchReadOnlyRolesSinceBuilder := make(map[string]bool)
-	dispatchLastDelegateResult := make(map[string]string)
-	dispatchLastScratchpadRead := ""
 	dispatchStopAfterTurn := false
 	defer func() {
 		a.renderer.Stats(time.Since(turnStart), a.getUsage())
@@ -231,11 +234,11 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 					results = append(results, "[delegate] error: repo-review and improvement requests must use scout for evidence gathering only, then architect for recommendations")
 					continue
 				}
-				if dispatchBuilderPresentationShimForbidden(role, task, dispatchLastDelegateResult) {
+				if dispatchBuilderPresentationShimForbidden(role, task, a.dispatchResults) {
 					results = append(results, "[delegate] error: repo-review presentation must end after architect synthesis; do not delegate to builder just to format the answer")
 					continue
 				}
-				if enriched := enrichDispatchDelegateTask(role, task, dispatchLastDelegateResult, dispatchLastScratchpadRead); enriched != task {
+				if enriched := enrichDispatchDelegateTask(role, task, a.dispatchResults, a.dispatchScratch); enriched != task {
 					task = enriched
 					call.Args["task"] = task
 				}
@@ -266,7 +269,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 						role, _ := call.Args["role"].(string)
 						lastDispatchDelegateRole = strings.TrimSpace(role)
 						lastDispatchDelegateBlocked = delegateResultBlocked(result)
-						dispatchLastDelegateResult[lastDispatchDelegateRole] = result
+						a.dispatchResults[lastDispatchDelegateRole] = result
 						if delegateResultCompleted(result) && !lastDispatchDelegateBlocked {
 							task, _ := call.Args["task"].(string)
 							if dispatchRepoReviewArchitectSynthesisTask(task) {
@@ -281,7 +284,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 					}
 				}
 				if a.role == "dispatch" && call.Name == "scratchpad_read" {
-					dispatchLastScratchpadRead = result
+					a.dispatchScratch = result
 				}
 				a.renderer.ToolResult(call.Name, displayResult, diff, false)
 			}
@@ -427,15 +430,25 @@ func dispatchRepoReviewArchitectSynthesisTask(task string) bool {
 }
 
 func enrichDispatchDelegateTask(role, task string, delegateResults map[string]string, scratchpadResult string) string {
-	if strings.TrimSpace(role) != "architect" {
-		return task
-	}
+	role = strings.TrimSpace(role)
 	var contextParts []string
-	if scout := strings.TrimSpace(delegateResults["scout"]); scout != "" && !strings.Contains(task, scout) {
-		contextParts = append(contextParts, "SCOUT FINDINGS:\n"+scout)
-	}
-	if scratch := strings.TrimSpace(scratchpadResult); scratch != "" && !strings.Contains(task, scratch) {
-		contextParts = append(contextParts, "SCRATCHPAD CONTEXT:\n"+scratch)
+	switch role {
+	case "architect":
+		if scout := strings.TrimSpace(delegateResults["scout"]); scout != "" && !strings.Contains(task, scout) {
+			contextParts = append(contextParts, "SCOUT FINDINGS:\n"+scout)
+		}
+		if scratch := strings.TrimSpace(scratchpadResult); scratch != "" && !strings.Contains(task, scratch) {
+			contextParts = append(contextParts, "SCRATCHPAD CONTEXT:\n"+scratch)
+		}
+	case "builder":
+		if architect := strings.TrimSpace(delegateResults["architect"]); architect != "" && !strings.Contains(task, architect) {
+			contextParts = append(contextParts, "ARCHITECT OUTPUT:\n"+architect)
+		}
+		if scratch := strings.TrimSpace(scratchpadResult); scratch != "" && !strings.Contains(task, scratch) {
+			contextParts = append(contextParts, "SCRATCHPAD CONTEXT:\n"+scratch)
+		}
+	default:
+		return task
 	}
 	if len(contextParts) == 0 {
 		return task
@@ -469,7 +482,7 @@ func delegateResultCompleted(result string) bool {
 }
 
 func delegateResultBlocked(result string) bool {
-	trimmed := strings.TrimSpace(strings.ToLower(result))
+	trimmed := strings.TrimSpace(strings.ToLower(normalizePromptText(result)))
 	if trimmed == "" {
 		return false
 	}
@@ -487,6 +500,10 @@ func delegateResultBlocked(result string) bool {
 		"incomplete",
 	}
 	return containsAny(trimmed, blockedSignals)
+}
+
+func normalizePromptText(text string) string {
+	return strings.NewReplacer("\u2018", "'", "\u2019", "'", "\u201c", "\"", "\u201d", "\"").Replace(text)
 }
 
 func compactAssistantHistory(visibleText string) string {
@@ -531,7 +548,7 @@ func looksLikeActionPreamble(text string) bool {
 		return false
 	}
 	// Normalize smart quotes/apostrophes to ASCII.
-	trimmed = strings.NewReplacer("\u2018", "'", "\u2019", "'", "\u201c", "\"", "\u201d", "\"").Replace(trimmed)
+	trimmed = normalizePromptText(trimmed)
 	// Phrases that indicate narration when they start the response.
 	prefixes := []string{
 		"i'm going to",
