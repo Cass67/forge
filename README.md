@@ -4,8 +4,8 @@ Forge is a terminal-first coding agent for local repositories.
 
 It has two primary modes:
 
-- `forge chat`: an interactive coding loop with tool use, provider switching, approvals, and optional multi-agent delegation
-- `forge` / `forge improve`: a pass-based improvement pipeline that iterates writer, auditor, and summarizer models over a codebase
+- `forge` / `forge chat`: an interactive coding loop with tool use, provider switching, approvals, and optional multi-agent delegation
+- `forge make`: the legacy writer/auditor pipeline for generating or iterating on code with batch-style passes
 
 Forge is designed to run against your local working tree, use multiple model providers, and keep the user in control of destructive actions.
 
@@ -17,7 +17,7 @@ Forge is optimized for local software work:
 - run commands, tests, and git queries
 - switch models and providers without leaving the chat session
 - delegate work to specialist sub-agents when multi-agent mode is enabled
-- run a separate batch improvement pipeline for iterative writer/auditor review
+- run a separate legacy writer/auditor pipeline for iterative or prompt-driven code generation
 
 Forge is not a hosted SaaS or remote coding sandbox. It is a native local tool that acts on the repository you launch it in.
 
@@ -41,13 +41,13 @@ go build -o ./bin/forge ./cmd/forge
 Run chat in the current repository:
 
 ```bash
-./bin/forge chat
+./bin/forge
 ```
 
-Run the pass-based improvement pipeline:
+Run the legacy writer/auditor pipeline:
 
 ```bash
-./bin/forge improve
+./bin/forge make
 ```
 
 ## Typical Chat Flow
@@ -56,7 +56,7 @@ Start in the repository you want Forge to work on:
 
 ```bash
 cd /path/to/repo
-./bin/forge chat
+./bin/forge
 ```
 
 Inside chat you can:
@@ -147,7 +147,8 @@ Core commands:
 
 ```bash
 forge chat [--model MODEL] [--yolo] [-C PATH]
-forge improve
+forge make [<path>] [--prompt "..."]
+forge improve <path> [--prompt "..."]
 forge list
 forge show <session-id>
 forge perf
@@ -159,8 +160,8 @@ forge skills
 
 Useful command families:
 
-- `forge chat`: local interactive coding loop
-- `forge improve`: batch writer/auditor/summarizer pipeline
+- `forge` / `forge chat`: local interactive coding loop
+- `forge make`: legacy writer/auditor/summarizer pipeline
 - `forge perf`: session usage and throughput reporting
 - `forge status`: auth and provider status snapshot
 
