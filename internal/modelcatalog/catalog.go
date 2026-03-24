@@ -4,12 +4,17 @@ package modelcatalog
 
 import (
 	_ "embed"
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
+
+	"forge/internal/fsutil"
 )
 
 //go:embed snapshot.json
@@ -22,6 +27,12 @@ type ModelInfo struct {
 	ToolCall      bool
 	ContextWindow int
 	OutputLimit   int
+}
+
+type CustomProviderRoute struct {
+	APIModel string `json:"api_model"`
+	APIBase  string `json:"api_base,omitempty"`
+	WireAPI  string `json:"wire_api,omitempty"`
 }
 
 // providerData mirrors the relevant fields from models.dev's JSON structure.
@@ -65,7 +76,20 @@ var (
 	mu             sync.RWMutex
 	bundledCatalog = parseSnapshot(snapshotData)
 	catalog        map[string]providerData // keyed by models.dev provider ID
+	customSources  = map[string]customSource{}
 )
+
+type customSource struct {
+	URL     string
+	Headers map[string]string
+	KeyFn   func() string
+}
+
+type customProviderCache struct {
+	Order  []string                       `json:"order,omitempty"`
+	Models map[string]modelEntry          `json:"models"`
+	Routes map[string]CustomProviderRoute `json:"routes,omitempty"`
+}
 
 func init() {
 	catalog = bundledCatalog
@@ -117,11 +141,7 @@ func refresh() {
 }
 
 func cacheFilePath() string {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(dir, "forge", "models.json")
+	return fsutil.ForgeConfigPath("models.json")
 }
 
 func loadDiskCache() map[string]providerData {
@@ -149,7 +169,30 @@ func writeDiskCache(data map[string]providerData) {
 	if err != nil {
 		return
 	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return
+	}
 	_ = os.WriteFile(path, b, 0o600)
+}
+
+func RegisterCustomProviderSource(providerID, url string, headers map[string]string, keyFn func() string) {
+	providerID = strings.TrimSpace(providerID)
+	url = strings.TrimSpace(url)
+	mu.Lock()
+	defer mu.Unlock()
+	if providerID == "" || url == "" {
+		delete(customSources, providerID)
+		return
+	}
+	copied := make(map[string]string, len(headers))
+	for k, v := range headers {
+		copied[k] = v
+	}
+	customSources[providerID] = customSource{
+		URL:     url,
+		Headers: copied,
+		KeyFn:   keyFn,
+	}
 }
 
 // Lookup returns capability info for a model. providerID is the forge provider
@@ -176,7 +219,7 @@ func Lookup(providerID, modelID string) *ModelInfo {
 	case bundledOK:
 		return bundledInfo
 	default:
-		return nil
+		return lookupCustomProvider(providerID, modelID)
 	}
 }
 
@@ -222,6 +265,17 @@ func mergeModelInfo(primary, fallback *ModelInfo) *ModelInfo {
 func ProviderModels(providerID string) []string {
 	mdevID, ok := forgeToModelsDev[providerID]
 	if !ok {
+		if cache, ok := loadCustomProviderData(providerID); ok {
+			if len(cache.Order) > 0 {
+				return append([]string(nil), cache.Order...)
+			}
+			out := make([]string, 0, len(cache.Models))
+			for id := range cache.Models {
+				out = append(out, id)
+			}
+			sort.Strings(out)
+			return out
+		}
 		mdevID = providerID
 	}
 
@@ -239,4 +293,407 @@ func ProviderModels(providerID string) []string {
 		}
 	}
 	return out
+}
+
+func lookupCustomProvider(providerID, modelID string) *ModelInfo {
+	data, ok := loadCustomProviderData(providerID)
+	if !ok {
+		return nil
+	}
+	info, ok := lookupModelInfo(providerData{Models: data.Models}, true, modelID)
+	if !ok {
+		return nil
+	}
+	return info
+}
+
+func CustomProviderRouteForModel(providerID, modelID string) *CustomProviderRoute {
+	data, ok := loadCustomProviderData(providerID)
+	if !ok {
+		return nil
+	}
+	route, ok := data.Routes[modelID]
+	if !ok {
+		return nil
+	}
+	copyRoute := route
+	return &copyRoute
+}
+
+func CustomProviderModels(providerID string) []string {
+	data, ok := loadCustomProviderData(providerID)
+	if !ok {
+		return nil
+	}
+	if len(data.Order) > 0 {
+		return append([]string(nil), data.Order...)
+	}
+	out := make([]string, 0, len(data.Models))
+	for id := range data.Models {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func customProviderCachePath(providerID string) string {
+	return filepath.Join(fsutil.ForgeConfigDir(), "providers", providerID+"-models.json")
+}
+
+func loadCustomProviderData(providerID string) (customProviderCache, bool) {
+	providerID = strings.TrimSpace(providerID)
+	if providerID == "" {
+		return customProviderCache{}, false
+	}
+	if data, ok := loadCustomProviderCache(providerID); ok {
+		if customProviderCacheNeedsRefresh(providerID, data) {
+			if refreshed, ok := refreshCustomProviderCache(providerID); ok {
+				return refreshed, true
+			}
+		}
+		return data, true
+	}
+	if data, ok := refreshCustomProviderCache(providerID); ok {
+		return data, true
+	}
+	return customProviderCache{}, false
+}
+
+func customProviderCacheNeedsRefresh(providerID string, data customProviderCache) bool {
+	if len(data.Models) == 0 || len(data.Routes) > 0 {
+		return false
+	}
+	mu.RLock()
+	source, ok := customSources[providerID]
+	mu.RUnlock()
+	return ok && strings.TrimSpace(source.URL) != "" && source.KeyFn != nil
+}
+
+func loadCustomProviderCache(providerID string) (customProviderCache, bool) {
+	path := customProviderCachePath(providerID)
+	if path == "" {
+		return customProviderCache{}, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return customProviderCache{}, false
+	}
+	info, err := os.Stat(path)
+	if err != nil || time.Since(info.ModTime()) > 24*time.Hour {
+		return customProviderCache{}, false
+	}
+	var cache customProviderCache
+	if err := json.Unmarshal(data, &cache); err == nil && len(cache.Models) > 0 {
+		if len(cache.Order) == 0 {
+			for id := range cache.Models {
+				cache.Order = append(cache.Order, id)
+			}
+			sort.Strings(cache.Order)
+		}
+		if cache.Routes == nil {
+			cache.Routes = map[string]CustomProviderRoute{}
+		}
+		return cache, true
+	}
+	var legacy providerData
+	if err := json.Unmarshal(data, &legacy); err != nil || len(legacy.Models) == 0 {
+		return customProviderCache{}, false
+	}
+	order := make([]string, 0, len(legacy.Models))
+	for id := range legacy.Models {
+		order = append(order, id)
+	}
+	sort.Strings(order)
+	return customProviderCache{Order: order, Models: legacy.Models, Routes: map[string]CustomProviderRoute{}}, true
+}
+
+func refreshCustomProviderCache(providerID string) (customProviderCache, bool) {
+	mu.RLock()
+	source, ok := customSources[providerID]
+	mu.RUnlock()
+	if !ok || strings.TrimSpace(source.URL) == "" || source.KeyFn == nil {
+		return customProviderCache{}, false
+	}
+	apiKey := strings.TrimSpace(source.KeyFn())
+	if apiKey == "" {
+		return customProviderCache{}, false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, source.URL, nil)
+	if err != nil {
+		return customProviderCache{}, false
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Accept", "application/json")
+	for k, v := range source.Headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		return customProviderCache{}, false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return customProviderCache{}, false
+	}
+
+	var raw json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return customProviderCache{}, false
+	}
+	provider, ok := parseCustomProviderPayload(providerID, raw)
+	if !ok {
+		return customProviderCache{}, false
+	}
+	writeCustomProviderCache(providerID, provider)
+	return provider, true
+}
+
+func writeCustomProviderCache(providerID string, provider customProviderCache) {
+	path := customProviderCachePath(providerID)
+	if path == "" {
+		return
+	}
+	data, err := json.Marshal(provider)
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return
+	}
+	_ = os.WriteFile(path, data, 0o600)
+}
+
+type customProviderPayload struct {
+	Data   []customProviderItem   `json:"data"`
+	Models map[string]modelEntry  `json:"models"`
+}
+
+type customProviderItem struct {
+	Key       string                 `json:"key"`
+	ID        string                 `json:"id"`
+	Model     string                 `json:"model"`
+	ModelName string                 `json:"model_name"`
+	Reasoning *bool                  `json:"reasoning"`
+	Temperature *bool                `json:"temperature"`
+	ToolCall  *bool                  `json:"tool_call"`
+	Limit     struct {
+		Context int `json:"context"`
+		Output  int `json:"output"`
+	} `json:"limit"`
+	ModelInfo     customProviderModelInfo     `json:"model_info"`
+	LiteLLMParams customProviderLiteLLMParams `json:"litellm_params"`
+}
+
+type customProviderModelInfo struct {
+	Key                          string `json:"key"`
+	Mode                         string `json:"mode"`
+	SupportedAPIList             []string `json:"supported_api_list"`
+	IsReasoningModel             *bool `json:"is_reasoning_model"`
+	Reasoning                    *bool `json:"reasoning"`
+	SupportsReasoning            *bool `json:"supports_reasoning"`
+	SupportsReasoningEffort      *bool `json:"supports_reasoning_effort"`
+	Temperature                  *bool `json:"temperature"`
+	SupportsTemperature          *bool `json:"supports_temperature"`
+	ToolCall                     *bool `json:"tool_call"`
+	SupportsFunctionCalling      *bool `json:"supports_function_calling"`
+	SupportsParallelFunctionCall *bool `json:"supports_parallel_function_calling"`
+	SupportsResponses            *bool `json:"supports_responses"`
+	SupportsResponsesAPI         *bool `json:"supports_responses_api"`
+	WireAPI                      string `json:"wire_api"`
+	ContextWindow                int   `json:"context_window"`
+	MaxInputTokens               int   `json:"max_input_tokens"`
+	MaxOutputTokens              int   `json:"max_output_tokens"`
+	MaxTokens                    int   `json:"max_tokens"`
+}
+
+type customProviderLiteLLMParams struct {
+	Model   string `json:"model"`
+	APIBase string `json:"api_base"`
+}
+
+func parseCustomProviderPayload(providerID string, raw json.RawMessage) (customProviderCache, bool) {
+	var payload customProviderPayload
+	if err := json.Unmarshal(raw, &payload); err == nil {
+		if len(payload.Models) > 0 {
+			order := make([]string, 0, len(payload.Models))
+			for id := range payload.Models {
+				order = append(order, id)
+			}
+			sort.Strings(order)
+			return customProviderCache{Order: order, Models: payload.Models, Routes: map[string]CustomProviderRoute{}}, true
+		}
+		if len(payload.Data) > 0 {
+			models := make(map[string]modelEntry, len(payload.Data))
+			routes := make(map[string]CustomProviderRoute, len(payload.Data))
+			order := make([]string, 0, len(payload.Data))
+			for _, item := range payload.Data {
+				aliases := customProviderAliases(providerID, item)
+				if len(aliases) == 0 {
+					continue
+				}
+				id := aliases[0]
+				if _, exists := models[id]; !exists {
+					order = append(order, id)
+				}
+				entry := modelEntry{
+					Reasoning:   anyTrue(item.Reasoning, item.ModelInfo.Reasoning, item.ModelInfo.SupportsReasoning, item.ModelInfo.SupportsReasoningEffort),
+					Temperature: pickBool(true, item.Temperature, item.ModelInfo.Temperature, item.ModelInfo.SupportsTemperature),
+					ToolCall:    anyTrue(item.ToolCall, item.ModelInfo.ToolCall, item.ModelInfo.SupportsFunctionCalling, item.ModelInfo.SupportsParallelFunctionCall),
+					Limit: struct {
+						Context int `json:"context"`
+						Output  int `json:"output"`
+					}{
+						Context: firstPositive(item.ModelInfo.MaxInputTokens, item.ModelInfo.ContextWindow, item.Limit.Context),
+						Output:  firstPositive(item.ModelInfo.MaxOutputTokens, item.ModelInfo.MaxTokens, item.Limit.Output),
+					},
+				}
+				if item.ModelInfo.IsReasoningModel != nil {
+					entry.Reasoning = entry.Reasoning || *item.ModelInfo.IsReasoningModel
+				}
+				route := CustomProviderRoute{
+					APIModel: firstNonEmpty(item.LiteLLMParams.Model, id),
+					APIBase:  strings.TrimSpace(item.LiteLLMParams.APIBase),
+					WireAPI:  customProviderWireAPI(item),
+				}
+				for _, alias := range aliases {
+					models[alias] = entry
+					routes[alias] = route
+				}
+			}
+			if len(models) > 0 {
+				return customProviderCache{Order: order, Models: models, Routes: routes}, true
+			}
+		}
+	}
+
+	var direct []customProviderItem
+	if err := json.Unmarshal(raw, &direct); err == nil && len(direct) > 0 {
+		return parseCustomProviderPayload(providerID, mustJSON(customProviderPayload{Data: direct}))
+	}
+	return customProviderCache{}, false
+}
+
+func mustJSON(v any) json.RawMessage {
+	data, _ := json.Marshal(v)
+	return data
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func deriveModelKey(providerID, apiModel string) string {
+	apiModel = strings.TrimSpace(apiModel)
+	if apiModel == "" {
+		return ""
+	}
+	if providerID = strings.TrimSpace(providerID); providerID != "" {
+		prefix := providerID + "/"
+		if strings.HasPrefix(apiModel, prefix) && len(apiModel) > len(prefix) {
+			return apiModel[len(prefix):]
+		}
+	}
+	switch {
+	case strings.HasPrefix(apiModel, "openai/"),
+		strings.HasPrefix(apiModel, "chatgpt/"),
+		strings.HasPrefix(apiModel, "anthropic/"),
+		strings.HasPrefix(apiModel, "claude/"),
+		strings.HasPrefix(apiModel, "groq/"),
+		strings.HasPrefix(apiModel, "xai/"),
+		strings.HasPrefix(apiModel, "mistral/"),
+		strings.HasPrefix(apiModel, "openrouter/"):
+		if idx := strings.Index(apiModel, "/"); idx >= 0 && idx+1 < len(apiModel) {
+			return apiModel[idx+1:]
+		}
+	}
+	return apiModel
+}
+
+func customProviderAliases(providerID string, item customProviderItem) []string {
+	candidates := []string{
+		item.ModelName,
+		item.ModelInfo.Key,
+		item.Key,
+		deriveModelKey(providerID, item.LiteLLMParams.Model),
+		item.Model,
+		item.ID,
+		strings.TrimSpace(item.LiteLLMParams.Model),
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" || seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		out = append(out, candidate)
+	}
+	return out
+}
+
+func firstPositive(values ...int) int {
+	for _, v := range values {
+		if v > 0 {
+			return v
+		}
+	}
+	return 0
+}
+
+func anyTrue(values ...*bool) bool {
+	for _, v := range values {
+		if v != nil && *v {
+			return true
+		}
+	}
+	return false
+}
+
+func pickBool(defaultValue bool, values ...*bool) bool {
+	for _, v := range values {
+		if v != nil {
+			return *v
+		}
+	}
+	return defaultValue
+}
+
+func customProviderWireAPI(item customProviderItem) string {
+	hasResponses := false
+	hasChat := false
+	for _, entry := range item.ModelInfo.SupportedAPIList {
+		switch strings.ToUpper(strings.TrimSpace(entry)) {
+		case "RESPONSES", "RESPONSE":
+			hasResponses = true
+		case "CHAT_COMPLETIONS", "CHAT", "COMPLETIONS", "COMPLETION":
+			hasChat = true
+		}
+	}
+	switch {
+	case hasResponses && !hasChat:
+		return "responses"
+	case hasChat && !hasResponses:
+		return "chat"
+	}
+	switch strings.ToLower(strings.TrimSpace(firstNonEmpty(item.ModelInfo.WireAPI, item.ModelInfo.Mode))) {
+	case "responses", "response":
+		return "responses"
+	case "chat", "chat_completions", "chat-completions", "completions", "completion":
+		return "chat"
+	}
+	if anyTrue(item.ModelInfo.SupportsResponses, item.ModelInfo.SupportsResponsesAPI) {
+		return "responses"
+	}
+	return ""
 }

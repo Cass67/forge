@@ -720,6 +720,41 @@ func TestCustomCompatProviderAvailableModelsExposesModelsOnlyWhenKeyExists(t *te
 	}
 }
 
+func TestCustomCompatProviderAvailableModelsUsesCachedModelList(t *testing.T) {
+	dir := t.TempDir()
+	writeCustomProviderTOML(t, dir)
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("FORGE_ENABLE_LIVE_COMPAT_MODELS", "0")
+
+	providersDir := filepath.Join(dir, "forge", "providers")
+	if err := os.MkdirAll(providersDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cache := `{
+		"order": ["gpt-5.4-pro", "gpt-5.3-codex"],
+		"models": {
+			"gpt-5.4-pro": {"reasoning": false, "temperature": true, "tool_call": true, "limit": {"context": 922000, "output": 128000}},
+			"gpt-5.3-codex": {"reasoning": false, "temperature": true, "tool_call": true, "limit": {"context": 272000, "output": 128000}}
+		},
+		"routes": {
+			"gpt-5.4-pro": {"api_model": "openai/gpt-5.4-pro", "api_base": "https://api.omnicloud.test/v1"},
+			"gpt-5.3-codex": {"api_model": "openai/gpt-5.3-codex", "api_base": "https://api.omnicloud.test/v1"}
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(providersDir, "oca-models.json"), []byte(cache), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	tokens := &auth.Tokens{}
+	tokens.SetCustomProviderKey("oca", "oca-key")
+	models := AvailableModels(cfg, tokens)
+
+	if !containsTestString(models, "oca/gpt-5.4-pro") || !containsTestString(models, "oca/gpt-5.3-codex") {
+		t.Fatalf("AvailableModels() = %#v", models)
+	}
+}
+
 func TestCustomCompatProviderAvailableModelsExposesModelsViaEnvVar(t *testing.T) {
 	dir := t.TempDir()
 	writeCustomProviderTOML(t, dir)

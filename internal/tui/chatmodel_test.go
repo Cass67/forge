@@ -50,6 +50,32 @@ func TestChatModelAddMessage(t *testing.T) {
 	}
 }
 
+func TestChatModelBlocksPromptWithoutConfiguredModel(t *testing.T) {
+	inputCh := make(chan string, 1)
+	m := NewChatModel(ChatLiveConfig{Model: "", WorkDir: "/tmp"})
+	m.inputCh = inputCh
+	m.inputBuf = "help me set this up"
+	m.inputPos = len([]rune(m.inputBuf))
+
+	updated, cmd := m.submitInput()
+	m = updated.(ChatModel)
+
+	if cmd != nil {
+		t.Fatal("expected no command when no model is configured")
+	}
+	if m.busy {
+		t.Fatal("expected busy=false when no model is configured")
+	}
+	if !strings.Contains(strings.ToLower(m.flash), "/provider") {
+		t.Fatalf("flash = %q, want provider guidance", m.flash)
+	}
+	select {
+	case msg := <-inputCh:
+		t.Fatalf("unexpected queued input: %q", msg)
+	default:
+	}
+}
+
 func TestChatModelViewNotEmpty(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test-model", WorkDir: "/tmp"})
 	m.width = 80

@@ -64,9 +64,6 @@ func BuildChatSetup(cfg *config.Config, tokens any, modelOverride, workDir strin
 		chatModel = modelOverride
 	} else if chatModel == "" || !ContainsModel(available, chatModel) {
 		chatModel = PickModel(available)
-		if chatModel == "" {
-			return nil, nil
-		}
 	}
 
 	driverReg := llm.NewRegistry()
@@ -92,11 +89,14 @@ func BuildChatSetup(cfg *config.Config, tokens any, modelOverride, workDir strin
 		)
 	}
 
-	driver := makeChatDriver(chatModel)
-	if driver == nil {
-		return nil, fmt.Errorf("no API key found for model %q", chatModel)
+	var driver llm.Driver
+	if strings.TrimSpace(chatModel) != "" {
+		driver = makeChatDriver(chatModel)
+		if driver == nil {
+			return nil, fmt.Errorf("no API key found for model %q", chatModel)
+		}
+		persistChatLastModel(cfg, chatModel)
 	}
-	persistChatLastModel(cfg, chatModel)
 
 	return &ChatSetup{
 		Config:     cfg,

@@ -15,6 +15,7 @@ import (
 	"forge/internal/fsutil"
 	"forge/internal/llm"
 	"forge/internal/llm/drivers"
+	"forge/internal/modelcatalog"
 )
 
 var (
@@ -43,6 +44,7 @@ type CompatProvider struct {
 	IsModel     func(string) bool
 	Models      []string
 	WireAPI     string
+	ModelInfoURL string
 	HTTPHeaders map[string]string
 }
 
@@ -58,6 +60,9 @@ func DefaultConfigPath() string {
 }
 
 func LoadConfig() (*config.Config, error) {
+	if err := ensureDefaultConfigScaffold(); err != nil {
+		return nil, err
+	}
 	cfg, err := config.Load(DefaultConfigPath())
 	if err != nil {
 		return nil, err
@@ -172,14 +177,27 @@ func DriverForModel(cfg *config.Config, tokens *auth.Tokens, model string) llm.D
 	}
 	if p, ambiguous := ResolveCompatProvider(BuildCompatProviders(cfg, tokens), model); p != nil {
 		apiModel := compatAPIModel(p.Name, ref, resolvedModel)
-		supportsResponses := p.WireAPI == "responses"
-		if len(p.HTTPHeaders) > 0 || supportsResponses {
-			return drivers.NewCustomCompatProvider(p.Name, p.KeyFn(), p.BaseURL, model, apiModel, supportsResponses, p.HTTPHeaders)
+		baseURL := p.BaseURL
+		wireAPI := p.WireAPI
+		if route := modelcatalog.CustomProviderRouteForModel(p.Name, ref.Model); route != nil {
+			if strings.TrimSpace(route.APIModel) != "" {
+				apiModel = strings.TrimSpace(route.APIModel)
+			}
+			if strings.TrimSpace(route.APIBase) != "" {
+				baseURL = strings.TrimSpace(route.APIBase)
+			}
+			if strings.TrimSpace(route.WireAPI) != "" {
+				wireAPI = strings.TrimSpace(route.WireAPI)
+			}
+		}
+		supportsResponses := wireAPI == "responses"
+		if len(p.HTTPHeaders) > 0 || supportsResponses || baseURL != p.BaseURL {
+			return drivers.NewCustomCompatProvider(p.Name, p.KeyFn(), baseURL, model, apiModel, supportsResponses, p.HTTPHeaders)
 		}
 		if apiModel != resolvedModel {
-			return drivers.NewOpenAICompatibleProviderAlias(p.Name, p.KeyFn(), p.BaseURL, model, apiModel)
+			return drivers.NewOpenAICompatibleProviderAlias(p.Name, p.KeyFn(), baseURL, model, apiModel)
 		}
-		return drivers.NewOpenAICompatibleProviderAlias(p.Name, p.KeyFn(), p.BaseURL, model, resolvedModel)
+		return drivers.NewOpenAICompatibleProviderAlias(p.Name, p.KeyFn(), baseURL, model, resolvedModel)
 	} else if ambiguous {
 		return nil
 	}
@@ -255,6 +273,10 @@ func AvailableModels(cfg *config.Config, tokens *auth.Tokens) []string {
 	}
 	for _, p := range BuildCompatProviders(cfg, tokens) {
 		if p.KeyFn() != "" {
+			if customModels := modelcatalog.CustomProviderModels(p.Name); len(customModels) > 0 {
+				out = append(out, qualifyCompatibleModelList(p.Name, customModels)...)
+				continue
+			}
 			if useLiveCompatModelDiscovery() {
 				out = append(out, discoverCompatModels(p.BaseURL, p.KeyFn(), p.Name, p.Models, p.IsModel)...)
 			} else {
@@ -602,6 +624,14 @@ func BuildCompatProviders(cfg *config.Config, tokens *auth.Tokens) []CompatProvi
 	for _, def := range customDefs {
 		RegisterCustomProviderName(def.ID)
 		defID := def.ID
+		modelcatalog.RegisterCustomProviderSource(defID, def.ModelInfoURL, def.HTTPHeaders, func() string {
+			if tokens != nil {
+				if k := tokens.CustomProviderKey(defID); k != "" {
+					return k
+				}
+			}
+			return os.Getenv(strings.ToUpper(defID) + "_API_KEY")
+		})
 		providers = append(providers, CompatProvider{
 			Name:    def.ID,
 			Label:   def.Name,
@@ -617,6 +647,7 @@ func BuildCompatProviders(cfg *config.Config, tokens *auth.Tokens) []CompatProvi
 			IsModel:     func(string) bool { return false },
 			Models:      def.Models,
 			WireAPI:     def.WireAPI,
+			ModelInfoURL: def.ModelInfoURL,
 			HTTPHeaders: def.HTTPHeaders,
 		})
 	}
