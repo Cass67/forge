@@ -1332,6 +1332,38 @@ func TestChatModelModelsOverlayDigitsExtendQuery(t *testing.T) {
 	}
 }
 
+func TestChatModelModelsOverlayLeadingDigitStartsSearch(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "openai/gpt-5",
+		WorkDir: "/tmp",
+		AvailableModels: []string{
+			"anthropic/claude-opus-4-6",
+			"anthropic/claude-sonnet-4-6",
+			"anthropic/claude-haiku-4-5",
+		},
+		SwitchModel: func(name string) (string, error) {
+			t.Fatalf("SwitchModel should not be called while typing numeric query, got %q", name)
+			return name, nil
+		},
+	})
+	m.width = 100
+	m.height = 24
+	m.openModelPicker()
+
+	updated, _ := m.handleModelsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("4")})
+	m = updated.(ChatModel)
+
+	if m.modelsQuery != "4" {
+		t.Fatalf("modelsQuery = %q, want %q", m.modelsQuery, "4")
+	}
+	if !m.modelsVisible {
+		t.Fatal("models overlay should remain open while typing query")
+	}
+	if len(m.modelsFiltered) != 3 {
+		t.Fatalf("modelsFiltered = %#v", m.modelsFiltered)
+	}
+}
+
 func TestChatModelModelsOverlayShowsVisibleRange(t *testing.T) {
 	models := make([]string, 0, 30)
 	for i := 1; i <= 30; i++ {

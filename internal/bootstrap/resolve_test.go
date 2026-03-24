@@ -104,13 +104,14 @@ func TestCanonicalAnthropicModel(t *testing.T) {
 		in   string
 		want string
 	}{
-		{in: "claude-sonnet-4-6", want: "claude-sonnet-4-20250514"},
-		{in: "claude-opus-4-6", want: "claude-opus-4-1-20250805"},
-		{in: "claude-sonnet-4-5", want: "claude-sonnet-4-20250514"},
-		{in: "claude-haiku-4-5", want: "claude-3-5-haiku-20241022"},
-		{in: "claude-3-5-haiku-latest", want: "claude-3-5-haiku-20241022"},
-		{in: "claude-3-7-sonnet-latest", want: "claude-3-7-sonnet-20250219"},
-		{in: "claude-3-7-sonnet-20250219", want: "claude-3-7-sonnet-20250219"},
+		{in: "claude-sonnet-4-6", want: "claude-sonnet-4-6"},
+		{in: "claude-sonnet-4-20250514", want: "claude-sonnet-4-6"},
+		{in: "claude-3-7-sonnet-20250219", want: "claude-sonnet-4-6"},
+		{in: "claude-opus-4-6", want: "claude-opus-4-6"},
+		{in: "claude-opus-4-1-20250805", want: "claude-opus-4-6"},
+		{in: "claude-haiku-4-5", want: "claude-haiku-4-5"},
+		{in: "claude-3-5-haiku-20241022", want: "claude-haiku-4-5"},
+		{in: "claude-3-5-haiku-latest", want: "claude-haiku-4-5"},
 	}
 
 	for _, tt := range tests {
@@ -122,13 +123,9 @@ func TestCanonicalAnthropicModel(t *testing.T) {
 
 func TestAnthropicModelsUseStableAPINames(t *testing.T) {
 	want := []string{
-		"claude-sonnet-4-20250514",
-		"claude-opus-4-1-20250805",
-		"claude-opus-4-20250514",
-		"claude-3-7-sonnet-20250219",
-		"claude-3-5-sonnet-20241022",
-		"claude-3-5-haiku-20241022",
-		"claude-3-haiku-20240307",
+		"claude-opus-4-6",
+		"claude-sonnet-4-6",
+		"claude-haiku-4-5",
 	}
 	got := AnthropicModels()
 	if strings.Join(got, ",") != strings.Join(want, ",") {
@@ -468,7 +465,7 @@ func TestAvailableModelsUsesLiveCompatCatalogWhenExplicitlyEnabled(t *testing.T)
 func TestAvailableModelsUsesLiveAnthropicModelsWhenAPIKeyPresent(t *testing.T) {
 	prevDiscover := discoverAnthropicModels
 	discoverAnthropicModels = func(_ string) []string {
-		return []string{"claude-sonnet-4-20250514", "claude-3-5-haiku-20241022"}
+		return []string{"claude-sonnet-4-6", "claude-haiku-4-5"}
 	}
 	defer func() { discoverAnthropicModels = prevDiscover }()
 
@@ -477,10 +474,10 @@ func TestAvailableModelsUsesLiveAnthropicModelsWhenAPIKeyPresent(t *testing.T) {
 
 	models := AvailableModels(cfg, &auth.Tokens{})
 
-	if !containsTestString(models, "claude-sonnet-4-20250514") || !containsTestString(models, "anthropic/claude-sonnet-4-20250514") {
+	if !containsTestString(models, "claude-sonnet-4-6") || !containsTestString(models, "anthropic/claude-sonnet-4-6") {
 		t.Fatalf("expected live anthropic model in available models, got %#v", models)
 	}
-	if containsTestString(models, "anthropic/claude-opus-4-1-20250805") {
+	if containsTestString(models, "anthropic/claude-opus-4-6") {
 		t.Fatalf("unexpected fallback anthropic catalog entry when live discovery succeeded: %#v", models)
 	}
 }
@@ -490,7 +487,7 @@ func TestAvailableModelsUsesLiveClaudeModelsWhenLoginPresent(t *testing.T) {
 	prevDiscover := discoverClaudeModels
 	claudeAuthAvailable = func() bool { return true }
 	discoverClaudeModels = func() []string {
-		return []string{"claude-sonnet-4-20250514", "claude-3-5-haiku-20241022"}
+		return []string{"claude-sonnet-4-6", "claude-haiku-4-5"}
 	}
 	defer func() {
 		claudeAuthAvailable = prevAvail
@@ -500,10 +497,10 @@ func TestAvailableModelsUsesLiveClaudeModelsWhenLoginPresent(t *testing.T) {
 	cfg := testConfig()
 	models := AvailableModels(cfg, &auth.Tokens{})
 
-	if !containsTestString(models, "claude-sonnet-4-20250514") || !containsTestString(models, "claude/claude-sonnet-4-20250514") {
+	if !containsTestString(models, "claude-sonnet-4-6") || !containsTestString(models, "claude/claude-sonnet-4-6") {
 		t.Fatalf("expected live claude model in available models, got %#v", models)
 	}
-	if containsTestString(models, "claude/claude-opus-4-1-20250805") {
+	if containsTestString(models, "claude/claude-opus-4-6") {
 		t.Fatalf("unexpected fallback claude catalog entry when live discovery succeeded: %#v", models)
 	}
 }

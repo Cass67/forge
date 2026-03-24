@@ -330,13 +330,9 @@ func FindCompatProvider(providers []CompatProvider, model string) *CompatProvide
 
 func AnthropicModels() []string {
 	return []string{
-		"claude-sonnet-4-20250514",
-		"claude-opus-4-1-20250805",
-		"claude-opus-4-20250514",
-		"claude-3-7-sonnet-20250219",
-		"claude-3-5-sonnet-20241022",
-		"claude-3-5-haiku-20241022",
-		"claude-3-haiku-20240307",
+		"claude-opus-4-6",
+		"claude-sonnet-4-6",
+		"claude-haiku-4-5",
 	}
 }
 
@@ -363,18 +359,12 @@ func canonicalOpenAIModel(name string) string {
 
 func canonicalAnthropicModel(name string) string {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "claude-sonnet-4-6", "claude-sonnet-4-5":
-		return "claude-sonnet-4-20250514"
-	case "claude-opus-4-6":
-		return "claude-opus-4-1-20250805"
-	case "claude-opus-4-5":
-		return "claude-opus-4-20250514"
-	case "claude-haiku-4-5", "claude-3-5-haiku-latest":
-		return "claude-3-5-haiku-20241022"
-	case "claude-3-7-sonnet-latest":
-		return "claude-3-7-sonnet-20250219"
-	case "claude-3-5-sonnet-latest":
-		return "claude-3-5-sonnet-20241022"
+	case "claude-opus-4-6", "claude-opus-4-1-20250805", "claude-opus-4-20250514", "claude-opus-4-5":
+		return "claude-opus-4-6"
+	case "claude-sonnet-4-6", "claude-sonnet-4-20250514", "claude-sonnet-4-5", "claude-3-7-sonnet-20250219", "claude-3-7-sonnet-latest", "claude-3-5-sonnet-20241022", "claude-3-5-sonnet-latest":
+		return "claude-sonnet-4-6"
+	case "claude-haiku-4-5", "claude-haiku-4-5-20251001", "claude-3-5-haiku-20241022", "claude-3-5-haiku-latest", "claude-3-haiku-20240307":
+		return "claude-haiku-4-5"
 	default:
 		return strings.TrimSpace(name)
 	}
@@ -442,16 +432,7 @@ func canUseClaudeForUnqualifiedModel(model string) bool {
 	if !claudeAuthAvailable() {
 		return false
 	}
-	target := canonicalAnthropicModel(model)
-	if target == "" {
-		return false
-	}
-	for _, known := range AnthropicModels() {
-		if known == target {
-			return true
-		}
-	}
-	return false
+	return IsAnthropicModel(canonicalAnthropicModel(model))
 }
 
 func qualifyModels(provider string, models []string) []string {

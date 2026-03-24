@@ -2645,17 +2645,6 @@ func (m ChatModel) handleModelsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEnter:
 		return m, m.pickModel(m.modelsCursor)
 	case tea.KeyRunes:
-		if len(msg.Runes) == 1 && strings.TrimSpace(m.modelsQuery) == "" {
-			r := msg.Runes[0]
-			if r >= '1' && r <= '9' {
-				idx := int(r - '1')
-				if idx < len(m.modelsFiltered) {
-					m.modelsCursor = idx
-					return m, m.pickModel(idx)
-				}
-				return m, nil
-			}
-		}
 		for _, r := range msg.Runes {
 			runes := []rune(m.modelsQuery)
 			newRunes := make([]rune, 0, len(runes)+1)

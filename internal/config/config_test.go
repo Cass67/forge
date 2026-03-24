@@ -40,11 +40,11 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Session.RoundsPerPass < 1 {
 		t.Error("expected positive default rounds")
 	}
-	if cfg.Models.Writer != "claude-sonnet-4-20250514" {
-		t.Fatalf("default writer = %q, want %q", cfg.Models.Writer, "claude-sonnet-4-20250514")
+	if cfg.Models.Writer != "claude-sonnet-4-6" {
+		t.Fatalf("default writer = %q, want %q", cfg.Models.Writer, "claude-sonnet-4-6")
 	}
-	if cfg.Models.Summarizer != "claude-3-5-haiku-20241022" {
-		t.Fatalf("default summarizer = %q, want %q", cfg.Models.Summarizer, "claude-3-5-haiku-20241022")
+	if cfg.Models.Summarizer != "claude-haiku-4-5" {
+		t.Fatalf("default summarizer = %q, want %q", cfg.Models.Summarizer, "claude-haiku-4-5")
 	}
 }
 

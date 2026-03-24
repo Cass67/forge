@@ -48,69 +48,25 @@ func (d *ClaudeDriver) LastRequestMode() string {
 func (d *ClaudeDriver) Stream(ctx context.Context, messages []llm.Message, out chan<- llm.Token) error {
 	defer close(out)
 
-	var systemBlocks []anthropic.TextBlockParam
-	var chatMsgs []anthropic.MessageParam
-	for _, m := range messages {
-		switch m.Role {
-		case llm.RoleSystem:
-			systemBlocks = append(systemBlocks, anthropic.TextBlockParam{
-				Text: m.Content,
-			})
-		case llm.RoleUser:
-			chatMsgs = append(chatMsgs, anthropic.NewUserMessage(
-				anthropic.ContentBlockParamUnion{
-					OfText: &anthropic.TextBlockParam{
-						Text: m.Content,
-					},
-				},
-			))
-		case llm.RoleAssistant:
-			chatMsgs = append(chatMsgs, anthropic.NewAssistantMessage(
-				anthropic.ContentBlockParamUnion{
-					OfText: &anthropic.TextBlockParam{
-						Text: m.Content,
-					},
-				},
-			))
-		}
-	}
-
 	maxTok := int64(8096)
 	if d.params.MaxTokens > 0 {
 		maxTok = int64(d.params.MaxTokens)
 	}
-	apiParams := anthropic.MessageNewParams{
-		Model:     anthropic.ModelClaudeSonnet4_6,
-		MaxTokens: maxTok,
-		Messages:  chatMsgs,
-		CacheControl: anthropic.CacheControlEphemeralParam{
-			TTL: anthropic.CacheControlEphemeralTTLTTL5m,
-		},
-	}
-
-	if len(systemBlocks) > 0 {
-		apiParams.System = systemBlocks
-	}
-
-	if d.model != "" {
-		apiParams.Model = anthropic.Model(d.model)
-	}
-
-	if d.params.Temperature >= 0 {
-		apiParams.Temperature = anthropic.Float(d.params.Temperature)
-	}
+	apiParams := buildClaudeBetaParams(d.model, d.params, messages, maxTok)
 	d.mu.Lock()
 	d.lastMode = "claude prompt cache (ephemeral 5m)"
 	d.mu.Unlock()
 
-	var acc anthropic.Message
-	stream := d.client.Messages.NewStreaming(ctx, apiParams)
+	var acc anthropic.BetaMessage
+	stream := d.client.Beta.Messages.NewStreaming(ctx, apiParams)
 	for stream.Next() {
 		event := stream.Current()
-		acc.Accumulate(event)
+		if err := acc.Accumulate(event); err != nil {
+			return err
+		}
 		switch e := event.AsAny().(type) {
-		case anthropic.ContentBlockDeltaEvent:
-			if delta, ok := e.Delta.AsAny().(anthropic.TextDelta); ok {
+		case anthropic.BetaRawContentBlockDeltaEvent:
+			if delta, ok := e.Delta.AsAny().(anthropic.BetaTextDelta); ok {
 				select {
 				case out <- llm.Token{Text: delta.Text}:
 				case <-ctx.Done():
@@ -131,4 +87,62 @@ func (d *ClaudeDriver) Stream(ctx context.Context, messages []llm.Message, out c
 	d.mu.Unlock()
 
 	return nil
+}
+
+func buildClaudeBetaMessages(messages []llm.Message) ([]anthropic.BetaTextBlockParam, []anthropic.BetaMessageParam) {
+	var systemBlocks []anthropic.BetaTextBlockParam
+	var chatMsgs []anthropic.BetaMessageParam
+	for _, m := range messages {
+		switch m.Role {
+		case llm.RoleSystem:
+			systemBlocks = append(systemBlocks, anthropic.BetaTextBlockParam{
+				Text: m.Content,
+			})
+		case llm.RoleUser:
+			chatMsgs = append(chatMsgs, anthropic.NewBetaUserMessage(
+				anthropic.BetaContentBlockParamUnion{
+					OfText: &anthropic.BetaTextBlockParam{
+						Text: m.Content,
+					},
+				},
+			))
+		case llm.RoleAssistant:
+			chatMsgs = append(chatMsgs, anthropic.BetaMessageParam{
+				Role: anthropic.BetaMessageParamRoleAssistant,
+				Content: []anthropic.BetaContentBlockParamUnion{
+					{
+						OfText: &anthropic.BetaTextBlockParam{
+							Text: m.Content,
+						},
+					},
+				},
+			})
+		}
+	}
+	return systemBlocks, chatMsgs
+}
+
+func buildClaudeBetaParams(model string, params llm.Params, messages []llm.Message, maxTokens int64) anthropic.BetaMessageNewParams {
+	systemBlocks, chatMsgs := buildClaudeBetaMessages(messages)
+	apiParams := anthropic.BetaMessageNewParams{
+		Model:     anthropic.ModelClaudeSonnet4_6,
+		MaxTokens: maxTokens,
+		Messages:  chatMsgs,
+		CacheControl: anthropic.BetaCacheControlEphemeralParam{
+			TTL: anthropic.BetaCacheControlEphemeralTTLTTL5m,
+		},
+		Betas: []anthropic.AnthropicBeta{
+			anthropic.AnthropicBetaPromptCaching2024_07_31,
+		},
+	}
+	if len(systemBlocks) > 0 {
+		apiParams.System = systemBlocks
+	}
+	if model != "" {
+		apiParams.Model = anthropic.Model(model)
+	}
+	if params.Temperature >= 0 {
+		apiParams.Temperature = anthropic.Float(params.Temperature)
+	}
+	return apiParams
 }
