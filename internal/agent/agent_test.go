@@ -595,6 +595,42 @@ func TestScoutRetriesInsteadOfMixingToolCallsWithVisibleProse(t *testing.T) {
 	}
 }
 
+func TestArchitectRetriesInsteadOfMixingToolCallsWithVisibleProse(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"read_file\", \"args\": {\"path\": \"repo_review_evidence.md\"}}\n</tool_call>\nI need the actual scout evidence contents to synthesize recommendations.",
+		"GOAL: prioritized recommendations",
+	}}
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{
+		Name:        "read_file",
+		Description: "Read file",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			return "FINDINGS:\n- tests are sparse", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("architect")
+	a.isSubAgent = true
+
+	if err := a.Run(context.Background(), "synthesize repo review"); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callIdx != 2 {
+		t.Fatalf("expected architect retry flow, got %d driver calls", driver.callIdx)
+	}
+	if got := output.String(); strings.Contains(got, "I need the actual scout evidence contents") {
+		t.Fatalf("architect prose leak should trigger retry, got %q", got)
+	}
+	for _, msg := range a.history {
+		if strings.Contains(msg.Content, "I need the actual scout evidence contents") {
+			t.Fatalf("architect mixed prose should not remain in history: %q", msg.Content)
+		}
+	}
+}
+
 func TestDispatchRetriesDirectAnswerUntilItDelegates(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"Repo overview\n- Purpose\n- Structure",
@@ -783,6 +819,50 @@ func TestDispatchInjectsScoutFindingsIntoArchitectTask(t *testing.T) {
 	}
 	if !strings.Contains(architectTask, "FINDINGS:\n- tests are sparse") {
 		t.Fatalf("architect task missing scout findings: %q", architectTask)
+	}
+}
+
+func TestDispatchPersistsScoutRepoReviewEvidenceToScratchpad(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Gather evidence for a repository review only. OUTCOME: Evidence-backed findings only.\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"TASK: Synthesize the repo review into prioritized recommendations. OUTCOME: Final review.\"}}\n</tool_call>",
+	}}
+	reg := tools.NewRegistry()
+	var wroteTopic, wroteContent string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			if role == "scout" {
+				return "FINDINGS:\n- docs are thin\nKEY FILES: /repo/README.md\nFOLLOW-UP: architect", nil
+			}
+			return "Prioritized recommendations", nil
+		},
+	})
+	reg.Register(tools.Tool{
+		Name:        "scratchpad_write",
+		Description: "Write scratchpad",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			wroteTopic, _ = args["topic"].(string)
+			wroteContent, _ = args["content"].(string)
+			return "written", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "review this repo and suggest improvements"); err != nil {
+		t.Fatal(err)
+	}
+	if wroteTopic != "repo_review_evidence" {
+		t.Fatalf("scratchpad topic = %q, want repo_review_evidence", wroteTopic)
+	}
+	if !strings.Contains(wroteContent, "FINDINGS:\n- docs are thin") {
+		t.Fatalf("scratchpad content missing scout findings: %q", wroteContent)
 	}
 }
 

@@ -126,6 +126,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	a.history = append(a.history, llm.Message{Role: llm.RoleUser, Content: userMessage})
 	turnStart := time.Now()
 	actionPreambleRetries := 0
+	subAgentMixedProseRetries := 0
 	dispatchDirectAnswerRetries := 0
 	sawToolCallThisRun := false
 	lastDispatchDelegateRole := ""
@@ -169,15 +170,17 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 
 		// Parse tool calls
 		calls, visibleText := ParseToolCalls(response)
-		if a.role == "scout" && len(calls) > 0 && strings.TrimSpace(visibleText) != "" {
+		if a.isSubAgent && len(calls) > 0 && strings.TrimSpace(visibleText) != "" {
 			if turn+1 < a.maxTurns {
+				subAgentMixedProseRetries++
 				a.history = append(a.history, llm.Message{
 					Role:    llm.RoleUser,
-					Content: scoutNudgeMessage(),
+					Content: subAgentToolCallNudgeMessage(a.role, subAgentMixedProseRetries),
 				})
 				continue
 			}
 		}
+		subAgentMixedProseRetries = 0
 
 		// No tool calls — final answer, or stalled narration.
 		if len(calls) == 0 {
@@ -272,6 +275,16 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 						a.dispatchResults[lastDispatchDelegateRole] = result
 						if delegateResultCompleted(result) && !lastDispatchDelegateBlocked {
 							task, _ := call.Args["task"].(string)
+							if role == "scout" && dispatchRepoReviewScoutEvidenceTask(task) {
+								if persisted, ok := a.writeDispatchScratchpad(ctx, "repo_review_evidence", result); ok {
+									results = append(results, persisted)
+								}
+							}
+							if role == "architect" && dispatchRepoReviewArchitectSynthesisTask(task) {
+								if persisted, ok := a.writeDispatchScratchpad(ctx, "repo_review_recommendations", result); ok {
+									results = append(results, persisted)
+								}
+							}
 							if dispatchRepoReviewArchitectSynthesisTask(task) {
 								dispatchStopAfterTurn = true
 							}
@@ -314,6 +327,32 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	}
 
 	return fmt.Errorf("max turns (%d) exceeded", a.maxTurns)
+}
+
+func (a *Agent) writeDispatchScratchpad(ctx context.Context, topic, content string) (string, bool) {
+	if strings.TrimSpace(topic) == "" || strings.TrimSpace(content) == "" {
+		return "", false
+	}
+	tool, ok := a.tools.Get("scratchpad_write")
+	if !ok {
+		return "", false
+	}
+	args := map[string]any{
+		"topic":   topic,
+		"content": content,
+	}
+	a.renderer.ToolCall("scratchpad_write", formatCallSummary(ToolCall{
+		Name: "scratchpad_write",
+		Args: args,
+	}))
+	result, err := tool.Execute(ctx, args)
+	if err != nil {
+		result = fmt.Sprintf("error: %v", err)
+		a.renderer.ToolResult("scratchpad_write", result, "", true)
+		return fmt.Sprintf("[scratchpad_write] %s", result), true
+	}
+	a.renderer.ToolResult("scratchpad_write", truncateResult(result), "", false)
+	return fmt.Sprintf("[scratchpad_write] %s", result), true
 }
 
 func (a *Agent) getUsage() llm.Usage {
@@ -427,6 +466,27 @@ func dispatchRepoReviewArchitectSynthesisTask(task string) bool {
 		"synthesize repository review",
 	}
 	return containsAny(lower, repoReviewSignals)
+}
+
+func dispatchRepoReviewScoutEvidenceTask(task string) bool {
+	lower := strings.ToLower(task)
+	repoSignals := []string{
+		"repo review",
+		"repository review",
+		"repository findings",
+		"repository evidence",
+		"repository improvement",
+		"review this repo",
+		"review the repository",
+	}
+	evidenceSignals := []string{
+		"gather evidence",
+		"evidence only",
+		"findings only",
+		"evidence-backed findings",
+		"descriptive only",
+	}
+	return containsAny(lower, repoSignals) && containsAny(lower, evidenceSignals)
 }
 
 func enrichDispatchDelegateTask(role, task string, delegateResults map[string]string, scratchpadResult string) string {
@@ -599,6 +659,20 @@ func nudgeMessage(attempt int) string {
 
 func scoutNudgeMessage() string {
 	return "Scout must not mix visible prose with tool calls. Use tool calls only while gathering evidence, and never ask for pasted outputs."
+}
+
+func subAgentToolCallNudgeMessage(role string, attempt int) string {
+	if strings.TrimSpace(role) == "scout" {
+		return scoutNudgeMessage()
+	}
+	switch attempt {
+	case 1:
+		return "Sub-agent must not mix visible prose with tool calls. Use tool calls while working; give plain-text output only when finished."
+	case 2:
+		return "Do not ask for pasted tool output while also calling tools. Either call the next tool or give the final answer."
+	default:
+		return "Stop mixing prose with tool calls. Tool calls only until the task is complete."
+	}
 }
 
 func dispatchNudgeMessage(attempt int) string {
