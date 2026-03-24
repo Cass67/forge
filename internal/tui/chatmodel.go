@@ -14,6 +14,7 @@ import (
 	"forge/internal/auth"
 	"forge/internal/chatgptauth"
 	"forge/internal/chatstate"
+	"forge/internal/claudeauth"
 	"forge/internal/codexusage"
 	"forge/internal/copilot"
 	"forge/internal/llm"
@@ -33,9 +34,10 @@ type providerAuthStartedMsg struct {
 	flow       any
 }
 type providerAuthSucceededMsg struct {
-	providerID string
-	session    *chatgptauth.Session
-	token      string
+	providerID    string
+	session       *chatgptauth.Session
+	claudeSession *claudeauth.Session
+	token         string
 }
 type providerAuthFailedMsg struct {
 	providerID string
@@ -63,6 +65,12 @@ var (
 	}
 	waitChatGPTDeviceAuth = func(ctx context.Context, flow *chatgptauth.DeviceFlow) (chatgptauth.Session, error) {
 		return flow.Wait(ctx)
+	}
+	startClaudeAuth = func() (*claudeauth.Flow, error) {
+		return claudeauth.StartAuth()
+	}
+	exchangeClaudeAuth = func(ctx context.Context, flow *claudeauth.Flow, pasted string) (claudeauth.Session, error) {
+		return claudeauth.Exchange(ctx, nil, flow, pasted)
 	}
 	startCopilotDeviceAuth = func(ctx context.Context, clientID string) (*copilot.DeviceCode, error) {
 		return copilot.RequestDeviceCode(ctx, clientID)
@@ -186,12 +194,15 @@ type ChatModel struct {
 	providerPromptingKey bool
 	providerKeyInput     string
 	providerKeyPos       int
+	providerPromptLabel  string
+	providerPromptMasked bool
 	providerStatus       string
 	providerAuthURL      string
 	providerAuthCode     string
 	providerAuthWaiting  bool
 	providerAuthProvider string
 	providerAuthCancel   context.CancelFunc
+	providerAuthFlow     any
 
 	sessionsVisible  bool
 	sessionsCursor   int
@@ -2645,11 +2656,14 @@ func (m *ChatModel) openProviderPicker() {
 	}
 	m.providersVisible = true
 	m.providerPromptingKey = false
+	m.providerPromptLabel = ""
+	m.providerPromptMasked = false
 	m.providerStatus = ""
 	m.providerAuthURL = ""
 	m.providerAuthCode = ""
 	m.providerAuthWaiting = false
 	m.providerAuthProvider = ""
+	m.providerAuthFlow = nil
 	m.providersCursor = 0
 }
 
@@ -2673,6 +2687,12 @@ func (m ChatModel) handleProvidersKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.Type {
 		case tea.KeyEscape:
 			m.providerPromptingKey = false
+			m.providerPromptLabel = ""
+			m.providerPromptMasked = false
+			m.providerKeyInput = ""
+			m.providerKeyPos = 0
+			m.providerAuthProvider = ""
+			m.providerAuthFlow = nil
 			m.providerStatus = ""
 		case tea.KeyEnter:
 			return m.saveProviderKey()
@@ -2745,6 +2765,8 @@ func (m ChatModel) activateProviderSelection() (tea.Model, tea.Cmd) {
 		m.providerPromptingKey = true
 		m.providerKeyInput = ""
 		m.providerKeyPos = 0
+		m.providerPromptLabel = "API key"
+		m.providerPromptMasked = true
 		m.providerStatus = "enter API key"
 		return m, nil
 	}
@@ -2767,7 +2789,7 @@ func (m ChatModel) activateProviderSelection() (tea.Model, tea.Cmd) {
 
 func providerNeedsInteractiveLogin(provider ProviderOption) bool {
 	id := strings.ToLower(strings.TrimSpace(provider.ID))
-	if id != "chatgpt" && id != "copilot" {
+	if id != "chatgpt" && id != "claude" && id != "copilot" {
 		return false
 	}
 	status := strings.ToLower(strings.TrimSpace(provider.Status))
@@ -2787,6 +2809,19 @@ func (m ChatModel) startProviderLogin(provider ProviderOption) (tea.Model, tea.C
 				providerID: provider.ID,
 				verifyURL:  flow.VerificationURL(),
 				userCode:   flow.UserCode(),
+				flow:       flow,
+			}
+		}
+	case "claude":
+		m.providerStatus = "preparing Claude sign-in..."
+		return m, func() tea.Msg {
+			flow, err := startClaudeAuth()
+			if err != nil {
+				return providerAuthFailedMsg{providerID: provider.ID, err: err}
+			}
+			return providerAuthStartedMsg{
+				providerID: provider.ID,
+				verifyURL:  flow.AuthorizationURL,
 				flow:       flow,
 			}
 		}
@@ -2820,8 +2855,22 @@ func (m ChatModel) saveProviderKey() (tea.Model, tea.Cmd) {
 	}
 	key := strings.TrimSpace(m.providerKeyInput)
 	if key == "" {
-		m.providerStatus = "missing API key"
+		if m.providerAuthProvider == "claude" {
+			m.providerStatus = "paste the callback URL or authorization code"
+		} else {
+			m.providerStatus = "missing API key"
+		}
 		return m, nil
+	}
+	if m.providerAuthProvider == "claude" {
+		flow, _ := m.providerAuthFlow.(*claudeauth.Flow)
+		return m, func() tea.Msg {
+			session, err := exchangeClaudeAuth(context.Background(), flow, key)
+			if err != nil {
+				return providerAuthFailedMsg{providerID: "claude", err: err}
+			}
+			return providerAuthSucceededMsg{providerID: "claude", claudeSession: &session}
+		}
 	}
 	tokens, err := auth.Load()
 	if err != nil {
@@ -2834,6 +2883,8 @@ func (m ChatModel) saveProviderKey() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.providerPromptingKey = false
+	m.providerPromptLabel = ""
+	m.providerPromptMasked = false
 	m.providerStatus = "saved"
 	if m.config.RefreshProviders != nil {
 		m.providersList = append([]ProviderOption(nil), m.config.RefreshProviders()...)
@@ -2857,12 +2908,29 @@ func (m ChatModel) saveProviderKey() (tea.Model, tea.Cmd) {
 }
 
 func (m ChatModel) handleProviderAuthStarted(msg providerAuthStartedMsg) (tea.Model, tea.Cmd) {
+	switch flow := msg.flow.(type) {
+	case *claudeauth.Flow:
+		m.providerAuthWaiting = false
+		m.providerAuthProvider = msg.providerID
+		m.providerAuthURL = msg.verifyURL
+		m.providerAuthCode = msg.userCode
+		m.providerAuthFlow = flow
+		m.providerPromptingKey = true
+		m.providerPromptLabel = "Callback"
+		m.providerPromptMasked = false
+		m.providerKeyInput = ""
+		m.providerKeyPos = 0
+		m.providerStatus = "open the browser URL, finish sign-in, then paste the callback URL or authorization code"
+		return m, nil
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	m.providerAuthCancel = cancel
 	m.providerAuthWaiting = true
 	m.providerAuthProvider = msg.providerID
 	m.providerAuthURL = msg.verifyURL
 	m.providerAuthCode = msg.userCode
+	m.providerAuthFlow = msg.flow
 	m.providerStatus = fmt.Sprintf("visit %s and enter %s", msg.verifyURL, msg.userCode)
 
 	switch flow := msg.flow.(type) {
@@ -2907,6 +2975,13 @@ func (m ChatModel) handleProviderAuthSucceeded(msg providerAuthSucceededMsg) (te
 			return m, nil
 		}
 		tokens = chatgptauth.StoreSession(tokens, *msg.session)
+	case "claude":
+		if msg.claudeSession == nil {
+			m.providerPromptingKey = true
+			m.providerStatus = "save failed: missing Claude session"
+			return m, nil
+		}
+		tokens = claudeauth.StoreSession(tokens, *msg.claudeSession)
 	case "copilot":
 		tokens.CopilotToken = strings.TrimSpace(msg.token)
 	}
@@ -2916,9 +2991,15 @@ func (m ChatModel) handleProviderAuthSucceeded(msg providerAuthSucceededMsg) (te
 		return m, nil
 	}
 	m.providerAuthWaiting = false
+	m.providerPromptingKey = false
+	m.providerPromptLabel = ""
+	m.providerPromptMasked = false
+	m.providerKeyInput = ""
+	m.providerKeyPos = 0
 	m.providerAuthURL = ""
 	m.providerAuthCode = ""
 	m.providerAuthProvider = ""
+	m.providerAuthFlow = nil
 	m.providerStatus = "authenticated"
 	if m.config.RefreshProviders != nil {
 		m.providersList = append([]ProviderOption(nil), m.config.RefreshProviders()...)
@@ -2950,9 +3031,13 @@ func (m ChatModel) handleProviderAuthFailed(msg providerAuthFailedMsg) (tea.Mode
 		m.providerAuthCancel = nil
 	}
 	m.providerAuthWaiting = false
+	m.providerPromptingKey = false
+	m.providerPromptLabel = ""
+	m.providerPromptMasked = false
 	m.providerAuthURL = ""
 	m.providerAuthCode = ""
 	m.providerAuthProvider = ""
+	m.providerAuthFlow = nil
 	if msg.err != nil {
 		m.providerStatus = fmt.Sprintf("sign-in failed: %v", msg.err)
 		m.flash = fmt.Sprintf("sign-in failed: %v", msg.err)
@@ -3452,24 +3537,34 @@ func (m ChatModel) renderProvidersOverlay() string {
 
 	keyLine := ""
 	if m.providerPromptingKey {
-		keyLine = "API key: " + strings.Repeat("*", len([]rune(m.providerKeyInput)))
+		if m.providerPromptMasked {
+			keyLine = m.providerPromptLabel + ": " + strings.Repeat("*", len([]rune(m.providerKeyInput)))
+		} else {
+			keyLine = m.providerPromptLabel + ": " + m.providerKeyInput
+		}
 	}
 	footerText := "↑/↓ select • Enter configure/select • d delete credential • Esc close"
 	if m.providerPromptingKey {
-		footerText = "Enter save key • Esc cancel"
+		if m.providerAuthProvider == "claude" {
+			footerText = "Enter submit pasted callback/code • Esc cancel"
+		} else {
+			footerText = "Enter save key • Esc cancel"
+		}
 	} else if m.providerAuthWaiting {
 		footerText = "Complete sign-in in browser • Esc cancel"
 	}
 	authLines := []string{}
-	if m.providerAuthWaiting {
+	if m.providerAuthWaiting || (m.providerPromptingKey && m.providerAuthProvider == "claude" && m.providerAuthURL != "") {
 		authLines = append(authLines,
 			textStyle.Render("Visit: "+m.providerAuthURL),
-			textStyle.Render("Code:  "+m.providerAuthCode),
 		)
+		if m.providerAuthCode != "" {
+			authLines = append(authLines, textStyle.Render("Code:  "+m.providerAuthCode))
+		}
 	}
 	inner := lipgloss.JoinVertical(lipgloss.Left,
 		titleStyle.Render("Providers"),
-		dimStyle.Render("Select a provider. API-key providers prompt for a key; ChatGPT/Copilot can sign in here."),
+		dimStyle.Render("Select a provider. API-key providers prompt for a key; ChatGPT/Claude/Copilot can sign in here."),
 		"",
 		lipgloss.NewStyle().Width(boxW-6).Height(contentHeight).Render(strings.Join(lines, "\n")),
 		"",

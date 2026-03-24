@@ -16,6 +16,7 @@ import (
 
 	"forge/internal/auth"
 	"forge/internal/chatgptauth"
+	"forge/internal/claudeauth"
 	"forge/internal/codexusage"
 	"forge/internal/copilot"
 	"forge/internal/llm"
@@ -1650,6 +1651,99 @@ func TestChatModelProviderOverlayCopilotLoginFlow(t *testing.T) {
 		t.Fatalf("expected copilot token saved, got %q", tokens.CopilotToken)
 	}
 	if switched != "copilot/gpt-5" {
+		t.Fatalf("switched = %q", switched)
+	}
+}
+
+func TestChatModelProviderOverlayClaudeLoginFlow(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	prevStart := startClaudeAuth
+	prevExchange := exchangeClaudeAuth
+	startClaudeAuth = func() (*claudeauth.Flow, error) {
+		return &claudeauth.Flow{
+			AuthorizationURL: "https://claude.ai/oauth/authorize?code=true",
+			Verifier:         "verifier",
+			State:            "state",
+		}, nil
+	}
+	exchangeClaudeAuth = func(ctx context.Context, flow *claudeauth.Flow, pasted string) (claudeauth.Session, error) {
+		if pasted != "https://console.anthropic.com/oauth/code/callback?code=abc&state=xyz" {
+			t.Fatalf("unexpected pasted callback: %q", pasted)
+		}
+		return claudeauth.Session{
+			AccessToken:  "claude-access",
+			RefreshToken: "claude-refresh",
+			ExpiresAt:    time.Now().Add(time.Hour),
+		}, nil
+	}
+	t.Cleanup(func() {
+		startClaudeAuth = prevStart
+		exchangeClaudeAuth = prevExchange
+	})
+
+	authenticated := false
+	switched := ""
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "test",
+		WorkDir: "/tmp",
+		Providers: []ProviderOption{
+			{ID: "claude", Label: "Claude.ai subscription", Status: "sign in", DefaultModel: "claude/claude-sonnet-4-6"},
+		},
+		RefreshProviders: func() []ProviderOption {
+			status := "sign in"
+			if authenticated {
+				status = "ready"
+			}
+			return []ProviderOption{{ID: "claude", Label: "Claude.ai subscription", Status: status, DefaultModel: "claude/claude-sonnet-4-6"}}
+		},
+		RefreshModels: func() []string {
+			return []string{"claude/claude-sonnet-4-6"}
+		},
+		SwitchModel: func(name string) (string, error) {
+			switched = name
+			return name, nil
+		},
+	})
+	m.width = 100
+	m.height = 24
+	m.openProviderPicker()
+
+	updated, cmd := m.handleProvidersKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+	if cmd == nil {
+		t.Fatal("expected Claude login start command")
+	}
+	startMsg := cmd().(providerAuthStartedMsg)
+	updated, _ = m.Update(startMsg)
+	m = updated.(ChatModel)
+	if !m.providerPromptingKey {
+		t.Fatal("expected callback paste prompt")
+	}
+	if got := m.View(); !strings.Contains(got, "claude.ai/oauth/authorize") {
+		t.Fatalf("view missing Claude auth URL: %s", got)
+	}
+
+	m.providerKeyInput = "https://console.anthropic.com/oauth/code/callback?code=abc&state=xyz"
+	m.providerKeyPos = len([]rune(m.providerKeyInput))
+	updated, cmd = m.handleProvidersKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+	if cmd == nil {
+		t.Fatal("expected Claude exchange command")
+	}
+	authenticated = true
+	successMsg := cmd().(providerAuthSucceededMsg)
+	updated, _ = m.Update(successMsg)
+	m = updated.(ChatModel)
+
+	tokens, err := auth.Load()
+	if err != nil {
+		t.Fatalf("auth.Load: %v", err)
+	}
+	if tokens.ClaudeAccessToken != "claude-access" || tokens.ClaudeRefreshToken != "claude-refresh" {
+		t.Fatal("expected Claude tokens to be saved")
+	}
+	if switched != "claude/claude-sonnet-4-6" {
 		t.Fatalf("switched = %q", switched)
 	}
 }

@@ -9,6 +9,7 @@ import (
 
 	"forge/internal/auth"
 	"forge/internal/chatgptauth"
+	"forge/internal/claudeauth"
 	"forge/internal/config"
 	"forge/internal/copilot"
 	"forge/internal/fsutil"
@@ -17,6 +18,8 @@ import (
 )
 
 var (
+	claudeAuthAvailable  = claudeauth.Available
+	newClaudeOAuthDriver = func(registryName, apiModel string) llm.Driver { return drivers.NewClaudeOAuth(registryName, apiModel) }
 	chatGPTAuthAvailable = chatgptauth.Available
 	newChatGPTDriver     = func(registryName, apiModel string) llm.Driver { return drivers.NewChatGPT(registryName, apiModel) }
 	discoverOpenAIModels = DiscoverOpenAIModels
@@ -108,6 +111,16 @@ func EnsureDriver(cfg *config.Config, tokens *auth.Tokens, reg *llm.Registry, mo
 func DriverForModel(cfg *config.Config, tokens *auth.Tokens, model string) llm.Driver {
 	ref := ParseModelRef(model)
 	resolvedModel := ref.Model
+	if ref.Provider == "claude" || (ref.Provider == "" && canUseClaudeForUnqualifiedModel(resolvedModel)) {
+		registryName := model
+		if ref.Provider == "claude" {
+			registryName = QualifyModel(ref)
+		}
+		if d := newClaudeOAuthDriver(registryName, resolvedModel); d != nil {
+			return d
+		}
+		return nil
+	}
 	if ref.Provider == "anthropic" || (ref.Provider == "" && IsAnthropicModel(model)) {
 		if key := cfg.AnthropicKey(); key != "" {
 			return drivers.NewClaude(key, resolvedModel)
@@ -165,8 +178,13 @@ func DriverForModel(cfg *config.Config, tokens *auth.Tokens, model string) llm.D
 
 func AvailableModels(cfg *config.Config, tokens *auth.Tokens) []string {
 	var out []string
+	if claudeAuthAvailable() {
+		out = append(out, AnthropicModels()...)
+		out = append(out, qualifyModels("claude", AnthropicModels())...)
+	}
 	if cfg.AnthropicKey() != "" {
 		out = append(out, AnthropicModels()...)
+		out = append(out, qualifyModels("anthropic", AnthropicModels())...)
 	}
 	if chatGPTAuthAvailable() {
 		out = append(out, ChatGPTModels()...)
@@ -208,6 +226,12 @@ func SupportedProviderBackends(cfg *config.Config, tokens *auth.Tokens) []Provid
 			Label:        "Anthropic",
 			Status:       providerBackendStatus(cfg.AnthropicKey() != "", "configure API key"),
 			DefaultModel: "anthropic/" + AnthropicModels()[0],
+		},
+		{
+			ID:           "claude",
+			Label:        "Claude.ai subscription",
+			Status:       providerBackendStatus(claudeAuthAvailable(), "sign in"),
+			DefaultModel: "claude/" + AnthropicModels()[0],
 		},
 		{
 			ID:           "chatgpt",
@@ -341,6 +365,22 @@ func canUseChatGPTForUnqualifiedModel(model string) bool {
 		return false
 	}
 	for _, known := range ChatGPTModels() {
+		if known == target {
+			return true
+		}
+	}
+	return false
+}
+
+func canUseClaudeForUnqualifiedModel(model string) bool {
+	if !claudeAuthAvailable() {
+		return false
+	}
+	target := strings.TrimSpace(model)
+	if target == "" {
+		return false
+	}
+	for _, known := range AnthropicModels() {
 		if known == target {
 			return true
 		}

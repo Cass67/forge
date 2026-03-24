@@ -250,7 +250,7 @@ func copyToClipboard(content string) error {
 
 func providerUsesAPIKey(id string) bool {
 	switch strings.ToLower(strings.TrimSpace(id)) {
-	case "chatgpt", "copilot":
+	case "chatgpt", "claude", "copilot":
 		return false
 	default:
 		return true
@@ -293,6 +293,10 @@ func clearProviderToken(t *auth.Tokens, id string) {
 		t.ChatGPTRefreshToken = ""
 		t.ChatGPTAccountID = ""
 		t.ChatGPTExpiresAt = time.Time{}
+	case "claude":
+		t.ClaudeAccessToken = ""
+		t.ClaudeRefreshToken = ""
+		t.ClaudeExpiresAt = time.Time{}
 	case "copilot":
 		t.CopilotToken = ""
 	default:
@@ -307,6 +311,8 @@ func providerHasStoredCredential(t *auth.Tokens, id string) bool {
 	switch strings.ToLower(strings.TrimSpace(id)) {
 	case "chatgpt":
 		return strings.TrimSpace(t.ChatGPTAccessToken) != "" || strings.TrimSpace(t.ChatGPTRefreshToken) != ""
+	case "claude":
+		return strings.TrimSpace(t.ClaudeAccessToken) != "" || strings.TrimSpace(t.ClaudeRefreshToken) != ""
 	case "copilot":
 		return strings.TrimSpace(t.CopilotToken) != ""
 	case "anthropic":
