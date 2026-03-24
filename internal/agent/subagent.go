@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"forge/internal/agent/tools"
 	"forge/internal/llm"
@@ -93,8 +94,8 @@ func (a *Agent) SpawnSubAgent(ctx context.Context, role, task string, mac MultiA
 	}
 
 	result := sub.lastFullResponse
-	if result == "" {
-		result = "(sub-agent produced no output)"
+	if strings.TrimSpace(result) == "" {
+		result = fmt.Sprintf("AGENT ERROR (%s): produced no final output", role)
 	}
 
 	subRenderer.Info(fmt.Sprintf("[%s] done", role))
