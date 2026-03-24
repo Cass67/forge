@@ -16,6 +16,12 @@ type ToolCall struct {
 var toolCallOpeners = []string{"<tool_call>", "<function_calls>", "<tool_calls>"}
 var toolCallClosers = []string{"</tool_call>", "</function_calls>", "</tool_calls>"}
 
+type inlineToolCallParse struct {
+	calls   []ToolCall
+	visible string
+	ok      bool
+}
+
 func isToolCallOpen(line string) (after string, ok bool) {
 	for _, tag := range toolCallOpeners {
 		if strings.Contains(line, tag) {
@@ -66,6 +72,15 @@ func ParseToolCalls(text string) ([]ToolCall, string) {
 			continue
 		}
 
+		if inline := parseInlineToolCallsLine(line); inline.ok {
+			calls = append(calls, inline.calls...)
+			if inline.visible != "" {
+				textParts = append(textParts, inline.visible)
+			}
+			i++
+			continue
+		}
+
 		lineTrimmed := strings.TrimSpace(line)
 		if after, ok := isToolCallOpen(lineTrimmed); ok {
 			i++
@@ -105,6 +120,56 @@ func ParseToolCalls(text string) ([]ToolCall, string) {
 	}
 
 	return calls, strings.Join(textParts, "\n")
+}
+
+func parseInlineToolCallsLine(line string) inlineToolCallParse {
+	remaining := line
+	var calls []ToolCall
+	var visible strings.Builder
+	parsedAny := false
+
+	for {
+		startIdx, openerIdx := nextToolCallOpener(remaining)
+		if openerIdx < 0 {
+			if parsedAny {
+				visible.WriteString(remaining)
+				return inlineToolCallParse{calls: calls, visible: visible.String(), ok: true}
+			}
+			return inlineToolCallParse{}
+		}
+		opener := toolCallOpeners[openerIdx]
+		closer := toolCallClosers[openerIdx]
+		openerStart := startIdx
+		openerEnd := openerStart + len(opener)
+		closeRel := strings.Index(remaining[openerEnd:], closer)
+		if closeRel < 0 {
+			return inlineToolCallParse{}
+		}
+		closeStart := openerEnd + closeRel
+		closeEnd := closeStart + len(closer)
+
+		visible.WriteString(remaining[:openerStart])
+		raw := strings.TrimSpace(remaining[openerEnd:closeStart])
+		calls = append(calls, parseBlock(raw)...)
+		remaining = remaining[closeEnd:]
+		parsedAny = true
+	}
+}
+
+func nextToolCallOpener(line string) (int, int) {
+	bestPos := -1
+	bestIdx := -1
+	for i, opener := range toolCallOpeners {
+		pos := strings.Index(line, opener)
+		if pos < 0 {
+			continue
+		}
+		if bestPos < 0 || pos < bestPos {
+			bestPos = pos
+			bestIdx = i
+		}
+	}
+	return bestPos, bestIdx
 }
 
 func parseLooseToolCallLine(line string) (ToolCall, bool) {
