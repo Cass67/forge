@@ -12,13 +12,12 @@ func TestDispatchPromptDoesNotTellDispatchToPresentResults(t *testing.T) {
 	for _, want := range []string{
 		"Do not present, summarize, rewrite, or analyze sub-agent results yourself.",
 		"If no further delegation is needed, stop. Do not add a prose answer.",
-		"REPO REVIEW / IMPROVEMENT REQUESTS → delegate to scout for evidence gathering first, then architect for synthesis.",
-		"SEARCH / TRACE / ORIGIN QUESTIONS → delegate to scout",
-		"Do not turn scout search results into a new architect or builder task unless the flow explicitly requires it.",
-		"Never use builder to gather repo-review evidence, reconstruct missing repo-review scratchpad context, or format repo-review recommendations.",
+		"Choose the next specialist using judgment, not rigid scripts:",
+		"Repo review or improvement requests usually start with scout for evidence, then architect for synthesis.",
+		`Prefer letting the current specialist request the next specialist through its structured JSON result ("next_role", "next_task")`,
+		"You may delegate to the same role again when the task calls for a narrower retry, another pass, or follow-up work.",
 		"Take one orchestration action per turn.",
 		"scratchpad_write may only persist raw sub-agent output or raw scratchpad content.",
-		"Never delegate architect for repo-review synthesis if the latest scout result was blocked, incomplete, cancelled, or errored.",
 	} {
 		if !strings.Contains(dispatchPrompt, want) {
 			t.Fatalf("dispatch prompt missing %q", want)

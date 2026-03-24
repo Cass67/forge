@@ -39,30 +39,6 @@ type Agent struct {
 
 const targetHistoryTokens = 12000
 
-type dispatchFlowKind string
-
-const (
-	dispatchFlowUnknown        dispatchFlowKind = "unknown"
-	dispatchFlowSearch         dispatchFlowKind = "search"
-	dispatchFlowImplement      dispatchFlowKind = "implement"
-	dispatchFlowDebug          dispatchFlowKind = "debug"
-	dispatchFlowPlan           dispatchFlowKind = "plan"
-	dispatchFlowAssessCodebase dispatchFlowKind = "assess_codebase"
-)
-
-type dispatchFlowPhase string
-
-const (
-	dispatchPhaseIdle          dispatchFlowPhase = "idle"
-	dispatchPhaseNeedContext   dispatchFlowPhase = "need_context"
-	dispatchPhaseNeedDiagnosis dispatchFlowPhase = "need_diagnosis"
-	dispatchPhaseNeedPlan      dispatchFlowPhase = "need_plan"
-	dispatchPhaseNeedEvidence  dispatchFlowPhase = "need_evidence"
-	dispatchPhaseNeedSynthesis dispatchFlowPhase = "need_synthesis"
-	dispatchPhaseNeedBuild     dispatchFlowPhase = "need_build"
-	dispatchPhaseDone          dispatchFlowPhase = "done"
-)
-
 func NewAgent(driver llm.Driver, toolReg *tools.Registry, approve tools.ApprovalFunc, workDir string, maxTurns int, renderer RenderTarget, loadedSkills []skills.Skill, state *chatstate.State) *Agent {
 	if state == nil {
 		state = chatstate.New()
@@ -159,9 +135,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	scoutNoToolRetries := 0
 	scoutMalformedToolRetries := 0
 	sawToolCallThisRun := false
-	lastDispatchDelegateRole := ""
-	lastDispatchDelegateBlocked := false
-	dispatchFlowKind, dispatchFlowPhase := classifyDispatchFlow(userMessage)
+	dispatchCanStop := false
 	dispatchStopAfterTurn := false
 	defer func() {
 		a.renderer.Stats(time.Since(turnStart), a.getUsage())
@@ -223,6 +197,9 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		if len(calls) == 0 {
 			a.lastFullResponse = response
 			if a.role == "dispatch" {
+				if dispatchCanStop {
+					return nil
+				}
 				if turn+1 < a.maxTurns {
 					dispatchDirectAnswerRetries++
 					a.history = append(a.history, llm.Message{
@@ -232,9 +209,6 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 					continue
 				}
 				return fmt.Errorf("dispatch produced no delegate call before answering")
-			}
-			if a.role == "dispatch" {
-				return nil
 			}
 			if a.role == "scout" && !sawToolCallThisRun && scoutTaskRequiresEvidenceTools(userMessage) {
 				if turn+1 < a.maxTurns {
@@ -301,28 +275,8 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				role, _ := call.Args["role"].(string)
 				role = strings.TrimSpace(role)
 				task, _ := call.Args["task"].(string)
-				autoChained, _ := call.Args["_auto_chain"].(bool)
-				if !autoChained && dispatchFlowKind == dispatchFlowAssessCodebase {
-					if canonical, ok := canonicalAssessCodebaseDelegateTask(dispatchFlowPhase, role, userMessage, a.dispatchResults, a.dispatchScratch); ok {
-						task = canonical
-					}
-				}
-				if role != "" && role == lastDispatchDelegateRole && !lastDispatchDelegateBlocked {
-					msg := fmt.Sprintf("[delegate] error: dispatch cannot delegate to %s twice in a row", role)
-					results = append(results, msg)
-					a.renderer.Error(strings.TrimPrefix(msg, "[delegate] "))
-					continue
-				}
-				if !autoChained && !dispatchRoleAllowedForFlow(dispatchFlowKind, dispatchFlowPhase, role) {
-					msg := dispatchIllegalRoleMessage(dispatchFlowKind, dispatchFlowPhase, role)
-					results = append(results, msg)
-					a.renderer.Error(strings.TrimPrefix(msg, "[delegate] "))
-					continue
-				}
-				if autoChained || dispatchFlowKind != dispatchFlowAssessCodebase {
-					if enriched := enrichDispatchDelegateTask(role, task, a.dispatchResults, a.dispatchArtifacts, a.dispatchScratch); enriched != task {
-						task = enriched
-					}
+				if enriched := enrichDispatchDelegateTask(role, task, a.dispatchResults, a.dispatchArtifacts, a.dispatchScratch); enriched != task {
+					task = enriched
 				}
 				call.Args["task"] = task
 			}
@@ -370,12 +324,11 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 					result = displayResult
 					if a.role == "dispatch" {
 						role, _ := call.Args["role"].(string)
-						lastDispatchDelegateRole = strings.TrimSpace(role)
-						lastDispatchDelegateBlocked = outcome.Blocked()
+						role = strings.TrimSpace(role)
 						contextText := outcome.ContextText()
-						a.dispatchResults[lastDispatchDelegateRole] = contextText
-						if contextText != "" {
-							a.dispatchArtifacts[lastDispatchDelegateRole] = contextText
+						a.dispatchResults[role] = displayResult
+						if outcome.Completed() && contextText != "" {
+							a.dispatchArtifacts[role] = contextText
 						}
 						if outcome.Structured {
 							if outcome.Completed() && outcome.NextRole != "" && outcome.NextTask != "" {
@@ -388,33 +341,19 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 										"_auto_chain": true,
 									},
 								})
+								dispatchCanStop = false
 							} else if outcome.Completed() {
 								dispatchStopAfterTurn = true
 							}
-						} else if delegateResultCompleted(contextText) && !lastDispatchDelegateBlocked {
-							prevPhase := dispatchFlowPhase
-							dispatchFlowPhase = advanceDispatchFlowPhase(dispatchFlowKind, dispatchFlowPhase, role)
-							if dispatchFlowKind == dispatchFlowAssessCodebase && role == "scout" && prevPhase == dispatchPhaseNeedEvidence && dispatchFlowPhase == dispatchPhaseNeedSynthesis {
-								if persisted, ok := a.writeDispatchScratchpad(ctx, "repo_review_evidence", contextText); ok {
-									results = append(results, persisted)
-								}
-							}
-							if dispatchFlowKind == dispatchFlowAssessCodebase && role == "architect" && dispatchFlowPhase == dispatchPhaseDone {
-								if persisted, ok := a.writeDispatchScratchpad(ctx, "repo_review_recommendations", contextText); ok {
-									results = append(results, persisted)
-								}
-							}
-							if shouldStopDispatchFlow(dispatchFlowKind, dispatchFlowPhase) {
-								dispatchStopAfterTurn = true
-							}
+						} else if outcome.Blocked() {
+							dispatchCanStop = false
+						} else if outcome.Completed() {
+							dispatchCanStop = true
 						}
 					}
 				}
 				if a.role == "dispatch" && call.Name == "scratchpad_read" {
 					a.dispatchScratch = result
-					if dispatchFlowKind == dispatchFlowAssessCodebase && dispatchFlowPhase == dispatchPhaseNeedEvidence && dispatchRepoReviewEvidenceUsable(result) {
-						dispatchFlowPhase = dispatchPhaseNeedSynthesis
-					}
 				}
 				a.renderer.ToolResult(call.Name, displayResult, diff, false)
 			}
@@ -458,32 +397,6 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	return fmt.Errorf("max turns (%d) exceeded", a.maxTurns)
 }
 
-func (a *Agent) writeDispatchScratchpad(ctx context.Context, topic, content string) (string, bool) {
-	if strings.TrimSpace(topic) == "" || strings.TrimSpace(content) == "" {
-		return "", false
-	}
-	tool, ok := a.tools.Get("scratchpad_write")
-	if !ok {
-		return "", false
-	}
-	args := map[string]any{
-		"topic":   topic,
-		"content": content,
-	}
-	a.renderer.ToolCall("scratchpad_write", formatCallSummary(ToolCall{
-		Name: "scratchpad_write",
-		Args: args,
-	}))
-	result, err := tool.Execute(ctx, args)
-	if err != nil {
-		result = fmt.Sprintf("error: %v", err)
-		a.renderer.ToolResult("scratchpad_write", result, "", true)
-		return fmt.Sprintf("[scratchpad_write] %s", result), true
-	}
-	a.renderer.ToolResult("scratchpad_write", truncateResult(result), "", false)
-	return fmt.Sprintf("[scratchpad_write] %s", result), true
-}
-
 func (a *Agent) getUsage() llm.Usage {
 	if ur, ok := a.driver.(llm.UsageReporter); ok {
 		return ur.LastUsage()
@@ -520,272 +433,6 @@ func truncateResult(result string) string {
 		return strings.Join(lines[:20], "\n") + fmt.Sprintf("\n... (%d more lines)", len(lines)-20)
 	}
 	return result
-}
-
-func classifyDispatchFlow(userMessage string) (dispatchFlowKind, dispatchFlowPhase) {
-	lower := strings.ToLower(userMessage)
-	switch {
-	case looksLikeAssessCodebaseRequest(lower):
-		return dispatchFlowAssessCodebase, dispatchPhaseNeedEvidence
-	case looksLikePlanningRequest(lower):
-		return dispatchFlowPlan, dispatchPhaseNeedPlan
-	case looksLikeDebugRequest(lower):
-		return dispatchFlowDebug, dispatchPhaseNeedDiagnosis
-	case looksLikeSearchRequest(lower):
-		return dispatchFlowSearch, dispatchPhaseNeedContext
-	case looksLikeImplementationRequest(lower):
-		return dispatchFlowImplement, dispatchPhaseIdle
-	default:
-		return dispatchFlowUnknown, dispatchPhaseIdle
-	}
-}
-
-func dispatchRoleAllowedForFlow(kind dispatchFlowKind, phase dispatchFlowPhase, role string) bool {
-	role = strings.TrimSpace(role)
-	switch kind {
-	case dispatchFlowAssessCodebase:
-		switch phase {
-		case dispatchPhaseNeedEvidence:
-			return role == "scout"
-		case dispatchPhaseNeedSynthesis:
-			return role == "architect"
-		case dispatchPhaseDone:
-			return false
-		default:
-			return true
-		}
-	case dispatchFlowPlan:
-		if phase == dispatchPhaseNeedPlan {
-			return role == "architect"
-		}
-		return phase != dispatchPhaseDone
-	case dispatchFlowDebug:
-		switch phase {
-		case dispatchPhaseNeedDiagnosis:
-			return role == "doctor"
-		case dispatchPhaseNeedBuild:
-			return role == "builder"
-		case dispatchPhaseDone:
-			return false
-		default:
-			return true
-		}
-	case dispatchFlowSearch:
-		if phase == dispatchPhaseNeedContext {
-			return role == "scout"
-		}
-		return phase != dispatchPhaseDone
-	default:
-		return true
-	}
-}
-
-func dispatchIllegalRoleMessage(kind dispatchFlowKind, phase dispatchFlowPhase, role string) string {
-	allowed := []string{"delegate"}
-	switch kind {
-	case dispatchFlowAssessCodebase:
-		switch phase {
-		case dispatchPhaseNeedEvidence:
-			allowed = []string{"scout"}
-		case dispatchPhaseNeedSynthesis:
-			allowed = []string{"architect"}
-		}
-	case dispatchFlowPlan:
-		if phase == dispatchPhaseNeedPlan {
-			allowed = []string{"architect"}
-		}
-	case dispatchFlowDebug:
-		switch phase {
-		case dispatchPhaseNeedDiagnosis:
-			allowed = []string{"doctor"}
-		case dispatchPhaseNeedBuild:
-			allowed = []string{"builder"}
-		}
-	case dispatchFlowSearch:
-		if phase == dispatchPhaseNeedContext {
-			allowed = []string{"scout"}
-		}
-	}
-	return fmt.Sprintf("[delegate] error: %s flow in %s phase does not allow %s; allowed role(s): %s", kind, phase, role, strings.Join(allowed, ", "))
-}
-
-func advanceDispatchFlowPhase(kind dispatchFlowKind, phase dispatchFlowPhase, role string) dispatchFlowPhase {
-	role = strings.TrimSpace(role)
-	switch kind {
-	case dispatchFlowAssessCodebase:
-		if phase == dispatchPhaseNeedEvidence && role == "scout" {
-			return dispatchPhaseNeedSynthesis
-		}
-		if phase == dispatchPhaseNeedSynthesis && role == "architect" {
-			return dispatchPhaseDone
-		}
-	case dispatchFlowPlan:
-		if phase == dispatchPhaseNeedPlan && role == "architect" {
-			return dispatchPhaseDone
-		}
-	case dispatchFlowDebug:
-		if phase == dispatchPhaseNeedDiagnosis && role == "doctor" {
-			return dispatchPhaseNeedBuild
-		}
-		if phase == dispatchPhaseNeedBuild && role == "builder" {
-			return dispatchPhaseDone
-		}
-	case dispatchFlowImplement:
-		if role == "builder" {
-			return dispatchPhaseDone
-		}
-	case dispatchFlowSearch:
-		if phase == dispatchPhaseNeedContext && role == "scout" {
-			return dispatchPhaseDone
-		}
-	}
-	return phase
-}
-
-func shouldStopDispatchFlow(kind dispatchFlowKind, phase dispatchFlowPhase) bool {
-	switch kind {
-	case dispatchFlowAssessCodebase, dispatchFlowPlan, dispatchFlowDebug, dispatchFlowImplement, dispatchFlowSearch:
-		return phase == dispatchPhaseDone
-	default:
-		return false
-	}
-}
-
-func looksLikeAssessCodebaseRequest(lower string) bool {
-	requestSignals := []string{
-		"review",
-		"take a look",
-		"look at this",
-		"review this",
-		"assess this",
-		"audit this",
-		"what should i change",
-		"what changes should i make",
-		"changes i should make",
-		"let me know if there are any changes",
-	}
-	targetSignals := []string{
-		"repo",
-		"repository",
-		"directory",
-		"dir",
-		"project",
-		"codebase",
-		"here",
-		"this",
-	}
-	return containsAny(lower, requestSignals) && containsAny(lower, targetSignals)
-}
-
-func looksLikePlanningRequest(lower string) bool {
-	return containsAny(lower, []string{
-		"steps you would take",
-		"write up a remediation plan",
-		"write a remediation plan",
-		"implementation plan",
-		"remediation plan",
-	})
-}
-
-func looksLikeDebugRequest(lower string) bool {
-	return containsAny(lower, []string{
-		"why is this happening",
-		"why does",
-		"debug",
-		"broken",
-		"failing",
-		"failure",
-		"error",
-		"regression",
-	})
-}
-
-func looksLikeSearchRequest(lower string) bool {
-	return containsAny(lower, []string{
-		"where is",
-		"where did",
-		"where does",
-		"come from",
-		"came from",
-		"originated from",
-		"what sent",
-		"what triggered",
-		"find",
-		"what does",
-		"how does",
-		"show me",
-	})
-}
-
-func looksLikeImplementationRequest(lower string) bool {
-	return containsAny(lower, []string{
-		"fix this",
-		"fix it",
-		"update this",
-		"update it",
-		"change this",
-		"change it",
-		"implement",
-		"write",
-		"create",
-		"add",
-		"put that in",
-		"do that now",
-	})
-}
-
-func canonicalAssessCodebaseDelegateTask(phase dispatchFlowPhase, role, userMessage string, delegateResults map[string]string, scratchpadResult string) (string, bool) {
-	role = strings.TrimSpace(role)
-	switch {
-	case phase == dispatchPhaseNeedEvidence && role == "scout":
-		return fmt.Sprintf("TASK: Gather evidence for a codebase assessment of the current workspace. OUTCOME: Evidence-only findings with concrete file paths, code/config/tooling signals, and notable risks or inconsistencies that can support later recommendations. CONTEXT: User asked: %q. Repository root is the current working directory. MUST NOT: Do not provide final recommendations, prioritization, or implementation steps. Do not modify files.", userMessage), true
-	case phase == dispatchPhaseNeedSynthesis && role == "architect":
-		var contextParts []string
-		if scout := strings.TrimSpace(delegateResults["scout"]); scout != "" {
-			contextParts = append(contextParts, "SCOUT FINDINGS:\n"+scout)
-		}
-		if scratch := strings.TrimSpace(scratchpadResult); scratch != "" && !strings.Contains(strings.Join(contextParts, "\n\n"), scratch) {
-			contextParts = append(contextParts, "SCRATCHPAD CONTEXT:\n"+scratch)
-		}
-		context := strings.Join(contextParts, "\n\n")
-		if context == "" {
-			context = "No usable evidence is currently available."
-		}
-		return fmt.Sprintf("TASK: Synthesize actionable codebase assessment recommendations from the latest evidence only. OUTCOME: A concise prioritized list of suggested changes with rationale and confidence notes. CONTEXT: User asked: %q.\n\n%s\n\nMUST NOT: Do not gather new repository evidence. Do not invent findings. Do not modify files.", userMessage, context), true
-	default:
-		return "", false
-	}
-}
-
-func dispatchRepoReviewEvidenceUsable(result string) bool {
-	trimmed := strings.TrimSpace(result)
-	if trimmed == "" || !delegateResultCompleted(trimmed) || delegateResultBlocked(trimmed) {
-		return false
-	}
-	lower := strings.ToLower(trimmed)
-	if looksLikeActionPreamble(trimmed) {
-		return false
-	}
-	if !containsAny(lower, []string{"findings:", "key files:", "repository evidence", "evidence-backed findings"}) {
-		return false
-	}
-	if strings.Contains(lower, "agent error") || strings.Contains(lower, "partial output:") {
-		return false
-	}
-	if strings.Contains(lower, "no verified evidence collected yet") {
-		return false
-	}
-	if strings.Contains(lower, "i do not have enough codebase evidence") {
-		return false
-	}
-	if containsAny(lower, []string{
-		"i'll inspect the repository structure",
-		"i'm going to inspect the repository structure",
-		"summarize concrete evidence only",
-	}) {
-		return false
-	}
-	return true
 }
 
 func dispatchScratchpadWriteAllowed(content string, delegateResults map[string]string, delegateArtifacts map[string]string, scratchpadResult string) bool {
@@ -858,43 +505,6 @@ func containsAny(text string, needles []string) bool {
 		}
 	}
 	return false
-}
-
-func delegateResultCompleted(result string) bool {
-	trimmed := strings.TrimSpace(result)
-	if trimmed == "" {
-		return false
-	}
-	if strings.EqualFold(trimmed, "(sub-agent produced no output)") {
-		return false
-	}
-	upper := strings.ToUpper(trimmed)
-	if strings.HasPrefix(upper, "CANCELLED:") || strings.HasPrefix(upper, "AGENT ERROR") {
-		return false
-	}
-	return true
-}
-
-func delegateResultBlocked(result string) bool {
-	trimmed := strings.TrimSpace(strings.ToLower(normalizePromptText(result)))
-	if trimmed == "" {
-		return false
-	}
-	blockedSignals := []string{
-		"sub-agent produced no output",
-		"i don't have",
-		"i dont have",
-		"do not have access",
-		"don't have access",
-		"missing context",
-		"need more context",
-		"paste the contents",
-		"paste the evidence",
-		"constrained not to gather new evidence",
-		"blocked",
-		"incomplete",
-	}
-	return containsAny(trimmed, blockedSignals)
 }
 
 func normalizeDelegateResult(role, result string) (string, bool) {
