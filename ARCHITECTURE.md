@@ -41,8 +41,10 @@ The main CLI entrypoint is [cmd/forge/main.go](/Users/cass/git/forge/cmd/forge/m
 
 Important command families:
 
+- `forge`
 - `forge chat`
-- `forge improve`
+- `forge make`
+- `forge improve` (compatibility alias for batch pipeline runs)
 - `forge list`
 - `forge show`
 - `forge perf`
@@ -86,14 +88,14 @@ The CLI starts in [cmd/forge/main.go](/Users/cass/git/forge/cmd/forge/main.go).
 
 There are two important top-level flows:
 
-- interactive root flow via `runInteractive()`
-  - starts the older writer/auditor pipeline UI
-- chat flow via `runChat()`
+- default chat flow via `forge` / `forge chat`
   - builds a chat session and launches the live chat runtime
+- legacy writer/auditor flow via `forge make`
+  - starts the older writer/auditor pipeline UI or batch pipeline entrypoint depending on arguments
 
 Even though the repository still contains multiple UI layers, the current chat runtime path is:
 
-1. `runChat()`
+1. `runChatArgs(...)`
 2. `runtime.BuildChatSetup(...)`
 3. `runtime.RunChatLive(setup)`
 4. `tui.RunChatLive(...)`
@@ -114,7 +116,7 @@ sequenceDiagram
     participant Driver
     participant TUI
 
-    User->>CLI: forge chat
+    User->>CLI: forge
     CLI->>Bootstrap: load config/tokens/models
     CLI->>Runtime: BuildChatSetup + RunChatLive
     Runtime->>Agent: construct top-level agent
