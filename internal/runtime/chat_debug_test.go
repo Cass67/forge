@@ -150,3 +150,31 @@ func TestChatDebugRecorderLogsEventsAndInputs(t *testing.T) {
 		t.Fatalf("last msg = %#v", last)
 	}
 }
+
+func TestEnableChatDebugTruncatesExistingLogFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chat-debug.jsonl")
+	if err := os.WriteFile(path, []byte("old line that should be removed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	setup := &ChatSetup{
+		ChatModel: "openai/gpt-5",
+		WorkDir:   t.TempDir(),
+		Driver:    &debugMockDriver{response: "ok"},
+	}
+	if _, err := EnableChatDebug(setup, path); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if strings.Contains(text, "old line that should be removed") {
+		t.Fatalf("expected existing debug file contents to be truncated, got %q", text)
+	}
+	if !strings.Contains(text, "chat.debug.enabled") {
+		t.Fatalf("debug log missing enable event after truncation: %q", text)
+	}
+}
