@@ -264,37 +264,15 @@ func (d *OpenAIDriver) chatCompletionsFallback(ctx context.Context, messages []l
 }
 
 func (d *OpenAIDriver) streamResponses(ctx context.Context, messages []llm.Message, out chan<- llm.Token) error {
-	instructions, inputMessages, previousResponseID, requestMode, err := d.responsesRequestState(ctx, messages)
+	params, err := d.responsesParams(ctx, messages)
 	if err != nil {
 		return err
 	}
 	d.mu.Lock()
-	d.lastRequestMode = requestMode
+	d.lastRequestMode = params.requestMode
 	d.mu.Unlock()
-	params := responses.ResponseNewParams{
-		Model: d.apiModel,
-		Input: responses.ResponseNewParamsInputUnion{
-			OfInputItemList: toResponseInput(inputMessages),
-		},
-	}
-	if providerSupportsResponseStore(d.providerLabel) {
-		params.Store = openai.Bool(true)
-	}
-	if instructions != "" {
-		params.Instructions = openai.String(instructions)
-	}
-	if previousResponseID != "" {
-		params.PreviousResponseID = openai.String(previousResponseID)
-	}
-	params.PromptCacheKey = openai.String(responsePromptCacheKey(d.apiModel, instructions))
-	if d.params.MaxTokens > 0 {
-		params.MaxOutputTokens = openai.Int(int64(d.params.MaxTokens))
-	}
-	if d.params.Temperature >= 0 && d.modelSupportsTemperature() {
-		params.Temperature = openai.Float(d.params.Temperature)
-	}
 
-	stream := d.client.Responses.NewStreaming(ctx, params)
+	stream := d.client.Responses.NewStreaming(ctx, params.params)
 	var responseID string
 	for stream.Next() {
 		evt := stream.Current()
@@ -341,7 +319,7 @@ func (d *OpenAIDriver) streamResponses(ctx context.Context, messages []llm.Messa
 	if err := stream.Err(); err != nil {
 		return d.wrapStreamError("responses", err)
 	}
-	if responseID != "" {
+	if responseID != "" && d.shouldPersistResponsesState() {
 		d.mu.Lock()
 		d.prevResponseID = responseID
 		d.lastMessages = append([]llm.Message(nil), messages...)
@@ -350,8 +328,49 @@ func (d *OpenAIDriver) streamResponses(ctx context.Context, messages []llm.Messa
 	return nil
 }
 
+type responseParamsResult struct {
+	params      responses.ResponseNewParams
+	requestMode string
+}
+
+func (d *OpenAIDriver) responsesParams(ctx context.Context, messages []llm.Message) (responseParamsResult, error) {
+	instructions, inputMessages, previousResponseID, requestMode, err := d.responsesRequestState(ctx, messages)
+	if err != nil {
+		return responseParamsResult{}, err
+	}
+	params := responses.ResponseNewParams{
+		Model: d.apiModel,
+		Input: responses.ResponseNewParamsInputUnion{
+			OfInputItemList: toResponseInput(inputMessages),
+		},
+	}
+	if d.providerRequiresStatelessResponses() {
+		params.Store = openai.Bool(false)
+		params.Include = append(params.Include, responses.ResponseIncludable("reasoning.encrypted_content"))
+	} else if providerSupportsResponseStore(d.providerLabel) {
+		params.Store = openai.Bool(true)
+	}
+	if instructions != "" {
+		params.Instructions = openai.String(instructions)
+	}
+	if previousResponseID != "" {
+		params.PreviousResponseID = openai.String(previousResponseID)
+	}
+	params.PromptCacheKey = openai.String(responsePromptCacheKey(d.apiModel, instructions))
+	if d.params.MaxTokens > 0 {
+		params.MaxOutputTokens = openai.Int(int64(d.params.MaxTokens))
+	}
+	if d.params.Temperature >= 0 && d.modelSupportsTemperature() {
+		params.Temperature = openai.Float(d.params.Temperature)
+	}
+	return responseParamsResult{params: params, requestMode: requestMode}, nil
+}
+
 func (d *OpenAIDriver) responsesRequestState(ctx context.Context, messages []llm.Message) (instructions string, inputMessages []llm.Message, previousResponseID string, requestMode string, err error) {
 	instructions = responseInstructions(messages)
+	if d.providerRequiresStatelessResponses() {
+		return instructions, stripSystemMessages(messages), "", "responses full input (chatgpt stateless)", nil
+	}
 	d.mu.Lock()
 	prevID := d.prevResponseID
 	lastMessages := append([]llm.Message(nil), d.lastMessages...)
@@ -697,7 +716,7 @@ func truncateDebug(s string, max int) string {
 }
 
 func (d *OpenAIDriver) useResponsesAPI() bool {
-	return d.supportsResponses && modelRequiresResponses(d.apiModel)
+	return d.supportsResponses && modelRequiresResponses(d.providerLabel, d.apiModel)
 }
 
 // modelSupportsTemperature returns true when the given model accepts a
@@ -715,8 +734,27 @@ func modelSupportsTemperature(providerLabel, model string) bool {
 	return !isReasoningModel(model)
 }
 
-func modelRequiresResponses(model string) bool {
+func modelRequiresResponses(providerLabel, model string) bool {
+	if providerRequiresStatelessResponses(providerLabel, model) {
+		return true
+	}
 	return isReasoningModel(model)
+}
+
+func (d *OpenAIDriver) providerRequiresStatelessResponses() bool {
+	return providerRequiresStatelessResponses(d.providerLabel, d.apiModel)
+}
+
+func (d *OpenAIDriver) shouldPersistResponsesState() bool {
+	return !d.providerRequiresStatelessResponses()
+}
+
+func providerRequiresStatelessResponses(providerLabel, model string) bool {
+	if strings.TrimSpace(strings.ToLower(providerLabel)) != "chatgpt" {
+		return false
+	}
+	m := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(m, "gpt-5")
 }
 
 func isReasoningModel(model string) bool {
