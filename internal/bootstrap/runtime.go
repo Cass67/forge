@@ -172,6 +172,10 @@ func DriverForModel(cfg *config.Config, tokens *auth.Tokens, model string) llm.D
 	}
 	if p, ambiguous := ResolveCompatProvider(BuildCompatProviders(cfg, tokens), model); p != nil {
 		apiModel := compatAPIModel(p.Name, ref, resolvedModel)
+		supportsResponses := p.WireAPI == "responses"
+		if len(p.HTTPHeaders) > 0 || supportsResponses {
+			return drivers.NewCustomCompatProvider(p.Name, p.KeyFn(), p.BaseURL, model, apiModel, supportsResponses, p.HTTPHeaders)
+		}
 		if apiModel != resolvedModel {
 			return drivers.NewOpenAICompatibleProviderAlias(p.Name, p.KeyFn(), p.BaseURL, model, apiModel)
 		}

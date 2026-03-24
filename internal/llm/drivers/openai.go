@@ -83,6 +83,26 @@ func NewOpenAICompatible(apiKey, baseURL, model string) *OpenAIDriver {
 	return NewOpenAICompatibleAlias(apiKey, baseURL, model, model)
 }
 
+func NewCustomCompatProvider(providerLabel, apiKey, baseURL, registryName, apiModel string, supportsResponses bool, headers map[string]string) *OpenAIDriver {
+	opts := []option.RequestOption{option.WithAPIKey(strings.TrimSpace(apiKey))}
+	if strings.TrimSpace(baseURL) != "" {
+		opts = append(opts, option.WithBaseURL(baseURL))
+	}
+	for k, v := range headers {
+		opts = append(opts, option.WithHeader(k, v))
+	}
+	opts = append(opts, providerHeaders(providerLabel)...)
+	client := openai.NewClient(opts...)
+	return &OpenAIDriver{
+		client:            &client,
+		providerLabel:     providerLabel,
+		registryName:      registryName,
+		apiModel:          apiModel,
+		supportsResponses: supportsResponses,
+		params:            llm.Params{Temperature: -1},
+	}
+}
+
 // NewCopilot creates a driver for GitHub Copilot. registryName is the key used
 // in the registry (e.g. "copilot/gpt-4o"); apiModel is the bare model ID sent
 // to the Copilot API (e.g. "gpt-4o").
