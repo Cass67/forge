@@ -49,7 +49,17 @@ func (a *Agent) SpawnSubAgent(ctx context.Context, role, task string, mac MultiA
 	// Build system prompt for the sub-agent.
 	system := BuildSystemPrompt(a.workDir, filteredTools, "") + "\n\n" + roleDef.System
 
-	a.renderer.Info(fmt.Sprintf("[%s] starting", role))
+	// Create a sub-agent renderer that tags events with the role name.
+	var subRenderer RenderTarget
+	if evr, ok := a.renderer.(*EventRenderer); ok {
+		subRenderer = NewSubAgentRenderer(evr, role)
+	} else {
+		subRenderer = a.renderer
+	}
+
+	// Notify both chat (parent renderer) and tools pane (sub renderer).
+	a.renderer.Info(fmt.Sprintf("delegating to %s", role))
+	subRenderer.Info(fmt.Sprintf("[%s] starting", role))
 
 	sub := &Agent{
 		driver:   driver,
@@ -57,7 +67,7 @@ func (a *Agent) SpawnSubAgent(ctx context.Context, role, task string, mac MultiA
 		approve:  a.approve,
 		workDir:  a.workDir,
 		maxTurns: roleDef.MaxTurns,
-		renderer: a.renderer,
+		renderer: subRenderer,
 		system:   system,
 	}
 
@@ -75,7 +85,7 @@ func (a *Agent) SpawnSubAgent(ctx context.Context, role, task string, mac MultiA
 		result = "(sub-agent produced no output)"
 	}
 
-	a.renderer.Info(fmt.Sprintf("[%s] done", role))
+	subRenderer.Info(fmt.Sprintf("[%s] done", role))
 
 	if err != nil {
 		return fmt.Sprintf("AGENT ERROR (%s): %v\n\nPartial output:\n%s", role, err, result), nil
