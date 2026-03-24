@@ -1757,7 +1757,9 @@ func TestChatModelProviderOverlayClaudeLoginFlow(t *testing.T) {
 	if !m.providerPromptingKey {
 		t.Fatal("expected callback paste prompt")
 	}
-	if got := m.View(); !strings.Contains(got, "claude.ai/oauth/authorize") {
+	if got := m.View(); !strings.Contains(got, "Open URL:") || !strings.Contains(got, "Paste callback/code:") {
+		t.Fatalf("view missing Claude auth labels: %s", got)
+	} else if !strings.Contains(got, "claude.ai/oauth/authorize") {
 		t.Fatalf("view missing Claude auth URL: %s", got)
 	}
 
@@ -1782,6 +1784,18 @@ func TestChatModelProviderOverlayClaudeLoginFlow(t *testing.T) {
 	}
 	if switched != "claude/claude-sonnet-4-6" {
 		t.Fatalf("switched = %q", switched)
+	}
+}
+
+func TestWrapProviderAuthValueBreaksLongURLs(t *testing.T) {
+	got := wrapProviderAuthValue("https://claude.ai/oauth/authorize?code=true&state=abcdefghijklmnopqrstuvwxyz", 20)
+	if !strings.Contains(got, "\n") {
+		t.Fatalf("expected wrapped output, got %q", got)
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if lipgloss.Width(line) > 20 {
+			t.Fatalf("wrapped line width = %d, want <= 20 for %q", lipgloss.Width(line), line)
+		}
 	}
 }
 
