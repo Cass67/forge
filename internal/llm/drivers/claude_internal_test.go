@@ -12,7 +12,7 @@ func TestBuildClaudeBetaParamsUsesPromptCachingBeta(t *testing.T) {
 	params := buildClaudeBetaParams("claude-sonnet-4-6", llm.Params{Temperature: 0.25}, []llm.Message{
 		{Role: llm.RoleSystem, Content: "system"},
 		{Role: llm.RoleUser, Content: "hello"},
-	}, 2048)
+	}, 2048, claudeRequestOptions{promptCache: true})
 
 	if params.Model != anthropic.Model("claude-sonnet-4-6") {
 		t.Fatalf("Model = %q, want %q", params.Model, "claude-sonnet-4-6")
@@ -31,5 +31,28 @@ func TestBuildClaudeBetaParamsUsesPromptCachingBeta(t *testing.T) {
 	}
 	if !params.Temperature.Valid() || params.Temperature.Value != 0.25 {
 		t.Fatalf("Temperature = %#v, want 0.25", params.Temperature)
+	}
+}
+
+func TestBuildClaudeBetaParamsForOAuthSkipsPromptCachingAndPrependsPrefix(t *testing.T) {
+	params := buildClaudeBetaParams("claude-sonnet-4-6", llm.Params{}, []llm.Message{
+		{Role: llm.RoleSystem, Content: "system"},
+		{Role: llm.RoleUser, Content: "hello"},
+	}, 2048, claudeRequestOptions{systemPrefix: claudeOAuthSystemPrefix})
+
+	if len(params.Betas) != 0 {
+		t.Fatalf("Betas = %#v, want none", params.Betas)
+	}
+	if params.CacheControl.TTL != "" {
+		t.Fatalf("CacheControl.TTL = %q, want empty", params.CacheControl.TTL)
+	}
+	if len(params.System) != 2 {
+		t.Fatalf("System = %#v", params.System)
+	}
+	if params.System[0].Text != claudeOAuthSystemPrefix {
+		t.Fatalf("System[0] = %q, want %q", params.System[0].Text, claudeOAuthSystemPrefix)
+	}
+	if params.System[1].Text != "system" {
+		t.Fatalf("System[1] = %q, want %q", params.System[1].Text, "system")
 	}
 }

@@ -311,6 +311,8 @@ func NewChatModel(cfg ChatLiveConfig) ChatModel {
 		agentModelsRoles:    []string{"dispatch", "scout", "builder", "doctor", "architect"},
 		agentModelsMap:      copyStringMap(cfg.GetAgentModels),
 	}
+	m.modelsList = m.uniqueModelOptions(m.modelsList)
+	m.modelsFiltered = append([]string(nil), m.modelsList...)
 	m.syncStatusData()
 	return m
 }
@@ -2561,6 +2563,36 @@ func (m ChatModel) modelOptionLabel(name string) string {
 	return name
 }
 
+func (m ChatModel) uniqueModelOptions(models []string) []string {
+	models = uniqueStringsPreserveOrder(models)
+	out := make([]string, 0, len(models))
+	seen := make(map[string]int, len(models))
+	for _, name := range models {
+		label := strings.TrimSpace(strings.ToLower(m.modelOptionLabel(name)))
+		if label == "" {
+			label = strings.TrimSpace(strings.ToLower(name))
+		}
+		if idx, ok := seen[label]; ok {
+			if preferExplicitModelOption(name, out[idx]) {
+				out[idx] = name
+			}
+			continue
+		}
+		seen[label] = len(out)
+		out = append(out, name)
+	}
+	return out
+}
+
+func preferExplicitModelOption(candidate, current string) bool {
+	candidateExplicit := strings.Contains(candidate, "/")
+	currentExplicit := strings.Contains(current, "/")
+	if candidateExplicit != currentExplicit {
+		return candidateExplicit
+	}
+	return false
+}
+
 func (m ChatModel) handleAgentModelsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEscape:
@@ -2661,11 +2693,11 @@ func (m ChatModel) handleModelsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *ChatModel) ensureModelListLoaded() {
 	if len(m.modelsList) > 0 {
-		m.modelsList = uniqueStringsPreserveOrder(m.modelsList)
+		m.modelsList = m.uniqueModelOptions(m.modelsList)
 		return
 	}
 	if len(m.config.AvailableModels) > 0 {
-		m.modelsList = uniqueStringsPreserveOrder(m.config.AvailableModels)
+		m.modelsList = m.uniqueModelOptions(m.config.AvailableModels)
 		return
 	}
 	m.refreshModelList()
@@ -2678,7 +2710,7 @@ func (m *ChatModel) refreshModelList() {
 	} else {
 		models = m.config.AvailableModels
 	}
-	m.modelsList = uniqueStringsPreserveOrder(models)
+	m.modelsList = m.uniqueModelOptions(models)
 	m.updateModelFilter()
 }
 
@@ -3512,7 +3544,7 @@ func (m ChatModel) renderModelsOverlay() string {
 	if len(m.modelsFiltered) > 0 {
 		rangeText = fmt.Sprintf("%d-%d/%d", start+1, min(len(m.modelsFiltered), start+len(lines)), len(m.modelsFiltered))
 	}
-	footer := dimStyle.Render("Type to filter • ↑/↓ select • Enter choose • 1-9 quick select • " + rangeText + " • Esc close")
+	footer := dimStyle.Render("Type to filter • ↑/↓ select • Enter choose • " + rangeText + " • Esc close")
 	inner := lipgloss.JoinVertical(lipgloss.Left,
 		titleStyle.Render("Models"),
 		queryLine,
