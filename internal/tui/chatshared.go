@@ -45,6 +45,7 @@ type ChatLiveConfig struct {
 	FetchLiveCopilotQuota func(context.Context) (*copilot.UserQuota, error)
 	FetchCodexUsage       func(context.Context) (*codexusage.Snapshot, error)
 	ModelInfo             func(model string) *modelcatalog.ModelInfo
+	DescribeModel         func(model string) string
 	RequestMode           func() string
 }
 

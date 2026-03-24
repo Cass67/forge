@@ -272,6 +272,10 @@ func RunChatLive(setup *ChatSetup) {
 			ref := bootstrap.ParseModelRef(model)
 			return modelcatalog.Lookup(ref.Provider, ref.Model)
 		},
+		DescribeModel: func(model string) string {
+			cfg, authTokens := refreshChatSetupState(setup)
+			return bootstrap.ModelDisplayLabel(cfg, authTokens, model)
+		},
 		RequestMode: func() string {
 			if reporter, ok := setup.Driver.(llm.RequestModeReporter); ok {
 				return reporter.LastRequestMode()
