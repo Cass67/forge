@@ -492,3 +492,9 @@ func TestDispatchProseFilteredOnToolCallTurns(t *testing.T) {
 		t.Errorf("dispatch result presentation missing from output: %q", got)
 	}
 }
+
+func TestCancelSubAgentSafe(t *testing.T) {
+	a := &Agent{}
+	// Should not panic when no sub-agent is active.
+	a.CancelSubAgent()
+}
