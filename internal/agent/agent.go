@@ -230,19 +230,33 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				role = strings.TrimSpace(role)
 				task, _ := call.Args["task"].(string)
 				if role != "" && role == lastDispatchDelegateRole && !lastDispatchDelegateBlocked {
-					results = append(results, fmt.Sprintf("[delegate] error: dispatch cannot delegate to %s twice in a row", role))
+					msg := fmt.Sprintf("[delegate] error: dispatch cannot delegate to %s twice in a row", role)
+					results = append(results, msg)
+					a.renderer.Error(strings.TrimPrefix(msg, "[delegate] "))
 					continue
 				}
 				if dispatchRoleRequiresFreshState(role) && dispatchReadOnlyRolesSinceBuilder[role] {
-					results = append(results, fmt.Sprintf("[delegate] error: dispatch already delegated to %s in this pass; use that result or delegate to builder", role))
+					msg := fmt.Sprintf("[delegate] error: dispatch already delegated to %s in this pass; use that result or delegate to builder", role)
+					results = append(results, msg)
+					a.renderer.Error(strings.TrimPrefix(msg, "[delegate] "))
 					continue
 				}
 				if dispatchScoutMustStayEvidenceOnly(role, task) {
-					results = append(results, "[delegate] error: repo-review and improvement requests must use scout for evidence gathering only, then architect for recommendations")
+					msg := "[delegate] error: repo-review and improvement requests must use scout for evidence gathering only, then architect for recommendations"
+					results = append(results, msg)
+					a.renderer.Error(strings.TrimPrefix(msg, "[delegate] "))
 					continue
 				}
 				if dispatchBuilderPresentationShimForbidden(role, task, a.dispatchResults) {
-					results = append(results, "[delegate] error: repo-review presentation must end after architect synthesis; do not delegate to builder just to format the answer")
+					msg := "[delegate] error: repo-review presentation must end after architect synthesis; do not delegate to builder just to format the answer"
+					results = append(results, msg)
+					a.renderer.Error(strings.TrimPrefix(msg, "[delegate] "))
+					continue
+				}
+				if dispatchArchitectRepoReviewRequiresUsableEvidence(role, task, a.dispatchResults["scout"], a.dispatchScratch) {
+					msg := "[delegate] error: delegate to architect for repo-review synthesis requires a successful scout evidence pass"
+					results = append(results, msg)
+					a.renderer.Error(strings.TrimPrefix(msg, "[delegate] "))
 					continue
 				}
 				if enriched := enrichDispatchDelegateTask(role, task, a.dispatchResults, a.dispatchScratch); enriched != task {
@@ -253,7 +267,9 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			if a.role == "dispatch" && call.Name == "scratchpad_write" {
 				content, _ := call.Args["content"].(string)
 				if !dispatchScratchpadWriteAllowed(content, a.dispatchResults, a.dispatchScratch) {
-					results = append(results, "[scratchpad_write] error: dispatch may only persist raw delegate or scratchpad content without rewriting it")
+					msg := "[scratchpad_write] error: dispatch may only persist raw delegate or scratchpad content without rewriting it"
+					results = append(results, msg)
+					a.renderer.Error(strings.TrimPrefix(msg, "[scratchpad_write] "))
 					continue
 				}
 			}
@@ -282,7 +298,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 					if a.role == "dispatch" {
 						role, _ := call.Args["role"].(string)
 						lastDispatchDelegateRole = strings.TrimSpace(role)
-						lastDispatchDelegateBlocked = delegateResultBlocked(result)
+						lastDispatchDelegateBlocked = delegateResultBlocked(result) || !delegateResultCompleted(result)
 						a.dispatchResults[lastDispatchDelegateRole] = result
 						if delegateResultCompleted(result) && !lastDispatchDelegateBlocked {
 							task, _ := call.Args["task"].(string)
@@ -296,7 +312,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 									results = append(results, persisted)
 								}
 							}
-							if dispatchRepoReviewArchitectSynthesisTask(task) {
+							if role == "architect" && dispatchRepoReviewArchitectSynthesisTask(task) {
 								dispatchStopAfterTurn = true
 							}
 							if role == "builder" {
@@ -469,14 +485,24 @@ func dispatchRepoReviewArchitectSynthesisTask(task string) bool {
 	repoReviewSignals := []string{
 		"repo review",
 		"repository review",
+		"repository evidence",
+		"repository findings",
+		"review this repo",
+		"review the repository",
+	}
+	synthesisSignals := []string{
 		"repository improvement recommendations",
 		"improvement recommendations for the user",
 		"improvement recommendations",
 		"prioritized recommendations",
 		"synthesize the repo review",
 		"synthesize repository review",
+		"recommendations",
+		"produce prioritized",
+		"produce recommendations",
+		"final review",
 	}
-	return containsAny(lower, repoReviewSignals)
+	return containsAny(lower, repoReviewSignals) && containsAny(lower, synthesisSignals)
 }
 
 func dispatchRepoReviewScoutEvidenceTask(task string) bool {
@@ -498,6 +524,34 @@ func dispatchRepoReviewScoutEvidenceTask(task string) bool {
 		"descriptive only",
 	}
 	return containsAny(lower, repoSignals) && containsAny(lower, evidenceSignals)
+}
+
+func dispatchArchitectRepoReviewRequiresUsableEvidence(role, task, scoutResult, scratchpadResult string) bool {
+	if strings.TrimSpace(role) != "architect" || !dispatchRepoReviewArchitectSynthesisTask(task) {
+		return false
+	}
+	return !dispatchRepoReviewEvidenceUsable(scoutResult) && !dispatchRepoReviewEvidenceUsable(scratchpadResult)
+}
+
+func dispatchRepoReviewEvidenceUsable(result string) bool {
+	trimmed := strings.TrimSpace(result)
+	if trimmed == "" || !delegateResultCompleted(trimmed) || delegateResultBlocked(trimmed) {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	if !containsAny(lower, []string{"findings:", "key files:", "repository evidence", "evidence-backed findings"}) {
+		return false
+	}
+	if strings.Contains(lower, "agent error") || strings.Contains(lower, "partial output:") {
+		return false
+	}
+	if strings.Contains(lower, "no verified evidence collected yet") {
+		return false
+	}
+	if strings.Contains(lower, "i do not have enough codebase evidence") {
+		return false
+	}
+	return true
 }
 
 func dispatchScratchpadWriteAllowed(content string, delegateResults map[string]string, scratchpadResult string) bool {
