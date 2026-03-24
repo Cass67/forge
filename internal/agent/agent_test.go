@@ -316,6 +316,24 @@ func TestAgentRunRetriesActionPreambleBeforeToolCall(t *testing.T) {
 	}
 }
 
+func TestAgentRunDoesNotRetryShortFinalAnswer(t *testing.T) {
+	driver := &mockDriver{responses: []string{"Hello! I'm forge, your coding agent. How can I help you with your project today?"}}
+	reg := tools.NewRegistry()
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+
+	agent := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	if err := agent.Run(context.Background(), "testing sonnet, hello"); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callCount != 1 {
+		t.Fatalf("expected 1 driver call for short final answer, got %d", driver.callCount)
+	}
+	if got := output.String(); strings.Count(got, "How can I help you with your project today?") != 1 {
+		t.Fatalf("expected one rendered greeting, got %q", got)
+	}
+}
+
 func TestCompactAssistantHistory(t *testing.T) {
 	got := compactAssistantHistory("I'm going to inspect the file first.")
 	if got != "I'm going to inspect the file first." {
