@@ -544,6 +544,31 @@ func TestDispatchProseAfterToolCallInSameResponseIsFiltered(t *testing.T) {
 	}
 }
 
+func TestSubAgentProseAfterToolCallInSameResponseIsFiltered(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"list_dir\", \"args\": {}}\n</tool_call>\nPlease paste the tool outputs for the repo root.",
+		"FINDINGS:\n- found files",
+	}}
+	reg := tools.NewRegistry()
+	reg.Register(tools.NewListDir(t.TempDir(), nil))
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.isSubAgent = true
+
+	if err := a.Run(context.Background(), "inspect repo"); err != nil {
+		t.Fatal(err)
+	}
+	got := output.String()
+	if strings.Contains(got, "Please paste the tool outputs") {
+		t.Fatalf("sub-agent prose after tool call leaked: %q", got)
+	}
+	if !strings.Contains(got, "found files") {
+		t.Fatalf("final sub-agent findings missing: %q", got)
+	}
+}
+
 func TestDispatchRetriesDirectAnswerUntilItDelegates(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"Repo overview\n- Purpose\n- Structure",
@@ -647,6 +672,56 @@ func TestDispatchRejectsScoutArchitectScoutLoop(t *testing.T) {
 	}
 	if strings.Contains(output.String(), "look for more problems") {
 		t.Fatalf("unexpected repeated scout loop rendered: %q", output.String())
+	}
+}
+
+func TestDispatchRejectsScoutRecommendationTaskAndRoutesThroughArchitect(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Inspect the repository and identify practical improvement opportunities. OUTCOME: Recommended improvements.\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Inspect the repository and collect factual findings about code structure, testing, docs, and maintainability. OUTCOME: Evidence-only findings with file references. MUST NOT: Recommend changes or prioritize work.\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"TASK: Turn the scout findings into prioritized recommendations for the repo owner. OUTCOME: A concise prioritized improvement plan grounded in the scout evidence.\"}}\n</tool_call>",
+		"Done.",
+	}}
+	reg := tools.NewRegistry()
+	var delegated []string
+	var tasks []string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			task, _ := args["task"].(string)
+			delegated = append(delegated, role)
+			tasks = append(tasks, task)
+			if role == "scout" {
+				return "FINDINGS:\n- README is thin\nKEY FILES: /repo/README.md\nFOLLOW-UP: architect", nil
+			}
+			return "GOAL: prioritize repo improvements", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "review this repo and suggest improvements"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(delegated, ","); got != "scout,architect" {
+		t.Fatalf("delegated roles = %q, want scout,architect", got)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("executed tasks = %d, want 2", len(tasks))
+	}
+	if strings.Contains(strings.ToLower(tasks[0]), "improvement opportunit") {
+		t.Fatalf("scout task should be evidence-only, got %q", tasks[0])
+	}
+	if !strings.Contains(strings.ToLower(tasks[1]), "prioritized recommendations") {
+		t.Fatalf("architect task should synthesize recommendations, got %q", tasks[1])
+	}
+	if strings.Contains(output.String(), "identify practical improvement opportunities") {
+		t.Fatalf("illegal scout recommendation task should not be rendered: %q", output.String())
 	}
 }
 
