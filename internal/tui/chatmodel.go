@@ -99,6 +99,7 @@ type ChatModel struct {
 	viewportDirty  bool
 	spinnerFrame   int
 	status         string
+	activeSubAgent string
 	flash          string
 	statsDuration  time.Duration
 	statsUsage     llm.Usage
@@ -209,9 +210,21 @@ func (m *ChatModel) AddMessage(msg ChatMessage) {
 }
 
 func (m *ChatModel) AppendToLastAgent(text string) {
+	m.AppendToLastAgentLabeled(text, "Agent")
+}
+
+func (m *ChatModel) AppendToLastAgentLabeled(text, label string) {
 	if len(m.messages) == 0 || m.messages[len(m.messages)-1].Kind != MsgAgent {
 		stamp := time.Now().Format("15:04:05")
-		m.messages = append(m.messages, ChatMessage{Kind: MsgAgent, Header: "Agent • " + stamp})
+		displayLabel := label
+		if displayLabel == "" || displayLabel == "agent" {
+			displayLabel = "Agent"
+		}
+		// Capitalize first letter for display.
+		if len(displayLabel) > 0 && displayLabel[0] >= 'a' && displayLabel[0] <= 'z' {
+			displayLabel = strings.ToUpper(displayLabel[:1]) + displayLabel[1:]
+		}
+		m.messages = append(m.messages, ChatMessage{Kind: MsgAgent, Header: displayLabel + " • " + stamp})
 	}
 	m.messages[len(m.messages)-1].Content += text
 	m.lastCodeBlock = latestFencedCodeBlock(m.messages[len(m.messages)-1].Content)
@@ -338,25 +351,26 @@ func (m ChatModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	ctx.inChatScrollbar = ctx.inChat && x == chatScrollbarX && y > ctx.chatY && y < ctx.chatY+ctx.chatH-1
 	ctx.inToolsScrollbar = ctx.inTools && x == toolsScrollbarX && y > ctx.toolsY && y < ctx.toolsY+ctx.toolsH-1
 
+	scrollStep := 6
 	if tea.MouseEvent(msg).IsWheel() {
 		switch msg.Button {
 		case tea.MouseButtonWheelUp:
 			if ctx.inTools {
 				m.paneFocus = focusTools
-				m.toolsScroll = max(0, m.toolsScroll-3)
+				m.toolsScroll = max(0, m.toolsScroll-scrollStep)
 				return m, nil
 			}
 			m.paneFocus = focusChat
-			m.chatViewport.ScrollUp(3)
+			m.chatViewport.ScrollUp(scrollStep)
 			return m, nil
 		case tea.MouseButtonWheelDown:
 			if ctx.inTools {
 				m.paneFocus = focusTools
-				m.toolsScroll = min(m.toolsMaxScroll(), m.toolsScroll+3)
+				m.toolsScroll = min(m.toolsMaxScroll(), m.toolsScroll+scrollStep)
 				return m, nil
 			}
 			m.paneFocus = focusChat
-			m.chatViewport.ScrollDown(3)
+			m.chatViewport.ScrollDown(scrollStep)
 			return m, nil
 		}
 	}
@@ -386,18 +400,24 @@ func (m ChatModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			total := len(m.toolsWrappedLines())
 			visible := max(1, m.chatViewport.Height)
 			thumbTop, thumbH := scrollbarThumb(ctx.toolsY+2, max(1, visible-2), total, visible, m.toolsScroll)
+			trackH := max(1, visible-2)
 			switch {
 			case y == ctx.toolsY+1:
-				m.toolsScroll = max(0, m.toolsScroll-1)
+				m.toolsScroll = max(0, m.toolsScroll-scrollStep)
 			case y == ctx.toolsY+ctx.toolsH-2:
-				m.toolsScroll = min(m.toolsMaxScroll(), m.toolsScroll+1)
+				m.toolsScroll = min(m.toolsMaxScroll(), m.toolsScroll+scrollStep)
 			case y >= thumbTop && y < thumbTop+thumbH:
-				// thumb click focuses pane; drag can be added later
+				// Drag: map click position to scroll position proportionally.
+				relY := y - (ctx.toolsY + 2)
+				if trackH > 0 && total > visible {
+					m.toolsScroll = min(m.toolsMaxScroll(), (relY*(total-visible))/trackH)
+				}
 			case y < thumbTop:
 				m.toolsScroll = max(0, m.toolsScroll-(visible-1))
 			default:
 				m.toolsScroll = min(m.toolsMaxScroll(), m.toolsScroll+(visible-1))
 			}
+			_ = thumbH
 			return m, nil
 		case ctx.inTools:
 			m.paneFocus = focusTools
@@ -657,10 +677,19 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
+	// Sub-agent events go entirely to the tools pane.
+	if ev.SubAgent != "" {
+		return m.handleSubAgentEvent(ev)
+	}
+
 	switch ev.Kind {
 	case llm.EventToken:
-		m.AppendToLastAgent(ev.Text)
+		m.AppendToLastAgentLabeled(ev.Text, ev.Agent)
 	case llm.EventToolCall:
+		// Show delegation events as a status line in the chat pane.
+		if ev.Agent == "runtime" && strings.HasPrefix(ev.Text, "delegating to ") {
+			m.AddMessage(ChatMessage{Kind: MsgStatus, Content: ev.Text})
+		}
 		if m.toolsBuf != "" && !strings.HasSuffix(m.toolsBuf, "\n\n") {
 			m.toolsBuf += "\n"
 		}
@@ -689,6 +718,7 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		m.toolsBuf += fmt.Sprintf("\n── round %d ──\n", ev.Round)
 	case llm.EventDone:
 		m.busy = false
+		m.activeSubAgent = ""
 		m.status = "ready"
 		stamp := time.Now().Format("15:04:05")
 		m.AddMessage(ChatMessage{
@@ -721,6 +751,71 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 			m.toolsBuf += "\n"
 		}
 	}
+	// Auto-scroll tools pane when content is added.
+	if ev.Kind == llm.EventToolCall || ev.Kind == llm.EventToolResult || ev.Kind == llm.EventStats {
+		m.toolsScroll = m.toolsMaxScroll()
+	}
+	return m, nil
+}
+
+// handleSubAgentEvent routes all sub-agent activity to the tools pane with
+// the agent role as a visible header. Tokens stream into the tools pane
+// instead of the main chat.
+func (m ChatModel) handleSubAgentEvent(ev llm.Event) (tea.Model, tea.Cmd) {
+	label := ev.SubAgent
+	m.toolsVisible = true
+	m.activeSubAgent = label
+
+	// Detect start/done lifecycle messages from the sub-agent renderer.
+	if ev.Kind == llm.EventToolCall && ev.Agent == "runtime" {
+		if strings.Contains(ev.Text, "] starting") {
+			if m.toolsBuf != "" && !strings.HasSuffix(m.toolsBuf, "\n") {
+				m.toolsBuf += "\n"
+			}
+			m.toolsBuf += fmt.Sprintf("┌─ %s ─────────────────\n", label)
+			m.status = label
+			m.toolsScroll = m.toolsMaxScroll()
+			return m, nil
+		}
+		if strings.Contains(ev.Text, "] done") {
+			m.toolsBuf += fmt.Sprintf("└─ %s complete ────────\n\n", label)
+			m.activeSubAgent = ""
+			m.status = "running"
+			m.toolsScroll = m.toolsMaxScroll()
+			return m, nil
+		}
+	}
+
+	switch ev.Kind {
+	case llm.EventToken:
+		m.toolsBuf += ev.Text
+	case llm.EventToolCall:
+		if m.toolsBuf != "" && !strings.HasSuffix(m.toolsBuf, "\n\n") {
+			m.toolsBuf += "\n"
+		}
+		m.toolsBuf += fmt.Sprintf("  │ %s › %s\n", label, ev.Agent)
+		m.toolsBuf += fmt.Sprintf("  │   %s\n", ev.Text)
+	case llm.EventToolResult:
+		if ev.IsError {
+			m.toolsBuf += fmt.Sprintf("  │   ✗ %s\n", truncate(ev.Text, 200))
+		} else {
+			m.toolsBuf += fmt.Sprintf("  │   ✓ %s\n", truncate(ev.Text, 200))
+		}
+	case llm.EventStats:
+		m.sessionUsage.InputTokens += ev.Usage.InputTokens
+		m.sessionUsage.OutputTokens += ev.Usage.OutputTokens
+		if ev.Duration > 0 {
+			m.toolsBuf += fmt.Sprintf("  │ %.1fs", ev.Duration.Seconds())
+			if ev.Usage.InputTokens > 0 {
+				m.toolsBuf += fmt.Sprintf(" • %d in / %d out", ev.Usage.InputTokens, ev.Usage.OutputTokens)
+			}
+			m.toolsBuf += "\n"
+		}
+	case llm.EventError:
+		m.toolsBuf += fmt.Sprintf("  │ ✗ [%s] %s\n", label, ev.Text)
+	}
+	// Auto-scroll tools pane to follow new output.
+	m.toolsScroll = m.toolsMaxScroll()
 	return m, nil
 }
 
@@ -2450,7 +2545,7 @@ func (m ChatModel) deleteProviderCredential() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	clearProviderToken(tokens, provider.ID)
-	if err := auth.Save(tokens); err != nil {
+	if err := auth.SaveExact(tokens); err != nil {
 		m.providerStatus = fmt.Sprintf("delete failed: %v", err)
 		return m, nil
 	}
@@ -3125,7 +3220,11 @@ func (m ChatModel) View() string {
 		statusText = m.flash
 	} else if m.busy {
 		spinnerChars := []rune("⠋⠙⠹⠸⠼⠴⠦⠧")
-		statusText = fmt.Sprintf("%c running...", spinnerChars[m.spinnerFrame])
+		if m.activeSubAgent != "" {
+			statusText = fmt.Sprintf("%c %s working...", spinnerChars[m.spinnerFrame], m.activeSubAgent)
+		} else {
+			statusText = fmt.Sprintf("%c running...", spinnerChars[m.spinnerFrame])
+		}
 	} else {
 		statusText = "ready • /help for commands"
 	}

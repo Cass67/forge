@@ -136,7 +136,7 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, appr
 }
 
 func RunChatLive(setup *ChatSetup) {
-	eventsCh := make(chan llm.Event, 64)
+	eventsCh := make(chan llm.Event, 256)
 	evRenderer := agent.NewEventRenderer(eventsCh)
 
 	var approve tools.ApprovalFunc
@@ -155,6 +155,7 @@ func RunChatLive(setup *ChatSetup) {
 
 	if setup.Config.Chat.Agents.Enabled {
 		configureMultiAgent(a, reg, setup)
+		evRenderer.SetLabel("dispatch")
 	}
 
 	inputCh := make(chan string, 1)

@@ -48,7 +48,26 @@ func Load() (*Tokens, error) {
 	return &t, nil
 }
 
+// Save merges the provided tokens into the existing auth.json file.
+// Non-empty fields in t overwrite existing values; empty fields are preserved
+// from the current file. This prevents stale in-memory copies from wiping keys
+// that were added by another process or manually.
 func Save(t *Tokens) error {
+	existing, _ := Load()
+	if existing == nil {
+		existing = &Tokens{}
+	}
+	merged := merge(existing, t)
+	return writeTokens(merged)
+}
+
+// SaveExact writes the token struct as-is without merging. Use this only when
+// you need to explicitly remove fields (e.g., clearing a provider credential).
+func SaveExact(t *Tokens) error {
+	return writeTokens(t)
+}
+
+func writeTokens(t *Tokens) error {
 	p := defaultPath()
 	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
 		return err
@@ -58,4 +77,60 @@ func Save(t *Tokens) error {
 		return err
 	}
 	return os.WriteFile(p, data, 0600)
+}
+
+// merge copies non-empty fields from src into dst, returning dst.
+func merge(dst, src *Tokens) *Tokens {
+	if src.CopilotToken != "" {
+		dst.CopilotToken = src.CopilotToken
+	}
+	if src.ChatGPTAccessToken != "" {
+		dst.ChatGPTAccessToken = src.ChatGPTAccessToken
+	}
+	if src.ChatGPTRefreshToken != "" {
+		dst.ChatGPTRefreshToken = src.ChatGPTRefreshToken
+	}
+	if src.ChatGPTAccountID != "" {
+		dst.ChatGPTAccountID = src.ChatGPTAccountID
+	}
+	if !src.ChatGPTExpiresAt.IsZero() {
+		dst.ChatGPTExpiresAt = src.ChatGPTExpiresAt
+	}
+	if src.AnthropicAPIKey != "" {
+		dst.AnthropicAPIKey = src.AnthropicAPIKey
+	}
+	if src.OpenAIAPIKey != "" {
+		dst.OpenAIAPIKey = src.OpenAIAPIKey
+	}
+	if src.GroqAPIKey != "" {
+		dst.GroqAPIKey = src.GroqAPIKey
+	}
+	if src.MistralAPIKey != "" {
+		dst.MistralAPIKey = src.MistralAPIKey
+	}
+	if src.XAIAPIKey != "" {
+		dst.XAIAPIKey = src.XAIAPIKey
+	}
+	if src.NVIDIAAPIKey != "" {
+		dst.NVIDIAAPIKey = src.NVIDIAAPIKey
+	}
+	if src.OpenRouterAPIKey != "" {
+		dst.OpenRouterAPIKey = src.OpenRouterAPIKey
+	}
+	if src.TogetherAPIKey != "" {
+		dst.TogetherAPIKey = src.TogetherAPIKey
+	}
+	if src.PerplexityAPIKey != "" {
+		dst.PerplexityAPIKey = src.PerplexityAPIKey
+	}
+	if src.DeepInfraAPIKey != "" {
+		dst.DeepInfraAPIKey = src.DeepInfraAPIKey
+	}
+	if src.CerebrasAPIKey != "" {
+		dst.CerebrasAPIKey = src.CerebrasAPIKey
+	}
+	if src.BraveAPIKey != "" {
+		dst.BraveAPIKey = src.BraveAPIKey
+	}
+	return dst
 }
