@@ -123,6 +123,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	actionPreambleRetries := 0
 	dispatchDirectAnswerRetries := 0
 	sawToolCallThisRun := false
+	lastDispatchDelegateRole := ""
 	defer func() {
 		a.renderer.Stats(time.Since(turnStart), a.getUsage())
 	}()
@@ -241,6 +242,9 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				}
 				return fmt.Errorf("dispatch produced no delegate call before answering")
 			}
+			if a.role == "dispatch" {
+				return nil
+			}
 			isPreamble := looksLikeActionPreamble(response)
 			if !a.isSubAgent && isPreamble && actionPreambleRetries < 4 && turn+1 < a.maxTurns {
 				actionPreambleRetries++
@@ -249,9 +253,6 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 					Content: nudgeMessage(actionPreambleRetries),
 				})
 				continue
-			}
-			if a.role == "dispatch" && strings.TrimSpace(visibleText) != "" {
-				a.renderer.AgentToken(visibleText)
 			}
 			a.history = append(a.history, llm.Message{Role: llm.RoleAssistant, Content: response})
 			return nil
@@ -263,6 +264,14 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		// Execute tool calls
 		var results []string
 		for _, call := range calls {
+			if a.role == "dispatch" && call.Name == "delegate" {
+				role, _ := call.Args["role"].(string)
+				role = strings.TrimSpace(role)
+				if role != "" && role == lastDispatchDelegateRole {
+					results = append(results, fmt.Sprintf("[delegate] error: dispatch cannot delegate to %s twice in a row", role))
+					continue
+				}
+			}
 			tool, ok := a.tools.Get(call.Name)
 			if !ok {
 				result := fmt.Sprintf("error: unknown tool %q", call.Name)
@@ -282,7 +291,15 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				result = fmt.Sprintf("error: %v", err)
 				a.renderer.ToolResult(call.Name, result, diff, true)
 			} else {
-				a.renderer.ToolResult(call.Name, truncateResult(result), diff, false)
+				displayResult := truncateResult(result)
+				if call.Name == "delegate" {
+					displayResult = result
+					if a.role == "dispatch" {
+						role, _ := call.Args["role"].(string)
+						lastDispatchDelegateRole = strings.TrimSpace(role)
+					}
+				}
+				a.renderer.ToolResult(call.Name, displayResult, diff, false)
 			}
 
 			results = append(results, fmt.Sprintf("[%s] %s", call.Name, result))

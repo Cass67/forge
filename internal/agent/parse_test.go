@@ -132,3 +132,20 @@ func TestParseInvokeXMLArgs(t *testing.T) {
 		t.Errorf("task = %v", calls[0].Args["task"])
 	}
 }
+
+func TestParseToolCallWithoutOpeningTag(t *testing.T) {
+	input := "{\"name\": \"list_dir\", \"args\": {\"path\": \".\", \"recursive\": false}}</tool_call>"
+	calls, visible := ParseToolCalls(input)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if calls[0].Name != "list_dir" {
+		t.Fatalf("name = %q", calls[0].Name)
+	}
+	if got := calls[0].Args["path"]; got != "." {
+		t.Fatalf("path = %v", got)
+	}
+	if visible != "" {
+		t.Fatalf("visible = %q, want empty", visible)
+	}
+}

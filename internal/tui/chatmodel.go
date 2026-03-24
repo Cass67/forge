@@ -1027,7 +1027,23 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 				Kind:    MsgStatus,
 				Content: fmt.Sprintf("%s complete • %d turns • %d tools", summary.role, summary.turns, summary.tools),
 			})
-			if status := compactStatusText(ev.Text); status != "" {
+			if !ev.IsError {
+				if result := strings.TrimSpace(ev.Text); result != "" {
+					stamp := time.Now().Format("15:04:05")
+					role := summary.role
+					if role == "" {
+						role = "agent"
+					}
+					if len(role) > 0 && role[0] >= 'a' && role[0] <= 'z' {
+						role = strings.ToUpper(role[:1]) + role[1:]
+					}
+					m.AddMessage(ChatMessage{
+						Kind:    MsgAgent,
+						Header:  role + " • " + stamp,
+						Content: result,
+					})
+				}
+			} else if status := compactStatusText(ev.Text); status != "" {
 				m.AddMessage(ChatMessage{
 					Kind:    MsgStatus,
 					Content: "status: " + status,

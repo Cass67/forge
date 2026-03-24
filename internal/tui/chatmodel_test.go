@@ -273,14 +273,32 @@ func TestChatModelDelegateResultAddsCompactSubAgentSummaryToChat(t *testing.T) {
 			statuses = append(statuses, msg.Content)
 		}
 	}
-	if len(statuses) < 2 {
-		t.Fatalf("expected compact sub-agent status messages, got %#v", m.messages)
+	if len(statuses) < 1 {
+		t.Fatalf("expected compact sub-agent completion status, got %#v", m.messages)
 	}
-	if statuses[len(statuses)-2] != "scout complete • 1 turns • 1 tools" {
-		t.Fatalf("summary status = %q", statuses[len(statuses)-2])
+	if statuses[len(statuses)-1] != "scout complete • 1 turns • 1 tools" {
+		t.Fatalf("summary status = %q", statuses[len(statuses)-1])
 	}
-	if got := statuses[len(statuses)-1]; !strings.Contains(got, "status: Now let me examine the Python files") {
-		t.Fatalf("result status = %q", got)
+	var agentMsgs []ChatMessage
+	for _, msg := range m.messages {
+		if msg.Kind == MsgAgent {
+			agentMsgs = append(agentMsgs, msg)
+		}
+	}
+	if len(agentMsgs) == 0 {
+		t.Fatalf("expected sub-agent result in chat, got %#v", m.messages)
+	}
+	last := agentMsgs[len(agentMsgs)-1]
+	if !strings.HasPrefix(last.Header, "Scout • ") {
+		t.Fatalf("agent header = %q", last.Header)
+	}
+	if !strings.Contains(last.Content, "Now let me examine the Python files") {
+		t.Fatalf("agent content = %q", last.Content)
+	}
+	for _, got := range statuses {
+		if strings.Contains(got, "status: Now let me examine the Python files") {
+			t.Fatalf("delegate result should no longer be reduced to a status line: %q", got)
+		}
 	}
 }
 
