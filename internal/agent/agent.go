@@ -158,6 +158,11 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	lastDispatchDelegateRole := ""
 	lastDispatchDelegateBlocked := false
 	dispatchFlowKind, dispatchFlowPhase := classifyDispatchFlow(userMessage)
+	if dispatchFlowKind == dispatchFlowUnknown {
+		if followUpKind, followUpPhase, ok := classifyDispatchFollowUp(userMessage, a.dispatchResults); ok {
+			dispatchFlowKind, dispatchFlowPhase = followUpKind, followUpPhase
+		}
+	}
 	dispatchStopAfterTurn := false
 	defer func() {
 		a.renderer.Stats(time.Since(turnStart), a.getUsage())
@@ -207,7 +212,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		// No tool calls — final answer, or stalled narration.
 		if len(calls) == 0 {
 			a.lastFullResponse = response
-			if a.role == "dispatch" && !sawToolCallThisRun {
+			if a.role == "dispatch" {
 				if turn+1 < a.maxTurns {
 					dispatchDirectAnswerRetries++
 					a.history = append(a.history, llm.Message{
@@ -483,6 +488,20 @@ func classifyDispatchFlow(userMessage string) (dispatchFlowKind, dispatchFlowPha
 	}
 }
 
+func classifyDispatchFollowUp(userMessage string, delegateResults map[string]string) (dispatchFlowKind, dispatchFlowPhase, bool) {
+	if !delegateResultCompleted(delegateResults["scout"]) || delegateResultBlocked(delegateResults["scout"]) {
+		return dispatchFlowUnknown, dispatchPhaseIdle, false
+	}
+	if delegateResultCompleted(delegateResults["architect"]) && !delegateResultBlocked(delegateResults["architect"]) {
+		return dispatchFlowUnknown, dispatchPhaseIdle, false
+	}
+	lower := strings.ToLower(normalizePromptText(userMessage))
+	if !looksLikeInterpretiveFollowUp(lower) {
+		return dispatchFlowUnknown, dispatchPhaseIdle, false
+	}
+	return dispatchFlowPlan, dispatchPhaseNeedPlan, true
+}
+
 func dispatchRoleAllowedForFlow(kind dispatchFlowKind, phase dispatchFlowPhase, role string) bool {
 	role = strings.TrimSpace(role)
 	switch kind {
@@ -573,6 +592,10 @@ func advanceDispatchFlowPhase(kind dispatchFlowKind, phase dispatchFlowPhase, ro
 		if phase == dispatchPhaseNeedBuild && role == "builder" {
 			return dispatchPhaseDone
 		}
+	case dispatchFlowImplement:
+		if role == "builder" {
+			return dispatchPhaseDone
+		}
 	case dispatchFlowSearch:
 		if phase == dispatchPhaseNeedContext && role == "scout" {
 			return dispatchPhaseDone
@@ -583,7 +606,7 @@ func advanceDispatchFlowPhase(kind dispatchFlowKind, phase dispatchFlowPhase, ro
 
 func shouldStopDispatchFlow(kind dispatchFlowKind, phase dispatchFlowPhase) bool {
 	switch kind {
-	case dispatchFlowAssessCodebase, dispatchFlowPlan, dispatchFlowDebug, dispatchFlowSearch:
+	case dispatchFlowAssessCodebase, dispatchFlowPlan, dispatchFlowDebug, dispatchFlowImplement, dispatchFlowSearch:
 		return phase == dispatchPhaseDone
 	default:
 		return false
@@ -626,6 +649,26 @@ func looksLikePlanningRequest(lower string) bool {
 	})
 }
 
+func looksLikeInterpretiveFollowUp(lower string) bool {
+	if strings.Contains(lower, "?") {
+		return true
+	}
+	return containsAny(lower, []string{
+		"what should",
+		"what do we do",
+		"what now",
+		"next step",
+		"should we",
+		"does that mean",
+		"is that expected",
+		"is that a problem",
+		"need fixed",
+		"needs fixed",
+		"need changed",
+		"needs changed",
+	})
+}
+
 func looksLikeDebugRequest(lower string) bool {
 	return containsAny(lower, []string{
 		"why is this happening",
@@ -658,11 +701,16 @@ func looksLikeSearchRequest(lower string) bool {
 
 func looksLikeImplementationRequest(lower string) bool {
 	return containsAny(lower, []string{
+		"fix this",
+		"fix it",
+		"update this",
+		"update it",
+		"change this",
+		"change it",
+		"implement",
 		"write",
 		"create",
 		"add",
-		"fix",
-		"update",
 		"put that in",
 		"do that now",
 	})
@@ -930,8 +978,6 @@ func isRuntimeArtifactSpecifier(text string) bool {
 		".forge/scratchpad",
 		"scratchpad/",
 		"history.jsonl",
-		"forge-chat-debug",
-		"chat-debug",
 		"transcript.jsonl",
 		"sessions/",
 		"session history",
@@ -953,9 +999,6 @@ func isRuntimeArtifactPath(path string) bool {
 	}
 	base := filepath.Base(lower)
 	if base == "history.jsonl" || base == "transcript.jsonl" {
-		return true
-	}
-	if strings.HasSuffix(base, ".jsonl") && containsAny(base, []string{"debug", "chat", "history", "transcript", "session"}) {
 		return true
 	}
 	return false
