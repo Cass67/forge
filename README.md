@@ -98,10 +98,19 @@ summarizer = "claude-haiku-4-5"
 
 [chat]
 model = "claude/claude-sonnet-4-6"
+last_model = "claude/claude-sonnet-4-6"
 
 [chat.agents]
 enabled = true
 ```
+
+Chat model startup precedence is:
+
+1. `--model`
+2. `FORGE_CHAT_MODEL`
+3. `chat.last_model`
+4. `chat.model`
+5. `models.writer`
 
 ## Providers
 

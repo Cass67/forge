@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"path/filepath"
 	"testing"
 
 	"forge/internal/agent"
@@ -100,6 +101,40 @@ func TestRefreshChatSetupStateReloadsConfigAndTokens(t *testing.T) {
 	}
 	if tokens.CopilotToken != "copilot-token" {
 		t.Fatalf("tokens.CopilotToken = %q, want copilot-token", tokens.CopilotToken)
+	}
+}
+
+func TestPersistChatLastModelUpdatesConfigAndWritesState(t *testing.T) {
+	cfg := &config.Config{}
+	var savedPath string
+	var savedModel string
+
+	oldSave := saveLastChatModel
+	oldPath := defaultConfigPath
+	defer func() {
+		saveLastChatModel = oldSave
+		defaultConfigPath = oldPath
+	}()
+
+	saveLastChatModel = func(path, model string) error {
+		savedPath = path
+		savedModel = model
+		return nil
+	}
+	defaultConfigPath = func() string {
+		return filepath.Join(t.TempDir(), "config.toml")
+	}
+
+	persistChatLastModel(cfg, "claude/claude-sonnet-4-6")
+
+	if cfg.Chat.LastModel != "claude/claude-sonnet-4-6" {
+		t.Fatalf("cfg.Chat.LastModel = %q", cfg.Chat.LastModel)
+	}
+	if savedModel != "claude/claude-sonnet-4-6" {
+		t.Fatalf("saved model = %q", savedModel)
+	}
+	if savedPath == "" {
+		t.Fatal("expected config path to be used")
 	}
 }
 
