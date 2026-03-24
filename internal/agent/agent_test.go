@@ -761,10 +761,9 @@ func TestDispatchRejectsScoutArchitectScoutLoop(t *testing.T) {
 	}
 }
 
-func TestDispatchRejectsScoutRecommendationTaskAndRoutesThroughArchitect(t *testing.T) {
+func TestDispatchNormalizesScoutRecommendationTaskAndRoutesThroughArchitect(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Inspect the repository and identify practical improvement opportunities. OUTCOME: Recommended improvements.\"}}\n</tool_call>",
-		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Inspect the repository and collect factual findings about code structure, testing, docs, and maintainability. OUTCOME: Evidence-only findings with file references. MUST NOT: Recommend changes or prioritize work.\"}}\n</tool_call>",
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"TASK: Turn the scout findings into prioritized recommendations for the repo owner. OUTCOME: A concise prioritized improvement plan grounded in the scout evidence.\"}}\n</tool_call>",
 		"Done.",
 	}}
@@ -803,11 +802,63 @@ func TestDispatchRejectsScoutRecommendationTaskAndRoutesThroughArchitect(t *test
 	if strings.Contains(strings.ToLower(tasks[0]), "improvement opportunit") {
 		t.Fatalf("scout task should be evidence-only, got %q", tasks[0])
 	}
+	if strings.Contains(strings.ToLower(tasks[0]), "recommended changes") {
+		t.Fatalf("scout task should not ask for recommended changes, got %q", tasks[0])
+	}
+	if !strings.Contains(strings.ToLower(tasks[0]), "evidence") {
+		t.Fatalf("scout task should be normalized toward evidence gathering, got %q", tasks[0])
+	}
 	if !strings.Contains(strings.ToLower(tasks[1]), "prioritized recommendations") {
 		t.Fatalf("architect task should synthesize recommendations, got %q", tasks[1])
 	}
-	if strings.Contains(output.String(), "identify practical improvement opportunities") {
-		t.Fatalf("illegal scout recommendation task should not be rendered: %q", output.String())
+	if strings.Contains(output.String(), "repo-review and improvement requests must use scout for evidence gathering only") {
+		t.Fatalf("dispatch should normalize scout repo-review tasks instead of erroring: %q", output.String())
+	}
+}
+
+func TestDispatchNormalizesFirstScoutCallWhenModelEmitsScoutThenArchitectInOneTurn(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Review this repository for notable issues, opportunities for improvement, and recommended changes. Gather concrete evidence from the codebase. OUTCOME: A factual repo-review evidence report with file-level references and specific candidate changes.\"}}\n</tool_call>\n<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"TASK: Synthesize recommendations from the scout report. OUTCOME: prioritized recommendations.\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"TASK: Synthesize recommendations from the scout report. OUTCOME: prioritized recommendations.\"}}\n</tool_call>",
+		"Done.",
+	}}
+	reg := tools.NewRegistry()
+	var delegated []string
+	var tasks []string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			task, _ := args["task"].(string)
+			delegated = append(delegated, role)
+			tasks = append(tasks, task)
+			if role == "scout" {
+				return "FINDINGS:\n- tests are sparse\nKEY FILES: /repo/tests\nFOLLOW-UP: architect", nil
+			}
+			return "GOAL: prioritized recommendations", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "take a look at this repo and let me know if there are any changes i should make"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(delegated, ","); got != "scout,architect" {
+		t.Fatalf("delegated roles = %q, want scout,architect", got)
+	}
+	if strings.Contains(strings.ToLower(tasks[0]), "recommended changes") {
+		t.Fatalf("first scout task should be normalized to evidence-only, got %q", tasks[0])
+	}
+	if !strings.Contains(strings.ToLower(tasks[0]), "evidence") {
+		t.Fatalf("first scout task should retain evidence gathering intent, got %q", tasks[0])
+	}
+	if strings.Contains(output.String(), "repo-review and improvement requests must use scout for evidence gathering only") {
+		t.Fatalf("normalization should avoid the guard error, got %q", output.String())
 	}
 }
 
