@@ -57,6 +57,19 @@ func (a *Agent) SpawnSubAgent(ctx context.Context, role, task string, mac MultiA
 		subRenderer = a.renderer
 	}
 
+	// Create a cancellable child context for the sub-agent.
+	subCtx, subCancel := context.WithCancel(ctx)
+	defer subCancel()
+
+	a.mu.Lock()
+	a.activeSubCancel = subCancel
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		a.activeSubCancel = nil
+		a.mu.Unlock()
+	}()
+
 	// Notify both chat (parent renderer) and tools pane (sub renderer).
 	a.renderer.Info(fmt.Sprintf("delegating to %s", role))
 	subRenderer.Info(fmt.Sprintf("[%s] starting", role))
@@ -72,7 +85,12 @@ func (a *Agent) SpawnSubAgent(ctx context.Context, role, task string, mac MultiA
 		isSubAgent: true,
 	}
 
-	err := sub.Run(ctx, task)
+	err := sub.Run(subCtx, task)
+
+	if err != nil && subCtx.Err() != nil {
+		subRenderer.Info(fmt.Sprintf("[%s] cancelled", role))
+		return fmt.Sprintf("CANCELLED: %s was cancelled by user. Present what you have or re-delegate.", role), nil
+	}
 
 	result := sub.lastFullResponse
 	if result == "" {
