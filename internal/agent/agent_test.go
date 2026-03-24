@@ -862,6 +862,58 @@ func TestDispatchNormalizesFirstScoutCallWhenModelEmitsScoutThenArchitectInOneTu
 	}
 }
 
+func TestClassifyDispatchFlowAssessCodebaseAcrossUserPhrasings(t *testing.T) {
+	cases := []string{
+		"review this repo",
+		"take a look at this directory and tell me what to change",
+		"assess this project",
+		"what changes should i make here",
+	}
+	for _, input := range cases {
+		kind, phase := classifyDispatchFlow(input)
+		if kind != dispatchFlowAssessCodebase || phase != dispatchPhaseNeedEvidence {
+			t.Fatalf("classifyDispatchFlow(%q) = (%s, %s), want (%s, %s)", input, kind, phase, dispatchFlowAssessCodebase, dispatchPhaseNeedEvidence)
+		}
+	}
+}
+
+func TestDispatchAllowsEvidenceOnlyScoutTaskWhenContextMentionsChanges(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Gather evidence for a repository review of this project and identify notable code quality, maintenance, testing, dependency, structure, and documentation issues or risks. OUTCOME: Raw evidence-based findings from inspecting the repo, including concrete file paths and examples, suitable for a follow-up recommendation synthesis. CONTEXT: User asked: 'take a look at this repo and let me know if there are any changes i should make'. MUST NOT: Do not provide final recommendations or synthesized advice; only gather evidence from the repository.\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"TASK: Synthesize recommendations from the scout report. OUTCOME: prioritized recommendations.\"}}\n</tool_call>",
+		"Done.",
+	}}
+	reg := tools.NewRegistry()
+	var delegated []string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			delegated = append(delegated, role)
+			if role == "scout" {
+				return "FINDINGS:\n- tests are sparse\nKEY FILES: /repo/tests\nFOLLOW-UP: architect", nil
+			}
+			return "GOAL: prioritized recommendations", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "take a look at this repo and let me know if there are any changes i should make"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(delegated, ","); got != "scout,architect" {
+		t.Fatalf("delegated roles = %q, want scout,architect", got)
+	}
+	if strings.Contains(output.String(), "repo-review and improvement requests must use scout for evidence gathering only") {
+		t.Fatalf("evidence-only scout task should not be rejected because context mentions changes: %q", output.String())
+	}
+}
+
 func TestDispatchInjectsScoutFindingsIntoArchitectTask(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Gather evidence only.\"}}\n</tool_call>",
@@ -997,7 +1049,7 @@ func TestDispatchAllowsArchitectRetryAfterBlockedResultWhenScratchpadContextArri
 	if !strings.Contains(secondArchitectTask, "FINDINGS:\n- docs are thin") {
 		t.Fatalf("retry architect task missing scratchpad findings: %q", secondArchitectTask)
 	}
-	if !strings.Contains(output.String(), "delegate to architect for repo-review synthesis requires a successful scout evidence pass") {
+	if !strings.Contains(output.String(), "assess_codebase flow in need_evidence phase does not allow architect; allowed role(s): scout") {
 		t.Fatalf("expected initial architect attempt to be blocked before evidence, got %q", output.String())
 	}
 }
@@ -1115,8 +1167,8 @@ func TestDispatchExecutesOnlyFirstToolCallPerTurn(t *testing.T) {
 	if got := strings.Join(delegated, ","); got != "scout,architect" {
 		t.Fatalf("delegated roles = %q, want scout,architect", got)
 	}
-	if scratchWrites != 0 {
-		t.Fatalf("unexpected dispatch scratchpad write execution count = %d", scratchWrites)
+	if scratchWrites != 2 {
+		t.Fatalf("unexpected dispatch scratchpad write execution count = %d, want 2 auto-persisted writes", scratchWrites)
 	}
 }
 
@@ -1160,8 +1212,8 @@ func TestDispatchRejectsSynthesizedScratchpadWriteContent(t *testing.T) {
 	if err := a.Run(context.Background(), "review repo"); err != nil {
 		t.Fatal(err)
 	}
-	if scratchWrites != 0 {
-		t.Fatalf("dispatch should not write synthesized scratchpad content, got %d writes", scratchWrites)
+	if scratchWrites != 2 {
+		t.Fatalf("dispatch should only write auto-persisted scout/architect outputs, got %d writes", scratchWrites)
 	}
 	if !strings.Contains(architectTask, "FINDINGS:\n- real evidence") {
 		t.Fatalf("architect task missing real scout evidence: %q", architectTask)
@@ -1208,7 +1260,7 @@ func TestDispatchRequiresUsableScoutEvidenceBeforeArchitectRepoReview(t *testing
 	if got := strings.Join(delegated, ","); got != "scout,scout,architect" {
 		t.Fatalf("delegated roles = %q, want scout,scout,architect (driver calls=%d output=%q)", got, driver.callIdx, output.String())
 	}
-	if strings.Contains(output.String(), "delegate to architect for repo-review synthesis requires a successful scout evidence pass") == false {
+	if strings.Contains(output.String(), "assess_codebase flow in need_evidence phase does not allow architect; allowed role(s): scout") == false {
 		t.Fatalf("expected dispatch guard error to be surfaced, got %q", output.String())
 	}
 }
@@ -1249,7 +1301,7 @@ func TestDispatchRejectsBuilderRepoReviewEvidenceCollection(t *testing.T) {
 	if got := strings.Join(delegated, ","); got != "scout" {
 		t.Fatalf("delegated roles = %q, want scout", got)
 	}
-	if !strings.Contains(output.String(), "repo-review evidence gathering and scratchpad recovery must stay on scout") {
+	if !strings.Contains(output.String(), "assess_codebase flow in need_evidence phase does not allow builder; allowed role(s): scout") {
 		t.Fatalf("expected builder repo-review evidence guard error, got %q", output.String())
 	}
 }
@@ -1518,8 +1570,8 @@ func TestDispatchRetriesScoutAfterEmptyDelegateOutputWithoutPersistingSentinel(t
 	if got := strings.Join(delegated, ","); got != "scout,scout,architect" {
 		t.Fatalf("delegated roles = %q, want scout,scout,architect", got)
 	}
-	if scratchWrites != 1 {
-		t.Fatalf("scratchpad writes = %d, want only the successful scout evidence write before architect proceeds", scratchWrites)
+	if scratchWrites != 2 {
+		t.Fatalf("scratchpad writes = %d, want successful scout evidence plus architect recommendation writes", scratchWrites)
 	}
 	if strings.Contains(output.String(), "dispatch cannot delegate to scout twice in a row") {
 		t.Fatalf("empty scout output should not poison dispatch state, got %q", output.String())

@@ -39,6 +39,30 @@ type Agent struct {
 
 const targetHistoryTokens = 12000
 
+type dispatchFlowKind string
+
+const (
+	dispatchFlowUnknown        dispatchFlowKind = "unknown"
+	dispatchFlowSearch         dispatchFlowKind = "search"
+	dispatchFlowImplement      dispatchFlowKind = "implement"
+	dispatchFlowDebug          dispatchFlowKind = "debug"
+	dispatchFlowPlan           dispatchFlowKind = "plan"
+	dispatchFlowAssessCodebase dispatchFlowKind = "assess_codebase"
+)
+
+type dispatchFlowPhase string
+
+const (
+	dispatchPhaseIdle          dispatchFlowPhase = "idle"
+	dispatchPhaseNeedContext   dispatchFlowPhase = "need_context"
+	dispatchPhaseNeedDiagnosis dispatchFlowPhase = "need_diagnosis"
+	dispatchPhaseNeedPlan      dispatchFlowPhase = "need_plan"
+	dispatchPhaseNeedEvidence  dispatchFlowPhase = "need_evidence"
+	dispatchPhaseNeedSynthesis dispatchFlowPhase = "need_synthesis"
+	dispatchPhaseNeedBuild     dispatchFlowPhase = "need_build"
+	dispatchPhaseDone          dispatchFlowPhase = "done"
+)
+
 func NewAgent(driver llm.Driver, toolReg *tools.Registry, approve tools.ApprovalFunc, workDir string, maxTurns int, renderer RenderTarget, loadedSkills []skills.Skill, state *chatstate.State) *Agent {
 	if state == nil {
 		state = chatstate.New()
@@ -133,7 +157,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	sawToolCallThisRun := false
 	lastDispatchDelegateRole := ""
 	lastDispatchDelegateBlocked := false
-	dispatchReadOnlyRolesSinceBuilder := make(map[string]bool)
+	dispatchFlowKind, dispatchFlowPhase := classifyDispatchFlow(userMessage)
 	dispatchStopAfterTurn := false
 	defer func() {
 		a.renderer.Stats(time.Since(turnStart), a.getUsage())
@@ -227,7 +251,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				role, _ := call.Args["role"].(string)
 				role = strings.TrimSpace(role)
 				task, _ := call.Args["task"].(string)
-				if role == "scout" {
+				if role == "scout" && dispatchFlowKind == dispatchFlowAssessCodebase && dispatchFlowPhase == dispatchPhaseNeedEvidence {
 					if normalized, changed := normalizeDispatchScoutRepoReviewTask(task); changed {
 						task = normalized
 						call.Args["task"] = task
@@ -239,14 +263,8 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 					a.renderer.Error(strings.TrimPrefix(msg, "[delegate] "))
 					continue
 				}
-				if dispatchRoleRequiresFreshState(role) && dispatchReadOnlyRolesSinceBuilder[role] {
-					msg := fmt.Sprintf("[delegate] error: dispatch already delegated to %s in this pass; use that result or choose another appropriate role", role)
-					results = append(results, msg)
-					a.renderer.Error(strings.TrimPrefix(msg, "[delegate] "))
-					continue
-				}
-				if dispatchScoutMustStayEvidenceOnly(role, task) {
-					msg := "[delegate] error: repo-review and improvement requests must use scout for evidence gathering only, then architect for recommendations"
+				if !dispatchRoleAllowedForFlow(dispatchFlowKind, dispatchFlowPhase, role) {
+					msg := dispatchIllegalRoleMessage(dispatchFlowKind, dispatchFlowPhase, role)
 					results = append(results, msg)
 					a.renderer.Error(strings.TrimPrefix(msg, "[delegate] "))
 					continue
@@ -259,12 +277,6 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				}
 				if dispatchBuilderPresentationShimForbidden(role, task, a.dispatchResults) {
 					msg := "[delegate] error: repo-review presentation must end after architect synthesis; do not delegate to builder just to format the answer"
-					results = append(results, msg)
-					a.renderer.Error(strings.TrimPrefix(msg, "[delegate] "))
-					continue
-				}
-				if dispatchArchitectRepoReviewRequiresUsableEvidence(role, task, a.dispatchResults["scout"], a.dispatchScratch) {
-					msg := "[delegate] error: delegate to architect for repo-review synthesis requires a successful scout evidence pass"
 					results = append(results, msg)
 					a.renderer.Error(strings.TrimPrefix(msg, "[delegate] "))
 					continue
@@ -318,29 +330,30 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 						a.dispatchResults[lastDispatchDelegateRole] = result
 						if delegateResultCompleted(result) && !lastDispatchDelegateBlocked {
 							task, _ := call.Args["task"].(string)
-							if role == "scout" && dispatchRepoReviewScoutEvidenceTask(task) {
+							prevPhase := dispatchFlowPhase
+							dispatchFlowPhase = advanceDispatchFlowPhase(dispatchFlowKind, dispatchFlowPhase, role)
+							if dispatchFlowKind == dispatchFlowAssessCodebase && role == "scout" && prevPhase == dispatchPhaseNeedEvidence && dispatchFlowPhase == dispatchPhaseNeedSynthesis {
 								if persisted, ok := a.writeDispatchScratchpad(ctx, "repo_review_evidence", result); ok {
 									results = append(results, persisted)
 								}
 							}
-							if role == "architect" && dispatchRepoReviewArchitectSynthesisTask(task) {
+							if dispatchFlowKind == dispatchFlowAssessCodebase && role == "architect" && dispatchFlowPhase == dispatchPhaseDone {
 								if persisted, ok := a.writeDispatchScratchpad(ctx, "repo_review_recommendations", result); ok {
 									results = append(results, persisted)
 								}
 							}
-							if role == "architect" && dispatchRepoReviewArchitectSynthesisTask(task) {
+							if shouldStopDispatchFlow(dispatchFlowKind, dispatchFlowPhase) {
 								dispatchStopAfterTurn = true
 							}
-							if role == "builder" {
-								clear(dispatchReadOnlyRolesSinceBuilder)
-							} else if dispatchRoleRequiresFreshState(role) {
-								dispatchReadOnlyRolesSinceBuilder[role] = true
-							}
+							_ = task
 						}
 					}
 				}
 				if a.role == "dispatch" && call.Name == "scratchpad_read" {
 					a.dispatchScratch = result
+					if dispatchFlowKind == dispatchFlowAssessCodebase && dispatchFlowPhase == dispatchPhaseNeedEvidence && dispatchRepoReviewEvidenceUsable(result) {
+						dispatchFlowPhase = dispatchPhaseNeedSynthesis
+					}
 				}
 				a.renderer.ToolResult(call.Name, displayResult, diff, false)
 			}
@@ -442,21 +455,200 @@ func truncateResult(result string) string {
 	return result
 }
 
-func dispatchRoleRequiresFreshState(role string) bool {
-	switch strings.TrimSpace(role) {
-	case "scout", "architect", "doctor":
+func classifyDispatchFlow(userMessage string) (dispatchFlowKind, dispatchFlowPhase) {
+	lower := strings.ToLower(userMessage)
+	switch {
+	case looksLikeAssessCodebaseRequest(lower):
+		return dispatchFlowAssessCodebase, dispatchPhaseNeedEvidence
+	case looksLikePlanningRequest(lower):
+		return dispatchFlowPlan, dispatchPhaseNeedPlan
+	case looksLikeDebugRequest(lower):
+		return dispatchFlowDebug, dispatchPhaseNeedDiagnosis
+	case looksLikeSearchRequest(lower):
+		return dispatchFlowSearch, dispatchPhaseNeedContext
+	case looksLikeImplementationRequest(lower):
+		return dispatchFlowImplement, dispatchPhaseIdle
+	default:
+		return dispatchFlowUnknown, dispatchPhaseIdle
+	}
+}
+
+func dispatchRoleAllowedForFlow(kind dispatchFlowKind, phase dispatchFlowPhase, role string) bool {
+	role = strings.TrimSpace(role)
+	switch kind {
+	case dispatchFlowAssessCodebase:
+		switch phase {
+		case dispatchPhaseNeedEvidence:
+			return role == "scout"
+		case dispatchPhaseNeedSynthesis:
+			return role == "architect"
+		case dispatchPhaseDone:
+			return false
+		default:
+			return true
+		}
+	case dispatchFlowPlan:
+		if phase == dispatchPhaseNeedPlan {
+			return role == "architect"
+		}
+		return phase != dispatchPhaseDone
+	case dispatchFlowDebug:
+		switch phase {
+		case dispatchPhaseNeedDiagnosis:
+			return role == "doctor"
+		case dispatchPhaseNeedBuild:
+			return role == "builder"
+		case dispatchPhaseDone:
+			return false
+		default:
+			return true
+		}
+	case dispatchFlowSearch:
+		if phase == dispatchPhaseNeedContext {
+			return role == "scout"
+		}
+		return phase != dispatchPhaseDone
+	default:
 		return true
+	}
+}
+
+func dispatchIllegalRoleMessage(kind dispatchFlowKind, phase dispatchFlowPhase, role string) string {
+	allowed := []string{"delegate"}
+	switch kind {
+	case dispatchFlowAssessCodebase:
+		switch phase {
+		case dispatchPhaseNeedEvidence:
+			allowed = []string{"scout"}
+		case dispatchPhaseNeedSynthesis:
+			allowed = []string{"architect"}
+		}
+	case dispatchFlowPlan:
+		if phase == dispatchPhaseNeedPlan {
+			allowed = []string{"architect"}
+		}
+	case dispatchFlowDebug:
+		switch phase {
+		case dispatchPhaseNeedDiagnosis:
+			allowed = []string{"doctor"}
+		case dispatchPhaseNeedBuild:
+			allowed = []string{"builder"}
+		}
+	case dispatchFlowSearch:
+		if phase == dispatchPhaseNeedContext {
+			allowed = []string{"scout"}
+		}
+	}
+	return fmt.Sprintf("[delegate] error: %s flow in %s phase does not allow %s; allowed role(s): %s", kind, phase, role, strings.Join(allowed, ", "))
+}
+
+func advanceDispatchFlowPhase(kind dispatchFlowKind, phase dispatchFlowPhase, role string) dispatchFlowPhase {
+	role = strings.TrimSpace(role)
+	switch kind {
+	case dispatchFlowAssessCodebase:
+		if phase == dispatchPhaseNeedEvidence && role == "scout" {
+			return dispatchPhaseNeedSynthesis
+		}
+		if phase == dispatchPhaseNeedSynthesis && role == "architect" {
+			return dispatchPhaseDone
+		}
+	case dispatchFlowPlan:
+		if phase == dispatchPhaseNeedPlan && role == "architect" {
+			return dispatchPhaseDone
+		}
+	case dispatchFlowDebug:
+		if phase == dispatchPhaseNeedDiagnosis && role == "doctor" {
+			return dispatchPhaseNeedBuild
+		}
+		if phase == dispatchPhaseNeedBuild && role == "builder" {
+			return dispatchPhaseDone
+		}
+	case dispatchFlowSearch:
+		if phase == dispatchPhaseNeedContext && role == "scout" {
+			return dispatchPhaseDone
+		}
+	}
+	return phase
+}
+
+func shouldStopDispatchFlow(kind dispatchFlowKind, phase dispatchFlowPhase) bool {
+	switch kind {
+	case dispatchFlowAssessCodebase, dispatchFlowPlan, dispatchFlowDebug, dispatchFlowSearch:
+		return phase == dispatchPhaseDone
 	default:
 		return false
 	}
 }
 
-func dispatchScoutMustStayEvidenceOnly(role, task string) bool {
-	if strings.TrimSpace(role) != "scout" {
-		return false
+func looksLikeAssessCodebaseRequest(lower string) bool {
+	requestSignals := []string{
+		"review",
+		"take a look",
+		"look at this",
+		"review this",
+		"assess this",
+		"audit this",
+		"what should i change",
+		"what changes should i make",
+		"changes i should make",
+		"let me know if there are any changes",
 	}
-	lower := strings.ToLower(task)
-	return dispatchRepoReviewLikeTask(lower) && dispatchRepoReviewRecommendationLikeTask(lower)
+	targetSignals := []string{
+		"repo",
+		"repository",
+		"directory",
+		"dir",
+		"project",
+		"codebase",
+		"here",
+		"this",
+	}
+	return containsAny(lower, requestSignals) && containsAny(lower, targetSignals)
+}
+
+func looksLikePlanningRequest(lower string) bool {
+	return containsAny(lower, []string{
+		"steps you would take",
+		"write up a remediation plan",
+		"write a remediation plan",
+		"implementation plan",
+		"remediation plan",
+	})
+}
+
+func looksLikeDebugRequest(lower string) bool {
+	return containsAny(lower, []string{
+		"why is this happening",
+		"why does",
+		"debug",
+		"broken",
+		"failing",
+		"failure",
+		"error",
+		"regression",
+	})
+}
+
+func looksLikeSearchRequest(lower string) bool {
+	return containsAny(lower, []string{
+		"where is",
+		"find",
+		"what does",
+		"how does",
+		"show me",
+	})
+}
+
+func looksLikeImplementationRequest(lower string) bool {
+	return containsAny(lower, []string{
+		"write",
+		"create",
+		"add",
+		"fix",
+		"update",
+		"put that in",
+		"do that now",
+	})
 }
 
 func dispatchBuilderPresentationShimForbidden(role, task string, delegateResults map[string]string) bool {
