@@ -389,7 +389,7 @@ func TestAvailableModelsIncludesAuthBackedNVIDIAModels(t *testing.T) {
 	}
 }
 
-func TestAvailableModelsUsesLiveCompatCatalogByDefault(t *testing.T) {
+func TestAvailableModelsUsesCuratedCompatCatalogByDefault(t *testing.T) {
 	t.Setenv("FORGE_ENABLE_LIVE_COMPAT_MODELS", "")
 	prevDiscover := discoverCompatModels
 	discoverCompatModels = func(_ string, _ string, provider string, curated []string, _ func(string) bool) []string {
@@ -402,8 +402,29 @@ func TestAvailableModelsUsesLiveCompatCatalogByDefault(t *testing.T) {
 
 	models := AvailableModels(cfg, &auth.Tokens{})
 
+	if containsTestString(models, "openrouter/live/provider-model") {
+		t.Fatalf("unexpected live compat model in default catalog: %#v", models)
+	}
+	if !containsTestString(models, "openrouter/moonshotai/kimi-k2-0905") {
+		t.Fatalf("expected curated compat model in default catalog: %#v", models)
+	}
+}
+
+func TestAvailableModelsUsesLiveCompatCatalogWhenExplicitlyEnabled(t *testing.T) {
+	t.Setenv("FORGE_ENABLE_LIVE_COMPAT_MODELS", "1")
+	prevDiscover := discoverCompatModels
+	discoverCompatModels = func(_ string, _ string, provider string, curated []string, _ func(string) bool) []string {
+		return append([]string{provider + "/live/provider-model"}, qualifyCompatibleModelList(provider, curated)...)
+	}
+	defer func() { discoverCompatModels = prevDiscover }()
+
+	cfg := testConfig()
+	cfg.Keys.OpenRouter = "openrouter-key"
+
+	models := AvailableModels(cfg, &auth.Tokens{})
+
 	if !containsTestString(models, "openrouter/live/provider-model") {
-		t.Fatalf("expected live compat model in default catalog: %#v", models)
+		t.Fatalf("expected live compat model when enabled: %#v", models)
 	}
 }
 

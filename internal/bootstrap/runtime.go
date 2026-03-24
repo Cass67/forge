@@ -212,10 +212,10 @@ func AvailableModels(cfg *config.Config, tokens *auth.Tokens) []string {
 
 func useLiveCompatModelDiscovery() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("FORGE_ENABLE_LIVE_COMPAT_MODELS"))) {
-	case "0", "false", "no", "off":
-		return false
-	default:
+	case "1", "true", "yes", "on":
 		return true
+	default:
+		return false
 	}
 }
 
