@@ -633,7 +633,8 @@ func TestScoutFiltersRuntimeArtifactsFromSearchResultsByDefault(t *testing.T) {
 					joined += msg.Content + "\n"
 				}
 				for _, forbidden := range []string{
-					"forge-chat-debug-20260324-191110.jsonl",
+					"artifact-log.jsonl",
+					"runtime-owned-log.jsonl",
 					".forge/scratchpad/email_origin_investigation_raw.md",
 					"history.jsonl",
 					"sessions/run-123/log/agent.log",
@@ -655,7 +656,8 @@ func TestScoutFiltersRuntimeArtifactsFromSearchResultsByDefault(t *testing.T) {
 		Description: "Search",
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			return strings.Join([]string{
-				"./forge-chat-debug-20260324-191110.jsonl:2:{\"msg\":\"chat.input\"}",
+				"./artifact-log.jsonl:2:{\"msg\":\"chat.input\"}",
+				"./runtime-owned-log.jsonl:3:{\"msg\":\"llm.request\"}",
 				"./.forge/scratchpad/email_origin_investigation_raw.md:1:cached prior finding",
 				"./history.jsonl:8:{\"msg\":\"session history\"}",
 				"./sessions/run-123/log/agent.log:4:delegating to scout",
@@ -679,7 +681,7 @@ func TestScoutAllowsRuntimeArtifactsWhenTaskExplicitlyRequestsDebugLogInspection
 	driver := &inspectingDriver{
 		responses: []string{
 			"<tool_call>\n{\"name\": \"search\", \"args\": {\"pattern\": \"delegate\", \"path\": \".\"}}\n</tool_call>",
-			"FINDINGS:\n- debug log inspected\nKEY FILES: /repo/forge-chat-debug-20260324-191110.jsonl\nFOLLOW-UP: none\nUNKNOWNS: none",
+			"FINDINGS:\n- debug log inspected\nKEY FILES: /repo/artifact-log.jsonl\nFOLLOW-UP: none\nUNKNOWNS: none",
 		},
 		checks: []func([]llm.Message) error{
 			nil,
@@ -688,7 +690,7 @@ func TestScoutAllowsRuntimeArtifactsWhenTaskExplicitlyRequestsDebugLogInspection
 				for _, msg := range messages {
 					joined += msg.Content + "\n"
 				}
-				if !strings.Contains(joined, "forge-chat-debug-20260324-191110.jsonl") {
+				if !strings.Contains(joined, "artifact-log.jsonl") {
 					return fmt.Errorf("explicit debug-log task should preserve debug artifact hits")
 				}
 				return nil
@@ -701,7 +703,7 @@ func TestScoutAllowsRuntimeArtifactsWhenTaskExplicitlyRequestsDebugLogInspection
 		Description: "Search",
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			return strings.Join([]string{
-				"./forge-chat-debug-20260324-191110.jsonl:2:{\"msg\":\"chat.input\"}",
+				"./artifact-log.jsonl:2:{\"msg\":\"chat.input\"}",
 				"./util-rancid/update_cerner_daily.sh:753:\trun_or_warn \"f5 objstor verify missing-script alert email\"",
 			}, "\n"), nil
 		},
@@ -811,7 +813,7 @@ func TestDispatchRetriesDirectAnswerUntilItDelegates(t *testing.T) {
 	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
 	a.SetRole("dispatch")
 
-	if err := a.Run(context.Background(), "describe this repo"); err != nil {
+	if err := a.Run(context.Background(), "find the repo description"); err != nil {
 		t.Fatal(err)
 	}
 	got := output.String()
@@ -824,7 +826,7 @@ func TestDispatchRetriesDirectAnswerUntilItDelegates(t *testing.T) {
 	if !strings.Contains(got, "scout found stuff") {
 		t.Fatalf("delegate tool result missing from output: %q", got)
 	}
-	if driver.callIdx != 3 {
+	if driver.callIdx != 2 {
 		t.Fatalf("expected dispatch retry plus delegate flow, got %d driver calls", driver.callIdx)
 	}
 }
@@ -833,16 +835,20 @@ func TestDispatchRejectsRepeatedScoutDelegation(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"describe repo\"}}\n</tool_call>",
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"look for problems\"}}\n</tool_call>",
-		"Done.",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"synthesize the scout evidence\"}}\n</tool_call>",
 	}}
 	reg := tools.NewRegistry()
-	delegateCalls := 0
+	var delegated []string
 	reg.Register(tools.Tool{
 		Name:        "delegate",
 		Description: "Delegate",
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
-			delegateCalls++
-			return "scout found stuff", nil
+			role, _ := args["role"].(string)
+			delegated = append(delegated, role)
+			if role == "scout" {
+				return "FINDINGS:\n- scout found stuff\nKEY FILES: /repo/README.md\nFOLLOW-UP: architect", nil
+			}
+			return "Prioritized recommendations", nil
 		},
 	})
 
@@ -851,11 +857,11 @@ func TestDispatchRejectsRepeatedScoutDelegation(t *testing.T) {
 	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
 	a.SetRole("dispatch")
 
-	if err := a.Run(context.Background(), "describe this repo and suggest improvements"); err != nil {
+	if err := a.Run(context.Background(), "review this repo and suggest improvements"); err != nil {
 		t.Fatal(err)
 	}
-	if delegateCalls != 1 {
-		t.Fatalf("expected one executed scout delegation, got %d", delegateCalls)
+	if got := strings.Join(delegated, ","); got != "scout,architect" {
+		t.Fatalf("delegated roles = %q, want scout,architect", got)
 	}
 	if strings.Contains(output.String(), "look for problems") {
 		t.Fatalf("unexpected repeated scout delegation rendered: %q", output.String())
@@ -1029,6 +1035,45 @@ func TestClassifyDispatchFlowCoreKinds(t *testing.T) {
 		if kind != tc.kind || phase != tc.phase {
 			t.Fatalf("classifyDispatchFlow(%q) = (%s, %s), want (%s, %s)", tc.input, kind, phase, tc.kind, tc.phase)
 		}
+	}
+}
+
+func TestDispatchRoutesInterpretiveFollowUpToArchitectAfterScoutEvidence(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"trace the alert source\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"explain what the scout findings mean and what should happen next\"}}\n</tool_call>",
+	}}
+	reg := tools.NewRegistry()
+	var delegated []string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			delegated = append(delegated, role)
+			if role == "scout" {
+				return "FINDINGS:\n- alert comes from /repo/util-rancid/update_cerner_daily.sh:753\nKEY FILES: /repo/util-rancid/update_cerner_daily.sh\nFOLLOW-UP: architect\nUNKNOWNS: none", nil
+			}
+			return "1. No code fix is indicated.\n2. Restore the missing runtime dependency.", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "where did this alert come from"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Run(context.Background(), "what should we do about that?"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(delegated, ","); got != "scout,architect" {
+		t.Fatalf("delegated roles = %q, want scout,architect", got)
+	}
+	if strings.Contains(output.String(), "what should we do about that?") {
+		t.Fatalf("dispatch should not render the follow-up prompt: %q", output.String())
 	}
 }
 
@@ -1353,9 +1398,7 @@ func TestDispatchAllowsBuilderRetryAfterBlockedResultWithSmartQuotes(t *testing.
 func TestDispatchCarriesPriorArchitectResultIntoLaterBuilderTurn(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"TASK: Write a remediation plan. OUTCOME: markdown plan.\"}}\n</tool_call>",
-		"Done.",
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"builder\", \"task\": \"TASK: Create improvments_cleanup.md with the previously recovered remediation plan text. OUTCOME: file exists.\"}}\n</tool_call>",
-		"Done.",
 	}}
 	reg := tools.NewRegistry()
 	var builderTask string
@@ -1381,7 +1424,7 @@ func TestDispatchCarriesPriorArchitectResultIntoLaterBuilderTurn(t *testing.T) {
 	if err := a.Run(context.Background(), "write up a remediation plan"); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.Run(context.Background(), "pop that in an improvments_cleanup.md file"); err != nil {
+	if err := a.Run(context.Background(), "write that prior plan into improvments_cleanup.md"); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(builderTask, "# Repository Cleanup and Contribution Readiness Plan") {
@@ -1539,7 +1582,7 @@ func TestDispatchRejectsBuilderRepoReviewEvidenceCollection(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"builder\", \"task\": \"TASK: Gather concrete repository evidence for a repo review and write the raw findings into the shared scratchpad file repo_review_evidence.md so that an architect can synthesize recommendations. OUTCOME: Evidence-based raw findings.\"}}\n</tool_call>",
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Gather evidence only for a repo review. OUTCOME: Evidence-backed findings only.\"}}\n</tool_call>",
-		"Done.",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"TASK: Synthesize recommendations from the scout findings. OUTCOME: prioritized recommendations.\"}}\n</tool_call>",
 	}}
 	reg := tools.NewRegistry()
 	var delegated []string
@@ -1549,7 +1592,10 @@ func TestDispatchRejectsBuilderRepoReviewEvidenceCollection(t *testing.T) {
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			role, _ := args["role"].(string)
 			delegated = append(delegated, role)
-			return "FINDINGS:\n- docs are thin\nKEY FILES: /repo/README.md\nFOLLOW-UP: architect", nil
+			if role == "scout" {
+				return "FINDINGS:\n- docs are thin\nKEY FILES: /repo/README.md\nFOLLOW-UP: architect", nil
+			}
+			return "Prioritized recommendations", nil
 		},
 	})
 
@@ -1561,8 +1607,8 @@ func TestDispatchRejectsBuilderRepoReviewEvidenceCollection(t *testing.T) {
 	if err := a.Run(context.Background(), "review this repo"); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(delegated, ","); got != "scout" {
-		t.Fatalf("delegated roles = %q, want scout", got)
+	if got := strings.Join(delegated, ","); got != "scout,architect" {
+		t.Fatalf("delegated roles = %q, want scout,architect", got)
 	}
 	if !strings.Contains(output.String(), "assess_codebase flow in need_evidence phase does not allow builder; allowed role(s): scout") {
 		t.Fatalf("expected builder repo-review evidence guard error, got %q", output.String())
@@ -1739,7 +1785,7 @@ func TestAgentRunDoesNotTruncateDelegateResult(t *testing.T) {
 	renderer := NewRenderer(&output, 80, false)
 	agent := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
 	agent.SetRole("dispatch")
-	if err := agent.Run(context.Background(), "review repo"); err != nil {
+	if err := agent.Run(context.Background(), "find the long delegate output"); err != nil {
 		t.Fatal(err)
 	}
 	if got := output.String(); !strings.Contains(got, "line 25") {
@@ -1838,6 +1884,48 @@ func TestDispatchRetriesScoutAfterEmptyDelegateOutputWithoutPersistingSentinel(t
 	}
 	if strings.Contains(output.String(), "dispatch cannot delegate to scout twice in a row") {
 		t.Fatalf("empty scout output should not poison dispatch state, got %q", output.String())
+	}
+}
+
+func TestDispatchReturnsErrorInsteadOfDirectProseAfterBlockedDelegate(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Inspect the alert source and determine whether anything needs fixed. OUTCOME: Evidence-backed findings only. MUST NOT: Do not modify files.\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Re-check the same alert source and decide if this repo needs a fix. OUTCOME: Evidence-backed findings only. MUST NOT: Do not modify files.\"}}\n</tool_call>",
+		"No code change is indicated from what was found.",
+	}}
+
+	reg := tools.NewRegistry()
+	var delegated []string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			delegated = append(delegated, role)
+			if role == "scout" {
+				return "FINDINGS:\n- alert originates from /repo/util-rancid/update_cerner_daily.sh:753\nKEY FILES: /repo/util-rancid/update_cerner_daily.sh\nFOLLOW-UP: decide whether this is a code or operational issue\nUNKNOWNS: none", nil
+			}
+			return "1. No repo change indicated.\n2. Restore the missing runtime script or fix deployment/config.\n3. Change code only if the path check is stale.", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	err := a.Run(context.Background(), "help me understand what to do next")
+	if err == nil || !strings.Contains(err.Error(), "dispatch produced no delegate call before answering") {
+		t.Fatalf("expected dispatch delegate error, got %v", err)
+	}
+	if got := strings.Join(delegated, ","); got != "scout" {
+		t.Fatalf("delegated roles = %q, want scout", got)
+	}
+	if driver.callIdx != 3 {
+		t.Fatalf("expected dispatch to retry once before failing, got %d driver calls", driver.callIdx)
+	}
+	if strings.Contains(output.String(), "No code change is indicated from what was found.") {
+		t.Fatalf("dispatch prose fallback should not be rendered after blocked delegate, got %q", output.String())
 	}
 }
 
