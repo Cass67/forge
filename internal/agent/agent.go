@@ -145,78 +145,8 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		}()
 
 		var sb strings.Builder
-		var lineBuf strings.Builder
-		inToolCall := false
-		inCodeFence := false
-		seenToolCall := false
-		var dispatchBuf []string // buffered lines before first tool call for dispatch
 		for tok := range out {
 			sb.WriteString(tok.Text)
-
-			// Filter tool call blocks line-by-line.
-			// Suppresses <tool_call>, <function_calls>, <tool_calls> and their contents.
-			for i := 0; i < len(tok.Text); i++ {
-				ch := tok.Text[i]
-				lineBuf.WriteByte(ch)
-
-				if ch == '\n' {
-					line := lineBuf.String()
-					lineBuf.Reset()
-					trimmed := strings.TrimSpace(line)
-
-					if strings.HasPrefix(trimmed, "```") {
-						inCodeFence = !inCodeFence
-					}
-					if !inCodeFence {
-						if _, ok := isToolCallOpen(trimmed); ok {
-							inToolCall = true
-							seenToolCall = true
-							continue
-						}
-						if _, ok := isToolCallClose(trimmed); ok {
-							inToolCall = false
-							continue
-						}
-						// Standalone <invoke> blocks (not wrapped in <function_calls>).
-						if strings.HasPrefix(trimmed, "<invoke") {
-							inToolCall = true
-							seenToolCall = true
-							continue
-						}
-						if strings.Contains(trimmed, "</invoke>") {
-							inToolCall = false
-							continue
-						}
-					}
-					if !inToolCall {
-						if a.role == "dispatch" {
-							if !seenToolCall {
-								dispatchBuf = append(dispatchBuf, line)
-							}
-						} else {
-							a.renderer.AgentToken(line)
-						}
-					}
-				}
-			}
-		}
-		// Flush any remaining partial line
-		remaining := lineBuf.String()
-		if remaining != "" && !inToolCall {
-			trimmed := strings.TrimSpace(remaining)
-			if _, ok := isToolCallOpen(trimmed); !ok {
-				if _, ok := isToolCallClose(trimmed); !ok {
-					if !strings.HasPrefix(trimmed, "<invoke") && !strings.Contains(trimmed, "</invoke>") {
-						if a.role == "dispatch" {
-							if !seenToolCall {
-								dispatchBuf = append(dispatchBuf, remaining)
-							}
-						} else {
-							a.renderer.AgentToken(remaining)
-						}
-					}
-				}
-			}
 		}
 		if modeReporter, ok := a.driver.(llm.RequestModeReporter); ok {
 			if mode := strings.TrimSpace(modeReporter.LastRequestMode()); mode != "" {
@@ -259,6 +189,9 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				})
 				continue
 			}
+			if strings.TrimSpace(visibleText) != "" {
+				a.renderer.AgentToken(visibleText)
+			}
 			a.history = append(a.history, llm.Message{Role: llm.RoleAssistant, Content: response})
 			return nil
 		}
@@ -272,12 +205,17 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			if a.role == "dispatch" && call.Name == "delegate" {
 				role, _ := call.Args["role"].(string)
 				role = strings.TrimSpace(role)
+				task, _ := call.Args["task"].(string)
 				if role != "" && role == lastDispatchDelegateRole {
 					results = append(results, fmt.Sprintf("[delegate] error: dispatch cannot delegate to %s twice in a row", role))
 					continue
 				}
 				if dispatchRoleRequiresFreshState(role) && dispatchReadOnlyRolesSinceBuilder[role] {
 					results = append(results, fmt.Sprintf("[delegate] error: dispatch already delegated to %s in this pass; use that result or delegate to builder", role))
+					continue
+				}
+				if dispatchScoutMustStayEvidenceOnly(role, task) {
+					results = append(results, "[delegate] error: repo-review and improvement requests must use scout for evidence gathering only, then architect for recommendations")
 					continue
 				}
 			}
@@ -387,6 +325,42 @@ func dispatchRoleRequiresFreshState(role string) bool {
 	default:
 		return false
 	}
+}
+
+func dispatchScoutMustStayEvidenceOnly(role, task string) bool {
+	if strings.TrimSpace(role) != "scout" {
+		return false
+	}
+	lower := strings.ToLower(task)
+	repoSignals := []string{
+		"repo",
+		"repository",
+		"codebase",
+		"project structure",
+		"maintainability",
+		"code quality",
+		"documentation",
+		"testing",
+	}
+	recommendationSignals := []string{
+		"improvement opportunit",
+		"recommended improvement",
+		"recommend improvements",
+		"suggest improvements",
+		"prioritized recommendations",
+		"recommended changes",
+		"improvement list",
+	}
+	return containsAny(lower, repoSignals) && containsAny(lower, recommendationSignals)
+}
+
+func containsAny(text string, needles []string) bool {
+	for _, needle := range needles {
+		if strings.Contains(text, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func delegateResultCompleted(result string) bool {
