@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"forge/internal/agent/tools"
@@ -14,17 +15,22 @@ import (
 )
 
 type Agent struct {
-	driver         llm.Driver
-	tools          *tools.Registry
-	approve        tools.ApprovalFunc
-	history        []llm.Message
-	system         string
-	systemOverride bool // true when SetSystem was called; suppresses rebuild
-	workDir        string
-	maxTurns       int
-	renderer       RenderTarget
-	skills         []skills.Skill
-	state          *chatstate.State
+	driver           llm.Driver
+	tools            *tools.Registry
+	approve          tools.ApprovalFunc
+	history          []llm.Message
+	system           string
+	systemOverride   bool // true when SetSystem was called; suppresses rebuild
+	workDir          string
+	maxTurns         int
+	renderer         RenderTarget
+	skills           []skills.Skill
+	state            *chatstate.State
+	isSubAgent       bool
+	lastFullResponse string
+	role             string
+	mu               sync.Mutex
+	activeSubCancel  context.CancelFunc
 }
 
 const targetHistoryTokens = 12000
@@ -83,6 +89,18 @@ func (a *Agent) systemPrompt() string {
 // SetTools replaces the agent's tool registry.
 func (a *Agent) SetTools(reg *tools.Registry) {
 	a.tools = reg
+}
+
+func (a *Agent) SetRole(role string) {
+	a.role = role
+}
+
+func (a *Agent) CancelSubAgent() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.activeSubCancel != nil {
+		a.activeSubCancel()
+	}
 }
 
 func (a *Agent) ClearHistory() {
@@ -192,9 +210,10 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 
 		// No tool calls — final answer, or stalled narration.
 		if len(calls) == 0 {
+			a.lastFullResponse = response
 			isShort := len(strings.TrimSpace(response)) < 300
 			isPreamble := looksLikeActionPreamble(response)
-			if (isPreamble || isShort) && actionPreambleRetries < 4 && turn+1 < a.maxTurns {
+			if !a.isSubAgent && (isPreamble || isShort) && actionPreambleRetries < 4 && turn+1 < a.maxTurns {
 				actionPreambleRetries++
 				a.history = append(a.history, llm.Message{
 					Role:    llm.RoleUser,
@@ -236,6 +255,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		}
 
 		// Append compact history entries; preserve UI output separately via the renderer only.
+		a.lastFullResponse = visibleText
 		if assistantSummary := compactAssistantHistory(visibleText); assistantSummary != "" {
 			a.history = append(a.history, llm.Message{
 				Role:    llm.RoleAssistant,
