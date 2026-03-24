@@ -514,6 +514,36 @@ func TestDispatchProseFilteredOnToolCallTurns(t *testing.T) {
 	}
 }
 
+func TestDispatchProseAfterToolCallInSameResponseIsFiltered(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"find it\"}}\n</tool_call>\nHere’s what stood out on a quick review.",
+	}}
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			return "scout found stuff", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "find something"); err != nil {
+		t.Fatal(err)
+	}
+	got := output.String()
+	if strings.Contains(got, "Here’s what stood out") || strings.Contains(got, "Here's what stood out") {
+		t.Fatalf("dispatch prose after tool call leaked: %q", got)
+	}
+	if !strings.Contains(got, "scout found stuff") {
+		t.Fatalf("delegate tool result missing from output: %q", got)
+	}
+}
+
 func TestDispatchRetriesDirectAnswerUntilItDelegates(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"Repo overview\n- Purpose\n- Structure",
