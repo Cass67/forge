@@ -124,7 +124,10 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	dispatchDirectAnswerRetries := 0
 	sawToolCallThisRun := false
 	lastDispatchDelegateRole := ""
+	lastDispatchDelegateBlocked := false
 	dispatchReadOnlyRolesSinceBuilder := make(map[string]bool)
+	dispatchLastDelegateResult := make(map[string]string)
+	dispatchLastScratchpadRead := ""
 	defer func() {
 		a.renderer.Stats(time.Since(turnStart), a.getUsage())
 	}()
@@ -206,7 +209,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				role, _ := call.Args["role"].(string)
 				role = strings.TrimSpace(role)
 				task, _ := call.Args["task"].(string)
-				if role != "" && role == lastDispatchDelegateRole {
+				if role != "" && role == lastDispatchDelegateRole && !lastDispatchDelegateBlocked {
 					results = append(results, fmt.Sprintf("[delegate] error: dispatch cannot delegate to %s twice in a row", role))
 					continue
 				}
@@ -217,6 +220,10 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				if dispatchScoutMustStayEvidenceOnly(role, task) {
 					results = append(results, "[delegate] error: repo-review and improvement requests must use scout for evidence gathering only, then architect for recommendations")
 					continue
+				}
+				if enriched := enrichDispatchDelegateTask(role, task, dispatchLastDelegateResult, dispatchLastScratchpadRead); enriched != task {
+					task = enriched
+					call.Args["task"] = task
 				}
 			}
 			tool, ok := a.tools.Get(call.Name)
@@ -244,7 +251,9 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 					if a.role == "dispatch" {
 						role, _ := call.Args["role"].(string)
 						lastDispatchDelegateRole = strings.TrimSpace(role)
-						if delegateResultCompleted(result) {
+						lastDispatchDelegateBlocked = delegateResultBlocked(result)
+						dispatchLastDelegateResult[lastDispatchDelegateRole] = result
+						if delegateResultCompleted(result) && !lastDispatchDelegateBlocked {
 							if role == "builder" {
 								clear(dispatchReadOnlyRolesSinceBuilder)
 							} else if dispatchRoleRequiresFreshState(role) {
@@ -252,6 +261,9 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 							}
 						}
 					}
+				}
+				if a.role == "dispatch" && call.Name == "scratchpad_read" {
+					dispatchLastScratchpadRead = result
 				}
 				a.renderer.ToolResult(call.Name, displayResult, diff, false)
 			}
@@ -354,6 +366,27 @@ func dispatchScoutMustStayEvidenceOnly(role, task string) bool {
 	return containsAny(lower, repoSignals) && containsAny(lower, recommendationSignals)
 }
 
+func enrichDispatchDelegateTask(role, task string, delegateResults map[string]string, scratchpadResult string) string {
+	if strings.TrimSpace(role) != "architect" {
+		return task
+	}
+	var contextParts []string
+	if scout := strings.TrimSpace(delegateResults["scout"]); scout != "" && !strings.Contains(task, scout) {
+		contextParts = append(contextParts, "SCOUT FINDINGS:\n"+scout)
+	}
+	if scratch := strings.TrimSpace(scratchpadResult); scratch != "" && !strings.Contains(task, scratch) {
+		contextParts = append(contextParts, "SCRATCHPAD CONTEXT:\n"+scratch)
+	}
+	if len(contextParts) == 0 {
+		return task
+	}
+	addition := strings.Join(contextParts, "\n\n")
+	if strings.Contains(task, "CONTEXT:") {
+		return task + "\n\n" + addition
+	}
+	return task + "\nCONTEXT: " + addition
+}
+
 func containsAny(text string, needles []string) bool {
 	for _, needle := range needles {
 		if strings.Contains(text, needle) {
@@ -373,6 +406,27 @@ func delegateResultCompleted(result string) bool {
 		return false
 	}
 	return true
+}
+
+func delegateResultBlocked(result string) bool {
+	trimmed := strings.TrimSpace(strings.ToLower(result))
+	if trimmed == "" {
+		return false
+	}
+	blockedSignals := []string{
+		"i don't have",
+		"i dont have",
+		"do not have access",
+		"don't have access",
+		"missing context",
+		"need more context",
+		"paste the contents",
+		"paste the evidence",
+		"constrained not to gather new evidence",
+		"blocked",
+		"incomplete",
+	}
+	return containsAny(trimmed, blockedSignals)
 }
 
 func compactAssistantHistory(visibleText string) string {
