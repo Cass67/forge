@@ -249,6 +249,16 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				}
 				return fmt.Errorf("scout produced no evidence-gathering tool call before answering")
 			}
+			if a.isSubAgent && strings.TrimSpace(response) == "" {
+				if turn+1 < a.maxTurns {
+					a.history = append(a.history, llm.Message{
+						Role:    llm.RoleUser,
+						Content: subAgentNoOutputNudgeMessage(a.role),
+					})
+					continue
+				}
+				return fmt.Errorf("%s produced no final output", a.role)
+			}
 			isPreamble := looksLikeActionPreamble(response)
 			if !a.isSubAgent && isPreamble && actionPreambleRetries < 4 && turn+1 < a.maxTurns {
 				actionPreambleRetries++
@@ -281,8 +291,8 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		// Execute tool calls
 		var results []string
 		for _, call := range calls {
-			if a.role == "scout" && !scoutAllowsRuntimeArtifactInspection(userMessage) && scoutToolTargetsRuntimeArtifact(call) {
-				msg := fmt.Sprintf("[%s] error: scout may not inspect runtime-generated conversation artifacts unless the task explicitly asks for them", call.Name)
+			if a.isSubAgent && subAgentFiltersRuntimeArtifacts(a.role) && !subAgentAllowsRuntimeArtifactInspection(a.role, userMessage) && toolTargetsRuntimeArtifact(call) {
+				msg := fmt.Sprintf("[%s] error: %s may not inspect runtime-generated conversation artifacts unless the task explicitly asks for them", call.Name, a.role)
 				results = append(results, msg)
 				a.renderer.Error(strings.TrimPrefix(msg, "["+call.Name+"] "))
 				continue
@@ -339,8 +349,8 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			if tool.LastDiff != nil {
 				diff = tool.LastDiff()
 			}
-			if err == nil && a.role == "scout" && !scoutAllowsRuntimeArtifactInspection(userMessage) {
-				result = sanitizeScoutToolResult(call.Name, result)
+			if err == nil && a.isSubAgent && subAgentFiltersRuntimeArtifacts(a.role) && !subAgentAllowsRuntimeArtifactInspection(a.role, userMessage) {
+				result = sanitizeRuntimeArtifactToolResult(call.Name, result)
 			}
 			if call.Name == "delegate" && err == nil {
 				role, _ := call.Args["role"].(string)
@@ -513,9 +523,6 @@ func classifyDispatchFlow(userMessage string) (dispatchFlowKind, dispatchFlowPha
 
 func classifyDispatchFollowUp(userMessage string, delegateResults map[string]string) (dispatchFlowKind, dispatchFlowPhase, bool) {
 	if !delegateResultCompleted(delegateResults["scout"]) || delegateResultBlocked(delegateResults["scout"]) {
-		return dispatchFlowUnknown, dispatchPhaseIdle, false
-	}
-	if delegateResultCompleted(delegateResults["architect"]) && !delegateResultBlocked(delegateResults["architect"]) {
 		return dispatchFlowUnknown, dispatchPhaseIdle, false
 	}
 	lower := strings.ToLower(normalizePromptText(userMessage))
@@ -916,7 +923,19 @@ func normalizePromptText(text string) string {
 	return strings.NewReplacer("\u2018", "'", "\u2019", "'", "\u201c", "\"", "\u201d", "\"").Replace(text)
 }
 
-func scoutAllowsRuntimeArtifactInspection(task string) bool {
+func subAgentFiltersRuntimeArtifacts(role string) bool {
+	switch strings.TrimSpace(role) {
+	case "scout", "architect", "doctor":
+		return true
+	default:
+		return false
+	}
+}
+
+func subAgentAllowsRuntimeArtifactInspection(role, task string) bool {
+	if !subAgentFiltersRuntimeArtifacts(role) {
+		return true
+	}
 	lower := strings.ToLower(normalizePromptText(task))
 	return containsAny(lower, []string{
 		"debug log",
@@ -933,7 +952,7 @@ func scoutAllowsRuntimeArtifactInspection(task string) bool {
 	})
 }
 
-func scoutToolTargetsRuntimeArtifact(call ToolCall) bool {
+func toolTargetsRuntimeArtifact(call ToolCall) bool {
 	switch call.Name {
 	case "read_file", "list_dir", "glob":
 		if path, _ := call.Args["path"].(string); isRuntimeArtifactPath(path) {
@@ -950,7 +969,7 @@ func scoutToolTargetsRuntimeArtifact(call ToolCall) bool {
 	return false
 }
 
-func sanitizeScoutToolResult(toolName, result string) string {
+func sanitizeRuntimeArtifactToolResult(toolName, result string) string {
 	switch toolName {
 	case "search", "glob", "list_dir", "run_command":
 		lines := strings.Split(result, "\n")
@@ -1042,7 +1061,7 @@ func compactToolResults(results []string) string {
 	lines := make([]string, 0, len(results)+1)
 	lines = append(lines, "Tool results:")
 	for _, result := range results {
-		line := clipForHistory(oneLine(result), 220)
+		line := clipForHistory(oneLine(result), 4000)
 		lines = append(lines, "- "+line)
 	}
 	return strings.Join(lines, "\n")
@@ -1160,6 +1179,13 @@ func subAgentToolCallNudgeMessage(role string, attempt int) string {
 	default:
 		return "Stop mixing prose with tool calls. Tool calls only until the task is complete."
 	}
+}
+
+func subAgentNoOutputNudgeMessage(role string) string {
+	if strings.TrimSpace(role) == "scout" {
+		return "Scout produced no final output after gathering evidence. Either call the next evidence tool or return findings now."
+	}
+	return "Sub-agent produced no final output. Either call the next tool or return the final plain-text answer now."
 }
 
 func dispatchNudgeMessage(attempt int) string {
