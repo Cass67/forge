@@ -725,6 +725,88 @@ func TestDispatchRejectsScoutRecommendationTaskAndRoutesThroughArchitect(t *test
 	}
 }
 
+func TestDispatchInjectsScoutFindingsIntoArchitectTask(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Gather evidence only.\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"TASK: Turn the scout findings into prioritized recommendations. OUTCOME: Prioritized recommendations.\"}}\n</tool_call>",
+		"Done.",
+	}}
+	reg := tools.NewRegistry()
+	var architectTask string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			task, _ := args["task"].(string)
+			if role == "scout" {
+				return "FINDINGS:\n- tests are sparse\nKEY FILES: /repo/tests\nFOLLOW-UP: architect", nil
+			}
+			architectTask = task
+			return "GOAL: prioritize improvements", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "review this repo and suggest improvements"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(architectTask, "FINDINGS:\n- tests are sparse") {
+		t.Fatalf("architect task missing scout findings: %q", architectTask)
+	}
+}
+
+func TestDispatchAllowsArchitectRetryAfterBlockedResultWhenScratchpadContextArrives(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"TASK: Synthesize the repo review. OUTCOME: Recommendations.\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"scratchpad_read\", \"args\": {\"topic\": \"repo_review_evidence\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"TASK: Synthesize the repo review. OUTCOME: Recommendations.\"}}\n</tool_call>",
+		"Done.",
+	}}
+	reg := tools.NewRegistry()
+	var architectCalls int
+	var secondArchitectTask string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			architectCalls++
+			task, _ := args["task"].(string)
+			if architectCalls == 1 {
+				return "I don't have the referenced scratchpad content in this chat, and I'm constrained not to gather new evidence or inspect the repo further.", nil
+			}
+			secondArchitectTask = task
+			return "GOAL: prioritized recommendations", nil
+		},
+	})
+	reg.Register(tools.Tool{
+		Name:        "scratchpad_read",
+		Description: "Read scratchpad",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			return "FINDINGS:\n- docs are thin\nKEY FILES: /repo/README.md\nFOLLOW-UP: architect", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "review this repo"); err != nil {
+		t.Fatal(err)
+	}
+	if architectCalls != 2 {
+		t.Fatalf("expected architect to be retried after blocked result, got %d calls", architectCalls)
+	}
+	if !strings.Contains(secondArchitectTask, "FINDINGS:\n- docs are thin") {
+		t.Fatalf("retry architect task missing scratchpad findings: %q", secondArchitectTask)
+	}
+}
+
 func TestDispatchFailsClosedWhenItNeverDelegates(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"Repo overview\n- Purpose",
