@@ -33,7 +33,7 @@ func TestModelRequiresResponses(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		if got := modelRequiresResponses(tt.model); got != tt.want {
+		if got := modelRequiresResponses("", tt.model); got != tt.want {
 			t.Fatalf("modelRequiresResponses(%q) = %v, want %v", tt.model, got, tt.want)
 		}
 	}
@@ -54,6 +54,16 @@ func TestUseResponsesAPI(t *testing.T) {
 			name:              "openai gpt-5.4 chat variant stays on chat completions",
 			driver:            NewOpenAI("sk-test", "gpt-5.4"),
 			wantUsesResponses: false,
+		},
+		{
+			name:              "chatgpt gpt-5.4 uses responses",
+			driver:            &OpenAIDriver{providerLabel: "chatgpt", apiModel: "gpt-5.4", supportsResponses: true},
+			wantUsesResponses: true,
+		},
+		{
+			name:              "chatgpt gpt-5.1-codex uses responses",
+			driver:            &OpenAIDriver{providerLabel: "chatgpt", apiModel: "gpt-5.1-codex", supportsResponses: true},
+			wantUsesResponses: true,
 		},
 		{
 			name:              "openai gpt-4o stays on chat completions",
@@ -204,6 +214,77 @@ func TestResponsesRequestStateFallsBackToFullInputWhenHistoryDiverges(t *testing
 	}
 	if len(input) != 2 {
 		t.Fatalf("input = %#v", input)
+	}
+}
+
+func TestResponsesRequestStateUsesFullInputForChatGPTStatelessMode(t *testing.T) {
+	d := &OpenAIDriver{
+		providerLabel:     "chatgpt",
+		registryName:      "chatgpt/gpt-5.4",
+		apiModel:          "gpt-5.4",
+		supportsResponses: true,
+	}
+	d.prevResponseID = "resp_123"
+	d.lastMessages = []llm.Message{
+		{Role: llm.RoleSystem, Content: "sys"},
+		{Role: llm.RoleUser, Content: "u1"},
+	}
+	msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: "sys"},
+		{Role: llm.RoleUser, Content: "u1"},
+		{Role: llm.RoleAssistant, Content: "a1"},
+	}
+
+	instructions, input, prevID, mode, err := d.responsesRequestState(context.Background(), msgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instructions != "sys" {
+		t.Fatalf("instructions = %q", instructions)
+	}
+	if prevID != "" {
+		t.Fatalf("prevID = %q, want empty", prevID)
+	}
+	if mode != "responses full input (chatgpt stateless)" {
+		t.Fatalf("mode = %q", mode)
+	}
+	if len(input) != 2 {
+		t.Fatalf("input = %#v", input)
+	}
+}
+
+func TestResponseParamsUseStatelessCodexDefaultsForChatGPT(t *testing.T) {
+	d := &OpenAIDriver{
+		providerLabel:     "chatgpt",
+		registryName:      "chatgpt/gpt-5.4",
+		apiModel:          "gpt-5.4",
+		supportsResponses: true,
+	}
+	msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: "sys"},
+		{Role: llm.RoleUser, Content: "u1"},
+	}
+
+	got, err := d.responsesParams(context.Background(), msgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params := got.params
+	if !params.Store.Valid() || params.Store.Value != false {
+		t.Fatalf("Store = %#v, want explicit false", params.Store)
+	}
+	found := false
+	for _, include := range params.Include {
+		if string(include) == "reasoning.encrypted_content" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("Include = %#v, want reasoning.encrypted_content", params.Include)
+	}
+	if params.PreviousResponseID.Valid() {
+		t.Fatalf("PreviousResponseID = %#v, want absent", params.PreviousResponseID)
 	}
 }
 
