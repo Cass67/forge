@@ -398,7 +398,7 @@ func (d *OpenAIDriver) responsesRequestState(ctx context.Context, messages []llm
 	lastMessages := append([]llm.Message(nil), d.lastMessages...)
 	d.mu.Unlock()
 
-	if prevID != "" && isAppendOnlyMessageHistory(lastMessages, messages) {
+	if providerSupportsResponseReuse(d.providerLabel) && prevID != "" && isAppendOnlyMessageHistory(lastMessages, messages) {
 		return instructions, stripSystemMessages(messages[len(lastMessages):]), prevID, "responses append-only reuse", nil
 	}
 	if estimatedMessageTokens(messages) <= responseStateCompactionThreshold {
@@ -553,6 +553,15 @@ func providerUsesLegacyMaxTokensField(providerLabel string) bool {
 }
 
 func providerSupportsResponseStore(providerLabel string) bool {
+	switch strings.TrimSpace(strings.ToLower(providerLabel)) {
+	case "openai", "chatgpt":
+		return true
+	default:
+		return false
+	}
+}
+
+func providerSupportsResponseReuse(providerLabel string) bool {
 	switch strings.TrimSpace(strings.ToLower(providerLabel)) {
 	case "openai", "chatgpt":
 		return true
@@ -768,7 +777,7 @@ func (d *OpenAIDriver) providerRequiresStatelessResponses() bool {
 }
 
 func (d *OpenAIDriver) shouldPersistResponsesState() bool {
-	return !d.providerRequiresStatelessResponses()
+	return providerSupportsResponseReuse(d.providerLabel) && !d.providerRequiresStatelessResponses()
 }
 
 func providerRequiresStatelessResponses(providerLabel, model string) bool {
