@@ -23,6 +23,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/wrap"
 )
 
 type chatTickMsg time.Time
@@ -57,6 +58,14 @@ type chatSlashCompletionState struct {
 	baseInput string
 	matches   []string
 	index     int
+}
+
+func wrapProviderAuthValue(value string, width int) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return wrap.String(value, max(1, width))
 }
 
 var (
@@ -2926,7 +2935,7 @@ func (m ChatModel) handleProviderAuthStarted(msg providerAuthStartedMsg) (tea.Mo
 		m.providerAuthCode = msg.userCode
 		m.providerAuthFlow = flow
 		m.providerPromptingKey = true
-		m.providerPromptLabel = "Callback"
+		m.providerPromptLabel = "Paste callback/code"
 		m.providerPromptMasked = false
 		m.providerKeyInput = ""
 		m.providerKeyPos = 0
@@ -3522,6 +3531,7 @@ func (m ChatModel) renderProvidersOverlay() string {
 	selectedStyle := lipgloss.NewStyle().Foreground(theme.HeaderFG).Background(theme.AccentPrimary).Bold(true)
 	textStyle := lipgloss.NewStyle().Foreground(theme.Text)
 	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
+	inputStyle := lipgloss.NewStyle().Foreground(theme.Text).Background(theme.PanelBG)
 
 	lines := make([]string, 0, min(len(m.providersList), contentHeight))
 	start := 0
@@ -3564,22 +3574,30 @@ func (m ChatModel) renderProvidersOverlay() string {
 		footerText = "Complete sign-in in browser • Esc cancel"
 	}
 	authLines := []string{}
+	authWidth := max(1, boxW-6)
 	if m.providerAuthWaiting || (m.providerPromptingKey && m.providerAuthProvider == "claude" && m.providerAuthURL != "") {
-		authLines = append(authLines,
-			textStyle.Render("Visit: "+m.providerAuthURL),
-		)
-		if m.providerAuthCode != "" {
-			authLines = append(authLines, textStyle.Render("Code:  "+m.providerAuthCode))
+		if m.providerAuthURL != "" {
+			authLines = append(authLines, textStyle.Render("Open URL:"))
+			authLines = append(authLines, textStyle.Render(wrapProviderAuthValue(m.providerAuthURL, authWidth)))
 		}
+		if m.providerAuthCode != "" {
+			authLines = append(authLines, textStyle.Render("Code:"))
+			authLines = append(authLines, textStyle.Render(wrapProviderAuthValue(m.providerAuthCode, authWidth)))
+		}
+	}
+	if m.providerPromptingKey && m.providerAuthProvider == "claude" {
+		keyLine = inputStyle.Render(keyLine)
+	} else if keyLine != "" {
+		keyLine = textStyle.Render(keyLine)
 	}
 	inner := lipgloss.JoinVertical(lipgloss.Left,
 		titleStyle.Render("Providers"),
 		dimStyle.Render("Select a provider. API-key providers prompt for a key; ChatGPT/Claude/Copilot can sign in here."),
 		"",
-		lipgloss.NewStyle().Width(boxW-6).Height(contentHeight).Render(strings.Join(lines, "\n")),
+		lipgloss.NewStyle().Width(authWidth).Height(contentHeight).Render(strings.Join(lines, "\n")),
 		"",
-		strings.Join(authLines, "\n"),
-		textStyle.Render(keyLine),
+		lipgloss.NewStyle().Width(authWidth).Render(strings.Join(authLines, "\n")),
+		keyLine,
 		dimStyle.Render(m.providerStatus),
 		dimStyle.Render(footerText),
 	)
