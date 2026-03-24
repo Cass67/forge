@@ -31,6 +31,12 @@ func BuildSystemPrompt(workDir string, registry *tools.Registry, skillsDesc stri
 	sb.WriteString("- Continue working after progress updates; do not pause waiting for confirmation unless you need missing information, explicit approval for a consequential action, or the task is complete.\n")
 	sb.WriteString("- If something fails, read the error, diagnose, and fix. Don't repeat the same failing approach.\n")
 	sb.WriteString("- Ask the user for clarification only if the request is ambiguous or you are genuinely blocked.\n")
+	sb.WriteString("\n## Autonomy\n")
+	sb.WriteString("- KEEP GOING. Solve problems. Ask only when truly impossible.\n")
+	sb.WriteString("- Never say \"I'll\", \"Let me\", \"I'm going to\" without immediately calling a tool in the same response.\n")
+	sb.WriteString("- If you need information, call a tool to get it. If you need to change a file, call the tool.\n")
+	sb.WriteString("- Only respond with plain text (no tool calls) when you have a complete final answer.\n")
+	sb.WriteString("- Before asking the user, exhaust self-help: read files, search, grep, check git log, run commands.\n")
 
 	if skillsDesc != "" {
 		sb.WriteString("\n")

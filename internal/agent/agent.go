@@ -63,6 +63,16 @@ func (a *Agent) SetDriver(d llm.Driver) {
 	a.driver = d
 }
 
+// SetSystem replaces the agent's system prompt.
+func (a *Agent) SetSystem(system string) {
+	a.system = system
+}
+
+// SetTools replaces the agent's tool registry.
+func (a *Agent) SetTools(reg *tools.Registry) {
+	a.tools = reg
+}
+
 func (a *Agent) ClearHistory() {
 	a.history = nil
 	a.state.Clear()
@@ -101,8 +111,8 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		for tok := range out {
 			sb.WriteString(tok.Text)
 
-			// Filter tool_call blocks line-by-line.
-			// Each complete line is emitted immediately for streaming display.
+			// Filter tool call blocks line-by-line.
+			// Suppresses <tool_call>, <function_calls>, <tool_calls> and their contents.
 			for i := 0; i < len(tok.Text); i++ {
 				ch := tok.Text[i]
 				lineBuf.WriteByte(ch)
@@ -115,13 +125,15 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 					if strings.HasPrefix(trimmed, "```") {
 						inCodeFence = !inCodeFence
 					}
-					if !inCodeFence && strings.Contains(trimmed, "<tool_call>") {
-						inToolCall = true
-						continue
-					}
-					if !inCodeFence && strings.Contains(trimmed, "</tool_call>") {
-						inToolCall = false
-						continue
+					if !inCodeFence {
+						if _, ok := isToolCallOpen(trimmed); ok {
+							inToolCall = true
+							continue
+						}
+						if _, ok := isToolCallClose(trimmed); ok {
+							inToolCall = false
+							continue
+						}
 					}
 					if !inToolCall {
 						a.renderer.AgentToken(line)
@@ -133,8 +145,10 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		remaining := lineBuf.String()
 		if remaining != "" && !inToolCall {
 			trimmed := strings.TrimSpace(remaining)
-			if !strings.Contains(trimmed, "<tool_call>") && !strings.Contains(trimmed, "</tool_call>") {
-				a.renderer.AgentToken(remaining)
+			if _, ok := isToolCallOpen(trimmed); !ok {
+				if _, ok := isToolCallClose(trimmed); !ok {
+					a.renderer.AgentToken(remaining)
+				}
 			}
 		}
 
@@ -153,13 +167,15 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		// Parse tool calls
 		calls, visibleText := ParseToolCalls(response)
 
-		// No tool calls — final answer.
+		// No tool calls — final answer, or stalled narration.
 		if len(calls) == 0 {
-			if looksLikeActionPreamble(response) && actionPreambleRetries < 2 && turn+1 < a.maxTurns {
+			isShort := len(strings.TrimSpace(response)) < 300
+			isPreamble := looksLikeActionPreamble(response)
+			if (isPreamble || isShort) && actionPreambleRetries < 4 && turn+1 < a.maxTurns {
 				actionPreambleRetries++
 				a.history = append(a.history, llm.Message{
 					Role:    llm.RoleUser,
-					Content: "Continue by acting. Call the next tool now, ask one blocker question, or give the final answer.",
+					Content: nudgeMessage(actionPreambleRetries),
 				})
 				continue
 			}
@@ -220,6 +236,13 @@ func (a *Agent) getUsage() llm.Usage {
 }
 
 func formatCallSummary(call ToolCall) string {
+	if role, ok := call.Args["role"].(string); ok && call.Name == "delegate" {
+		task, _ := call.Args["task"].(string)
+		if len(task) > 80 {
+			task = task[:80] + "..."
+		}
+		return fmt.Sprintf("→ %s: %s", role, task)
+	}
 	if path, ok := call.Args["path"].(string); ok {
 		return path
 	}
@@ -284,22 +307,54 @@ func looksLikeActionPreamble(text string) bool {
 	if trimmed == "" {
 		return false
 	}
-	phrases := []string{
+	// Normalize smart quotes/apostrophes to ASCII.
+	trimmed = strings.NewReplacer("\u2018", "'", "\u2019", "'", "\u201c", "\"", "\u201d", "\"").Replace(trimmed)
+	// Phrases that indicate narration when they start the response.
+	prefixes := []string{
 		"i'm going to",
-		"i’m going to",
 		"i noticed we need to",
 		"next i'll",
-		"next i’ll",
 		"i'll ",
-		"i’ll ",
 		"let me ",
+		"first,", "first i", "to accomplish", "to do this",
+		"based on", "here's my plan", "here's what",
+		"looking at", "the next step", "we need to", "we should",
+		"i can ", "i need to", "i want to",
+		"ok,", "okay,", "sure,", "alright,",
+		"to start", "to begin", "my approach",
+		"so,", "now,", "now i",
 	}
-	for _, phrase := range phrases {
-		if strings.HasPrefix(trimmed, phrase) {
+	for _, p := range prefixes {
+		if strings.HasPrefix(trimmed, p) {
+			return true
+		}
+	}
+	// Phrases that indicate narration anywhere in the response.
+	contains := []string{
+		"i'll start by", "i'll begin by", "let's start",
+		"steps to take", "here is my plan", "here are the steps",
+		"i will now", "i will first", "shall i proceed",
+		"would you like me to", "should i proceed", "should i continue",
+	}
+	for _, c := range contains {
+		if strings.Contains(trimmed, c) {
 			return true
 		}
 	}
 	return false
+}
+
+func nudgeMessage(attempt int) string {
+	switch attempt {
+	case 1:
+		return "Continue by acting. Call the next tool now, or give the final answer."
+	case 2:
+		return "You must call a tool or give a final answer. Do not describe what you plan to do."
+	case 3:
+		return "STOP NARRATING. Either call a tool right now or say DONE if the task is complete."
+	default:
+		return "Call a tool now. No more text without a tool call."
+	}
 }
 
 // estimateTokens returns a rough token count (~4 chars per token).
