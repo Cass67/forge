@@ -154,6 +154,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	subAgentMixedProseRetries := 0
 	dispatchDirectAnswerRetries := 0
 	scoutNoToolRetries := 0
+	scoutMalformedToolRetries := 0
 	sawToolCallThisRun := false
 	lastDispatchDelegateRole := ""
 	lastDispatchDelegateBlocked := false
@@ -201,6 +202,17 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 
 		// Parse tool calls
 		calls, visibleText := ParseToolCalls(response)
+		if a.role == "scout" && containsRawToolMarkup(response) && len(calls) == 0 {
+			if turn+1 < a.maxTurns {
+				scoutMalformedToolRetries++
+				a.history = append(a.history, llm.Message{
+					Role:    llm.RoleUser,
+					Content: scoutMalformedToolMarkupNudgeMessage(scoutMalformedToolRetries),
+				})
+				continue
+			}
+			return fmt.Errorf("scout produced malformed tool markup")
+		}
 		mixedSubAgentToolCallProse := a.isSubAgent && len(calls) > 0 && strings.TrimSpace(visibleText) != ""
 		if mixedSubAgentToolCallProse {
 			subAgentMixedProseRetries++
@@ -255,9 +267,14 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		actionPreambleRetries = 0
 		dispatchDirectAnswerRetries = 0
 		scoutNoToolRetries = 0
+		scoutMalformedToolRetries = 0
 		sawToolCallThisRun = true
 
 		if a.role == "dispatch" && len(calls) > 1 {
+			calls = calls[:1]
+		}
+		scoutFirstTurnMultipleCalls := a.role == "scout" && turn == 0 && scoutTaskRequiresEvidenceTools(userMessage) && len(calls) > 1
+		if scoutFirstTurnMultipleCalls {
 			calls = calls[:1]
 		}
 
@@ -396,6 +413,12 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			a.history = append(a.history, llm.Message{
 				Role:    llm.RoleUser,
 				Content: subAgentToolCallNudgeMessage(a.role, subAgentMixedProseRetries),
+			})
+		}
+		if scoutFirstTurnMultipleCalls && turn+1 < a.maxTurns {
+			a.history = append(a.history, llm.Message{
+				Role:    llm.RoleUser,
+				Content: scoutFirstTurnToolCallNudgeMessage(),
 			})
 		}
 		if a.role == "dispatch" && dispatchStopAfterTurn {
@@ -1108,6 +1131,21 @@ func scoutEvidenceNudgeMessage(attempt int) string {
 	default:
 		return "Call an evidence-gathering tool now. Do not stop with a no-evidence answer while tools are still available."
 	}
+}
+
+func scoutMalformedToolMarkupNudgeMessage(attempt int) string {
+	switch attempt {
+	case 1:
+		return "Scout emitted malformed tool markup. Return exactly one valid <tool_call>...</tool_call> block and nothing else."
+	case 2:
+		return "Malformed scout tool call again. Emit one valid tool call only. No prose, no second tool call, no partial wrapper."
+	default:
+		return "Return one valid tool call block only. No prose."
+	}
+}
+
+func scoutFirstTurnToolCallNudgeMessage() string {
+	return "For evidence-gathering scout tasks, the first working turn must contain exactly one valid tool call."
 }
 
 func subAgentToolCallNudgeMessage(role string, attempt int) string {

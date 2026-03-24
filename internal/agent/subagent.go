@@ -84,6 +84,7 @@ func (a *Agent) SpawnSubAgent(ctx context.Context, role, task string, mac MultiA
 		renderer:   subRenderer,
 		system:     system,
 		isSubAgent: true,
+		role:       role,
 	}
 
 	err := sub.Run(subCtx, task)
