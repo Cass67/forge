@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -245,6 +246,12 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		// Execute tool calls
 		var results []string
 		for _, call := range calls {
+			if a.role == "scout" && !scoutAllowsRuntimeArtifactInspection(userMessage) && scoutToolTargetsRuntimeArtifact(call) {
+				msg := fmt.Sprintf("[%s] error: scout may not inspect runtime-generated conversation artifacts unless the task explicitly asks for them", call.Name)
+				results = append(results, msg)
+				a.renderer.Error(strings.TrimPrefix(msg, "["+call.Name+"] "))
+				continue
+			}
 			if a.role == "dispatch" && call.Name == "delegate" {
 				role, _ := call.Args["role"].(string)
 				role = strings.TrimSpace(role)
@@ -296,6 +303,9 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			var diff string
 			if tool.LastDiff != nil {
 				diff = tool.LastDiff()
+			}
+			if err == nil && a.role == "scout" && !scoutAllowsRuntimeArtifactInspection(userMessage) {
+				result = sanitizeScoutToolResult(call.Name, result)
 			}
 			if call.Name == "delegate" && err == nil {
 				role, _ := call.Args["role"].(string)
@@ -619,6 +629,13 @@ func looksLikeDebugRequest(lower string) bool {
 func looksLikeSearchRequest(lower string) bool {
 	return containsAny(lower, []string{
 		"where is",
+		"where did",
+		"where does",
+		"come from",
+		"came from",
+		"originated from",
+		"what sent",
+		"what triggered",
 		"find",
 		"what does",
 		"how does",
@@ -813,6 +830,122 @@ func containsRawToolMarkup(text string) bool {
 
 func normalizePromptText(text string) string {
 	return strings.NewReplacer("\u2018", "'", "\u2019", "'", "\u201c", "\"", "\u201d", "\"").Replace(text)
+}
+
+func scoutAllowsRuntimeArtifactInspection(task string) bool {
+	lower := strings.ToLower(normalizePromptText(task))
+	return containsAny(lower, []string{
+		"debug log",
+		"debug file",
+		"chat debug",
+		"scratchpad",
+		"session history",
+		"session log",
+		"transcript",
+		"history.jsonl",
+		"jsonl log",
+		"inspect the log",
+		"check the log",
+	})
+}
+
+func scoutToolTargetsRuntimeArtifact(call ToolCall) bool {
+	switch call.Name {
+	case "read_file", "list_dir", "glob":
+		if path, _ := call.Args["path"].(string); isRuntimeArtifactPath(path) {
+			return true
+		}
+		if pattern, _ := call.Args["pattern"].(string); isRuntimeArtifactSpecifier(pattern) {
+			return true
+		}
+	case "run_command":
+		if cmd, _ := call.Args["command"].(string); isRuntimeArtifactSpecifier(cmd) {
+			return true
+		}
+	}
+	return false
+}
+
+func sanitizeScoutToolResult(toolName, result string) string {
+	switch toolName {
+	case "search", "glob", "list_dir", "run_command":
+		lines := strings.Split(result, "\n")
+		filtered := lines[:0]
+		for _, line := range lines {
+			if strings.TrimSpace(line) == "" {
+				filtered = append(filtered, line)
+				continue
+			}
+			if isRuntimeArtifactLine(line) {
+				continue
+			}
+			filtered = append(filtered, line)
+		}
+		return strings.Join(filtered, "\n")
+	default:
+		return result
+	}
+}
+
+func isRuntimeArtifactLine(line string) bool {
+	path := artifactPathFromLine(line)
+	if isRuntimeArtifactPath(path) {
+		return true
+	}
+	lower := strings.ToLower(line)
+	if strings.HasSuffix(strings.ToLower(filepath.ToSlash(strings.TrimSpace(path))), ".jsonl") &&
+		containsAny(lower, []string{"chat.input", "llm.request", "llm.response", "\"sub_agent\"", "\"kind\":\"tool_call\"", "\"kind\":\"tool_result\""}) {
+		return true
+	}
+	return false
+}
+
+func artifactPathFromLine(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return ""
+	}
+	if idx := strings.Index(trimmed, ":"); idx >= 0 {
+		return strings.TrimSpace(trimmed[:idx])
+	}
+	return trimmed
+}
+
+func isRuntimeArtifactSpecifier(text string) bool {
+	lower := strings.ToLower(normalizePromptText(filepath.ToSlash(strings.TrimSpace(text))))
+	return containsAny(lower, []string{
+		".forge/scratchpad",
+		"scratchpad/",
+		"history.jsonl",
+		"forge-chat-debug",
+		"chat-debug",
+		"transcript.jsonl",
+		"sessions/",
+		"session history",
+		"session log",
+	})
+}
+
+func isRuntimeArtifactPath(path string) bool {
+	lower := strings.ToLower(normalizePromptText(filepath.ToSlash(strings.TrimSpace(path))))
+	lower = strings.TrimPrefix(lower, "./")
+	if lower == "" {
+		return false
+	}
+	if strings.HasPrefix(lower, ".forge/scratchpad/") || strings.Contains(lower, "/.forge/scratchpad/") {
+		return true
+	}
+	if strings.HasPrefix(lower, "sessions/") || strings.Contains(lower, "/sessions/") {
+		return true
+	}
+	base := filepath.Base(lower)
+	if base == "history.jsonl" || base == "transcript.jsonl" {
+		return true
+	}
+	if strings.HasSuffix(base, ".jsonl") && containsAny(base, []string{"debug", "chat", "history", "transcript", "session"}) {
+		return true
+	}
+	return false
 }
 
 func compactAssistantHistory(visibleText string) string {
