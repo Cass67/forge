@@ -42,15 +42,15 @@ func NewAgent(driver llm.Driver, toolReg *tools.Registry, approve tools.Approval
 		state = chatstate.New()
 	}
 	return &Agent{
-		driver:   driver,
-		tools:    toolReg,
-		approve:  approve,
-		workDir:  workDir,
-		maxTurns: maxTurns,
-		renderer: renderer,
-		system:   BuildSystemPrompt(workDir, toolReg, skills.Describe(loadedSkills)),
-		skills:   loadedSkills,
-		state:    state,
+		driver:          driver,
+		tools:           toolReg,
+		approve:         approve,
+		workDir:         workDir,
+		maxTurns:        maxTurns,
+		renderer:        renderer,
+		system:          BuildSystemPrompt(workDir, toolReg, skills.Describe(loadedSkills)),
+		skills:          loadedSkills,
+		state:           state,
 		dispatchResults: make(map[string]string),
 	}
 }
@@ -623,6 +623,9 @@ func delegateResultCompleted(result string) bool {
 	if trimmed == "" {
 		return false
 	}
+	if strings.EqualFold(trimmed, "(sub-agent produced no output)") {
+		return false
+	}
 	upper := strings.ToUpper(trimmed)
 	if strings.HasPrefix(upper, "CANCELLED:") || strings.HasPrefix(upper, "AGENT ERROR") {
 		return false
@@ -636,6 +639,7 @@ func delegateResultBlocked(result string) bool {
 		return false
 	}
 	blockedSignals := []string{
+		"sub-agent produced no output",
 		"i don't have",
 		"i dont have",
 		"do not have access",

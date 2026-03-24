@@ -1381,6 +1381,59 @@ func TestDispatchRetriesScoutAfterMalformedInlineToolMarkupDelegateResult(t *tes
 	}
 }
 
+func TestDispatchRetriesScoutAfterEmptyDelegateOutputWithoutPersistingSentinel(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Gather repo-review evidence only. OUTCOME: Evidence-backed findings only.\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Retry the repo-review evidence pass narrowly. OUTCOME: Evidence-backed findings only.\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"TASK: Synthesize the repo review into prioritized recommendations. OUTCOME: Final review.\"}}\n</tool_call>",
+	}}
+	reg := tools.NewRegistry()
+	var delegated []string
+	var scratchWrites int
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			delegated = append(delegated, role)
+			switch len(delegated) {
+			case 1:
+				return "(sub-agent produced no output)", nil
+			case 2:
+				return "FINDINGS:\n- tests are sparse\nKEY FILES: /repo/tests\nFOLLOW-UP: architect", nil
+			default:
+				return "Prioritized recommendations", nil
+			}
+		},
+	})
+	reg.Register(tools.Tool{
+		Name:        "scratchpad_write",
+		Description: "Write scratchpad",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			scratchWrites++
+			return "written", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "review this repo and tell me what to change"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(delegated, ","); got != "scout,scout,architect" {
+		t.Fatalf("delegated roles = %q, want scout,scout,architect", got)
+	}
+	if scratchWrites != 1 {
+		t.Fatalf("scratchpad writes = %d, want only the successful scout evidence write before architect proceeds", scratchWrites)
+	}
+	if strings.Contains(output.String(), "dispatch cannot delegate to scout twice in a row") {
+		t.Fatalf("empty scout output should not poison dispatch state, got %q", output.String())
+	}
+}
+
 func TestCancelSubAgentSafe(t *testing.T) {
 	a := &Agent{}
 	// Should not panic when no sub-agent is active.
