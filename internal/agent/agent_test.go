@@ -1162,6 +1162,47 @@ func TestDispatchRequiresUsableScoutEvidenceBeforeArchitectRepoReview(t *testing
 	}
 }
 
+func TestDispatchRepoReviewEvidenceUsableRejectsPlaceholderScratchpadContent(t *testing.T) {
+	placeholder := "I’ll inspect the repository structure, Python modules, configuration, tests, and docs, then summarize concrete evidence only."
+	if dispatchRepoReviewEvidenceUsable(placeholder) {
+		t.Fatalf("placeholder scratchpad content should not count as usable evidence")
+	}
+}
+
+func TestDispatchRejectsBuilderRepoReviewEvidenceCollection(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"builder\", \"task\": \"TASK: Gather concrete repository evidence for a repo review and write the raw findings into the shared scratchpad file repo_review_evidence.md so that an architect can synthesize recommendations. OUTCOME: Evidence-based raw findings.\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Gather evidence only for a repo review. OUTCOME: Evidence-backed findings only.\"}}\n</tool_call>",
+		"Done.",
+	}}
+	reg := tools.NewRegistry()
+	var delegated []string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			delegated = append(delegated, role)
+			return "FINDINGS:\n- docs are thin\nKEY FILES: /repo/README.md\nFOLLOW-UP: architect", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "review this repo"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(delegated, ","); got != "scout" {
+		t.Fatalf("delegated roles = %q, want scout", got)
+	}
+	if !strings.Contains(output.String(), "repo-review evidence gathering and scratchpad recovery must stay on scout") {
+		t.Fatalf("expected builder repo-review evidence guard error, got %q", output.String())
+	}
+}
+
 func TestDispatchRejectsBuilderPresentationShimAfterArchitectRepoReview(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Gather evidence only.\"}}\n</tool_call>",
