@@ -506,8 +506,11 @@ func TestDispatchProseFilteredOnToolCallTurns(t *testing.T) {
 	if strings.Contains(got, "Let me delegate") {
 		t.Errorf("dispatch prose before tool call leaked: %q", got)
 	}
-	if !strings.Contains(got, "Here are the results") {
-		t.Errorf("dispatch result presentation missing from output: %q", got)
+	if strings.Contains(got, "Here are the results") {
+		t.Errorf("dispatch should not narrate delegated results: %q", got)
+	}
+	if !strings.Contains(got, "scout found stuff") {
+		t.Errorf("delegate tool result missing from output: %q", got)
 	}
 }
 
@@ -538,11 +541,47 @@ func TestDispatchRetriesDirectAnswerUntilItDelegates(t *testing.T) {
 	if strings.Contains(got, "Repo overview") {
 		t.Fatalf("dispatch should not leak direct answers before delegating: %q", got)
 	}
-	if !strings.Contains(got, "Here are the results from scout.") {
-		t.Fatalf("dispatch final presentation missing from output: %q", got)
+	if strings.Contains(got, "Here are the results from scout.") {
+		t.Fatalf("dispatch should stay silent after delegation: %q", got)
+	}
+	if !strings.Contains(got, "scout found stuff") {
+		t.Fatalf("delegate tool result missing from output: %q", got)
 	}
 	if driver.callIdx != 3 {
 		t.Fatalf("expected dispatch retry plus delegate flow, got %d driver calls", driver.callIdx)
+	}
+}
+
+func TestDispatchRejectsRepeatedScoutDelegation(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"describe repo\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"look for problems\"}}\n</tool_call>",
+		"Done.",
+	}}
+	reg := tools.NewRegistry()
+	delegateCalls := 0
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			delegateCalls++
+			return "scout found stuff", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "describe this repo and suggest improvements"); err != nil {
+		t.Fatal(err)
+	}
+	if delegateCalls != 1 {
+		t.Fatalf("expected one executed scout delegation, got %d", delegateCalls)
+	}
+	if strings.Contains(output.String(), "look for problems") {
+		t.Fatalf("unexpected repeated scout delegation rendered: %q", output.String())
 	}
 }
 
@@ -564,6 +603,58 @@ func TestDispatchFailsClosedWhenItNeverDelegates(t *testing.T) {
 	}
 	if got := output.String(); strings.Contains(got, "Repo overview") || strings.Contains(got, "Still summarizing") {
 		t.Fatalf("dispatch should not render direct answers when it never delegates: %q", got)
+	}
+}
+
+func TestAgentRunParsesCloseOnlyToolCallFragment(t *testing.T) {
+	dir := t.TempDir()
+	driver := &mockDriver{responses: []string{
+		"{\"name\": \"list_dir\", \"args\": {\"path\": \".\", \"recursive\": false}}</tool_call>",
+		"Done.",
+	}}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.NewListDir(dir, nil))
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	agent := NewAgent(driver, reg, YoloApproval(), dir, 10, renderer, nil, nil)
+	if err := agent.Run(context.Background(), "list files"); err != nil {
+		t.Fatal(err)
+	}
+	got := output.String()
+	if strings.Contains(got, "</tool_call>") || strings.Contains(got, `{"name": "list_dir"`) {
+		t.Fatalf("raw malformed tool call leaked to renderer output: %q", got)
+	}
+}
+
+func TestAgentRunDoesNotTruncateDelegateResult(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"review repo\"}}\n</tool_call>",
+		"Done.",
+	}}
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			lines := make([]string, 0, 25)
+			for i := 1; i <= 25; i++ {
+				lines = append(lines, fmt.Sprintf("line %02d", i))
+			}
+			return strings.Join(lines, "\n"), nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	agent := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	agent.SetRole("dispatch")
+	if err := agent.Run(context.Background(), "review repo"); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); !strings.Contains(got, "line 25") {
+		t.Fatalf("delegate output was truncated: %q", got)
 	}
 }
 

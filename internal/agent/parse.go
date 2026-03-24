@@ -94,12 +94,42 @@ func ParseToolCalls(text string) ([]ToolCall, string) {
 			calls = append(calls, parsed...)
 			continue
 		}
+		if call, ok := parseLooseToolCallLine(lineTrimmed); ok {
+			calls = append(calls, call)
+			i++
+			continue
+		}
 
 		textParts = append(textParts, line)
 		i++
 	}
 
 	return calls, strings.Join(textParts, "\n")
+}
+
+func parseLooseToolCallLine(line string) (ToolCall, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return ToolCall{}, false
+	}
+	for _, tag := range toolCallClosers {
+		if strings.Contains(line, tag) {
+			line = strings.TrimSpace(strings.ReplaceAll(line, tag, ""))
+		}
+	}
+	for _, tag := range toolCallOpeners {
+		if strings.Contains(line, tag) {
+			line = strings.TrimSpace(strings.ReplaceAll(line, tag, ""))
+		}
+	}
+	if line == "" {
+		return ToolCall{}, false
+	}
+	call := parseCallJSON(line)
+	if call.Name == "" {
+		return ToolCall{}, false
+	}
+	return call, true
 }
 
 // parseBlock tries to parse the inner content of a tool call block.
