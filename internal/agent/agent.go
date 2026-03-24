@@ -684,9 +684,14 @@ func looksLikeInterpretiveFollowUp(lower string) bool {
 		return true
 	}
 	return containsAny(lower, []string{
+		"i don't understand",
+		"i dont understand",
 		"what should",
 		"what do we do",
 		"what now",
+		"what it means",
+		"what this means",
+		"what the email means",
 		"next step",
 		"should we",
 		"does that mean",
