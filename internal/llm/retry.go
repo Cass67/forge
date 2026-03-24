@@ -6,7 +6,23 @@ import (
 	"math"
 	"math/rand"
 	"strings"
+	"sync"
 	"time"
+)
+
+var (
+	retryNow               = time.Now
+	retryRateLimitCooldown = 10 * time.Second
+	retrySleep             = func(ctx context.Context, d time.Duration) error {
+		select {
+		case <-time.After(d):
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	retryCooldownMu sync.Mutex
+	retryCooldowns  = map[string]time.Time{}
 )
 
 type RetryDriver struct {
@@ -61,14 +77,16 @@ func (d *RetryDriver) ResetConversation() {
 func (d *RetryDriver) Stream(ctx context.Context, messages []Message, out chan<- Token) error {
 	defer close(out)
 
+	if err := waitForRateLimitCooldown(ctx, d.Name()); err != nil {
+		return err
+	}
+
 	var lastErr error
 	for attempt := 0; attempt < d.maxAttempts; attempt++ {
 		if attempt > 0 {
 			wait := d.backoff(attempt)
-			select {
-			case <-time.After(wait):
-			case <-ctx.Done():
-				return ctx.Err()
+			if err := retrySleep(ctx, wait); err != nil {
+				return err
 			}
 		}
 
@@ -100,6 +118,9 @@ func (d *RetryDriver) Stream(ctx context.Context, messages []Message, out chan<-
 				}
 			}
 			return nil
+		}
+		if isRateLimited(lastErr) {
+			rememberRateLimit(d.Name())
 		}
 
 		if !isRetryable(lastErr) {
@@ -148,4 +169,38 @@ func isRetryable(err error) bool {
 		}
 	}
 	return true
+}
+
+func isRateLimited(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "429") ||
+		strings.Contains(msg, "too many requests") ||
+		strings.Contains(msg, "rate limit exceeded") ||
+		strings.Contains(msg, "rate limited")
+}
+
+func waitForRateLimitCooldown(ctx context.Context, key string) error {
+	retryCooldownMu.Lock()
+	until, ok := retryCooldowns[key]
+	retryCooldownMu.Unlock()
+	if !ok {
+		return nil
+	}
+	now := retryNow()
+	if !until.After(now) {
+		retryCooldownMu.Lock()
+		delete(retryCooldowns, key)
+		retryCooldownMu.Unlock()
+		return nil
+	}
+	return retrySleep(ctx, until.Sub(now))
+}
+
+func rememberRateLimit(key string) {
+	retryCooldownMu.Lock()
+	defer retryCooldownMu.Unlock()
+	retryCooldowns[key] = retryNow().Add(retryRateLimitCooldown)
 }

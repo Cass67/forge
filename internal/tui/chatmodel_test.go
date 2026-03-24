@@ -219,6 +219,44 @@ func TestChatModelProgressHandoffFreezesPreviousActivityBlock(t *testing.T) {
 	}
 }
 
+func TestChatModelDelegateResultAddsCompactSubAgentSummaryToChat(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "runtime", Text: "[scout] starting", SubAgent: "scout"})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "read_file", Text: "README.md", SubAgent: "scout"})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{Kind: llm.EventStats, Duration: time.Second, Usage: llm.Usage{InputTokens: 1}, SubAgent: "scout"})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "runtime", Text: "[scout] done", SubAgent: "scout"})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{
+		Kind:    llm.EventToolResult,
+		Agent:   "delegate",
+		Text:    "Now let me examine the Python files to understand the codebase structure and identify potential issues.",
+		IsError: false,
+	})
+	m = updated.(ChatModel)
+
+	var statuses []string
+	for _, msg := range m.messages {
+		if msg.Kind == MsgStatus {
+			statuses = append(statuses, msg.Content)
+		}
+	}
+	if len(statuses) < 2 {
+		t.Fatalf("expected compact sub-agent status messages, got %#v", m.messages)
+	}
+	if statuses[len(statuses)-2] != "scout complete • 1 turns • 1 tools" {
+		t.Fatalf("summary status = %q", statuses[len(statuses)-2])
+	}
+	if got := statuses[len(statuses)-1]; !strings.Contains(got, "status: Now let me examine the Python files") {
+		t.Fatalf("result status = %q", got)
+	}
+}
+
 func TestChatModelSlashClear(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 80
