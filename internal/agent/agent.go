@@ -153,6 +153,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	actionPreambleRetries := 0
 	subAgentMixedProseRetries := 0
 	dispatchDirectAnswerRetries := 0
+	scoutNoToolRetries := 0
 	sawToolCallThisRun := false
 	lastDispatchDelegateRole := ""
 	lastDispatchDelegateBlocked := false
@@ -220,6 +221,17 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			if a.role == "dispatch" {
 				return nil
 			}
+			if a.role == "scout" && !sawToolCallThisRun && scoutTaskRequiresEvidenceTools(userMessage) {
+				if turn+1 < a.maxTurns {
+					scoutNoToolRetries++
+					a.history = append(a.history, llm.Message{
+						Role:    llm.RoleUser,
+						Content: scoutEvidenceNudgeMessage(scoutNoToolRetries),
+					})
+					continue
+				}
+				return fmt.Errorf("scout produced no evidence-gathering tool call before answering")
+			}
 			isPreamble := looksLikeActionPreamble(response)
 			if !a.isSubAgent && isPreamble && actionPreambleRetries < 4 && turn+1 < a.maxTurns {
 				actionPreambleRetries++
@@ -237,6 +249,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		}
 		actionPreambleRetries = 0
 		dispatchDirectAnswerRetries = 0
+		scoutNoToolRetries = 0
 		sawToolCallThisRun = true
 
 		if a.role == "dispatch" && len(calls) > 1 {
@@ -1043,6 +1056,17 @@ func scoutNudgeMessage() string {
 	return "Scout must not mix visible prose with tool calls. Use tool calls only while gathering evidence, and never ask for pasted outputs."
 }
 
+func scoutEvidenceNudgeMessage(attempt int) string {
+	switch attempt {
+	case 1:
+		return "Scout must gather evidence with tools before answering. Call the next search/read tool now, not a search plan."
+	case 2:
+		return "No blocked scout answer yet. Use the available search/read tools and return findings only after evidence is gathered."
+	default:
+		return "Call an evidence-gathering tool now. Do not stop with a no-evidence answer while tools are still available."
+	}
+}
+
 func subAgentToolCallNudgeMessage(role string, attempt int) string {
 	if strings.TrimSpace(role) == "scout" {
 		return scoutNudgeMessage()
@@ -1068,6 +1092,27 @@ func dispatchNudgeMessage(attempt int) string {
 	default:
 		return "Delegate now. No direct answer."
 	}
+}
+
+func scoutTaskRequiresEvidenceTools(task string) bool {
+	lower := strings.ToLower(normalizePromptText(task))
+	return containsAny(lower, []string{
+		"task:",
+		"find",
+		"search",
+		"trace",
+		"investigate",
+		"identify",
+		"where did",
+		"where does",
+		"come from",
+		"origin",
+		"why it was sent",
+		"triggering condition",
+		"repo review",
+		"evidence",
+		"codebase assessment",
+	})
 }
 
 // estimateTokens returns a rough token count (~4 chars per token).
