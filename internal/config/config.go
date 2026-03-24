@@ -94,6 +94,7 @@ type AgentsConfig struct {
 
 type ChatConfig struct {
 	Model          string       `toml:"model"`
+	LastModel      string       `toml:"last_model"`
 	MaxTurns       int          `toml:"max_turns"`
 	CommandTimeout int          `toml:"command_timeout"`
 	Yolo           bool         `toml:"yolo"`
@@ -189,6 +190,70 @@ func SaveAgentModels(path string, models AgentModels) error {
 			filtered = append(filtered, "")
 		}
 		filtered = append(filtered, strings.Split(section, "\n")...)
+	}
+
+	content := strings.Join(filtered, "\n")
+	if content != "" && !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	return os.WriteFile(path, []byte(content), 0o600)
+}
+
+// SaveChatLastModel updates only the [chat] last_model key in the config file.
+func SaveChatLastModel(path, model string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	lines := []string{}
+	if len(data) > 0 {
+		lines = strings.Split(string(data), "\n")
+	}
+
+	sectionFound := false
+	inserted := false
+	filtered := make([]string, 0, len(lines)+2)
+	inChatSection := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			if inChatSection && !inserted {
+				filtered = append(filtered, `last_model = "`+model+`"`)
+				inserted = true
+			}
+			inChatSection = trimmed == "[chat]"
+			if inChatSection {
+				sectionFound = true
+			}
+			filtered = append(filtered, line)
+			continue
+		}
+		if inChatSection && strings.HasPrefix(trimmed, "last_model") {
+			if !inserted {
+				filtered = append(filtered, `last_model = "`+model+`"`)
+				inserted = true
+			}
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+
+	if sectionFound && !inserted {
+		filtered = append(filtered, `last_model = "`+model+`"`)
+	}
+	if !sectionFound {
+		for len(filtered) > 0 && strings.TrimSpace(filtered[len(filtered)-1]) == "" {
+			filtered = filtered[:len(filtered)-1]
+		}
+		if len(filtered) > 0 {
+			filtered = append(filtered, "")
+		}
+		filtered = append(filtered, "[chat]", `last_model = "`+model+`"`)
 	}
 
 	content := strings.Join(filtered, "\n")
@@ -385,6 +450,9 @@ func (c *Config) BraveKey() string {
 func (c *Config) ChatModel() string {
 	if v := os.Getenv("FORGE_CHAT_MODEL"); v != "" {
 		return v
+	}
+	if c.Chat.LastModel != "" {
+		return c.Chat.LastModel
 	}
 	if c.Chat.Model != "" {
 		return c.Chat.Model

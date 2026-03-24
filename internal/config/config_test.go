@@ -168,6 +168,19 @@ func TestChatModel(t *testing.T) {
 	if got := cfg.ChatModel(); got != "gpt-4o" {
 		t.Errorf("ChatModel() = %q, want gpt-4o", got)
 	}
+	cfg.Chat.LastModel = "openai/gpt-5"
+	if got := cfg.ChatModel(); got != "openai/gpt-5" {
+		t.Errorf("ChatModel() with last_model = %q, want openai/gpt-5", got)
+	}
+}
+
+func TestChatModelEnvOverrideBeatsStoredLastModel(t *testing.T) {
+	cfg, _ := config.Load("/nonexistent/path.toml")
+	cfg.Chat.LastModel = "claude/claude-sonnet-4-6"
+	t.Setenv("FORGE_CHAT_MODEL", "openai/gpt-5.4")
+	if got := cfg.ChatModel(); got != "openai/gpt-5.4" {
+		t.Fatalf("ChatModel() = %q, want openai/gpt-5.4", got)
+	}
 }
 
 func TestBraveKeyEnvOverride(t *testing.T) {
@@ -252,5 +265,45 @@ func TestSaveAgentModelsReplacesExistingSection(t *testing.T) {
 	}
 	if !strings.Contains(content, "[session]") || !strings.Contains(content, "rounds_per_pass = 3") {
 		t.Fatalf("expected unrelated config to remain, got:\n%s", content)
+	}
+}
+
+func TestSaveChatLastModelPreservesExistingChatSection(t *testing.T) {
+	path := writeTemp(t, "[models]\nwriter = \"claude-sonnet-4-6\"\n\n[chat]\nmodel = \"chatgpt/gpt-5.4\"\nauto_skills = \"auto\"\n\n[chat.agents]\nenabled = true\n")
+
+	if err := config.SaveChatLastModel(path, "claude/claude-opus-4-6"); err != nil {
+		t.Fatalf("SaveChatLastModel: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "[chat]") || !strings.Contains(content, "model = \"chatgpt/gpt-5.4\"") || !strings.Contains(content, "auto_skills = \"auto\"") {
+		t.Fatalf("expected existing chat config to be preserved, got:\n%s", content)
+	}
+	if !strings.Contains(content, "last_model = \"claude/claude-opus-4-6\"") {
+		t.Fatalf("expected last_model to be saved, got:\n%s", content)
+	}
+	if !strings.Contains(content, "[chat.agents]") || !strings.Contains(content, "enabled = true") {
+		t.Fatalf("expected nested chat sections to remain, got:\n%s", content)
+	}
+}
+
+func TestSaveChatLastModelAddsChatSectionWhenMissing(t *testing.T) {
+	path := writeTemp(t, "[models]\nwriter = \"claude-sonnet-4-6\"\n")
+
+	if err := config.SaveChatLastModel(path, "openai/gpt-5.4"); err != nil {
+		t.Fatalf("SaveChatLastModel: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "[chat]") || !strings.Contains(content, "last_model = \"openai/gpt-5.4\"") {
+		t.Fatalf("expected chat section with last_model, got:\n%s", content)
 	}
 }

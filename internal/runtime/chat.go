@@ -25,8 +25,10 @@ import (
 )
 
 var (
-	loadChatConfig = bootstrap.LoadConfig
-	loadChatTokens = bootstrap.LoadTokens
+	loadChatConfig    = bootstrap.LoadConfig
+	loadChatTokens    = bootstrap.LoadTokens
+	saveLastChatModel = config.SaveChatLastModel
+	defaultConfigPath = config.DefaultPath
 )
 
 type ChatSetup struct {
@@ -51,7 +53,10 @@ func BuildChatSetup(cfg *config.Config, tokens any, modelOverride, workDir strin
 		return nil, fmt.Errorf("resolve working directory: %w", err)
 	}
 
-	authTokens, _ := bootstrap.LoadTokens()
+	authTokens, _ := loadChatTokens()
+	if authTokens == nil {
+		authTokens = &auth.Tokens{}
+	}
 	available := bootstrap.AvailableModels(cfg, authTokens)
 	providers := providerOptionsFromBootstrap(bootstrap.SupportedProviderBackends(cfg, authTokens))
 	chatModel := cfg.ChatModel()
@@ -91,6 +96,7 @@ func BuildChatSetup(cfg *config.Config, tokens any, modelOverride, workDir strin
 	if driver == nil {
 		return nil, fmt.Errorf("no API key found for model %q", chatModel)
 	}
+	persistChatLastModel(cfg, chatModel)
 
 	return &ChatSetup{
 		Config:     cfg,
@@ -102,6 +108,14 @@ func BuildChatSetup(cfg *config.Config, tokens any, modelOverride, workDir strin
 		Providers:  providers,
 		MakeDriver: makeChatDriver,
 	}, nil
+}
+
+func persistChatLastModel(cfg *config.Config, model string) {
+	if cfg == nil || strings.TrimSpace(model) == "" {
+		return
+	}
+	cfg.Chat.LastModel = model
+	_ = saveLastChatModel(defaultConfigPath(), model)
 }
 
 func refreshChatSetupState(setup *ChatSetup) (*config.Config, *auth.Tokens) {
@@ -310,6 +324,7 @@ func RunChatLive(setup *ChatSetup) {
 			setup.ChatModel = name
 			setup.Driver = d
 			a.SetDriver(setup.Driver)
+			persistChatLastModel(setup.Config, name)
 			return name, nil
 		},
 		ToggleAgents: func(enabled bool) error {
