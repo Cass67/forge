@@ -14,16 +14,17 @@ import (
 )
 
 type Agent struct {
-	driver   llm.Driver
-	tools    *tools.Registry
-	approve  tools.ApprovalFunc
-	history  []llm.Message
-	system   string
-	workDir  string
-	maxTurns int
-	renderer RenderTarget
-	skills   []skills.Skill
-	state    *chatstate.State
+	driver         llm.Driver
+	tools          *tools.Registry
+	approve        tools.ApprovalFunc
+	history        []llm.Message
+	system         string
+	systemOverride bool // true when SetSystem was called; suppresses rebuild
+	workDir        string
+	maxTurns       int
+	renderer       RenderTarget
+	skills         []skills.Skill
+	state          *chatstate.State
 }
 
 const targetHistoryTokens = 12000
@@ -63,9 +64,20 @@ func (a *Agent) SetDriver(d llm.Driver) {
 	a.driver = d
 }
 
-// SetSystem replaces the agent's system prompt.
+// SetSystem replaces the agent's system prompt with a fixed value
+// that won't be rebuilt between turns (used for sub-agents with role prompts).
 func (a *Agent) SetSystem(system string) {
 	a.system = system
+	a.systemOverride = true
+}
+
+// systemPrompt returns the current system prompt, rebuilding it from the
+// tool registry when no explicit override is set (picks up tool disclosure changes).
+func (a *Agent) systemPrompt() string {
+	if a.systemOverride {
+		return a.system
+	}
+	return BuildSystemPrompt(a.workDir, a.tools, skills.Describe(a.skills))
 }
 
 // SetTools replaces the agent's tool registry.
@@ -94,7 +106,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		a.enforceHistoryBudget(targetHistoryTokens)
 
 		messages := make([]llm.Message, 0, len(a.history)+1)
-		messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: a.system})
+		messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: a.systemPrompt()})
 		messages = append(messages, a.history...)
 
 		// Stream response
@@ -134,6 +146,15 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 							inToolCall = false
 							continue
 						}
+						// Standalone <invoke> blocks (not wrapped in <function_calls>).
+						if strings.HasPrefix(trimmed, "<invoke") {
+							inToolCall = true
+							continue
+						}
+						if strings.Contains(trimmed, "</invoke>") {
+							inToolCall = false
+							continue
+						}
 					}
 					if !inToolCall {
 						a.renderer.AgentToken(line)
@@ -147,7 +168,9 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			trimmed := strings.TrimSpace(remaining)
 			if _, ok := isToolCallOpen(trimmed); !ok {
 				if _, ok := isToolCallClose(trimmed); !ok {
-					a.renderer.AgentToken(remaining)
+					if !strings.HasPrefix(trimmed, "<invoke") && !strings.Contains(trimmed, "</invoke>") {
+						a.renderer.AgentToken(remaining)
+					}
 				}
 			}
 		}
@@ -423,7 +446,7 @@ func (a *Agent) enforceHistoryBudget(tokenBudget int) {
 }
 
 func (a *Agent) estimatedRequestTokens() int {
-	total := estimateTokens(a.system)
+	total := estimateTokens(a.systemPrompt())
 	for _, m := range a.history {
 		total += estimateTokens(m.Content)
 	}

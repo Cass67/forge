@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,27 +14,34 @@ import (
 	"forge/internal/agent/tools"
 	"forge/internal/auth"
 	"forge/internal/chatstate"
+	"forge/internal/codexusage"
+	"forge/internal/copilot"
 	"forge/internal/llm"
+	"forge/internal/modelcatalog"
 	"forge/internal/skills"
 )
 
 type ChatLiveConfig struct {
-	Model            string
-	WorkDir          string
-	AvailableModels  []string
-	Providers        []ProviderOption
-	RefreshModels    func() []string
-	ProbeModels      func(currentModel string, available []string) []string
-	RefreshProviders func() []ProviderOption
-	ContextFiles     []string
-	SwitchModel      func(name string) (newModel string, err error)
-	ClearHistory     func()
-	ApprovalCh       <-chan tools.Action
-	ResponseCh       chan<- bool
-	Skills           []skills.Skill
-	AutoSkillsMode   string
-	State            *chatstate.State
-	CopilotClientID  string
+	Model                 string
+	WorkDir               string
+	AvailableModels       []string
+	Providers             []ProviderOption
+	RefreshModels         func() []string
+	ProbeModels           func(currentModel string, available []string) []string
+	RefreshProviders      func() []ProviderOption
+	ContextFiles          []string
+	SwitchModel           func(name string) (newModel string, err error)
+	ClearHistory          func()
+	ApprovalCh            <-chan tools.Action
+	ResponseCh            chan<- bool
+	Skills                []skills.Skill
+	AutoSkillsMode        string
+	State                 *chatstate.State
+	CopilotClientID       string
+	FetchLiveCopilotQuota func(context.Context) (*copilot.UserQuota, error)
+	FetchCodexUsage       func(context.Context) (*codexusage.Snapshot, error)
+	ModelInfo             func(model string) *modelcatalog.ModelInfo
+	RequestMode           func() string
 }
 
 type ProviderOption struct {

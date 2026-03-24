@@ -10,10 +10,11 @@ import (
 type MsgKind int
 
 const (
-	MsgUser   MsgKind = iota // User input
-	MsgAgent                 // Agent response
-	MsgForge                 // Forge steering input
-	MsgStatus                // Status line (e.g. "Agent complete")
+	MsgUser    MsgKind = iota // User input
+	MsgAgent                  // Agent response
+	MsgForge                  // Forge steering input
+	MsgWorking                // Inline progress / working-state update
+	MsgStatus                 // Status line (e.g. "Agent complete")
 )
 
 // ChatMessage is a single message in the conversation.
@@ -23,40 +24,58 @@ type ChatMessage struct {
 	Content string // message body (may be multi-line)
 }
 
-func (m ChatMessage) borderColor() lipgloss.Color {
+func (m ChatMessage) borderColor(theme chatTheme) lipgloss.Color {
 	switch m.Kind {
 	case MsgUser:
-		return lipgloss.Color("#56d364")
+		return theme.Success
 	case MsgAgent:
-		return lipgloss.Color("#58a6ff")
+		return theme.AccentPrimary
 	case MsgForge:
-		return lipgloss.Color("#d2a8ff")
+		return theme.AccentSecondary
+	case MsgWorking:
+		return theme.TextDim
 	default:
-		return lipgloss.Color("#484f58")
+		return theme.Border
 	}
 }
 
 // Render returns the styled string for this message at the given width.
-func (m ChatMessage) Render(width int, lowContrast bool) string {
+func (m ChatMessage) Render(width int, theme chatTheme) string {
 	if width < 10 {
 		width = 10
 	}
 
 	if m.Kind == MsgStatus {
 		style := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#484f58")).
+			Foreground(theme.TextDim).
 			Width(width).
 			Align(lipgloss.Center)
 		return style.Render(m.Content)
 	}
 
-	bc := m.borderColor()
-	if lowContrast && m.Kind == MsgUser {
-		bc = lipgloss.Color("#7fbf7f")
+	if m.Kind == MsgWorking {
+		header := strings.TrimSpace(m.Header)
+		if header == "" {
+			header = "Working"
+		}
+		titleStyle := lipgloss.NewStyle().
+			Foreground(theme.TextDim).
+			Bold(true)
+		contentStyle := lipgloss.NewStyle().
+			Foreground(theme.TextDim).
+			Width(width)
+		if strings.TrimSpace(m.Content) == "" {
+			return titleStyle.Render(header)
+		}
+		return lipgloss.JoinVertical(lipgloss.Left,
+			titleStyle.Render(header),
+			contentStyle.Render(m.Content),
+		)
 	}
 
-	boxBg := lipgloss.Color("#0d1117")
-	headerBg := lipgloss.Color("#161b22")
+	bc := m.borderColor(theme)
+	boxBg := theme.PanelBG
+	headerBg := theme.HeaderBG
 	innerWidth := width - 2
 
 	var headerBlock string
@@ -71,7 +90,7 @@ func (m ChatMessage) Render(width int, lowContrast bool) string {
 
 	contentStyle := lipgloss.NewStyle().
 		Background(boxBg).
-		Foreground(lipgloss.Color("#c9d1d9")).
+		Foreground(theme.Text).
 		Width(innerWidth)
 	// Strip trailing blank lines so boxes hug their last content line
 	contentLines := strings.Split(m.Content, "\n")

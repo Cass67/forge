@@ -14,6 +14,7 @@ import (
 	"forge/internal/auth"
 	"forge/internal/chatgptauth"
 	"forge/internal/chatstate"
+	"forge/internal/codexusage"
 	"forge/internal/copilot"
 	"forge/internal/llm"
 	"forge/internal/skills"
@@ -39,6 +40,16 @@ type providerAuthSucceededMsg struct {
 type providerAuthFailedMsg struct {
 	providerID string
 	err        error
+}
+type statsCopilotQuotaMsg struct {
+	model string
+	quota *copilot.UserQuota
+	err   error
+}
+type statsCodexUsageMsg struct {
+	model    string
+	snapshot *codexusage.Snapshot
+	err      error
 }
 type chatSlashCompletionState struct {
 	baseInput string
@@ -68,6 +79,11 @@ const (
 	focusChat chatPaneFocus = iota
 	focusTools
 )
+
+const chatHeaderHeight = 2
+const chatPaneBorderHeight = 2
+const chatInputHeight = 3
+const chatStatusHeight = 1
 
 type ChatModel struct {
 	config  ChatLiveConfig
@@ -104,16 +120,21 @@ type ChatModel struct {
 	statsDuration  time.Duration
 	statsUsage     llm.Usage
 	sessionUsage   llm.Usage
+	statusData     chatStatusData
 	skills         []skills.Skill
 	autoSkillsMode string
 	state          *chatstate.State
-	lowContrast    bool
+	themeID        string
 
 	helpVisible bool
 	helpTab     int
 	helpScroll  int
 
-	statsVisible bool
+	statsVisible        bool
+	statsCopilotLoading bool
+	statsCopilotErr     string
+	statsCodexLoading   bool
+	statsCodexErr       string
 
 	searchVisible bool
 	searchQuery   string
@@ -172,11 +193,12 @@ func NewChatModel(cfg ChatLiveConfig) ChatModel {
 		state = chatstate.New()
 	}
 
-	return ChatModel{
+	m := ChatModel{
 		config:         cfg,
 		model:          cfg.Model,
 		workDir:        cfg.WorkDir,
 		copyFn:         copyToClipboard,
+		themeID:        "default",
 		chatViewport:   vp,
 		status:         "ready",
 		skills:         cfg.Skills,
@@ -189,6 +211,8 @@ func NewChatModel(cfg ChatLiveConfig) ChatModel {
 		providersList:  append([]ProviderOption(nil), cfg.Providers...),
 		contextFiles:   append([]string(nil), cfg.ContextFiles...),
 	}
+	m.syncStatusData()
+	return m
 }
 
 func (m ChatModel) Init() tea.Cmd {
@@ -206,6 +230,25 @@ func tickCmd() tea.Cmd {
 
 func (m *ChatModel) AddMessage(msg ChatMessage) {
 	m.messages = append(m.messages, msg)
+	m.refreshViewport()
+}
+
+func (m *ChatModel) AddWorkingMessage(content string) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return
+	}
+	if len(m.messages) > 0 {
+		last := m.messages[len(m.messages)-1]
+		if last.Kind == MsgWorking && strings.TrimSpace(last.Content) == content {
+			return
+		}
+	}
+	m.messages = append(m.messages, ChatMessage{
+		Kind:    MsgWorking,
+		Header:  "Working",
+		Content: content,
+	})
 	m.refreshViewport()
 }
 
@@ -236,6 +279,7 @@ func (m *ChatModel) refreshViewport() {
 	if contentWidth < 10 {
 		contentWidth = 60
 	}
+	theme := m.theme()
 
 	var blocks []string
 	for _, msg := range m.messages {
@@ -244,7 +288,7 @@ func (m *ChatModel) refreshViewport() {
 		if (msg.Kind == MsgAgent || msg.Kind == MsgForge) && strings.TrimSpace(msg.Content) == "" {
 			continue
 		}
-		blocks = append(blocks, msg.Render(contentWidth, m.lowContrast))
+		blocks = append(blocks, msg.Render(contentWidth, theme))
 	}
 	content := strings.Join(blocks, "\n")
 	m.chatContent = content
@@ -275,7 +319,7 @@ type chatLayoutMouseContext struct {
 }
 
 func (m ChatModel) mouseContext() chatLayoutMouseContext {
-	headerH := 1
+	headerH := chatHeaderHeight
 	chatPaneWidth := m.chatPaneWidth()
 	chatBodyHeight := max(1, m.chatViewport.Height)
 	chatH := chatBodyHeight + 2
@@ -508,7 +552,7 @@ func (m ChatModel) handleModelsMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				idx := start + (msg.Y - listY)
 				if idx >= 0 && idx < len(m.modelsFiltered) {
 					m.modelsCursor = idx
-					m.pickModel(idx)
+					return m, m.pickModel(idx)
 				}
 			}
 			return m, nil
@@ -622,9 +666,8 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		headerH := 1
-		inputH := 4
-		bodyH := max(3, m.height-headerH-inputH)
+		headerH := chatHeaderHeight
+		bodyH := max(3, m.height-headerH-chatPaneBorderHeight-chatInputHeight-chatStatusHeight)
 		m.chatViewport.Width = m.chatContentWidth()
 		m.chatViewport.Height = bodyH
 		m.refreshViewport()
@@ -664,6 +707,32 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case providerAuthFailedMsg:
 		return m.handleProviderAuthFailed(msg)
 
+	case statsCopilotQuotaMsg:
+		if msg.model != m.model {
+			return m, nil
+		}
+		m.statsCopilotLoading = false
+		m.statusData.CopilotLive = msg.quota
+		if msg.err != nil {
+			m.statsCopilotErr = msg.err.Error()
+		} else {
+			m.statsCopilotErr = ""
+		}
+		return m, nil
+
+	case statsCodexUsageMsg:
+		if msg.model != m.model {
+			return m, nil
+		}
+		m.statsCodexLoading = false
+		m.statusData.CodexUsage = msg.snapshot
+		if msg.err != nil {
+			m.statsCodexErr = msg.err.Error()
+		} else {
+			m.statsCodexErr = ""
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 
@@ -686,9 +755,13 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 	case llm.EventToken:
 		m.AppendToLastAgentLabeled(ev.Text, ev.Agent)
 	case llm.EventToolCall:
-		// Show delegation events as a status line in the chat pane.
-		if ev.Agent == "runtime" && strings.HasPrefix(ev.Text, "delegating to ") {
-			m.AddMessage(ChatMessage{Kind: MsgStatus, Content: ev.Text})
+		if ev.Agent == "runtime" {
+			if strings.HasPrefix(ev.Text, "delegating to ") {
+				m.AddMessage(ChatMessage{Kind: MsgStatus, Content: ev.Text})
+			} else {
+				m.AddWorkingMessage(ev.Text)
+			}
+			return m, nil
 		}
 		if m.toolsBuf != "" && !strings.HasSuffix(m.toolsBuf, "\n\n") {
 			m.toolsBuf += "\n"
@@ -720,6 +793,7 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		m.busy = false
 		m.activeSubAgent = ""
 		m.status = "ready"
+		m.syncStatusData()
 		stamp := time.Now().Format("15:04:05")
 		m.AddMessage(ChatMessage{
 			Kind:    MsgStatus,
@@ -731,6 +805,7 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 	case llm.EventError:
 		m.busy = false
 		m.status = "error"
+		m.syncStatusData()
 		errMsg := eventErrorMessage(ev)
 		m.toolsBuf += fmt.Sprintf("  ✗ %s\n", errMsg)
 		m.flash = "error: " + errMsg
@@ -743,6 +818,7 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		m.statsUsage = ev.Usage
 		m.sessionUsage.InputTokens += ev.Usage.InputTokens
 		m.sessionUsage.OutputTokens += ev.Usage.OutputTokens
+		m.syncStatusData()
 		if ev.Duration > 0 {
 			m.toolsBuf += fmt.Sprintf("  %.1fs", ev.Duration.Seconds())
 			if ev.Usage.InputTokens > 0 {
@@ -750,6 +826,7 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 			}
 			m.toolsBuf += "\n"
 		}
+		return m, m.beginProviderDiagnosticsFetch(false)
 	}
 	// Auto-scroll tools pane when content is added.
 	if ev.Kind == llm.EventToolCall || ev.Kind == llm.EventToolResult || ev.Kind == llm.EventStats {
@@ -842,6 +919,51 @@ func latestFencedCodeBlock(content string) string {
 		}
 	}
 	return ""
+}
+
+func (m *ChatModel) resetProviderDiagnostics() {
+	m.statusData.CopilotLive = nil
+	m.statusData.CodexUsage = nil
+	m.statsCopilotLoading = false
+	m.statsCodexLoading = false
+	m.statsCopilotErr = ""
+	m.statsCodexErr = ""
+}
+
+func (m *ChatModel) beginProviderDiagnosticsFetch(force bool) tea.Cmd {
+	provider := providerFromModel(m.model)
+	var cmds []tea.Cmd
+
+	if provider == "copilot" && m.config.FetchLiveCopilotQuota != nil && (force || (m.statusData.CopilotLive == nil && !m.statsCopilotLoading)) {
+		m.statsCopilotLoading = true
+		if force {
+			m.statsCopilotErr = ""
+		}
+		model := m.model
+		fetch := m.config.FetchLiveCopilotQuota
+		cmds = append(cmds, func() tea.Msg {
+			quota, err := fetch(context.Background())
+			return statsCopilotQuotaMsg{model: model, quota: quota, err: err}
+		})
+	}
+
+	if (provider == "chatgpt" || provider == "openai" || provider == "codex") && m.config.FetchCodexUsage != nil && (force || (m.statusData.CodexUsage == nil && !m.statsCodexLoading)) {
+		m.statsCodexLoading = true
+		if force {
+			m.statsCodexErr = ""
+		}
+		model := m.model
+		fetch := m.config.FetchCodexUsage
+		cmds = append(cmds, func() tea.Msg {
+			snapshot, err := fetch(context.Background())
+			return statsCodexUsageMsg{model: model, snapshot: snapshot, err: err}
+		})
+	}
+
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1054,6 +1176,7 @@ func (m ChatModel) submitInput() (tea.Model, tea.Cmd) {
 	m.inputPos = 0
 	m.busy = true
 	m.status = "running"
+	m.syncStatusData()
 
 	if m.inputCh != nil {
 		ch := m.inputCh
@@ -1202,6 +1325,7 @@ func (m ChatModel) submitSkillInput(s skills.Skill, turnLabel, msg string) (tea.
 	m.flash = fmt.Sprintf("skill: %s", s.Name)
 	m.busy = true
 	m.status = "running"
+	m.syncStatusData()
 
 	if m.inputCh != nil {
 		ch := m.inputCh
@@ -1216,7 +1340,7 @@ func (m ChatModel) submitSkillInput(s skills.Skill, turnLabel, msg string) (tea.
 var builtinCommands = []string{
 	"/clear", "/clear all", "/clear agent", "/clear tools",
 	"/help", "/stats",
-	"/theme", "/theme low", "/theme default",
+	"/theme", "/theme low", "/theme default", "/theme light", "/theme dusk",
 	"/tools", "/toggle tools", "/toggle tools on", "/toggle tools off",
 	"/models", "/model", "/provider",
 	"/skills", "/auto-skills", "/sessions", "/save", "/restore",
@@ -1256,33 +1380,18 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.helpScroll = 0
 		m.flash = "help opened"
 	case input == "/stats":
-		hasStats := m.statsDuration > 0 ||
-			m.statsUsage.InputTokens > 0 ||
-			m.statsUsage.OutputTokens > 0 ||
-			m.sessionUsage.InputTokens > 0 ||
-			m.sessionUsage.OutputTokens > 0
-		if !hasStats {
-			m.flash = "no stats yet"
-			break
-		}
 		m.statsVisible = true
 		m.flash = "stats opened"
+		return m, m.beginProviderDiagnosticsFetch(false)
 	case input == "/theme":
-		m.lowContrast = !m.lowContrast
-		m.refreshViewport()
-		if m.lowContrast {
-			m.flash = "theme: low contrast"
-		} else {
-			m.flash = "theme: default"
+		m.cycleTheme()
+	case strings.HasPrefix(input, "/theme "):
+		name := strings.TrimSpace(strings.TrimPrefix(input, "/theme "))
+		if name == "" {
+			m.flash = "unknown theme \"\""
+			break
 		}
-	case input == "/theme low":
-		m.lowContrast = true
-		m.refreshViewport()
-		m.flash = "theme: low contrast"
-	case input == "/theme default":
-		m.lowContrast = false
-		m.refreshViewport()
-		m.flash = "theme: default"
+		m.applyTheme(name)
 	case input == "/sessions":
 		_ = m.saveSession("last-session")
 		if ok := m.refreshSessionsPicker(true); ok {
@@ -1372,6 +1481,8 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				m.flash = fmt.Sprintf("error: %v", err)
 			} else {
 				m.model = newModel
+				m.resetProviderDiagnostics()
+				m.syncStatusData()
 				m.flash = fmt.Sprintf("switched to %s", newModel)
 			}
 		}
@@ -1479,7 +1590,8 @@ func (m ChatModel) helpLines() []string {
 			"Layout and display:",
 			"  /tools             show / hide tools pane",
 			"  /toggle tools      show / hide tools pane",
-			"  /theme             toggle low-contrast theme",
+			"  /theme             cycle chat themes",
+			"  /theme <name>      select default, low, light, or dusk",
 			"  /expand            expand last truncated result",
 			"",
 			"Export and cleanup:",
@@ -2147,7 +2259,7 @@ func (m ChatModel) handleModelsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.modelsQueryPos = 0
 		m.updateModelFilter()
 	case tea.KeyEnter:
-		m.pickModel(m.modelsCursor)
+		return m, m.pickModel(m.modelsCursor)
 	case tea.KeyRunes:
 		if len(msg.Runes) == 1 && strings.TrimSpace(m.modelsQuery) == "" {
 			r := msg.Runes[0]
@@ -2155,7 +2267,7 @@ func (m ChatModel) handleModelsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				idx := int(r - '1')
 				if idx < len(m.modelsFiltered) {
 					m.modelsCursor = idx
-					m.pickModel(idx)
+					return m, m.pickModel(idx)
 				}
 				return m, nil
 			}
@@ -2197,21 +2309,24 @@ func (m *ChatModel) refreshModelList() {
 	m.updateModelFilter()
 }
 
-func (m *ChatModel) pickModel(idx int) {
+func (m *ChatModel) pickModel(idx int) tea.Cmd {
 	if idx < 0 || idx >= len(m.modelsFiltered) {
-		return
+		return nil
 	}
 	picked := m.modelsFiltered[idx]
 	if m.config.SwitchModel != nil {
 		newModel, err := m.config.SwitchModel(picked)
 		if err != nil {
 			m.flash = fmt.Sprintf("error: %v", err)
-			return
+			return nil
 		}
 		m.model = newModel
+		m.resetProviderDiagnostics()
+		m.syncStatusData()
 		m.flash = fmt.Sprintf("switched to %s", newModel)
 	}
 	m.modelsVisible = false
+	return nil
 }
 
 func (m *ChatModel) openProviderPicker() {
@@ -2331,7 +2446,11 @@ func (m ChatModel) activateProviderSelection() (tea.Model, tea.Cmd) {
 			m.flash = fmt.Sprintf("error: %v", err)
 		} else {
 			m.model = newModel
+			m.resetProviderDiagnostics()
+			m.syncStatusData()
 			m.flash = fmt.Sprintf("switched to %s", newModel)
+			m.providersVisible = false
+			return m, nil
 		}
 	}
 	m.providersVisible = false
@@ -2416,7 +2535,10 @@ func (m ChatModel) saveProviderKey() (tea.Model, tea.Cmd) {
 	if provider.DefaultModel != "" && m.config.SwitchModel != nil {
 		if newModel, err := m.config.SwitchModel(provider.DefaultModel); err == nil {
 			m.model = newModel
+			m.resetProviderDiagnostics()
+			m.syncStatusData()
 			m.flash = fmt.Sprintf("saved key and switched to %s", newModel)
+			return m, nil
 		} else {
 			m.flash = "saved key"
 		}
@@ -2499,7 +2621,10 @@ func (m ChatModel) handleProviderAuthSucceeded(msg providerAuthSucceededMsg) (te
 		if provider.DefaultModel != "" && m.config.SwitchModel != nil {
 			if newModel, err := m.config.SwitchModel(provider.DefaultModel); err == nil {
 				m.model = newModel
+				m.resetProviderDiagnostics()
+				m.syncStatusData()
 				m.flash = fmt.Sprintf("authenticated and switched to %s", newModel)
+				return m, nil
 			} else {
 				m.flash = "authenticated"
 			}
@@ -2663,55 +2788,18 @@ func joinWithScrollbar(lines []string, scrollbar []string, width, height int) st
 }
 
 func (m ChatModel) renderStatsOverlay() string {
-	boxW := min(76, max(46, m.width-10))
-	boxH := 12
-
-	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#56d364")).Bold(true)
-	textStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#c9d1d9"))
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))
-
-	duration := "n/a"
-	if m.statsDuration > 0 {
-		duration = fmt.Sprintf("%.1fs", m.statsDuration.Seconds())
-	}
-	lines := []string{
-		"Duration: " + duration,
-		fmt.Sprintf("Latest turn input:   %d", m.statsUsage.InputTokens),
-		fmt.Sprintf("Latest turn output:  %d", m.statsUsage.OutputTokens),
-		fmt.Sprintf("Session input:       %d", m.sessionUsage.InputTokens),
-		fmt.Sprintf("Session output:      %d", m.sessionUsage.OutputTokens),
-		fmt.Sprintf("Session total:       %d", m.sessionUsage.InputTokens+m.sessionUsage.OutputTokens),
-	}
-	innerLines := make([]string, 0, len(lines))
-	for _, line := range lines {
-		innerLines = append(innerLines, textStyle.Render(line))
-	}
-	inner := lipgloss.JoinVertical(lipgloss.Left,
-		titleStyle.Render("Latest turn stats"),
-		"",
-		strings.Join(innerLines, "\n"),
-		"",
-		dimStyle.Render("Esc / Enter closes this overlay"),
-	)
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#58a6ff")).
-		Background(lipgloss.Color("#161b22")).
-		Padding(1, 2).
-		Width(boxW - 6).
-		Height(boxH - 4).
-		Render(inner)
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+	return renderStatsOverlayPanel(m.theme(), m.statsSnapshot(), m.width, m.height)
 }
 
 func (m ChatModel) renderSearchOverlay() string {
+	theme := m.theme()
 	boxW := min(72, max(42, m.width-10))
 	boxH := 7
 
-	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#56d364")).Bold(true)
-	textStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#c9d1d9"))
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))
-	inputStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#c9d1d9")).Background(lipgloss.Color("#0d1117"))
+	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true)
+	textStyle := lipgloss.NewStyle().Foreground(theme.Text)
+	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
+	inputStyle := lipgloss.NewStyle().Foreground(theme.Text).Background(theme.PanelBG)
 
 	paneName := "agent"
 	if m.searchPane == focusTools {
@@ -2733,8 +2821,8 @@ func (m ChatModel) renderSearchOverlay() string {
 	)
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#58a6ff")).
-		Background(lipgloss.Color("#161b22")).
+		BorderForeground(theme.BorderFocus).
+		Background(theme.HeaderBG).
 		Padding(1, 2).
 		Width(boxW - 6).
 		Height(boxH - 4).
@@ -2743,15 +2831,16 @@ func (m ChatModel) renderSearchOverlay() string {
 }
 
 func (m ChatModel) renderFilesOverlay() string {
+	theme := m.theme()
 	boxW := min(72, max(42, m.width-6))
 	boxH := min(24, max(12, m.height-4))
 	contentHeight := max(1, boxH-8)
 
-	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#56d364")).Bold(true)
-	selectedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Background(lipgloss.Color("#1f6feb")).Bold(true)
-	textStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#c9d1d9"))
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))
-	inputStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#c9d1d9")).Background(lipgloss.Color("#0d1117"))
+	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true)
+	selectedStyle := lipgloss.NewStyle().Foreground(theme.HeaderFG).Background(theme.AccentPrimary).Bold(true)
+	textStyle := lipgloss.NewStyle().Foreground(theme.Text)
+	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
+	inputStyle := lipgloss.NewStyle().Foreground(theme.Text).Background(theme.PanelBG)
 
 	lines := make([]string, 0, min(len(m.filesFiltered), contentHeight))
 	start := 0
@@ -2780,8 +2869,8 @@ func (m ChatModel) renderFilesOverlay() string {
 	)
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#58a6ff")).
-		Background(lipgloss.Color("#161b22")).
+		BorderForeground(theme.BorderFocus).
+		Background(theme.HeaderBG).
 		Padding(1, 2).
 		Width(boxW - 6).
 		Height(boxH - 4).
@@ -2790,11 +2879,12 @@ func (m ChatModel) renderFilesOverlay() string {
 }
 
 func (m ChatModel) renderSessionRenameOverlay() string {
+	theme := m.theme()
 	boxW := min(64, max(38, m.width-10))
 	boxH := 7
-	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#56d364")).Bold(true)
-	textStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#c9d1d9"))
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))
+	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true)
+	textStyle := lipgloss.NewStyle().Foreground(theme.Text)
+	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
 	inner := lipgloss.JoinVertical(lipgloss.Left,
 		titleStyle.Render("Rename session"),
 		textStyle.Render("name> "+m.sessionRenameBuf),
@@ -2803,8 +2893,8 @@ func (m ChatModel) renderSessionRenameOverlay() string {
 	)
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#58a6ff")).
-		Background(lipgloss.Color("#161b22")).
+		BorderForeground(theme.BorderFocus).
+		Background(theme.HeaderBG).
 		Padding(1, 2).
 		Width(boxW - 6).
 		Height(boxH - 4).
@@ -2813,14 +2903,15 @@ func (m ChatModel) renderSessionRenameOverlay() string {
 }
 
 func (m ChatModel) renderSessionsOverlay() string {
+	theme := m.theme()
 	boxW := min(88, max(56, m.width-6))
 	boxH := min(28, max(12, m.height-4))
 	contentHeight := max(1, boxH-6)
 
-	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#56d364")).Bold(true)
-	selectedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Background(lipgloss.Color("#1f6feb")).Bold(true)
-	textStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#c9d1d9"))
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))
+	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true)
+	selectedStyle := lipgloss.NewStyle().Foreground(theme.HeaderFG).Background(theme.AccentPrimary).Bold(true)
+	textStyle := lipgloss.NewStyle().Foreground(theme.Text)
+	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
 
 	lines := make([]string, 0, min(len(m.sessionsList), contentHeight))
 	start := 0
@@ -2847,8 +2938,8 @@ func (m ChatModel) renderSessionsOverlay() string {
 	)
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#58a6ff")).
-		Background(lipgloss.Color("#161b22")).
+		BorderForeground(theme.BorderFocus).
+		Background(theme.HeaderBG).
 		Padding(1, 2).
 		Width(boxW - 6).
 		Height(boxH - 4).
@@ -2860,6 +2951,7 @@ func (m ChatModel) renderSessionsOverlay() string {
 }
 
 func (m ChatModel) renderHelpOverlay() string {
+	theme := m.theme()
 	boxW := min(108, max(72, m.width-6))
 	boxH := min(32, max(20, m.height-4))
 	contentHeight := max(1, boxH-7)
@@ -2869,11 +2961,11 @@ func (m ChatModel) renderHelpOverlay() string {
 		m.helpScroll = maxScroll
 	}
 
-	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#56d364")).Bold(true)
-	activeTabStyle := lipgloss.NewStyle().Background(lipgloss.Color("#1f6feb")).Foreground(lipgloss.Color("#ffffff")).Bold(true).Padding(0, 1)
-	inactiveTabStyle := lipgloss.NewStyle().Background(lipgloss.Color("#22272e")).Foreground(lipgloss.Color("#8b949e")).Padding(0, 1)
-	textStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#c9d1d9"))
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))
+	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true)
+	activeTabStyle := lipgloss.NewStyle().Background(theme.AccentPrimary).Foreground(theme.HeaderFG).Bold(true).Padding(0, 1)
+	inactiveTabStyle := lipgloss.NewStyle().Background(theme.HeaderBG).Foreground(theme.TextDim).Padding(0, 1)
+	textStyle := lipgloss.NewStyle().Foreground(theme.Text)
+	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
 
 	tabs := m.helpTabs()
 	renderedTabs := make([]string, 0, len(tabs))
@@ -2907,8 +2999,8 @@ func (m ChatModel) renderHelpOverlay() string {
 
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#58a6ff")).
-		Background(lipgloss.Color("#161b22")).
+		BorderForeground(theme.BorderFocus).
+		Background(theme.HeaderBG).
 		Padding(1, 2).
 		Width(boxW - 6).
 		Height(boxH - 4).
@@ -2918,15 +3010,16 @@ func (m ChatModel) renderHelpOverlay() string {
 }
 
 func (m ChatModel) renderModelsOverlay() string {
+	theme := m.theme()
 	boxW := min(96, max(56, m.width-6))
 	boxH := min(28, max(14, m.height-4))
 	contentHeight := max(1, boxH-8)
 
-	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#56d364")).Bold(true)
-	selectedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Background(lipgloss.Color("#1f6feb")).Bold(true)
-	textStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#c9d1d9"))
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))
-	inputStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#c9d1d9")).Background(lipgloss.Color("#0d1117"))
+	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true)
+	selectedStyle := lipgloss.NewStyle().Foreground(theme.HeaderFG).Background(theme.AccentPrimary).Bold(true)
+	textStyle := lipgloss.NewStyle().Foreground(theme.Text)
+	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
+	inputStyle := lipgloss.NewStyle().Foreground(theme.Text).Background(theme.PanelBG)
 
 	lines := make([]string, 0, min(len(m.modelsFiltered), contentHeight))
 	start := 0
@@ -2961,8 +3054,8 @@ func (m ChatModel) renderModelsOverlay() string {
 	)
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#58a6ff")).
-		Background(lipgloss.Color("#161b22")).
+		BorderForeground(theme.BorderFocus).
+		Background(theme.HeaderBG).
 		Padding(1, 2).
 		Width(boxW - 6).
 		Height(boxH - 4).
@@ -2971,14 +3064,15 @@ func (m ChatModel) renderModelsOverlay() string {
 }
 
 func (m ChatModel) renderProvidersOverlay() string {
+	theme := m.theme()
 	boxW := min(96, max(64, m.width-6))
 	boxH := min(30, max(14, m.height-4))
 	contentHeight := max(1, boxH-9)
 
-	titleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#56d364")).Bold(true)
-	selectedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#ffffff")).Background(lipgloss.Color("#1f6feb")).Bold(true)
-	textStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#c9d1d9"))
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))
+	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true)
+	selectedStyle := lipgloss.NewStyle().Foreground(theme.HeaderFG).Background(theme.AccentPrimary).Bold(true)
+	textStyle := lipgloss.NewStyle().Foreground(theme.Text)
+	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
 
 	lines := make([]string, 0, min(len(m.providersList), contentHeight))
 	start := 0
@@ -3032,8 +3126,8 @@ func (m ChatModel) renderProvidersOverlay() string {
 	)
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#58a6ff")).
-		Background(lipgloss.Color("#161b22")).
+		BorderForeground(theme.BorderFocus).
+		Background(theme.HeaderBG).
 		Padding(1, 2).
 		Width(boxW - 6).
 		Height(boxH - 4).
@@ -3070,6 +3164,8 @@ func (m *ChatModel) applySnapshot(s chatSessionSnapshot) {
 	m.toolsVisible = toolsVisible
 	m.contextFiles = append([]string(nil), s.ContextFiles...)
 	m.sessionUsage = s.SessionUsage
+	m.resetProviderDiagnostics()
+	m.syncStatusData()
 	m.messages = nil
 	if strings.TrimSpace(s.AgentBuf) != "" {
 		m.messages = append(m.messages, ChatMessage{Kind: MsgStatus, Content: s.AgentBuf})
@@ -3113,20 +3209,9 @@ func (m ChatModel) View() string {
 	if m.width == 0 || m.height == 0 {
 		return "Initializing..."
 	}
-
-	headerStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color("#161b22")).
-		Foreground(lipgloss.Color("#c9d1d9")).
-		Width(m.width).
-		Bold(true)
-	headerText := "forge • " + m.model + " • " + m.workDir
-	if m.state != nil {
-		active := m.state.ActiveSkills()
-		if len(active) > 0 {
-			headerText += " • skills: " + strings.Join(active, ", ")
-		}
-	}
-	header := headerStyle.Render(headerText)
+	theme := m.theme()
+	headerData := m.statusSnapshot()
+	header := renderStatusHeader(theme, headerData, m.width)
 
 	chatPaneWidth := m.chatPaneWidth()
 	chatBodyHeight := max(1, m.chatViewport.Height)
@@ -3149,13 +3234,15 @@ func (m ChatModel) View() string {
 	chatBody := joinWithScrollbar(chatLines, chatScrollbar, chatContentWidth, chatBodyHeight)
 	chatBorder := lipgloss.Color("#30363d")
 	if m.paneFocus == focusChat {
-		chatBorder = lipgloss.Color("#58a6ff")
+		chatBorder = theme.BorderFocus
+	} else {
+		chatBorder = theme.Border
 	}
 	chatPane := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(chatBorder).
-		Background(lipgloss.Color("#0d1117")).
-		Foreground(lipgloss.Color("#c9d1d9")).
+		Background(theme.PanelBG).
+		Foreground(theme.Text).
 		Width(chatInnerWidth).
 		Height(chatBodyHeight).
 		Render(chatBody)
@@ -3176,13 +3263,15 @@ func (m ChatModel) View() string {
 		toolsBody := joinWithScrollbar(visibleToolLines, toolScrollbar, toolsContentWidth, chatBodyHeight)
 		toolsBorder := lipgloss.Color("#30363d")
 		if m.paneFocus == focusTools {
-			toolsBorder = lipgloss.Color("#58a6ff")
+			toolsBorder = theme.BorderFocus
+		} else {
+			toolsBorder = theme.Border
 		}
 		toolsStyle := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(toolsBorder).
-			Background(lipgloss.Color("#0d1117")).
-			Foreground(lipgloss.Color("#8b949e")).
+			Background(theme.PanelBG).
+			Foreground(theme.TextDim).
 			Width(toolsInnerWidth).
 			Height(max(1, m.chatViewport.Height-2))
 		toolsPane := toolsStyle.Render(toolsBody)
@@ -3191,18 +3280,18 @@ func (m ChatModel) View() string {
 
 	inputStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#30363d")).
-		Background(lipgloss.Color("#0d1117")).
-		Foreground(lipgloss.Color("#c9d1d9")).
+		BorderForeground(theme.Border).
+		Background(theme.PanelBG).
+		Foreground(theme.Text).
 		Width(m.width - 4)
 
 	var inputBox string
 	if m.pendingApproval != nil {
 		approvalStyle := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#d29922")).
-			Background(lipgloss.Color("#161b22")).
-			Foreground(lipgloss.Color("#c9d1d9")).
+			BorderForeground(theme.Warning).
+			Background(theme.HeaderBG).
+			Foreground(theme.Text).
 			Width(m.width - 4)
 		approvalText := fmt.Sprintf("Tool: %s\n%s\n\n[y]es / [n]o", m.pendingApproval.Tool, m.pendingApproval.Summary)
 		inputBox = approvalStyle.Render(approvalText)
@@ -3229,7 +3318,7 @@ func (m ChatModel) View() string {
 		statusText = "ready • /help for commands"
 	}
 	statusStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#484f58")).
+		Foreground(theme.TextDim).
 		Width(m.width)
 	statusBar := statusStyle.Render(statusText)
 
