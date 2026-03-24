@@ -124,6 +124,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	dispatchDirectAnswerRetries := 0
 	sawToolCallThisRun := false
 	lastDispatchDelegateRole := ""
+	dispatchReadOnlyRolesSinceBuilder := make(map[string]bool)
 	defer func() {
 		a.renderer.Stats(time.Since(turnStart), a.getUsage())
 	}()
@@ -275,6 +276,10 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 					results = append(results, fmt.Sprintf("[delegate] error: dispatch cannot delegate to %s twice in a row", role))
 					continue
 				}
+				if dispatchRoleRequiresFreshState(role) && dispatchReadOnlyRolesSinceBuilder[role] {
+					results = append(results, fmt.Sprintf("[delegate] error: dispatch already delegated to %s in this pass; use that result or delegate to builder", role))
+					continue
+				}
 			}
 			tool, ok := a.tools.Get(call.Name)
 			if !ok {
@@ -301,6 +306,13 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 					if a.role == "dispatch" {
 						role, _ := call.Args["role"].(string)
 						lastDispatchDelegateRole = strings.TrimSpace(role)
+						if delegateResultCompleted(result) {
+							if role == "builder" {
+								clear(dispatchReadOnlyRolesSinceBuilder)
+							} else if dispatchRoleRequiresFreshState(role) {
+								dispatchReadOnlyRolesSinceBuilder[role] = true
+							}
+						}
 					}
 				}
 				a.renderer.ToolResult(call.Name, displayResult, diff, false)
@@ -366,6 +378,27 @@ func truncateResult(result string) string {
 		return strings.Join(lines[:20], "\n") + fmt.Sprintf("\n... (%d more lines)", len(lines)-20)
 	}
 	return result
+}
+
+func dispatchRoleRequiresFreshState(role string) bool {
+	switch strings.TrimSpace(role) {
+	case "scout", "architect", "doctor":
+		return true
+	default:
+		return false
+	}
+}
+
+func delegateResultCompleted(result string) bool {
+	trimmed := strings.TrimSpace(result)
+	if trimmed == "" {
+		return false
+	}
+	upper := strings.ToUpper(trimmed)
+	if strings.HasPrefix(upper, "CANCELLED:") || strings.HasPrefix(upper, "AGENT ERROR") {
+		return false
+	}
+	return true
 }
 
 func compactAssistantHistory(visibleText string) string {

@@ -238,11 +238,34 @@ func TestChatModelProgressHandoffFreezesPreviousActivityBlock(t *testing.T) {
 	if got := m.messages[0]; got.Header != "Recent activity • scout" || !strings.Contains(got.Content, "reading README.md") {
 		t.Fatalf("unexpected scout activity block: %#v", got)
 	}
-	if got := m.messages[1]; got.Kind != MsgStatus || got.Content != "delegating to builder" {
+	if got := m.messages[1]; got.Kind != MsgAgent || !strings.HasPrefix(got.Header, "Dispatch • ") || got.Content != "delegating to builder" {
 		t.Fatalf("unexpected handoff status: %#v", got)
 	}
 	if got := m.messages[2]; got.Header != "Recent activity • builder" || !strings.Contains(got.Content, "editing main.go") {
 		t.Fatalf("unexpected builder activity block: %#v", got)
+	}
+}
+
+func TestChatModelDelegatingRuntimeEventUsesDispatchBox(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "runtime", Text: "delegating to scout"})
+	m = updated.(ChatModel)
+
+	if len(m.messages) != 1 {
+		t.Fatalf("messages = %#v", m.messages)
+	}
+	got := m.messages[0]
+	if got.Kind != MsgAgent {
+		t.Fatalf("kind = %#v", got)
+	}
+	if !strings.HasPrefix(got.Header, "Dispatch • ") {
+		t.Fatalf("header = %q", got.Header)
+	}
+	if got.Content != "delegating to scout" {
+		t.Fatalf("content = %q", got.Content)
 	}
 }
 
