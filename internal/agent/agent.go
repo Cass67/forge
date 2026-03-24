@@ -77,6 +77,12 @@ func (a *Agent) SetSystem(system string) {
 	a.systemOverride = true
 }
 
+// UseGeneratedSystem clears any fixed system override so future turns rebuild
+// the system prompt from the current tool registry and loaded skills.
+func (a *Agent) UseGeneratedSystem() {
+	a.systemOverride = false
+}
+
 // systemPrompt returns the current system prompt, rebuilding it from the
 // tool registry when no explicit override is set (picks up tool disclosure changes).
 func (a *Agent) systemPrompt() string {
