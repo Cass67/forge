@@ -28,6 +28,7 @@ type OpenAIDriver struct {
 	registryName      string // Name() — used for registry lookup; may include provider prefix
 	apiModel          string // model ID sent to the API
 	supportsResponses bool
+	forceResponses    bool
 	params            llm.Params
 	lastUsage         llm.Usage
 	prevResponseID    string
@@ -99,6 +100,7 @@ func NewCustomCompatProvider(providerLabel, apiKey, baseURL, registryName, apiMo
 		registryName:      registryName,
 		apiModel:          apiModel,
 		supportsResponses: supportsResponses,
+		forceResponses:    supportsResponses,
 		params:            llm.Params{Temperature: -1},
 	}
 }
@@ -736,7 +738,7 @@ func truncateDebug(s string, max int) string {
 }
 
 func (d *OpenAIDriver) useResponsesAPI() bool {
-	return d.supportsResponses && modelRequiresResponses(d.providerLabel, d.apiModel)
+	return d.forceResponses || (d.supportsResponses && modelRequiresResponses(d.providerLabel, d.apiModel))
 }
 
 // modelSupportsTemperature returns true when the given model accepts a

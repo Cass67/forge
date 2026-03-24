@@ -1451,6 +1451,11 @@ func (m ChatModel) submitInput() (tea.Model, tea.Cmd) {
 		return m.handleSlashCommand(input) // falls through to "unknown command"
 	}
 
+	if strings.TrimSpace(m.model) == "" {
+		m.flash = "configure a provider first with /provider, then pick a model with /models"
+		return m, nil
+	}
+
 	// Auto-skill detection
 	if !m.busy {
 		switch m.autoSkillsMode {

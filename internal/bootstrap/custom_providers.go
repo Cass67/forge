@@ -13,6 +13,7 @@ type CustomProviderDef struct {
 	Name         string
 	BaseURL      string
 	WireAPI      string
+	ModelInfoURL string
 	HTTPHeaders  map[string]string
 	DefaultModel string
 	Models       []string
@@ -22,6 +23,7 @@ type tomlProviderBlock struct {
 	Name         string            `toml:"name"`
 	BaseURL      string            `toml:"base_url"`
 	WireAPI      string            `toml:"wire_api"`
+	ModelInfoURL string            `toml:"model_info_url"`
 	HTTPHeaders  map[string]string `toml:"http_headers"`
 	DefaultModel string            `toml:"default_model"`
 	Models       []string          `toml:"models"`
@@ -84,6 +86,7 @@ func parseProviderFile(path string) ([]CustomProviderDef, error) {
 			Name:         block.Name,
 			BaseURL:      normalizeBaseURL(block.BaseURL),
 			WireAPI:      block.WireAPI,
+			ModelInfoURL: normalizeBaseURL(block.ModelInfoURL),
 			HTTPHeaders:  block.HTTPHeaders,
 			DefaultModel: block.DefaultModel,
 			Models:       block.Models,

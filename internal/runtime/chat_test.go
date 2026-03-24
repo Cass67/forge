@@ -138,6 +138,39 @@ func TestPersistChatLastModelUpdatesConfigAndWritesState(t *testing.T) {
 	}
 }
 
+func TestBuildChatSetupAllowsNoConfiguredModels(t *testing.T) {
+	oldLoadTokens := loadChatTokens
+	defer func() {
+		loadChatTokens = oldLoadTokens
+	}()
+
+	loadChatTokens = func() (*auth.Tokens, error) {
+		return &auth.Tokens{}, nil
+	}
+
+	cfg, err := config.Load("/nonexistent/path.toml")
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+
+	setup, err := BuildChatSetup(cfg, nil, "", t.TempDir(), false)
+	if err != nil {
+		t.Fatalf("BuildChatSetup: %v", err)
+	}
+	if setup == nil {
+		t.Fatal("expected setup")
+	}
+	if setup.ChatModel != "" {
+		t.Fatalf("ChatModel = %q, want empty", setup.ChatModel)
+	}
+	if setup.Driver != nil {
+		t.Fatal("expected nil driver when no provider is configured")
+	}
+	if len(setup.Providers) == 0 {
+		t.Fatal("expected provider options for in-app configuration")
+	}
+}
+
 type assertErr string
 
 func (e assertErr) Error() string { return string(e) }
