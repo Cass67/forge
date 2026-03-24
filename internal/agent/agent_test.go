@@ -808,7 +808,7 @@ func TestDispatchNormalizesScoutRecommendationTaskAndRoutesThroughArchitect(t *t
 	if !strings.Contains(strings.ToLower(tasks[0]), "evidence") {
 		t.Fatalf("scout task should be normalized toward evidence gathering, got %q", tasks[0])
 	}
-	if !strings.Contains(strings.ToLower(tasks[1]), "prioritized recommendations") {
+	if !strings.Contains(strings.ToLower(tasks[1]), "suggested changes with rationale") {
 		t.Fatalf("architect task should synthesize recommendations, got %q", tasks[1])
 	}
 	if strings.Contains(output.String(), "repo-review and improvement requests must use scout for evidence gathering only") {
@@ -874,6 +874,96 @@ func TestClassifyDispatchFlowAssessCodebaseAcrossUserPhrasings(t *testing.T) {
 		if kind != dispatchFlowAssessCodebase || phase != dispatchPhaseNeedEvidence {
 			t.Fatalf("classifyDispatchFlow(%q) = (%s, %s), want (%s, %s)", input, kind, phase, dispatchFlowAssessCodebase, dispatchPhaseNeedEvidence)
 		}
+	}
+}
+
+func TestClassifyDispatchFlowCoreKinds(t *testing.T) {
+	cases := []struct {
+		input string
+		kind  dispatchFlowKind
+		phase dispatchFlowPhase
+	}{
+		{input: "write up a remediation plan", kind: dispatchFlowPlan, phase: dispatchPhaseNeedPlan},
+		{input: "why is this happening", kind: dispatchFlowDebug, phase: dispatchPhaseNeedDiagnosis},
+		{input: "find the auth handler", kind: dispatchFlowSearch, phase: dispatchPhaseNeedContext},
+	}
+	for _, tc := range cases {
+		kind, phase := classifyDispatchFlow(tc.input)
+		if kind != tc.kind || phase != tc.phase {
+			t.Fatalf("classifyDispatchFlow(%q) = (%s, %s), want (%s, %s)", tc.input, kind, phase, tc.kind, tc.phase)
+		}
+	}
+}
+
+func TestDispatchPlanFlowAllowsOnlyArchitect(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"builder\", \"task\": \"draft the plan\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"draft the plan\"}}\n</tool_call>",
+		"Done.",
+	}}
+	reg := tools.NewRegistry()
+	var delegated []string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			delegated = append(delegated, role)
+			return "GOAL: plan", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "write up a remediation plan"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(delegated, ","); got != "architect" {
+		t.Fatalf("delegated roles = %q, want architect", got)
+	}
+	if !strings.Contains(output.String(), "plan flow in need_plan phase does not allow builder; allowed role(s): architect") {
+		t.Fatalf("expected builder to be blocked during plan phase, got %q", output.String())
+	}
+}
+
+func TestDispatchDebugFlowRequiresDoctorBeforeBuilder(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"builder\", \"task\": \"fix it\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"doctor\", \"task\": \"diagnose it\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"builder\", \"task\": \"fix it\"}}\n</tool_call>",
+		"Done.",
+	}}
+	reg := tools.NewRegistry()
+	var delegated []string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			delegated = append(delegated, role)
+			if role == "doctor" {
+				return "ROOT CAUSE: nil pointer\nEVIDENCE: file.go:10\nFIX: initialize it\nRISK: low", nil
+			}
+			return "fixed", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "why is this happening"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(delegated, ","); got != "doctor,builder" {
+		t.Fatalf("delegated roles = %q, want doctor,builder", got)
+	}
+	if !strings.Contains(output.String(), "debug flow in need_diagnosis phase does not allow builder; allowed role(s): doctor") {
+		t.Fatalf("expected builder to be blocked before diagnosis, got %q", output.String())
 	}
 }
 
