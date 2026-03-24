@@ -619,6 +619,105 @@ func TestScoutExecutesToolCallsAndSuppressesVisibleProse(t *testing.T) {
 	}
 }
 
+func TestScoutFiltersRuntimeArtifactsFromSearchResultsByDefault(t *testing.T) {
+	driver := &inspectingDriver{
+		responses: []string{
+			"<tool_call>\n{\"name\": \"search\", \"args\": {\"pattern\": \"Rancid f5 objstor verify script missing\", \"path\": \".\"}}\n</tool_call>",
+			"FINDINGS:\n- found source\nKEY FILES: /repo/util-rancid/update_cerner_daily.sh\nFOLLOW-UP: none\nUNKNOWNS: none",
+		},
+		checks: []func([]llm.Message) error{
+			nil,
+			func(messages []llm.Message) error {
+				joined := ""
+				for _, msg := range messages {
+					joined += msg.Content + "\n"
+				}
+				for _, forbidden := range []string{
+					"forge-chat-debug-20260324-191110.jsonl",
+					".forge/scratchpad/email_origin_investigation_raw.md",
+					"history.jsonl",
+					"sessions/run-123/log/agent.log",
+				} {
+					if strings.Contains(joined, forbidden) {
+						return fmt.Errorf("runtime artifact leaked into scout context: %s", forbidden)
+					}
+				}
+				if !strings.Contains(joined, "util-rancid/update_cerner_daily.sh:753") {
+					return fmt.Errorf("real source hit missing from scout context: %s", joined)
+				}
+				return nil
+			},
+		},
+	}
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{
+		Name:        "search",
+		Description: "Search",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			return strings.Join([]string{
+				"./forge-chat-debug-20260324-191110.jsonl:2:{\"msg\":\"chat.input\"}",
+				"./.forge/scratchpad/email_origin_investigation_raw.md:1:cached prior finding",
+				"./history.jsonl:8:{\"msg\":\"session history\"}",
+				"./sessions/run-123/log/agent.log:4:delegating to scout",
+				"./util-rancid/update_cerner_daily.sh:753:\trun_or_warn \"f5 objstor verify missing-script alert email\" mailx -s \"Rancid f5 objstor verify script missing\" martin.cassidy@oracle.com </dev/null",
+			}, "\n"), nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("scout")
+	a.isSubAgent = true
+
+	if err := a.Run(context.Background(), "Investigate where the email came from in this codebase."); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestScoutAllowsRuntimeArtifactsWhenTaskExplicitlyRequestsDebugLogInspection(t *testing.T) {
+	driver := &inspectingDriver{
+		responses: []string{
+			"<tool_call>\n{\"name\": \"search\", \"args\": {\"pattern\": \"delegate\", \"path\": \".\"}}\n</tool_call>",
+			"FINDINGS:\n- debug log inspected\nKEY FILES: /repo/forge-chat-debug-20260324-191110.jsonl\nFOLLOW-UP: none\nUNKNOWNS: none",
+		},
+		checks: []func([]llm.Message) error{
+			nil,
+			func(messages []llm.Message) error {
+				joined := ""
+				for _, msg := range messages {
+					joined += msg.Content + "\n"
+				}
+				if !strings.Contains(joined, "forge-chat-debug-20260324-191110.jsonl") {
+					return fmt.Errorf("explicit debug-log task should preserve debug artifact hits")
+				}
+				return nil
+			},
+		},
+	}
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{
+		Name:        "search",
+		Description: "Search",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			return strings.Join([]string{
+				"./forge-chat-debug-20260324-191110.jsonl:2:{\"msg\":\"chat.input\"}",
+				"./util-rancid/update_cerner_daily.sh:753:\trun_or_warn \"f5 objstor verify missing-script alert email\"",
+			}, "\n"), nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("scout")
+	a.isSubAgent = true
+
+	if err := a.Run(context.Background(), "Inspect the debug log and tell me why dispatch delegated twice."); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestArchitectRetriesInsteadOfMixingToolCallsWithVisibleProse(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"read_file\", \"args\": {\"path\": \"repo_review_evidence.md\"}}\n</tool_call>\nI need the actual scout evidence contents to synthesize recommendations.",
@@ -886,6 +985,7 @@ func TestClassifyDispatchFlowCoreKinds(t *testing.T) {
 		{input: "write up a remediation plan", kind: dispatchFlowPlan, phase: dispatchPhaseNeedPlan},
 		{input: "why is this happening", kind: dispatchFlowDebug, phase: dispatchPhaseNeedDiagnosis},
 		{input: "find the auth handler", kind: dispatchFlowSearch, phase: dispatchPhaseNeedContext},
+		{input: "i got an email today that said \"Rancid f5 objstor verify script missing\" where did it come from and why", kind: dispatchFlowSearch, phase: dispatchPhaseNeedContext},
 	}
 	for _, tc := range cases {
 		kind, phase := classifyDispatchFlow(tc.input)
@@ -964,6 +1064,42 @@ func TestDispatchDebugFlowRequiresDoctorBeforeBuilder(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "debug flow in need_diagnosis phase does not allow builder; allowed role(s): doctor") {
 		t.Fatalf("expected builder to be blocked before diagnosis, got %q", output.String())
+	}
+}
+
+func TestDispatchSearchFlowStopsAfterScoutAnswer(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"investigate the source of the alert\"}}\n</tool_call>",
+		"This prose should never be generated because dispatch should stop after scout completes.",
+	}}
+	reg := tools.NewRegistry()
+	var delegated []string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			delegated = append(delegated, role)
+			return "FINDINGS:\n- alert comes from /repo/script.sh:10\nKEY FILES: /repo/script.sh\nFOLLOW-UP: none\nUNKNOWNS: none", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "i got an email today that said \"Rancid f5 objstor verify script missing\" where did it come from and why"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(delegated, ","); got != "scout" {
+		t.Fatalf("delegated roles = %q, want scout", got)
+	}
+	if driver.callIdx != 1 {
+		t.Fatalf("dispatch should stop after scout completes terminal search flow, got %d driver calls", driver.callIdx)
+	}
+	if strings.Contains(output.String(), "This prose should never be generated") {
+		t.Fatalf("dispatch should stop instead of generating prose after scout search result: %q", output.String())
 	}
 }
 

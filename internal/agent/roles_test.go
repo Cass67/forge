@@ -13,6 +13,7 @@ func TestDispatchPromptDoesNotTellDispatchToPresentResults(t *testing.T) {
 		"Do not present, summarize, rewrite, or analyze sub-agent results yourself.",
 		"If no further delegation is needed, stop. Do not add a prose answer.",
 		"REPO REVIEW / IMPROVEMENT REQUESTS → delegate to scout for evidence gathering first, then architect for synthesis.",
+		"SEARCH / TRACE / ORIGIN QUESTIONS → delegate to scout",
 		"Never use builder to gather repo-review evidence, reconstruct missing repo-review scratchpad context, or format repo-review recommendations.",
 		"Take one orchestration action per turn.",
 		"scratchpad_write may only persist raw sub-agent output or raw scratchpad content.",
@@ -29,7 +30,7 @@ func TestScoutPromptKeepsRecommendationsOutOfScoutResponses(t *testing.T) {
 		"Do not recommend code changes, plans, or prioritization.",
 		"FOLLOW-UP: [what information is still needed or which role should handle synthesis]",
 		"For repo-review tasks, gather a bounded evidence set and then stop.",
-		"Never read forge-generated debug logs or scratchpad artifacts unless the task explicitly asks for them.",
+		"Never inspect runtime-generated conversation artifacts such as debug logs, scratchpad files, session histories, or session logs unless the task explicitly asks for them.",
 	} {
 		if !strings.Contains(scoutPrompt, want) {
 			t.Fatalf("scout prompt missing %q", want)
