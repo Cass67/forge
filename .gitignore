@@ -8,6 +8,7 @@
 .env.*
 *.env
 *.env.*
+*env*
 
 # Common private key and secret bundle formats
 *.key
@@ -76,8 +77,8 @@ log/
 
 # Local docs and design scratch files
 /chat-ui-demo.html
-/docs/next-steps-bubbletea-parity.md
-/docs/superpowers/specs/2026-03-23-input-box-growth-design.md
+/docs/
+/docs/*
 
 # OS and editor workspace noise.
 .DS_Store
