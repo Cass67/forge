@@ -619,6 +619,109 @@ func TestScoutExecutesToolCallsAndSuppressesVisibleProse(t *testing.T) {
 	}
 }
 
+func TestSpawnSubAgentScoutRecoversFromMalformedToolMarkup(t *testing.T) {
+	driver := &inspectingDriver{
+		responses: []string{
+			"<tool_call>{\"name\":\"search\",\"args\":{\"pattern\":\"Rancid f5 objstor verify script missing\",\"path\":\".\",\"glob\":\"**/*\"}}<tool_call>{\"name\":\"search\",\"args\":{\"pattern\":\"objstor verify\",\"path\":\".\",\"glob\":\"**/*\"}}",
+			"<tool_call>\n{\"name\": \"search\", \"args\": {\"pattern\": \"Rancid f5 objstor verify script missing\", \"path\": \".\", \"glob\": \"**/*\"}}\n</tool_call>",
+			"FINDINGS:\n- /repo/util-rancid/update_cerner_daily.sh:753 emits the alert\nKEY FILES: /repo/util-rancid/update_cerner_daily.sh\nFOLLOW-UP: none\nUNKNOWNS: none",
+		},
+		checks: []func([]llm.Message) error{
+			nil,
+			func(messages []llm.Message) error {
+				joined := ""
+				for _, msg := range messages {
+					joined += msg.Content + "\n"
+				}
+				if !strings.Contains(joined, scoutMalformedToolMarkupNudgeMessage(1)) {
+					return fmt.Errorf("second turn missing malformed-tool-markup nudge")
+				}
+				return nil
+			},
+			nil,
+		},
+	}
+
+	reg := tools.NewRegistry()
+	searchCalls := 0
+	reg.Register(tools.Tool{
+		Name:        "search",
+		Description: "Search",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			searchCalls++
+			return "/repo/util-rancid/update_cerner_daily.sh:753: run_or_warn \"f5 objstor verify missing-script alert email\"", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	parent := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+
+	result, err := parent.SpawnSubAgent(context.Background(), "scout", "TASK: Trace the origin of the email subject and identify why it would be sent. OUTCOME: Evidence-backed findings with file path and triggering condition. MUST NOT: Do not speculate.", MultiAgentConfig{
+		BaseTools: reg,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if searchCalls != 1 {
+		t.Fatalf("expected one recovered scout search call, got %d", searchCalls)
+	}
+	if !strings.Contains(result, "FINDINGS:") {
+		t.Fatalf("expected scout findings after malformed markup recovery, got %q", result)
+	}
+}
+
+func TestSpawnSubAgentScoutFirstTurnUsesSingleToolCall(t *testing.T) {
+	driver := &inspectingDriver{
+		responses: []string{
+			"<tool_call>{\"name\":\"search\",\"args\":{\"pattern\":\"first\",\"path\":\".\",\"glob\":\"**/*\"}}</tool_call><tool_call>{\"name\":\"search\",\"args\":{\"pattern\":\"second\",\"path\":\".\",\"glob\":\"**/*\"}}</tool_call>",
+			"FINDINGS:\n- /repo/result\nKEY FILES: /repo/result\nFOLLOW-UP: none\nUNKNOWNS: none",
+		},
+		checks: []func([]llm.Message) error{
+			nil,
+			func(messages []llm.Message) error {
+				joined := ""
+				for _, msg := range messages {
+					joined += msg.Content + "\n"
+				}
+				if !strings.Contains(joined, scoutFirstTurnToolCallNudgeMessage()) {
+					return fmt.Errorf("second turn missing first-turn single-tool-call nudge")
+				}
+				return nil
+			},
+		},
+	}
+
+	reg := tools.NewRegistry()
+	var patterns []string
+	reg.Register(tools.Tool{
+		Name:        "search",
+		Description: "Search",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			pattern, _ := args["pattern"].(string)
+			patterns = append(patterns, pattern)
+			return "/repo/result", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	parent := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+
+	result, err := parent.SpawnSubAgent(context.Background(), "scout", "TASK: Search the repository for the alert source. OUTCOME: Evidence-backed findings only. MUST NOT: Do not speculate.", MultiAgentConfig{
+		BaseTools: reg,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(patterns) != 1 || patterns[0] != "first" {
+		t.Fatalf("expected only first scout tool call to execute, got %v", patterns)
+	}
+	if !strings.Contains(result, "FINDINGS:") {
+		t.Fatalf("expected scout findings after single-tool-call enforcement, got %q", result)
+	}
+}
+
 func TestScoutFiltersRuntimeArtifactsFromSearchResultsByDefault(t *testing.T) {
 	driver := &inspectingDriver{
 		responses: []string{
