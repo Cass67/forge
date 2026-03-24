@@ -99,6 +99,43 @@ func TestCanonicalOpenAIModel(t *testing.T) {
 	}
 }
 
+func TestCanonicalAnthropicModel(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{in: "claude-sonnet-4-6", want: "claude-sonnet-4-20250514"},
+		{in: "claude-opus-4-6", want: "claude-opus-4-1-20250805"},
+		{in: "claude-sonnet-4-5", want: "claude-sonnet-4-20250514"},
+		{in: "claude-haiku-4-5", want: "claude-3-5-haiku-20241022"},
+		{in: "claude-3-5-haiku-latest", want: "claude-3-5-haiku-20241022"},
+		{in: "claude-3-7-sonnet-latest", want: "claude-3-7-sonnet-20250219"},
+		{in: "claude-3-7-sonnet-20250219", want: "claude-3-7-sonnet-20250219"},
+	}
+
+	for _, tt := range tests {
+		if got := canonicalAnthropicModel(tt.in); got != tt.want {
+			t.Fatalf("canonicalAnthropicModel(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestAnthropicModelsUseStableAPINames(t *testing.T) {
+	want := []string{
+		"claude-sonnet-4-20250514",
+		"claude-opus-4-1-20250805",
+		"claude-opus-4-20250514",
+		"claude-3-7-sonnet-20250219",
+		"claude-3-5-sonnet-20241022",
+		"claude-3-5-haiku-20241022",
+		"claude-3-haiku-20240307",
+	}
+	got := AnthropicModels()
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("AnthropicModels() = %#v, want %#v", got, want)
+	}
+}
+
 func TestDriverForModelMapsLegacyOpenAIAlias(t *testing.T) {
 	cfg := testConfig()
 	cfg.Keys.OpenAI = "openai-key"

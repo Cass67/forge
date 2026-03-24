@@ -112,18 +112,19 @@ func DriverForModel(cfg *config.Config, tokens *auth.Tokens, model string) llm.D
 	ref := ParseModelRef(model)
 	resolvedModel := ref.Model
 	if ref.Provider == "claude" || (ref.Provider == "" && canUseClaudeForUnqualifiedModel(resolvedModel)) {
+		apiModel := canonicalAnthropicModel(resolvedModel)
 		registryName := model
 		if ref.Provider == "claude" {
 			registryName = QualifyModel(ref)
 		}
-		if d := newClaudeOAuthDriver(registryName, resolvedModel); d != nil {
+		if d := newClaudeOAuthDriver(registryName, apiModel); d != nil {
 			return d
 		}
 		return nil
 	}
 	if ref.Provider == "anthropic" || (ref.Provider == "" && IsAnthropicModel(model)) {
 		if key := cfg.AnthropicKey(); key != "" {
-			return drivers.NewClaude(key, resolvedModel)
+			return drivers.NewClaude(key, canonicalAnthropicModel(resolvedModel))
 		}
 		return nil
 	}
@@ -325,17 +326,13 @@ func FindCompatProvider(providers []CompatProvider, model string) *CompatProvide
 
 func AnthropicModels() []string {
 	return []string{
-		"claude-3-7-sonnet-latest",
+		"claude-sonnet-4-20250514",
+		"claude-opus-4-1-20250805",
+		"claude-opus-4-20250514",
 		"claude-3-7-sonnet-20250219",
-		"claude-3-5-haiku-latest",
+		"claude-3-5-sonnet-20241022",
 		"claude-3-5-haiku-20241022",
-		"claude-sonnet-4-5",
-		"claude-sonnet-4-5-20250929",
-		"claude-haiku-4-5",
-		"claude-haiku-4-5-20251001",
-		"claude-opus-4-5-20251101",
-		"claude-sonnet-4-6",
-		"claude-opus-4-6",
+		"claude-3-haiku-20240307",
 	}
 }
 
@@ -355,6 +352,25 @@ func canonicalOpenAIModel(name string) string {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "gpt-5.4", "gpt5.4":
 		return "gpt-5"
+	default:
+		return strings.TrimSpace(name)
+	}
+}
+
+func canonicalAnthropicModel(name string) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "claude-sonnet-4-6", "claude-sonnet-4-5":
+		return "claude-sonnet-4-20250514"
+	case "claude-opus-4-6":
+		return "claude-opus-4-1-20250805"
+	case "claude-opus-4-5":
+		return "claude-opus-4-20250514"
+	case "claude-haiku-4-5", "claude-3-5-haiku-latest":
+		return "claude-3-5-haiku-20241022"
+	case "claude-3-7-sonnet-latest":
+		return "claude-3-7-sonnet-20250219"
+	case "claude-3-5-sonnet-latest":
+		return "claude-3-5-sonnet-20241022"
 	default:
 		return strings.TrimSpace(name)
 	}
@@ -422,7 +438,7 @@ func canUseClaudeForUnqualifiedModel(model string) bool {
 	if !claudeAuthAvailable() {
 		return false
 	}
-	target := strings.TrimSpace(model)
+	target := canonicalAnthropicModel(model)
 	if target == "" {
 		return false
 	}
