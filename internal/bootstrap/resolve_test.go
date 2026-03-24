@@ -27,7 +27,7 @@ func TestResolveCompatProviderDetectsAmbiguity(t *testing.T) {
 	cfg.Keys.Together = "together-key"
 	cfg.Keys.OpenRouter = "openrouter-key"
 
-	p, ambiguous := ResolveCompatProvider(BuildCompatProviders(cfg), "meta-llama/Llama-3.3-70B-Instruct-Turbo")
+	p, ambiguous := ResolveCompatProvider(BuildCompatProviders(cfg, &auth.Tokens{}), "meta-llama/Llama-3.3-70B-Instruct-Turbo")
 	if p != nil {
 		t.Fatalf("expected nil provider for ambiguous match, got %s", p.Name)
 	}
@@ -594,4 +594,208 @@ func testConfig() *config.Config {
 	cfg.Models.WriterParams.Temperature = -1
 	cfg.Models.AuditorParams.Temperature = -1
 	return cfg
+}
+
+func writeCustomProviderTOML(t *testing.T, dir string) {
+	t.Helper()
+	providersDir := filepath.Join(dir, "forge", "providers")
+	if err := os.MkdirAll(providersDir, 0o700); err != nil {
+		t.Fatalf("mkdir providers: %v", err)
+	}
+	tomlContent := `
+[model_providers.oca]
+name = "Omni Cloud AI"
+base_url = "https://api.omnicloud.test/v1"
+wire_api = "chat"
+models = ["gpt-5.4", "llama-4"]
+
+[model_providers.localbox]
+name = "Local Box"
+base_url = "http://localhost:11434/v1"
+wire_api = "chat"
+models = ["phi-4", "qwen-3"]
+`
+	if err := os.WriteFile(filepath.Join(providersDir, "custom.toml"), []byte(tomlContent), 0o644); err != nil {
+		t.Fatalf("write toml: %v", err)
+	}
+}
+
+func TestCustomCompatProviderBuildCompatProvidersAppendsCustomProviders(t *testing.T) {
+	dir := t.TempDir()
+	writeCustomProviderTOML(t, dir)
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	cfg := testConfig()
+	tokens := &auth.Tokens{}
+	providers := BuildCompatProviders(cfg, tokens)
+
+	foundOCA := false
+	foundLocalbox := false
+	for _, p := range providers {
+		if p.Name == "oca" {
+			foundOCA = true
+			if p.Label != "Omni Cloud AI" {
+				t.Fatalf("oca label = %q, want %q", p.Label, "Omni Cloud AI")
+			}
+			if p.BaseURL != "https://api.omnicloud.test/v1" {
+				t.Fatalf("oca base_url = %q", p.BaseURL)
+			}
+		}
+		if p.Name == "localbox" {
+			foundLocalbox = true
+		}
+	}
+	if !foundOCA {
+		t.Fatal("expected oca custom provider in BuildCompatProviders output")
+	}
+	if !foundLocalbox {
+		t.Fatal("expected localbox custom provider in BuildCompatProviders output")
+	}
+
+	// Verify built-in providers are still present
+	foundXAI := false
+	for _, p := range providers {
+		if p.Name == "xai" {
+			foundXAI = true
+		}
+	}
+	if !foundXAI {
+		t.Fatal("expected built-in xai provider to still be present")
+	}
+}
+
+func TestCustomCompatProviderSupportedProviderBackendsShowsCustomProvider(t *testing.T) {
+	dir := t.TempDir()
+	writeCustomProviderTOML(t, dir)
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	cfg := testConfig()
+	tokens := &auth.Tokens{}
+
+	backends := SupportedProviderBackends(cfg, tokens)
+
+	foundOCA := false
+	for _, b := range backends {
+		if b.ID == "oca" {
+			foundOCA = true
+			if b.Label != "Omni Cloud AI" {
+				t.Fatalf("oca label = %q, want %q", b.Label, "Omni Cloud AI")
+			}
+			if b.Status != "configure API key" {
+				t.Fatalf("oca status = %q, want 'configure API key'", b.Status)
+			}
+		}
+	}
+	if !foundOCA {
+		t.Fatal("expected oca in SupportedProviderBackends")
+	}
+}
+
+func TestCustomCompatProviderAvailableModelsExposesModelsOnlyWhenKeyExists(t *testing.T) {
+	dir := t.TempDir()
+	writeCustomProviderTOML(t, dir)
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("FORGE_ENABLE_LIVE_COMPAT_MODELS", "0")
+
+	cfg := testConfig()
+
+	// Without key, no models should appear
+	tokensNoKey := &auth.Tokens{}
+	models := AvailableModels(cfg, tokensNoKey)
+	for _, m := range models {
+		if strings.HasPrefix(m, "oca/") {
+			t.Fatalf("unexpected oca model without key: %s", m)
+		}
+	}
+
+	// With key via tokens, models should appear
+	tokensWithKey := &auth.Tokens{}
+	tokensWithKey.SetCustomProviderKey("oca", "test-key")
+	models = AvailableModels(cfg, tokensWithKey)
+	if !containsTestString(models, "oca/gpt-5.4") {
+		t.Fatalf("expected oca/gpt-5.4 in available models, got %v", models)
+	}
+	if !containsTestString(models, "oca/llama-4") {
+		t.Fatalf("expected oca/llama-4 in available models, got %v", models)
+	}
+}
+
+func TestCustomCompatProviderAvailableModelsExposesModelsViaEnvVar(t *testing.T) {
+	dir := t.TempDir()
+	writeCustomProviderTOML(t, dir)
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("FORGE_ENABLE_LIVE_COMPAT_MODELS", "0")
+	t.Setenv("OCA_API_KEY", "env-key")
+
+	cfg := testConfig()
+	tokens := &auth.Tokens{}
+	models := AvailableModels(cfg, tokens)
+	if !containsTestString(models, "oca/gpt-5.4") {
+		t.Fatalf("expected oca/gpt-5.4 via env var in available models, got %v", models)
+	}
+}
+
+func TestCustomCompatProviderDriverForModelResolvesCustomProvider(t *testing.T) {
+	dir := t.TempDir()
+	writeCustomProviderTOML(t, dir)
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	cfg := testConfig()
+	tokens := &auth.Tokens{}
+	tokens.SetCustomProviderKey("oca", "test-key")
+
+	d := DriverForModel(cfg, tokens, "oca/gpt-5.4")
+	if d == nil {
+		t.Fatal("expected DriverForModel to resolve oca/gpt-5.4")
+	}
+	if got := d.Name(); got != "oca/gpt-5.4" {
+		t.Fatalf("driver.Name() = %q, want %q", got, "oca/gpt-5.4")
+	}
+}
+
+func TestCustomCompatProviderResolvedProviderIDShowsCustomProviderID(t *testing.T) {
+	dir := t.TempDir()
+	writeCustomProviderTOML(t, dir)
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	cfg := testConfig()
+	tokens := &auth.Tokens{}
+	tokens.SetCustomProviderKey("oca", "test-key")
+
+	got := ResolvedProviderID(cfg, tokens, "oca/gpt-5.4")
+	if got != "oca" {
+		t.Fatalf("ResolvedProviderID() = %q, want %q", got, "oca")
+	}
+}
+
+func TestCustomCompatProviderModelDisplayLabelShowsCustomProviderID(t *testing.T) {
+	dir := t.TempDir()
+	writeCustomProviderTOML(t, dir)
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	cfg := testConfig()
+	tokens := &auth.Tokens{}
+	tokens.SetCustomProviderKey("oca", "test-key")
+
+	got := ModelDisplayLabel(cfg, tokens, "oca/gpt-5.4")
+	if got != "gpt-5.4 [oca]" {
+		t.Fatalf("ModelDisplayLabel() = %q, want %q", got, "gpt-5.4 [oca]")
+	}
+}
+
+func TestCustomCompatProviderIsProviderNameRecognizesCustomProviders(t *testing.T) {
+	// Register a custom provider name
+	RegisterCustomProviderName("testcustom")
+
+	if !isProviderName("testcustom") {
+		t.Fatal("expected isProviderName to recognize registered custom provider")
+	}
+
+	ref := ParseModelRef("testcustom/some-model")
+	if ref.Provider != "testcustom" {
+		t.Fatalf("ParseModelRef(testcustom/some-model).Provider = %q, want %q", ref.Provider, "testcustom")
+	}
+	if ref.Model != "some-model" {
+		t.Fatalf("ParseModelRef(testcustom/some-model).Model = %q, want %q", ref.Model, "some-model")
+	}
 }

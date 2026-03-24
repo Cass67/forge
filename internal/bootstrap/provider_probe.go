@@ -11,19 +11,20 @@ import (
 	"sync"
 	"time"
 
+	"forge/internal/auth"
 	"forge/internal/config"
 )
 
 const providerProbeBody = "ping"
 
-func ProbeProviderModels(cfg *config.Config, currentModel string, available []string) []string {
+func ProbeProviderModels(cfg *config.Config, tokens *auth.Tokens, currentModel string, available []string) []string {
 	ref := ParseModelRef(currentModel)
 	if ref.Provider == "" {
 		return sortModelsByHealth(available)
 	}
 
 	var provider *CompatProvider
-	providers := BuildCompatProviders(cfg)
+	providers := BuildCompatProviders(cfg, tokens)
 	for i := range providers {
 		p := &providers[i]
 		if p.Name == ref.Provider && strings.TrimSpace(p.KeyFn()) != "" {

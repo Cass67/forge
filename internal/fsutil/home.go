@@ -15,6 +15,13 @@ func UserHomeDir() string {
 	return "."
 }
 
+func ForgeConfigDir() string {
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		return filepath.Join(xdg, "forge")
+	}
+	return filepath.Join(UserHomeDir(), ".config", "forge")
+}
+
 func ForgeConfigPath(name string) string {
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
 		return filepath.Join(xdg, "forge", name)

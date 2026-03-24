@@ -73,7 +73,7 @@ func Preflight(cfg *config.Config, tokens *auth.Tokens, reg *llm.Registry) []Iss
 	}
 	seen := map[string]bool{}
 	for _, m := range []string{cfg.Models.Writer, cfg.Models.Auditor, cfg.Models.Summarizer} {
-		if cp, ambiguous := ResolveCompatProvider(BuildCompatProviders(cfg), m); cp != nil && !seen[cp.Name] {
+		if cp, ambiguous := ResolveCompatProvider(BuildCompatProviders(cfg, tokens), m); cp != nil && !seen[cp.Name] {
 			seen[cp.Name] = true
 			appendKeyIssue(compatEnvVars[cp.Name], "not set — add in Forge provider auth or export in shell", cp.KeyFn() != "")
 		} else if ambiguous {

@@ -302,11 +302,11 @@ func RunChatLive(setup *ChatSetup) {
 			return append([]string(nil), setup.Available...)
 		},
 		ProbeModels: func(currentModel string, available []string) []string {
-			cfg, _ := refreshChatSetupState(setup)
+			cfg, authTokens := refreshChatSetupState(setup)
 			if len(available) == 0 {
 				available = append([]string(nil), setup.Available...)
 			}
-			updated := bootstrap.ProbeProviderModels(cfg, currentModel, available)
+			updated := bootstrap.ProbeProviderModels(cfg, authTokens, currentModel, available)
 			setup.Available = append([]string(nil), updated...)
 			return updated
 		},
