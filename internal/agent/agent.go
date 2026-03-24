@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"forge/internal/agent/tools"
 	"forge/internal/chatstate"
@@ -225,6 +227,12 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				role, _ := call.Args["role"].(string)
 				role = strings.TrimSpace(role)
 				task, _ := call.Args["task"].(string)
+				if role == "scout" {
+					if normalized, changed := normalizeDispatchScoutRepoReviewTask(task); changed {
+						task = normalized
+						call.Args["task"] = task
+					}
+				}
 				if role != "" && role == lastDispatchDelegateRole && !lastDispatchDelegateBlocked {
 					msg := fmt.Sprintf("[delegate] error: dispatch cannot delegate to %s twice in a row", role)
 					results = append(results, msg)
@@ -448,26 +456,7 @@ func dispatchScoutMustStayEvidenceOnly(role, task string) bool {
 		return false
 	}
 	lower := strings.ToLower(task)
-	repoSignals := []string{
-		"repo",
-		"repository",
-		"codebase",
-		"project structure",
-		"maintainability",
-		"code quality",
-		"documentation",
-		"testing",
-	}
-	recommendationSignals := []string{
-		"improvement opportunit",
-		"recommended improvement",
-		"recommend improvements",
-		"suggest improvements",
-		"prioritized recommendations",
-		"recommended changes",
-		"improvement list",
-	}
-	return containsAny(lower, repoSignals) && containsAny(lower, recommendationSignals)
+	return dispatchRepoReviewLikeTask(lower) && dispatchRepoReviewRecommendationLikeTask(lower)
 }
 
 func dispatchBuilderPresentationShimForbidden(role, task string, delegateResults map[string]string) bool {
@@ -522,14 +511,6 @@ func dispatchBuilderRepoReviewEvidenceTaskForbidden(role, task string) bool {
 
 func dispatchRepoReviewArchitectSynthesisTask(task string) bool {
 	lower := strings.ToLower(task)
-	repoReviewSignals := []string{
-		"repo review",
-		"repository review",
-		"repository evidence",
-		"repository findings",
-		"review this repo",
-		"review the repository",
-	}
 	synthesisSignals := []string{
 		"repository improvement recommendations",
 		"improvement recommendations for the user",
@@ -542,11 +523,22 @@ func dispatchRepoReviewArchitectSynthesisTask(task string) bool {
 		"produce recommendations",
 		"final review",
 	}
-	return containsAny(lower, repoReviewSignals) && containsAny(lower, synthesisSignals)
+	return dispatchRepoReviewLikeTask(lower) && containsAny(lower, synthesisSignals)
 }
 
 func dispatchRepoReviewScoutEvidenceTask(task string) bool {
 	lower := strings.ToLower(task)
+	evidenceSignals := []string{
+		"gather evidence",
+		"evidence only",
+		"findings only",
+		"evidence-backed findings",
+		"descriptive only",
+	}
+	return dispatchRepoReviewLikeTask(lower) && containsAny(lower, evidenceSignals)
+}
+
+func dispatchRepoReviewLikeTask(lower string) bool {
 	repoSignals := []string{
 		"repo review",
 		"repository review",
@@ -555,15 +547,82 @@ func dispatchRepoReviewScoutEvidenceTask(task string) bool {
 		"repository improvement",
 		"review this repo",
 		"review the repository",
+		"review this repository",
+		"inspect the repository",
+		"inspect this repository",
+		"inspect this repo",
+		"look at this repo",
+		"take a look at this repo",
 	}
-	evidenceSignals := []string{
-		"gather evidence",
-		"evidence only",
-		"findings only",
-		"evidence-backed findings",
-		"descriptive only",
+	return containsAny(lower, repoSignals)
+}
+
+func dispatchRepoReviewRecommendationLikeTask(lower string) bool {
+	recommendationSignals := []string{
+		"improvement opportunit",
+		"recommended improvement",
+		"recommend improvements",
+		"suggest improvements",
+		"prioritized recommendations",
+		"recommended changes",
+		"improvement list",
+		"changes i should make",
+		"changes should i make",
+		"issues, opportunities for improvement",
+		"candidate changes",
 	}
-	return containsAny(lower, repoSignals) && containsAny(lower, evidenceSignals)
+	return containsAny(lower, recommendationSignals)
+}
+
+func normalizeDispatchScoutRepoReviewTask(task string) (string, bool) {
+	lower := strings.ToLower(task)
+	if !dispatchRepoReviewLikeTask(lower) || !dispatchRepoReviewRecommendationLikeTask(lower) {
+		return task, false
+	}
+	normalized := task
+	replacements := []struct {
+		old string
+		new string
+	}{
+		{"opportunities for improvement, and recommended changes", "code-quality and maintainability signals"},
+		{"opportunities for improvement and recommended changes", "code-quality and maintainability signals"},
+		{"identify practical improvement opportunities", "collect factual findings"},
+		{"recommended improvements", "evidence-backed findings"},
+		{"recommended changes", "file-level findings"},
+		{"specific candidate changes", "specific evidence points"},
+		{"recommend improvements", "report evidence"},
+		{"suggest improvements", "report evidence"},
+	}
+	for _, replacement := range replacements {
+		normalized = strings.ReplaceAll(normalized, replacement.old, replacement.new)
+		normalized = strings.ReplaceAll(normalized, upperFirst(replacement.old), upperFirst(replacement.new))
+	}
+	if !strings.Contains(strings.ToLower(normalized), "evidence") {
+		if strings.Contains(normalized, "OUTCOME:") {
+			normalized = strings.Replace(normalized, "OUTCOME:", "OUTCOME: Evidence-backed findings only. ", 1)
+		} else {
+			normalized += " OUTCOME: Evidence-backed findings only."
+		}
+	}
+	lowerNormalized := strings.ToLower(normalized)
+	mustNotClause := "MUST NOT: Recommend changes or prioritize work."
+	if !strings.Contains(lowerNormalized, "must not:") {
+		normalized += " " + mustNotClause
+	} else if !strings.Contains(lowerNormalized, "recommend changes or prioritize work") {
+		normalized += " Recommend changes or prioritize work."
+	}
+	return normalized, normalized != task
+}
+
+func upperFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	r, size := utf8.DecodeRuneInString(s)
+	if r == utf8.RuneError && size == 0 {
+		return s
+	}
+	return string(unicode.ToUpper(r)) + s[size:]
 }
 
 func dispatchArchitectRepoReviewRequiresUsableEvidence(role, task, scoutResult, scratchpadResult string) bool {
