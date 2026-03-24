@@ -62,25 +62,19 @@ func (a *Agent) SpawnSubAgent(ctx context.Context, role, task string, mac MultiA
 	subRenderer.Info(fmt.Sprintf("[%s] starting", role))
 
 	sub := &Agent{
-		driver:   driver,
-		tools:    filteredTools,
-		approve:  a.approve,
-		workDir:  a.workDir,
-		maxTurns: roleDef.MaxTurns,
-		renderer: subRenderer,
-		system:   system,
+		driver:     driver,
+		tools:      filteredTools,
+		approve:    a.approve,
+		workDir:    a.workDir,
+		maxTurns:   roleDef.MaxTurns,
+		renderer:   subRenderer,
+		system:     system,
+		isSubAgent: true,
 	}
 
 	err := sub.Run(ctx, task)
 
-	// Extract the last assistant message as the result.
-	var result string
-	for i := len(sub.history) - 1; i >= 0; i-- {
-		if sub.history[i].Role == llm.RoleAssistant {
-			result = sub.history[i].Content
-			break
-		}
-	}
+	result := sub.lastFullResponse
 	if result == "" {
 		result = "(sub-agent produced no output)"
 	}
