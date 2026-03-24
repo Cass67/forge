@@ -40,6 +40,8 @@ type ChatSetup struct {
 	Available  []string
 	Providers  []tui.ProviderOption
 	MakeDriver func(string) llm.Driver
+	DebugLog   string
+	debugRec   *chatDebugRecorder
 }
 
 func BuildChatSetup(cfg *config.Config, tokens any, modelOverride, workDir string, yolo bool) (*ChatSetup, error) {
@@ -161,7 +163,18 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, appr
 
 func RunChatLive(setup *ChatSetup) {
 	eventsCh := make(chan llm.Event, 256)
-	evRenderer := agent.NewEventRenderer(eventsCh)
+	renderCh := chan<- llm.Event(eventsCh)
+	if setup != nil && setup.debugRec != nil {
+		debugEvents := make(chan llm.Event, 256)
+		renderCh = debugEvents
+		go func() {
+			for ev := range debugEvents {
+				setup.debugRec.logEvent(ev)
+				eventsCh <- ev
+			}
+		}()
+	}
+	evRenderer := agent.NewEventRenderer(renderCh)
 
 	var approve tools.ApprovalFunc
 	if setup.Yolo {
@@ -203,6 +216,9 @@ func RunChatLive(setup *ChatSetup) {
 		}
 		startRun := func(msg string) {
 			running = true
+			if setup != nil && setup.debugRec != nil {
+				setup.debugRec.logInput("user", msg)
+			}
 			go func(runMsg string) {
 				err := a.Run(ctx, runMsg)
 				inputCh <- runOutcome(err)
@@ -211,13 +227,25 @@ func RunChatLive(setup *ChatSetup) {
 		for input := range inputCh {
 			switch input {
 			case "__approve_yes":
+				if setup != nil && setup.debugRec != nil {
+					setup.debugRec.logInput("control", input)
+				}
 				evRenderer.ResponseChan() <- true
 			case "__approve_no":
+				if setup != nil && setup.debugRec != nil {
+					setup.debugRec.logInput("control", input)
+				}
 				evRenderer.ResponseChan() <- false
 			case "__cancel_subagent__":
+				if setup != nil && setup.debugRec != nil {
+					setup.debugRec.logInput("control", input)
+				}
 				a.CancelSubAgent()
 				evRenderer.Info("sub-agent cancelled")
 			case "__cancel_turn__":
+				if setup != nil && setup.debugRec != nil {
+					setup.debugRec.logInput("control", input)
+				}
 				if running {
 					cancel()
 					ctx, cancel = context.WithCancel(context.Background())
@@ -238,6 +266,9 @@ func RunChatLive(setup *ChatSetup) {
 				queue = nil
 			default:
 				if running {
+					if setup != nil && setup.debugRec != nil {
+						setup.debugRec.logInput("queued", input)
+					}
 					queue = append(queue, input)
 					evRenderer.Info(fmt.Sprintf("queued steering: %s", input))
 					continue

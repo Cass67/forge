@@ -1224,6 +1224,8 @@ func runChatArgs(args []string) {
 	workDir := fs.String("C", "", "working directory (default: cwd)")
 	live := fs.Bool("live", true, "use split-pane live view")
 	autoSkills := fs.String("auto-skills", "", "auto skill mode: off, suggest, or auto")
+	debug := fs.Bool("d", false, "write chat debug log")
+	debugFile := fs.String("debug-file", "", "chat debug log path (default: ./forge-chat-debug-<timestamp>.jsonl)")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
@@ -1251,6 +1253,14 @@ func runChatArgs(args []string) {
 	}
 	if setup == nil {
 		return
+	}
+	if *debug {
+		path, err := runtimepkg.EnableChatDebug(setup, *debugFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error enabling chat debug: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "chat debug log: %s\n", path)
 	}
 
 	_ = live
