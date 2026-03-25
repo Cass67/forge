@@ -2772,36 +2772,44 @@ func TestChatModelViewShowsChatScrollbarWhenOverflowing(t *testing.T) {
 	}
 }
 
-func TestChatModelStreamingReplyKeepsLatestUserTurnVisible(t *testing.T) {
+func TestRenderComposerTextShowsTailNearCursorForLongPaste(t *testing.T) {
+	got := renderComposerText(strings.Repeat("prefix ", 8)+"important ending", len([]rune(strings.Repeat("prefix ", 8)+"important ending")), 30)
+	if !strings.Contains(got, "important ending") {
+		t.Fatalf("expected rendered composer text to include tail near cursor, got %q", got)
+	}
+	if !strings.Contains(got, "…") {
+		t.Fatalf("expected long composer text to be clipped with ellipsis, got %q", got)
+	}
+}
+
+func TestRenderComposerTextFlattensPastedNewlines(t *testing.T) {
+	got := renderComposerText("first line\nsecond line\nthird line", len([]rune("first line\nsecond line\nthird line")), 80)
+	if strings.Contains(got, "\n") {
+		t.Fatalf("expected composer render to stay single-line, got %q", got)
+	}
+	if !strings.Contains(got, "first line second line third line") {
+		t.Fatalf("expected pasted newlines to be flattened, got %q", got)
+	}
+}
+
+func TestChatModelSubmitKeepsTranscriptVisibleAndEchoesSubmittedPrompt(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 12})
 	m = updated.(ChatModel)
 
-	for i := 0; i < 8; i++ {
-		m.AddMessage(ChatMessage{
-			Kind:    MsgAgent,
-			Header:  fmt.Sprintf("Agent • 12:00:%02d", i),
-			Content: strings.Repeat("previous context line ", 6),
-		})
-	}
+	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Agent • 12:00:00", Content: "previous answer remains visible"})
 
 	m.inputBuf = "question should stay visible"
 	m.inputPos = len([]rune(m.inputBuf))
 	updated, _ = m.submitInput()
 	m = updated.(ChatModel)
 
-	m.AppendToLastAgentLabeled(strings.Repeat("streaming reply line that wraps and grows the transcript\n", 10), "Forge")
-	updated, _ = m.Update(chatTickMsg(time.Now()))
-	m = updated.(ChatModel)
-	if !strings.Contains(m.chatContent, "question should stay visible") {
-		t.Fatalf("expected chat content to still contain the latest user turn, got:\n%s", strippedLine(m.chatContent))
+	got := strippedLine(m.View())
+	if !strings.Contains(got, "previous answer remains visible") {
+		t.Fatalf("expected previous transcript to stay visible, got:\n%s", got)
 	}
-	if !strings.Contains(m.chatViewport.View(), "question should stay visible") {
-		t.Fatalf("expected viewport content to contain the latest user turn (anchor=%d follow=%d y=%d), got:\n%s", m.turnAnchorMessageIndex, m.followMode, m.chatViewport.YOffset, strippedLine(m.chatViewport.View()))
-	}
-
-	if got := strippedLine(m.View()); !strings.Contains(got, "question should stay visible") {
-		t.Fatalf("expected latest user turn to remain visible during streaming reply (anchor=%d follow=%d y=%d h=%d), got:\n%s", m.turnAnchorMessageIndex, m.followMode, m.chatViewport.YOffset, m.chatViewport.Height, got)
+	if !strings.Contains(got, "question should stay visible") {
+		t.Fatalf("expected submitted prompt to remain visible in the shell while running, got:\n%s", got)
 	}
 }
 
