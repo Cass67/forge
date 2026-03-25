@@ -199,6 +199,8 @@ type ChatModel struct {
 	paneFocus    chatPaneFocus
 	toolsScroll  int
 	followMode   chatFollowMode
+	debugEnabled bool
+	traceVisible bool
 
 	toolsSections   []toolsSection
 	toolsVisible    bool
@@ -312,6 +314,7 @@ func NewChatModel(cfg ChatLiveConfig) ChatModel {
 		themeID:                "default",
 		chatViewport:           vp,
 		followMode:             followBottom,
+		debugEnabled:           cfg.DebugEnabled,
 		status:                 "ready",
 		skills:                 cfg.Skills,
 		autoSkillsMode:         cfg.AutoSkillsMode,
@@ -435,8 +438,8 @@ func compactStatusText(content string) string {
 
 func displayAgentLabel(label string) string {
 	label = strings.TrimSpace(label)
-	if label == "" || label == "agent" {
-		return "Agent"
+	if label == "" || label == "agent" || label == "forge" {
+		return "Forge"
 	}
 	if len(label) > 0 && label[0] >= 'a' && label[0] <= 'z' {
 		label = strings.ToUpper(label[:1]) + label[1:]
@@ -1149,6 +1152,10 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 			m.AddWorkingMessage(ev.Text)
 			return m, nil
 		}
+		if !m.debugEnabled {
+			m.UpdateRecentActivity("", fmt.Sprintf("%s: %s", ev.Agent, ev.Text))
+			return m, nil
+		}
 		sec := m.currentToolsSection("")
 		if sec.buf != "" && !strings.HasSuffix(sec.buf, "\n\n") {
 			sec.buf += "\n"
@@ -1190,6 +1197,15 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 			}
 			m.pendingSubAgentSummary = nil
 		}
+		if !m.debugEnabled {
+			if ev.IsError {
+				m.AddMessage(ChatMessage{
+					Kind:    MsgStatus,
+					Content: "Error: " + compactStatusText(ev.Text),
+				})
+			}
+			return m, nil
+		}
 		if ev.IsError {
 			m.appendTools("", fmt.Sprintf("  status: ✗ %s\n", ev.Text))
 		} else if ev.Content != "" {
@@ -1229,6 +1245,9 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		m.sessionUsage.InputTokens += ev.Usage.InputTokens
 		m.sessionUsage.OutputTokens += ev.Usage.OutputTokens
 		m.syncStatusData()
+		if !m.debugEnabled {
+			return m, m.beginProviderDiagnosticsFetch(false)
+		}
 		if ev.Duration > 0 {
 			m.appendTools("", fmt.Sprintf("  %.1fs", ev.Duration.Seconds()))
 			if ev.Usage.InputTokens > 0 {
@@ -1473,6 +1492,9 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.statsVisible {
 		return m.handleStatsKey(msg)
+	}
+	if m.traceVisible {
+		return m.handleTraceKey(msg)
 	}
 	if m.searchVisible {
 		return m.handleSearchKey(msg)
@@ -1862,10 +1884,9 @@ func (m ChatModel) submitSkillInput(s skills.Skill, turnLabel, msg string) (tea.
 
 var builtinCommands = []string{
 	"/clear", "/clear all", "/clear agent", "/clear tools",
-	"/help", "/stats",
+	"/help", "/stats", "/trace",
 	"/theme", "/theme low", "/theme default", "/theme light", "/theme dusk",
 	"/tools", "/toggle tools", "/toggle tools on", "/toggle tools off",
-	"/agents", "/agents models",
 	"/models", "/model", "/provider",
 	"/skills", "/auto-skills", "/sessions", "/save", "/restore",
 	"/find", "/copy agent", "/copy tools", "/copy code", "/copy result",
@@ -1915,6 +1936,17 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.statsVisible = true
 		m.flash = "stats opened"
 		return m, m.beginProviderDiagnosticsFetch(false)
+	case input == "/trace":
+		if !m.debugEnabled {
+			m.flash = "trace unavailable without -d"
+			break
+		}
+		m.traceVisible = !m.traceVisible
+		if m.traceVisible {
+			m.flash = "trace opened"
+		} else {
+			m.flash = "trace closed"
+		}
 	case input == "/theme":
 		m.cycleTheme()
 	case strings.HasPrefix(input, "/theme "):
@@ -1983,28 +2015,8 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 	case input == "/toggle tools off":
 		m.toolsVisible = false
 		m.flash = "tools pane removed"
-	case input == "/agents":
-		if m.config.ToggleAgents == nil {
-			m.flash = "agents not available (no config)"
-			break
-		}
-		next := !m.agentsEnabled
-		if err := m.config.ToggleAgents(next); err != nil {
-			m.flash = fmt.Sprintf("agents toggle failed: %v", err)
-			break
-		}
-		m.agentsEnabled = next
-		if m.agentsEnabled {
-			m.flash = "agents: enabled"
-		} else {
-			m.flash = "agents: disabled"
-		}
-	case input == "/agents models":
-		m.agentModelsMap = copyStringMap(m.config.GetAgentModels)
-		m.agentModelsVisible = true
-		m.agentModelsCursor = 0
-		m.agentModelsPickingRole = ""
-		m.flash = "agent models opened"
+	case input == "/agents" || input == "/agents models":
+		m.flash = fmt.Sprintf("unknown command: %s", input)
 	case input == "/provider":
 		m.openProviderPicker()
 		m.flash = "providers opened"
@@ -2124,11 +2136,10 @@ func (m ChatModel) helpLines() []string {
 			"  /save [name]       save the current session",
 			"  /restore [name]    restore a saved session",
 			"  /stats             show latest turn and session token usage",
+			"  /trace             open the debug trace overlay (requires -d)",
 			"  /skills            list loaded skills",
 			"",
 			"Layout and display:",
-			"  /agents            toggle multi-agent mode",
-			"  /agents models     configure per-role agent models",
 			"  /theme             cycle chat themes",
 			"  /theme <name>      select default, low, light, or dusk",
 			"",
@@ -2528,6 +2539,18 @@ func (m ChatModel) handleStatsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyRunes:
 		if len(msg.Runes) == 1 && (msg.Runes[0] == 'q' || msg.Runes[0] == 'Q') {
 			m.statsVisible = false
+		}
+	}
+	return m, nil
+}
+
+func (m ChatModel) handleTraceKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEscape, tea.KeyEnter:
+		m.traceVisible = false
+	case tea.KeyRunes:
+		if len(msg.Runes) == 1 && (msg.Runes[0] == 'q' || msg.Runes[0] == 'Q') {
+			m.traceVisible = false
 		}
 	}
 	return m, nil
@@ -3494,6 +3517,10 @@ func (m ChatModel) renderStatsOverlay() string {
 	return renderStatsOverlayPanel(m.theme(), m.statsSnapshot(), m.width, m.height)
 }
 
+func (m ChatModel) renderTraceOverlay() string {
+	return renderTraceOverlayPanel(m.theme(), m.renderedToolsBuf(), m.width, m.height)
+}
+
 func (m ChatModel) renderSearchOverlay() string {
 	theme := m.theme()
 	boxW := min(72, max(42, m.width-10))
@@ -4066,6 +4093,9 @@ func (m ChatModel) View() string {
 	}
 	if m.statsVisible {
 		return m.renderStatsOverlay()
+	}
+	if m.traceVisible {
+		return m.renderTraceOverlay()
 	}
 	if m.searchVisible {
 		return m.renderSearchOverlay()
