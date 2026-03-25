@@ -27,22 +27,21 @@ type delegateEnvelope struct {
 }
 
 func parseDelegateOutcome(raw string) delegateOutcome {
+	return parseDelegateOutcomeForRole("", raw)
+}
+
+func parseDelegateOutcomeForRole(role, raw string) delegateOutcome {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return delegateOutcome{Status: "blocked", Raw: raw}
 	}
 
 	if envelope, ok := parseDelegateEnvelope(raw); ok {
-		return delegateOutcome{
-			Structured:   true,
-			Status:       normalizeDelegateStatus(envelope.Status),
-			Message:      strings.TrimSpace(envelope.Message),
-			ArtifactKind: strings.TrimSpace(envelope.ArtifactKind),
-			Artifact:     strings.TrimSpace(envelope.Artifact),
-			NextRole:     strings.TrimSpace(envelope.NextRole),
-			NextTask:     strings.TrimSpace(envelope.NextTask),
-			Raw:          raw,
-		}
+		return delegateOutcomeFromEnvelope(envelope, raw)
+	}
+
+	if envelope, ok := parseDelegateJSONObjectForRole(role, raw); ok {
+		return delegateOutcomeFromEnvelope(envelope, raw)
 	}
 
 	upper := strings.ToUpper(raw)
@@ -55,6 +54,19 @@ func parseDelegateOutcome(raw string) delegateOutcome {
 		return delegateOutcome{Status: "blocked", Message: raw, Raw: raw}
 	default:
 		return delegateOutcome{Status: "complete", Message: raw, Artifact: raw, Raw: raw}
+	}
+}
+
+func delegateOutcomeFromEnvelope(envelope delegateEnvelope, raw string) delegateOutcome {
+	return delegateOutcome{
+		Structured:   true,
+		Status:       normalizeDelegateStatus(envelope.Status),
+		Message:      strings.TrimSpace(envelope.Message),
+		ArtifactKind: strings.TrimSpace(envelope.ArtifactKind),
+		Artifact:     strings.TrimSpace(envelope.Artifact),
+		NextRole:     strings.TrimSpace(envelope.NextRole),
+		NextTask:     strings.TrimSpace(envelope.NextTask),
+		Raw:          raw,
 	}
 }
 
@@ -95,6 +107,105 @@ func parseDelegateEnvelope(raw string) (delegateEnvelope, bool) {
 		NextRole:     nextRole,
 		NextTask:     nextTask,
 	}, true
+}
+
+func parseDelegateJSONObjectForRole(role, raw string) (delegateEnvelope, bool) {
+	trimmed := strings.TrimSpace(stripJSONFence(raw))
+	if trimmed == "" || !strings.HasPrefix(trimmed, "{") {
+		return delegateEnvelope{}, false
+	}
+
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(trimmed), &object); err != nil {
+		return delegateEnvelope{}, false
+	}
+
+	if len(object) == 0 {
+		return delegateEnvelope{}, false
+	}
+
+	if _, hasStatus := object["status"]; hasStatus {
+		return delegateEnvelope{}, false
+	}
+
+	message := strings.TrimSpace(decodeDelegateStringField(object, "message"))
+	if message == "" {
+		message = defaultDelegateMessage(role)
+	}
+
+	artifactKind := strings.TrimSpace(decodeDelegateStringField(object, "artifact_kind"))
+	if artifactKind == "" {
+		artifactKind = defaultDelegateArtifactKind(role)
+	}
+
+	artifact := trimmed
+	if rawArtifact, ok := object["artifact"]; ok {
+		normalizedArtifact, ok := normalizeDelegateArtifact(rawArtifact)
+		if !ok {
+			return delegateEnvelope{}, false
+		}
+		if strings.TrimSpace(normalizedArtifact) != "" {
+			artifact = normalizedArtifact
+		}
+	}
+
+	nextRole := strings.TrimSpace(decodeDelegateStringField(object, "next_role"))
+	nextTask := strings.TrimSpace(decodeDelegateStringField(object, "next_task"))
+	if _, ok := Roles[nextRole]; !ok {
+		nextRole = ""
+		nextTask = ""
+	}
+
+	return delegateEnvelope{
+		Status:       "complete",
+		Message:      message,
+		ArtifactKind: artifactKind,
+		Artifact:     artifact,
+		NextRole:     nextRole,
+		NextTask:     nextTask,
+	}, true
+}
+
+func decodeDelegateStringField(object map[string]json.RawMessage, key string) string {
+	raw, ok := object[key]
+	if !ok {
+		return ""
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(value)
+}
+
+func defaultDelegateArtifactKind(role string) string {
+	switch strings.TrimSpace(role) {
+	case "scout":
+		return "evidence"
+	case "builder":
+		return "implementation"
+	case "doctor":
+		return "diagnosis"
+	case "architect":
+		return "plan"
+	default:
+		return ""
+	}
+}
+
+func defaultDelegateMessage(role string) string {
+	switch strings.TrimSpace(role) {
+	case "scout":
+		return "Evidence gathered."
+	case "builder":
+		return "Implementation complete."
+	case "doctor":
+		return "Diagnosis ready."
+	case "architect":
+		return "Architect output ready."
+	default:
+		return ""
+	}
 }
 
 func normalizeDelegateArtifact(raw json.RawMessage) (string, bool) {

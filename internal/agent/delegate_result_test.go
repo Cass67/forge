@@ -88,3 +88,43 @@ func TestParseDelegateOutcomeStructuredEnvelopeNormalizesCompletedStatus(t *test
 		t.Fatalf("context text = %q, want %q", outcome.ContextText(), want)
 	}
 }
+
+func TestParseDelegateOutcomeForRoleCoercesBareScoutJSONObject(t *testing.T) {
+	raw := `{"source_file":"util-rancid/update_cerner_daily.sh","source_line":753,"message":"Found the alert source.","evidence":["mailx subject matches"]}`
+	outcome := parseDelegateOutcomeForRole("scout", raw)
+	if !outcome.Structured {
+		t.Fatalf("expected structured outcome")
+	}
+	if !outcome.Completed() {
+		t.Fatalf("expected completed outcome")
+	}
+	if outcome.DisplayText() != "Found the alert source." {
+		t.Fatalf("display text = %q", outcome.DisplayText())
+	}
+	if outcome.ArtifactKind != "evidence" {
+		t.Fatalf("artifact kind = %q", outcome.ArtifactKind)
+	}
+	if outcome.ContextText() != raw {
+		t.Fatalf("context text = %q, want %q", outcome.ContextText(), raw)
+	}
+}
+
+func TestParseDelegateOutcomeForRoleCoercesBareArchitectJSONObject(t *testing.T) {
+	raw := `{"severity":"medium","likely_impact":"Verification coverage gap","suggested_next_checks":["confirm script path"]}`
+	outcome := parseDelegateOutcomeForRole("architect", raw)
+	if !outcome.Structured {
+		t.Fatalf("expected structured outcome")
+	}
+	if !outcome.Completed() {
+		t.Fatalf("expected completed outcome")
+	}
+	if outcome.DisplayText() != "Architect output ready." {
+		t.Fatalf("display text = %q", outcome.DisplayText())
+	}
+	if outcome.ArtifactKind != "plan" {
+		t.Fatalf("artifact kind = %q", outcome.ArtifactKind)
+	}
+	if outcome.ContextText() != raw {
+		t.Fatalf("context text = %q, want %q", outcome.ContextText(), raw)
+	}
+}

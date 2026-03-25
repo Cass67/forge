@@ -319,11 +319,11 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			} else {
 				displayResult := truncateResult(result)
 				if call.Name == "delegate" {
-					outcome := parseDelegateOutcome(result)
+					role, _ := call.Args["role"].(string)
+					outcome := parseDelegateOutcomeForRole(role, result)
 					displayResult = outcome.DisplayText()
 					result = displayResult
 					if a.role == "dispatch" {
-						role, _ := call.Args["role"].(string)
 						role = strings.TrimSpace(role)
 						contextText := outcome.ContextText()
 						a.dispatchResults[role] = displayResult
