@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"forge/internal/config"
+	"forge/internal/harness"
 	"forge/internal/llm"
 )
 
@@ -206,4 +208,78 @@ func TestEnableChatDebugDefaultsOutsideWorkDir(t *testing.T) {
 	if _, err := os.Stat(gotPath); err != nil {
 		t.Fatalf("expected debug log to be created at %q: %v", gotPath, err)
 	}
+}
+
+func TestEnableChatDebugLogsActiveRuntimeMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chat-debug.jsonl")
+	cfg := &config.Config{}
+	cfg.Chat.Agents.Enabled = true
+	setup := &ChatSetup{
+		ChatModel: "openai/gpt-5",
+		WorkDir:   t.TempDir(),
+		Driver:    &debugMockDriver{response: "ok"},
+		Config:    cfg,
+	}
+
+	t.Setenv("FORGE_CHAT_RUNTIME", "")
+	if _, err := EnableChatDebug(setup, path); err != nil {
+		t.Fatal(err)
+	}
+
+	lines := readDebugLines(t, path)
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
+		t.Fatal(err)
+	}
+	fields, _ := entry["fields"].(map[string]any)
+	if got := fields["runtime_mode"]; got != "kernel" {
+		t.Fatalf("runtime_mode = %#v, want kernel", got)
+	}
+	if got := fields["agents_enabled"]; got != false {
+		t.Fatalf("agents_enabled = %#v, want false because visible agents are disabled in kernel mode", got)
+	}
+}
+
+func TestChatDebugRecorderLogsHarnessTrace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chat-debug.jsonl")
+	setup := &ChatSetup{WorkDir: t.TempDir()}
+	if _, err := EnableChatDebug(setup, path); err != nil {
+		t.Fatal(err)
+	}
+
+	setup.debugRec.logTrace([]harness.TraceRecord{
+		{
+			State:        harness.StateClassify,
+			Family:       harness.FamilyInspect,
+			Step:         harness.StepLocal,
+			Reason:       "inspection language",
+			TopicKey:     "workspace:directory",
+			DebugSummary: "state=classify | family=inspect | step=local | topic=workspace:directory | reason=inspection language",
+		},
+	})
+
+	lines := readDebugLines(t, path)
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["msg"] != "harness.trace" {
+		t.Fatalf("last msg = %#v", entry["msg"])
+	}
+	fields, _ := entry["fields"].(map[string]any)
+	if got := fields["family"]; got != "inspect" {
+		t.Fatalf("family = %#v, want inspect", got)
+	}
+	if got := fields["debug_summary"]; got == "" {
+		t.Fatalf("expected debug_summary, got %#v", got)
+	}
+}
+
+func readDebugLines(t *testing.T, path string) []string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Split(strings.TrimSpace(string(data)), "\n")
 }

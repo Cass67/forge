@@ -311,6 +311,40 @@ func TestRunChatTurnEmitsForgeResponseForWorkerResults(t *testing.T) {
 	}
 }
 
+func TestWorkerDriverForUsesLegacyScoutModelForReader(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Chat.Agents.Models.Scout = "openai/gpt-5.4-mini"
+	defaultDriver := &kernelMockDriver{response: "default"}
+	readerDriver := &kernelMockDriver{response: "reader"}
+	setup := &ChatSetup{
+		Config: cfg,
+		Driver: defaultDriver,
+		MakeDriver: func(model string) llm.Driver {
+			if model == "openai/gpt-5.4-mini" {
+				return readerDriver
+			}
+			return nil
+		},
+	}
+
+	got := workerDriverFor(setup, harness.WorkerReader)
+	if got != readerDriver {
+		t.Fatalf("worker driver = %#v, want reader driver", got)
+	}
+}
+
+func TestWorkerDriverForFallsBackToChatDriverWhenNoCompatModelExists(t *testing.T) {
+	setup := &ChatSetup{
+		Config: &config.Config{},
+		Driver: &kernelMockDriver{response: "default"},
+	}
+
+	got := workerDriverFor(setup, harness.WorkerVerifier)
+	if got != setup.Driver {
+		t.Fatalf("worker driver = %#v, want chat driver", got)
+	}
+}
+
 type stubHarnessLocalExecutor struct {
 	response string
 }

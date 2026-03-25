@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"forge/internal/harness"
 	"forge/internal/llm"
 	"forge/internal/logger"
 )
@@ -47,11 +48,17 @@ func EnableChatDebug(setup *ChatSetup, path string) (string, error) {
 		return "", err
 	}
 	rec := &chatDebugRecorder{log: log}
+	runtimeMode := "legacy"
+	if useHarnessKernelRuntime() {
+		runtimeMode = "kernel"
+	}
+	visibleAgents := setup.Config != nil && setup.Config.Chat.Agents.Enabled && runtimeMode == "legacy"
 	rec.log.Info("chat.debug.enabled", map[string]any{
 		"path":           resolved,
 		"model":          setup.ChatModel,
 		"work_dir":       setup.WorkDir,
-		"agents_enabled": setup.Config != nil && setup.Config.Chat.Agents.Enabled,
+		"runtime_mode":   runtimeMode,
+		"agents_enabled": visibleAgents,
 	})
 	if setup.Driver != nil {
 		setup.Driver = rec.wrapDriver(setup.Driver)
@@ -106,6 +113,23 @@ func (r *chatDebugRecorder) logEvent(ev llm.Event) {
 			"output_tokens": ev.Usage.OutputTokens,
 		},
 	})
+}
+
+func (r *chatDebugRecorder) logTrace(records []harness.TraceRecord) {
+	if r == nil || r.log == nil {
+		return
+	}
+	for _, record := range records {
+		r.log.Debug("harness.trace", map[string]any{
+			"state":         record.State,
+			"family":        record.Family,
+			"step":          record.Step,
+			"worker":        record.Worker,
+			"reason":        record.Reason,
+			"topic_key":     record.TopicKey,
+			"debug_summary": record.DebugSummary,
+		})
+	}
 }
 
 func (r *chatDebugRecorder) wrapDriver(inner llm.Driver) llm.Driver {
