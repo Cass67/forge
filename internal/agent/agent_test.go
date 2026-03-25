@@ -799,6 +799,80 @@ func TestSpawnSubAgentArchitectRetriesPlainFinalOutputIntoTypedEnvelope(t *testi
 	}
 }
 
+func TestSpawnSubAgentScoutAcceptsBareJSONObjectWithoutSecondRetry(t *testing.T) {
+	driver := &inspectingDriver{
+		responses: []string{
+			"<tool_call>\n{\"name\": \"search\", \"args\": {\"pattern\": \"Rancid f5 objstor verify script missing\", \"path\": \".\", \"glob\": \"**/*\"}}\n</tool_call>",
+			`{"source_file":"util-rancid/update_cerner_daily.sh","source_line":753,"message":"Found the alert source.","evidence":["mailx subject matches"]}`,
+		},
+		checks: []func([]llm.Message) error{
+			nil,
+			nil,
+			func(messages []llm.Message) error {
+				return fmt.Errorf("unexpected structured-output retry")
+			},
+		},
+	}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{
+		Name:        "search",
+		Description: "Search",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			return "/repo/util-rancid/update_cerner_daily.sh:753: run_or_warn \"f5 objstor verify missing-script alert email\"", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	parent := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+
+	result, err := parent.SpawnSubAgent(context.Background(), "scout", "TASK: Trace the origin of the email subject and identify the source file. OUTCOME: Evidence-backed findings only. MUST NOT: Do not speculate.", MultiAgentConfig{
+		BaseTools: reg,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if driver.callIdx != 2 {
+		t.Fatalf("expected bare scout json to avoid second retry, got %d driver calls", driver.callIdx)
+	}
+	if outcome := parseDelegateOutcomeForRole("scout", result); !outcome.Structured || outcome.Message != "Found the alert source." {
+		t.Fatalf("expected coerced scout result, got %q", result)
+	}
+}
+
+func TestSpawnSubAgentArchitectAcceptsBareJSONObjectWithoutSecondRetry(t *testing.T) {
+	driver := &inspectingDriver{
+		responses: []string{
+			`{"severity":"medium","likely_impact":"Verification coverage gap","suggested_next_checks":["confirm script path"]}`,
+		},
+		checks: []func([]llm.Message) error{
+			nil,
+			func(messages []llm.Message) error {
+				return fmt.Errorf("unexpected structured-output retry")
+			},
+		},
+	}
+
+	reg := tools.NewRegistry()
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	parent := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+
+	result, err := parent.SpawnSubAgent(context.Background(), "architect", "TASK: Assess whether the alert is urgent. OUTCOME: Concise assessment only. CONTEXT: Prior source and trigger are already known. MUST NOT: Do not inspect more files.", MultiAgentConfig{
+		BaseTools: reg,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if driver.callIdx != 1 {
+		t.Fatalf("expected bare architect json to avoid second retry, got %d driver calls", driver.callIdx)
+	}
+	if outcome := parseDelegateOutcomeForRole("architect", result); !outcome.Structured || outcome.Message != "Architect output ready." {
+		t.Fatalf("expected coerced architect result, got %q", result)
+	}
+}
+
 func TestScoutFiltersRuntimeArtifactsFromSearchResultsByDefault(t *testing.T) {
 	driver := &inspectingDriver{
 		responses: []string{
