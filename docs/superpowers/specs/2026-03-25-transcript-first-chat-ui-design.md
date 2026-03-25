@@ -138,6 +138,12 @@ Content source for `/expand`:
 - the full untruncated answer body when the visible answer was shortened for readability
 - explicit debug detail only when it was already associated with the most recent meaningful answer
 
+When no expandable payload exists:
+
+- `/expand` must not change the transcript
+- the UI should surface a compact no-op message such as `nothing to expand`
+- this no-op state should be testable and deterministic
+
 Not in scope for this redesign:
 
 - a dedicated keyboard shortcut for expand
@@ -183,6 +189,11 @@ Selection rules:
 - if `message` is generic and extraction succeeds, use the extracted summary
 - if `message` is generic and extraction fails, use the role default fallback
 - if both `message` and extracted summary exist and the message is specific, keep the message and store the extracted artifact for `/expand`
+
+Single owner:
+
+- placeholder suppression and summary selection logic should live in the delegate-result path, not separately in transcript rendering
+- transcript rendering should consume the already-selected display text and only decide how to present it visually
 
 ### Minimal role artifact schemas
 
@@ -388,6 +399,17 @@ Rules:
 - if scout explicitly returns `next_role:"architect"` and a concrete `next_task`, dispatch should honor it
 - if scout returns complete evidence for an `interpret` turn but no `next_role`, dispatch should synthesize one architect follow-on using the scout artifact
 
+Definition of `same topic`:
+
+- dispatch should carry a per-turn `topic_key` for the latest successful scout artifact
+- `topic_key` is the normalized subject of the scout result, derived from the concrete source being discussed
+- preferred derivation order:
+  1. `source_file[:source_line]` when present
+  2. `source`
+  3. a dispatch-provided normalized task label when the artifact has no source location
+- a follow-up user turn may reuse the prior scout artifact only when dispatch resolves it to the same `topic_key`
+- if no stable `topic_key` can be derived, dispatch must not treat the prior artifact as reusable evidence
+
 ### Failure and timeout behavior
 
 - if architect blocks, errors, or times out after scout has already produced evidence, dispatch should surface the best scout evidence summary plus a one-line note that interpretation was unavailable
@@ -465,6 +487,7 @@ Expected responsibilities:
 - a bare JSON scout result that contains source and trigger information is surfaced as a meaningful inline answer
 - a bare JSON architect result that contains severity and next check is surfaced as a meaningful inline answer
 - fallback strings do not hide more useful structured content
+- `/expand` with no payload yields a deterministic `nothing to expand`-style no-op
 
 ### Loop behavior
 
