@@ -391,7 +391,7 @@ func TestChatModelSlashThemeChangesRenderedViewportStyle(t *testing.T) {
 	}
 }
 
-func TestChatModelViewHeaderIncludesThemeName(t *testing.T) {
+func TestChatModelViewHeaderStaysCompact(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test-model", WorkDir: "/tmp"})
 	m.width = 80
 	m.height = 24
@@ -399,12 +399,19 @@ func TestChatModelViewHeaderIncludesThemeName(t *testing.T) {
 	m.AddMessage(ChatMessage{Kind: MsgUser, Header: "You • 12:00:00", Content: "hello"})
 
 	v := m.View()
-	if !strings.Contains(v, "theme: dusk") {
-		t.Fatalf("view header missing theme name: %s", v)
+	lines := strings.Split(v, "\n")
+	if len(lines) == 0 {
+		t.Fatalf("view missing header: %q", v)
+	}
+	if !strings.Contains(lines[0], "forge • test-model • /tmp") {
+		t.Fatalf("view header missing compact identity line: %q", lines[0])
+	}
+	if strings.Contains(lines[0], "theme:") {
+		t.Fatalf("view header should omit theme chrome: %q", lines[0])
 	}
 }
 
-func TestChatModelViewShowsActiveModelAndThemeInHeader(t *testing.T) {
+func TestChatModelViewShowsCompactHeaderIdentity(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "copilot/gpt-5", WorkDir: "/tmp"})
 	m.width = 120
 	m.height = 30
@@ -412,11 +419,14 @@ func TestChatModelViewShowsActiveModelAndThemeInHeader(t *testing.T) {
 
 	got := m.View()
 	lines := strings.Split(got, "\n")
-	if len(lines) < 2 {
-		t.Fatalf("view missing two-line header: %q", got)
+	if len(lines) < 1 {
+		t.Fatalf("view missing header: %q", got)
 	}
-	if !strings.Contains(lines[0], "copilot/gpt-5") || !strings.Contains(lines[0], "theme: light") {
-		t.Fatalf("header line 1 missing model or theme: %q", lines[0])
+	if !strings.Contains(lines[0], "copilot/gpt-5") || !strings.Contains(lines[0], "/tmp") {
+		t.Fatalf("header line missing model or workdir: %q", lines[0])
+	}
+	if strings.Contains(lines[0], "theme: light") {
+		t.Fatalf("header line should stay compact: %q", lines[0])
 	}
 }
 
@@ -431,7 +441,7 @@ func TestChatModelViewFitsWithinWindowHeight(t *testing.T) {
 	}
 }
 
-func TestChatModelViewShowsSecondStatusLine(t *testing.T) {
+func TestChatModelViewKeepsTurnStatsOutOfCompactHeader(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "copilot/gpt-5", WorkDir: "/tmp"})
 	m.width = 120
 	m.height = 30
@@ -440,15 +450,15 @@ func TestChatModelViewShowsSecondStatusLine(t *testing.T) {
 
 	got := m.View()
 	lines := strings.Split(got, "\n")
-	if len(lines) < 2 {
-		t.Fatalf("view missing second status line: %q", got)
+	if len(lines) < 1 {
+		t.Fatalf("view missing header: %q", got)
 	}
-	if !strings.Contains(lines[1], "ready") || !strings.Contains(lines[1], "last 100 in / 20 out") {
-		t.Fatalf("header line 2 missing status summary: %q", lines[1])
+	if strings.Contains(lines[0], "last 100 in / 20 out") || strings.Contains(lines[0], "session 120 tok") {
+		t.Fatalf("compact header should omit turn/session stats: %q", lines[0])
 	}
 }
 
-func TestChatModelViewShowsContextSummaryInHeader(t *testing.T) {
+func TestChatModelViewKeepsContextSummaryOutOfCompactHeader(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{
 		Model:   "openai/gpt-5",
 		WorkDir: "/tmp",
@@ -462,15 +472,15 @@ func TestChatModelViewShowsContextSummaryInHeader(t *testing.T) {
 
 	got := m.View()
 	lines := strings.Split(got, "\n")
-	if len(lines) < 2 {
-		t.Fatalf("view missing second status line: %q", got)
+	if len(lines) < 1 {
+		t.Fatalf("view missing header: %q", got)
 	}
-	if !strings.Contains(lines[1], "session 120 tok") || !strings.Contains(lines[1], "est ctx 120/8000") {
-		t.Fatalf("header line 2 missing context summary: %q", lines[1])
+	if strings.Contains(lines[0], "session 120 tok") || strings.Contains(lines[0], "est ctx 120/8000") {
+		t.Fatalf("compact header should omit context summary: %q", lines[0])
 	}
 }
 
-func TestChatModelViewShowsBaselineSessionStatsBeforeFirstResponse(t *testing.T) {
+func TestChatModelViewKeepsBaselineSessionStatsOutOfCompactHeader(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{
 		Model:   "openai/gpt-5",
 		WorkDir: "/tmp",
@@ -483,15 +493,15 @@ func TestChatModelViewShowsBaselineSessionStatsBeforeFirstResponse(t *testing.T)
 
 	got := m.View()
 	lines := strings.Split(got, "\n")
-	if len(lines) < 2 {
-		t.Fatalf("view missing second status line: %q", got)
+	if len(lines) < 1 {
+		t.Fatalf("view missing header: %q", got)
 	}
-	if !strings.Contains(lines[1], "session 0 tok") || !strings.Contains(lines[1], "est ctx 0/8000") {
-		t.Fatalf("header line 2 missing baseline session stats: %q", lines[1])
+	if strings.Contains(lines[0], "session 0 tok") || strings.Contains(lines[0], "est ctx 0/8000") {
+		t.Fatalf("compact header should omit baseline session stats: %q", lines[0])
 	}
 }
 
-func TestChatModelEventStatsFetchesProviderDiagnosticsForHeader(t *testing.T) {
+func TestChatModelEventStatsFetchesProviderDiagnosticsWithoutExpandingHeader(t *testing.T) {
 	codexCalls := 0
 	m := NewChatModel(ChatLiveConfig{
 		Model:   "openai/gpt-5",
@@ -527,13 +537,19 @@ func TestChatModelEventStatsFetchesProviderDiagnosticsForHeader(t *testing.T) {
 	if codexCalls != 1 {
 		t.Fatalf("codexCalls = %d, want 1", codexCalls)
 	}
+	if m.statusData.CodexUsage == nil {
+		t.Fatal("expected codex usage snapshot to be stored")
+	}
 	lines := strings.Split(m.View(), "\n")
-	if len(lines) < 2 || !strings.Contains(lines[1], "Codex") {
-		t.Fatalf("header line 2 missing codex summary: %q", strings.Join(lines, "\n"))
+	if len(lines) < 1 {
+		t.Fatalf("view missing header: %q", strings.Join(lines, "\n"))
+	}
+	if strings.Contains(lines[0], "Codex") {
+		t.Fatalf("compact header should omit provider diagnostics: %q", lines[0])
 	}
 }
 
-func TestChatModelViewShowsCopilotSummaryOnlyForCopilotModel(t *testing.T) {
+func TestChatModelViewKeepsProviderDiagnosticsOutOfCompactHeader(t *testing.T) {
 	quota := &copilot.UserQuota{
 		Windows: map[string]llm.CopilotQuota{
 			"premium": {Type: "premium", Remaining: 3, Included: 10},
@@ -545,11 +561,11 @@ func TestChatModelViewShowsCopilotSummaryOnlyForCopilotModel(t *testing.T) {
 	copilotModel.height = 30
 	copilotModel.statusData.CopilotLive = quota
 	copilotLines := strings.Split(copilotModel.View(), "\n")
-	if len(copilotLines) < 2 {
-		t.Fatalf("copilot view missing second status line: %q", copilotModel.View())
+	if len(copilotLines) < 1 {
+		t.Fatalf("copilot view missing header: %q", copilotModel.View())
 	}
-	if !strings.Contains(copilotLines[1], "Copilot") {
-		t.Fatalf("expected Copilot summary for copilot model: %q", copilotLines[1])
+	if strings.Contains(copilotLines[0], "Copilot") {
+		t.Fatalf("compact header should omit Copilot diagnostics: %q", copilotLines[0])
 	}
 
 	otherModel := NewChatModel(ChatLiveConfig{Model: "anthropic/claude-sonnet-4-6", WorkDir: "/tmp"})
@@ -557,11 +573,11 @@ func TestChatModelViewShowsCopilotSummaryOnlyForCopilotModel(t *testing.T) {
 	otherModel.height = 30
 	otherModel.statusData.CopilotLive = quota
 	otherLines := strings.Split(otherModel.View(), "\n")
-	if len(otherLines) < 2 {
-		t.Fatalf("other view missing second status line: %q", otherModel.View())
+	if len(otherLines) < 1 {
+		t.Fatalf("other view missing header: %q", otherModel.View())
 	}
-	if strings.Contains(otherLines[1], "Copilot") {
-		t.Fatalf("did not expect Copilot summary for non-Copilot model: %q", otherLines[1])
+	if strings.Contains(otherLines[0], "Copilot") {
+		t.Fatalf("compact header should omit Copilot diagnostics for all models: %q", otherLines[0])
 	}
 }
 

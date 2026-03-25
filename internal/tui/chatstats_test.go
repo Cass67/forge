@@ -158,3 +158,27 @@ func TestBuildStatusLine2ShowsContextForOpenRouterModels(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderStatusHeaderUsesSingleCompactLine(t *testing.T) {
+	rendered := renderStatusHeader(lookupThemeForTest(t, "default"), chatStatusData{
+		Model:        "oca/OpenAI GPT 5.4",
+		ThemeID:      "default",
+		WorkDir:      "/Users/mcassidy/git/work/Cerner/managability",
+		Status:       "ready",
+		SessionUsage: llm.Usage{InputTokens: 23122},
+		LastUsage:    llm.Usage{InputTokens: 1217, OutputTokens: 212},
+	}, 200)
+
+	lines := strings.Split(strippedLine(rendered), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("header lines = %d, want 1: %q", len(lines), rendered)
+	}
+	if !strings.Contains(lines[0], "forge • oca/OpenAI GPT 5.4 • /Users/mcassidy/git/work/Cerner/managability") {
+		t.Fatalf("header missing compact identity line: %q", lines[0])
+	}
+	for _, unwanted := range []string{"theme:", "ready", "session", "last"} {
+		if strings.Contains(lines[0], unwanted) {
+			t.Fatalf("header should omit %q: %q", unwanted, lines[0])
+		}
+	}
+}

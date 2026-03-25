@@ -359,8 +359,9 @@ func summarizeScoutArtifact(object map[string]any) string {
 
 func summarizeArchitectArtifact(object map[string]any) string {
 	assessment := firstNonEmptyString(object, "assessment")
-	severity := humanizeDelegateText(firstNonEmptyString(object, "severity", "worry_level"), "-")
-	actionability := humanizeDelegateText(firstNonEmptyString(object, "actionability"), " ")
+	severity := humanizeDelegateText(firstNonEmptyString(object, "severity", "worry_level"), " ")
+	actionabilityRaw := strings.TrimSpace(strings.ToLower(firstNonEmptyString(object, "actionability")))
+	actionability := humanizeDelegateText(actionabilityRaw, " ")
 	nextCheck := firstNonEmptyString(object, "recommended_next_check")
 	impact := firstNonEmptyString(object, "likely_impact")
 	suggested := firstUsefulEntry(object["suggested_next_checks"])
@@ -375,10 +376,17 @@ func summarizeArchitectArtifact(object map[string]any) string {
 
 	var parts []string
 	if severity != "" {
-		parts = append(parts, labelSentence("", severity+" severity"))
+		parts = append(parts, labelSentence("Severity: ", severity))
 	}
 	if actionability != "" {
-		parts = append(parts, sentence(actionability))
+		switch {
+		case actionabilityRaw == "actionable" && nextCheck != "":
+			// The explicit next check already conveys actionability.
+		case actionabilityRaw == "actionable":
+			parts = append(parts, sentence("Action needed"))
+		default:
+			parts = append(parts, labelSentence("Actionability: ", actionability))
+		}
 	}
 	if severity == "" && impact != "" {
 		parts = append(parts, labelSentence("Likely impact: ", impact))
