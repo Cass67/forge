@@ -66,3 +66,23 @@ func TestClassifyRecognizesImplementationAndDebugFamilies(t *testing.T) {
 		t.Fatalf("debug request family = %q", got.Family)
 	}
 }
+
+func TestClassifyResearchNeedsExplicitExternalLookupSignals(t *testing.T) {
+	cases := []struct {
+		input string
+		want  RequestFamily
+	}{
+		{input: "look at this file", want: FamilyAnswer},
+		{input: "search the repo for auth", want: FamilyInspect},
+		{input: "update docs for the auth flow", want: FamilyImplement},
+		{input: "look up the latest API docs", want: FamilyResearch},
+		{input: "search the web for the latest API docs", want: FamilyResearch},
+	}
+
+	for _, tc := range cases {
+		got := Classify(UserTurn{Text: tc.input}, SessionState{})
+		if got.Family != tc.want {
+			t.Fatalf("%q family = %q, want %q", tc.input, got.Family, tc.want)
+		}
+	}
+}

@@ -164,6 +164,18 @@ func (a *Agent) LastResponse() string {
 	return a.lastFullResponse
 }
 
+func (a *Agent) EmitSyntheticResponse(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	a.lastFullResponse = text
+	a.history = append(a.history, llm.Message{Role: llm.RoleAssistant, Content: text})
+	if a.renderer != nil {
+		a.renderer.AgentText(text)
+	}
+}
+
 func (a *Agent) CancelSubAgent() {
 	a.mu.Lock()
 	defer a.mu.Unlock()

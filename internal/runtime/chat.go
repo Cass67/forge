@@ -195,10 +195,19 @@ func RunChatLive(setup *ChatSetup) {
 	var kernel *harness.Runner
 
 	if useKernel {
+		workers := harness.NewManager(harness.ManagerConfig{
+			WorkDir:   setup.WorkDir,
+			BaseTools: baseReg,
+			Approve:   approve,
+			DriverFor: func(harness.WorkerKind) llm.Driver {
+				return setup.Driver
+			},
+		})
 		kernel = harness.NewRunner(harness.RunnerConfig{
 			Session: harness.NewSession(),
 			Trace:   harness.NewRecorder(),
 			Local:   harness.AgentExecutor{Agent: a},
+			Workers: workers,
 		})
 	}
 
@@ -476,10 +485,19 @@ func RunChatConsole(setup *ChatSetup) {
 	var kernel *harness.Runner
 
 	if useKernel {
+		workers := harness.NewManager(harness.ManagerConfig{
+			WorkDir:   setup.WorkDir,
+			BaseTools: reg.Filter(nil),
+			Approve:   approve,
+			DriverFor: func(harness.WorkerKind) llm.Driver {
+				return setup.Driver
+			},
+		})
 		kernel = harness.NewRunner(harness.RunnerConfig{
 			Session: harness.NewSession(),
 			Trace:   harness.NewRecorder(),
 			Local:   harness.AgentExecutor{Agent: a},
+			Workers: workers,
 		})
 	}
 
@@ -547,7 +565,10 @@ func runChatTurn(ctx context.Context, a *agent.Agent, kernel *harness.Runner, in
 	if kernel == nil {
 		return a.Run(ctx, input)
 	}
-	_, err := kernel.Run(ctx, input)
+	result, err := kernel.Run(ctx, input)
+	if err == nil && a != nil && result.Step.Kind == harness.StepWorker {
+		a.EmitSyntheticResponse(result.Response)
+	}
 	return err
 }
 

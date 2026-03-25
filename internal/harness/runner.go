@@ -1,17 +1,23 @@
 package harness
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"strings"
+)
 
 type Runner struct {
 	session *Session
 	trace   *Recorder
 	local   LocalExecutor
+	workers WorkerExecutor
 }
 
 type RunnerConfig struct {
 	Session *Session
 	Trace   *Recorder
 	Local   LocalExecutor
+	Workers WorkerExecutor
 }
 
 func NewRunner(cfg RunnerConfig) *Runner {
@@ -27,6 +33,7 @@ func NewRunner(cfg RunnerConfig) *Runner {
 		session: session,
 		trace:   trace,
 		local:   cfg.Local,
+		workers: cfg.Workers,
 	}
 }
 
@@ -40,22 +47,19 @@ func (r *Runner) Run(ctx context.Context, input string) (TurnResult, error) {
 	class := Classify(turn, snapshot)
 	r.trace.Add(StateClassify, class.Family, "", WorkerNone, class.Reason, class.TopicKey)
 
-	step := Plan(class, snapshot)
-	r.trace.Add(StatePlanStep, class.Family, step.Kind, step.Worker, step.Reason, class.TopicKey)
+	planned := Plan(class, snapshot)
+	r.trace.Add(StatePlanStep, class.Family, planned.Kind, planned.Worker, planned.Reason, class.TopicKey)
 
-	r.trace.Add(StateAct, class.Family, step.Kind, step.Worker, step.Summary, class.TopicKey)
-	obs, err := r.local.Execute(ctx, turn, class)
-	r.trace.Add(StateObserve, class.Family, step.Kind, step.Worker, firstNonEmpty(obs.Summary, "local execution complete"), class.TopicKey)
-
+	step, obs, err := r.executeStep(ctx, turn, class, planned)
 	decision := Decide(class, obs)
 	r.trace.Add(StateDecide, class.Family, step.Kind, step.Worker, decision.Reason, class.TopicKey)
 
 	if decision.FinalState != StateBlocked {
+		obs.Response = buildForgeResponse(step, obs)
 		r.session.Apply(class, obs)
 		r.trace.Add(StateRespond, class.Family, StepRespond, WorkerNone, "emit final forge response", class.TopicKey)
 		r.trace.Add(StateComplete, class.Family, StepRespond, WorkerNone, "turn complete", class.TopicKey)
-	}
-	if decision.FinalState == StateBlocked {
+	} else {
 		r.trace.Add(StateBlocked, class.Family, step.Kind, step.Worker, decision.Reason, class.TopicKey)
 	}
 
@@ -71,4 +75,151 @@ func (r *Runner) Run(ctx context.Context, input string) (TurnResult, error) {
 
 func (r *Runner) Trace() []TraceRecord {
 	return r.trace.Records()
+}
+
+func (r *Runner) executeStep(ctx context.Context, turn UserTurn, class Classification, step Step) (Step, Observation, error) {
+	if step.Kind == StepWorker {
+		return r.executeWorker(ctx, turn, class, step)
+	}
+	return r.executeLocal(ctx, turn, class, step)
+}
+
+func (r *Runner) executeWorker(ctx context.Context, turn UserTurn, class Classification, step Step) (Step, Observation, error) {
+	if r.workers == nil {
+		r.trace.Add(StateBlocked, class.Family, step.Kind, step.Worker, "worker executor unavailable; recovering locally", class.TopicKey)
+		return r.executeLocal(ctx, turn, class, localRecoveryStep())
+	}
+
+	r.trace.Add(StateAct, class.Family, step.Kind, step.Worker, step.Summary, class.TopicKey)
+	obs, err := r.workers.Execute(ctx, WorkerTask{
+		Kind:          step.Worker,
+		Objective:     turn.Text,
+		TopicKey:      class.TopicKey,
+		StopCondition: step.Reason,
+	})
+	r.trace.Add(StateObserve, class.Family, step.Kind, step.Worker, firstNonEmpty(obs.Summary, "worker execution complete"), class.TopicKey)
+	if err == nil && obs.Status != ObservationBlocked {
+		return step, obs, nil
+	}
+
+	reason := firstNonEmpty(obs.Summary, errorString(err), "worker failed closed; recovering locally")
+	r.trace.Add(StateBlocked, class.Family, step.Kind, step.Worker, reason, class.TopicKey)
+
+	fallback := localRecoveryStep()
+	r.trace.Add(StatePlanStep, class.Family, fallback.Kind, fallback.Worker, fallback.Reason, class.TopicKey)
+	return r.executeLocal(ctx, turn, class, fallback)
+}
+
+func (r *Runner) executeLocal(ctx context.Context, turn UserTurn, class Classification, step Step) (Step, Observation, error) {
+	r.trace.Add(StateAct, class.Family, step.Kind, step.Worker, step.Summary, class.TopicKey)
+	obs, err := r.local.Execute(ctx, turn, class)
+	r.trace.Add(StateObserve, class.Family, step.Kind, step.Worker, firstNonEmpty(obs.Summary, "local execution complete"), class.TopicKey)
+	return step, obs, err
+}
+
+func localRecoveryStep() Step {
+	return Step{
+		Kind:    StepLocal,
+		Worker:  WorkerNone,
+		Reason:  "worker failed closed; recover locally",
+		Summary: "run locally",
+	}
+}
+
+func buildForgeResponse(step Step, obs Observation) string {
+	if step.Kind != StepWorker {
+		return strings.TrimSpace(obs.Response)
+	}
+
+	switch artifact := obs.Artifact.(type) {
+	case ReaderResult:
+		return firstNonEmpty(joinReaderEvidence(artifact.Evidence), artifact.Coverage, obs.Summary)
+	case EditorResult:
+		return firstNonEmpty(joinChangeSummaries(artifact.Changes), strings.Join(trimmedStrings(artifact.RemainingIssues), " "), obs.Summary, "Edit complete.")
+	case VerifierResult:
+		if failures := trimmedStrings(artifact.Failures); len(failures) > 0 {
+			return strings.Join(failures, " ")
+		}
+		if len(artifact.Checks) > 0 {
+			return fmt.Sprintf("Verified %d checks.", len(artifact.Checks))
+		}
+		return firstNonEmpty(obs.Summary, "Verification complete.")
+	case ResearcherResult:
+		return composeResearchResponse(artifact, obs.Summary)
+	default:
+		return firstNonEmpty(obs.Summary, obs.Response)
+	}
+}
+
+func joinReaderEvidence(evidence []ReaderEvidence) string {
+	parts := make([]string, 0, len(evidence))
+	for _, item := range evidence {
+		if summary := strings.TrimSpace(item.Summary); summary != "" {
+			parts = append(parts, summary)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func joinChangeSummaries(changes []ChangeRecord) string {
+	parts := make([]string, 0, len(changes))
+	for _, item := range changes {
+		if summary := strings.TrimSpace(item.Summary); summary != "" {
+			parts = append(parts, summary)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func composeResearchResponse(result ResearcherResult, fallback string) string {
+	findings := make([]string, 0, len(result.Findings))
+	for _, finding := range result.Findings {
+		if summary := strings.TrimSpace(finding.Summary); summary != "" {
+			findings = append(findings, summary)
+		}
+	}
+
+	response := strings.Join(findings, " ")
+	labels := make([]string, 0, len(result.Sources))
+	for _, source := range result.Sources {
+		if label := strings.TrimSpace(source.Label); label != "" {
+			labels = append(labels, label)
+		}
+	}
+	if len(labels) > 0 {
+		suffix := "Sources checked: " + humanList(labels) + "."
+		response = firstNonEmpty(strings.TrimSpace(response+" "+suffix), suffix)
+	}
+	return firstNonEmpty(response, fallback, "Research complete.")
+}
+
+func humanList(values []string) string {
+	values = trimmedStrings(values)
+	switch len(values) {
+	case 0:
+		return ""
+	case 1:
+		return values[0]
+	case 2:
+		return values[0] + " and " + values[1]
+	default:
+		return strings.Join(values[:len(values)-1], ", ") + ", and " + values[len(values)-1]
+	}
+}
+
+func trimmedStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
