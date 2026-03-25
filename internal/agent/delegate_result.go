@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 )
@@ -62,14 +63,54 @@ func parseDelegateEnvelope(raw string) (delegateEnvelope, bool) {
 	if trimmed == "" || !strings.HasPrefix(trimmed, "{") {
 		return delegateEnvelope{}, false
 	}
-	var envelope delegateEnvelope
+	var envelope struct {
+		Status       string          `json:"status"`
+		Message      string          `json:"message"`
+		ArtifactKind string          `json:"artifact_kind,omitempty"`
+		Artifact     json.RawMessage `json:"artifact,omitempty"`
+		NextRole     string          `json:"next_role,omitempty"`
+		NextTask     string          `json:"next_task,omitempty"`
+	}
 	if err := json.Unmarshal([]byte(trimmed), &envelope); err != nil {
 		return delegateEnvelope{}, false
 	}
 	if normalizeDelegateStatus(envelope.Status) == "" {
 		return delegateEnvelope{}, false
 	}
-	return envelope, true
+	artifact, ok := normalizeDelegateArtifact(envelope.Artifact)
+	if !ok {
+		return delegateEnvelope{}, false
+	}
+	nextRole := strings.TrimSpace(envelope.NextRole)
+	nextTask := strings.TrimSpace(envelope.NextTask)
+	if _, ok := Roles[nextRole]; !ok {
+		nextRole = ""
+		nextTask = ""
+	}
+	return delegateEnvelope{
+		Status:       envelope.Status,
+		Message:      envelope.Message,
+		ArtifactKind: envelope.ArtifactKind,
+		Artifact:     artifact,
+		NextRole:     nextRole,
+		NextTask:     nextTask,
+	}, true
+}
+
+func normalizeDelegateArtifact(raw json.RawMessage) (string, bool) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return "", true
+	}
+	var text string
+	if err := json.Unmarshal(trimmed, &text); err == nil {
+		return strings.TrimSpace(text), true
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, trimmed); err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(compact.String()), true
 }
 
 func stripJSONFence(raw string) string {
