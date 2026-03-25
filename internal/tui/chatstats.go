@@ -51,9 +51,6 @@ func buildStatusLine1(data chatStatusData) string {
 	if workDir := strings.TrimSpace(data.WorkDir); workDir != "" {
 		parts = append(parts, workDir)
 	}
-	if theme := strings.TrimSpace(data.ThemeID); theme != "" {
-		parts = append(parts, "theme: "+theme)
-	}
 	return strings.Join(parts, " • ")
 }
 
@@ -311,13 +308,7 @@ func renderStatusHeader(theme chatTheme, data chatStatusData, width int) string 
 		Width(width).
 		Bold(true)
 
-	line1 := fitCell(buildStatusLine1(data), width)
-	line2 := fitCell(buildStatusLine2(data), width)
-
-	return lipgloss.JoinVertical(lipgloss.Left,
-		headerStyle.Render(line1),
-		headerStyle.Render(line2),
-	)
+	return headerStyle.Render(fitCell(buildStatusLine1(data), width))
 }
 
 func (m *ChatModel) syncStatusData() {

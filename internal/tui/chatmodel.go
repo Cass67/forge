@@ -155,7 +155,7 @@ const (
 	focusTools
 )
 
-const chatHeaderHeight = 2
+const chatHeaderHeight = 1
 const chatPaneBorderHeight = 2
 const chatInputHeight = 3
 const chatStatusHeight = 1
