@@ -1,0 +1,68 @@
+package harness
+
+import "testing"
+
+func TestClassifyDirectoryParaphrasesStayInspect(t *testing.T) {
+	cases := []string{
+		"describe this directory",
+		"go over this directory",
+		"walk through this directory",
+		"explain this directory",
+		"review this directory",
+		"summarize this directory",
+		"give an overview of this directory",
+		"take me through this directory",
+		"show me what’s in this directory",
+		"help me understand this directory",
+	}
+
+	for _, input := range cases {
+		got := Classify(UserTurn{Text: input}, SessionState{})
+		if got.Family != FamilyInspect {
+			t.Fatalf("%q family = %q", input, got.Family)
+		}
+		if got.WantsEvaluation {
+			t.Fatalf("%q unexpectedly wanted evaluation", input)
+		}
+		if got.WantsInterpretation {
+			t.Fatalf("%q unexpectedly wanted interpretation", input)
+		}
+		if got.TopicKey != "workspace:directory" {
+			t.Fatalf("%q topic = %q", input, got.TopicKey)
+		}
+	}
+}
+
+func TestClassifyInterpretiveFollowUpNeedsRecentEvidence(t *testing.T) {
+	noEvidence := Classify(UserTurn{Text: "what do you think?"}, SessionState{})
+	if noEvidence.WantsInterpretation {
+		t.Fatal("expected no interpretation without recent evidence")
+	}
+
+	withEvidence := Classify(UserTurn{Text: "what do you think?"}, SessionState{
+		Turn: 2,
+		LastEvidence: EvidenceSnapshot{
+			Turn:     1,
+			TopicKey: "workspace:directory",
+			Summary:  "read the directory",
+		},
+	})
+	if !withEvidence.WantsInterpretation {
+		t.Fatal("expected interpretation when recent evidence exists")
+	}
+	if !withEvidence.IsFollowUp {
+		t.Fatal("expected follow-up classification")
+	}
+	if withEvidence.TopicKey != "workspace:directory" {
+		t.Fatalf("topic = %q", withEvidence.TopicKey)
+	}
+}
+
+func TestClassifyRecognizesImplementationAndDebugFamilies(t *testing.T) {
+	if got := Classify(UserTurn{Text: "fix the broken auth flow"}, SessionState{}); got.Family != FamilyImplement {
+		t.Fatalf("fix request family = %q", got.Family)
+	}
+	if got := Classify(UserTurn{Text: "debug the failing auth flow"}, SessionState{}); got.Family != FamilyDebug {
+		t.Fatalf("debug request family = %q", got.Family)
+	}
+}

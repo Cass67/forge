@@ -18,6 +18,7 @@ import (
 	"forge/internal/codexusage"
 	"forge/internal/config"
 	"forge/internal/copilot"
+	"forge/internal/harness"
 	"forge/internal/llm"
 	"forge/internal/modelcatalog"
 	"forge/internal/skills"
@@ -190,8 +191,18 @@ func RunChatLive(setup *ChatSetup) {
 	state := chatstate.New()
 
 	a := agent.NewAgent(setup.Driver, reg, approve, setup.WorkDir, setup.Config.Chat.MaxTurns, evRenderer, loadedSkills, state)
+	useKernel := useHarnessKernelRuntime()
+	var kernel *harness.Runner
 
-	if setup.Config.Chat.Agents.Enabled {
+	if useKernel {
+		kernel = harness.NewRunner(harness.RunnerConfig{
+			Session: harness.NewSession(),
+			Trace:   harness.NewRecorder(),
+			Local:   harness.AgentExecutor{Agent: a},
+		})
+	}
+
+	if setup.Config.Chat.Agents.Enabled && !useKernel {
 		configureMultiAgent(a, baseReg, setup)
 		evRenderer.SetLabel("dispatch")
 	}
@@ -220,7 +231,7 @@ func RunChatLive(setup *ChatSetup) {
 				setup.debugRec.logInput("user", msg)
 			}
 			go func(runMsg string) {
-				err := a.Run(ctx, runMsg)
+				err := runChatTurn(ctx, a, kernel, runMsg)
 				inputCh <- runOutcome(err)
 			}(msg)
 		}
@@ -360,6 +371,13 @@ func RunChatLive(setup *ChatSetup) {
 		},
 		ToggleAgents: func(enabled bool) error {
 			setup.Config.Chat.Agents.Enabled = enabled
+			if useKernel {
+				a.SetTools(baseReg.Filter(nil))
+				a.UseGeneratedSystem()
+				a.SetRole("")
+				evRenderer.SetLabel("agent")
+				return nil
+			}
 			if enabled {
 				configureMultiAgent(a, baseReg, setup)
 				evRenderer.SetLabel("dispatch")
@@ -454,8 +472,18 @@ func RunChatConsole(setup *ChatSetup) {
 	renderer := agent.NewRenderer(os.Stdout, 80, true)
 	state := chatstate.New()
 	a := agent.NewAgent(setup.Driver, reg, approve, setup.WorkDir, setup.Config.Chat.MaxTurns, renderer, loadedSkills, state)
+	useKernel := useHarnessKernelRuntime()
+	var kernel *harness.Runner
 
-	if setup.Config.Chat.Agents.Enabled {
+	if useKernel {
+		kernel = harness.NewRunner(harness.RunnerConfig{
+			Session: harness.NewSession(),
+			Trace:   harness.NewRecorder(),
+			Local:   harness.AgentExecutor{Agent: a},
+		})
+	}
+
+	if setup.Config.Chat.Agents.Enabled && !useKernel {
 		configureMultiAgent(a, reg, setup)
 	}
 
@@ -500,11 +528,27 @@ func RunChatConsole(setup *ChatSetup) {
 				continue
 			}
 		}
-		if err := a.Run(ctx, input); err != nil {
+		if err := runChatTurn(ctx, a, kernel, input); err != nil {
 			renderer.Error(err.Error())
 		}
 	}
 	fmt.Println()
+}
+
+func useHarnessKernelRuntime() bool {
+	mode := strings.TrimSpace(os.Getenv("FORGE_CHAT_RUNTIME"))
+	if mode == "" {
+		return true
+	}
+	return !strings.EqualFold(mode, "legacy")
+}
+
+func runChatTurn(ctx context.Context, a *agent.Agent, kernel *harness.Runner, input string) error {
+	if kernel == nil {
+		return a.Run(ctx, input)
+	}
+	_, err := kernel.Run(ctx, input)
+	return err
 }
 
 func handleChatSlashCommand(input string, renderer *agent.Renderer, a *agent.Agent, setup *ChatSetup) bool {
