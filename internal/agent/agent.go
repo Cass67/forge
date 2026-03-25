@@ -66,6 +66,7 @@ type scoutRepoReviewEvidenceState struct {
 }
 
 const targetHistoryTokens = 12000
+const maxCurrentToolResultChars = 12000
 
 func NewAgent(driver llm.Driver, toolReg *tools.Registry, approve tools.ApprovalFunc, workDir string, maxTurns int, renderer RenderTarget, loadedSkills []skills.Skill, state *chatstate.State) *Agent {
 	if state == nil {
@@ -1089,8 +1090,16 @@ func compactToolResults(results []string) string {
 	lines := make([]string, 0, len(results)+1)
 	lines = append(lines, "Tool results:")
 	for _, result := range results {
-		line := clipForHistory(oneLine(result), 4000)
-		lines = append(lines, "- "+line)
+		block := clipMultilineForHistory(strings.TrimSpace(result), maxCurrentToolResultChars)
+		if block == "" {
+			lines = append(lines, "- (empty)")
+			continue
+		}
+		blockLines := strings.Split(block, "\n")
+		lines = append(lines, "- "+blockLines[0])
+		for _, line := range blockLines[1:] {
+			lines = append(lines, "  "+line)
+		}
 	}
 	return strings.Join(lines, "\n")
 }
@@ -1108,6 +1117,18 @@ func clipForHistory(s string, max int) string {
 		return s[:max]
 	}
 	return s[:max-3] + "..."
+}
+
+func clipMultilineForHistory(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= max {
+		return s
+	}
+	const suffix = "\n... (truncated in history)"
+	if max <= len(suffix) {
+		return s[:max]
+	}
+	return strings.TrimSpace(s[:max-len(suffix)]) + suffix
 }
 
 func looksLikeActionPreamble(text string) bool {
@@ -1471,13 +1492,33 @@ var repoReviewHealthCandidates = []string{
 
 func scoutTaskIsRepoReview(task string) bool {
 	lower := strings.ToLower(normalizePromptText(task))
-	return containsAny(lower, []string{
+	if containsAny(lower, []string{
 		"repo review",
 		"repository review",
 		"inspect the repository",
 		"inspect the go repository",
-		"gather evidence about its purpose",
-		"gather repository purpose",
+	}) {
+		return true
+	}
+
+	if !containsAny(lower, []string{"repo", "repository", "codebase"}) {
+		return false
+	}
+	if !containsAny(lower, []string{
+		"review",
+		"assess",
+		"assessment",
+		"recommend",
+		"recommendation",
+		"improve",
+		"improvement",
+		"cleanup",
+		"maintenance",
+	}) {
+		return false
+	}
+	return containsAny(lower, []string{
+		"purpose",
 		"tech stack",
 		"key modules",
 		"main packages/binaries",
