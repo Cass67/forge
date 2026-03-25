@@ -64,7 +64,7 @@ func TestRendererNoColor(t *testing.T) {
 	}
 }
 
-func TestRendererExpand(t *testing.T) {
+func TestRendererToolResultTruncatesWithoutExpandHint(t *testing.T) {
 	var buf bytes.Buffer
 	r := NewRenderer(&buf, 80, false)
 	// Create a long diff that will be truncated
@@ -73,11 +73,11 @@ func TestRendererExpand(t *testing.T) {
 		longDiff.WriteString("+line " + string(rune('A'+i)) + "\n")
 	}
 	r.ToolResult("edit_file", "edited main.go", longDiff.String(), false)
-	if r.LastExpandable() == "" {
-		t.Error("expected lastExpandable to be set for long diff")
+	out := buf.String()
+	if strings.Contains(out, "/expand") {
+		t.Fatalf("unexpected /expand hint in rendered output: %q", out)
 	}
-	r.ClearExpandable()
-	if r.LastExpandable() != "" {
-		t.Error("expected lastExpandable to be cleared")
+	if !strings.Contains(out, "more lines") {
+		t.Fatalf("expected truncation summary in rendered output: %q", out)
 	}
 }

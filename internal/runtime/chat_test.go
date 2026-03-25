@@ -1,11 +1,17 @@
 package runtime
 
 import (
+	"bytes"
+	"io"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"forge/internal/agent"
+	"forge/internal/agent/tools"
 	"forge/internal/auth"
+	"forge/internal/chatstate"
 	"forge/internal/config"
 	"forge/internal/llm"
 )
@@ -169,6 +175,48 @@ func TestBuildChatSetupAllowsNoConfiguredModels(t *testing.T) {
 	if len(setup.Providers) == 0 {
 		t.Fatal("expected provider options for in-app configuration")
 	}
+}
+
+func TestPrintChatHelpOmitsExpandCommand(t *testing.T) {
+	output := captureRuntimeStdout(t, PrintChatHelp)
+	if strings.Contains(output, "/expand") {
+		t.Fatalf("expected /expand to be removed from chat help, got:\n%s", output)
+	}
+}
+
+func TestHandleChatSlashCommandExpandIsUnknown(t *testing.T) {
+	var buf bytes.Buffer
+	renderer := agent.NewRenderer(&buf, 80, false)
+	a := agent.NewAgent(nil, tools.NewRegistry(), agent.YoloApproval(), t.TempDir(), 4, renderer, nil, chatstate.New())
+	setup := &ChatSetup{}
+
+	if handled := handleChatSlashCommand("/expand", renderer, a, setup); !handled {
+		t.Fatal("expected slash command to be handled")
+	}
+	if !strings.Contains(buf.String(), "unknown command: /expand") {
+		t.Fatalf("expected unknown command output, got %q", buf.String())
+	}
+}
+
+func captureRuntimeStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	prev := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = prev }()
+
+	fn()
+
+	_ = w.Close()
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, r); err != nil {
+		t.Fatalf("io.Copy: %v", err)
+	}
+	_ = r.Close()
+	return buf.String()
 }
 
 type assertErr string

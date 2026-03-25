@@ -4,7 +4,7 @@ Forge is a terminal-first coding agent for local repositories.
 
 It has two primary modes:
 
-- `forge` / `forge chat`: an interactive coding loop with tool use, provider switching, approvals, and optional multi-agent delegation
+- `forge`: an interactive coding loop with tool use, provider switching, approvals, and optional multi-agent delegation
 - `forge make`: the legacy writer/auditor pipeline for generating or iterating on code with batch-style passes
 
 Forge is designed to run against your local working tree, use multiple model providers, and keep the user in control of destructive actions.
@@ -197,7 +197,7 @@ Model picker entries are labeled with the resolved auth path, for example:
 Core commands:
 
 ```bash
-forge chat [--model MODEL] [--yolo] [-C PATH]
+forge [--model MODEL] [--yolo] [-C PATH]
 forge make [<path>] [--prompt "..."]
 forge improve <path> [--prompt "..."]
 forge list
@@ -211,7 +211,7 @@ forge skills
 
 Useful command families:
 
-- `forge` / `forge chat`: local interactive coding loop
+- `forge`: local interactive coding loop
 - `forge make`: legacy writer/auditor/summarizer pipeline
 - `forge perf`: session usage and throughput reporting
 - `forge status`: auth and provider status snapshot
@@ -252,4 +252,4 @@ flowchart LR
 ## Notes
 
 - Forge does not currently produce one native binary that runs unchanged on every OS. Build one binary per target OS/architecture pair.
-- `forge chat` currently uses the Bubble Tea chat frontend through [internal/tui/chatmodel.go](/Users/cass/git/forge/internal/tui/chatmodel.go).
+- `forge` currently uses the Bubble Tea chat frontend through [internal/tui/chatmodel.go](/Users/cass/git/forge/internal/tui/chatmodel.go).

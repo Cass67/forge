@@ -2576,70 +2576,44 @@ func TestChatModelFilePickerAcceptsExplicitRelativePath(t *testing.T) {
 	}
 }
 
-func TestChatModelSlashExpandShowsFullResult(t *testing.T) {
+func TestChatModelSlashExpandIsUnknownCommand(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 100
 	m.height = 24
-	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Scout • 10:00:00", Content: "Source: /repo/main.go:12\n... (/expand)"})
-	m.lastExpandable = "full expanded output"
-
-	m.inputBuf = "/expand"
-	m.inputPos = len(m.inputBuf)
-	updated, _ := m.submitInput()
-	m = updated.(ChatModel)
-
-	if m.lastExpandable != "" {
-		t.Fatal("expected expand buffer to be cleared")
-	}
-	if got := m.View(); !strings.Contains(got, "full expanded output") {
-		t.Fatalf("view missing expanded output: %s", got)
-	}
-	if got := m.messages[len(m.messages)-1]; got.Kind != MsgAgent || got.Header != "" || got.Content != "full expanded output" {
-		t.Fatalf("unexpected expanded message: %#v", got)
-	}
-}
-
-func TestChatModelSlashExpandNoopLeavesTranscriptUnchanged(t *testing.T) {
-	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
-	m.width = 100
-	m.height = 24
-	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Scout • 10:00:00", Content: "already expanded"})
-
-	updated, _ := m.submitInput()
-	m = updated.(ChatModel)
+	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Scout • 10:00:00", Content: "Source: /repo/main.go:12"})
 	before := len(m.messages)
 
 	m.inputBuf = "/expand"
 	m.inputPos = len(m.inputBuf)
-	updated, _ = m.submitInput()
+	updated, _ := m.submitInput()
 	m = updated.(ChatModel)
 
 	if len(m.messages) != before {
-		t.Fatalf("messages changed on expand noop: %#v", m.messages)
+		t.Fatalf("messages changed after unknown /expand command: %#v", m.messages)
 	}
-	if m.flash != "nothing to expand" {
+	if m.flash != "unknown command: /expand" {
 		t.Fatalf("flash = %q", m.flash)
 	}
 }
 
-func TestChatModelLatestExpandablePayloadReplacesPreviousOne(t *testing.T) {
+func TestChatModelToolResultsDoNotAdvertiseExpand(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 100
 	m.height = 24
 	m.pendingSubAgentSummary = &subAgentSummary{role: "scout", turns: 1, tools: 1}
 
-	updated, _ := m.Update(llm.Event{Kind: llm.EventToolResult, Agent: "delegate", Text: "Source: /repo/first.go:1", Content: "{\"source_file\":\"/repo/first.go\",\"source_line\":1}"})
+	longJSON := `{"source_file":"/repo/first.go","source_line":1,"detail":"` + strings.Repeat("x", 260) + `"}`
+	updated, _ := m.Update(llm.Event{Kind: llm.EventToolResult, Agent: "delegate", Text: "Source: /repo/first.go:1", Content: longJSON})
 	m = updated.(ChatModel)
-	if got := m.lastExpandable; !strings.Contains(got, "/repo/first.go") {
-		t.Fatalf("first expandable = %q", got)
+
+	if got := m.messages[len(m.messages)-1].Content; strings.Contains(got, "/expand") {
+		t.Fatalf("unexpected /expand hint in transcript message: %q", got)
 	}
-
-	m.pendingSubAgentSummary = &subAgentSummary{role: "architect", turns: 1, tools: 1}
-	updated, _ = m.Update(llm.Event{Kind: llm.EventToolResult, Agent: "delegate", Text: "Low severity.", Content: "{\"severity\":\"low\"}"})
-	m = updated.(ChatModel)
-
-	if got := m.lastExpandable; got != "{\"severity\":\"low\"}" {
-		t.Fatalf("lastExpandable = %q", got)
+	if got := m.renderedToolsBuf(); strings.Contains(got, "/expand") {
+		t.Fatalf("unexpected /expand hint in tools buffer: %q", got)
+	}
+	if got := m.lastToolResult; got != longJSON {
+		t.Fatalf("lastToolResult = %q", got)
 	}
 }
 
