@@ -416,6 +416,17 @@ func compactStatusText(content string) string {
 	return truncate(content, 200)
 }
 
+func displayAgentLabel(label string) string {
+	label = strings.TrimSpace(label)
+	if label == "" || label == "agent" {
+		return "Agent"
+	}
+	if len(label) > 0 && label[0] >= 'a' && label[0] <= 'z' {
+		label = strings.ToUpper(label[:1]) + label[1:]
+	}
+	return label
+}
+
 func formatWorkingLine(role, content string) string {
 	content = strings.TrimSpace(content)
 	if role != "" {
@@ -438,19 +449,26 @@ func (m *ChatModel) AppendToLastAgentLabeled(text, label string) {
 	}
 	if len(m.messages) == 0 || m.messages[len(m.messages)-1].Kind != MsgAgent {
 		stamp := time.Now().Format("15:04:05")
-		displayLabel := label
-		if displayLabel == "" || displayLabel == "agent" {
-			displayLabel = "Agent"
-		}
-		// Capitalize first letter for display.
-		if len(displayLabel) > 0 && displayLabel[0] >= 'a' && displayLabel[0] <= 'z' {
-			displayLabel = strings.ToUpper(displayLabel[:1]) + displayLabel[1:]
-		}
-		m.messages = append(m.messages, ChatMessage{Kind: MsgAgent, Header: displayLabel + " • " + stamp})
+		m.messages = append(m.messages, ChatMessage{Kind: MsgAgent, Header: displayAgentLabel(label) + " • " + stamp})
 	}
 	m.messages[len(m.messages)-1].Content += text
 	m.lastCodeBlock = latestFencedCodeBlock(m.messages[len(m.messages)-1].Content)
 	m.viewportDirty = true
+}
+
+func (m ChatModel) delegateResultLabel() string {
+	if m.pendingSubAgentSummary != nil && strings.TrimSpace(m.pendingSubAgentSummary.role) != "" {
+		return displayAgentLabel(m.pendingSubAgentSummary.role)
+	}
+	if role := strings.TrimSpace(m.activeSubAgent); role != "" {
+		return displayAgentLabel(role)
+	}
+	for i := len(m.toolsSections) - 1; i >= 0; i-- {
+		if role := strings.TrimSpace(m.toolsSections[i].role); role != "" {
+			return displayAgentLabel(role)
+		}
+	}
+	return "Agent"
 }
 
 func (m *ChatModel) refreshViewport() {
@@ -1011,26 +1029,18 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		} else if ev.Text != "" {
 			m.lastToolResult = ev.Text
 		}
-		if ev.Agent == "delegate" && m.pendingSubAgentSummary != nil {
-			summary := m.pendingSubAgentSummary
+		if ev.Agent == "delegate" {
 			m.clearWorkingMessage()
 			if !ev.IsError {
 				if result := strings.TrimSpace(ev.Text); result != "" {
 					stamp := time.Now().Format("15:04:05")
-					role := summary.role
-					if role == "" {
-						role = "agent"
-					}
-					if len(role) > 0 && role[0] >= 'a' && role[0] <= 'z' {
-						role = strings.ToUpper(role[:1]) + role[1:]
-					}
 					if extra := strings.TrimSpace(ev.Content); extra != "" && extra != result {
 						m.lastExpandable = extra
 						result += "\n... (/expand)"
 					}
 					m.AddMessage(ChatMessage{
 						Kind:    MsgAgent,
-						Header:  role + " • " + stamp,
+						Header:  m.delegateResultLabel() + " • " + stamp,
 						Content: result,
 					})
 				}
