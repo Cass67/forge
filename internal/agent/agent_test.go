@@ -1941,6 +1941,173 @@ func TestDispatchRejectsSynthesizedScratchpadWriteContent(t *testing.T) {
 	}
 }
 
+func TestDispatchAutoChainsInterpretiveScoutResultToArchitect(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Inspect the alert source. OUTCOME: Evidence-backed findings only.\"}}\n</tool_call>",
+		"This prose should never be generated because dispatch should stop after the architect result.",
+	}}
+	reg := tools.NewRegistry()
+	var delegated []string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			delegated = append(delegated, role)
+			switch role {
+			case "scout":
+				return `{"status":"complete","message":"Evidence gathered.","artifact_kind":"evidence","artifact":{"source_file":"/repo/util-rancid/update_cerner_daily.sh","source_line":753,"most_likely_trigger":"missing verify script at runtime"},"next_role":"","next_task":""}`, nil
+			case "architect":
+				return `{"status":"complete","message":"Architect output ready.","artifact_kind":"plan","artifact":{"worry_level":"low_to_medium","actionability":"actionable","recommended_next_check":"Verify the expected verify script path exists and is executable."},"next_role":"","next_task":""}`, nil
+			default:
+				return "", fmt.Errorf("unexpected role %q", role)
+			}
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "is this something i need to worry about?"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(delegated, ","); got != "scout,architect" {
+		t.Fatalf("delegated roles = %q, want scout,architect", got)
+	}
+	if driver.callIdx != 1 {
+		t.Fatalf("dispatch should stop after the auto-chained architect result, got %d driver calls", driver.callIdx)
+	}
+	if got := output.String(); !strings.Contains(got, "Low-to-medium severity. Actionable. Next check: Verify the expected verify script path exists and is executable.") {
+		t.Fatalf("missing architect summary in output: %q", got)
+	}
+}
+
+func TestDispatchDoesNotAutoChainTraceScoutResultToArchitect(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Trace the alert source. OUTCOME: Evidence-backed findings only.\"}}\n</tool_call>",
+	}}
+	reg := tools.NewRegistry()
+	var delegated []string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			delegated = append(delegated, role)
+			return `{"status":"complete","message":"Evidence gathered.","artifact_kind":"evidence","artifact":{"source_file":"/repo/util-rancid/update_cerner_daily.sh","source_line":753,"most_likely_trigger":"missing verify script at runtime"},"next_role":"","next_task":""}`, nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "where does this alert come from?"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(delegated, ","); got != "scout" {
+		t.Fatalf("delegated roles = %q, want scout", got)
+	}
+	if got := output.String(); strings.Contains(got, "severity") {
+		t.Fatalf("trace flow should not auto-chain to architect, got %q", got)
+	}
+}
+
+func TestDispatchReusesImmediatelyPriorScoutArtifactForInterpretiveFollowUp(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Trace the alert source. OUTCOME: Evidence-backed findings only.\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Re-check the current alert so we can decide how urgent it is. OUTCOME: Evidence-backed findings only.\"}}\n</tool_call>",
+	}}
+	reg := tools.NewRegistry()
+	var delegated []string
+	var architectTask string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			task, _ := args["task"].(string)
+			delegated = append(delegated, role)
+			switch role {
+			case "scout":
+				return `{"status":"complete","message":"Evidence gathered.","artifact_kind":"evidence","artifact":{"source_file":"/repo/util-rancid/update_cerner_daily.sh","source_line":753,"most_likely_trigger":"missing verify script at runtime"},"next_role":"","next_task":""}`, nil
+			case "architect":
+				architectTask = task
+				return `{"status":"complete","message":"Architect output ready.","artifact_kind":"plan","artifact":{"worry_level":"low_to_medium","actionability":"actionable","recommended_next_check":"Verify the expected verify script path exists and is executable."},"next_role":"","next_task":""}`, nil
+			default:
+				return "", fmt.Errorf("unexpected role %q", role)
+			}
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "where does this alert come from?"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Run(context.Background(), "should I worry about that?"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(delegated, ","); got != "scout,architect" {
+		t.Fatalf("delegated roles = %q, want scout,architect", got)
+	}
+	if !strings.Contains(architectTask, `"/repo/util-rancid/update_cerner_daily.sh"`) || !strings.Contains(architectTask, `"source_line":753`) {
+		t.Fatalf("architect task missing reused scout evidence: %q", architectTask)
+	}
+	if got := output.String(); !strings.Contains(got, "Low-to-medium severity. Actionable. Next check: Verify the expected verify script path exists and is executable.") {
+		t.Fatalf("missing interpretive follow-up summary in output: %q", got)
+	}
+}
+
+func TestDispatchFallsBackToScoutEvidenceWhenAutoChainedArchitectBlocks(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Inspect the alert source. OUTCOME: Evidence-backed findings only.\"}}\n</tool_call>",
+	}}
+	reg := tools.NewRegistry()
+	var delegated []string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			delegated = append(delegated, role)
+			switch role {
+			case "scout":
+				return `{"status":"complete","message":"Evidence gathered.","artifact_kind":"evidence","artifact":{"source_file":"/repo/util-rancid/update_cerner_daily.sh","source_line":753,"most_likely_trigger":"missing verify script at runtime"},"next_role":"","next_task":""}`, nil
+			case "architect":
+				return `{"status":"blocked","message":"Need the verify script output before I can assess urgency.","artifact_kind":"plan","artifact":"","next_role":"","next_task":""}`, nil
+			default:
+				return "", fmt.Errorf("unexpected role %q", role)
+			}
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "is this something i need to worry about?"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(delegated, ","); got != "scout,architect" {
+		t.Fatalf("delegated roles = %q, want scout,architect", got)
+	}
+	got := output.String()
+	if !strings.Contains(got, "Source: /repo/util-rancid/update_cerner_daily.sh:753. Likely trigger: missing verify script at runtime.") {
+		t.Fatalf("missing scout fallback summary in output: %q", got)
+	}
+	if !strings.Contains(got, "Interpretation unavailable") {
+		t.Fatalf("missing interpretation-unavailable note in output: %q", got)
+	}
+}
+
 func TestDispatchAllowsArchitectRepoReviewChoiceWithoutRuntimeVeto(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"TASK: Synthesize the repo review into prioritized recommendations. OUTCOME: Final review.\"}}\n</tool_call>",

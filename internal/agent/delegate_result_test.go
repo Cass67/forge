@@ -110,7 +110,7 @@ func TestParseDelegateOutcomeForRoleCoercesBareScoutJSONObject(t *testing.T) {
 }
 
 func TestParseDelegateOutcomeForRoleCoercesBareArchitectJSONObject(t *testing.T) {
-	raw := `{"severity":"medium","likely_impact":"Verification coverage gap","suggested_next_checks":["confirm script path"]}`
+	raw := `{"worry_level":"low_to_medium","actionability":"actionable","recommended_next_check":"Verify the expected verify script path exists and is executable."}`
 	outcome := parseDelegateOutcomeForRole("architect", raw)
 	if !outcome.Structured {
 		t.Fatalf("expected structured outcome")
@@ -118,7 +118,7 @@ func TestParseDelegateOutcomeForRoleCoercesBareArchitectJSONObject(t *testing.T)
 	if !outcome.Completed() {
 		t.Fatalf("expected completed outcome")
 	}
-	if outcome.DisplayText() != "Architect output ready." {
+	if outcome.DisplayText() != "Low-to-medium severity. Actionable. Next check: Verify the expected verify script path exists and is executable." {
 		t.Fatalf("display text = %q", outcome.DisplayText())
 	}
 	if outcome.ArtifactKind != "plan" {
@@ -126,5 +126,37 @@ func TestParseDelegateOutcomeForRoleCoercesBareArchitectJSONObject(t *testing.T)
 	}
 	if outcome.ContextText() != raw {
 		t.Fatalf("context text = %q, want %q", outcome.ContextText(), raw)
+	}
+}
+
+func TestParseDelegateOutcomeForRoleUsesScoutArtifactSummaryWhenMessageIsGeneric(t *testing.T) {
+	outcome := parseDelegateOutcomeForRole("scout", `{"source_file":"util-rancid/update_cerner_daily.sh","source_line":753,"most_likely_trigger":"missing verify script at runtime"}`)
+	if got := outcome.DisplayText(); got != "Source: util-rancid/update_cerner_daily.sh:753. Likely trigger: missing verify script at runtime." {
+		t.Fatalf("display text = %q", got)
+	}
+}
+
+func TestParseDelegateOutcomeStructuredEnvelopeKeepsSpecificMessageOverArtifactSummary(t *testing.T) {
+	raw := `{"status":"complete","message":"The email comes from util-rancid/update_cerner_daily.sh:753.","artifact_kind":"evidence","artifact":{"source_file":"util-rancid/update_cerner_daily.sh","source_line":753,"most_likely_trigger":"missing verify script at runtime"}}`
+	outcome := parseDelegateOutcomeForRole("scout", raw)
+	if got := outcome.DisplayText(); got != "The email comes from util-rancid/update_cerner_daily.sh:753." {
+		t.Fatalf("display text = %q", got)
+	}
+	if want := `{"source_file":"util-rancid/update_cerner_daily.sh","source_line":753,"most_likely_trigger":"missing verify script at runtime"}`; outcome.ContextText() != want {
+		t.Fatalf("context text = %q, want %q", outcome.ContextText(), want)
+	}
+}
+
+func TestParseDelegateOutcomeForRoleUsesDoctorArtifactSummaryWhenMessageIsGeneric(t *testing.T) {
+	outcome := parseDelegateOutcomeForRole("doctor", `{"root_cause":"delegate parser rejected a bare JSON object","fix":"coerce bare JSON objects into typed delegate outcomes"}`)
+	if got := outcome.DisplayText(); got != "Root cause: delegate parser rejected a bare JSON object. Fix: coerce bare JSON objects into typed delegate outcomes." {
+		t.Fatalf("display text = %q", got)
+	}
+}
+
+func TestParseDelegateOutcomeForRoleUsesBuilderArtifactSummaryWhenMessageIsGeneric(t *testing.T) {
+	outcome := parseDelegateOutcomeForRole("builder", `{"summary":"Removed the tools pane and switched to a transcript-first layout.","verification":"go test ./internal/tui && go build ./cmd/forge"}`)
+	if got := outcome.DisplayText(); got != "Removed the tools pane and switched to a transcript-first layout. Verification: go test ./internal/tui && go build ./cmd/forge." {
+		t.Fatalf("display text = %q", got)
 	}
 }

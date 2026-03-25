@@ -54,14 +54,13 @@ func TestChatMessageRenderStatus(t *testing.T) {
 func TestChatMessageRenderWorking(t *testing.T) {
 	m := ChatMessage{
 		Kind:    MsgWorking,
-		Header:  "Working",
-		Content: "Reading repository structure",
+		Content: "scout: reading repository structure",
 	}
 	got := m.Render(60, lookupThemeForTest(t, "default"))
 	if got == "" {
 		t.Fatal("expected non-empty render")
 	}
-	if !strings.Contains(got, "Working") || !strings.Contains(got, "Reading repository structure") {
+	if !strings.Contains(got, "scout: reading repository structure") {
 		t.Fatalf("working render missing content: %s", got)
 	}
 }

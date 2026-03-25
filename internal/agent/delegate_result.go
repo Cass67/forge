@@ -3,10 +3,12 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
+	"strconv"
 	"strings"
 )
 
 type delegateOutcome struct {
+	Role         string
 	Structured   bool
 	Status       string
 	Message      string
@@ -31,34 +33,36 @@ func parseDelegateOutcome(raw string) delegateOutcome {
 }
 
 func parseDelegateOutcomeForRole(role, raw string) delegateOutcome {
+	role = strings.TrimSpace(role)
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return delegateOutcome{Status: "blocked", Raw: raw}
+		return delegateOutcome{Role: role, Status: "blocked", Raw: raw}
 	}
 
 	if envelope, ok := parseDelegateEnvelope(raw); ok {
-		return delegateOutcomeFromEnvelope(envelope, raw)
+		return delegateOutcomeFromEnvelope(role, envelope, raw)
 	}
 
 	if envelope, ok := parseDelegateJSONObjectForRole(role, raw); ok {
-		return delegateOutcomeFromEnvelope(envelope, raw)
+		return delegateOutcomeFromEnvelope(role, envelope, raw)
 	}
 
 	upper := strings.ToUpper(raw)
 	switch {
 	case raw == "(sub-agent produced no output)":
-		return delegateOutcome{Status: "blocked", Message: raw, Raw: raw}
+		return delegateOutcome{Role: role, Status: "blocked", Message: raw, Raw: raw}
 	case strings.HasPrefix(upper, "CANCELLED:"):
-		return delegateOutcome{Status: "blocked", Message: raw, Raw: raw}
+		return delegateOutcome{Role: role, Status: "blocked", Message: raw, Raw: raw}
 	case strings.HasPrefix(upper, "AGENT ERROR"):
-		return delegateOutcome{Status: "blocked", Message: raw, Raw: raw}
+		return delegateOutcome{Role: role, Status: "blocked", Message: raw, Raw: raw}
 	default:
-		return delegateOutcome{Status: "complete", Message: raw, Artifact: raw, Raw: raw}
+		return delegateOutcome{Role: role, Status: "complete", Message: raw, Artifact: raw, Raw: raw}
 	}
 }
 
-func delegateOutcomeFromEnvelope(envelope delegateEnvelope, raw string) delegateOutcome {
+func delegateOutcomeFromEnvelope(role string, envelope delegateEnvelope, raw string) delegateOutcome {
 	return delegateOutcome{
+		Role:         strings.TrimSpace(role),
 		Structured:   true,
 		Status:       normalizeDelegateStatus(envelope.Status),
 		Message:      strings.TrimSpace(envelope.Message),
@@ -259,6 +263,18 @@ func (o delegateOutcome) Blocked() bool {
 }
 
 func (o delegateOutcome) DisplayText() string {
+	if o.Structured {
+		message := strings.TrimSpace(o.Message)
+		if message != "" && !isGenericDelegateMessage(message) {
+			return message
+		}
+		if summary := extractDelegateArtifactSummary(o.Role, o.Artifact); summary != "" {
+			return summary
+		}
+		if fallback := strings.TrimSpace(defaultDelegateMessage(o.Role)); fallback != "" {
+			return fallback
+		}
+	}
 	switch {
 	case strings.TrimSpace(o.Message) != "":
 		return strings.TrimSpace(o.Message)
@@ -267,6 +283,273 @@ func (o delegateOutcome) DisplayText() string {
 	default:
 		return strings.TrimSpace(o.Raw)
 	}
+}
+
+var genericDelegateMessages = map[string]struct{}{
+	"evidence gathered":       {},
+	"architect output ready":  {},
+	"diagnosis ready":         {},
+	"implementation complete": {},
+	"recommendations ready":   {},
+	"plan ready":              {},
+}
+
+func isGenericDelegateMessage(message string) bool {
+	normalized := strings.TrimSpace(strings.ToLower(message))
+	normalized = strings.TrimSuffix(normalized, ".")
+	_, ok := genericDelegateMessages[normalized]
+	return ok
+}
+
+func extractDelegateArtifactSummary(role, artifact string) string {
+	object, ok := parseDelegateArtifactObject(artifact)
+	if !ok {
+		return ""
+	}
+	switch strings.TrimSpace(role) {
+	case "scout":
+		return summarizeScoutArtifact(object)
+	case "architect":
+		return summarizeArchitectArtifact(object)
+	case "doctor":
+		return summarizeDoctorArtifact(object)
+	case "builder":
+		return summarizeBuilderArtifact(object)
+	default:
+		return ""
+	}
+}
+
+func parseDelegateArtifactObject(artifact string) (map[string]any, bool) {
+	artifact = strings.TrimSpace(artifact)
+	if artifact == "" || !strings.HasPrefix(artifact, "{") {
+		return nil, false
+	}
+	var object map[string]any
+	if err := json.Unmarshal([]byte(artifact), &object); err != nil {
+		return nil, false
+	}
+	if len(object) == 0 {
+		return nil, false
+	}
+	return object, true
+}
+
+func summarizeScoutArtifact(object map[string]any) string {
+	location := scoutSourceLocation(object)
+	trigger := firstNonEmptyString(object, "trigger", "most_likely_trigger", "why_it_was_sent")
+	source := firstNonEmptyString(object, "source")
+	evidence := firstUsefulEntry(object["evidence"])
+
+	var parts []string
+	if location != "" {
+		parts = append(parts, labelSentence("Source: ", location))
+	}
+	if location == "" && source != "" {
+		parts = append(parts, sentence(source))
+	}
+	if trigger != "" {
+		parts = append(parts, labelSentence("Likely trigger: ", trigger))
+	}
+	if len(parts) == 0 && evidence != "" {
+		parts = append(parts, sentence(evidence))
+	}
+	return strings.Join(parts, " ")
+}
+
+func summarizeArchitectArtifact(object map[string]any) string {
+	assessment := firstNonEmptyString(object, "assessment")
+	severity := humanizeDelegateText(firstNonEmptyString(object, "severity", "worry_level"), "-")
+	actionability := humanizeDelegateText(firstNonEmptyString(object, "actionability"), " ")
+	nextCheck := firstNonEmptyString(object, "recommended_next_check")
+	impact := firstNonEmptyString(object, "likely_impact")
+	suggested := firstUsefulEntry(object["suggested_next_checks"])
+
+	if assessment != "" {
+		parts := []string{sentence(assessment)}
+		if nextCheck != "" {
+			parts = append(parts, labelSentence("Next check: ", nextCheck))
+		}
+		return strings.Join(parts, " ")
+	}
+
+	var parts []string
+	if severity != "" {
+		parts = append(parts, labelSentence("", severity+" severity"))
+	}
+	if actionability != "" {
+		parts = append(parts, sentence(actionability))
+	}
+	if severity == "" && impact != "" {
+		parts = append(parts, labelSentence("Likely impact: ", impact))
+	}
+	if nextCheck != "" {
+		parts = append(parts, labelSentence("Next check: ", nextCheck))
+	}
+	if len(parts) > 0 {
+		return strings.Join(parts, " ")
+	}
+	if suggested != "" {
+		return labelSentence("Next check: ", suggested)
+	}
+	return ""
+}
+
+func summarizeDoctorArtifact(object map[string]any) string {
+	rootCause := firstNonEmptyString(object, "root_cause")
+	fix := firstNonEmptyString(object, "fix")
+
+	switch {
+	case rootCause != "" && fix != "":
+		return strings.Join([]string{
+			labelSentence("Root cause: ", rootCause),
+			labelSentence("Fix: ", fix),
+		}, " ")
+	case rootCause != "":
+		return labelSentence("Root cause: ", rootCause)
+	case fix != "":
+		return labelSentence("Fix: ", fix)
+	default:
+		return ""
+	}
+}
+
+func summarizeBuilderArtifact(object map[string]any) string {
+	summary := firstNonEmptyString(object, "summary")
+	result := firstNonEmptyString(object, "result")
+	verification := firstNonEmptyString(object, "verification")
+	filesChanged := firstUsefulEntry(object["files_changed"])
+
+	switch {
+	case summary != "":
+		if verification != "" {
+			return strings.Join([]string{
+				sentence(summary),
+				labelSentence("Verification: ", verification),
+			}, " ")
+		}
+		return sentence(summary)
+	case result != "":
+		if verification != "" {
+			return strings.Join([]string{
+				sentence(result),
+				labelSentence("Verification: ", verification),
+			}, " ")
+		}
+		return sentence(result)
+	case filesChanged != "":
+		parts := []string{labelSentence("Changed: ", filesChanged)}
+		if verification != "" {
+			parts = append(parts, labelSentence("Verification: ", verification))
+		}
+		return strings.Join(parts, " ")
+	default:
+		return ""
+	}
+}
+
+func scoutSourceLocation(object map[string]any) string {
+	sourceFile := firstNonEmptyString(object, "source_file")
+	if sourceFile == "" {
+		return ""
+	}
+	line := firstNonEmptyString(object, "source_line", "source_lines")
+	if line == "" {
+		return sourceFile
+	}
+	return sourceFile + ":" + line
+}
+
+func firstNonEmptyString(object map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		if value, ok := object[key]; ok {
+			if text := stringifyDelegateValue(value); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+func firstUsefulEntry(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case []any:
+		for _, entry := range typed {
+			if text := firstUsefulEntry(entry); text != "" {
+				return text
+			}
+		}
+	case map[string]any:
+		for _, key := range []string{"summary", "text", "message", "path"} {
+			if text := firstNonEmptyString(typed, key); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+func stringifyDelegateValue(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case float64:
+		if typed == float64(int64(typed)) {
+			return strings.TrimSpace(strconv.FormatInt(int64(typed), 10))
+		}
+		return strings.TrimSpace(strconv.FormatFloat(typed, 'f', -1, 64))
+	case int:
+		return strings.TrimSpace(strconv.Itoa(typed))
+	case int64:
+		return strings.TrimSpace(strconv.FormatInt(typed, 10))
+	case json.Number:
+		return strings.TrimSpace(typed.String())
+	default:
+		return ""
+	}
+}
+
+func humanizeDelegateText(text, separator string) string {
+	text = strings.TrimSpace(strings.ToLower(text))
+	if text == "" {
+		return ""
+	}
+	switch separator {
+	case "-":
+		text = strings.ReplaceAll(text, "_", "-")
+	default:
+		text = strings.ReplaceAll(text, "_", " ")
+	}
+	return strings.ToUpper(text[:1]) + text[1:]
+}
+
+func labelSentence(label, text string) string {
+	label = strings.TrimSpace(label)
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	text = trimSentenceEnding(text)
+	if label == "" {
+		return text + "."
+	}
+	if !strings.HasSuffix(label, ":") {
+		label = strings.TrimRight(label, " ")
+	}
+	return label + " " + text + "."
+}
+
+func sentence(text string) string {
+	return labelSentence("", text)
+}
+
+func trimSentenceEnding(text string) string {
+	return strings.TrimRight(strings.TrimSpace(text), ".!?")
 }
 
 func (o delegateOutcome) ContextText() string {

@@ -33,8 +33,26 @@ type Agent struct {
 	dispatchResults   map[string]string
 	dispatchArtifacts map[string]string
 	dispatchScratch   string
+	dispatchTurn      int
+	latestScout       dispatchScoutEvidence
 	mu                sync.Mutex
 	activeSubCancel   context.CancelFunc
+}
+
+type dispatchIntent string
+
+const (
+	dispatchIntentTrace     dispatchIntent = "trace"
+	dispatchIntentInterpret dispatchIntent = "interpret"
+	dispatchIntentDebug     dispatchIntent = "debug"
+	dispatchIntentImplement dispatchIntent = "implement"
+)
+
+type dispatchScoutEvidence struct {
+	TopicKey    string
+	DisplayText string
+	ContextText string
+	Turn        int
 }
 
 const targetHistoryTokens = 12000
@@ -137,6 +155,22 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	sawToolCallThisRun := false
 	dispatchCanStop := false
 	dispatchStopAfterTurn := false
+	currentDispatchTurn := 0
+	currentDispatchIntent := dispatchIntentTrace
+	currentDispatchTopic := ""
+	autoChainedArchitect := false
+	var currentScoutEvidence *dispatchScoutEvidence
+	if a.role == "dispatch" {
+		a.dispatchTurn++
+		currentDispatchTurn = a.dispatchTurn
+		currentDispatchIntent = classifyDispatchIntent(userMessage)
+		if a.latestScout.Turn > 0 && a.latestScout.Turn < currentDispatchTurn-1 {
+			a.latestScout = dispatchScoutEvidence{}
+			delete(a.dispatchResults, "scout")
+			delete(a.dispatchArtifacts, "scout")
+		}
+		currentDispatchTopic = resolveDispatchTopicKey(userMessage, currentDispatchIntent, currentDispatchTurn, a.latestScout)
+	}
 	defer func() {
 		a.renderer.Stats(time.Since(turnStart), a.getUsage())
 	}()
@@ -275,6 +309,12 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				role, _ := call.Args["role"].(string)
 				role = strings.TrimSpace(role)
 				task, _ := call.Args["task"].(string)
+				if shouldReuseLatestScoutEvidence(role, task, currentDispatchIntent, currentDispatchTurn, currentDispatchTopic, a.latestScout) {
+					role = "architect"
+					task = synthesizeInterpretiveArchitectTask(userMessage)
+					call.Args["role"] = role
+					call.Args["_auto_chain"] = true
+				}
 				if enriched := enrichDispatchDelegateTask(role, task, a.dispatchResults, a.dispatchArtifacts, a.dispatchScratch); enriched != task {
 					task = enriched
 				}
@@ -320,15 +360,43 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				displayResult := truncateResult(result)
 				if call.Name == "delegate" {
 					role, _ := call.Args["role"].(string)
+					role = strings.TrimSpace(role)
+					task, _ := call.Args["task"].(string)
+					autoChain, _ := call.Args["_auto_chain"].(bool)
 					outcome := parseDelegateOutcomeForRole(role, result)
+					contextText := outcome.ContextText()
 					displayResult = outcome.DisplayText()
+					usedInterpretFallback := false
+					if a.role == "dispatch" && role == "architect" && autoChain && outcome.Blocked() {
+						if fallback := resolveScoutFallbackEvidence(currentDispatchTurn, currentScoutEvidence, a.latestScout); fallback != nil {
+							displayResult = fallback.DisplayText + "\n" + labelInterpretationUnavailable(outcome.DisplayText())
+							result = displayResult
+							dispatchCanStop = true
+							dispatchStopAfterTurn = true
+							usedInterpretFallback = true
+							contextText = fallback.ContextText
+						}
+					}
+					if strings.TrimSpace(contextText) != "" && strings.TrimSpace(contextText) != strings.TrimSpace(displayResult) {
+						diff = contextText
+					}
 					result = displayResult
 					if a.role == "dispatch" {
-						role = strings.TrimSpace(role)
-						contextText := outcome.ContextText()
 						a.dispatchResults[role] = displayResult
 						if outcome.Completed() && contextText != "" {
 							a.dispatchArtifacts[role] = contextText
+						}
+						if role == "scout" && outcome.Completed() {
+							topicKey := deriveScoutTopicKey(contextText, task)
+							currentScoutEvidence = &dispatchScoutEvidence{
+								TopicKey:    topicKey,
+								DisplayText: displayResult,
+								ContextText: contextText,
+								Turn:        currentDispatchTurn,
+							}
+							if strings.TrimSpace(contextText) != "" {
+								a.latestScout = *currentScoutEvidence
+							}
 						}
 						if outcome.Structured {
 							if outcome.Completed() && outcome.NextRole != "" && outcome.NextTask != "" {
@@ -342,10 +410,22 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 									},
 								})
 								dispatchCanStop = false
+							} else if outcome.Completed() && role == "scout" && currentDispatchIntent == dispatchIntentInterpret && !autoChainedArchitect {
+								autoChainedArchitect = true
+								nextTask := enrichDispatchDelegateTask("architect", synthesizeInterpretiveArchitectTask(userMessage), a.dispatchResults, a.dispatchArtifacts, a.dispatchScratch)
+								callQueue = append(callQueue, ToolCall{
+									Name: "delegate",
+									Args: map[string]any{
+										"role":        "architect",
+										"task":        nextTask,
+										"_auto_chain": true,
+									},
+								})
+								dispatchCanStop = false
 							} else if outcome.Completed() {
 								dispatchStopAfterTurn = true
 							}
-						} else if outcome.Blocked() {
+						} else if outcome.Blocked() && !usedInterpretFallback {
 							dispatchCanStop = false
 						} else if outcome.Completed() {
 							dispatchCanStop = true
@@ -497,6 +577,147 @@ func enrichDispatchDelegateTask(role, task string, delegateResults map[string]st
 		return task + "\n\n" + addition
 	}
 	return task + "\nCONTEXT: " + addition
+}
+
+func classifyDispatchIntent(task string) dispatchIntent {
+	lower := strings.ToLower(normalizePromptText(task))
+	switch {
+	case containsAny(lower, []string{
+		"fix",
+		"implement",
+		"edit",
+		"write",
+		"update",
+		"remove",
+		"add",
+		"change",
+		"refactor",
+	}):
+		return dispatchIntentImplement
+	case containsAny(lower, []string{
+		"root cause",
+		"bug",
+		"broken",
+		"not working",
+		"failing",
+		"failure",
+		"error",
+		"debug",
+	}):
+		return dispatchIntentDebug
+	case containsAny(lower, []string{
+		"worry",
+		"urgent",
+		"severity",
+		"risk",
+		"safe",
+		"ignore",
+		"what does that mean",
+		"what should",
+		"what do i do",
+		"next step",
+		"next check",
+		"recommend",
+		"recommendation",
+		"actionable",
+		"should i",
+	}):
+		return dispatchIntentInterpret
+	default:
+		return dispatchIntentTrace
+	}
+}
+
+func resolveDispatchTopicKey(userMessage string, intent dispatchIntent, currentTurn int, latest dispatchScoutEvidence) string {
+	if key := deriveTopicKeyFromText(userMessage); key != "" {
+		return key
+	}
+	if intent == dispatchIntentInterpret && latest.Turn == currentTurn-1 {
+		return latest.TopicKey
+	}
+	return ""
+}
+
+func shouldReuseLatestScoutEvidence(role, task string, intent dispatchIntent, currentTurn int, currentTopic string, latest dispatchScoutEvidence) bool {
+	if strings.TrimSpace(role) != "scout" || intent != dispatchIntentInterpret {
+		return false
+	}
+	if latest.Turn != currentTurn-1 || strings.TrimSpace(latest.TopicKey) == "" || strings.TrimSpace(latest.ContextText) == "" {
+		return false
+	}
+	if taskTopic := deriveTopicKeyFromText(task); taskTopic != "" && taskTopic != latest.TopicKey {
+		return false
+	}
+	if currentTopic != "" && currentTopic != latest.TopicKey {
+		return false
+	}
+	return true
+}
+
+func synthesizeInterpretiveArchitectTask(userMessage string) string {
+	return strings.TrimSpace("TASK: Interpret the existing scout findings for the user's question.\n" +
+		"OUTCOME: Concise severity, actionability, and the next check the user should make.\n" +
+		"CONTEXT: USER QUESTION:\n" + strings.TrimSpace(userMessage) + "\n" +
+		"MUST NOT: Do not gather new evidence unless the scout findings are unusable.")
+}
+
+func resolveScoutFallbackEvidence(currentTurn int, current *dispatchScoutEvidence, latest dispatchScoutEvidence) *dispatchScoutEvidence {
+	if current != nil && strings.TrimSpace(current.DisplayText) != "" {
+		return current
+	}
+	if latest.Turn == currentTurn-1 && strings.TrimSpace(latest.DisplayText) != "" {
+		return &latest
+	}
+	return nil
+}
+
+func labelInterpretationUnavailable(message string) string {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return "Interpretation unavailable."
+	}
+	return "Interpretation unavailable: " + trimSentencePunctuation(message) + "."
+}
+
+func deriveScoutTopicKey(contextText, task string) string {
+	if object, ok := parseDelegateArtifactObject(contextText); ok {
+		if path := scoutSourceLocation(object); path != "" {
+			return normalizeDispatchTopicKey(path)
+		}
+		if source := firstNonEmptyString(object, "source"); source != "" {
+			return normalizeDispatchTopicKey(source)
+		}
+	}
+	if key := deriveTopicKeyFromText(task); key != "" {
+		return key
+	}
+	return normalizeDispatchTopicKey(task)
+}
+
+func deriveTopicKeyFromText(text string) string {
+	text = normalizePromptText(filepath.ToSlash(text))
+	for _, field := range strings.Fields(text) {
+		token := strings.Trim(field, "\"'`()[]{}.,;!?")
+		if token == "" {
+			continue
+		}
+		if strings.Contains(token, "/") {
+			return normalizeDispatchTopicKey(token)
+		}
+	}
+	return ""
+}
+
+func normalizeDispatchTopicKey(text string) string {
+	text = strings.ToLower(normalizePromptText(filepath.ToSlash(strings.TrimSpace(text))))
+	if text == "" {
+		return ""
+	}
+	return strings.Join(strings.Fields(text), " ")
+}
+
+func trimSentencePunctuation(text string) string {
+	return strings.TrimRight(strings.TrimSpace(text), ".!?")
 }
 
 func containsAny(text string, needles []string) bool {

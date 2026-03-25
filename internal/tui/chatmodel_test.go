@@ -121,14 +121,10 @@ func TestChatModelHandlesDoneEvent(t *testing.T) {
 	if m.busy {
 		t.Fatal("expected busy=false after done event")
 	}
-	found := false
 	for _, msg := range m.messages {
-		if msg.Kind == MsgStatus {
-			found = true
+		if msg.Kind == MsgStatus && strings.Contains(msg.Content, "Agent complete") {
+			t.Fatalf("unexpected completion banner: %#v", msg)
 		}
-	}
-	if !found {
-		t.Fatal("expected status message after done")
 	}
 }
 
@@ -201,26 +197,21 @@ func TestChatModelProgressUpdatesActiveSubAgentInPlace(t *testing.T) {
 	}
 
 	if len(m.messages) != 1 {
-		t.Fatalf("expected one recent-activity block, got %#v", m.messages)
+		t.Fatalf("expected one working line, got %#v", m.messages)
 	}
 	msg := m.messages[0]
 	if msg.Kind != MsgWorking {
 		t.Fatalf("expected working message, got %#v", msg)
 	}
-	if msg.Header != "Recent activity • scout" {
-		t.Fatalf("header = %q", msg.Header)
+	if msg.Header != "" {
+		t.Fatalf("header = %q, want empty", msg.Header)
 	}
-	if strings.Contains(msg.Content, "README.md") {
-		t.Fatalf("expected oldest activity to be trimmed, got %q", msg.Content)
-	}
-	for _, want := range []string{"finding \"**/*.go\"", "reading main.go", "reading app.go"} {
-		if !strings.Contains(msg.Content, want) {
-			t.Fatalf("content = %q, want %q", msg.Content, want)
-		}
+	if got := msg.Content; got != "scout: reading app.go" {
+		t.Fatalf("content = %q, want last progress line", got)
 	}
 }
 
-func TestChatModelProgressHandoffFreezesPreviousActivityBlock(t *testing.T) {
+func TestChatModelProgressHandoffReplacesPreviousWorkingLine(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 80
 	m.height = 24
@@ -232,21 +223,15 @@ func TestChatModelProgressHandoffFreezesPreviousActivityBlock(t *testing.T) {
 	updated, _ = m.Update(llm.Event{Kind: llm.EventProgress, Agent: "builder", Text: "builder: editing main.go"})
 	m = updated.(ChatModel)
 
-	if len(m.messages) != 3 {
+	if len(m.messages) != 1 {
 		t.Fatalf("messages = %#v", m.messages)
 	}
-	if got := m.messages[0]; got.Header != "Recent activity • scout" || !strings.Contains(got.Content, "reading README.md") {
-		t.Fatalf("unexpected scout activity block: %#v", got)
-	}
-	if got := m.messages[1]; got.Kind != MsgAgent || !strings.HasPrefix(got.Header, "Dispatch • ") || got.Content != "delegating to builder" {
-		t.Fatalf("unexpected handoff status: %#v", got)
-	}
-	if got := m.messages[2]; got.Header != "Recent activity • builder" || !strings.Contains(got.Content, "editing main.go") {
-		t.Fatalf("unexpected builder activity block: %#v", got)
+	if got := m.messages[0]; got.Kind != MsgWorking || got.Content != "builder: editing main.go" {
+		t.Fatalf("unexpected working handoff state: %#v", got)
 	}
 }
 
-func TestChatModelDelegatingRuntimeEventUsesDispatchBox(t *testing.T) {
+func TestChatModelDelegatingRuntimeEventUsesWorkingLine(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 80
 	m.height = 24
@@ -258,11 +243,8 @@ func TestChatModelDelegatingRuntimeEventUsesDispatchBox(t *testing.T) {
 		t.Fatalf("messages = %#v", m.messages)
 	}
 	got := m.messages[0]
-	if got.Kind != MsgAgent {
+	if got.Kind != MsgWorking {
 		t.Fatalf("kind = %#v", got)
-	}
-	if !strings.HasPrefix(got.Header, "Dispatch • ") {
-		t.Fatalf("header = %q", got.Header)
 	}
 	if got.Content != "delegating to scout" {
 		t.Fatalf("content = %q", got.Content)
@@ -290,22 +272,13 @@ func TestChatModelDelegateResultAddsCompactSubAgentSummaryToChat(t *testing.T) {
 	})
 	m = updated.(ChatModel)
 
-	var statuses []string
-	for _, msg := range m.messages {
-		if msg.Kind == MsgStatus {
-			statuses = append(statuses, msg.Content)
-		}
-	}
-	if len(statuses) < 1 {
-		t.Fatalf("expected compact sub-agent completion status, got %#v", m.messages)
-	}
-	if statuses[len(statuses)-1] != "scout complete • 1 turns • 1 tools" {
-		t.Fatalf("summary status = %q", statuses[len(statuses)-1])
-	}
 	var agentMsgs []ChatMessage
 	for _, msg := range m.messages {
 		if msg.Kind == MsgAgent {
 			agentMsgs = append(agentMsgs, msg)
+		}
+		if msg.Kind == MsgStatus && strings.Contains(msg.Content, "complete") {
+			t.Fatalf("unexpected completion status message: %#v", msg)
 		}
 	}
 	if len(agentMsgs) == 0 {
@@ -317,11 +290,6 @@ func TestChatModelDelegateResultAddsCompactSubAgentSummaryToChat(t *testing.T) {
 	}
 	if !strings.Contains(last.Content, "Now let me examine the Python files") {
 		t.Fatalf("agent content = %q", last.Content)
-	}
-	for _, got := range statuses {
-		if strings.Contains(got, "status: Now let me examine the Python files") {
-			t.Fatalf("delegate result should no longer be reduced to a status line: %q", got)
-		}
 	}
 }
 
@@ -899,27 +867,25 @@ func TestChatModelApprovalDeny(t *testing.T) {
 	}
 }
 
-func TestChatModelToolsPaneVisible(t *testing.T) {
+func TestChatModelHiddenToolsBufferDoesNotRenderByDefault(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 120
 	m.height = 24
-	m.toolsVisible = true
 	setToolsContent(&m, "● read_file {\"path\":\"main.go\"}\nstatus: ok\n")
 
 	v := m.View()
-	if !strings.Contains(v, "read_file") {
-		t.Fatal("tools pane should show tool calls")
+	if strings.Contains(v, "read_file") {
+		t.Fatal("hidden tools buffer should not render in the transcript")
 	}
 }
 
-func TestChatModelToolsPaneToggle(t *testing.T) {
+func TestChatModelToolsPaneToggleShowsRemovedMessage(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 120
 	m.height = 24
 
-	// Tools visible by default
-	if !m.toolsVisible {
-		t.Fatal("tools should be visible by default")
+	if m.toolsVisible {
+		t.Fatal("tools pane should start hidden")
 	}
 
 	m.inputBuf = "/tools"
@@ -928,7 +894,10 @@ func TestChatModelToolsPaneToggle(t *testing.T) {
 	m = updated.(ChatModel)
 
 	if m.toolsVisible {
-		t.Fatal("tools pane should be hidden after toggle")
+		t.Fatal("tools pane should stay hidden")
+	}
+	if !strings.Contains(m.flash, "tools pane removed") {
+		t.Fatalf("flash = %q", m.flash)
 	}
 }
 
@@ -936,7 +905,6 @@ func TestChatModelSlashToggleToolsAlias(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 120
 	m.height = 24
-	m.toolsVisible = true
 
 	m.inputBuf = "/toggle tools"
 	m.inputPos = len("/toggle tools")
@@ -944,22 +912,24 @@ func TestChatModelSlashToggleToolsAlias(t *testing.T) {
 	m = updated.(ChatModel)
 
 	if m.toolsVisible {
-		t.Fatal("tools pane should be hidden after /toggle tools")
+		t.Fatal("tools pane should remain hidden after /toggle tools")
+	}
+	if !strings.Contains(m.flash, "tools pane removed") {
+		t.Fatalf("flash = %q", m.flash)
 	}
 }
 
-func TestChatModelSlashToggleToolsOnOff(t *testing.T) {
+func TestChatModelSlashToggleToolsOnOffStaysDisabled(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 120
 	m.height = 24
-	m.toolsVisible = false
 
 	m.inputBuf = "/toggle tools on"
 	m.inputPos = len(m.inputBuf)
 	updated, _ := m.submitInput()
 	m = updated.(ChatModel)
-	if !m.toolsVisible {
-		t.Fatal("tools pane should be visible after /toggle tools on")
+	if m.toolsVisible {
+		t.Fatal("tools pane should remain hidden after /toggle tools on")
 	}
 
 	m.inputBuf = "/toggle tools off"
@@ -967,7 +937,7 @@ func TestChatModelSlashToggleToolsOnOff(t *testing.T) {
 	updated, _ = m.submitInput()
 	m = updated.(ChatModel)
 	if m.toolsVisible {
-		t.Fatal("tools pane should be hidden after /toggle tools off")
+		t.Fatal("tools pane should remain hidden after /toggle tools off")
 	}
 }
 
@@ -2552,6 +2522,7 @@ func TestChatModelSlashExpandShowsFullResult(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 100
 	m.height = 24
+	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Scout • 10:00:00", Content: "Source: /repo/main.go:12\n... (/expand)"})
 	m.lastExpandable = "full expanded output"
 
 	m.inputBuf = "/expand"
@@ -2564,6 +2535,53 @@ func TestChatModelSlashExpandShowsFullResult(t *testing.T) {
 	}
 	if got := m.View(); !strings.Contains(got, "full expanded output") {
 		t.Fatalf("view missing expanded output: %s", got)
+	}
+	if got := m.messages[len(m.messages)-1]; got.Kind != MsgAgent || got.Header != "" || got.Content != "full expanded output" {
+		t.Fatalf("unexpected expanded message: %#v", got)
+	}
+}
+
+func TestChatModelSlashExpandNoopLeavesTranscriptUnchanged(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Scout • 10:00:00", Content: "already expanded"})
+
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+	before := len(m.messages)
+
+	m.inputBuf = "/expand"
+	m.inputPos = len(m.inputBuf)
+	updated, _ = m.submitInput()
+	m = updated.(ChatModel)
+
+	if len(m.messages) != before {
+		t.Fatalf("messages changed on expand noop: %#v", m.messages)
+	}
+	if m.flash != "nothing to expand" {
+		t.Fatalf("flash = %q", m.flash)
+	}
+}
+
+func TestChatModelLatestExpandablePayloadReplacesPreviousOne(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+	m.pendingSubAgentSummary = &subAgentSummary{role: "scout", turns: 1, tools: 1}
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventToolResult, Agent: "delegate", Text: "Source: /repo/first.go:1", Content: "{\"source_file\":\"/repo/first.go\",\"source_line\":1}"})
+	m = updated.(ChatModel)
+	if got := m.lastExpandable; !strings.Contains(got, "/repo/first.go") {
+		t.Fatalf("first expandable = %q", got)
+	}
+
+	m.pendingSubAgentSummary = &subAgentSummary{role: "architect", turns: 1, tools: 1}
+	updated, _ = m.Update(llm.Event{Kind: llm.EventToolResult, Agent: "delegate", Text: "Low severity.", Content: "{\"severity\":\"low\"}"})
+	m = updated.(ChatModel)
+
+	if got := m.lastExpandable; got != "{\"severity\":\"low\"}" {
+		t.Fatalf("lastExpandable = %q", got)
 	}
 }
 
@@ -2611,7 +2629,6 @@ func TestChatModelTabCompletesSlashCommand(t *testing.T) {
 	m.height = 24
 	m.inputBuf = "/pro"
 	m.inputPos = len("/pro")
-	m.toolsVisible = true
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	m = updated.(ChatModel)
@@ -2619,8 +2636,8 @@ func TestChatModelTabCompletesSlashCommand(t *testing.T) {
 	if m.inputBuf != "/provider" {
 		t.Fatalf("inputBuf = %q, want /provider", m.inputBuf)
 	}
-	if !m.toolsVisible {
-		t.Fatal("tools pane should not toggle while slash-completing")
+	if m.toolsVisible {
+		t.Fatal("tools pane should remain hidden while slash-completing")
 	}
 }
 
@@ -2650,25 +2667,23 @@ func TestChatModelTabCyclesSlashCommandMatches(t *testing.T) {
 	}
 }
 
-func TestChatModelTabTogglesToolsWhenNotCompletingSlashCommand(t *testing.T) {
+func TestChatModelTabDoesNothingWhenNotCompletingSlashCommand(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 100
 	m.height = 24
-	m.toolsVisible = true
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	m = updated.(ChatModel)
 
 	if m.toolsVisible {
-		t.Fatal("tools pane should toggle when tab is not completing a slash command")
+		t.Fatal("tools pane should stay hidden when tab is not completing a slash command")
 	}
 }
 
-func TestChatModelTabTogglesCollapsedToolsSectionWhenToolsFocused(t *testing.T) {
+func TestChatModelTabDoesNotExpandHiddenToolsSections(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 120
 	m.height = 24
-	m.toolsVisible = true
 	m.paneFocus = focusTools
 	m.toolsSections = []toolsSection{
 		{buf: "main tool output\n"},
@@ -2678,11 +2693,8 @@ func TestChatModelTabTogglesCollapsedToolsSectionWhenToolsFocused(t *testing.T) 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	m = updated.(ChatModel)
 
-	if m.toolsSections[1].collapsed {
-		t.Fatal("expected tab to expand the last collapsible tools section")
-	}
-	if got := m.renderedToolsBuf(); !strings.Contains(got, "full scout output") {
-		t.Fatalf("expected expanded tools output, got %q", got)
+	if !m.toolsSections[1].collapsed {
+		t.Fatal("tab should not reopen hidden tools sections")
 	}
 }
 
@@ -2728,11 +2740,10 @@ func TestChatModelAgentPaneStillRendersWhenToolsVisible(t *testing.T) {
 	}
 }
 
-func TestChatModelAgentPaneStillRendersAfterToolsToggleOn(t *testing.T) {
+func TestChatModelToolsToggleDoesNotRevealHiddenBuffer(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
 	m = updated.(ChatModel)
-	m.toolsVisible = false
 	setToolsContent(&m, "tool output")
 	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Forge", Content: "agent text should remain visible after toggle"})
 
@@ -2744,8 +2755,8 @@ func TestChatModelAgentPaneStillRendersAfterToolsToggleOn(t *testing.T) {
 	m = updated.(ChatModel)
 
 	v := m.View()
-	if !strings.Contains(v, "agent text should remain visible after toggle") {
-		t.Fatalf("expected agent pane content after tools toggle, got: %s", v)
+	if strings.Contains(v, "tool output") {
+		t.Fatalf("hidden tools buffer should stay hidden after /tools, got: %s", v)
 	}
 }
 
