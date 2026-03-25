@@ -66,6 +66,64 @@ func TestClassifyDelegatedTaskProfilePrefersFocusedUserScopeOverRepoReviewWordin
 	}
 }
 
+func TestClassifyTaskProfileDetectsRepoReviewAuditPrompt(t *testing.T) {
+	task := "audit the repo for problems"
+
+	profile := classifyTaskProfile(task)
+
+	if profile.Scope != taskScopeRepoReview {
+		t.Fatalf("expected repo-review scope, got %#v", profile)
+	}
+}
+
+func TestClassifyDelegatedTaskProfileKeepsRepoReviewForArchitectSynthesisTask(t *testing.T) {
+	userMessage := "audit the repo for problems"
+	task := "Synthesize these evidence-backed findings into repo-review recommendations and risk prioritization."
+
+	profile := classifyDelegatedTaskProfile(userMessage, task)
+
+	if profile.Scope != taskScopeRepoReview {
+		t.Fatalf("expected repo-review scope, got %#v", profile)
+	}
+}
+
+func TestClassifyTaskProfileDoesNotTreatNarrowRepositoryTraceAsRepoReview(t *testing.T) {
+	task := "TASK: Search the repository for the alert source. OUTCOME: Evidence-backed findings only. MUST NOT: Do not speculate."
+
+	profile := classifyTaskProfile(task)
+
+	if profile.Scope == taskScopeRepoReview {
+		t.Fatalf("expected non-repo-review scope for narrow trace task, got %#v", profile)
+	}
+}
+
+func TestClassifyTaskProfileKeepsExplicitRepoReviewScopeOverLanguageHints(t *testing.T) {
+	task := strings.Join([]string{
+		"TASK: Review the repository code quality with concrete evidence from the code, focusing on representative shell files across the main areas.",
+		"OUTCOME: A code-focused assessment grounded in files actually read.",
+		"CONTEXT: Read representative shell files if present; include file paths in findings.",
+		"SCOPE: repo-review",
+		"TOPIC: code-quality",
+		"EVIDENCE_MIN_READS: 10",
+		"MUST NOT: Do not modify files.",
+	}, "\n")
+
+	profile := classifyTaskProfile(task)
+
+	if profile.Scope != taskScopeRepoReview {
+		t.Fatalf("expected explicit repo-review scope to win, got %#v", profile)
+	}
+	if profile.TargetLang != "" {
+		t.Fatalf("expected repo-review scope to clear target lang, got %#v", profile)
+	}
+	if profile.TargetGlob != "" {
+		t.Fatalf("expected repo-review scope to clear target glob, got %#v", profile)
+	}
+	if profile.EvidenceMinReads != 0 {
+		t.Fatalf("expected repo-review scope to clear evidence minimum, got %#v", profile)
+	}
+}
+
 func TestRewriteDispatchScoutTaskAddsFocusedFileScopeMetadata(t *testing.T) {
 	task := "TASK: Inspect the repository's Python files and identify cleanup opportunities, code smells, outdated patterns, risky constructs, or maintainability issues. OUTCOME: A concrete list of findings with file paths and brief rationale."
 
@@ -82,6 +140,31 @@ func TestRewriteDispatchScoutTaskAddsFocusedFileScopeMetadata(t *testing.T) {
 	}
 	if !strings.Contains(rewritten, "\nEVIDENCE_MIN_READS: 3") {
 		t.Fatalf("expected evidence minimum metadata, got %q", rewritten)
+	}
+}
+
+func TestRewriteDispatchScoutTaskRemovesFocusedSelectorsFromRepoReviewTask(t *testing.T) {
+	task := strings.Join([]string{
+		"TASK: Review the repository code quality with concrete evidence from the code, focusing on representative shell files across the main areas.",
+		"OUTCOME: A code-focused assessment grounded in files actually read.",
+		"CONTEXT: Read representative shell files if present; include file paths in findings.",
+		"MUST NOT: Do not modify files.",
+		"SCOPE: repo-review",
+		"TARGET_LANG: shell",
+		"TARGET_GLOB: **/*.sh",
+		"EVIDENCE_MIN_READS: 10",
+		"TOPIC: code-quality",
+	}, "\n")
+
+	rewritten := rewriteDispatchScoutTask(task)
+
+	if !strings.Contains(rewritten, "\nSCOPE: repo-review") {
+		t.Fatalf("expected repo-review scope metadata, got %q", rewritten)
+	}
+	for _, forbidden := range []string{"TARGET_LANG:", "TARGET_GLOB:", "EVIDENCE_MIN_READS:"} {
+		if strings.Contains(rewritten, forbidden) {
+			t.Fatalf("repo-review scout task should not keep focused-file selectors, got %q", rewritten)
+		}
 	}
 }
 

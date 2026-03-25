@@ -10,6 +10,7 @@ func TestDispatchPromptDoesNotTellDispatchToPresentResults(t *testing.T) {
 		t.Fatalf("dispatch prompt still instructs result presentation: %q", dispatchPrompt)
 	}
 	for _, want := range []string{
+		"Every response must contain exactly one tool call and no prose.",
 		"Do not present, summarize, rewrite, or analyze sub-agent results yourself.",
 		"If no further delegation is needed, stop. Do not add a prose answer.",
 		"Choose the next specialist using judgment, not rigid scripts:",
@@ -34,6 +35,7 @@ func TestScoutPromptKeepsRecommendationsOutOfScoutResponses(t *testing.T) {
 		"Your first working turn for an evidence-gathering task must contain tool calls, not a search plan.",
 		"Do not return a blocked or \"I couldn't verify\" answer before using the relevant search/read tools available to you.",
 		"If a delegated search is yours, own it to completion.",
+		"When a response contains tool calls, it must contain only tool call blocks and no visible prose before or after them.",
 		`{"status":"complete|blocked","message":"concise user-visible summary","artifact_kind":"evidence","artifact":"detailed evidence with file paths and line numbers","next_role":"","next_task":""}`,
 		`Set next_role and next_task only when another role must act immediately in the same user turn.`,
 	} {

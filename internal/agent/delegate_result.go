@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -65,7 +66,14 @@ func canonicalStructuredDelegateResult(role, raw string) (string, bool) {
 	if !roleRequiresStructuredDelegateResult(role) {
 		return raw, false
 	}
-	outcome := parseDelegateOutcomeForRole(role, raw)
+	var envelope delegateEnvelope
+	var ok bool
+	if envelope, ok = parseDelegateEnvelope(raw); !ok {
+		if envelope, ok = parseDelegateJSONObjectForRole(role, raw); !ok {
+			return raw, false
+		}
+	}
+	outcome := delegateOutcomeFromEnvelope(role, envelope, raw)
 	if !outcome.Completed() {
 		return raw, false
 	}
@@ -301,11 +309,13 @@ func (o delegateOutcome) Blocked() bool {
 func (o delegateOutcome) DisplayText() string {
 	if o.Structured {
 		message := strings.TrimSpace(o.Message)
-		if message != "" && !isGenericDelegateMessage(message) {
-			return message
-		}
 		if summary := extractDelegateArtifactSummary(o.Role, o.Artifact); summary != "" {
-			return summary
+			if message == "" || isGenericDelegateMessage(message) || delegateArtifactSummaryShouldReplaceMessage(summary, message) {
+				return summary
+			}
+		}
+		if message != "" {
+			return message
 		}
 		if fallback := strings.TrimSpace(defaultDelegateMessage(o.Role)); fallback != "" {
 			return fallback
@@ -411,6 +421,34 @@ func summarizeArchitectArtifact(object map[string]any) string {
 	nextCheck := firstNonEmptyString(object, "recommended_next_check")
 	impact := firstNonEmptyString(object, "likely_impact")
 	suggested := firstUsefulEntry(object["suggested_next_checks"])
+	prioritySummary := summarizeArchitectList(object["priorities"])
+	themeSummary := summarizeArchitectList(object["themes"])
+	findingSummary := summarizeArchitectList(object["prioritized_findings"])
+	riskPrioritySummary := summarizeArchitectList(object["risk_prioritization"])
+	actionSummary := summarizeArchitectList(object["next_actions"])
+	riskSummary := summarizeArchitectList(object["top_risks"])
+	metricSummary := summarizeArchitectList(object["success_metrics"])
+
+	switch {
+	case prioritySummary != "":
+		return prioritySummary
+	case themeSummary != "":
+		return themeSummary
+	case riskPrioritySummary != "" && actionSummary != "":
+		return riskPrioritySummary + "\n" + actionSummary
+	case riskPrioritySummary != "":
+		return riskPrioritySummary
+	case findingSummary != "" && actionSummary != "":
+		return findingSummary + "\n" + actionSummary
+	case findingSummary != "":
+		return findingSummary
+	case actionSummary != "":
+		return actionSummary
+	case riskSummary != "":
+		return riskSummary
+	case metricSummary != "":
+		return metricSummary
+	}
 
 	if assessment != "" {
 		parts := []string{sentence(assessment)}
@@ -445,6 +483,107 @@ func summarizeArchitectArtifact(object map[string]any) string {
 	}
 	if len(parts) > 0 {
 		return strings.Join(parts, " ")
+	}
+	return ""
+}
+
+func summarizeArchitectList(value any) string {
+	items, ok := value.([]any)
+	if !ok || len(items) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, min(len(items), 6)+1)
+	for _, item := range items {
+		object, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		title := firstNonEmptyString(object, "title", "name", "theme", "action", "risk", "id")
+		if title == "" {
+			continue
+		}
+		summary := firstNonEmptyString(object, "summary", "assessment", "result", "why_it_matters", "impact", "expected_outcome", "definition")
+		nextCheck := firstArchitectRecommendation(object["recommendations"])
+		if nextCheck == "" {
+			nextCheck = firstArchitectRecommendation(object["details"])
+		}
+		if nextCheck == "" {
+			nextCheck = firstArchitectRecommendation(object["drivers"])
+		}
+		if summary == "" || nextCheck == "" {
+			findingSummary, findingNext := summarizeArchitectFindings(object["findings"])
+			if summary == "" {
+				summary = findingSummary
+			}
+			if nextCheck == "" {
+				nextCheck = findingNext
+			}
+		}
+		risk := humanizeDelegateText(firstNonEmptyString(object, "risk", "severity"), " ")
+		switch {
+		case summary != "" && nextCheck != "":
+			lines = append(lines, fmt.Sprintf("- %s: %s. Next: %s.", title, trimSentenceEnding(summary), trimSentenceEnding(nextCheck)))
+		case summary != "" && risk != "":
+			lines = append(lines, fmt.Sprintf("- %s (%s): %s.", title, risk, trimSentenceEnding(summary)))
+		case summary != "":
+			lines = append(lines, fmt.Sprintf("- %s: %s.", title, trimSentenceEnding(summary)))
+		case risk != "" && nextCheck != "":
+			lines = append(lines, fmt.Sprintf("- %s (%s). Next: %s.", title, risk, trimSentenceEnding(nextCheck)))
+		case risk != "":
+			lines = append(lines, fmt.Sprintf("- %s (%s).", title, risk))
+		case nextCheck != "":
+			lines = append(lines, fmt.Sprintf("- %s. Next: %s.", title, trimSentenceEnding(nextCheck)))
+		default:
+			lines = append(lines, fmt.Sprintf("- %s.", title))
+		}
+		if len(lines) == 6 {
+			break
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	if extra := len(items) - len(lines); extra > 0 {
+		lines = append(lines, fmt.Sprintf("- %d more.", extra))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func summarizeArchitectFindings(value any) (string, string) {
+	items, ok := value.([]any)
+	if !ok || len(items) == 0 {
+		return "", ""
+	}
+	for _, item := range items {
+		object, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		summary := firstNonEmptyString(object, "summary", "assessment", "result", "why_it_matters", "risk")
+		nextCheck := firstArchitectRecommendation(object["recommendations"])
+		if summary != "" || nextCheck != "" {
+			return summary, nextCheck
+		}
+	}
+	return "", ""
+}
+
+func firstArchitectRecommendation(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case []any:
+		for _, entry := range typed {
+			if text := firstArchitectRecommendation(entry); text != "" {
+				return text
+			}
+		}
+	case map[string]any:
+		for _, key := range []string{"summary", "text", "message", "action", "recommendation", "title", "name"} {
+			if text := firstNonEmptyString(typed, key); text != "" {
+				return text
+			}
+		}
 	}
 	return ""
 }
@@ -640,4 +779,49 @@ func (o delegateOutcome) ContextText() string {
 	default:
 		return strings.TrimSpace(o.Raw)
 	}
+}
+
+func (o delegateOutcome) CarryContextText() string {
+	message := strings.TrimSpace(o.Message)
+	artifact := strings.TrimSpace(o.Artifact)
+	switch {
+	case artifact == "" && message == "":
+		return strings.TrimSpace(o.Raw)
+	case artifact == "":
+		return message
+	case message == "":
+		return artifact
+	case !o.Structured:
+		return artifact
+	case isGenericDelegateMessage(message):
+		return artifact
+	case sameDelegateContext(message, artifact):
+		return artifact
+	default:
+		return "MESSAGE:\n" + message + "\n\nARTIFACT:\n" + artifact
+	}
+}
+
+func sameDelegateContext(left, right string) bool {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	if left == "" || right == "" {
+		return left == right
+	}
+	if left == right {
+		return true
+	}
+	return trimSentenceEnding(left) == trimSentenceEnding(right)
+}
+
+func delegateArtifactSummaryShouldReplaceMessage(summary, message string) bool {
+	summary = strings.TrimSpace(summary)
+	message = strings.TrimSpace(message)
+	if summary == "" || message == "" || sameDelegateContext(summary, message) {
+		return false
+	}
+	if strings.Count(summary, "\n") > strings.Count(message, "\n") {
+		return true
+	}
+	return len(summary) > len(message)+40
 }

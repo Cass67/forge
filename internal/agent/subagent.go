@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"forge/internal/agent/tools"
 	"forge/internal/llm"
@@ -12,6 +13,38 @@ import (
 // DriverFactory creates a driver for a given model name.
 // Returns nil if the model is unavailable.
 type DriverFactory func(modelName string) llm.Driver
+
+type spawnedSubAgentRenderer struct {
+	base RenderTarget
+}
+
+func suppressSpawnedSubAgentTokens(base RenderTarget) RenderTarget {
+	return spawnedSubAgentRenderer{base: base}
+}
+
+func (r spawnedSubAgentRenderer) AgentToken(text string) {}
+
+func (r spawnedSubAgentRenderer) AgentText(text string) {}
+
+func (r spawnedSubAgentRenderer) ToolCall(name, summary string) {
+	r.base.ToolCall(name, summary)
+}
+
+func (r spawnedSubAgentRenderer) ToolResult(name, output, diff string, isError bool) {
+	r.base.ToolResult(name, output, diff, isError)
+}
+
+func (r spawnedSubAgentRenderer) Stats(duration time.Duration, usage llm.Usage) {
+	r.base.Stats(duration, usage)
+}
+
+func (r spawnedSubAgentRenderer) Error(msg string) {
+	r.base.Error(msg)
+}
+
+func (r spawnedSubAgentRenderer) Info(msg string) {
+	r.base.Info(msg)
+}
 
 // MultiAgentConfig holds the configuration for multi-agent delegation.
 type MultiAgentConfig struct {
@@ -81,7 +114,7 @@ func (a *Agent) SpawnSubAgent(ctx context.Context, role, task string, mac MultiA
 		approve:    a.approve,
 		workDir:    a.workDir,
 		maxTurns:   roleDef.MaxTurns,
-		renderer:   subRenderer,
+		renderer:   suppressSpawnedSubAgentTokens(subRenderer),
 		system:     system,
 		isSubAgent: true,
 		role:       role,
@@ -122,9 +155,12 @@ func retryStructuredSubAgentResult(ctx context.Context, sub *Agent, role, result
 		return result, nil
 	}
 	for attempt := 1; attempt <= 2; attempt++ {
+		sub.structuredOutputRetryMode = true
 		if err := sub.Run(ctx, subAgentStructuredOutputNudgeMessage(role, attempt)); err != nil {
+			sub.structuredOutputRetryMode = false
 			return subAgentFinalResult(role, sub), err
 		}
+		sub.structuredOutputRetryMode = false
 		result = subAgentFinalResult(role, sub)
 		if canonical, ok := canonicalStructuredDelegateResult(role, result); ok {
 			return canonical, nil
@@ -160,6 +196,14 @@ func subAgentStructuredOutputNudgeMessage(role string, attempt int) string {
 	role = strings.TrimSpace(role)
 	if role == "" {
 		role = "sub-agent"
+	}
+	if role == "scout" {
+		switch attempt {
+		case 1:
+			return "Scout stopped with plain prose. If more evidence is needed, call the next search/read/run_command tool now. If the investigation is complete, re-emit the completed answer as exactly one JSON object with status, message, artifact_kind, artifact, next_role, and next_task. Use status \"complete\" or \"blocked\" only. No prose outside tool calls or the JSON object."
+		default:
+			return "Still unstructured. Scout must either call the next evidence tool now or re-emit the completed answer as exactly one JSON object with status, message, artifact_kind, artifact, next_role, and next_task. Use status \"complete\" or \"blocked\" only. No prose outside tool calls or the JSON object."
+		}
 	}
 	switch attempt {
 	case 1:
