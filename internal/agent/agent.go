@@ -156,6 +156,14 @@ func (a *Agent) SetRole(role string) {
 	a.role = role
 }
 
+func (a *Agent) Role() string {
+	return a.role
+}
+
+func (a *Agent) LastResponse() string {
+	return a.lastFullResponse
+}
+
 func (a *Agent) CancelSubAgent() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -176,6 +184,7 @@ func (a *Agent) ClearHistory() {
 }
 
 func (a *Agent) Run(ctx context.Context, userMessage string) error {
+	a.lastFullResponse = ""
 	a.history = append(a.history, llm.Message{Role: llm.RoleUser, Content: userMessage})
 	turnStart := time.Now()
 	actionPreambleRetries := 0
