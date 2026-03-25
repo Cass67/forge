@@ -130,8 +130,11 @@ func TestTruncate(t *testing.T) {
 	if !strings.Contains(truncated, "line1") {
 		t.Error("missing line1")
 	}
-	if !strings.Contains(truncated, "/expand") {
-		t.Error("missing /expand hint")
+	if strings.Contains(truncated, "/expand") {
+		t.Errorf("unexpected /expand hint in %q", truncated)
+	}
+	if !strings.Contains(truncated, "3 more lines") {
+		t.Errorf("missing truncation summary in %q", truncated)
 	}
 }
 

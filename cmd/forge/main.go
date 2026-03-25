@@ -36,7 +36,7 @@ var (
 func main() {
 	args := os.Args[1:]
 	if len(args) == 0 || startsWithFlag(args[0]) {
-		runChatArgs(args)
+		runChat(args)
 		return
 	}
 
@@ -58,7 +58,6 @@ func main() {
 				os.Exit(1)
 			},
 		},
-		"chat": {Name: "chat", Run: func(args []string) { runChatArgs(args) }},
 		"make": {Name: "make", Run: func(args []string) { runMake(args) }},
 		"improve": {Name: "improve", Run: func(args []string) {
 			runImproveArgsFn("improve", args)
@@ -908,7 +907,6 @@ func printHelp() {
 
 Usage:
   forge                           Start interactive chat session
-  forge chat [flags]              Start interactive agent session
   forge make                      Launch the legacy writer/auditor pipeline UI
   forge make <path> [flags]       Run the writer/auditor pipeline against a path
   forge improve <path> [flags]    Compatibility alias for forge make <path> [flags]
@@ -1217,8 +1215,8 @@ func runSkills(args []string) {
 	}
 }
 
-func runChatArgs(args []string) {
-	fs := flag.NewFlagSet("chat", flag.ExitOnError)
+func runChat(args []string) {
+	fs := flag.NewFlagSet("forge", flag.ExitOnError)
 	yolo := fs.Bool("yolo", false, "skip all approval prompts")
 	model := fs.String("model", "", "model override")
 	workDir := fs.String("C", "", "working directory (default: cwd)")

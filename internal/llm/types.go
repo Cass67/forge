@@ -108,7 +108,7 @@ type Event struct {
 	Err      error
 	// Chat frontend fields
 	IsError  bool          // true if tool result is an error
-	Content  string        // diff content or full tool output (for /expand)
+	Content  string        // diff content or full tool output
 	Duration time.Duration // turn duration (EventStats)
 	Usage    Usage         // token usage (EventStats)
 	SubAgent string        // non-empty when event comes from a delegated sub-agent

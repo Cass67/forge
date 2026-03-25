@@ -459,7 +459,7 @@ func RunChatConsole(setup *ChatSetup) {
 		configureMultiAgent(a, reg, setup)
 	}
 
-	fmt.Printf("forge chat (%s) — %s\n", setup.ChatModel, setup.WorkDir)
+	fmt.Printf("forge (%s) — %s\n", setup.ChatModel, setup.WorkDir)
 	fmt.Println("type your request, or /help for commands")
 	fmt.Println()
 
@@ -554,13 +554,6 @@ func handleChatSlashCommand(input string, renderer *agent.Renderer, a *agent.Age
 			fmt.Printf("  %s%d. %s\n", marker, i+1, m)
 		}
 		fmt.Println()
-	case input == "/expand":
-		if exp := renderer.LastExpandable(); exp != "" {
-			fmt.Fprintln(os.Stdout, exp)
-			renderer.ClearExpandable()
-		} else {
-			renderer.Error("nothing to expand")
-		}
 	case input == "/clear":
 		a.ClearHistory()
 		renderer.Info("conversation history cleared")
@@ -666,7 +659,6 @@ func PrintChatHelp() {
 	fmt.Println("    /model          select model from list")
 	fmt.Println("    /model <name>   switch to a specific model")
 	fmt.Println("    /models         show available models")
-	fmt.Println("    /expand         show full output of last truncated result")
 	fmt.Println("    /clear          clear conversation history")
 	fmt.Println("    /skills         list available skills and how to activate them")
 	fmt.Println("    /<skill>        activate a loaded skill by name from /skills")

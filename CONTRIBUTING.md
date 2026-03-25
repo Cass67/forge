@@ -80,7 +80,7 @@ For code changes:
 Practical rule:
 
 - if you change provider behavior, start in bootstrap and drivers
-- if you change root CLI behavior, start in [cmd/forge/main.go](/Users/cass/git/forge/cmd/forge/main.go) and verify both `forge` and `forge chat`
+- if you change root CLI behavior, start in [cmd/forge/main.go](/Users/cass/git/forge/cmd/forge/main.go) and verify `forge`
 - if you change chat behavior, start in runtime, agent, and TUI together
 - if you change session/pipeline behavior, start in runtime/session and `internal/session`
 
