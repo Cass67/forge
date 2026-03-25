@@ -145,6 +145,9 @@ type toolsSection struct {
 	collapsed bool   // true after sub-agent completes
 	turnCount int
 	toolCount int
+
+	tokenRun          string
+	transcriptVisible bool
 }
 
 // ChatModel is the Bubble Tea model for the interactive chat screen.
@@ -169,9 +172,10 @@ const chatInputHeight = 1
 const chatStatusHeight = 1
 
 type subAgentSummary struct {
-	role  string
-	turns int
-	tools int
+	role              string
+	turns             int
+	tools             int
+	transcriptVisible bool
 }
 
 type ChatModel struct {
@@ -440,6 +444,11 @@ func displayAgentLabel(label string) string {
 	return label
 }
 
+func hasAgentHeaderForLabel(msg ChatMessage, label string) bool {
+	label = displayAgentLabel(label)
+	return strings.TrimSpace(msg.Header) == label || strings.HasPrefix(msg.Header, label+" • ")
+}
+
 func formatWorkingLine(role, content string) string {
 	content = strings.TrimSpace(content)
 	if role != "" {
@@ -460,7 +469,7 @@ func (m *ChatModel) AppendToLastAgentLabeled(text, label string) {
 	if m.hasLiveWorkingMessage() {
 		m.clearWorkingMessage()
 	}
-	if len(m.messages) == 0 || m.messages[len(m.messages)-1].Kind != MsgAgent {
+	if len(m.messages) == 0 || m.messages[len(m.messages)-1].Kind != MsgAgent || !hasAgentHeaderForLabel(m.messages[len(m.messages)-1], label) {
 		stamp := time.Now().Format("15:04:05")
 		m.messages = append(m.messages, ChatMessage{Kind: MsgAgent, Header: displayAgentLabel(label) + " • " + stamp})
 	}
@@ -496,19 +505,90 @@ func (m *ChatModel) applyViewportFollow(totalLines int) {
 	m.chatViewport.GotoBottom()
 }
 
-func (m ChatModel) delegateResultLabel() string {
+type delegateTranscriptState struct {
+	role              string
+	transcriptVisible bool
+}
+
+func (m ChatModel) delegateResultState() delegateTranscriptState {
 	if m.pendingSubAgentSummary != nil && strings.TrimSpace(m.pendingSubAgentSummary.role) != "" {
-		return displayAgentLabel(m.pendingSubAgentSummary.role)
+		return delegateTranscriptState{
+			role:              strings.TrimSpace(m.pendingSubAgentSummary.role),
+			transcriptVisible: m.pendingSubAgentSummary.transcriptVisible,
+		}
 	}
 	if role := strings.TrimSpace(m.activeSubAgent); role != "" {
-		return displayAgentLabel(role)
+		for i := len(m.toolsSections) - 1; i >= 0; i-- {
+			if strings.TrimSpace(m.toolsSections[i].role) == role {
+				return delegateTranscriptState{
+					role:              role,
+					transcriptVisible: m.toolsSections[i].transcriptVisible,
+				}
+			}
+		}
+		return delegateTranscriptState{role: role}
 	}
 	for i := len(m.toolsSections) - 1; i >= 0; i-- {
 		if role := strings.TrimSpace(m.toolsSections[i].role); role != "" {
-			return displayAgentLabel(role)
+			return delegateTranscriptState{
+				role:              role,
+				transcriptVisible: m.toolsSections[i].transcriptVisible,
+			}
 		}
 	}
+	return delegateTranscriptState{}
+}
+
+func (m ChatModel) delegateResultLabel() string {
+	if state := m.delegateResultState(); state.role != "" {
+		return displayAgentLabel(state.role)
+	}
 	return "Agent"
+}
+
+func looksLikeStructuredTranscript(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "```") {
+		lines := strings.SplitN(trimmed, "\n", 2)
+		if len(lines) == 2 {
+			body := strings.TrimSpace(strings.TrimSuffix(lines[1], "```"))
+			return strings.HasPrefix(body, "{") || strings.HasPrefix(body, "[")
+		}
+	}
+	return false
+}
+
+func prefersDelegateArtifactText(summary, artifact string) bool {
+	summary = strings.TrimSpace(summary)
+	artifact = strings.TrimSpace(artifact)
+	if artifact == "" || looksLikeStructuredTranscript(artifact) {
+		return false
+	}
+	if summary == "" {
+		return true
+	}
+	if strings.Count(artifact, "\n") > strings.Count(summary, "\n") {
+		return true
+	}
+	return len(artifact) > len(summary)
+}
+
+func selectDelegateTranscript(summary, artifact string) string {
+	summary = strings.TrimSpace(summary)
+	artifact = strings.TrimSpace(artifact)
+	if prefersDelegateArtifactText(summary, artifact) {
+		return artifact
+	}
+	if summary != "" {
+		return summary
+	}
+	return artifact
 }
 
 func (m *ChatModel) refreshViewport() {
@@ -1055,7 +1135,8 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
-	// Sub-agent events go entirely to the tools pane.
+	// Sub-agent events primarily render in the tools pane, with human-readable
+	// prose mirrored into the main transcript.
 	if ev.SubAgent != "" {
 		return m.handleSubAgentEvent(ev)
 	}
@@ -1082,13 +1163,22 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 			m.lastToolResult = ev.Text
 		}
 		if ev.Agent == "delegate" {
+			state := m.delegateResultState()
+			label := "Agent"
+			if state.role != "" {
+				label = displayAgentLabel(state.role)
+			}
+			result := ""
+			if !ev.IsError && !state.transcriptVisible {
+				result = selectDelegateTranscript(ev.Text, ev.Content)
+			}
 			m.clearWorkingMessage()
 			if !ev.IsError {
-				if result := strings.TrimSpace(ev.Text); result != "" {
+				if result := strings.TrimSpace(result); result != "" {
 					stamp := time.Now().Format("15:04:05")
 					m.AddMessage(ChatMessage{
 						Kind:    MsgAgent,
-						Header:  m.delegateResultLabel() + " • " + stamp,
+						Header:  label + " • " + stamp,
 						Content: result,
 					})
 				}
@@ -1158,8 +1248,8 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 }
 
 // handleSubAgentEvent routes all sub-agent activity to the tools pane with
-// the agent role as a visible header. Tokens stream into the tools pane
-// instead of the main chat.
+// the agent role as a visible header. Human-readable prose is also mirrored
+// into the main chat transcript for a transcript-first experience.
 func (m ChatModel) handleSubAgentEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 	label := ev.SubAgent
 	m.activeSubAgent = label
@@ -1186,9 +1276,10 @@ func (m ChatModel) handleSubAgentEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 					sec.summary = fmt.Sprintf("─ %s (%d turns, %d tools) %s ─\n", label, sec.turnCount, sec.toolCount, status)
 					sec.collapsed = true
 					m.pendingSubAgentSummary = &subAgentSummary{
-						role:  label,
-						turns: sec.turnCount,
-						tools: sec.toolCount,
+						role:              label,
+						turns:             sec.turnCount,
+						tools:             sec.toolCount,
+						transcriptVisible: sec.transcriptVisible,
 					}
 					break
 				}
@@ -1202,9 +1293,16 @@ func (m ChatModel) handleSubAgentEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 
 	switch ev.Kind {
 	case llm.EventToken:
+		sec := m.currentToolsSection(label)
+		sec.tokenRun += ev.Text
 		m.appendTools(label, ev.Text)
+		if strings.TrimSpace(sec.tokenRun) != "" && !looksLikeStructuredTranscript(sec.tokenRun) {
+			m.AppendToLastAgentLabeled(ev.Text, label)
+			sec.transcriptVisible = true
+		}
 	case llm.EventToolCall:
 		sec := m.currentToolsSection(label)
+		sec.tokenRun = ""
 		if sec.buf != "" && !strings.HasSuffix(sec.buf, "\n\n") {
 			sec.buf += "\n"
 		}
@@ -1212,12 +1310,16 @@ func (m ChatModel) handleSubAgentEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		m.appendTools(label, fmt.Sprintf("  │   %s\n", ev.Text))
 		sec.toolCount++
 	case llm.EventToolResult:
+		sec := m.currentToolsSection(label)
+		sec.tokenRun = ""
 		if ev.IsError {
 			m.appendTools(label, fmt.Sprintf("  │   ✗ %s\n", truncate(ev.Text, 200)))
 		} else {
 			m.appendTools(label, fmt.Sprintf("  │   ✓ %s\n", truncate(ev.Text, 200)))
 		}
 	case llm.EventStats:
+		sec := m.currentToolsSection(label)
+		sec.tokenRun = ""
 		m.sessionUsage.InputTokens += ev.Usage.InputTokens
 		m.sessionUsage.OutputTokens += ev.Usage.OutputTokens
 		if ev.Duration > 0 {
@@ -1234,6 +1336,8 @@ func (m ChatModel) handleSubAgentEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 			}
 		}
 	case llm.EventError:
+		sec := m.currentToolsSection(label)
+		sec.tokenRun = ""
 		m.appendTools(label, fmt.Sprintf("  │ ✗ [%s] %s\n", label, ev.Text))
 	}
 	// Auto-scroll tools pane to follow new output.
