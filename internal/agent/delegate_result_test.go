@@ -136,6 +136,14 @@ func TestParseDelegateOutcomeForRoleUsesScoutArtifactSummaryWhenMessageIsGeneric
 	}
 }
 
+func TestParseDelegateOutcomeForRoleUsesScoutArtifactSummaryForCurrentScoutContract(t *testing.T) {
+	raw := `{"origin_file":"util-rancid/update_cerner_daily.sh","evidence":[{"file":"util-rancid/update_cerner_daily.sh","line":753,"match":"run_or_warn \"f5 objstor verify missing-script alert email\" mailx -s \"Rancid f5 objstor verify script missing\" martin.cassidy@oracle.com </dev/null"}],"explanation":"The email subject/body text is hard-coded in a mailx command inside the daily RANCID update script.","triggering_condition":"Missing-script alert path for the f5 objstor verify step in the daily update workflow","related_job_or_config":"Likely invoked by a cron/scheduled daily job that runs util-rancid/update_cerner_daily.sh","confidence":"high"}`
+	outcome := parseDelegateOutcomeForRole("scout", raw)
+	if got := outcome.DisplayText(); got != "Source: util-rancid/update_cerner_daily.sh:753. Likely trigger: Missing-script alert path for the f5 objstor verify step in the daily update workflow." {
+		t.Fatalf("display text = %q", got)
+	}
+}
+
 func TestParseDelegateOutcomeStructuredEnvelopeKeepsSpecificMessageOverArtifactSummary(t *testing.T) {
 	raw := `{"status":"complete","message":"The email comes from util-rancid/update_cerner_daily.sh:753.","artifact_kind":"evidence","artifact":{"source_file":"util-rancid/update_cerner_daily.sh","source_line":753,"most_likely_trigger":"missing verify script at runtime"}}`
 	outcome := parseDelegateOutcomeForRole("scout", raw)
