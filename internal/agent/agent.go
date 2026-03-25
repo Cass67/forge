@@ -349,6 +349,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 							dispatchCanStop = false
 						} else if outcome.Completed() {
 							dispatchCanStop = true
+							dispatchStopAfterTurn = true
 						}
 					}
 				}

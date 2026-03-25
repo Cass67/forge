@@ -88,15 +88,14 @@ func (a *Agent) SpawnSubAgent(ctx context.Context, role, task string, mac MultiA
 	}
 
 	err := sub.Run(subCtx, task)
+	result := subAgentFinalResult(role, sub)
+	if err == nil {
+		result, err = retryStructuredSubAgentResult(subCtx, sub, role, result)
+	}
 
 	if err != nil && subCtx.Err() != nil {
 		subRenderer.Info(fmt.Sprintf("[%s] cancelled", role))
 		return fmt.Sprintf("CANCELLED: %s was cancelled by user. Present what you have or re-delegate.", role), nil
-	}
-
-	result := sub.lastFullResponse
-	if strings.TrimSpace(result) == "" {
-		result = fmt.Sprintf("AGENT ERROR (%s): produced no final output", role)
 	}
 
 	subRenderer.Info(fmt.Sprintf("[%s] done", role))
@@ -105,4 +104,58 @@ func (a *Agent) SpawnSubAgent(ctx context.Context, role, task string, mac MultiA
 		return fmt.Sprintf("AGENT ERROR (%s): %v\n\nPartial output:\n%s", role, err, result), nil
 	}
 	return result, nil
+}
+
+func subAgentFinalResult(role string, sub *Agent) string {
+	result := sub.lastFullResponse
+	if strings.TrimSpace(result) == "" {
+		return fmt.Sprintf("AGENT ERROR (%s): produced no final output", role)
+	}
+	return result
+}
+
+func retryStructuredSubAgentResult(ctx context.Context, sub *Agent, role, result string) (string, error) {
+	if !subAgentNeedsStructuredRetry(role, result) {
+		return result, nil
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		if err := sub.Run(ctx, subAgentStructuredOutputNudgeMessage(role, attempt)); err != nil {
+			return subAgentFinalResult(role, sub), err
+		}
+		result = subAgentFinalResult(role, sub)
+		if !subAgentNeedsStructuredRetry(role, result) {
+			return result, nil
+		}
+	}
+	return result, fmt.Errorf("%s produced unstructured final output after structured-output retry", role)
+}
+
+func subAgentNeedsStructuredRetry(role, result string) bool {
+	if !roleRequiresStructuredDelegateResult(role) {
+		return false
+	}
+	outcome := parseDelegateOutcome(result)
+	return outcome.Completed() && !outcome.Structured
+}
+
+func roleRequiresStructuredDelegateResult(role string) bool {
+	switch strings.TrimSpace(role) {
+	case "scout", "builder", "doctor", "architect":
+		return true
+	default:
+		return false
+	}
+}
+
+func subAgentStructuredOutputNudgeMessage(role string, attempt int) string {
+	role = strings.TrimSpace(role)
+	if role == "" {
+		role = "sub-agent"
+	}
+	switch attempt {
+	case 1:
+		return fmt.Sprintf("%s final output must be exactly one JSON object matching the required contract. Do not call tools. Return exactly one JSON object and nothing else.", role)
+	default:
+		return fmt.Sprintf("Still unstructured. %s must re-emit the completed answer as exactly one JSON object with status, message, artifact_kind, artifact, next_role, and next_task. No prose outside the JSON object.", role)
+	}
 }
