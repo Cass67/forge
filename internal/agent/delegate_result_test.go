@@ -118,7 +118,7 @@ func TestParseDelegateOutcomeForRoleCoercesBareArchitectJSONObject(t *testing.T)
 	if !outcome.Completed() {
 		t.Fatalf("expected completed outcome")
 	}
-	if outcome.DisplayText() != "Low-to-medium severity. Actionable. Next check: Verify the expected verify script path exists and is executable." {
+	if outcome.DisplayText() != "Severity: Low to medium. Next check: Verify the expected verify script path exists and is executable." {
 		t.Fatalf("display text = %q", outcome.DisplayText())
 	}
 	if outcome.ArtifactKind != "plan" {
@@ -157,6 +157,13 @@ func TestParseDelegateOutcomeForRoleUsesDoctorArtifactSummaryWhenMessageIsGeneri
 func TestParseDelegateOutcomeForRoleUsesBuilderArtifactSummaryWhenMessageIsGeneric(t *testing.T) {
 	outcome := parseDelegateOutcomeForRole("builder", `{"summary":"Removed the tools pane and switched to a transcript-first layout.","verification":"go test ./internal/tui && go build ./cmd/forge"}`)
 	if got := outcome.DisplayText(); got != "Removed the tools pane and switched to a transcript-first layout. Verification: go test ./internal/tui && go build ./cmd/forge." {
+		t.Fatalf("display text = %q", got)
+	}
+}
+
+func TestParseDelegateOutcomeForRoleUsesLabeledArchitectSummaryForSeverityAndActionability(t *testing.T) {
+	outcome := parseDelegateOutcomeForRole("architect", `{"severity":"medium","actionability":"high"}`)
+	if got := outcome.DisplayText(); got != "Severity: Medium. Actionability: High." {
 		t.Fatalf("display text = %q", got)
 	}
 }

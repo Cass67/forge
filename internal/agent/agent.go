@@ -164,6 +164,9 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		a.dispatchTurn++
 		currentDispatchTurn = a.dispatchTurn
 		currentDispatchIntent = classifyDispatchIntent(userMessage)
+		if currentDispatchIntent == dispatchIntentTrace && shouldInterpretReferentialFollowUp(userMessage, currentDispatchTurn, a.latestScout, a.dispatchResults["architect"]) {
+			currentDispatchIntent = dispatchIntentInterpret
+		}
 		if a.latestScout.Turn > 0 && a.latestScout.Turn < currentDispatchTurn-1 {
 			a.latestScout = dispatchScoutEvidence{}
 			delete(a.dispatchResults, "scout")
@@ -652,6 +655,63 @@ func shouldReuseLatestScoutEvidence(role, task string, intent dispatchIntent, cu
 		return false
 	}
 	return true
+}
+
+func shouldInterpretReferentialFollowUp(userMessage string, currentTurn int, latest dispatchScoutEvidence, priorArchitectResult string) bool {
+	if latest.Turn != currentTurn-1 || strings.TrimSpace(latest.TopicKey) == "" || strings.TrimSpace(latest.ContextText) == "" {
+		return false
+	}
+	normalized := strings.ToLower(normalizePromptText(strings.TrimSpace(userMessage)))
+	if normalized == "" || deriveTopicKeyFromText(normalized) != "" {
+		return false
+	}
+	if containsAny(normalized, []string{
+		"where",
+		"which file",
+		"what file",
+		"what line",
+		"show me",
+		"trace",
+		"find",
+		"search",
+		"fix",
+		"implement",
+		"change",
+		"update",
+		"edit",
+		"write",
+		"debug",
+		"root cause",
+	}) {
+		return false
+	}
+	fields := strings.Fields(normalized)
+	if len(fields) == 0 || len(fields) > 6 {
+		return false
+	}
+	if containsAny(normalized, []string{
+		"is it",
+		"well is it",
+		"means",
+		"mean",
+		"what does",
+		"what now",
+		"so what",
+		"should i",
+		"worry",
+		"urgent",
+		"serious",
+		"safe",
+		"ok",
+		"okay",
+		"how bad",
+	}) {
+		return true
+	}
+	if strings.TrimSpace(priorArchitectResult) != "" && strings.Contains(normalized, "?") {
+		return true
+	}
+	return false
 }
 
 func synthesizeInterpretiveArchitectTask(userMessage string) string {
