@@ -293,6 +293,48 @@ func TestChatModelDelegateResultAddsCompactSubAgentSummaryToChat(t *testing.T) {
 	}
 }
 
+func TestChatModelDelegateResultStillShowsWhenPendingSummaryWasLost(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "runtime", Text: "[scout] starting", SubAgent: "scout"})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "read_file", Text: "README.md", SubAgent: "scout"})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "runtime", Text: "[scout] done", SubAgent: "scout"})
+	m = updated.(ChatModel)
+
+	// Simulate the brittle state loss path: the delegate result should still surface.
+	m.pendingSubAgentSummary = nil
+
+	updated, _ = m.Update(llm.Event{
+		Kind:    llm.EventToolResult,
+		Agent:   "delegate",
+		Text:    "Source: /repo/main.go:12.",
+		Content: "{\"source_file\":\"/repo/main.go\",\"source_line\":12}",
+		IsError: false,
+	})
+	m = updated.(ChatModel)
+
+	var agentMsgs []ChatMessage
+	for _, msg := range m.messages {
+		if msg.Kind == MsgAgent {
+			agentMsgs = append(agentMsgs, msg)
+		}
+	}
+	if len(agentMsgs) == 0 {
+		t.Fatalf("expected scout result in chat even without pending summary, got %#v", m.messages)
+	}
+	last := agentMsgs[len(agentMsgs)-1]
+	if !strings.HasPrefix(last.Header, "Scout • ") {
+		t.Fatalf("agent header = %q", last.Header)
+	}
+	if !strings.Contains(last.Content, "Source: /repo/main.go:12.") {
+		t.Fatalf("agent content = %q", last.Content)
+	}
+}
+
 func TestChatModelSlashClear(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 80
