@@ -29,6 +29,7 @@ func TestScoutPromptKeepsRecommendationsOutOfScoutResponses(t *testing.T) {
 	for _, want := range []string{
 		"Do not recommend code changes, plans, or prioritization.",
 		"For repo-review tasks, gather a bounded evidence set and then stop.",
+		"For repo-review tasks, read at least one representative file (for example README, config, or a primary source file) before concluding; do not base the review on directory listings alone.",
 		"Never inspect runtime-generated conversation artifacts such as debug logs, scratchpad files, session histories, or session logs unless the task explicitly asks for them.",
 		"Your first working turn for an evidence-gathering task must contain tool calls, not a search plan.",
 		"Do not return a blocked or \"I couldn't verify\" answer before using the relevant search/read tools available to you.",
