@@ -847,7 +847,7 @@ func TestSpawnSubAgentScoutRecoversFromBareJSONToolCallPrefix(t *testing.T) {
 		responses: []string{
 			"{\"name\":\"read_file\",\"args\":{\"path\":\"README.md\",\"start_line\":1,\"end_line\":260}}I need a bit more repository evidence before I can give a reliable, citation-backed overview and tidy-up assessment.",
 			"Repository inspection shows this is an automation repo with mixed Bash, PowerShell, and Python workflows.",
-			`{"status":"complete","message":"Inspected README-backed repo overview.","artifact_kind":"evidence","artifact":"README.md confirms a multi-host automation repo.","next_role":"","next_task":""}`,
+			`{"status":"complete","message":"Repository inspection shows this is an automation repo with mixed Bash, PowerShell, and Python workflows.","artifact_kind":"evidence","artifact":"README.md confirms a multi-host automation repo.","next_role":"","next_task":""}`,
 		},
 	}
 
@@ -969,10 +969,76 @@ func TestSpawnSubAgentScoutRetriesAfterEmptyFinalOutput(t *testing.T) {
 	}
 }
 
-func TestSpawnSubAgentArchitectNormalizesPlainFinalOutputIntoTypedEnvelopeWithoutRetry(t *testing.T) {
+func TestSpawnSubAgentScoutRetriesAfterPlainFinalOutput(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"search\", \"args\": {\"pattern\": \"Rancid f5 objstor verify script missing\", \"path\": \".\", \"glob\": \"**/*\"}}\n</tool_call>",
+		"Found the alert source in util-rancid/update_cerner_daily.sh:753.",
+		`{"status":"complete","message":"Found the alert source in util-rancid/update_cerner_daily.sh:753.","artifact_kind":"evidence","artifact":"/repo/util-rancid/update_cerner_daily.sh:753 emits the alert","next_role":"","next_task":""}`,
+	}}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{
+		Name:        "search",
+		Description: "Search",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			return "/repo/util-rancid/update_cerner_daily.sh:753: run_or_warn \"f5 objstor verify missing-script alert email\"", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	parent := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+
+	result, err := parent.SpawnSubAgent(context.Background(), "scout", "TASK: Trace the alert source and return evidence-backed findings only. OUTCOME: file path plus trigger. MUST NOT: Do not speculate.", MultiAgentConfig{
+		BaseTools: reg,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if driver.callIdx != 3 {
+		t.Fatalf("expected plain scout final output to trigger a retry, got %d driver calls", driver.callIdx)
+	}
+	if strings.Contains(result, "AGENT ERROR") {
+		t.Fatalf("expected scout to recover from plain final output, got %q", result)
+	}
+	if outcome := parseDelegateOutcome(result); !outcome.Structured || outcome.Message != "Found the alert source in util-rancid/update_cerner_daily.sh:753." {
+		t.Fatalf("expected typed scout findings after plain output retry, got %q", result)
+	}
+	if got := output.String(); strings.Contains(got, "Found the alert source in util-rancid/update_cerner_daily.sh:753.") {
+		t.Fatalf("provisional plain scout output should be suppressed during retry, got %q", got)
+	}
+}
+
+func TestSubAgentStructuredOutputNudgeMessageForScoutAllowsContinuingWithTools(t *testing.T) {
+	got := subAgentStructuredOutputNudgeMessage("scout", 1)
+	for _, want := range []string{
+		"call the next search/read/run_command tool now",
+		"exactly one JSON object",
+		"No prose outside tool calls or the JSON object",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("scout structured-output nudge missing %q: %q", want, got)
+		}
+	}
+}
+
+func TestSpawnSubAgentArchitectRetriesPlainFinalOutputIntoTypedEnvelope(t *testing.T) {
 	driver := &inspectingDriver{
+		checks: []func([]llm.Message) error{
+			nil,
+			func(messages []llm.Message) error {
+				if len(messages) == 0 {
+					return fmt.Errorf("missing retry message")
+				}
+				if got := messages[len(messages)-1].Content; !strings.Contains(got, "exactly one JSON object") {
+					return fmt.Errorf("expected structured-output retry nudge, got %q", got)
+				}
+				return nil
+			},
+		},
 		responses: []string{
 			"The alert means the runtime verification helper was missing, not that the job failed.",
+			`{"status":"complete","message":"The alert means the runtime verification helper was missing, not that the job failed.","artifact_kind":"plan","artifact":"The alert means the runtime verification helper was missing, not that the job failed.","next_role":"","next_task":""}`,
 		},
 	}
 
@@ -987,8 +1053,8 @@ func TestSpawnSubAgentArchitectNormalizesPlainFinalOutputIntoTypedEnvelopeWithou
 	if err != nil {
 		t.Fatal(err)
 	}
-	if driver.callIdx != 1 {
-		t.Fatalf("expected plain architect output to be normalized locally, got %d driver calls", driver.callIdx)
+	if driver.callIdx != 2 {
+		t.Fatalf("expected plain architect output to trigger a retry, got %d driver calls", driver.callIdx)
 	}
 	if outcome := parseDelegateOutcome(result); !outcome.Structured || outcome.Message != "The alert means the runtime verification helper was missing, not that the job failed." {
 		t.Fatalf("expected typed architect result after retry, got %q", result)
@@ -2843,6 +2909,152 @@ func TestDispatchRetriesScoutAfterEmptyDelegateOutputWithoutPersistingSentinel(t
 	}
 	if strings.Contains(output.String(), "dispatch cannot delegate to scout twice in a row") {
 		t.Fatalf("empty scout output should not poison dispatch state, got %q", output.String())
+	}
+}
+
+func TestDispatchSuppressesBlockedScoutIntermediateResultBeforeRetry(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Gather repo-review evidence only. OUTCOME: Evidence-backed findings only.\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Retry the repo-review evidence pass narrowly. OUTCOME: Evidence-backed findings only.\"}}\n</tool_call>",
+	}}
+	reg := tools.NewRegistry()
+	var delegated []string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			delegated = append(delegated, role)
+			switch role {
+			case "scout":
+				if len(delegated) == 1 {
+					return `{"status":"blocked","message":"Evidence gathered so far is insufficient for a supported code-quality audit.","artifact_kind":"evidence","artifact":"Need implementation and test reads before concluding.","next_role":"","next_task":""}`, nil
+				}
+				return `{"status":"complete","message":"Retry scout pass complete.","artifact_kind":"evidence","artifact":"FINDINGS:\n- tests are sparse\nKEY FILES: /repo/tests","next_role":"","next_task":""}`, nil
+			case "architect":
+				return `{"status":"complete","message":"Recommendations ready.","artifact_kind":"plan","artifact":"GOAL: prioritize repo-review findings","next_role":"","next_task":""}`, nil
+			default:
+				return "", fmt.Errorf("unexpected role %q", role)
+			}
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "audit the repo for problems"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(delegated, ","); got != "scout,scout,architect" {
+		t.Fatalf("delegated roles = %q, want scout,scout,architect", got)
+	}
+	got := output.String()
+	if strings.Contains(got, "Evidence gathered so far is insufficient for a supported code-quality audit.") {
+		t.Fatalf("blocked scout retry result should stay internal, got %q", got)
+	}
+	if !strings.Contains(got, "Recommendations ready.") {
+		t.Fatalf("architect synthesis missing after successful scout retry: %q", got)
+	}
+}
+
+func TestDispatchAutoChainedArchitectTaskKeepsRepoReviewScopeAndRichScoutContext(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Audit the repository for problems. OUTCOME: Evidence-backed findings only.\"}}\n</tool_call>",
+		"This prose should never be generated because dispatch should stop after the architect result.",
+	}}
+	reg := tools.NewRegistry()
+	var architectTask string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			task, _ := args["task"].(string)
+			switch role {
+			case "scout":
+				return `{"status":"complete","message":"Repository purpose: Forge is a Go-based terminal-first local coding agent. Evidence-backed findings: High severity - Go 1.25.0 requirement may constrain contributors. Medium severity - docs contain absolute /Users/cass/git/forge links that are not portable.","artifact_kind":"repo_review","artifact":["README.md","go.mod","BUILD.md"],"next_role":"architect","next_task":"Synthesize these evidence-backed findings into repo-review recommendations and risk prioritization."}`, nil
+			case "architect":
+				architectTask = task
+				return `{"status":"complete","message":"Repo-review synthesis ready.","artifact_kind":"plan","artifact":"GOAL: prioritize repo-review findings","next_role":"","next_task":""}`, nil
+			default:
+				return "", fmt.Errorf("unexpected role %q", role)
+			}
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "audit the repo for problems"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(architectTask, "SCOPE: repo-review") {
+		t.Fatalf("architect task should preserve repo-review scope: %q", architectTask)
+	}
+	if strings.Contains(architectTask, "SCOPE: single-file") {
+		t.Fatalf("architect task should not be narrowed to single-file: %q", architectTask)
+	}
+	if !strings.Contains(architectTask, "High severity - Go 1.25.0 requirement may constrain contributors.") {
+		t.Fatalf("architect task missing rich scout message context: %q", architectTask)
+	}
+	if !strings.Contains(architectTask, `["README.md","go.mod","BUILD.md"]`) {
+		t.Fatalf("architect task missing scout artifact index: %q", architectTask)
+	}
+}
+
+func TestDispatchAutoChainsRepoReviewScoutResultToArchitectWithoutExplicitNextRole(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Audit the repository for problems. OUTCOME: Evidence-backed findings only.\"}}\n</tool_call>",
+		"This prose should never be generated because dispatch should stop after the architect result.",
+	}}
+	reg := tools.NewRegistry()
+	var delegated []string
+	var architectTask string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			task, _ := args["task"].(string)
+			delegated = append(delegated, role)
+			switch role {
+			case "scout":
+				return `{"status":"complete","message":"Evidence-backed repo review completed with concrete file-backed findings covering repository purpose, structure, stack, key modules, and maintenance signals.","artifact_kind":"evidence","artifact":"1. go.mod requires Go 1.25.0.\n2. README.md contains absolute /Users/cass/git/forge links.\n3. cmd/forge/main.go concentrates CLI and session orchestration responsibilities.","next_role":"","next_task":""}`, nil
+			case "architect":
+				architectTask = task
+				return `{"status":"complete","message":"Recommendations ready.","artifact_kind":"plan","artifact":"GOAL: prioritize repo-review findings","next_role":"","next_task":""}`, nil
+			default:
+				return "", fmt.Errorf("unexpected role %q", role)
+			}
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "audit the repo for problems"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(delegated, ","); got != "scout,architect" {
+		t.Fatalf("delegated roles = %q, want scout,architect", got)
+	}
+	if driver.callIdx != 1 {
+		t.Fatalf("dispatch should stop after the auto-chained architect result, got %d driver calls", driver.callIdx)
+	}
+	if !strings.Contains(architectTask, "SCOPE: repo-review") {
+		t.Fatalf("architect task should preserve repo-review scope: %q", architectTask)
+	}
+	if !strings.Contains(architectTask, "go.mod requires Go 1.25.0.") {
+		t.Fatalf("architect task missing scout evidence: %q", architectTask)
+	}
+	if got := output.String(); !strings.Contains(got, "Recommendations ready.") {
+		t.Fatalf("missing architect output in transcript: %q", got)
 	}
 }
 

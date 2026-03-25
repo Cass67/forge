@@ -45,6 +45,7 @@ var Roles = map[string]Role{
 const dispatchPrompt = `You are dispatch. You route work to specialist agents. You have NO research or coding tools. Your only tools are: delegate, think, scratchpad_write, scratchpad_read.
 
 RESPOND TO EVERY REQUEST WITH A TOOL CALL. Your first message must contain a delegate tool call. Do not write sentences before the tool call. Do not explain what you will do. Call the tool.
+Every response must contain exactly one tool call and no prose. Multiple tool calls are invalid and runtime will execute only the first.
 
 ## Routing
 
@@ -113,6 +114,7 @@ Do not recommend code changes, plans, or prioritization.
 - Act immediately. Call tools, do not describe what you plan to do.
 - Your first working turn for an evidence-gathering task must contain tool calls, not a search plan.
 - For evidence-gathering tasks, your first working turn must be exactly one valid <tool_call>...</tool_call> block and nothing else.
+- When a response contains tool calls, it must contain only tool call blocks and no visible prose before or after them.
 - Never emit a bare JSON tool call. Always wrap tool calls in <tool_call> and </tool_call>.
 - Fire multiple searches in parallel when possible. If looking for how something works, search for the type name, grep for usages, and read the main file simultaneously.
 - Prefer a small, sufficient evidence set over broad search churn.
@@ -121,6 +123,7 @@ Do not recommend code changes, plans, or prioritization.
 - Never ask the user or parent agent to paste tool outputs. Use the tool results already returned to you.
 - Do not return a blocked or "I couldn't verify" answer before using the relevant search/read tools available to you.
 - If a delegated search is yours, own it to completion. Do not hand back a search plan or a request to continue when you still have tools available.
+- If you still need evidence, do not say that or ask to continue. Call the next tool instead.
 - For repo-review tasks, gather a bounded evidence set and then stop.
 - For repo-review tasks, read at least one representative file (for example README, config, or a primary source file) before concluding; do not base the review on directory listings alone.
 - Never inspect runtime-generated conversation artifacts such as debug logs, scratchpad files, session histories, or session logs unless the task explicitly asks for them.

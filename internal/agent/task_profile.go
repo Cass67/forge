@@ -57,7 +57,12 @@ var languageScopeHints = []languageScopeHint{
 }
 
 func classifyTaskProfile(task string) taskProfile {
-	profile := mergeTaskProfiles(explicitTaskProfile(task), inferTaskProfile(task))
+	explicit := explicitTaskProfile(task)
+	inferred := inferTaskProfile(task)
+	if explicit.Scope != taskScopeUnknown {
+		inferred.Scope = taskScopeUnknown
+	}
+	profile := mergeTaskProfiles(explicit, inferred)
 	return normalizeTaskProfile(profile)
 }
 
@@ -66,7 +71,11 @@ func classifyDelegatedTaskProfile(userMessage, task string) taskProfile {
 	if strings.TrimSpace(userMessage) == "" {
 		return profile
 	}
-	return normalizeTaskProfile(mergeTaskProfiles(profile, classifyTaskProfile(userMessage)))
+	userProfile := classifyTaskProfile(userMessage)
+	if explicitTaskProfile(task).Scope != taskScopeUnknown {
+		userProfile.Scope = taskScopeUnknown
+	}
+	return normalizeTaskProfile(mergeTaskProfiles(profile, userProfile))
 }
 
 func explicitTaskProfile(task string) taskProfile {
@@ -136,7 +145,20 @@ func inferRepoReviewScope(task string) bool {
 	lower := strings.ToLower(normalizePromptText(task))
 	if containsAny(lower, []string{
 		"repo review",
+		"repo-review",
+		"repo audit",
+		"repo-audit",
 		"repository review",
+		"repository-review",
+		"repository audit",
+		"repository-audit",
+		"codebase review",
+		"codebase-review",
+		"codebase audit",
+		"codebase-audit",
+		"audit the repo",
+		"audit the repository",
+		"audit the codebase",
 		"inspect the repository",
 		"inspect the go repository",
 	}) {
@@ -155,6 +177,8 @@ func inferRepoReviewScope(task string) bool {
 		"improvement",
 		"cleanup",
 		"maintenance",
+		"audit",
+		"prioritization",
 	}) {
 		return false
 	}
@@ -167,6 +191,8 @@ func inferRepoReviewScope(task string) bool {
 		"test/build health",
 		"maintenance signals",
 		"cleanup opportunities",
+		"recommendations",
+		"risk prioritization",
 	})
 }
 
@@ -512,6 +538,7 @@ func normalizeTaskTopic(raw string) string {
 }
 
 func ensureTaskProfileSections(task string, profile taskProfile, includeEvidenceMin bool) string {
+	task = sanitizeTaskProfileSections(task, profile)
 	task = appendTaskSectionIfMissing(task, "SCOPE:", string(profile.Scope))
 	task = appendTaskSectionIfMissing(task, "TARGET:", profile.Target)
 	task = appendTaskSectionIfMissing(task, "TARGET_LANG:", profile.TargetLang)
@@ -521,6 +548,19 @@ func ensureTaskProfileSections(task string, profile taskProfile, includeEvidence
 		task = appendTaskSectionIfMissing(task, "EVIDENCE_MIN_READS:", strconv.Itoa(profile.EvidenceMinReads))
 	}
 	return task
+}
+
+func sanitizeTaskProfileSections(task string, profile taskProfile) string {
+	switch profile.Scope {
+	case taskScopeSingleFile:
+		return removeTaskSections(task, "TARGET_LANG:", "TARGET_GLOB:", "EVIDENCE_MIN_READS:")
+	case taskScopeFocusedFiles:
+		return removeTaskSections(task, "TARGET:")
+	case taskScopeRepoReview:
+		return removeTaskSections(task, "TARGET:", "TARGET_LANG:", "TARGET_GLOB:", "EVIDENCE_MIN_READS:")
+	default:
+		return task
+	}
 }
 
 func appendTaskSectionIfMissing(task, label, value string) string {
@@ -534,6 +574,32 @@ func appendTaskSectionIfMissing(task, label, value string) string {
 		return label + " " + value
 	}
 	return strings.TrimRight(task, "\n") + "\n" + label + " " + value
+}
+
+func removeTaskSections(task string, labels ...string) string {
+	for _, label := range labels {
+		task = removeLabeledTaskSection(task, label, taskSectionStopLabels(label)...)
+	}
+	return task
+}
+
+func removeLabeledTaskSection(task, label string, stopLabels ...string) string {
+	start, end, ok := taskSectionBounds(task, label, stopLabels...)
+	if !ok {
+		return task
+	}
+	prefix := strings.TrimRight(task[:start], "\n")
+	suffix := strings.TrimLeft(task[end:], "\n")
+	switch {
+	case prefix == "" && suffix == "":
+		return ""
+	case prefix == "":
+		return suffix
+	case suffix == "":
+		return prefix
+	default:
+		return prefix + "\n" + suffix
+	}
 }
 
 func taskSectionStopLabels(except string) []string {

@@ -16,27 +16,28 @@ import (
 )
 
 type Agent struct {
-	driver            llm.Driver
-	tools             *tools.Registry
-	approve           tools.ApprovalFunc
-	history           []llm.Message
-	system            string
-	systemOverride    bool // true when SetSystem was called; suppresses rebuild
-	workDir           string
-	maxTurns          int
-	renderer          RenderTarget
-	skills            []skills.Skill
-	state             *chatstate.State
-	isSubAgent        bool
-	lastFullResponse  string
-	role              string
-	dispatchResults   map[string]string
-	dispatchArtifacts map[string]string
-	dispatchScratch   string
-	dispatchTurn      int
-	latestScout       dispatchScoutEvidence
-	mu                sync.Mutex
-	activeSubCancel   context.CancelFunc
+	driver                    llm.Driver
+	tools                     *tools.Registry
+	approve                   tools.ApprovalFunc
+	history                   []llm.Message
+	system                    string
+	systemOverride            bool // true when SetSystem was called; suppresses rebuild
+	workDir                   string
+	maxTurns                  int
+	renderer                  RenderTarget
+	skills                    []skills.Skill
+	state                     *chatstate.State
+	isSubAgent                bool
+	structuredOutputRetryMode bool
+	lastFullResponse          string
+	role                      string
+	dispatchResults           map[string]string
+	dispatchArtifacts         map[string]string
+	dispatchScratch           string
+	dispatchTurn              int
+	latestScout               dispatchScoutEvidence
+	mu                        sync.Mutex
+	activeSubCancel           context.CancelFunc
 }
 
 type dispatchIntent string
@@ -279,7 +280,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				}
 				return fmt.Errorf("dispatch produced no delegate call before answering")
 			}
-			if a.role == "scout" && !sawToolCallThisRun && scoutTaskRequiresEvidenceTools(userMessage) {
+			if a.role == "scout" && !a.structuredOutputRetryMode && !sawToolCallThisRun && scoutTaskRequiresEvidenceTools(userMessage) {
 				if turn+1 < a.maxTurns {
 					scoutNoToolRetries++
 					a.history = append(a.history, llm.Message{
@@ -437,13 +438,19 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				a.renderer.ToolResult(call.Name, result, diff, true)
 			} else {
 				displayResult := truncateResult(result)
+				renderToolResult := true
 				if call.Name == "delegate" {
 					role, _ := call.Args["role"].(string)
 					role = strings.TrimSpace(role)
 					task, _ := call.Args["task"].(string)
 					autoChain, _ := call.Args["_auto_chain"].(bool)
 					outcome := parseDelegateOutcomeForRole(role, result)
-					contextText := outcome.ContextText()
+					artifactContextText := outcome.ContextText()
+					carryContextText := outcome.CarryContextText()
+					displayContextText := artifactContextText
+					if strings.TrimSpace(displayContextText) == "" {
+						displayContextText = carryContextText
+					}
 					displayResult = outcome.DisplayText()
 					usedInterpretFallback := false
 					if a.role == "dispatch" && role == "architect" && autoChain && outcome.Blocked() {
@@ -453,50 +460,67 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 							dispatchCanStop = true
 							dispatchStopAfterTurn = true
 							usedInterpretFallback = true
-							contextText = fallback.ContextText
+							carryContextText = fallback.ContextText
+							displayContextText = fallback.ContextText
 						}
 					}
-					if strings.TrimSpace(contextText) != "" && strings.TrimSpace(contextText) != strings.TrimSpace(displayResult) {
-						diff = contextText
+					if strings.TrimSpace(displayContextText) != "" && strings.TrimSpace(displayContextText) != strings.TrimSpace(displayResult) {
+						diff = displayContextText
 					}
 					result = displayResult
 					if a.role == "dispatch" {
 						a.dispatchResults[role] = displayResult
-						if outcome.Completed() && contextText != "" {
-							a.dispatchArtifacts[role] = contextText
+						if outcome.Completed() && carryContextText != "" {
+							a.dispatchArtifacts[role] = carryContextText
+						}
+						if role == "scout" && outcome.Blocked() && !usedInterpretFallback {
+							renderToolResult = false
 						}
 						if role == "scout" && outcome.Completed() {
-							topicKey := deriveScoutTopicKey(contextText, task)
+							topicContext := artifactContextText
+							if strings.TrimSpace(topicContext) == "" {
+								topicContext = carryContextText
+							}
+							topicKey := deriveScoutTopicKey(topicContext, task)
 							currentScoutEvidence = &dispatchScoutEvidence{
 								TopicKey:    topicKey,
 								DisplayText: displayResult,
-								ContextText: contextText,
+								ContextText: carryContextText,
 								Turn:        currentDispatchTurn,
 							}
-							if strings.TrimSpace(contextText) != "" {
+							if strings.TrimSpace(carryContextText) != "" {
 								a.latestScout = *currentScoutEvidence
 							}
 						}
 						if outcome.Structured {
 							if outcome.Completed() && outcome.NextRole != "" && outcome.NextTask != "" {
-								nextTask := enrichDispatchDelegateTask(outcome.NextRole, outcome.NextTask, a.dispatchResults, a.dispatchArtifacts, a.dispatchScratch)
 								callQueue = append(callQueue, ToolCall{
 									Name: "delegate",
 									Args: map[string]any{
 										"role":        outcome.NextRole,
-										"task":        nextTask,
+										"task":        outcome.NextTask,
+										"_auto_chain": true,
+									},
+								})
+								dispatchCanStop = false
+							} else if outcome.Completed() && role == "scout" && shouldAutoChainRepoReviewArchitect(task) && !autoChainedArchitect {
+								autoChainedArchitect = true
+								callQueue = append(callQueue, ToolCall{
+									Name: "delegate",
+									Args: map[string]any{
+										"role":        "architect",
+										"task":        synthesizeRepoReviewArchitectTask(userMessage),
 										"_auto_chain": true,
 									},
 								})
 								dispatchCanStop = false
 							} else if outcome.Completed() && role == "scout" && currentDispatchIntent == dispatchIntentInterpret && !autoChainedArchitect {
 								autoChainedArchitect = true
-								nextTask := enrichDispatchDelegateTask("architect", synthesizeInterpretiveArchitectTask(userMessage), a.dispatchResults, a.dispatchArtifacts, a.dispatchScratch)
 								callQueue = append(callQueue, ToolCall{
 									Name: "delegate",
 									Args: map[string]any{
 										"role":        "architect",
-										"task":        nextTask,
+										"task":        synthesizeInterpretiveArchitectTask(userMessage),
 										"_auto_chain": true,
 									},
 								})
@@ -515,7 +539,9 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				if a.role == "dispatch" && call.Name == "scratchpad_read" {
 					a.dispatchScratch = result
 				}
-				a.renderer.ToolResult(call.Name, displayResult, diff, false)
+				if renderToolResult {
+					a.renderer.ToolResult(call.Name, displayResult, diff, false)
+				}
 			}
 
 			results = append(results, fmt.Sprintf("[%s] %s", call.Name, result))
@@ -823,27 +849,25 @@ func dispatchScoutTaskNeedsEvidenceOnly(task string) bool {
 }
 
 func replaceLabeledTaskSection(task, label, replacement string, stopLabels ...string) string {
-	start := strings.Index(task, label)
-	if start < 0 {
+	start, end, ok := taskSectionBounds(task, label, stopLabels...)
+	if !ok {
 		if strings.TrimSpace(task) == "" {
 			return replacement
 		}
 		return strings.TrimRight(task, "\n") + "\n" + replacement
 	}
-	sectionStart := start + len(label)
-	end := len(task)
-	for _, stop := range stopLabels {
-		if stop == "" {
-			continue
-		}
-		if idx := strings.Index(task[sectionStart:], stop); idx >= 0 {
-			candidate := sectionStart + idx
-			if candidate < end {
-				end = candidate
-			}
-		}
+	prefix := strings.TrimRight(task[:start], "\n")
+	suffix := strings.TrimLeft(task[end:], "\n")
+	switch {
+	case prefix == "" && suffix == "":
+		return replacement
+	case prefix == "":
+		return replacement + "\n" + suffix
+	case suffix == "":
+		return prefix + "\n" + replacement
+	default:
+		return prefix + "\n" + replacement + "\n" + suffix
 	}
-	return task[:start] + replacement + task[end:]
 }
 
 func resolveDispatchTopicKey(userMessage string, intent dispatchIntent, currentTurn int, latest dispatchScoutEvidence) string {
@@ -936,6 +960,14 @@ func synthesizeInterpretiveArchitectTask(userMessage string) string {
 		"MUST NOT: Do not gather new evidence unless the scout findings are unusable.")
 }
 
+func synthesizeRepoReviewArchitectTask(userMessage string) string {
+	return strings.TrimSpace("TASK: Synthesize the existing repo-review evidence into prioritized findings, risks, and next actions for the user.\n" +
+		"OUTCOME: Concise repo-review synthesis that highlights the most important maintenance risks and the most actionable next steps.\n" +
+		"CONTEXT: USER QUESTION:\n" + strings.TrimSpace(userMessage) + "\n" +
+		"SCOPE: repo-review\n" +
+		"MUST NOT: Do not gather new evidence unless the scout findings are unusable.")
+}
+
 func resolveScoutFallbackEvidence(currentTurn int, current *dispatchScoutEvidence, latest dispatchScoutEvidence) *dispatchScoutEvidence {
 	if current != nil && strings.TrimSpace(current.DisplayText) != "" {
 		return current
@@ -952,6 +984,10 @@ func labelInterpretationUnavailable(message string) string {
 		return "Interpretation unavailable."
 	}
 	return "Interpretation unavailable: " + trimSentencePunctuation(message) + "."
+}
+
+func shouldAutoChainRepoReviewArchitect(task string) bool {
+	return classifyTaskProfile(task).Scope == taskScopeRepoReview
 }
 
 func deriveScoutTopicKey(contextText, task string) string {
@@ -1786,14 +1822,23 @@ var taskSectionLabels = []string{
 }
 
 func taskSection(task, label string) string {
-	start := strings.Index(task, label)
-	if start < 0 {
+	start, end, ok := taskSectionBounds(task, label, taskSectionStopLabels(label)...)
+	if !ok {
 		return ""
 	}
 	sectionStart := start + len(label)
-	end := len(task)
-	for _, stop := range taskSectionLabels {
-		if stop == label {
+	return strings.TrimSpace(task[sectionStart:end])
+}
+
+func taskSectionBounds(task, label string, stopLabels ...string) (start, end int, ok bool) {
+	start = strings.Index(task, label)
+	if start < 0 {
+		return 0, 0, false
+	}
+	sectionStart := start + len(label)
+	end = len(task)
+	for _, stop := range stopLabels {
+		if stop == "" || stop == label {
 			continue
 		}
 		if idx := strings.Index(task[sectionStart:], stop); idx >= 0 {
@@ -1803,7 +1848,7 @@ func taskSection(task, label string) string {
 			}
 		}
 	}
-	return strings.TrimSpace(task[sectionStart:end])
+	return start, end, true
 }
 
 func extractSingleFileTaskTarget(task string) string {
