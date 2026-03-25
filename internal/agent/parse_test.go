@@ -190,6 +190,29 @@ func TestParseLooseToolCallWithVisibleSuffix(t *testing.T) {
 	}
 }
 
+func TestParseOpenTaggedToolCallWithVisibleSuffixAndNoCloser(t *testing.T) {
+	input := "<tool_call>{\"name\":\"read_file\",\"args\":{\"path\":\"README.md\",\"start_line\":1,\"end_line\":260}}I need a bit more repository evidence before I can give a reliable overview."
+	calls, visible := ParseToolCalls(input)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if calls[0].Name != "read_file" {
+		t.Fatalf("name = %q", calls[0].Name)
+	}
+	if got := calls[0].Args["path"]; got != "README.md" {
+		t.Fatalf("path = %v", got)
+	}
+	if got := calls[0].Args["start_line"]; got != float64(1) {
+		t.Fatalf("start_line = %v", got)
+	}
+	if got := calls[0].Args["end_line"]; got != float64(260) {
+		t.Fatalf("end_line = %v", got)
+	}
+	if visible != "I need a bit more repository evidence before I can give a reliable overview." {
+		t.Fatalf("visible = %q", visible)
+	}
+}
+
 func TestParseStructuredDelegateEnvelopeIsNotToolCall(t *testing.T) {
 	input := `{"status":"complete","message":"Prepared findings.","artifact_kind":"summary","artifact":"body","next_role":"","next_task":""}`
 	calls, visible := ParseToolCalls(input)

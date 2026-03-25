@@ -355,16 +355,69 @@ func TestCompactAssistantHistoryEmptyWhenNoVisibleText(t *testing.T) {
 func TestCompactToolResults(t *testing.T) {
 	got := compactToolResults([]string{
 		"[read_file] line1\nline2\nline3",
-		strings.Repeat("x", 300),
+		strings.Repeat("x", 13000),
 	})
 	if !strings.Contains(got, "Tool results:") {
 		t.Fatalf("got %q", got)
 	}
-	if strings.Contains(got, "\nline2") {
-		t.Fatalf("expected multiline result to be flattened: %q", got)
+	if !strings.Contains(got, "\n  line2") {
+		t.Fatalf("expected multiline result to be preserved: %q", got)
 	}
-	if len(got) > 600 {
+	if !strings.Contains(got, "truncated in history") {
+		t.Fatalf("expected long result to be clipped with an explicit marker: %q", got)
+	}
+	if len(got) > 13000 {
 		t.Fatalf("compact results too large: %d", len(got))
+	}
+}
+
+func TestScoutTaskIsRepoReviewRequiresRepositoryScope(t *testing.T) {
+	fileSummaryTask := "TASK: Inspect and summarize the file @util-rancid/influx/update-influx-file.py for the user. OUTCOME: Provide a concise explanation of what the script does, its key functions/flow, inputs/outputs, dependencies, and any noteworthy implementation details."
+	if scoutTaskIsRepoReview(fileSummaryTask) {
+		t.Fatalf("targeted file-summary task should not be treated as a repo review: %q", fileSummaryTask)
+	}
+
+	repoReviewTask := "TASK: Gather evidence only for a repo review. OUTCOME: Evidence-backed findings only. Gather repository purpose, structure, tech stack, key modules, dependencies, and test/build health."
+	if !scoutTaskIsRepoReview(repoReviewTask) {
+		t.Fatalf("explicit repo-review task should be detected: %q", repoReviewTask)
+	}
+}
+
+func TestScoutRunAllowsTargetedFileSummaryThatMentionsDependencies(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "util-rancid", "influx")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "update-influx-file.py"), []byte("print('ok')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"read_file\", \"args\": {\"path\": \"util-rancid/influx/update-influx-file.py\"}}\n</tool_call>",
+		`{"status":"complete","message":"Summary ready.","artifact_kind":"evidence","artifact":"Reads the script and summarizes it.","next_role":"","next_task":""}`,
+	}}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.NewReadFile(dir))
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), dir, 2, renderer, nil, nil)
+	a.SetRole("scout")
+	a.isSubAgent = true
+
+	task := "TASK: Inspect and summarize the file @util-rancid/influx/update-influx-file.py for the user. OUTCOME: Provide a concise explanation of what the script does, its key functions/flow, inputs/outputs, dependencies, and any noteworthy implementation details. MUST NOT: Modify files or make code changes."
+	if err := a.Run(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callCount != 2 {
+		t.Fatalf("expected scout to finish in two turns, got %d calls", driver.callCount)
+	}
+	for _, m := range a.history {
+		if strings.Contains(m.Content, "Repo-review evidence is still incomplete") {
+			t.Fatalf("targeted file-summary task should not receive repo-review nudges: %#v", a.history)
+		}
 	}
 }
 

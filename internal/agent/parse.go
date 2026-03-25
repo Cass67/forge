@@ -83,6 +83,16 @@ func ParseToolCalls(text string) ([]ToolCall, string) {
 
 		lineTrimmed := strings.TrimSpace(line)
 		if after, ok := isToolCallOpen(lineTrimmed); ok {
+			if after != "" && !containsAny(after, toolCallOpeners) && !containsAny(after, toolCallClosers) {
+				if call, remainder, ok := parseLooseToolCallLine(after); ok {
+					calls = append(calls, call)
+					if remainder != "" {
+						textParts = append(textParts, remainder)
+					}
+					i++
+					continue
+				}
+			}
 			i++
 			var block strings.Builder
 			if after != "" {
