@@ -134,7 +134,7 @@ func subAgentNeedsStructuredRetry(role, result string) bool {
 	if !roleRequiresStructuredDelegateResult(role) {
 		return false
 	}
-	outcome := parseDelegateOutcome(result)
+	outcome := parseDelegateOutcomeForRole(role, result)
 	return outcome.Completed() && !outcome.Structured
 }
 
