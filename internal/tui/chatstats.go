@@ -302,13 +302,28 @@ func joinStatsParts(parts ...string) string {
 }
 
 func renderStatusHeader(theme chatTheme, data chatStatusData, width int) string {
-	headerStyle := lipgloss.NewStyle().
-		Background(theme.HeaderBG).
-		Foreground(theme.HeaderFG).
-		Width(width).
+	brandStyle := lipgloss.NewStyle().
+		Foreground(theme.AccentPrimary).
 		Bold(true)
+	metaStyle := lipgloss.NewStyle().
+		Foreground(theme.TextDim)
+	sep := lipgloss.NewStyle().
+		Foreground(theme.Border).
+		Render(" • ")
 
-	return headerStyle.Render(fitCell(buildStatusLine1(data), width))
+	var parts []string
+	parts = append(parts, brandStyle.Render("forge"))
+	if model := strings.TrimSpace(data.Model); model != "" {
+		parts = append(parts, metaStyle.Render(model))
+	}
+	if workDir := strings.TrimSpace(data.WorkDir); workDir != "" {
+		parts = append(parts, metaStyle.Render(workDir))
+	}
+	line := strings.Join(parts, sep)
+	return lipgloss.NewStyle().
+		Background(theme.AppBG).
+		Width(width).
+		Render(line)
 }
 
 func (m *ChatModel) syncStatusData() {
