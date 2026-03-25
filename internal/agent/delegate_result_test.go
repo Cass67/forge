@@ -46,3 +46,29 @@ func TestParseDelegateOutcomeAgentErrorIsBlocked(t *testing.T) {
 		t.Fatalf("agent error should not be complete")
 	}
 }
+
+func TestParseDelegateOutcomeStructuredEnvelopeStringifiesObjectArtifact(t *testing.T) {
+	outcome := parseDelegateOutcome(`{"status":"complete","message":"Collected evidence.","artifact_kind":"evidence_summary","artifact":{"source_file":"util-rancid/update_cerner_daily.sh","source_lines":"743-753"},"next_role":"","next_task":""}`)
+	if !outcome.Structured {
+		t.Fatalf("expected structured outcome")
+	}
+	if !outcome.Completed() {
+		t.Fatalf("expected completed outcome")
+	}
+	if outcome.DisplayText() != "Collected evidence." {
+		t.Fatalf("display text = %q", outcome.DisplayText())
+	}
+	if want := `{"source_file":"util-rancid/update_cerner_daily.sh","source_lines":"743-753"}`; outcome.ContextText() != want {
+		t.Fatalf("context text = %q, want %q", outcome.ContextText(), want)
+	}
+}
+
+func TestParseDelegateOutcomeStructuredEnvelopeDropsInvalidNextRole(t *testing.T) {
+	outcome := parseDelegateOutcome(`{"status":"complete","message":"Collected evidence.","artifact_kind":"evidence_summary","artifact":{"subject":"Rancid f5 objstor verify script missing"},"next_role":"user","next_task":"inspect repository scheduling files"}`)
+	if !outcome.Structured {
+		t.Fatalf("expected structured outcome")
+	}
+	if outcome.NextRole != "" || outcome.NextTask != "" {
+		t.Fatalf("expected invalid next step to be dropped, got role=%q task=%q", outcome.NextRole, outcome.NextTask)
+	}
+}
