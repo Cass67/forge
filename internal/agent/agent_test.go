@@ -624,7 +624,7 @@ func TestSpawnSubAgentScoutRecoversFromMalformedToolMarkup(t *testing.T) {
 		responses: []string{
 			"<tool_call>{\"name\":\"search\",\"args\":{\"pattern\":\"Rancid f5 objstor verify script missing\",\"path\":\".\",\"glob\":\"**/*\"}}<tool_call>{\"name\":\"search\",\"args\":{\"pattern\":\"objstor verify\",\"path\":\".\",\"glob\":\"**/*\"}}",
 			"<tool_call>\n{\"name\": \"search\", \"args\": {\"pattern\": \"Rancid f5 objstor verify script missing\", \"path\": \".\", \"glob\": \"**/*\"}}\n</tool_call>",
-			"FINDINGS:\n- /repo/util-rancid/update_cerner_daily.sh:753 emits the alert\nKEY FILES: /repo/util-rancid/update_cerner_daily.sh\nFOLLOW-UP: none\nUNKNOWNS: none",
+			`{"status":"complete","message":"Found the alert source.","artifact_kind":"evidence","artifact":"/repo/util-rancid/update_cerner_daily.sh:753 emits the alert","next_role":"","next_task":""}`,
 		},
 		checks: []func([]llm.Message) error{
 			nil,
@@ -666,8 +666,8 @@ func TestSpawnSubAgentScoutRecoversFromMalformedToolMarkup(t *testing.T) {
 	if searchCalls != 1 {
 		t.Fatalf("expected one recovered scout search call, got %d", searchCalls)
 	}
-	if !strings.Contains(result, "FINDINGS:") {
-		t.Fatalf("expected scout findings after malformed markup recovery, got %q", result)
+	if outcome := parseDelegateOutcome(result); !outcome.Structured || outcome.Message != "Found the alert source." {
+		t.Fatalf("expected typed scout findings after malformed markup recovery, got %q", result)
 	}
 }
 
@@ -675,7 +675,7 @@ func TestSpawnSubAgentScoutFirstTurnUsesSingleToolCall(t *testing.T) {
 	driver := &inspectingDriver{
 		responses: []string{
 			"<tool_call>{\"name\":\"search\",\"args\":{\"pattern\":\"first\",\"path\":\".\",\"glob\":\"**/*\"}}</tool_call><tool_call>{\"name\":\"search\",\"args\":{\"pattern\":\"second\",\"path\":\".\",\"glob\":\"**/*\"}}</tool_call>",
-			"FINDINGS:\n- /repo/result\nKEY FILES: /repo/result\nFOLLOW-UP: none\nUNKNOWNS: none",
+			`{"status":"complete","message":"Found the alert source.","artifact_kind":"evidence","artifact":"/repo/result","next_role":"","next_task":""}`,
 		},
 		checks: []func([]llm.Message) error{
 			nil,
@@ -717,8 +717,8 @@ func TestSpawnSubAgentScoutFirstTurnUsesSingleToolCall(t *testing.T) {
 	if len(patterns) != 1 || patterns[0] != "first" {
 		t.Fatalf("expected only first scout tool call to execute, got %v", patterns)
 	}
-	if !strings.Contains(result, "FINDINGS:") {
-		t.Fatalf("expected scout findings after single-tool-call enforcement, got %q", result)
+	if outcome := parseDelegateOutcome(result); !outcome.Structured || outcome.Message != "Found the alert source." {
+		t.Fatalf("expected typed scout findings after single-tool-call enforcement, got %q", result)
 	}
 }
 
@@ -726,7 +726,7 @@ func TestSpawnSubAgentScoutRetriesAfterEmptyFinalOutput(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"search\", \"args\": {\"pattern\": \"Rancid f5 objstor verify script missing\", \"path\": \".\", \"glob\": \"**/*\"}}\n</tool_call>",
 		"",
-		"FINDINGS:\n- /repo/util-rancid/update_cerner_daily.sh:753 emits the alert\nKEY FILES: /repo/util-rancid/update_cerner_daily.sh\nFOLLOW-UP: none\nUNKNOWNS: none",
+		`{"status":"complete","message":"Found the alert source.","artifact_kind":"evidence","artifact":"/repo/util-rancid/update_cerner_daily.sh:753 emits the alert","next_role":"","next_task":""}`,
 	}}
 
 	reg := tools.NewRegistry()
@@ -754,8 +754,48 @@ func TestSpawnSubAgentScoutRetriesAfterEmptyFinalOutput(t *testing.T) {
 	if strings.Contains(result, "AGENT ERROR") {
 		t.Fatalf("expected scout to recover from empty final output, got %q", result)
 	}
-	if !strings.Contains(result, "FINDINGS:") {
-		t.Fatalf("expected scout findings after empty output retry, got %q", result)
+	if outcome := parseDelegateOutcome(result); !outcome.Structured || outcome.Message != "Found the alert source." {
+		t.Fatalf("expected typed scout findings after empty output retry, got %q", result)
+	}
+}
+
+func TestSpawnSubAgentArchitectRetriesPlainFinalOutputIntoTypedEnvelope(t *testing.T) {
+	driver := &inspectingDriver{
+		responses: []string{
+			"The alert means the runtime verification helper was missing, not that the job failed.",
+			`{"status":"complete","message":"The alert means the runtime verification helper was missing, not that the job failed.","artifact_kind":"plan","artifact":"Explain that the helper was missing at runtime and verification was skipped.","next_role":"","next_task":""}`,
+		},
+		checks: []func([]llm.Message) error{
+			nil,
+			func(messages []llm.Message) error {
+				joined := ""
+				for _, msg := range messages {
+					joined += msg.Content + "\n"
+				}
+				if !strings.Contains(joined, "Return exactly one JSON object") {
+					return fmt.Errorf("missing structured-output retry nudge")
+				}
+				return nil
+			},
+		},
+	}
+
+	reg := tools.NewRegistry()
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	parent := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+
+	result, err := parent.SpawnSubAgent(context.Background(), "architect", "TASK: Explain what the alert means in plain language. OUTCOME: Clear meaning only. CONTEXT: The scout already found the source path and trigger. MUST NOT: Do not inspect more files.", MultiAgentConfig{
+		BaseTools: reg,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if driver.callIdx != 2 {
+		t.Fatalf("expected plain architect output to trigger a typed-envelope retry, got %d driver calls", driver.callIdx)
+	}
+	if outcome := parseDelegateOutcome(result); !outcome.Structured || outcome.Message != "The alert means the runtime verification helper was missing, not that the job failed." {
+		t.Fatalf("expected typed architect result after retry, got %q", result)
 	}
 }
 
@@ -1070,16 +1110,14 @@ func TestDispatchRetriesDirectAnswerUntilItDelegates(t *testing.T) {
 	if !strings.Contains(got, "scout found stuff") {
 		t.Fatalf("delegate tool result missing from output: %q", got)
 	}
-	if driver.callIdx != 3 {
-		t.Fatalf("expected dispatch retry, delegate, and graceful stop, got %d driver calls", driver.callIdx)
+	if driver.callIdx != 2 {
+		t.Fatalf("expected dispatch retry and delegate without an extra stop turn, got %d driver calls", driver.callIdx)
 	}
 }
 
 func TestDispatchAllowsRepeatedScoutDelegation(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"describe repo\"}}\n</tool_call>",
-		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"look for problems\"}}\n</tool_call>",
-		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"synthesize the scout evidence\"}}\n</tool_call>",
 	}}
 	reg := tools.NewRegistry()
 	var delegated []string
@@ -1089,10 +1127,14 @@ func TestDispatchAllowsRepeatedScoutDelegation(t *testing.T) {
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			role, _ := args["role"].(string)
 			delegated = append(delegated, role)
-			if role == "scout" {
-				return "FINDINGS:\n- scout found stuff\nKEY FILES: /repo/README.md\nFOLLOW-UP: architect", nil
+			switch len(delegated) {
+			case 1:
+				return `{"status":"complete","message":"Initial scout pass complete.","artifact_kind":"evidence","artifact":"FINDINGS:\n- scout found stuff\nKEY FILES: /repo/README.md","next_role":"scout","next_task":"look for problems"}`, nil
+			case 2:
+				return `{"status":"complete","message":"Follow-up scout pass complete.","artifact_kind":"evidence","artifact":"FINDINGS:\n- more scout findings\nKEY FILES: /repo/README.md","next_role":"architect","next_task":"synthesize the scout evidence"}`, nil
+			default:
+				return `{"status":"complete","message":"Prioritized recommendations ready.","artifact_kind":"plan","artifact":"GOAL: prioritized recommendations","next_role":"","next_task":""}`, nil
 			}
-			return "Prioritized recommendations", nil
 		},
 	})
 
@@ -1112,9 +1154,6 @@ func TestDispatchAllowsRepeatedScoutDelegation(t *testing.T) {
 func TestDispatchAllowsScoutArchitectScoutLoop(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"describe repo\"}}\n</tool_call>",
-		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"organize findings\"}}\n</tool_call>",
-		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"look for more problems\"}}\n</tool_call>",
-		"Done.",
 	}}
 	reg := tools.NewRegistry()
 	var delegated []string
@@ -1124,7 +1163,14 @@ func TestDispatchAllowsScoutArchitectScoutLoop(t *testing.T) {
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			role, _ := args["role"].(string)
 			delegated = append(delegated, role)
-			return role + " result", nil
+			switch len(delegated) {
+			case 1:
+				return `{"status":"complete","message":"Scout evidence gathered.","artifact_kind":"evidence","artifact":"scout result","next_role":"architect","next_task":"organize findings"}`, nil
+			case 2:
+				return `{"status":"complete","message":"Architect organized findings.","artifact_kind":"plan","artifact":"architect result","next_role":"scout","next_task":"look for more problems"}`, nil
+			default:
+				return `{"status":"complete","message":"Additional scout pass complete.","artifact_kind":"evidence","artifact":"more scout result","next_role":"","next_task":""}`, nil
+			}
 		},
 	})
 
@@ -1516,9 +1562,9 @@ func TestDispatchAllowsEvidenceOnlyScoutTaskWhenContextMentionsChanges(t *testin
 			role, _ := args["role"].(string)
 			delegated = append(delegated, role)
 			if role == "scout" {
-				return "FINDINGS:\n- tests are sparse\nKEY FILES: /repo/tests\nFOLLOW-UP: architect", nil
+				return `{"status":"complete","message":"Scout evidence gathered.","artifact_kind":"evidence","artifact":"FINDINGS:\n- tests are sparse\nKEY FILES: /repo/tests","next_role":"architect","next_task":"TASK: Turn the scout findings into prioritized recommendations. OUTCOME: Prioritized recommendations."}`, nil
 			}
-			return "GOAL: prioritized recommendations", nil
+			return `{"status":"complete","message":"Recommendations ready.","artifact_kind":"plan","artifact":"GOAL: prioritized recommendations","next_role":"","next_task":""}`, nil
 		},
 	})
 
@@ -1541,8 +1587,6 @@ func TestDispatchAllowsEvidenceOnlyScoutTaskWhenContextMentionsChanges(t *testin
 func TestDispatchInjectsScoutFindingsIntoArchitectTask(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Gather evidence only.\"}}\n</tool_call>",
-		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"TASK: Turn the scout findings into prioritized recommendations. OUTCOME: Prioritized recommendations.\"}}\n</tool_call>",
-		"Done.",
 	}}
 	reg := tools.NewRegistry()
 	var architectTask string
@@ -1553,10 +1597,10 @@ func TestDispatchInjectsScoutFindingsIntoArchitectTask(t *testing.T) {
 			role, _ := args["role"].(string)
 			task, _ := args["task"].(string)
 			if role == "scout" {
-				return "FINDINGS:\n- tests are sparse\nKEY FILES: /repo/tests\nFOLLOW-UP: architect", nil
+				return `{"status":"complete","message":"Scout evidence gathered.","artifact_kind":"evidence","artifact":"FINDINGS:\n- tests are sparse\nKEY FILES: /repo/tests","next_role":"architect","next_task":"TASK: Turn the scout findings into prioritized recommendations. OUTCOME: Prioritized recommendations."}`, nil
 			}
 			architectTask = task
-			return "GOAL: prioritize improvements", nil
+			return `{"status":"complete","message":"Recommendations ready.","artifact_kind":"plan","artifact":"GOAL: prioritize improvements","next_role":"","next_task":""}`, nil
 		},
 	})
 
@@ -1625,8 +1669,11 @@ func TestDispatchAllowsArchitectRetryAfterScratchpadRead(t *testing.T) {
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			architectCalls++
 			task, _ := args["task"].(string)
+			if architectCalls == 1 {
+				return `{"status":"blocked","message":"Need the repo-review evidence before synthesizing recommendations.","artifact_kind":"plan","artifact":"Missing scout evidence.","next_role":"","next_task":""}`, nil
+			}
 			secondArchitectTask = task
-			return "GOAL: prioritized recommendations", nil
+			return `{"status":"complete","message":"Recommendations ready.","artifact_kind":"plan","artifact":"GOAL: prioritized recommendations","next_role":"","next_task":""}`, nil
 		},
 	})
 	reg.Register(tools.Tool{
@@ -1726,8 +1773,6 @@ func TestDispatchCarriesPriorArchitectResultIntoLaterBuilderTurn(t *testing.T) {
 func TestDispatchExecutesOnlyFirstToolCallPerTurn(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"find evidence\"}}\n</tool_call>\n<tool_call>\n{\"name\": \"scratchpad_write\", \"args\": {\"topic\": \"ignored\", \"content\": \"invented\"}}\n</tool_call>\n<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"should not run yet\"}}\n</tool_call>",
-		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"now synthesize\"}}\n</tool_call>",
-		"Done.",
 	}}
 	reg := tools.NewRegistry()
 	var delegated []string
@@ -1739,9 +1784,9 @@ func TestDispatchExecutesOnlyFirstToolCallPerTurn(t *testing.T) {
 			role, _ := args["role"].(string)
 			delegated = append(delegated, role)
 			if role == "scout" {
-				return "FINDINGS:\n- evidence", nil
+				return `{"status":"complete","message":"Scout evidence gathered.","artifact_kind":"evidence","artifact":"FINDINGS:\n- evidence","next_role":"architect","next_task":"now synthesize"}`, nil
 			}
-			return "GOAL: synthesize", nil
+			return `{"status":"complete","message":"Synthesis ready.","artifact_kind":"plan","artifact":"GOAL: synthesize","next_role":"","next_task":""}`, nil
 		},
 	})
 	reg.Register(tools.Tool{
@@ -1774,7 +1819,6 @@ func TestDispatchRejectsSynthesizedScratchpadWriteContent(t *testing.T) {
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Gather evidence only.\"}}\n</tool_call>",
 		"<tool_call>\n{\"name\": \"scratchpad_write\", \"args\": {\"topic\": \"repo-review-scout-findings\", \"content\": \"Scout findings to carry into recommendation synthesis:\\n- invented summary\"}}\n</tool_call>",
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"TASK: Synthesize recommendations.\"}}\n</tool_call>",
-		"Done.",
 	}}
 	reg := tools.NewRegistry()
 	var scratchWrites int
@@ -1786,10 +1830,10 @@ func TestDispatchRejectsSynthesizedScratchpadWriteContent(t *testing.T) {
 			role, _ := args["role"].(string)
 			task, _ := args["task"].(string)
 			if role == "scout" {
-				return "FINDINGS:\n- real evidence\nKEY FILES: /repo/README.md", nil
+				return `{"status":"complete","message":"Scout evidence gathered.","artifact_kind":"evidence","artifact":"FINDINGS:\n- real evidence\nKEY FILES: /repo/README.md","next_role":"","next_task":""}`, nil
 			}
 			architectTask = task
-			return "GOAL: prioritized recommendations", nil
+			return `{"status":"complete","message":"Recommendations ready.","artifact_kind":"plan","artifact":"GOAL: prioritized recommendations","next_role":"","next_task":""}`, nil
 		},
 	})
 	reg.Register(tools.Tool{
@@ -1807,6 +1851,9 @@ func TestDispatchRejectsSynthesizedScratchpadWriteContent(t *testing.T) {
 	a.SetRole("dispatch")
 
 	if err := a.Run(context.Background(), "review repo"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Run(context.Background(), "keep going with the repo review"); err != nil {
 		t.Fatal(err)
 	}
 	if scratchWrites != 0 {
@@ -1856,8 +1903,6 @@ func TestDispatchAllowsArchitectRepoReviewChoiceWithoutRuntimeVeto(t *testing.T)
 func TestDispatchAllowsBuilderRepoReviewEvidenceCollectionWhenDispatchChoosesIt(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"builder\", \"task\": \"TASK: Gather concrete repository evidence for a repo review and write the raw findings into the shared scratchpad file repo_review_evidence.md so that an architect can synthesize recommendations. OUTCOME: Evidence-based raw findings.\"}}\n</tool_call>",
-		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Gather evidence only for a repo review. OUTCOME: Evidence-backed findings only.\"}}\n</tool_call>",
-		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"TASK: Synthesize recommendations from the scout findings. OUTCOME: prioritized recommendations.\"}}\n</tool_call>",
 	}}
 	reg := tools.NewRegistry()
 	var delegated []string
@@ -1867,10 +1912,14 @@ func TestDispatchAllowsBuilderRepoReviewEvidenceCollectionWhenDispatchChoosesIt(
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			role, _ := args["role"].(string)
 			delegated = append(delegated, role)
-			if role == "scout" {
-				return "FINDINGS:\n- docs are thin\nKEY FILES: /repo/README.md\nFOLLOW-UP: architect", nil
+			switch role {
+			case "builder":
+				return `{"status":"complete","message":"Builder evidence pass complete.","artifact_kind":"implementation","artifact":"Raw repo-review evidence captured.","next_role":"scout","next_task":"TASK: Gather evidence only for a repo review. OUTCOME: Evidence-backed findings only."}`, nil
+			case "scout":
+				return `{"status":"complete","message":"Scout evidence gathered.","artifact_kind":"evidence","artifact":"FINDINGS:\n- docs are thin\nKEY FILES: /repo/README.md","next_role":"architect","next_task":"TASK: Synthesize recommendations from the scout findings. OUTCOME: prioritized recommendations."}`, nil
+			default:
+				return `{"status":"complete","message":"Recommendations ready.","artifact_kind":"plan","artifact":"Prioritized recommendations","next_role":"","next_task":""}`, nil
 			}
-			return "Prioritized recommendations", nil
 		},
 	})
 
@@ -1890,7 +1939,6 @@ func TestDispatchAllowsBuilderRepoReviewEvidenceCollectionWhenDispatchChoosesIt(
 func TestDispatchStopsAfterSuccessfulArchitectRepoReviewSynthesis(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Gather evidence only.\"}}\n</tool_call>",
-		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"TASK: Synthesize the repo review into prioritized recommendations. OUTCOME: Final review.\"}}\n</tool_call>",
 		"Based on the repo review, the main improvements to make are: ...",
 	}}
 	reg := tools.NewRegistry()
@@ -1900,9 +1948,9 @@ func TestDispatchStopsAfterSuccessfulArchitectRepoReviewSynthesis(t *testing.T) 
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			role, _ := args["role"].(string)
 			if role == "scout" {
-				return "FINDINGS:\n- tests are sparse\nKEY FILES: /repo/tests\nFOLLOW-UP: architect", nil
+				return `{"status":"complete","message":"Scout evidence gathered.","artifact_kind":"evidence","artifact":"FINDINGS:\n- tests are sparse\nKEY FILES: /repo/tests","next_role":"architect","next_task":"TASK: Synthesize the repo review into prioritized recommendations. OUTCOME: Final review."}`, nil
 			}
-			return "Priority recommendations", nil
+			return `{"status":"complete","message":"Recommendations ready.","artifact_kind":"plan","artifact":"Priority recommendations","next_role":"","next_task":""}`, nil
 		},
 	})
 
@@ -1914,8 +1962,8 @@ func TestDispatchStopsAfterSuccessfulArchitectRepoReviewSynthesis(t *testing.T) 
 	if err := a.Run(context.Background(), "review repo improvements"); err != nil {
 		t.Fatal(err)
 	}
-	if driver.callIdx != 3 {
-		t.Fatalf("dispatch should stop after architect synthesis plus a silent stop turn, got %d driver calls", driver.callIdx)
+	if driver.callIdx != 1 {
+		t.Fatalf("dispatch should stop after architect synthesis without an extra stop turn, got %d driver calls", driver.callIdx)
 	}
 	if strings.Contains(output.String(), "Based on the repo review") {
 		t.Fatalf("dispatch should not emit direct final prose after architect result: %q", output.String())
@@ -1925,7 +1973,6 @@ func TestDispatchStopsAfterSuccessfulArchitectRepoReviewSynthesis(t *testing.T) 
 func TestDispatchStopsAfterArchitectRepoReviewRecommendationTaskWithoutSynthesizeKeyword(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Gather evidence only.\"}}\n</tool_call>",
-		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"TASK: Review the scout evidence in scratchpad and produce prioritized repository improvement recommendations for the user. OUTCOME: Concise, actionable list of improvements with rationale and priority, based only on repository evidence.\"}}\n</tool_call>",
 		"",
 	}}
 	reg := tools.NewRegistry()
@@ -1935,9 +1982,9 @@ func TestDispatchStopsAfterArchitectRepoReviewRecommendationTaskWithoutSynthesiz
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			role, _ := args["role"].(string)
 			if role == "scout" {
-				return "FINDINGS:\n- tests are sparse\nKEY FILES: /repo/tests\nFOLLOW-UP: architect", nil
+				return `{"status":"complete","message":"Scout evidence gathered.","artifact_kind":"evidence","artifact":"FINDINGS:\n- tests are sparse\nKEY FILES: /repo/tests","next_role":"architect","next_task":"TASK: Review the scout evidence in scratchpad and produce prioritized repository improvement recommendations for the user. OUTCOME: Concise, actionable list of improvements with rationale and priority, based only on repository evidence."}`, nil
 			}
-			return "Prioritized improvement recommendations", nil
+			return `{"status":"complete","message":"Recommendations ready.","artifact_kind":"plan","artifact":"Prioritized improvement recommendations","next_role":"","next_task":""}`, nil
 		},
 	})
 
@@ -1949,8 +1996,8 @@ func TestDispatchStopsAfterArchitectRepoReviewRecommendationTaskWithoutSynthesiz
 	if err := a.Run(context.Background(), "review repo improvements"); err != nil {
 		t.Fatal(err)
 	}
-	if driver.callIdx != 3 {
-		t.Fatalf("dispatch should stop after architect recommendation task plus a silent stop turn, got %d driver calls", driver.callIdx)
+	if driver.callIdx != 1 {
+		t.Fatalf("dispatch should stop after architect recommendation task without an extra stop turn, got %d driver calls", driver.callIdx)
 	}
 }
 
@@ -2031,7 +2078,6 @@ func TestDispatchRetriesScoutAfterMalformedInlineToolMarkupDelegateResult(t *tes
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Gather repo-review evidence only. OUTCOME: Evidence-backed findings only.\"}}\n</tool_call>",
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Retry the repo-review evidence pass narrowly. OUTCOME: Evidence-backed findings only.\"}}\n</tool_call>",
-		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"TASK: Synthesize the repo review into prioritized recommendations. OUTCOME: Final review.\"}}\n</tool_call>",
 	}}
 	reg := tools.NewRegistry()
 	var delegated []string
@@ -2045,9 +2091,9 @@ func TestDispatchRetriesScoutAfterMalformedInlineToolMarkupDelegateResult(t *tes
 			case 1:
 				return "Reviewing the repo structure, tests, and config for concrete issues now.<tool_call>{\"name\":\"list_dir\",\"args\":{\"path\":\".\",\"recursive\":false}}</tool_call>", nil
 			case 2:
-				return "FINDINGS:\n- tests are sparse\nKEY FILES: /repo/tests\nFOLLOW-UP: architect", nil
+				return `{"status":"complete","message":"Retry scout pass complete.","artifact_kind":"evidence","artifact":"FINDINGS:\n- tests are sparse\nKEY FILES: /repo/tests","next_role":"architect","next_task":"TASK: Synthesize the repo review into prioritized recommendations. OUTCOME: Final review."}`, nil
 			default:
-				return "Prioritized recommendations", nil
+				return `{"status":"complete","message":"Recommendations ready.","artifact_kind":"plan","artifact":"Prioritized recommendations","next_role":"","next_task":""}`, nil
 			}
 		},
 	})
@@ -2072,7 +2118,6 @@ func TestDispatchRetriesScoutAfterEmptyDelegateOutputWithoutPersistingSentinel(t
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Gather repo-review evidence only. OUTCOME: Evidence-backed findings only.\"}}\n</tool_call>",
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Retry the repo-review evidence pass narrowly. OUTCOME: Evidence-backed findings only.\"}}\n</tool_call>",
-		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"architect\", \"task\": \"TASK: Synthesize the repo review into prioritized recommendations. OUTCOME: Final review.\"}}\n</tool_call>",
 	}}
 	reg := tools.NewRegistry()
 	var delegated []string
@@ -2087,9 +2132,9 @@ func TestDispatchRetriesScoutAfterEmptyDelegateOutputWithoutPersistingSentinel(t
 			case 1:
 				return "(sub-agent produced no output)", nil
 			case 2:
-				return "FINDINGS:\n- tests are sparse\nKEY FILES: /repo/tests\nFOLLOW-UP: architect", nil
+				return `{"status":"complete","message":"Retry scout pass complete.","artifact_kind":"evidence","artifact":"FINDINGS:\n- tests are sparse\nKEY FILES: /repo/tests","next_role":"architect","next_task":"TASK: Synthesize the repo review into prioritized recommendations. OUTCOME: Final review."}`, nil
 			default:
-				return "Prioritized recommendations", nil
+				return `{"status":"complete","message":"Recommendations ready.","artifact_kind":"plan","artifact":"Prioritized recommendations","next_role":"","next_task":""}`, nil
 			}
 		},
 	})
@@ -2121,11 +2166,10 @@ func TestDispatchRetriesScoutAfterEmptyDelegateOutputWithoutPersistingSentinel(t
 	}
 }
 
-func TestDispatchStopsGracefullyAfterCompletedDelegateEvenIfDispatchEmitsProse(t *testing.T) {
+func TestDispatchStopsAfterPlainCompletedDelegateWithoutExtraTurn(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Inspect the alert source and determine whether anything needs fixed. OUTCOME: Evidence-backed findings only. MUST NOT: Do not modify files.\"}}\n</tool_call>",
-		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Re-check the same alert source and decide if this repo needs a fix. OUTCOME: Evidence-backed findings only. MUST NOT: Do not modify files.\"}}\n</tool_call>",
-		"No code change is indicated from what was found.",
+		"This prose should never be generated because dispatch should stop after a completed plain delegate result.",
 	}}
 
 	reg := tools.NewRegistry()
@@ -2151,11 +2195,14 @@ func TestDispatchStopsGracefullyAfterCompletedDelegateEvenIfDispatchEmitsProse(t
 	if err := a.Run(context.Background(), "help me understand what to do next"); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(delegated, ","); got != "scout,scout" {
-		t.Fatalf("delegated roles = %q, want scout,scout", got)
+	if got := strings.Join(delegated, ","); got != "scout" {
+		t.Fatalf("delegated roles = %q, want scout", got)
 	}
-	if strings.Contains(output.String(), "No code change is indicated from what was found.") {
-		t.Fatalf("dispatch prose stop signal should not be rendered, got %q", output.String())
+	if driver.callIdx != 1 {
+		t.Fatalf("dispatch should stop after plain completed delegate, got %d driver calls", driver.callIdx)
+	}
+	if strings.Contains(output.String(), "This prose should never be generated") {
+		t.Fatalf("dispatch should not take a second model turn after plain completion, got %q", output.String())
 	}
 }
 
