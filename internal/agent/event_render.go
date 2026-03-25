@@ -23,7 +23,7 @@ func NewEventRenderer(events chan<- llm.Event) *EventRenderer {
 		events:     events,
 		approvalCh: make(chan tools.Action, 1),
 		responseCh: make(chan bool, 1),
-		label:      "agent",
+		label:      "forge",
 	}
 }
 
@@ -37,7 +37,7 @@ func (r *EventRenderer) AgentToken(text string) {
 }
 
 func (r *EventRenderer) AgentText(text string) {
-	r.events <- llm.Event{Kind: llm.EventToken, Agent: "agent", Text: text}
+	r.events <- llm.Event{Kind: llm.EventToken, Agent: r.label, Text: text}
 }
 
 func (r *EventRenderer) ToolCall(name, summary string) {

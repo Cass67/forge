@@ -46,18 +46,25 @@ func (m ChatMessage) Render(width int, theme chatTheme) string {
 	}
 
 	if m.Kind == MsgStatus {
-		return lipgloss.NewStyle().
+		style := lipgloss.NewStyle().
 			Foreground(theme.TextDim).
 			Width(width).
-			Render(strings.TrimSpace(m.Content))
+			Render("· " + strings.TrimSpace(m.Content))
+		content := strings.ToLower(strings.TrimSpace(m.Content))
+		switch {
+		case strings.Contains(content, "error"), strings.Contains(content, "failed"), strings.Contains(content, "denied"):
+			style = lipgloss.NewStyle().Foreground(theme.Error).Width(width).Render("✗ " + strings.TrimSpace(m.Content))
+		case strings.Contains(content, "complete"), strings.Contains(content, "ready"), strings.Contains(content, "approved"):
+			style = lipgloss.NewStyle().Foreground(theme.Success).Width(width).Render("✓ " + strings.TrimSpace(m.Content))
+		}
+		return style
 	}
 
 	if m.Kind == MsgWorking {
 		return lipgloss.NewStyle().
 			Foreground(theme.TextDim).
-			Italic(true).
 			Width(width).
-			Render(strings.TrimSpace(m.Content))
+			Render("· " + strings.TrimSpace(m.Content))
 	}
 
 	headerColor := m.borderColor(theme)
@@ -72,10 +79,12 @@ func (m ChatMessage) Render(width int, theme chatTheme) string {
 			Render(header))
 	}
 	if strings.TrimSpace(content) != "" {
-		blocks = append(blocks, lipgloss.NewStyle().
-			Foreground(theme.Text).
-			Width(width).
-			Render(content))
+		blocks = append(blocks, renderMessageContent(content, max(10, width-3), theme))
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, blocks...)
+	return lipgloss.NewStyle().
+		BorderLeft(true).
+		BorderForeground(headerColor).
+		PaddingLeft(1).
+		Width(width).
+		Render(lipgloss.JoinVertical(lipgloss.Left, blocks...))
 }

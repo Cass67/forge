@@ -146,7 +146,7 @@ func TestChatModelHandlesErrorEventFromText(t *testing.T) {
 }
 
 func TestChatModelHandlesToolCallEvent(t *testing.T) {
-	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp", DebugEnabled: true})
 	m.width = 80
 	m.height = 24
 
@@ -1237,16 +1237,10 @@ func TestChatModelModelFilterMatchesDisplayLabel(t *testing.T) {
 	}
 }
 
-func TestChatModelSlashAgentsTogglesState(t *testing.T) {
-	var toggles []bool
+func TestChatModelSlashAgentsIsUnknown(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{
-		Model:         "openai/gpt-5",
-		WorkDir:       "/tmp",
-		AgentsEnabled: true,
-		ToggleAgents: func(enabled bool) error {
-			toggles = append(toggles, enabled)
-			return nil
-		},
+		Model:   "openai/gpt-5",
+		WorkDir: "/tmp",
 	})
 	m.width = 100
 	m.height = 24
@@ -1255,51 +1249,80 @@ func TestChatModelSlashAgentsTogglesState(t *testing.T) {
 	m.inputPos = len(m.inputBuf)
 	updated, _ := m.submitInput()
 	m = updated.(ChatModel)
-	if m.agentsEnabled {
-		t.Fatal("expected /agents to disable agents")
-	}
-	if got := m.flash; got != "agents: disabled" {
+	if got := m.flash; got != "unknown command: /agents" {
 		t.Fatalf("flash = %q", got)
-	}
-
-	m.inputBuf = "/agents"
-	m.inputPos = len(m.inputBuf)
-	updated, _ = m.submitInput()
-	m = updated.(ChatModel)
-	if !m.agentsEnabled {
-		t.Fatal("expected /agents to enable agents")
-	}
-	if got := m.flash; got != "agents: enabled" {
-		t.Fatalf("flash = %q", got)
-	}
-	if want := []bool{false, true}; fmt.Sprint(toggles) != fmt.Sprint(want) {
-		t.Fatalf("toggles = %#v, want %#v", toggles, want)
 	}
 }
 
-func TestChatModelSlashAgentsModelsOpensOverlay(t *testing.T) {
+func TestChatModelHelpOmitsLegacyAgentCommands(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{
-		Model:           "openai/gpt-5",
-		WorkDir:         "/tmp",
-		AvailableModels: []string{"openai/gpt-5", "anthropic/claude-sonnet-4-6"},
-		GetAgentModels:  func() map[string]string { return map[string]string{"scout": "anthropic/claude-sonnet-4-6"} },
-		SaveAgentModels: func(map[string]string) error { return nil },
-		ToggleAgents:    func(bool) error { return nil },
-		AgentsEnabled:   true,
+		Model:   "openai/gpt-5",
+		WorkDir: "/tmp",
 	})
 	m.width = 100
 	m.height = 24
+	m.helpVisible = true
+	m.helpTab = 1
 
-	m.inputBuf = "/agents models"
+	got := m.View()
+	if strings.Contains(got, "/agents") || strings.Contains(got, "Agent Models") {
+		t.Fatalf("legacy agent commands should be hidden from help: %s", got)
+	}
+}
+
+func TestChatModelToolCallShowsWorkingActivityWithoutDebug(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "openai/gpt-5", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "read_file", Text: "inspect main.go"})
+	m = updated.(ChatModel)
+
+	if len(m.toolsSections) != 0 {
+		t.Fatalf("expected no default trace buffer, got %#v", m.toolsSections)
+	}
+	if len(m.messages) == 0 || m.messages[len(m.messages)-1].Kind != MsgWorking {
+		t.Fatalf("expected working activity row, got %#v", m.messages)
+	}
+	if !strings.Contains(m.messages[len(m.messages)-1].Content, "read_file: inspect main.go") {
+		t.Fatalf("unexpected working activity: %#v", m.messages[len(m.messages)-1])
+	}
+}
+
+func TestChatModelTraceCommandRequiresDebug(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "openai/gpt-5", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+
+	m.inputBuf = "/trace"
 	m.inputPos = len(m.inputBuf)
 	updated, _ := m.submitInput()
 	m = updated.(ChatModel)
 
-	if !m.agentModelsVisible {
-		t.Fatal("expected agent models overlay to be visible")
+	if m.traceVisible {
+		t.Fatal("trace overlay should stay hidden without debug")
 	}
-	if got := m.View(); !strings.Contains(got, "Agent Models") || !strings.Contains(got, "scout") || !strings.Contains(got, "(default)") {
-		t.Fatalf("agent models overlay missing content: %s", got)
+	if got := m.flash; got != "trace unavailable without -d" {
+		t.Fatalf("flash = %q", got)
+	}
+}
+
+func TestChatModelTraceCommandOpensOverlayInDebugMode(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "openai/gpt-5", WorkDir: "/tmp", DebugEnabled: true})
+	m.width = 100
+	m.height = 24
+	m.toolsSections = []toolsSection{{buf: "tool_call read_file\nobserve complete\n"}}
+
+	m.inputBuf = "/trace"
+	m.inputPos = len(m.inputBuf)
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+
+	if !m.traceVisible {
+		t.Fatal("expected trace overlay to open in debug mode")
+	}
+	if got := m.View(); !strings.Contains(got, "Debug trace") || !strings.Contains(got, "tool_call read_file") {
+		t.Fatalf("trace overlay missing content: %s", got)
 	}
 }
 
