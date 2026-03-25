@@ -89,6 +89,35 @@ func TestParseDelegateOutcomeStructuredEnvelopeNormalizesCompletedStatus(t *test
 	}
 }
 
+func TestParseDelegateOutcomeStructuredEnvelopeNormalizesDoneStatus(t *testing.T) {
+	outcome := parseDelegateOutcome(`{"status":"done","message":"Found the alert source.","artifact_kind":"evidence","artifact":"./util-rancid/update_cerner_daily.sh","next_role":"developer","next_task":"inspect more"}`)
+	if !outcome.Structured {
+		t.Fatalf("expected structured outcome")
+	}
+	if !outcome.Completed() {
+		t.Fatalf("expected completed outcome")
+	}
+	if outcome.NextRole != "" || outcome.NextTask != "" {
+		t.Fatalf("expected invalid next step to be dropped, got role=%q task=%q", outcome.NextRole, outcome.NextTask)
+	}
+	if got := outcome.DisplayText(); got != "Found the alert source." {
+		t.Fatalf("display text = %q", got)
+	}
+}
+
+func TestParseDelegateOutcomeStructuredEnvelopeNormalizesPartialStatusAndKeepsValidNextRole(t *testing.T) {
+	outcome := parseDelegateOutcome(`{"status":"partial","message":"Need one more scout pass.","artifact_kind":"evidence","artifact":"more evidence needed","next_role":"scout","next_task":"capture the exact run_or_warn block"}`)
+	if !outcome.Structured {
+		t.Fatalf("expected structured outcome")
+	}
+	if !outcome.Completed() {
+		t.Fatalf("expected completed outcome")
+	}
+	if outcome.NextRole != "scout" || outcome.NextTask != "capture the exact run_or_warn block" {
+		t.Fatalf("expected valid next step to be kept, got role=%q task=%q", outcome.NextRole, outcome.NextTask)
+	}
+}
+
 func TestParseDelegateOutcomeForRoleCoercesBareScoutJSONObject(t *testing.T) {
 	raw := `{"source_file":"util-rancid/update_cerner_daily.sh","source_line":753,"message":"Found the alert source.","evidence":["mailx subject matches"]}`
 	outcome := parseDelegateOutcomeForRole("scout", raw)
@@ -140,6 +169,22 @@ func TestParseDelegateOutcomeForRoleUsesScoutArtifactSummaryForCurrentScoutContr
 	raw := `{"origin_file":"util-rancid/update_cerner_daily.sh","evidence":[{"file":"util-rancid/update_cerner_daily.sh","line":753,"match":"run_or_warn \"f5 objstor verify missing-script alert email\" mailx -s \"Rancid f5 objstor verify script missing\" martin.cassidy@oracle.com </dev/null"}],"explanation":"The email subject/body text is hard-coded in a mailx command inside the daily RANCID update script.","triggering_condition":"Missing-script alert path for the f5 objstor verify step in the daily update workflow","related_job_or_config":"Likely invoked by a cron/scheduled daily job that runs util-rancid/update_cerner_daily.sh","confidence":"high"}`
 	outcome := parseDelegateOutcomeForRole("scout", raw)
 	if got := outcome.DisplayText(); got != "Source: util-rancid/update_cerner_daily.sh:753. Likely trigger: Missing-script alert path for the f5 objstor verify step in the daily update workflow." {
+		t.Fatalf("display text = %q", got)
+	}
+}
+
+func TestParseDelegateOutcomeForRoleUsesScoutArtifactSummaryForRuntimeScoutPayload(t *testing.T) {
+	raw := `{"source_file":"util-rancid/update_cerner_daily.sh","source_line":753,"message_subject":"Rancid f5 objstor verify script missing","emitter":"mailx invocation inside the RANCID daily update script","trigger_condition":"The f5 objstor verify step expected a verify script to exist, but the script was missing or unavailable when the job ran","why_sent":"To alert the configured recipient that the automated RANCID verification for the f5 objstor target could not run due to the missing verify script","recipient":"martin.cassidy@oracle.com","context":"This appears to be a maintenance/monitoring alert from a scheduled RANCID update workflow, not a user-initiated email.","evidence":"run_or_warn \"f5 objstor verify missing-script alert email\" mailx -s \"Rancid f5 objstor verify script missing\" martin.cassidy@oracle.com </dev/null"}`
+	outcome := parseDelegateOutcomeForRole("scout", raw)
+	if got := outcome.DisplayText(); got != "Source: util-rancid/update_cerner_daily.sh:753. Likely trigger: The f5 objstor verify step expected a verify script to exist, but the script was missing or unavailable when the job ran." {
+		t.Fatalf("display text = %q", got)
+	}
+}
+
+func TestParseDelegateOutcomeForRoleUsesScoutArtifactSummaryForLiveRetryPayload(t *testing.T) {
+	raw := `{"file":"util-rancid/update_cerner_daily.sh","line":753,"subject":"Rancid f5 objstor verify script missing","process":"Daily RANCID update/maintenance workflow driven by update_cerner_daily.sh (likely cron-scheduled)","trigger":"The script sends this alert when the expected F5 objstor verify helper/script is missing or unavailable during the update run.","reason":"This is a missing-script failure notification, not a normal report; it warns the recipient that the RANCID F5 objstor verify step could not be performed because the script was not present.","recipient":"martin.cassidy@oracle.com"}`
+	outcome := parseDelegateOutcomeForRole("scout", raw)
+	if got := outcome.DisplayText(); got != "Source: util-rancid/update_cerner_daily.sh:753. Likely trigger: The script sends this alert when the expected F5 objstor verify helper/script is missing or unavailable during the update run." {
 		t.Fatalf("display text = %q", got)
 	}
 }

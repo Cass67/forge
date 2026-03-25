@@ -244,13 +244,14 @@ func stripJSONFence(raw string) string {
 }
 
 func normalizeDelegateStatus(status string) string {
-	switch strings.TrimSpace(strings.ToLower(status)) {
-	case "complete", "completed":
-		return "complete"
-	case "blocked":
+	normalized := strings.TrimSpace(strings.ToLower(status))
+	switch normalized {
+	case "":
+		return ""
+	case "blocked", "block", "error", "failed", "failure", "cancelled", "canceled":
 		return "blocked"
 	default:
-		return ""
+		return "complete"
 	}
 }
 
@@ -337,7 +338,9 @@ func parseDelegateArtifactObject(artifact string) (map[string]any, bool) {
 
 func summarizeScoutArtifact(object map[string]any) string {
 	location := scoutSourceLocation(object)
-	trigger := firstNonEmptyString(object, "trigger", "triggering_condition", "most_likely_trigger", "why_it_was_sent")
+	trigger := firstNonEmptyString(object, "trigger", "trigger_condition", "triggering_condition", "most_likely_trigger", "why_it_was_sent")
+	whySent := firstNonEmptyString(object, "why_sent")
+	reason := firstNonEmptyString(object, "reason")
 	source := firstNonEmptyString(object, "source")
 	explanation := firstNonEmptyString(object, "explanation")
 	evidence := firstUsefulEntry(object["evidence"])
@@ -351,6 +354,10 @@ func summarizeScoutArtifact(object map[string]any) string {
 	}
 	if trigger != "" {
 		parts = append(parts, labelSentence("Likely trigger: ", trigger))
+	} else if whySent != "" {
+		parts = append(parts, labelSentence("Likely trigger: ", whySent))
+	} else if reason != "" {
+		parts = append(parts, labelSentence("Likely trigger: ", reason))
 	}
 	if len(parts) == 0 && explanation != "" {
 		parts = append(parts, sentence(explanation))
@@ -461,8 +468,8 @@ func summarizeBuilderArtifact(object map[string]any) string {
 }
 
 func scoutSourceLocation(object map[string]any) string {
-	sourceFile := firstNonEmptyString(object, "source_file", "origin_file")
-	line := firstNonEmptyString(object, "source_line", "source_lines")
+	sourceFile := firstNonEmptyString(object, "source_file", "origin_file", "file", "path")
+	line := firstNonEmptyString(object, "source_line", "source_lines", "line", "lines")
 	evidenceFile, evidenceLine := firstEvidenceFileLine(object["evidence"])
 	if sourceFile == "" {
 		sourceFile = evidenceFile
