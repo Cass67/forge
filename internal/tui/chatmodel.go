@@ -184,6 +184,7 @@ type ChatModel struct {
 
 	inputBuf string
 	inputPos int
+	pendingInputEcho string
 
 	width  int
 	height int
@@ -476,7 +477,7 @@ func (m *ChatModel) anchorLatestTurnToBottom() {
 		return
 	}
 	m.turnAnchorMessageIndex = len(m.messages) - 1
-	m.followMode = followTurnStart
+	m.followMode = followBottom
 }
 
 func (m *ChatModel) markManualScroll() {
@@ -534,14 +535,7 @@ func (m *ChatModel) refreshViewport() {
 		blocks = append(blocks, rendered)
 	}
 	content := strings.Join(blocks, "\n\n")
-	visibleBlocks := blocks
-	if m.followMode == followTurnStart {
-		idx := m.turnAnchorMessageIndex
-		if idx >= 0 && idx < len(messageBlockIndex) && messageBlockIndex[idx] >= 0 {
-			visibleBlocks = blocks[messageBlockIndex[idx]:]
-		}
-	}
-	visible := strings.Join(visibleBlocks, "\n\n")
+	visible := content
 	m.chatContent = content
 	m.chatVisible = visible
 	m.chatViewport.SetContent(visible)
@@ -1128,6 +1122,7 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 	case llm.EventDone:
 		m.busy = false
 		m.activeSubAgent = ""
+		m.pendingInputEcho = ""
 		m.clearWorkingMessage()
 		m.status = "ready"
 		m.syncStatusData()
@@ -1136,6 +1131,7 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		}
 	case llm.EventError:
 		m.busy = false
+		m.pendingInputEcho = ""
 		m.clearWorkingMessage()
 		m.status = "error"
 		m.syncStatusData()
@@ -1259,6 +1255,58 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "…"
+}
+
+func flattenComposerText(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	var b strings.Builder
+	lastSpace := false
+	for _, r := range raw {
+		switch r {
+		case '\n', '\r', '\t':
+			if !lastSpace {
+				b.WriteByte(' ')
+				lastSpace = true
+			}
+		default:
+			if r < 32 {
+				continue
+			}
+			b.WriteRune(r)
+			lastSpace = r == ' '
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func renderComposerText(raw string, cursorPos, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	content := []rune(flattenComposerText(raw))
+	prefix := []rune("> ")
+	if len(content) == 0 {
+		return fitCell("> Type a message or /help", width)
+	}
+	cursorPos = clamp(cursorPos, 0, len([]rune(raw)))
+	flatCursor := len([]rune(flattenComposerText(string([]rune(raw)[:cursorPos]))))
+	flatCursor = clamp(flatCursor, 0, len(content))
+	avail := max(1, width-len(prefix))
+	if len(content) <= avail {
+		return fitCell(string(prefix)+string(content), width)
+	}
+	start := clamp(flatCursor-avail+1, 0, max(0, len(content)-avail))
+	end := min(len(content), start+avail)
+	segment := append([]rune(nil), content[start:end]...)
+	if start > 0 && len(segment) > 0 {
+		segment[0] = '…'
+	}
+	if end < len(content) && len(segment) > 0 {
+		segment[len(segment)-1] = '…'
+	}
+	return fitCell(string(prefix)+string(segment), width)
 }
 
 func latestFencedCodeBlock(content string) string {
@@ -1549,6 +1597,7 @@ func (m ChatModel) submitInput() (tea.Model, tea.Cmd) {
 	m.anchorLatestTurnToBottom()
 	m.refreshViewport()
 
+	m.pendingInputEcho = input
 	m.inputBuf = ""
 	m.inputPos = 0
 	m.busy = true
@@ -1746,6 +1795,7 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.messages = nil
 		m.resetRecentActivity()
 		m.clearToolsSections()
+		m.pendingInputEcho = ""
 		m.turnAnchorMessageIndex = -1
 		m.followMode = followBottom
 		m.refreshViewport()
@@ -1753,6 +1803,7 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 	case input == "/clear agent":
 		m.messages = nil
 		m.resetRecentActivity()
+		m.pendingInputEcho = ""
 		m.turnAnchorMessageIndex = -1
 		m.followMode = followBottom
 		m.refreshViewport()
@@ -3882,18 +3933,21 @@ func (m ChatModel) View() string {
 		approvalText := fmt.Sprintf("Tool: %s\n%s\n\n[y]es / [n]o", m.pendingApproval.Tool, m.pendingApproval.Summary)
 		inputBox = approvalStyle.Render(approvalText)
 	} else {
-		inputContent := strings.TrimSpace(m.inputBuf)
 		inputStyle := lipgloss.NewStyle().
 			Background(theme.AppBG).
+			Foreground(theme.Text).
 			Width(m.width)
-		if inputContent == "" {
-			inputStyle = inputStyle.Foreground(theme.TextDim)
-			inputContent = "> Type a message or /help"
-		} else {
-			inputStyle = inputStyle.Foreground(theme.Text)
-			inputContent = "> " + m.inputBuf
+		displaySource := m.inputBuf
+		cursorPos := m.inputPos
+		if strings.TrimSpace(displaySource) == "" && m.busy && strings.TrimSpace(m.pendingInputEcho) != "" {
+			displaySource = m.pendingInputEcho
+			cursorPos = len([]rune(displaySource))
 		}
-		inputBox = inputStyle.Render(fitCell(inputContent, m.width))
+		renderedInput := renderComposerText(displaySource, cursorPos, m.width)
+		if strings.TrimSpace(displaySource) == "" {
+			inputStyle = inputStyle.Foreground(theme.TextDim)
+		}
+		inputBox = inputStyle.Render(renderedInput)
 	}
 
 	// Status bar with spinner and flash
