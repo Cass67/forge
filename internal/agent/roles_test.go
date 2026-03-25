@@ -45,6 +45,15 @@ func TestScoutPromptKeepsRecommendationsOutOfScoutResponses(t *testing.T) {
 	}
 }
 
+func TestScoutPromptRequiresWrappedFirstToolCall(t *testing.T) {
+	if !strings.Contains(scoutPrompt, "exactly one valid <tool_call>...</tool_call> block and nothing else") {
+		t.Fatal("scout prompt missing exact wrapped first tool call rule")
+	}
+	if !strings.Contains(scoutPrompt, "Never emit a bare JSON tool call") {
+		t.Fatal("scout prompt missing bare JSON tool call prohibition")
+	}
+}
+
 func TestBuilderPromptRequiresActionFirstAndVerificationDiscipline(t *testing.T) {
 	for _, want := range []string{
 		"Your first working turn must contain tool calls or edits, not a plan.",

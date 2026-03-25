@@ -109,8 +109,11 @@ func ParseToolCalls(text string) ([]ToolCall, string) {
 			calls = append(calls, parsed...)
 			continue
 		}
-		if call, ok := parseLooseToolCallLine(lineTrimmed); ok {
+		if call, remainder, ok := parseLooseToolCallLine(lineTrimmed); ok {
 			calls = append(calls, call)
+			if remainder != "" {
+				textParts = append(textParts, remainder)
+			}
 			i++
 			continue
 		}
@@ -172,10 +175,10 @@ func nextToolCallOpener(line string) (int, int) {
 	return bestPos, bestIdx
 }
 
-func parseLooseToolCallLine(line string) (ToolCall, bool) {
+func parseLooseToolCallLine(line string) (ToolCall, string, bool) {
 	line = strings.TrimSpace(line)
 	if line == "" {
-		return ToolCall{}, false
+		return ToolCall{}, "", false
 	}
 	for _, tag := range toolCallClosers {
 		if strings.Contains(line, tag) {
@@ -188,13 +191,42 @@ func parseLooseToolCallLine(line string) (ToolCall, bool) {
 		}
 	}
 	if line == "" {
-		return ToolCall{}, false
+		return ToolCall{}, "", false
 	}
 	call := parseCallJSON(line)
 	if call.Name == "" {
-		return ToolCall{}, false
+		call, remainder, ok := parseLeadingToolCallJSON(line)
+		if !ok {
+			return ToolCall{}, "", false
+		}
+		return call, remainder, true
 	}
-	return call, true
+	return call, "", true
+}
+
+func parseLeadingToolCallJSON(line string) (ToolCall, string, bool) {
+	if !strings.HasPrefix(strings.TrimSpace(line), "{") {
+		return ToolCall{}, "", false
+	}
+	var parsed struct {
+		Name string         `json:"name"`
+		Args map[string]any `json:"args"`
+	}
+	dec := json.NewDecoder(strings.NewReader(line))
+	if err := dec.Decode(&parsed); err != nil {
+		return ToolCall{}, "", false
+	}
+	if strings.TrimSpace(parsed.Name) == "" {
+		return ToolCall{}, "", false
+	}
+	if parsed.Args == nil {
+		parsed.Args = make(map[string]any)
+	}
+	offset := int(dec.InputOffset())
+	if offset < 0 || offset > len(line) {
+		offset = len(line)
+	}
+	return ToolCall{Name: parsed.Name, Args: parsed.Args}, strings.TrimSpace(line[offset:]), true
 }
 
 // parseBlock tries to parse the inner content of a tool call block.
