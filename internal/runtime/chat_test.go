@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"forge/internal/auth"
 	"forge/internal/chatstate"
 	"forge/internal/config"
+	"forge/internal/harness"
 	"forge/internal/llm"
 )
 
@@ -196,6 +198,95 @@ func TestHandleChatSlashCommandExpandIsUnknown(t *testing.T) {
 	if !strings.Contains(buf.String(), "unknown command: /expand") {
 		t.Fatalf("expected unknown command output, got %q", buf.String())
 	}
+}
+
+func TestUseHarnessKernelRuntimeReadsEnv(t *testing.T) {
+	t.Setenv("FORGE_CHAT_RUNTIME", "")
+	if !useHarnessKernelRuntime() {
+		t.Fatal("kernel runtime should be enabled by default")
+	}
+
+	t.Setenv("FORGE_CHAT_RUNTIME", "legacy")
+	if useHarnessKernelRuntime() {
+		t.Fatal("kernel runtime should be disabled when env requests legacy mode")
+	}
+
+	t.Setenv("FORGE_CHAT_RUNTIME", "kernel")
+	if !useHarnessKernelRuntime() {
+		t.Fatal("kernel runtime should be enabled when env requests it")
+	}
+}
+
+func TestRunChatTurnUsesKernelWhenProvided(t *testing.T) {
+	kernel := harness.NewRunner(harness.RunnerConfig{
+		Session: harness.NewSession(),
+		Trace:   harness.NewRecorder(),
+		Local:   stubHarnessLocalExecutor{response: "kernel path"},
+	})
+
+	if err := runChatTurn(context.Background(), nil, kernel, "describe this directory"); err != nil {
+		t.Fatal(err)
+	}
+
+	trace := kernel.Trace()
+	if len(trace) == 0 {
+		t.Fatal("expected kernel trace records")
+	}
+	if trace[1].Family != harness.FamilyInspect {
+		t.Fatalf("unexpected classification trace: %#v", trace)
+	}
+}
+
+func TestRunChatTurnKernelPathAvoidsDelegationMarkers(t *testing.T) {
+	events := make(chan llm.Event, 16)
+	renderer := agent.NewEventRenderer(events)
+	driver := &kernelMockDriver{response: "Directory contains cmd and internal."}
+	a := agent.NewAgent(driver, tools.NewRegistry(), agent.YoloApproval(), t.TempDir(), 4, renderer, nil, chatstate.New())
+	kernel := harness.NewRunner(harness.RunnerConfig{
+		Session: harness.NewSession(),
+		Trace:   harness.NewRecorder(),
+		Local:   harness.AgentExecutor{Agent: a},
+	})
+
+	if err := runChatTurn(context.Background(), a, kernel, "describe this directory"); err != nil {
+		t.Fatal(err)
+	}
+
+	for {
+		select {
+		case ev := <-events:
+			if ev.Kind == llm.EventToolCall && ev.Agent == "runtime" && strings.Contains(strings.ToLower(ev.Text), "delegating") {
+				t.Fatalf("unexpected delegation marker: %#v", ev)
+			}
+		default:
+			return
+		}
+	}
+}
+
+type stubHarnessLocalExecutor struct {
+	response string
+}
+
+func (s stubHarnessLocalExecutor) Execute(_ context.Context, _ harness.UserTurn, class harness.Classification) (harness.Observation, error) {
+	return harness.Observation{
+		Status:   harness.ObservationComplete,
+		Response: s.response,
+		Summary:  s.response,
+		TopicKey: class.TopicKey,
+	}, nil
+}
+
+type kernelMockDriver struct {
+	response string
+}
+
+func (d *kernelMockDriver) Name() string { return "kernel-mock" }
+
+func (d *kernelMockDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	defer close(out)
+	out <- llm.Token{Text: d.response}
+	return nil
 }
 
 func captureRuntimeStdout(t *testing.T, fn func()) string {
