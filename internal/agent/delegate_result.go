@@ -337,8 +337,9 @@ func parseDelegateArtifactObject(artifact string) (map[string]any, bool) {
 
 func summarizeScoutArtifact(object map[string]any) string {
 	location := scoutSourceLocation(object)
-	trigger := firstNonEmptyString(object, "trigger", "most_likely_trigger", "why_it_was_sent")
+	trigger := firstNonEmptyString(object, "trigger", "triggering_condition", "most_likely_trigger", "why_it_was_sent")
 	source := firstNonEmptyString(object, "source")
+	explanation := firstNonEmptyString(object, "explanation")
 	evidence := firstUsefulEntry(object["evidence"])
 
 	var parts []string
@@ -350,6 +351,9 @@ func summarizeScoutArtifact(object map[string]any) string {
 	}
 	if trigger != "" {
 		parts = append(parts, labelSentence("Likely trigger: ", trigger))
+	}
+	if len(parts) == 0 && explanation != "" {
+		parts = append(parts, sentence(explanation))
 	}
 	if len(parts) == 0 && evidence != "" {
 		parts = append(parts, sentence(evidence))
@@ -457,15 +461,40 @@ func summarizeBuilderArtifact(object map[string]any) string {
 }
 
 func scoutSourceLocation(object map[string]any) string {
-	sourceFile := firstNonEmptyString(object, "source_file")
+	sourceFile := firstNonEmptyString(object, "source_file", "origin_file")
+	line := firstNonEmptyString(object, "source_line", "source_lines")
+	evidenceFile, evidenceLine := firstEvidenceFileLine(object["evidence"])
+	if sourceFile == "" {
+		sourceFile = evidenceFile
+	}
 	if sourceFile == "" {
 		return ""
 	}
-	line := firstNonEmptyString(object, "source_line", "source_lines")
+	if line == "" && evidenceLine != "" && (evidenceFile == "" || evidenceFile == sourceFile) {
+		line = evidenceLine
+	}
 	if line == "" {
 		return sourceFile
 	}
 	return sourceFile + ":" + line
+}
+
+func firstEvidenceFileLine(value any) (string, string) {
+	switch typed := value.(type) {
+	case []any:
+		for _, entry := range typed {
+			if file, line := firstEvidenceFileLine(entry); file != "" {
+				return file, line
+			}
+		}
+	case map[string]any:
+		file := firstNonEmptyString(typed, "file", "path", "source_file", "origin_file")
+		line := firstNonEmptyString(typed, "line", "lines", "source_line", "source_lines")
+		if file != "" {
+			return file, line
+		}
+	}
+	return "", ""
 }
 
 func firstNonEmptyString(object map[string]any, keys ...string) string {
