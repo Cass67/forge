@@ -115,6 +115,9 @@ func subAgentFinalResult(role string, sub *Agent) string {
 }
 
 func retryStructuredSubAgentResult(ctx context.Context, sub *Agent, role, result string) (string, error) {
+	if canonical, ok := canonicalStructuredDelegateResult(role, result); ok {
+		return canonical, nil
+	}
 	if !subAgentNeedsStructuredRetry(role, result) {
 		return result, nil
 	}
@@ -123,6 +126,9 @@ func retryStructuredSubAgentResult(ctx context.Context, sub *Agent, role, result
 			return subAgentFinalResult(role, sub), err
 		}
 		result = subAgentFinalResult(role, sub)
+		if canonical, ok := canonicalStructuredDelegateResult(role, result); ok {
+			return canonical, nil
+		}
 		if !subAgentNeedsStructuredRetry(role, result) {
 			return result, nil
 		}

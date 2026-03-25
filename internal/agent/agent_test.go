@@ -768,7 +768,7 @@ func TestSpawnSubAgentScoutRecoversFromBareJSONToolCallPrefix(t *testing.T) {
 	if strings.Contains(result, "not able to inspect the key files") {
 		t.Fatalf("expected scout to avoid blocked no-evidence fallback, got %q", result)
 	}
-	if outcome := parseDelegateOutcome(result); !outcome.Structured || outcome.Message != "Inspected README-backed repo overview." {
+	if outcome := parseDelegateOutcome(result); !outcome.Structured || outcome.Message != "Repository inspection shows this is an automation repo with mixed Bash, PowerShell, and Python workflows." {
 		t.Fatalf("expected typed scout findings after loose JSON recovery, got %q", result)
 	}
 }
@@ -861,24 +861,10 @@ func TestSpawnSubAgentScoutRetriesAfterEmptyFinalOutput(t *testing.T) {
 	}
 }
 
-func TestSpawnSubAgentArchitectRetriesPlainFinalOutputIntoTypedEnvelope(t *testing.T) {
+func TestSpawnSubAgentArchitectNormalizesPlainFinalOutputIntoTypedEnvelopeWithoutRetry(t *testing.T) {
 	driver := &inspectingDriver{
 		responses: []string{
 			"The alert means the runtime verification helper was missing, not that the job failed.",
-			`{"status":"complete","message":"The alert means the runtime verification helper was missing, not that the job failed.","artifact_kind":"plan","artifact":"Explain that the helper was missing at runtime and verification was skipped.","next_role":"","next_task":""}`,
-		},
-		checks: []func([]llm.Message) error{
-			nil,
-			func(messages []llm.Message) error {
-				joined := ""
-				for _, msg := range messages {
-					joined += msg.Content + "\n"
-				}
-				if !strings.Contains(joined, "exactly one JSON object with status, message, artifact_kind, artifact, next_role, and next_task") {
-					return fmt.Errorf("missing structured-output retry nudge")
-				}
-				return nil
-			},
 		},
 	}
 
@@ -893,8 +879,8 @@ func TestSpawnSubAgentArchitectRetriesPlainFinalOutputIntoTypedEnvelope(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if driver.callIdx != 2 {
-		t.Fatalf("expected plain architect output to trigger a typed-envelope retry, got %d driver calls", driver.callIdx)
+	if driver.callIdx != 1 {
+		t.Fatalf("expected plain architect output to be normalized locally, got %d driver calls", driver.callIdx)
 	}
 	if outcome := parseDelegateOutcome(result); !outcome.Structured || outcome.Message != "The alert means the runtime verification helper was missing, not that the job failed." {
 		t.Fatalf("expected typed architect result after retry, got %q", result)
@@ -910,24 +896,10 @@ func TestSubAgentNeedsStructuredRetryRequiresExactEnvelopeForScout(t *testing.T)
 	}
 }
 
-func TestSpawnSubAgentArchitectRetriesBareJSONObjectIntoTypedEnvelope(t *testing.T) {
+func TestSpawnSubAgentArchitectNormalizesBareJSONObjectIntoTypedEnvelopeWithoutRetry(t *testing.T) {
 	driver := &inspectingDriver{
 		responses: []string{
 			`{"severity":"medium","likely_impact":"Verification coverage gap","suggested_next_checks":["confirm script path"]}`,
-			`{"status":"complete","message":"Architect output ready.","artifact_kind":"plan","artifact":"{\"severity\":\"medium\",\"likely_impact\":\"Verification coverage gap\",\"suggested_next_checks\":[\"confirm script path\"]}","next_role":"","next_task":""}`,
-		},
-		checks: []func([]llm.Message) error{
-			nil,
-			func(messages []llm.Message) error {
-				joined := ""
-				for _, msg := range messages {
-					joined += msg.Content + "\n"
-				}
-				if !strings.Contains(joined, "exactly one JSON object with status, message, artifact_kind, artifact, next_role, and next_task") {
-					return fmt.Errorf("missing structured-output retry nudge")
-				}
-				return nil
-			},
 		},
 	}
 
@@ -942,11 +914,59 @@ func TestSpawnSubAgentArchitectRetriesBareJSONObjectIntoTypedEnvelope(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if driver.callIdx != 2 {
-		t.Fatalf("expected bare architect json to trigger retry, got %d driver calls", driver.callIdx)
+	if driver.callIdx != 1 {
+		t.Fatalf("expected bare architect json to be normalized locally, got %d driver calls", driver.callIdx)
 	}
-	if outcome := parseDelegateOutcomeForRole("architect", result); !outcome.Structured || outcome.Message != "Architect output ready." {
+	if outcome := parseDelegateOutcomeForRole("architect", result); !outcome.Structured || outcome.Message != "Severity: Medium. Next check: confirm script path." {
 		t.Fatalf("expected coerced architect result, got %q", result)
+	}
+}
+
+func TestDispatchRewritesRepoReviewScoutTaskToEvidenceOnly(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Inspect the repository and gather evidence about its purpose, structure, tech stack, key modules, and obvious cleanup/maintenance opportunities. OUTCOME: A concise but concrete repo review with file/path references, including recommended cleanup actions. CONTEXT: User asked: 'explain this repo and recommend and cleanup actions this might need'. MUST NOT: Do not modify files. Do not make guesses without citing evidence from the repo.\"}}\n</tool_call>",
+	}}
+	reg := tools.NewRegistry()
+	var delegated []string
+	var scoutTask string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			role, _ := args["role"].(string)
+			task, _ := args["task"].(string)
+			delegated = append(delegated, role)
+			switch role {
+			case "scout":
+				scoutTask = task
+				return `{"status":"complete","message":"Scout evidence gathered.","artifact_kind":"evidence","artifact":"FINDINGS:\n- tests are sparse\nKEY FILES: /repo/tests","next_role":"architect","next_task":"TASK: Synthesize the repo review into prioritized recommendations. OUTCOME: Final review."}`, nil
+			case "architect":
+				return `{"status":"complete","message":"Recommendations ready.","artifact_kind":"plan","artifact":"Prioritized recommendations","next_role":"","next_task":""}`, nil
+			default:
+				return "", fmt.Errorf("unexpected role %q", role)
+			}
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "explain this repo and recommend and cleanup actions this might need"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(delegated, ","); got != "scout,architect" {
+		t.Fatalf("delegated roles = %q, want scout,architect", got)
+	}
+	if strings.Contains(strings.ToLower(scoutTask), "recommended cleanup actions") {
+		t.Fatalf("scout task should be rewritten to evidence-only, got %q", scoutTask)
+	}
+	if !strings.Contains(scoutTask, "Evidence-backed findings only") {
+		t.Fatalf("scout task missing evidence-only outcome: %q", scoutTask)
+	}
+	if !strings.Contains(scoutTask, "Do not provide final recommendations") {
+		t.Fatalf("scout task missing no-recommendations constraint: %q", scoutTask)
 	}
 }
 
@@ -1189,6 +1209,122 @@ func TestScoutRetriesBlockedAnswerUntilItUsesEvidenceTools(t *testing.T) {
 	}
 	if got := output.String(); strings.Contains(got, "If you want, I can do a narrow repository search next.") {
 		t.Fatalf("blocked scout prose should not be rendered when tools are still available: %q", got)
+	}
+}
+
+func TestScoutRepoReviewNoOutputGetsTargetedEvidenceNudge(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Forge\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module forge\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "BUILD.md"), []byte("# Build\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "internal", "agent"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "internal", "agent", "agent.go"), []byte("package agent\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	driver := &inspectingDriver{
+		responses: []string{
+			"<tool_call>\n{\"name\": \"list_dir\", \"args\": {\"path\": \".\", \"recursive\": false}}\n</tool_call>",
+			"<tool_call>\n{\"name\": \"read_file\", \"args\": {\"path\": \"README.md\", \"start_line\": 1, \"end_line\": 40}}\n</tool_call>",
+			"",
+			"<tool_call>\n{\"name\": \"read_file\", \"args\": {\"path\": \"go.mod\", \"start_line\": 1, \"end_line\": 40}}\n</tool_call>",
+			"<tool_call>\n{\"name\": \"list_dir\", \"args\": {\"path\": \"internal\", \"recursive\": false}}\n</tool_call>",
+			"<tool_call>\n{\"name\": \"read_file\", \"args\": {\"path\": \"BUILD.md\", \"start_line\": 1, \"end_line\": 40}}\n</tool_call>",
+			`{"status":"complete","message":"Repo evidence gathered.","artifact_kind":"evidence","artifact":"FINDINGS:\n- README.md explains the CLI.\n- go.mod defines the module.\n- internal/ holds agent internals.\n- BUILD.md documents build flow.","next_role":"","next_task":""}`,
+		},
+		checks: []func([]llm.Message) error{
+			nil,
+			nil,
+			nil,
+			func(messages []llm.Message) error {
+				joined := ""
+				for _, msg := range messages {
+					joined += msg.Content + "\n"
+				}
+				for _, want := range []string{
+					"Repo-review evidence is still incomplete.",
+					"go.mod",
+					"internal",
+					"BUILD.md",
+				} {
+					if !strings.Contains(joined, want) {
+						return fmt.Errorf("missing targeted repo-review nudge content %q in messages: %s", want, joined)
+					}
+				}
+				return nil
+			},
+		},
+	}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.NewListDir(dir, nil))
+	reg.Register(tools.NewReadFile(dir))
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), dir, 10, renderer, nil, nil)
+	a.SetRole("scout")
+	a.isSubAgent = true
+
+	if err := a.Run(context.Background(), "TASK: Inspect the Go repository and gather evidence about its purpose, structure, main packages/binaries, dependencies, test/build health indicators, and obvious cleanup opportunities. OUTCOME: Evidence-backed findings only."); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestScoutRepoReviewBlockedAnswerRetriesUntilChecklistCovered(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Forge\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module forge\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "BUILD.md"), []byte("# Build\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "internal", "agent"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "internal", "agent", "agent.go"), []byte("package agent\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"list_dir\", \"args\": {\"path\": \".\", \"recursive\": false}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"read_file\", \"args\": {\"path\": \"README.md\", \"start_line\": 1, \"end_line\": 40}}\n</tool_call>",
+		"I’m blocked from giving the requested evidence-backed repository findings because I still need to inspect go.mod, internal/*, and BUILD.md before concluding.",
+		"<tool_call>\n{\"name\": \"read_file\", \"args\": {\"path\": \"go.mod\", \"start_line\": 1, \"end_line\": 40}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"list_dir\", \"args\": {\"path\": \"internal\", \"recursive\": false}}\n</tool_call>",
+		"<tool_call>\n{\"name\": \"read_file\", \"args\": {\"path\": \"BUILD.md\", \"start_line\": 1, \"end_line\": 40}}\n</tool_call>",
+		`{"status":"complete","message":"Repo evidence gathered.","artifact_kind":"evidence","artifact":"FINDINGS:\n- README.md explains the CLI.\n- go.mod defines the module.\n- internal/ holds agent internals.\n- BUILD.md documents build flow.","next_role":"","next_task":""}`,
+	}}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.NewListDir(dir, nil))
+	reg.Register(tools.NewReadFile(dir))
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), dir, 10, renderer, nil, nil)
+	a.SetRole("scout")
+	a.isSubAgent = true
+
+	if err := a.Run(context.Background(), "TASK: Inspect the Go repository and gather evidence about its purpose, structure, main packages/binaries, dependencies, test/build health indicators, and obvious cleanup opportunities. OUTCOME: Evidence-backed findings only."); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callIdx != 7 {
+		t.Fatalf("expected blocked repo-review answer to be retried until checklist was covered, got %d driver calls", driver.callIdx)
+	}
+	if got := output.String(); strings.Contains(got, "I’m blocked from giving the requested evidence-backed repository findings") {
+		t.Fatalf("blocked repo-review prose should not be rendered when more evidence is still required: %q", got)
 	}
 }
 
@@ -1630,7 +1766,7 @@ func TestDispatchAllowsBuilderSelectionOnPlanRequestWithoutRuntimeVeto(t *testin
 	}
 }
 
-func TestDispatchPreservesModelProvidedScoutTaskWithoutRepoReviewRewrite(t *testing.T) {
+func TestDispatchRewritesModelProvidedScoutRepoReviewTaskToEvidenceOnly(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Inspect the repository and identify practical improvement opportunities. OUTCOME: Recommended improvements.\"}}\n</tool_call>",
 		"",
@@ -1654,8 +1790,46 @@ func TestDispatchPreservesModelProvidedScoutTaskWithoutRepoReviewRewrite(t *test
 	if err := a.Run(context.Background(), "review this repo and suggest improvements"); err != nil {
 		t.Fatal(err)
 	}
-	if scoutTask != "TASK: Inspect the repository and identify practical improvement opportunities. OUTCOME: Recommended improvements." {
-		t.Fatalf("dispatch rewrote scout task: %q", scoutTask)
+	if !strings.Contains(scoutTask, "Evidence-backed findings only") {
+		t.Fatalf("dispatch should rewrite scout repo-review tasks to evidence-only, got %q", scoutTask)
+	}
+	if !strings.Contains(scoutTask, "Do not provide final recommendations") {
+		t.Fatalf("dispatch should add no-recommendations constraint, got %q", scoutTask)
+	}
+	if strings.Contains(output.String(), "repo-review and improvement requests must use scout for evidence gathering only") {
+		t.Fatalf("unexpected repo-review guard output: %q", output.String())
+	}
+}
+
+func TestDispatchRewritesScoutRepoTourCleanupTaskToEvidenceOnly(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"TASK: Inspect the Go repository structure, key packages, entrypoints, tests, tooling/config, and obvious maintenance smells. OUTCOME: A concise repo tour plus a concrete list of recommended cleanup actions grounded in files/packages found. CONTEXT: User asked: 'explain this repo and recommend cleanup actions this might need'. Working directory is the repo root. MUST NOT: Modify files; keep it read-only; do not speculate without pointing to repo evidence.\"}}\n</tool_call>",
+		"",
+	}}
+	reg := tools.NewRegistry()
+	var scoutTask string
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			scoutTask, _ = args["task"].(string)
+			return "FINDINGS:\n- README is thin\nKEY FILES: /repo/README.md\nFOLLOW-UP: architect", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), "explain this repo and recommend cleanup actions this might need"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(scoutTask, "Evidence-backed findings only") {
+		t.Fatalf("dispatch should rewrite scout repo-tour cleanup tasks to evidence-only, got %q", scoutTask)
+	}
+	if !strings.Contains(scoutTask, "Do not provide final recommendations") {
+		t.Fatalf("dispatch should add no-recommendations constraint, got %q", scoutTask)
 	}
 	if strings.Contains(output.String(), "repo-review and improvement requests must use scout for evidence gathering only") {
 		t.Fatalf("unexpected repo-review guard output: %q", output.String())

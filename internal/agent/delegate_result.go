@@ -60,6 +60,41 @@ func parseDelegateOutcomeForRole(role, raw string) delegateOutcome {
 	}
 }
 
+func canonicalStructuredDelegateResult(role, raw string) (string, bool) {
+	role = strings.TrimSpace(role)
+	if !roleRequiresStructuredDelegateResult(role) {
+		return raw, false
+	}
+	outcome := parseDelegateOutcomeForRole(role, raw)
+	if !outcome.Completed() {
+		return raw, false
+	}
+	message := strings.TrimSpace(outcome.DisplayText())
+	if message == "" {
+		message = strings.TrimSpace(defaultDelegateMessage(role))
+	}
+	artifactKind := strings.TrimSpace(outcome.ArtifactKind)
+	if artifactKind == "" {
+		artifactKind = defaultDelegateArtifactKind(role)
+	}
+	artifact := strings.TrimSpace(outcome.ContextText())
+	if artifact == "" {
+		artifact = message
+	}
+	canonical, err := json.Marshal(delegateEnvelope{
+		Status:       "complete",
+		Message:      message,
+		ArtifactKind: artifactKind,
+		Artifact:     artifact,
+		NextRole:     strings.TrimSpace(outcome.NextRole),
+		NextTask:     strings.TrimSpace(outcome.NextTask),
+	})
+	if err != nil {
+		return raw, false
+	}
+	return string(canonical), true
+}
+
 func delegateOutcomeFromEnvelope(role string, envelope delegateEnvelope, raw string) delegateOutcome {
 	return delegateOutcome{
 		Role:         strings.TrimSpace(role),
@@ -405,11 +440,11 @@ func summarizeArchitectArtifact(object map[string]any) string {
 	if nextCheck != "" {
 		parts = append(parts, labelSentence("Next check: ", nextCheck))
 	}
+	if nextCheck == "" && suggested != "" {
+		parts = append(parts, labelSentence("Next check: ", suggested))
+	}
 	if len(parts) > 0 {
 		return strings.Join(parts, " ")
-	}
-	if suggested != "" {
-		return labelSentence("Next check: ", suggested)
 	}
 	return ""
 }
