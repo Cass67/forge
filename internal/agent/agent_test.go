@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -619,6 +621,62 @@ func TestScoutExecutesToolCallsAndSuppressesVisibleProse(t *testing.T) {
 	}
 }
 
+func TestScoutExecutesBareJSONToolCallPrefixAndSuppressesVisibleProse(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Repo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	driver := &inspectingDriver{
+		responses: []string{
+			"{\"name\":\"read_file\",\"args\":{\"path\":\"README.md\",\"start_line\":1,\"end_line\":260}}I need a bit more repository evidence before I can give a reliable, citation-backed overview and tidy-up assessment.",
+			"FINDINGS:\n- README inspected successfully",
+		},
+		checks: []func([]llm.Message) error{
+			nil,
+			func(messages []llm.Message) error {
+				var sawToolResults bool
+				var sawNudge bool
+				for _, msg := range messages {
+					if strings.Contains(msg.Content, "[read_file]") && strings.Contains(msg.Content, "# Repo") {
+						sawToolResults = true
+					}
+					if strings.Contains(msg.Content, scoutNudgeMessage()) {
+						sawNudge = true
+					}
+				}
+				if !sawToolResults {
+					return fmt.Errorf("second turn missing executed read_file results")
+				}
+				if !sawNudge {
+					return fmt.Errorf("second turn missing scout mixed-prose nudge")
+				}
+				return nil
+			},
+		},
+	}
+	reg := tools.NewRegistry()
+	reg.Register(tools.NewReadFile(dir))
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), dir, 10, renderer, nil, nil)
+	a.SetRole("scout")
+	a.isSubAgent = true
+
+	if err := a.Run(context.Background(), "TASK: Inspect the repository and produce an evidence-backed overview. OUTCOME: Findings only. MUST NOT: Do not modify files."); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callIdx != 2 {
+		t.Fatalf("expected loose JSON tool call to execute and continue, got %d driver calls", driver.callIdx)
+	}
+	if got := output.String(); strings.Contains(got, "I need a bit more repository evidence") {
+		t.Fatalf("scout prose leak should be suppressed, got %q", got)
+	}
+	if got := output.String(); !strings.Contains(got, "README inspected successfully") {
+		t.Fatalf("final scout findings missing: %q", got)
+	}
+}
+
 func TestSpawnSubAgentScoutRecoversFromMalformedToolMarkup(t *testing.T) {
 	driver := &inspectingDriver{
 		responses: []string{
@@ -669,6 +727,49 @@ func TestSpawnSubAgentScoutRecoversFromMalformedToolMarkup(t *testing.T) {
 	}
 	if outcome := parseDelegateOutcome(result); !outcome.Structured || outcome.Message != "Found the alert source." {
 		t.Fatalf("expected typed scout findings after malformed markup recovery, got %q", result)
+	}
+}
+
+func TestSpawnSubAgentScoutRecoversFromBareJSONToolCallPrefix(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Repo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	driver := &inspectingDriver{
+		responses: []string{
+			"{\"name\":\"read_file\",\"args\":{\"path\":\"README.md\",\"start_line\":1,\"end_line\":260}}I need a bit more repository evidence before I can give a reliable, citation-backed overview and tidy-up assessment.",
+			"Repository inspection shows this is an automation repo with mixed Bash, PowerShell, and Python workflows.",
+			`{"status":"complete","message":"Inspected README-backed repo overview.","artifact_kind":"evidence","artifact":"README.md confirms a multi-host automation repo.","next_role":"","next_task":""}`,
+		},
+	}
+
+	reg := tools.NewRegistry()
+	readCalls := 0
+	readTool := tools.NewReadFile(dir)
+	readTool.Execute = func(ctx context.Context, args map[string]any) (string, error) {
+		readCalls++
+		return "1 | # Repo", nil
+	}
+	reg.Register(readTool)
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	parent := NewAgent(driver, reg, YoloApproval(), dir, 10, renderer, nil, nil)
+
+	result, err := parent.SpawnSubAgent(context.Background(), "scout", "TASK: Inspect the repository and produce an evidence-backed overview. OUTCOME: Findings only. MUST NOT: Do not modify files.", MultiAgentConfig{
+		BaseTools: reg,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readCalls != 1 {
+		t.Fatalf("expected one recovered read_file call, got %d", readCalls)
+	}
+	if strings.Contains(result, "not able to inspect the key files") {
+		t.Fatalf("expected scout to avoid blocked no-evidence fallback, got %q", result)
+	}
+	if outcome := parseDelegateOutcome(result); !outcome.Structured || outcome.Message != "Inspected README-backed repo overview." {
+		t.Fatalf("expected typed scout findings after loose JSON recovery, got %q", result)
 	}
 }
 
