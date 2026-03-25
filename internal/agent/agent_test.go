@@ -628,6 +628,7 @@ func TestSpawnSubAgentScoutRecoversFromMalformedToolMarkup(t *testing.T) {
 		},
 		checks: []func([]llm.Message) error{
 			nil,
+			nil,
 			func(messages []llm.Message) error {
 				joined := ""
 				for _, msg := range messages {
@@ -772,7 +773,7 @@ func TestSpawnSubAgentArchitectRetriesPlainFinalOutputIntoTypedEnvelope(t *testi
 				for _, msg := range messages {
 					joined += msg.Content + "\n"
 				}
-				if !strings.Contains(joined, "Return exactly one JSON object") {
+				if !strings.Contains(joined, "exactly one JSON object with status, message, artifact_kind, artifact, next_role, and next_task") {
 					return fmt.Errorf("missing structured-output retry nudge")
 				}
 				return nil
@@ -799,57 +800,32 @@ func TestSpawnSubAgentArchitectRetriesPlainFinalOutputIntoTypedEnvelope(t *testi
 	}
 }
 
-func TestSpawnSubAgentScoutAcceptsBareJSONObjectWithoutSecondRetry(t *testing.T) {
-	driver := &inspectingDriver{
-		responses: []string{
-			"<tool_call>\n{\"name\": \"search\", \"args\": {\"pattern\": \"Rancid f5 objstor verify script missing\", \"path\": \".\", \"glob\": \"**/*\"}}\n</tool_call>",
-			`{"source_file":"util-rancid/update_cerner_daily.sh","source_line":753,"message":"Found the alert source.","evidence":["mailx subject matches"]}`,
-		},
-		checks: []func([]llm.Message) error{
-			nil,
-			nil,
-			func(messages []llm.Message) error {
-				return fmt.Errorf("unexpected structured-output retry")
-			},
-		},
+func TestSubAgentNeedsStructuredRetryRequiresExactEnvelopeForScout(t *testing.T) {
+	if !subAgentNeedsStructuredRetry("scout", `{"source_file":"util-rancid/update_cerner_daily.sh","source_line":753,"message":"Found the alert source.","evidence":["mailx subject matches"]}`) {
+		t.Fatal("expected bare scout json to require another structured-output retry")
 	}
-
-	reg := tools.NewRegistry()
-	reg.Register(tools.Tool{
-		Name:        "search",
-		Description: "Search",
-		Execute: func(ctx context.Context, args map[string]any) (string, error) {
-			return "/repo/util-rancid/update_cerner_daily.sh:753: run_or_warn \"f5 objstor verify missing-script alert email\"", nil
-		},
-	})
-
-	var output bytes.Buffer
-	renderer := NewRenderer(&output, 80, false)
-	parent := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
-
-	result, err := parent.SpawnSubAgent(context.Background(), "scout", "TASK: Trace the origin of the email subject and identify the source file. OUTCOME: Evidence-backed findings only. MUST NOT: Do not speculate.", MultiAgentConfig{
-		BaseTools: reg,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if driver.callIdx != 2 {
-		t.Fatalf("expected bare scout json to avoid second retry, got %d driver calls", driver.callIdx)
-	}
-	if outcome := parseDelegateOutcomeForRole("scout", result); !outcome.Structured || outcome.Message != "Found the alert source." {
-		t.Fatalf("expected coerced scout result, got %q", result)
+	if subAgentNeedsStructuredRetry("scout", `{"status":"complete","message":"Found the alert source.","artifact_kind":"evidence","artifact":"{\"source_file\":\"util-rancid/update_cerner_daily.sh\",\"source_line\":753}","next_role":"","next_task":""}`) {
+		t.Fatal("expected exact scout envelope to satisfy the retry gate")
 	}
 }
 
-func TestSpawnSubAgentArchitectAcceptsBareJSONObjectWithoutSecondRetry(t *testing.T) {
+func TestSpawnSubAgentArchitectRetriesBareJSONObjectIntoTypedEnvelope(t *testing.T) {
 	driver := &inspectingDriver{
 		responses: []string{
 			`{"severity":"medium","likely_impact":"Verification coverage gap","suggested_next_checks":["confirm script path"]}`,
+			`{"status":"complete","message":"Architect output ready.","artifact_kind":"plan","artifact":"{\"severity\":\"medium\",\"likely_impact\":\"Verification coverage gap\",\"suggested_next_checks\":[\"confirm script path\"]}","next_role":"","next_task":""}`,
 		},
 		checks: []func([]llm.Message) error{
 			nil,
 			func(messages []llm.Message) error {
-				return fmt.Errorf("unexpected structured-output retry")
+				joined := ""
+				for _, msg := range messages {
+					joined += msg.Content + "\n"
+				}
+				if !strings.Contains(joined, "exactly one JSON object with status, message, artifact_kind, artifact, next_role, and next_task") {
+					return fmt.Errorf("missing structured-output retry nudge")
+				}
+				return nil
 			},
 		},
 	}
@@ -865,8 +841,8 @@ func TestSpawnSubAgentArchitectAcceptsBareJSONObjectWithoutSecondRetry(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if driver.callIdx != 1 {
-		t.Fatalf("expected bare architect json to avoid second retry, got %d driver calls", driver.callIdx)
+	if driver.callIdx != 2 {
+		t.Fatalf("expected bare architect json to trigger retry, got %d driver calls", driver.callIdx)
 	}
 	if outcome := parseDelegateOutcomeForRole("architect", result); !outcome.Structured || outcome.Message != "Architect output ready." {
 		t.Fatalf("expected coerced architect result, got %q", result)
@@ -1618,6 +1594,37 @@ func TestDispatchSearchFlowStopsAfterScoutAnswer(t *testing.T) {
 	}
 	if strings.Contains(output.String(), "This prose should never be generated") {
 		t.Fatalf("dispatch should stop instead of generating prose after scout search result: %q", output.String())
+	}
+}
+
+func TestDispatchSearchFlowSurfacesWhyFromCurrentScoutContract(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"investigate the source of the alert\"}}\n</tool_call>",
+	}}
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{
+		Name:        "delegate",
+		Description: "Delegate",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			return `{"source_file":"util-rancid/update_cerner_daily.sh","source_line":753,"message_subject":"Rancid f5 objstor verify script missing","emitter":"mailx invocation inside the RANCID daily update script","trigger_condition":"The f5 objstor verify step expected a verify script to exist, but the script was missing or unavailable when the job ran","why_sent":"To alert the configured recipient that the automated RANCID verification for the f5 objstor target could not run due to the missing verify script","recipient":"martin.cassidy@oracle.com","context":"This appears to be a maintenance/monitoring alert from a scheduled RANCID update workflow, not a user-initiated email.","evidence":"run_or_warn \"f5 objstor verify missing-script alert email\" mailx -s \"Rancid f5 objstor verify script missing\" martin.cassidy@oracle.com </dev/null"}`, nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	a.SetRole("dispatch")
+
+	if err := a.Run(context.Background(), `i got an email today that said "Rancid f5 objstor verify script missing" where did it come from and why`); err != nil {
+		t.Fatal(err)
+	}
+
+	got := output.String()
+	if !strings.Contains(got, "Source: util-rancid/update_cerner_daily.sh:753.") {
+		t.Fatalf("missing source summary in output: %q", got)
+	}
+	if !strings.Contains(got, "Likely trigger: The f5 objstor verify step expected a verify script to exist, but the script was missing or unavailable when the job ran.") {
+		t.Fatalf("missing trigger summary in output: %q", got)
 	}
 }
 

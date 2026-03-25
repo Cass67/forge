@@ -134,8 +134,11 @@ func subAgentNeedsStructuredRetry(role, result string) bool {
 	if !roleRequiresStructuredDelegateResult(role) {
 		return false
 	}
+	if _, ok := parseDelegateEnvelope(result); ok {
+		return false
+	}
 	outcome := parseDelegateOutcomeForRole(role, result)
-	return outcome.Completed() && !outcome.Structured
+	return outcome.Completed()
 }
 
 func roleRequiresStructuredDelegateResult(role string) bool {
@@ -154,8 +157,8 @@ func subAgentStructuredOutputNudgeMessage(role string, attempt int) string {
 	}
 	switch attempt {
 	case 1:
-		return fmt.Sprintf("%s final output must be exactly one JSON object matching the required contract. Do not call tools. Return exactly one JSON object and nothing else.", role)
+		return fmt.Sprintf("%s final output must be exactly one JSON object with status, message, artifact_kind, artifact, next_role, and next_task. Use status \"complete\" or \"blocked\" only. Do not call tools. No prose outside the JSON object.", role)
 	default:
-		return fmt.Sprintf("Still unstructured. %s must re-emit the completed answer as exactly one JSON object with status, message, artifact_kind, artifact, next_role, and next_task. No prose outside the JSON object.", role)
+		return fmt.Sprintf("Still unstructured. %s must re-emit the completed answer as exactly one JSON object with status, message, artifact_kind, artifact, next_role, and next_task. Use status \"complete\" or \"blocked\" only. No prose outside the JSON object.", role)
 	}
 }
