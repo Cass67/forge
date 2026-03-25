@@ -301,9 +301,10 @@ func RunChatLive(setup *ChatSetup) {
 	liveCfg := tui.ChatLiveConfig{
 		Model:           setup.ChatModel,
 		WorkDir:         setup.WorkDir,
+		DebugEnabled:    setup.debugRec != nil,
 		AvailableModels: setup.Available,
 		Providers:       append([]tui.ProviderOption(nil), setup.Providers...),
-		AgentsEnabled:   setup.Config.Chat.Agents.Enabled,
+		AgentsEnabled:   !useKernel && setup.Config.Chat.Agents.Enabled,
 		FetchLiveCopilotQuota: func(ctx context.Context) (*copilot.UserQuota, error) {
 			if provider := bootstrap.ParseModelRef(setup.ChatModel).Provider; provider != "copilot" {
 				return nil, nil
@@ -377,43 +378,6 @@ func RunChatLive(setup *ChatSetup) {
 			a.SetDriver(setup.Driver)
 			persistChatLastModel(setup.Config, name)
 			return name, nil
-		},
-		ToggleAgents: func(enabled bool) error {
-			setup.Config.Chat.Agents.Enabled = enabled
-			if useKernel {
-				a.SetTools(baseReg.Filter(nil))
-				a.UseGeneratedSystem()
-				a.SetRole("")
-				evRenderer.SetLabel("agent")
-				return nil
-			}
-			if enabled {
-				configureMultiAgent(a, baseReg, setup)
-				evRenderer.SetLabel("dispatch")
-				return nil
-			}
-			a.SetTools(baseReg.Filter(nil))
-			a.UseGeneratedSystem()
-			a.SetRole("")
-			evRenderer.SetLabel("agent")
-			return nil
-		},
-		GetAgentModels: func() map[string]string {
-			return setup.Config.AgentRoleModels()
-		},
-		SaveAgentModels: func(models map[string]string) error {
-			agentModels := config.AgentModels{
-				Dispatch:  models["dispatch"],
-				Scout:     models["scout"],
-				Builder:   models["builder"],
-				Doctor:    models["doctor"],
-				Architect: models["architect"],
-			}
-			if err := config.SaveAgentModels(config.DefaultPath(), agentModels); err != nil {
-				return err
-			}
-			setup.Config.Chat.Agents.Models = agentModels
-			return nil
 		},
 		ClearHistory: func() {
 			a.ClearHistory()

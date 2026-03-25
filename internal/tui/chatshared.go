@@ -24,6 +24,7 @@ import (
 type ChatLiveConfig struct {
 	Model                 string
 	WorkDir               string
+	DebugEnabled          bool
 	AvailableModels       []string
 	Providers             []ProviderOption
 	AgentsEnabled         bool
