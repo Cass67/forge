@@ -156,6 +156,10 @@ func (a *Agent) SetRole(role string) {
 	a.role = role
 }
 
+func (a *Agent) SetSubAgentMode(enabled bool) {
+	a.isSubAgent = enabled
+}
+
 func (a *Agent) Role() string {
 	return a.role
 }

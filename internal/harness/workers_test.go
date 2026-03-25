@@ -71,3 +71,34 @@ func TestManagerExecuteRetriesInvalidStructuredOutput(t *testing.T) {
 		t.Fatalf("artifact = %#v", result)
 	}
 }
+
+func TestManagerExecuteRetriesReaderWithoutConcreteEvidence(t *testing.T) {
+	manager := NewManager(ManagerConfig{
+		WorkDir: ".",
+		DriverFor: func(WorkerKind) llm.Driver {
+			return &sequenceDriver{responses: []string{
+				`{"status":"complete","evidence":[{"kind":"note","summary":"This looks like a Go project."}],"coverage":"ambient context only","gaps":["No files inspected."],"suggested_next":"inspect top-level files"}`,
+				`{"status":"complete","evidence":[{"kind":"file","path":"go.mod","summary":"go.mod declares the forge module and Bubble Tea dependencies."},{"kind":"command","summary":"git_status confirmed the worktree is dirty with harness/runtime edits."}],"coverage":"Checked the module file and current git state.","gaps":[],"suggested_next":"read README.md for a user-facing overview"}`,
+			}}
+		},
+	})
+
+	obs, err := manager.Execute(context.Background(), WorkerTask{
+		Kind:      WorkerReader,
+		Objective: "talk about this directory",
+		TopicKey:  "workspace:directory",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, ok := obs.Artifact.(ReaderResult)
+	if !ok {
+		t.Fatalf("artifact = %#v", obs.Artifact)
+	}
+	if len(result.Evidence) != 2 {
+		t.Fatalf("artifact = %#v", result)
+	}
+	if result.Evidence[0].Path != "go.mod" {
+		t.Fatalf("artifact = %#v", result)
+	}
+}

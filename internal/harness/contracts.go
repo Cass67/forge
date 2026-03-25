@@ -180,6 +180,7 @@ func validateReaderResult(result ReaderResult) error {
 	if strings.TrimSpace(result.Coverage) == "" {
 		return fmt.Errorf("reader coverage is required")
 	}
+	hasConcreteEvidence := false
 	for _, evidence := range result.Evidence {
 		if strings.TrimSpace(evidence.Kind) == "" || strings.TrimSpace(evidence.Summary) == "" {
 			return fmt.Errorf("reader evidence entries require kind and summary")
@@ -187,6 +188,15 @@ func validateReaderResult(result ReaderResult) error {
 		if err := validateReaderEvidenceKind(evidence.Kind); err != nil {
 			return err
 		}
+		if evidence.Kind == "file" && strings.TrimSpace(evidence.Path) == "" {
+			return fmt.Errorf("reader file evidence requires path")
+		}
+		if evidence.Kind == "file" || evidence.Kind == "command" {
+			hasConcreteEvidence = true
+		}
+	}
+	if strings.TrimSpace(result.Status) == "complete" && !hasConcreteEvidence {
+		return fmt.Errorf("reader complete result must include concrete evidence from at least one file or command")
 	}
 	return nil
 }

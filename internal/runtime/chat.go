@@ -162,6 +162,23 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, appr
 	reg.Register(tools.NewToolHelp(reg))
 }
 
+func buildInspectToolRegistry(base *tools.Registry) *tools.Registry {
+	if base == nil {
+		return tools.NewRegistry()
+	}
+	return base.Filter([]string{
+		"git_diff",
+		"git_log",
+		"git_status",
+		"glob",
+		"list_dir",
+		"read_file",
+		"search",
+		"think",
+		"tool_help",
+	})
+}
+
 func RunChatLive(setup *ChatSetup) {
 	eventsCh := make(chan llm.Event, 256)
 	renderCh := chan<- llm.Event(eventsCh)
@@ -187,6 +204,7 @@ func RunChatLive(setup *ChatSetup) {
 	reg := tools.NewRegistry()
 	registerTools(reg, setup.WorkDir, setup.Config, approve)
 	baseReg := reg.Filter(nil)
+	inspectReg := buildInspectToolRegistry(baseReg)
 	loadedSkills := skills.Load(setup.WorkDir)
 	state := chatstate.New()
 
@@ -199,14 +217,16 @@ func RunChatLive(setup *ChatSetup) {
 			WorkDir:   setup.WorkDir,
 			BaseTools: baseReg,
 			Approve:   approve,
-			DriverFor: func(harness.WorkerKind) llm.Driver {
-				return setup.Driver
-			},
+			DriverFor: func(kind harness.WorkerKind) llm.Driver { return workerDriverFor(setup, kind) },
 		})
 		kernel = harness.NewRunner(harness.RunnerConfig{
 			Session: harness.NewSession(),
 			Trace:   harness.NewRecorder(),
-			Local:   harness.AgentExecutor{Agent: a},
+			Local: harness.AgentExecutor{
+				Agent:        a,
+				DefaultTools: baseReg,
+				InspectTools: inspectReg,
+			},
 			Workers: workers,
 		})
 	}
@@ -241,6 +261,9 @@ func RunChatLive(setup *ChatSetup) {
 			}
 			go func(runMsg string) {
 				err := runChatTurn(ctx, a, kernel, runMsg)
+				if setup != nil && setup.debugRec != nil && kernel != nil {
+					setup.debugRec.logTrace(kernel.Trace())
+				}
 				inputCh <- runOutcome(err)
 			}(msg)
 		}
@@ -440,6 +463,8 @@ func RunChatConsole(setup *ChatSetup) {
 	reg := tools.NewRegistry()
 	interactiveApprove := agent.InteractiveApproval(os.Stdin, os.Stdout)
 	registerTools(reg, setup.WorkDir, setup.Config, approve, interactiveApprove)
+	baseReg := reg.Filter(nil)
+	inspectReg := buildInspectToolRegistry(baseReg)
 	loadedSkills := skills.Load(setup.WorkDir)
 
 	renderer := agent.NewRenderer(os.Stdout, 80, true)
@@ -451,16 +476,18 @@ func RunChatConsole(setup *ChatSetup) {
 	if useKernel {
 		workers := harness.NewManager(harness.ManagerConfig{
 			WorkDir:   setup.WorkDir,
-			BaseTools: reg.Filter(nil),
+			BaseTools: baseReg,
 			Approve:   approve,
-			DriverFor: func(harness.WorkerKind) llm.Driver {
-				return setup.Driver
-			},
+			DriverFor: func(kind harness.WorkerKind) llm.Driver { return workerDriverFor(setup, kind) },
 		})
 		kernel = harness.NewRunner(harness.RunnerConfig{
 			Session: harness.NewSession(),
 			Trace:   harness.NewRecorder(),
-			Local:   harness.AgentExecutor{Agent: a},
+			Local: harness.AgentExecutor{
+				Agent:        a,
+				DefaultTools: baseReg,
+				InspectTools: inspectReg,
+			},
 			Workers: workers,
 		})
 	}
@@ -510,7 +537,11 @@ func RunChatConsole(setup *ChatSetup) {
 				continue
 			}
 		}
-		if err := runChatTurn(ctx, a, kernel, input); err != nil {
+		err := runChatTurn(ctx, a, kernel, input)
+		if setup != nil && setup.debugRec != nil && kernel != nil {
+			setup.debugRec.logTrace(kernel.Trace())
+		}
+		if err != nil {
 			renderer.Error(err.Error())
 		}
 	}
@@ -523,6 +554,36 @@ func useHarnessKernelRuntime() bool {
 		return true
 	}
 	return !strings.EqualFold(mode, "legacy")
+}
+
+func workerDriverFor(setup *ChatSetup, kind harness.WorkerKind) llm.Driver {
+	if setup == nil {
+		return nil
+	}
+	if setup.MakeDriver != nil {
+		if model := compatibilityWorkerModel(setup.Config, kind); model != "" {
+			if driver := setup.MakeDriver(model); driver != nil {
+				return driver
+			}
+		}
+	}
+	return setup.Driver
+}
+
+func compatibilityWorkerModel(cfg *config.Config, kind harness.WorkerKind) string {
+	if cfg == nil {
+		return ""
+	}
+	switch kind {
+	case harness.WorkerReader, harness.WorkerResearcher:
+		return strings.TrimSpace(cfg.Chat.Agents.Models.Scout)
+	case harness.WorkerEditor:
+		return strings.TrimSpace(cfg.Chat.Agents.Models.Builder)
+	case harness.WorkerVerifier:
+		return strings.TrimSpace(cfg.Chat.Agents.Models.Doctor)
+	default:
+		return ""
+	}
 }
 
 func runChatTurn(ctx context.Context, a *agent.Agent, kernel *harness.Runner, input string) error {

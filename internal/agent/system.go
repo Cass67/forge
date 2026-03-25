@@ -60,6 +60,8 @@ func WorkerInstructionBlock(kind string) string {
 Return exactly one JSON object and no prose outside it:
 {"status":"complete|blocked","evidence":[{"kind":"file|command|note","path":"","summary":""}],"coverage":"what you covered","gaps":["remaining gaps"],"suggested_next":""}
 Rules:
+- use at least one real inspection tool before completing
+- a complete result must include at least one file or command evidence entry
 - no recommendations
 - no planning
 - no scope expansion

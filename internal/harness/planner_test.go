@@ -2,12 +2,12 @@ package harness
 
 import "testing"
 
-func TestPlanUsesLocalFirstStep(t *testing.T) {
+func TestPlanUsesReaderWorkerForPlainInspectTurns(t *testing.T) {
 	step := Plan(Classification{Family: FamilyInspect}, SessionState{})
-	if step.Kind != StepLocal {
+	if step.Kind != StepWorker {
 		t.Fatalf("step = %#v", step)
 	}
-	if step.Worker != WorkerNone {
+	if step.Worker != WorkerReader {
 		t.Fatalf("worker = %q", step.Worker)
 	}
 }

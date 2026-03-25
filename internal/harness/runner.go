@@ -94,6 +94,7 @@ func (r *Runner) executeWorker(ctx context.Context, turn UserTurn, class Classif
 	obs, err := r.workers.Execute(ctx, WorkerTask{
 		Kind:          step.Worker,
 		Objective:     turn.Text,
+		Context:       workerContext(class, step),
 		TopicKey:      class.TopicKey,
 		StopCondition: step.Reason,
 	})
@@ -124,6 +125,21 @@ func localRecoveryStep() Step {
 		Reason:  "worker failed closed; recover locally",
 		Summary: "run locally",
 	}
+}
+
+func workerContext(class Classification, step Step) string {
+	if step.Worker != WorkerReader {
+		return ""
+	}
+	if class.Family != FamilyInspect {
+		return ""
+	}
+	return strings.TrimSpace(`Gather concrete workspace evidence before you conclude.
+For a directory or repository walkthrough:
+- inspect the top-level structure with list_dir
+- inspect one or two representative files such as README.md, go.mod, package.json, or a relevant entrypoint when present
+- use git_status or git_log only when they materially help explain the state
+- stop once you can explain what the directory is and how it is organized`)
 }
 
 func buildForgeResponse(step Step, obs Observation) string {
