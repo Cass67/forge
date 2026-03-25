@@ -22,10 +22,9 @@ type RenderTarget interface {
 }
 
 type Renderer struct {
-	out            io.Writer
-	width          int
-	colors         bool
-	lastExpandable string
+	out    io.Writer
+	width  int
+	colors bool
 }
 
 func NewRenderer(out io.Writer, width int, colors bool) *Renderer {
@@ -77,7 +76,6 @@ func (r *Renderer) ToolResult(name, output, diff string, isError bool) {
 	if detail != "" {
 		truncated, wasTruncated := format.Truncate(detail, 20)
 		if wasTruncated {
-			r.lastExpandable = detail
 			displayDetail = truncated
 		}
 	}
@@ -104,9 +102,6 @@ func (r *Renderer) Info(msg string) {
 	}}
 	fmt.Fprintln(r.out, format.LineToANSI(line, r.colors))
 }
-
-func (r *Renderer) LastExpandable() string { return r.lastExpandable }
-func (r *Renderer) ClearExpandable()       { r.lastExpandable = "" }
 
 func (r *Renderer) Prompt() {
 	if r.colors {

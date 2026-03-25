@@ -57,6 +57,9 @@ func TestPrintHelpPromotesMakeAndKeepsImproveAlias(t *testing.T) {
 	if !strings.Contains(output, "forge                           Start interactive chat session") {
 		t.Fatalf("expected bare forge help entry, got:\n%s", output)
 	}
+	if strings.Contains(output, "forge chat [flags]") {
+		t.Fatalf("expected explicit chat alias to be removed from help, got:\n%s", output)
+	}
 	if !strings.Contains(output, "forge make                      Launch the legacy writer/auditor pipeline UI") {
 		t.Fatalf("expected forge make help entry, got:\n%s", output)
 	}

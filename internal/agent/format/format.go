@@ -182,7 +182,7 @@ func Truncate(output string, maxLines int) (string, bool) {
 	}
 	truncated := strings.Join(lines[:maxLines], "\n")
 	remaining := len(lines) - maxLines
-	truncated += fmt.Sprintf("\n... (%d more lines, /expand to show)", remaining)
+	truncated += fmt.Sprintf("\n... (%d more lines)", remaining)
 	return truncated, true
 }
 

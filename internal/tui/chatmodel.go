@@ -182,8 +182,8 @@ type ChatModel struct {
 
 	messages []ChatMessage
 
-	inputBuf string
-	inputPos int
+	inputBuf         string
+	inputPos         int
 	pendingInputEcho string
 
 	width  int
@@ -199,7 +199,6 @@ type ChatModel struct {
 	toolsSections   []toolsSection
 	toolsVisible    bool
 	toolsWasShowing bool
-	lastExpandable  string
 	lastToolResult  string
 	lastCodeBlock   string
 
@@ -302,28 +301,28 @@ func NewChatModel(cfg ChatLiveConfig) ChatModel {
 	}
 
 	m := ChatModel{
-		config:              cfg,
-		model:               cfg.Model,
-		workDir:             cfg.WorkDir,
-		copyFn:              copyToClipboard,
-		themeID:             "default",
-		chatViewport:        vp,
-		followMode:          followBottom,
-		status:              "ready",
-		skills:              cfg.Skills,
-		autoSkillsMode:      cfg.AutoSkillsMode,
-		state:               state,
-		toolsVisible:        false,
-		paneFocus:           focusChat,
-		agentsEnabled:       cfg.AgentsEnabled,
-		recentActivityIndex: -1,
+		config:                 cfg,
+		model:                  cfg.Model,
+		workDir:                cfg.WorkDir,
+		copyFn:                 copyToClipboard,
+		themeID:                "default",
+		chatViewport:           vp,
+		followMode:             followBottom,
+		status:                 "ready",
+		skills:                 cfg.Skills,
+		autoSkillsMode:         cfg.AutoSkillsMode,
+		state:                  state,
+		toolsVisible:           false,
+		paneFocus:              focusChat,
+		agentsEnabled:          cfg.AgentsEnabled,
+		recentActivityIndex:    -1,
 		turnAnchorMessageIndex: -1,
-		modelsList:          uniqueStringsPreserveOrder(cfg.AvailableModels),
-		modelsFiltered:      uniqueStringsPreserveOrder(cfg.AvailableModels),
-		providersList:       append([]ProviderOption(nil), cfg.Providers...),
-		contextFiles:        append([]string(nil), cfg.ContextFiles...),
-		agentModelsRoles:    []string{"dispatch", "scout", "builder", "doctor", "architect"},
-		agentModelsMap:      copyStringMap(cfg.GetAgentModels),
+		modelsList:             uniqueStringsPreserveOrder(cfg.AvailableModels),
+		modelsFiltered:         uniqueStringsPreserveOrder(cfg.AvailableModels),
+		providersList:          append([]ProviderOption(nil), cfg.Providers...),
+		contextFiles:           append([]string(nil), cfg.ContextFiles...),
+		agentModelsRoles:       []string{"dispatch", "scout", "builder", "doctor", "architect"},
+		agentModelsMap:         copyStringMap(cfg.GetAgentModels),
 	}
 	m.modelsList = m.uniqueModelOptions(m.modelsList)
 	m.modelsFiltered = append([]string(nil), m.modelsList...)
@@ -1087,10 +1086,6 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 			if !ev.IsError {
 				if result := strings.TrimSpace(ev.Text); result != "" {
 					stamp := time.Now().Format("15:04:05")
-					if extra := strings.TrimSpace(ev.Content); extra != "" && extra != result {
-						m.lastExpandable = extra
-						result += "\n... (/expand)"
-					}
 					m.AddMessage(ChatMessage{
 						Kind:    MsgAgent,
 						Header:  m.delegateResultLabel() + " • " + stamp,
@@ -1109,10 +1104,6 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 			m.appendTools("", fmt.Sprintf("  status: ✗ %s\n", ev.Text))
 		} else if ev.Content != "" {
 			truncated := truncate(ev.Content, 200)
-			if truncated != ev.Content {
-				m.lastExpandable = ev.Content
-				truncated += "\n  ... (/expand)"
-			}
 			m.appendTools("", fmt.Sprintf("  status: ✓\n  %s\n", truncated))
 		} else {
 			m.appendTools("", fmt.Sprintf("  status: ✓ %s\n", truncate(ev.Text, 200)))
@@ -1773,7 +1764,7 @@ var builtinCommands = []string{
 	"/agents", "/agents models",
 	"/models", "/model", "/provider",
 	"/skills", "/auto-skills", "/sessions", "/save", "/restore",
-	"/find", "/copy agent", "/copy tools", "/copy code", "/copy result", "/expand",
+	"/find", "/copy agent", "/copy tools", "/copy code", "/copy result",
 	"/exit", "/quit",
 }
 
@@ -1881,13 +1872,13 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		}
 	case input == "/tools" || input == "/toggle tools":
 		m.toolsVisible = false
-		m.flash = "tools pane removed; use /expand for details"
+		m.flash = "tools pane removed"
 	case input == "/toggle tools on":
 		m.toolsVisible = false
-		m.flash = "tools pane removed; use /expand for details"
+		m.flash = "tools pane removed"
 	case input == "/toggle tools off":
 		m.toolsVisible = false
-		m.flash = "tools pane removed; use /expand for details"
+		m.flash = "tools pane removed"
 	case input == "/agents":
 		if m.config.ToggleAgents == nil {
 			m.flash = "agents not available (no config)"
@@ -1997,14 +1988,6 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		} else {
 			m.flash = "result copied"
 		}
-	case input == "/expand":
-		if strings.TrimSpace(m.lastExpandable) == "" {
-			m.flash = "nothing to expand"
-		} else {
-			m.AddMessage(ChatMessage{Kind: MsgAgent, Content: m.lastExpandable})
-			m.lastExpandable = ""
-			m.flash = "expanded"
-		}
 	default:
 		m.flash = "unknown command: " + input
 	}
@@ -2044,7 +2027,6 @@ func (m ChatModel) helpLines() []string {
 			"  /agents models     configure per-role agent models",
 			"  /theme             cycle chat themes",
 			"  /theme <name>      select default, low, light, or dusk",
-			"  /expand            expand the latest hidden detail payload",
 			"",
 			"Export and cleanup:",
 			"  /copy agent        copy transcript",
@@ -3908,7 +3890,7 @@ func (m ChatModel) View() string {
 			"Forge is ready.",
 			"",
 			"Ask for a code change, bugfix, or investigation.",
-			"Use /help for commands, /find to search, /expand for full results.",
+			"Use /help for commands, /find to search.",
 		}
 		chatLines = empty
 		chatTotalLines = len(empty)
