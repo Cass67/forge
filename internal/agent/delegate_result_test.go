@@ -72,3 +72,19 @@ func TestParseDelegateOutcomeStructuredEnvelopeDropsInvalidNextRole(t *testing.T
 		t.Fatalf("expected invalid next step to be dropped, got role=%q task=%q", outcome.NextRole, outcome.NextTask)
 	}
 }
+
+func TestParseDelegateOutcomeStructuredEnvelopeNormalizesCompletedStatus(t *testing.T) {
+	outcome := parseDelegateOutcome(`{"status":"completed","message":"Collected evidence.","artifact_kind":"evidence_summary","artifact":{"subject":"Rancid f5 objstor verify script missing"},"next_role":"none","next_task":"none"}`)
+	if !outcome.Structured {
+		t.Fatalf("expected structured outcome")
+	}
+	if !outcome.Completed() {
+		t.Fatalf("expected completed outcome")
+	}
+	if outcome.NextRole != "" || outcome.NextTask != "" {
+		t.Fatalf("expected invalid next step to be dropped, got role=%q task=%q", outcome.NextRole, outcome.NextTask)
+	}
+	if want := `{"subject":"Rancid f5 objstor verify script missing"}`; outcome.ContextText() != want {
+		t.Fatalf("context text = %q, want %q", outcome.ContextText(), want)
+	}
+}

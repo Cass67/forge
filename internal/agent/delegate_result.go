@@ -130,7 +130,7 @@ func stripJSONFence(raw string) string {
 
 func normalizeDelegateStatus(status string) string {
 	switch strings.TrimSpace(strings.ToLower(status)) {
-	case "complete":
+	case "complete", "completed":
 		return "complete"
 	case "blocked":
 		return "blocked"
