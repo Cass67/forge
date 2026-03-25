@@ -55,6 +55,16 @@ type dispatchScoutEvidence struct {
 	Turn        int
 }
 
+type scoutRepoReviewEvidenceState struct {
+	active      bool
+	workDir     string
+	topEntries  map[string]string
+	sawOverview bool
+	sawManifest bool
+	sawSource   bool
+	sawHealth   bool
+}
+
 const targetHistoryTokens = 12000
 
 func NewAgent(driver llm.Driver, toolReg *tools.Registry, approve tools.ApprovalFunc, workDir string, maxTurns int, renderer RenderTarget, loadedSkills []skills.Skill, state *chatstate.State) *Agent {
@@ -160,6 +170,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	currentDispatchTopic := ""
 	autoChainedArchitect := false
 	var currentScoutEvidence *dispatchScoutEvidence
+	scoutRepoReviewState := newScoutRepoReviewEvidenceState(a.workDir, userMessage)
 	if a.role == "dispatch" {
 		a.dispatchTurn++
 		currentDispatchTurn = a.dispatchTurn
@@ -258,11 +269,25 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				}
 				return fmt.Errorf("scout produced no evidence-gathering tool call before answering")
 			}
-			if a.isSubAgent && strings.TrimSpace(response) == "" {
+			if a.role == "scout" && scoutRepoReviewState.NeedsMoreEvidence() {
 				if turn+1 < a.maxTurns {
 					a.history = append(a.history, llm.Message{
 						Role:    llm.RoleUser,
-						Content: subAgentNoOutputNudgeMessage(a.role),
+						Content: scoutRepoReviewState.NudgeMessage(),
+					})
+					continue
+				}
+				return fmt.Errorf("scout stopped before gathering enough repo-review evidence")
+			}
+			if a.isSubAgent && strings.TrimSpace(response) == "" {
+				if turn+1 < a.maxTurns {
+					nudge := subAgentNoOutputNudgeMessage(a.role)
+					if a.role == "scout" && scoutRepoReviewState.NeedsMoreEvidence() {
+						nudge = scoutRepoReviewState.NudgeMessage()
+					}
+					a.history = append(a.history, llm.Message{
+						Role:    llm.RoleUser,
+						Content: nudge,
 					})
 					continue
 				}
@@ -318,6 +343,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 					call.Args["role"] = role
 					call.Args["_auto_chain"] = true
 				}
+				task = rewriteDispatchDelegateTask(role, task)
 				if enriched := enrichDispatchDelegateTask(role, task, a.dispatchResults, a.dispatchArtifacts, a.dispatchScratch); enriched != task {
 					task = enriched
 				}
@@ -350,6 +376,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			if err == nil && a.isSubAgent && subAgentFiltersRuntimeArtifacts(a.role) && !subAgentAllowsRuntimeArtifactInspection(a.role, userMessage) {
 				result = sanitizeRuntimeArtifactToolResult(call.Name, result)
 			}
+			scoutRepoReviewState.Observe(call, result)
 			if call.Name == "delegate" && err == nil {
 				role, _ := call.Args["role"].(string)
 				if normalized, malformed := normalizeDelegateResult(role, result); malformed {
@@ -629,6 +656,111 @@ func classifyDispatchIntent(task string) dispatchIntent {
 	default:
 		return dispatchIntentTrace
 	}
+}
+
+func rewriteDispatchDelegateTask(role, task string) string {
+	switch strings.TrimSpace(role) {
+	case "scout":
+		return rewriteDispatchScoutTask(task)
+	default:
+		return task
+	}
+}
+
+func rewriteDispatchScoutTask(task string) string {
+	lower := strings.ToLower(normalizePromptText(task))
+	if task == "" || strings.Contains(lower, "do not provide final recommendations") {
+		return task
+	}
+	if !dispatchScoutTaskNeedsEvidenceOnly(task) {
+		return task
+	}
+
+	task = replaceLabeledTaskSection(
+		task,
+		"OUTCOME:",
+		"OUTCOME: Evidence-backed findings only. Gather repository purpose, structure, tech stack, key modules, and concrete maintenance signals with file/path references so an architect can synthesize recommendations.",
+		"CONTEXT:",
+		"MUST NOT:",
+	)
+
+	const recommendationConstraint = "Do not provide final recommendations, cleanup actions, prioritization, or user-facing advice."
+	const evidenceDepthConstraint = "Read at least one relevant file or search result before concluding; do not base a repository review on directory listings alone."
+
+	switch {
+	case strings.Contains(task, "MUST NOT:"):
+		if !strings.Contains(strings.ToLower(normalizePromptText(task)), strings.ToLower(recommendationConstraint)) {
+			task += " " + recommendationConstraint
+		}
+		if !strings.Contains(strings.ToLower(normalizePromptText(task)), strings.ToLower(evidenceDepthConstraint)) {
+			task += " " + evidenceDepthConstraint
+		}
+	default:
+		task += "\nMUST NOT: " + recommendationConstraint + " " + evidenceDepthConstraint
+	}
+	return task
+}
+
+func dispatchScoutTaskNeedsEvidenceOnly(task string) bool {
+	lower := strings.ToLower(normalizePromptText(task))
+	if containsAny(lower, []string{"evidence-backed findings only", "do not provide final recommendations"}) {
+		return false
+	}
+	repoReference := containsAny(lower, []string{"repo", "repository"})
+	repoReviewTopic := repoReference && containsAny(lower, []string{
+		"review",
+		"inspect",
+		"explain this repo",
+		"repo tour",
+		"repo overview",
+		"repo structure",
+		"repository structure",
+		"key packages",
+		"key modules",
+		"packages",
+		"entrypoint",
+		"entrypoints",
+		"tests",
+		"tooling",
+		"config",
+		"tech stack",
+		"maintenance smells",
+	})
+	recommendationAsk := containsAny(lower, []string{
+		"recommend",
+		"cleanup",
+		"improvement",
+		"changes i should make",
+		"what to change",
+		"priorit",
+		"actionable",
+		"maintenance smells",
+	})
+	return repoReviewTopic && recommendationAsk
+}
+
+func replaceLabeledTaskSection(task, label, replacement string, stopLabels ...string) string {
+	start := strings.Index(task, label)
+	if start < 0 {
+		if strings.TrimSpace(task) == "" {
+			return replacement
+		}
+		return strings.TrimRight(task, "\n") + "\n" + replacement
+	}
+	sectionStart := start + len(label)
+	end := len(task)
+	for _, stop := range stopLabels {
+		if stop == "" {
+			continue
+		}
+		if idx := strings.Index(task[sectionStart:], stop); idx >= 0 {
+			candidate := sectionStart + idx
+			if candidate < end {
+				end = candidate
+			}
+		}
+	}
+	return task[:start] + replacement + task[end:]
 }
 
 func resolveDispatchTopicKey(userMessage string, intent dispatchIntent, currentTurn int, latest dispatchScoutEvidence) string {
@@ -1116,6 +1248,328 @@ func scoutTaskRequiresEvidenceTools(task string) bool {
 		"evidence",
 		"codebase assessment",
 	})
+}
+
+func newScoutRepoReviewEvidenceState(workDir, task string) scoutRepoReviewEvidenceState {
+	return scoutRepoReviewEvidenceState{
+		active:     scoutTaskIsRepoReview(task),
+		workDir:    workDir,
+		topEntries: make(map[string]string),
+	}
+}
+
+func (s *scoutRepoReviewEvidenceState) Observe(call ToolCall, result string) {
+	if !s.active {
+		return
+	}
+
+	switch call.Name {
+	case "read_file":
+		if path, _ := call.Args["path"].(string); path != "" {
+			s.observePath(path)
+		}
+	case "list_dir":
+		if path, _ := call.Args["path"].(string); path != "" {
+			s.observePath(path)
+			if isRootRepoPath(s.workDir, path) {
+				s.observeTopEntries(result)
+			}
+		}
+	case "search":
+		if path, _ := call.Args["path"].(string); path != "" {
+			s.observePath(path)
+		}
+		s.observeResultPaths(result)
+	case "glob":
+		if path, _ := call.Args["path"].(string); path != "" {
+			s.observePath(path)
+		}
+		if pattern, _ := call.Args["pattern"].(string); pattern != "" {
+			s.observePath(pattern)
+		}
+	}
+}
+
+func (s *scoutRepoReviewEvidenceState) observeTopEntries(result string) {
+	for _, rawLine := range strings.Split(result, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "...") {
+			continue
+		}
+		entry := strings.Fields(line)[0]
+		if entry == "" || entry == "." || entry == ".." {
+			continue
+		}
+		s.recordTopEntry(entry)
+	}
+}
+
+func (s *scoutRepoReviewEvidenceState) observeResultPaths(result string) {
+	for _, rawLine := range strings.Split(result, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" {
+			continue
+		}
+		candidate := line
+		if idx := strings.Index(candidate, ":"); idx > 0 {
+			candidate = candidate[:idx]
+		}
+		candidate = strings.Fields(candidate)[0]
+		if strings.Contains(candidate, "/") || strings.Contains(candidate, "\\") {
+			s.observePath(candidate)
+		}
+	}
+}
+
+func (s *scoutRepoReviewEvidenceState) observePath(path string) {
+	rel := normalizeRepoReviewPath(s.workDir, path)
+	if rel == "" {
+		return
+	}
+	s.recordTopEntry(rel)
+	lower := strings.ToLower(rel)
+	base := strings.ToLower(filepath.Base(lower))
+
+	switch {
+	case isRepoOverviewPath(lower, base):
+		s.sawOverview = true
+	case isRepoManifestPath(base):
+		s.sawManifest = true
+	case isRepoSourcePath(lower, base):
+		s.sawSource = true
+	case isRepoHealthPath(lower, base):
+		s.sawHealth = true
+	}
+
+	if isRepoManifestPath(base) {
+		s.sawManifest = true
+	}
+	if isRepoSourcePath(lower, base) {
+		s.sawSource = true
+	}
+	if isRepoHealthPath(lower, base) {
+		s.sawHealth = true
+	}
+}
+
+func (s *scoutRepoReviewEvidenceState) recordTopEntry(path string) {
+	rel := normalizeRepoReviewPath(s.workDir, path)
+	if rel == "" {
+		return
+	}
+	first := rel
+	if idx := strings.Index(first, "/"); idx >= 0 {
+		first = first[:idx+1]
+	}
+	key := strings.ToLower(first)
+	if _, exists := s.topEntries[key]; !exists {
+		s.topEntries[key] = first
+	}
+}
+
+func (s scoutRepoReviewEvidenceState) NeedsMoreEvidence() bool {
+	if !s.active {
+		return false
+	}
+	if !s.sawOverview && !s.sawManifest {
+		return true
+	}
+	if s.hasTopEntry(repoReviewManifestCandidates...) && !s.sawManifest {
+		return true
+	}
+	if s.hasTopEntry(repoReviewSourceCandidates...) && !s.sawSource {
+		return true
+	}
+	if s.hasTopEntry(repoReviewHealthCandidates...) && !s.sawHealth {
+		return true
+	}
+	return false
+}
+
+func (s scoutRepoReviewEvidenceState) NudgeMessage() string {
+	targets := make([]string, 0, 3)
+	if s.hasTopEntry(repoReviewManifestCandidates...) && !s.sawManifest {
+		targets = append(targets, s.firstTopEntry(repoReviewManifestCandidates...))
+	}
+	if s.hasTopEntry(repoReviewSourceCandidates...) && !s.sawSource {
+		targets = append(targets, s.firstTopEntry(repoReviewSourceCandidates...))
+	}
+	if s.hasTopEntry(repoReviewHealthCandidates...) && !s.sawHealth {
+		targets = append(targets, s.firstTopEntry(repoReviewHealthCandidates...))
+	}
+	if !s.sawOverview && !s.sawManifest {
+		if overview := s.firstTopEntry(repoReviewOverviewCandidates...); overview != "" {
+			targets = append([]string{overview}, targets...)
+		}
+	}
+	if len(targets) == 0 {
+		return "Repo-review evidence is still incomplete. Inspect the next concrete manifest, source, or build/test target now instead of stopping."
+	}
+	return "Repo-review evidence is still incomplete. Inspect the next concrete targets now instead of stopping or running a recursive root listing: " + strings.Join(targets, ", ") + ". Use read_file or list_dir on those targets, then return findings only after the missing categories are covered."
+}
+
+func (s scoutRepoReviewEvidenceState) hasTopEntry(candidates ...string) bool {
+	for _, candidate := range candidates {
+		if _, ok := s.topEntries[strings.ToLower(candidate)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (s scoutRepoReviewEvidenceState) firstTopEntry(candidates ...string) string {
+	for _, candidate := range candidates {
+		if value, ok := s.topEntries[strings.ToLower(candidate)]; ok {
+			return value
+		}
+	}
+	return ""
+}
+
+var repoReviewOverviewCandidates = []string{
+	"README.md",
+	"README",
+	"ARCHITECTURE.md",
+	"docs/",
+}
+
+var repoReviewManifestCandidates = []string{
+	"go.mod",
+	"package.json",
+	"pyproject.toml",
+	"Cargo.toml",
+	"pom.xml",
+	"build.gradle",
+	"build.gradle.kts",
+	"composer.json",
+	"Gemfile",
+	"Pipfile",
+	"requirements.txt",
+}
+
+var repoReviewSourceCandidates = []string{
+	"cmd/",
+	"internal/",
+	"pkg/",
+	"src/",
+	"app/",
+	"lib/",
+	"main.go",
+}
+
+var repoReviewHealthCandidates = []string{
+	"BUILD.md",
+	"Makefile",
+	".golangci.yml",
+	".golangci.yaml",
+	".github/",
+	"ci/",
+	"test/",
+	"tests/",
+	"CONTRIBUTING.md",
+}
+
+func scoutTaskIsRepoReview(task string) bool {
+	lower := strings.ToLower(normalizePromptText(task))
+	return containsAny(lower, []string{
+		"repo review",
+		"repository review",
+		"inspect the repository",
+		"inspect the go repository",
+		"gather evidence about its purpose",
+		"gather repository purpose",
+		"tech stack",
+		"key modules",
+		"main packages/binaries",
+		"dependencies",
+		"test/build health",
+		"maintenance signals",
+		"cleanup opportunities",
+	})
+}
+
+func normalizeRepoReviewPath(workDir, path string) string {
+	path = strings.TrimSpace(filepath.ToSlash(path))
+	if path == "" || path == "." {
+		return "."
+	}
+	if filepath.IsAbs(path) {
+		if rel, err := filepath.Rel(workDir, path); err == nil {
+			path = filepath.ToSlash(rel)
+		}
+	}
+	path = strings.TrimPrefix(path, "./")
+	return filepath.ToSlash(filepath.Clean(path))
+}
+
+func isRootRepoPath(workDir, path string) bool {
+	rel := normalizeRepoReviewPath(workDir, path)
+	return rel == "."
+}
+
+func isRepoOverviewPath(lower, base string) bool {
+	switch {
+	case strings.HasPrefix(base, "readme"):
+		return true
+	case base == "architecture.md":
+		return true
+	case strings.HasPrefix(lower, "docs/"):
+		return true
+	default:
+		return false
+	}
+}
+
+func isRepoManifestPath(base string) bool {
+	return containsAny(base, []string{
+		"go.mod",
+		"package.json",
+		"pyproject.toml",
+		"cargo.toml",
+		"pom.xml",
+		"build.gradle",
+		"build.gradle.kts",
+		"composer.json",
+		"gemfile",
+		"pipfile",
+		"requirements.txt",
+	})
+}
+
+func isRepoSourcePath(lower, base string) bool {
+	switch {
+	case base == "main.go":
+		return true
+	case strings.HasPrefix(lower, "cmd/"),
+		strings.HasPrefix(lower, "internal/"),
+		strings.HasPrefix(lower, "pkg/"),
+		strings.HasPrefix(lower, "src/"),
+		strings.HasPrefix(lower, "app/"),
+		strings.HasPrefix(lower, "lib/"):
+		return true
+	default:
+		return false
+	}
+}
+
+func isRepoHealthPath(lower, base string) bool {
+	switch {
+	case strings.HasSuffix(base, "_test.go"):
+		return true
+	case base == "build.md",
+		base == "makefile",
+		base == ".golangci.yml",
+		base == ".golangci.yaml",
+		base == "contributing.md":
+		return true
+	case strings.HasPrefix(lower, ".github/"),
+		strings.HasPrefix(lower, "ci/"),
+		strings.HasPrefix(lower, "test/"),
+		strings.HasPrefix(lower, "tests/"):
+		return true
+	default:
+		return false
+	}
 }
 
 // estimateTokens returns a rough token count (~4 chars per token).
