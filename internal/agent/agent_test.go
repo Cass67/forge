@@ -1502,6 +1502,89 @@ func TestScoutRepoReviewBlockedAnswerRetriesUntilChecklistCovered(t *testing.T) 
 	}
 }
 
+func TestScoutRepoReviewBlockedAnswerRetriesWithoutTopLevelDiscovery(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Forge\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module forge\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "BUILD.md"), []byte("# Build\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "internal", "agent"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "internal", "agent", "agent.go"), []byte("package agent\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	driver := &inspectingDriver{
+		responses: []string{
+			"<tool_call>\n{\"name\": \"git_log\", \"args\": {\"count\": 8}}\n</tool_call>",
+			"<tool_call>\n{\"name\": \"glob\", \"args\": {\"pattern\": \"README.md\"}}\n</tool_call>",
+			"<tool_call>\n{\"name\": \"read_file\", \"args\": {\"path\": \"README.md\", \"start_line\": 1, \"end_line\": 20}}\n</tool_call>",
+			`{"status":"blocked","message":"Need manifest, source, and health evidence.","artifact_kind":"evidence","artifact":["README.md"],"next_role":"","next_task":""}`,
+			"<tool_call>\n{\"name\": \"read_file\", \"args\": {\"path\": \"go.mod\", \"start_line\": 1, \"end_line\": 20}}\n</tool_call>",
+			"<tool_call>\n{\"name\": \"list_dir\", \"args\": {\"path\": \"internal\", \"recursive\": false}}\n</tool_call>",
+			"<tool_call>\n{\"name\": \"read_file\", \"args\": {\"path\": \"BUILD.md\", \"start_line\": 1, \"end_line\": 20}}\n</tool_call>",
+			`{"status":"complete","message":"Repo evidence gathered.","artifact_kind":"evidence","artifact":"README.md, go.mod, internal/, BUILD.md","next_role":"","next_task":""}`,
+		},
+		checks: []func([]llm.Message) error{
+			nil,
+			nil,
+			nil,
+			nil,
+			func(messages []llm.Message) error {
+				joined := ""
+				for _, msg := range messages {
+					joined += msg.Content + "\n"
+				}
+				for _, want := range []string{
+					"Repo-review evidence is still incomplete.",
+					"list_dir on .",
+					"manifest/source/health",
+				} {
+					if !strings.Contains(joined, want) {
+						return fmt.Errorf("missing repo-review recovery nudge content %q in messages: %s", want, joined)
+					}
+				}
+				return nil
+			},
+		},
+	}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{
+		Name:        "git_log",
+		Description: "Show recent commit history (git log --oneline).",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			return "01ffccc latest rancid hour/day script\n", nil
+		},
+	})
+	reg.Register(tools.NewGlob(dir, nil))
+	reg.Register(tools.NewReadFile(dir))
+	reg.Register(tools.NewListDir(dir, nil))
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), dir, 12, renderer, nil, nil)
+	a.SetRole("scout")
+	a.isSubAgent = true
+
+	task := "TASK: Review the repository health and provide evidence-based findings on structure, code quality, testing/build setup, and obvious risks. OUTCOME: Evidence-backed findings only. Gather repository purpose, structure, tech stack, key modules, and concrete maintenance signals with file/path references so an architect can synthesize recommendations. MUST NOT: Modify files. Do not provide final recommendations, cleanup actions, prioritization, or user-facing advice. Read at least one relevant file or search result before concluding; do not base a repository review on directory listings alone."
+	if err := a.Run(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callIdx != 8 {
+		t.Fatalf("expected repo-review scout to continue after partial blocked evidence, got %d calls", driver.callIdx)
+	}
+	if got := output.String(); strings.Contains(got, "Need manifest, source, and health evidence.") {
+		t.Fatalf("blocked repo-review JSON should not be rendered while checklist is incomplete: %q", got)
+	}
+}
+
 func TestArchitectRetriesInsteadOfMixingToolCallsWithVisibleProse(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"read_file\", \"args\": {\"path\": \"repo_review_evidence.md\"}}\n</tool_call>\nI need the actual scout evidence contents to synthesize recommendations.",
