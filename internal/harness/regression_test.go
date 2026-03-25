@@ -56,7 +56,7 @@ func TestRegressionFixturesRouteWithoutEscalation(t *testing.T) {
 	}
 }
 
-func TestParaphraseDirectoryInspectRoutesLocally(t *testing.T) {
+func TestParaphraseDirectoryInspectRoutesThroughReaderWorker(t *testing.T) {
 	lines := loadParaphrases(t, filepath.Join("testdata", "paraphrases", "directory-inspect.txt"))
 	for _, input := range lines {
 		t.Run(input, func(t *testing.T) {
@@ -68,7 +68,7 @@ func TestParaphraseDirectoryInspectRoutesLocally(t *testing.T) {
 				t.Fatal("unexpected evaluation request")
 			}
 			step := Plan(class, SessionState{})
-			if step.Kind != StepLocal || step.Worker != WorkerNone {
+			if step.Kind != StepWorker || step.Worker != WorkerReader {
 				t.Fatalf("step = %#v", step)
 			}
 		})

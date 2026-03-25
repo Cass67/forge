@@ -40,6 +40,13 @@ func TestValidateWorkerResultRejectsInvalidReaderEvidenceKind(t *testing.T) {
 	}
 }
 
+func TestValidateWorkerResultRejectsReaderOutputWithoutConcreteEvidence(t *testing.T) {
+	_, err := ValidateWorkerResult(WorkerReader, `{"status":"complete","evidence":[{"kind":"note","summary":"This looks like a Go project."}],"coverage":"ambient context only","gaps":[],"suggested_next":"inspect files"}`)
+	if err == nil || !strings.Contains(err.Error(), "concrete evidence") {
+		t.Fatalf("expected concrete evidence error, got %v", err)
+	}
+}
+
 func TestValidateWorkerResultRejectsInvalidVerifierOutcome(t *testing.T) {
 	_, err := ValidateWorkerResult(WorkerVerifier, `{"status":"complete","checks":[{"name":"unit","outcome":"maybe"}],"failures":[],"confidence":"high"}`)
 	if err == nil || !strings.Contains(err.Error(), "verifier check outcome") {

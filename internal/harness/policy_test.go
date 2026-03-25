@@ -19,8 +19,25 @@ func TestAdmitWorkerAllowsExternalResearch(t *testing.T) {
 	}
 }
 
-func TestAdmitWorkerDefaultsToLocal(t *testing.T) {
-	worker, _, ok := AdmitWorker(Classification{Family: FamilyInspect, CanStayLocal: true}, SessionState{})
+func TestAdmitWorkerUsesReaderForPlainInspectTurns(t *testing.T) {
+	worker, reason, ok := AdmitWorker(Classification{Family: FamilyInspect, CanStayLocal: true}, SessionState{})
+	if !ok {
+		t.Fatal("expected reader worker admission")
+	}
+	if worker != WorkerReader {
+		t.Fatalf("worker = %q", worker)
+	}
+	if reason == "" {
+		t.Fatal("expected admission reason")
+	}
+}
+
+func TestAdmitWorkerKeepsEvaluativeInspectTurnsLocal(t *testing.T) {
+	worker, _, ok := AdmitWorker(Classification{
+		Family:          FamilyInspect,
+		CanStayLocal:    true,
+		WantsEvaluation: true,
+	}, SessionState{})
 	if ok {
 		t.Fatalf("unexpected worker admission: %q", worker)
 	}

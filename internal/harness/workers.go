@@ -71,6 +71,7 @@ func (m *Manager) Execute(ctx context.Context, task WorkerTask) (Observation, er
 	}
 	worker := agent.NewAgent(driver, reg, m.approve, m.workDir, workerMaxTurns(task.Kind), agent.NewHiddenWorkerRenderer(nil), nil, nil)
 	worker.SetRole(string(task.Kind))
+	worker.SetSubAgentMode(true)
 	worker.SetSystem(agent.BuildWorkerSystemPrompt(m.workDir, reg, string(task.Kind)))
 
 	var raw string
@@ -111,7 +112,7 @@ func (m *Manager) Execute(ctx context.Context, task WorkerTask) (Observation, er
 func workerToolAllowlist(kind WorkerKind) []string {
 	switch kind {
 	case WorkerReader:
-		return []string{"read_file", "glob", "search", "list_dir", "run_command", "git_log", "git_diff", "git_status", "think"}
+		return []string{"read_file", "glob", "search", "list_dir", "git_log", "git_diff", "git_status", "think"}
 	case WorkerEditor:
 		return []string{"read_file", "write_file", "edit_file", "glob", "search", "list_dir", "run_command", "git_diff", "git_status", "think"}
 	case WorkerVerifier:
