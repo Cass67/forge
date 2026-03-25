@@ -67,6 +67,18 @@ OUTCOME: [what done looks like]
 CONTEXT: [file paths, errors, prior findings]
 MUST NOT: [constraints]
 
+## Task Profile Labels
+
+When the scope is known, preserve or add these labels:
+SCOPE: single-file | focused-files | repo-review
+TARGET: exact file path
+TARGET_LANG: normalized language name
+TARGET_GLOB: matching-file selector such as **/*.py
+TOPIC: short focus such as code-quality, security, or performance
+EVIDENCE_MIN_READS: minimum matching files the scout should read before concluding
+
+Treat these labels as hard boundaries. Do not let broad repo wording override a narrower labeled scope.
+
 ## After delegation returns
 
 Do not present, summarize, rewrite, or analyze sub-agent results yourself.
@@ -114,6 +126,14 @@ Do not recommend code changes, plans, or prioritization.
 - Never inspect runtime-generated conversation artifacts such as debug logs, scratchpad files, session histories, or session logs unless the task explicitly asks for them.
 - If a tool result is truncated or noisy, switch to a narrower follow-up read/search instead of asking for pasted output or repeating the same broad call.
 
+## Task Profile
+
+If the task includes SCOPE, TARGET, TARGET_LANG, TARGET_GLOB, TOPIC, or EVIDENCE_MIN_READS labels, obey them before any natural-language heuristics.
+- SCOPE: single-file means read TARGET before concluding.
+- SCOPE: focused-files means start with TARGET_GLOB or TARGET_LANG, stay inside that slice, and read multiple matching files before concluding.
+- SCOPE: repo-review means gather cross-cutting repo evidence.
+- Do not let the words "repo" or "repository" override a narrower labeled scope.
+
 ## Self-Help Hierarchy
 
 Before saying "I couldn't find it":
@@ -155,6 +175,7 @@ Forbidden behaviors:
 - Your first working turn must contain tool calls or edits, not a plan.
 - If task context already contains scout or architect findings, use that context as your starting point instead of re-running the same broad discovery.
 - Do only non-overlapping work after another agent has already done the search or synthesis pass.
+- Treat SCOPE, TARGET, TARGET_LANG, TARGET_GLOB, and TOPIC labels as hard scope boundaries unless the task explicitly widens them.
 
 ## Self-Help Before Asking
 
@@ -236,6 +257,7 @@ Core rule: no diagnosis without evidence.
 - Your first working turn for a debugging task must contain tool calls, not a theory.
 - Prefer the shortest path to hard evidence: reproduce, inspect the failing file, or search for the exact symbol/error text.
 - Do not hand back a debugging plan when you still have read-only tools available to investigate.
+- Treat SCOPE, TARGET, TARGET_LANG, TARGET_GLOB, and TOPIC labels as hard scope boundaries unless the task explicitly widens them.
 
 ## Reasoning
 
@@ -283,6 +305,7 @@ const architectPrompt = `You are forge's architect agent. You break down complex
 - Your first working turn should use read/search tools unless the provided context is already sufficient to plan from directly.
 - If scout or doctor already produced the relevant evidence, synthesize from that evidence instead of reopening the investigation.
 - Do not turn gathered findings into generic user-facing prose; your job is plan structure, prioritization, and decision framing.
+- Treat SCOPE, TARGET, TARGET_LANG, TARGET_GLOB, and TOPIC labels as hard scope boundaries unless the task explicitly widens them.
 
 ## Planning Discipline
 
