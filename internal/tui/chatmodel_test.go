@@ -2772,15 +2772,62 @@ func TestChatModelViewShowsChatScrollbarWhenOverflowing(t *testing.T) {
 	}
 }
 
-func TestChatModelViewShowsToolsScrollbarWhenOverflowing(t *testing.T) {
+func TestChatModelStreamingReplyKeepsLatestUserTurnVisible(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 12})
+	m = updated.(ChatModel)
+
+	for i := 0; i < 8; i++ {
+		m.AddMessage(ChatMessage{
+			Kind:    MsgAgent,
+			Header:  fmt.Sprintf("Agent • 12:00:%02d", i),
+			Content: strings.Repeat("previous context line ", 6),
+		})
+	}
+
+	m.inputBuf = "question should stay visible"
+	m.inputPos = len([]rune(m.inputBuf))
+	updated, _ = m.submitInput()
+	m = updated.(ChatModel)
+
+	m.AppendToLastAgentLabeled(strings.Repeat("streaming reply line that wraps and grows the transcript\n", 10), "Forge")
+	updated, _ = m.Update(chatTickMsg(time.Now()))
+	m = updated.(ChatModel)
+	if !strings.Contains(m.chatContent, "question should stay visible") {
+		t.Fatalf("expected chat content to still contain the latest user turn, got:\n%s", strippedLine(m.chatContent))
+	}
+	if !strings.Contains(m.chatViewport.View(), "question should stay visible") {
+		t.Fatalf("expected viewport content to contain the latest user turn (anchor=%d follow=%d y=%d), got:\n%s", m.turnAnchorMessageIndex, m.followMode, m.chatViewport.YOffset, strippedLine(m.chatViewport.View()))
+	}
+
+	if got := strippedLine(m.View()); !strings.Contains(got, "question should stay visible") {
+		t.Fatalf("expected latest user turn to remain visible during streaming reply (anchor=%d follow=%d y=%d h=%d), got:\n%s", m.turnAnchorMessageIndex, m.followMode, m.chatViewport.YOffset, m.chatViewport.Height, got)
+	}
+}
+
+func TestChatModelViewUsesSingleColumnPromptShell(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
+	m = updated.(ChatModel)
+
+	got := strippedLine(m.View())
+	if strings.ContainsAny(got, "╭╮╰╯") {
+		t.Fatalf("expected unboxed shell layout, got:\n%s", got)
+	}
+	if !strings.Contains(got, "> Type a message") {
+		t.Fatalf("expected inline prompt placeholder, got:\n%s", got)
+	}
+}
+
+func TestChatModelViewKeepsHiddenToolBufferOutOfSingleColumnShell(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 120
 	m.height = 16
 	m.toolsVisible = true
 	setToolsContent(&m, strings.Repeat("tool output line\n", 40))
 	v := m.View()
-	if !strings.Contains(v, "█") {
-		t.Fatal("expected visible scrollbar thumb in tools pane")
+	if strings.Contains(v, "tool output line") {
+		t.Fatalf("expected hidden tools buffer to stay out of the main shell, got: %s", v)
 	}
 }
 
@@ -2944,7 +2991,7 @@ func TestChatModelSessionsOverlayMouseRestoresSession(t *testing.T) {
 	}
 }
 
-func TestChatModelMouseClickFocusesToolsPane(t *testing.T) {
+func TestChatModelMouseClickDoesNotFocusHiddenToolsPane(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
 	m = updated.(ChatModel)
@@ -2956,12 +3003,12 @@ func TestChatModelMouseClickFocusesToolsPane(t *testing.T) {
 	updated, _ = m.Update(tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 	m = updated.(ChatModel)
 
-	if m.paneFocus != focusTools {
-		t.Fatal("expected mouse click in tools pane to focus tools")
+	if m.paneFocus != focusChat {
+		t.Fatal("expected hidden tools pane to stay unfocusable")
 	}
 }
 
-func TestChatModelMouseWheelScrollsToolsPane(t *testing.T) {
+func TestChatModelMouseWheelDoesNotScrollHiddenToolsPane(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 16})
 	m = updated.(ChatModel)
@@ -2975,12 +3022,12 @@ func TestChatModelMouseWheelScrollsToolsPane(t *testing.T) {
 	updated, _ = m.Update(tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown})
 	m = updated.(ChatModel)
 
-	if m.toolsScroll == 0 {
-		t.Fatal("expected mouse wheel in tools pane to scroll tools")
+	if m.toolsScroll != 0 {
+		t.Fatal("expected hidden tools pane to ignore wheel scrolling")
 	}
 }
 
-func TestChatModelMouseClickScrollbarScrollsToolsPane(t *testing.T) {
+func TestChatModelMouseClickScrollbarDoesNotScrollHiddenToolsPane(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 16})
 	m = updated.(ChatModel)
@@ -2996,8 +3043,8 @@ func TestChatModelMouseClickScrollbarScrollsToolsPane(t *testing.T) {
 	updated, _ = m.Update(tea.MouseMsg{X: scrollbarX, Y: clickY, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
 	m = updated.(ChatModel)
 
-	if m.toolsScroll == 0 {
-		t.Fatal("expected clicking tools scrollbar to change tools scroll")
+	if m.toolsScroll != 0 {
+		t.Fatal("expected hidden tools pane scrollbar clicks to do nothing")
 	}
 }
 

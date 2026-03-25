@@ -155,9 +155,17 @@ const (
 	focusTools
 )
 
+type chatFollowMode int
+
+const (
+	followBottom chatFollowMode = iota
+	followTurnStart
+	followManual
+)
+
 const chatHeaderHeight = 1
-const chatPaneBorderHeight = 2
-const chatInputHeight = 3
+const chatPaneBorderHeight = 0
+const chatInputHeight = 1
 const chatStatusHeight = 1
 
 type subAgentSummary struct {
@@ -182,8 +190,10 @@ type ChatModel struct {
 
 	chatViewport viewport.Model
 	chatContent  string
+	chatVisible  string
 	paneFocus    chatPaneFocus
 	toolsScroll  int
+	followMode   chatFollowMode
 
 	toolsSections   []toolsSection
 	toolsVisible    bool
@@ -206,6 +216,7 @@ type ChatModel struct {
 	recentActivityRole     string
 	recentActivityLines    []string
 	recentActivityIndex    int
+	turnAnchorMessageIndex int
 	pendingSubAgentSummary *subAgentSummary
 	skills                 []skills.Skill
 	autoSkillsMode         string
@@ -296,6 +307,7 @@ func NewChatModel(cfg ChatLiveConfig) ChatModel {
 		copyFn:              copyToClipboard,
 		themeID:             "default",
 		chatViewport:        vp,
+		followMode:          followBottom,
 		status:              "ready",
 		skills:              cfg.Skills,
 		autoSkillsMode:      cfg.AutoSkillsMode,
@@ -304,6 +316,7 @@ func NewChatModel(cfg ChatLiveConfig) ChatModel {
 		paneFocus:           focusChat,
 		agentsEnabled:       cfg.AgentsEnabled,
 		recentActivityIndex: -1,
+		turnAnchorMessageIndex: -1,
 		modelsList:          uniqueStringsPreserveOrder(cfg.AvailableModels),
 		modelsFiltered:      uniqueStringsPreserveOrder(cfg.AvailableModels),
 		providersList:       append([]ProviderOption(nil), cfg.Providers...),
@@ -456,6 +469,33 @@ func (m *ChatModel) AppendToLastAgentLabeled(text, label string) {
 	m.viewportDirty = true
 }
 
+func (m *ChatModel) anchorLatestTurnToBottom() {
+	if len(m.messages) == 0 {
+		m.turnAnchorMessageIndex = -1
+		m.followMode = followBottom
+		return
+	}
+	m.turnAnchorMessageIndex = len(m.messages) - 1
+	m.followMode = followTurnStart
+}
+
+func (m *ChatModel) markManualScroll() {
+	m.followMode = followManual
+}
+
+func (m *ChatModel) applyViewportFollow(totalLines int) {
+	maxScroll := max(0, totalLines-max(1, m.chatViewport.Height))
+	if m.followMode == followManual {
+		m.chatViewport.YOffset = clamp(m.chatViewport.YOffset, 0, maxScroll)
+		return
+	}
+	if m.followMode == followTurnStart {
+		m.chatViewport.GotoTop()
+		return
+	}
+	m.chatViewport.GotoBottom()
+}
+
 func (m ChatModel) delegateResultLabel() string {
 	if m.pendingSubAgentSummary != nil && strings.TrimSpace(m.pendingSubAgentSummary.role) != "" {
 		return displayAgentLabel(m.pendingSubAgentSummary.role)
@@ -479,25 +519,41 @@ func (m *ChatModel) refreshViewport() {
 	theme := m.theme()
 
 	var blocks []string
-	for _, msg := range m.messages {
+	messageBlockIndex := make([]int, len(m.messages))
+	for i := range messageBlockIndex {
+		messageBlockIndex[i] = -1
+	}
+	for i, msg := range m.messages {
 		// Skip agent/forge boxes with no content — they render as blank space
 		// (created before first token arrives; if error occurs, they stay empty)
 		if (msg.Kind == MsgAgent || msg.Kind == MsgForge) && strings.TrimSpace(msg.Content) == "" {
 			continue
 		}
-		blocks = append(blocks, msg.Render(contentWidth, theme))
+		messageBlockIndex[i] = len(blocks)
+		rendered := msg.Render(contentWidth, theme)
+		blocks = append(blocks, rendered)
 	}
 	content := strings.Join(blocks, "\n\n")
+	visibleBlocks := blocks
+	if m.followMode == followTurnStart {
+		idx := m.turnAnchorMessageIndex
+		if idx >= 0 && idx < len(messageBlockIndex) && messageBlockIndex[idx] >= 0 {
+			visibleBlocks = blocks[messageBlockIndex[idx]:]
+		}
+	}
+	visible := strings.Join(visibleBlocks, "\n\n")
 	m.chatContent = content
-	m.chatViewport.SetContent(content)
-	m.chatViewport.GotoBottom()
+	m.chatVisible = visible
+	m.chatViewport.SetContent(visible)
+	totalLines := strings.Count(visible, "\n") + 1
+	if totalLines == 0 {
+		totalLines = 1
+	}
+	m.applyViewportFollow(totalLines)
 }
 
 func (m ChatModel) chatPaneWidth() int {
-	if !m.toolsVisible {
-		return m.width
-	}
-	return max(20, m.width*7/10)
+	return m.width
 }
 
 func (m ChatModel) chatContentWidth() int {
@@ -518,7 +574,7 @@ func (m ChatModel) mouseContext() chatLayoutMouseContext {
 	headerH := chatHeaderHeight
 	chatPaneWidth := m.chatPaneWidth()
 	chatBodyHeight := max(1, m.chatViewport.Height)
-	chatH := chatBodyHeight + 2
+	chatH := chatBodyHeight + chatPaneBorderHeight
 	ctx := chatLayoutMouseContext{
 		chatX:  0,
 		chatY:  headerH,
@@ -637,6 +693,7 @@ func (m ChatModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.paneFocus = focusChat
+			m.markManualScroll()
 			m.chatViewport.ScrollUp(scrollStep)
 			return m, nil
 		case tea.MouseButtonWheelDown:
@@ -646,6 +703,7 @@ func (m ChatModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.paneFocus = focusChat
+			m.markManualScroll()
 			m.chatViewport.ScrollDown(scrollStep)
 			return m, nil
 		}
@@ -655,7 +713,8 @@ func (m ChatModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		switch {
 		case ctx.inChatScrollbar:
 			m.paneFocus = focusChat
-			total := len(strings.Split(m.chatContent, "\n"))
+			m.markManualScroll()
+			total := len(strings.Split(m.chatVisible, "\n"))
 			visible := max(1, m.chatViewport.Height)
 			thumbTop, thumbH := scrollbarThumb(ctx.chatY+2, max(1, visible-2), total, visible, m.chatViewport.YOffset)
 			switch {
@@ -1373,9 +1432,11 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.inputPos = len([]rune(m.inputBuf))
 	case tea.KeyPgUp:
 		m.resetSlashCompletion()
+		m.markManualScroll()
 		m.chatViewport.HalfPageUp()
 	case tea.KeyPgDown:
 		m.resetSlashCompletion()
+		m.markManualScroll()
 		m.chatViewport.HalfPageDown()
 	case tea.KeyF1:
 		m.helpVisible = true
@@ -1485,6 +1546,8 @@ func (m ChatModel) submitInput() (tea.Model, tea.Cmd) {
 		Header:  "You • " + stamp,
 		Content: input,
 	})
+	m.anchorLatestTurnToBottom()
+	m.refreshViewport()
 
 	m.inputBuf = ""
 	m.inputPos = 0
@@ -1633,6 +1696,8 @@ func (m ChatModel) submitSkillInput(s skills.Skill, turnLabel, msg string) (tea.
 		Header:  "Forge • " + stamp,
 		Content: turnLabel,
 	})
+	m.anchorLatestTurnToBottom()
+	m.refreshViewport()
 
 	m.inputBuf = ""
 	m.inputPos = 0
@@ -1681,11 +1746,15 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.messages = nil
 		m.resetRecentActivity()
 		m.clearToolsSections()
+		m.turnAnchorMessageIndex = -1
+		m.followMode = followBottom
 		m.refreshViewport()
 		m.flash = "conversation cleared"
 	case input == "/clear agent":
 		m.messages = nil
 		m.resetRecentActivity()
+		m.turnAnchorMessageIndex = -1
+		m.followMode = followBottom
 		m.refreshViewport()
 		m.flash = "conversation cleared"
 	case input == "/clear tools":
@@ -3237,7 +3306,7 @@ func scrollbarColumn(totalLines, visibleLines, scroll, height int) []string {
 	}
 	col := make([]string, height)
 	for i := range col {
-		col[i] = "│"
+		col[i] = " "
 	}
 	if totalLines <= visibleLines || visibleLines <= 0 {
 		return col
@@ -3717,6 +3786,7 @@ func (m *ChatModel) applySnapshot(s chatSessionSnapshot) {
 	m.model = s.Model
 	m.workDir = s.WorkDir
 	m.chatContent = s.AgentBuf
+	m.chatVisible = s.AgentBuf
 	m.toolsSections = nil
 	if s.ToolsBuf != "" {
 		m.toolsSections = []toolsSection{{buf: s.ToolsBuf}}
@@ -3728,11 +3798,13 @@ func (m *ChatModel) applySnapshot(s chatSessionSnapshot) {
 	m.sessionUsage = s.SessionUsage
 	m.resetProviderDiagnostics()
 	m.syncStatusData()
+	m.turnAnchorMessageIndex = -1
+	m.followMode = followBottom
 	m.messages = nil
 	if strings.TrimSpace(s.AgentBuf) != "" {
 		m.messages = append(m.messages, ChatMessage{Kind: MsgStatus, Content: s.AgentBuf})
 	}
-	m.chatViewport.SetContent(m.chatContent)
+	m.chatViewport.SetContent(m.chatVisible)
 }
 
 func (m *ChatModel) saveSession(name string) error {
@@ -3775,19 +3847,17 @@ func (m ChatModel) View() string {
 	headerData := m.statusSnapshot()
 	header := renderStatusHeader(theme, headerData, m.width)
 
-	chatPaneWidth := m.chatPaneWidth()
 	chatBodyHeight := max(1, m.chatViewport.Height)
-	chatInnerWidth := max(1, chatPaneWidth-2)
-	chatContentWidth := max(1, chatInnerWidth-1)
+	chatContentWidth := max(1, m.chatContentWidth())
 	chatView := m.chatViewport.View()
 	chatLines := strings.Split(chatView, "\n")
-	chatTotalLines := len(strings.Split(m.chatContent, "\n"))
-	if strings.TrimSpace(m.chatContent) == "" {
+	chatTotalLines := len(strings.Split(m.chatVisible, "\n"))
+	if strings.TrimSpace(m.chatVisible) == "" {
 		empty := []string{
 			"Forge is ready.",
 			"",
-			"Type a coding task or use /help.",
-			"Common commands: /provider, /models, /sessions, /find, /expand.",
+			"Ask for a code change, bugfix, or investigation.",
+			"Use /help for commands, /find to search, /expand for full results.",
 		}
 		chatLines = empty
 		chatTotalLines = len(empty)
@@ -3797,47 +3867,9 @@ func (m ChatModel) View() string {
 	chatPane := lipgloss.NewStyle().
 		Background(theme.AppBG).
 		Foreground(theme.Text).
-		Width(chatPaneWidth).
+		Width(m.width).
 		Height(chatBodyHeight).
 		Render(chatBody)
-
-	// Side-by-side with tools pane if visible and has content
-	if m.toolsVisible && len(m.toolsSections) > 0 {
-		toolsWidth := m.width - chatPaneWidth
-		toolsInnerWidth := max(1, toolsWidth-2)
-		toolsContentWidth := max(1, toolsInnerWidth-1)
-		wrappedTools := lipgloss.NewStyle().Width(toolsContentWidth).Render(m.renderedToolsBuf())
-		toolLines := strings.Split(wrappedTools, "\n")
-		toolOffset := min(m.toolsScroll, max(0, len(toolLines)-chatBodyHeight))
-		visibleToolLines := toolLines
-		if len(visibleToolLines) > chatBodyHeight {
-			visibleToolLines = visibleToolLines[toolOffset:]
-		}
-		toolScrollbar := scrollbarColumn(len(toolLines), chatBodyHeight, toolOffset, chatBodyHeight)
-		toolsBody := joinWithScrollbar(visibleToolLines, toolScrollbar, toolsContentWidth, chatBodyHeight)
-		toolsBorder := lipgloss.Color("#30363d")
-		if m.paneFocus == focusTools {
-			toolsBorder = theme.BorderFocus
-		} else {
-			toolsBorder = theme.Border
-		}
-		toolsStyle := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(toolsBorder).
-			Background(theme.PanelBG).
-			Foreground(theme.TextDim).
-			Width(toolsInnerWidth).
-			Height(max(1, m.chatViewport.Height-2))
-		toolsPane := toolsStyle.Render(toolsBody)
-		chatPane = lipgloss.JoinHorizontal(lipgloss.Top, chatPane, toolsPane)
-	}
-
-	inputStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.Border).
-		Background(theme.PanelBG).
-		Foreground(theme.Text).
-		Width(m.width - 4)
 
 	var inputBox string
 	if m.pendingApproval != nil {
@@ -3850,11 +3882,18 @@ func (m ChatModel) View() string {
 		approvalText := fmt.Sprintf("Tool: %s\n%s\n\n[y]es / [n]o", m.pendingApproval.Tool, m.pendingApproval.Summary)
 		inputBox = approvalStyle.Render(approvalText)
 	} else {
-		inputContent := m.inputBuf
+		inputContent := strings.TrimSpace(m.inputBuf)
+		inputStyle := lipgloss.NewStyle().
+			Background(theme.AppBG).
+			Width(m.width)
 		if inputContent == "" {
-			inputContent = "forge> Type a message..."
+			inputStyle = inputStyle.Foreground(theme.TextDim)
+			inputContent = "> Type a message or /help"
+		} else {
+			inputStyle = inputStyle.Foreground(theme.Text)
+			inputContent = "> " + m.inputBuf
 		}
-		inputBox = inputStyle.Render(inputContent)
+		inputBox = inputStyle.Render(fitCell(inputContent, m.width))
 	}
 
 	// Status bar with spinner and flash
