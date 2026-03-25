@@ -18,15 +18,15 @@ const (
 type RuntimeState string
 
 const (
-	StateIntake    RuntimeState = "intake"
-	StateClassify  RuntimeState = "classify"
-	StatePlanStep  RuntimeState = "plan_step"
-	StateAct       RuntimeState = "act"
-	StateObserve   RuntimeState = "observe"
-	StateDecide    RuntimeState = "decide"
-	StateRespond   RuntimeState = "respond"
-	StateComplete  RuntimeState = "complete"
-	StateBlocked   RuntimeState = "blocked"
+	StateIntake   RuntimeState = "intake"
+	StateClassify RuntimeState = "classify"
+	StatePlanStep RuntimeState = "plan_step"
+	StateAct      RuntimeState = "act"
+	StateObserve  RuntimeState = "observe"
+	StateDecide   RuntimeState = "decide"
+	StateRespond  RuntimeState = "respond"
+	StateComplete RuntimeState = "complete"
+	StateBlocked  RuntimeState = "blocked"
 )
 
 type StepKind string
@@ -81,11 +81,21 @@ type Step struct {
 	Summary string
 }
 
+type WorkerTask struct {
+	Kind           WorkerKind
+	Objective      string
+	Context        string
+	TopicKey       string
+	StopCondition  string
+	EvidenceBudget int
+}
+
 type Observation struct {
 	Status   ObservationStatus
 	Response string
 	Summary  string
 	TopicKey string
+	Artifact any
 	Err      error
 }
 
@@ -101,6 +111,13 @@ type TurnResult struct {
 	Observation    Observation
 	Decision       Decision
 	Trace          []TraceRecord
+}
+
+type ValidatedWorkerResult struct {
+	Parsed   any
+	Response string
+	Summary  string
+	Status   ObservationStatus
 }
 
 type EvidenceSnapshot struct {

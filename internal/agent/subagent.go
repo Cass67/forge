@@ -18,9 +18,26 @@ type spawnedSubAgentRenderer struct {
 	base RenderTarget
 }
 
+type silentRenderTarget struct{}
+
 func suppressSpawnedSubAgentTokens(base RenderTarget) RenderTarget {
 	return spawnedSubAgentRenderer{base: base}
 }
+
+func NewHiddenWorkerRenderer(base RenderTarget) RenderTarget {
+	if base == nil {
+		base = silentRenderTarget{}
+	}
+	return suppressSpawnedSubAgentTokens(base)
+}
+
+func (silentRenderTarget) AgentToken(string)                       {}
+func (silentRenderTarget) AgentText(string)                        {}
+func (silentRenderTarget) ToolCall(string, string)                 {}
+func (silentRenderTarget) ToolResult(string, string, string, bool) {}
+func (silentRenderTarget) Stats(time.Duration, llm.Usage)          {}
+func (silentRenderTarget) Error(string)                            {}
+func (silentRenderTarget) Info(string)                             {}
 
 func (r spawnedSubAgentRenderer) AgentToken(text string) {}
 

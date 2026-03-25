@@ -36,10 +36,6 @@ var (
 	verifyTokens = tokenSet(
 		"verify", "validation", "validate", "confirm", "check", "prove", "test",
 	)
-	researchTokens = tokenSet(
-		"latest", "recent", "news", "docs", "documentation", "internet", "web",
-		"online", "lookup", "look", "up", "search",
-	)
 	transformTokens = tokenSet(
 		"rewrite", "rephrase", "translate", "convert", "format", "transform",
 	)
@@ -154,6 +150,9 @@ func wantsInspection(tokens map[string]struct{}, lower string) bool {
 	if containsAny(tokens, inspectVerbs) {
 		return true
 	}
+	if hasToken(tokens, "search") {
+		return true
+	}
 	return strings.Contains(lower, "take me through") || strings.Contains(lower, "go over")
 }
 
@@ -184,10 +183,22 @@ func wantsVerification(tokens map[string]struct{}, lower string) bool {
 }
 
 func wantsResearch(tokens map[string]struct{}, lower string) bool {
-	if containsAny(tokens, researchTokens) {
+	if hasToken(tokens, "internet") || hasToken(tokens, "online") {
 		return true
 	}
-	return strings.Contains(lower, "look up")
+	if strings.Contains(lower, "look up") || strings.Contains(lower, "search the web") || strings.Contains(lower, "web search") || strings.Contains(lower, "search online") {
+		return true
+	}
+	if strings.Contains(lower, "latest docs") || strings.Contains(lower, "latest documentation") || strings.Contains(lower, "official docs") || strings.Contains(lower, "official documentation") {
+		return true
+	}
+	if (hasToken(tokens, "latest") || hasToken(tokens, "recent")) && (hasToken(tokens, "docs") || hasToken(tokens, "documentation") || hasToken(tokens, "news")) {
+		return true
+	}
+	if hasToken(tokens, "web") && (hasToken(tokens, "docs") || hasToken(tokens, "documentation") || hasToken(tokens, "site")) {
+		return true
+	}
+	return false
 }
 
 func looksLikeReferentialFollowUp(tokens map[string]struct{}, lower string) bool {
