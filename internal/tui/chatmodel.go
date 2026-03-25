@@ -300,7 +300,7 @@ func NewChatModel(cfg ChatLiveConfig) ChatModel {
 		skills:              cfg.Skills,
 		autoSkillsMode:      cfg.AutoSkillsMode,
 		state:               state,
-		toolsVisible:        true,
+		toolsVisible:        false,
 		paneFocus:           focusChat,
 		agentsEnabled:       cfg.AgentsEnabled,
 		recentActivityIndex: -1,
@@ -348,63 +348,57 @@ func (m *ChatModel) AddMessage(msg ChatMessage) {
 }
 
 func (m *ChatModel) AddWorkingMessage(content string) {
-	content = strings.TrimSpace(content)
-	if content == "" {
-		return
-	}
-	if len(m.messages) > 0 {
-		last := m.messages[len(m.messages)-1]
-		if last.Kind == MsgWorking && strings.TrimSpace(last.Content) == content {
-			return
-		}
-	}
-	m.messages = append(m.messages, ChatMessage{
-		Kind:    MsgWorking,
-		Header:  "Working",
-		Content: content,
-	})
-	m.refreshViewport()
+	m.upsertWorkingMessage(strings.TrimSpace(content))
 }
-
-const recentActivityLimit = 3
 
 func (m *ChatModel) UpdateRecentActivity(role, content string) {
 	role = strings.TrimSpace(role)
-	content = formatRecentActivityLine(role, content)
-	if role == "" || content == "" {
+	content = formatWorkingLine(role, content)
+	if content == "" {
 		return
 	}
-
-	if role != m.recentActivityRole || !m.hasLiveRecentActivityBlock() {
-		m.recentActivityRole = role
-		m.recentActivityLines = []string{content}
-		m.messages = append(m.messages, ChatMessage{
-			Kind:    MsgWorking,
-			Header:  "Recent activity • " + role,
-			Content: renderRecentActivityLines(m.recentActivityLines),
-		})
-		m.recentActivityIndex = len(m.messages) - 1
-		m.refreshViewport()
-		return
-	}
-
-	if len(m.recentActivityLines) > 0 && m.recentActivityLines[len(m.recentActivityLines)-1] == content {
-		return
-	}
-	m.recentActivityLines = append(m.recentActivityLines, content)
-	if len(m.recentActivityLines) > recentActivityLimit {
-		m.recentActivityLines = m.recentActivityLines[len(m.recentActivityLines)-recentActivityLimit:]
-	}
-	m.messages[m.recentActivityIndex].Content = renderRecentActivityLines(m.recentActivityLines)
-	m.refreshViewport()
+	m.upsertWorkingMessage(content)
 }
 
-func (m *ChatModel) hasLiveRecentActivityBlock() bool {
+func (m *ChatModel) hasLiveWorkingMessage() bool {
 	if m.recentActivityIndex < 0 || m.recentActivityIndex >= len(m.messages) {
 		return false
 	}
 	msg := m.messages[m.recentActivityIndex]
-	return msg.Kind == MsgWorking && msg.Header == "Recent activity • "+m.recentActivityRole
+	return msg.Kind == MsgWorking
+}
+
+func (m *ChatModel) upsertWorkingMessage(content string) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return
+	}
+	if m.hasLiveWorkingMessage() {
+		if strings.TrimSpace(m.messages[m.recentActivityIndex].Content) == content {
+			return
+		}
+		m.messages[m.recentActivityIndex].Content = content
+		m.messages[m.recentActivityIndex].Header = ""
+		m.refreshViewport()
+		return
+	}
+	m.messages = append(m.messages, ChatMessage{
+		Kind:    MsgWorking,
+		Content: content,
+	})
+	m.recentActivityIndex = len(m.messages) - 1
+	m.refreshViewport()
+}
+
+func (m *ChatModel) clearWorkingMessage() {
+	if !m.hasLiveWorkingMessage() {
+		m.resetRecentActivity()
+		return
+	}
+	idx := m.recentActivityIndex
+	m.messages = append(m.messages[:idx], m.messages[idx+1:]...)
+	m.resetRecentActivity()
+	m.refreshViewport()
 }
 
 func (m *ChatModel) resetRecentActivity() {
@@ -422,18 +416,16 @@ func compactStatusText(content string) string {
 	return truncate(content, 200)
 }
 
-func formatRecentActivityLine(role, content string) string {
+func formatWorkingLine(role, content string) string {
 	content = strings.TrimSpace(content)
-	prefix := role + ": "
-	content = strings.TrimPrefix(content, prefix)
+	if role != "" {
+		content = strings.TrimPrefix(content, role+": ")
+		content = role + ": " + content
+	}
 	if content == "" {
 		return ""
 	}
-	return "• " + content
-}
-
-func renderRecentActivityLines(lines []string) string {
-	return strings.Join(lines, "\n")
+	return content
 }
 
 func (m *ChatModel) AppendToLastAgent(text string) {
@@ -441,6 +433,9 @@ func (m *ChatModel) AppendToLastAgent(text string) {
 }
 
 func (m *ChatModel) AppendToLastAgentLabeled(text, label string) {
+	if m.hasLiveWorkingMessage() {
+		m.clearWorkingMessage()
+	}
 	if len(m.messages) == 0 || m.messages[len(m.messages)-1].Kind != MsgAgent {
 		stamp := time.Now().Format("15:04:05")
 		displayLabel := label
@@ -474,7 +469,7 @@ func (m *ChatModel) refreshViewport() {
 		}
 		blocks = append(blocks, msg.Render(contentWidth, theme))
 	}
-	content := strings.Join(blocks, "\n")
+	content := strings.Join(blocks, "\n\n")
 	m.chatContent = content
 	m.chatViewport.SetContent(content)
 	m.chatViewport.GotoBottom()
@@ -489,8 +484,7 @@ func (m ChatModel) chatPaneWidth() int {
 
 func (m ChatModel) chatContentWidth() int {
 	paneWidth := m.chatPaneWidth()
-	innerWidth := max(1, paneWidth-2)
-	return max(10, innerWidth-1)
+	return max(10, paneWidth-1)
 }
 
 type chatLayoutMouseContext struct {
@@ -1001,16 +995,7 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		m.AppendToLastAgentLabeled(ev.Text, ev.Agent)
 	case llm.EventToolCall:
 		if ev.Agent == "runtime" {
-			if strings.HasPrefix(ev.Text, "delegating to ") {
-				stamp := time.Now().Format("15:04:05")
-				m.AddMessage(ChatMessage{
-					Kind:    MsgAgent,
-					Header:  "Dispatch • " + stamp,
-					Content: ev.Text,
-				})
-			} else {
-				m.AddWorkingMessage(ev.Text)
-			}
+			m.AddWorkingMessage(ev.Text)
 			return m, nil
 		}
 		sec := m.currentToolsSection("")
@@ -1028,10 +1013,7 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		}
 		if ev.Agent == "delegate" && m.pendingSubAgentSummary != nil {
 			summary := m.pendingSubAgentSummary
-			m.AddMessage(ChatMessage{
-				Kind:    MsgStatus,
-				Content: fmt.Sprintf("%s complete • %d turns • %d tools", summary.role, summary.turns, summary.tools),
-			})
+			m.clearWorkingMessage()
 			if !ev.IsError {
 				if result := strings.TrimSpace(ev.Text); result != "" {
 					stamp := time.Now().Format("15:04:05")
@@ -1041,6 +1023,10 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 					}
 					if len(role) > 0 && role[0] >= 'a' && role[0] <= 'z' {
 						role = strings.ToUpper(role[:1]) + role[1:]
+					}
+					if extra := strings.TrimSpace(ev.Content); extra != "" && extra != result {
+						m.lastExpandable = extra
+						result += "\n... (/expand)"
 					}
 					m.AddMessage(ChatMessage{
 						Kind:    MsgAgent,
@@ -1073,20 +1059,15 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 	case llm.EventDone:
 		m.busy = false
 		m.activeSubAgent = ""
-		m.resetRecentActivity()
+		m.clearWorkingMessage()
 		m.status = "ready"
 		m.syncStatusData()
-		stamp := time.Now().Format("15:04:05")
-		m.AddMessage(ChatMessage{
-			Kind:    MsgStatus,
-			Content: "Agent complete • " + stamp,
-		})
 		if len(m.toolsSections) > 0 {
-			m.appendTools("", fmt.Sprintf("status: complete • %s\n", stamp))
+			m.appendTools("", "status: complete\n")
 		}
 	case llm.EventError:
 		m.busy = false
-		m.resetRecentActivity()
+		m.clearWorkingMessage()
 		m.status = "error"
 		m.syncStatusData()
 		errMsg := eventErrorMessage(ev)
@@ -1125,7 +1106,6 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 // instead of the main chat.
 func (m ChatModel) handleSubAgentEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 	label := ev.SubAgent
-	m.toolsVisible = true
 	m.activeSubAgent = label
 
 	// Detect start/done/cancelled lifecycle messages from the sub-agent renderer.
@@ -1397,18 +1377,7 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.completeSlashCommand() {
 			return m, nil
 		}
-		if m.paneFocus == focusTools && len(m.toolsSections) > 0 {
-			for i := len(m.toolsSections) - 1; i >= 0; i-- {
-				if m.toolsSections[i].role != "" && m.toolsSections[i].summary != "" {
-					m.toolsSections[i].collapsed = !m.toolsSections[i].collapsed
-					break
-				}
-			}
-			return m, nil
-		}
-		m.toolsVisible = !m.toolsVisible
-		m.chatViewport.Width = m.chatContentWidth()
-		m.refreshViewport()
+		return m, nil
 	case tea.KeySpace:
 		m.flash = ""
 		m.resetSlashCompletion()
@@ -1781,21 +1750,14 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			m.flash = fmt.Sprintf("session restored: %s", name)
 		}
 	case input == "/tools" || input == "/toggle tools":
-		m.toolsVisible = !m.toolsVisible
-		m.refreshViewport()
-		if m.toolsVisible {
-			m.flash = "tools pane: visible"
-		} else {
-			m.flash = "tools pane: hidden"
-		}
+		m.toolsVisible = false
+		m.flash = "tools pane removed; use /expand for details"
 	case input == "/toggle tools on":
-		m.toolsVisible = true
-		m.refreshViewport()
-		m.flash = "tools pane: visible"
+		m.toolsVisible = false
+		m.flash = "tools pane removed; use /expand for details"
 	case input == "/toggle tools off":
 		m.toolsVisible = false
-		m.refreshViewport()
-		m.flash = "tools pane: hidden"
+		m.flash = "tools pane removed; use /expand for details"
 	case input == "/agents":
 		if m.config.ToggleAgents == nil {
 			m.flash = "agents not available (no config)"
@@ -1909,7 +1871,7 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		if strings.TrimSpace(m.lastExpandable) == "" {
 			m.flash = "nothing to expand"
 		} else {
-			m.AddMessage(ChatMessage{Kind: MsgStatus, Content: m.lastExpandable})
+			m.AddMessage(ChatMessage{Kind: MsgAgent, Content: m.lastExpandable})
 			m.lastExpandable = ""
 			m.flash = "expanded"
 		}
@@ -1948,23 +1910,21 @@ func (m ChatModel) helpLines() []string {
 			"  /skills            list loaded skills",
 			"",
 			"Layout and display:",
-			"  /tools             show / hide tools pane",
-			"  /toggle tools      show / hide tools pane",
 			"  /agents            toggle multi-agent mode",
 			"  /agents models     configure per-role agent models",
 			"  /theme             cycle chat themes",
 			"  /theme <name>      select default, low, light, or dusk",
-			"  /expand            expand last truncated result",
+			"  /expand            expand the latest hidden detail payload",
 			"",
 			"Export and cleanup:",
-			"  /copy agent        copy agent pane",
-			"  /copy tools        copy tools pane",
+			"  /copy agent        copy transcript",
+			"  /copy tools        copy hidden tool log buffer",
 			"  /copy code         copy latest code block",
 			"  /copy result       copy latest tool result",
-			"  /clear             clear conversation and tools pane",
+			"  /clear             clear conversation and hidden tool log",
 			"  /clear all         same as /clear",
-			"  /clear agent       clear agent pane",
-			"  /clear tools       clear tools pane",
+			"  /clear agent       clear transcript",
+			"  /clear tools       clear hidden tool log",
 			"  /exit              leave live mode",
 			"  /quit              leave live mode",
 		}
@@ -2016,9 +1976,9 @@ func (m ChatModel) helpLines() []string {
 			"  Home / End         jump to start / end",
 			"  Backspace          delete previous character",
 			"",
-			"Pane navigation:",
+			"Transcript navigation:",
 			"  PgUp / PgDn        scroll conversation",
-			"  Tab                toggle tools pane or expand tools section",
+			"  Tab                cycle slash-command completion only",
 			"  Mouse wheel        scroll conversation",
 			"  Ctrl-F             open search for current pane",
 			"  n / N              next / previous search hit",
@@ -3753,11 +3713,7 @@ func (m *ChatModel) applySnapshot(s chatSessionSnapshot) {
 	}
 	m.inputBuf = s.InputBuf
 	m.inputPos = s.InputPos
-	toolsVisible := true
-	if s.ToolsVisible != nil {
-		toolsVisible = *s.ToolsVisible
-	}
-	m.toolsVisible = toolsVisible
+	m.toolsVisible = false
 	m.contextFiles = append([]string(nil), s.ContextFiles...)
 	m.sessionUsage = s.SessionUsage
 	m.resetProviderDiagnostics()
@@ -3821,25 +3777,17 @@ func (m ChatModel) View() string {
 			"Forge is ready.",
 			"",
 			"Type a coding task or use /help.",
-			"Common commands: /provider, /models, /sessions, /find, /toggle tools.",
+			"Common commands: /provider, /models, /sessions, /find, /expand.",
 		}
 		chatLines = empty
 		chatTotalLines = len(empty)
 	}
 	chatScrollbar := scrollbarColumn(chatTotalLines, m.chatViewport.Height, m.chatViewport.YOffset, chatBodyHeight)
 	chatBody := joinWithScrollbar(chatLines, chatScrollbar, chatContentWidth, chatBodyHeight)
-	chatBorder := lipgloss.Color("#30363d")
-	if m.paneFocus == focusChat {
-		chatBorder = theme.BorderFocus
-	} else {
-		chatBorder = theme.Border
-	}
 	chatPane := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(chatBorder).
-		Background(theme.PanelBG).
+		Background(theme.AppBG).
 		Foreground(theme.Text).
-		Width(chatInnerWidth).
+		Width(chatPaneWidth).
 		Height(chatBodyHeight).
 		Render(chatBody)
 

@@ -46,75 +46,36 @@ func (m ChatMessage) Render(width int, theme chatTheme) string {
 	}
 
 	if m.Kind == MsgStatus {
-		style := lipgloss.NewStyle().
+		return lipgloss.NewStyle().
 			Foreground(theme.TextDim).
 			Width(width).
-			Align(lipgloss.Center)
-		return style.Render(m.Content)
+			Render(strings.TrimSpace(m.Content))
 	}
 
 	if m.Kind == MsgWorking {
-		header := strings.TrimSpace(m.Header)
-		if header == "" {
-			header = "Working"
-		}
-		titleStyle := lipgloss.NewStyle().
+		return lipgloss.NewStyle().
 			Foreground(theme.TextDim).
-			Bold(true)
-		contentStyle := lipgloss.NewStyle().
-			Foreground(theme.TextDim).
-			Width(width)
-		if strings.TrimSpace(m.Content) == "" {
-			return titleStyle.Render(header)
-		}
-		return lipgloss.JoinVertical(lipgloss.Left,
-			titleStyle.Render(header),
-			contentStyle.Render(m.Content),
-		)
+			Italic(true).
+			Width(width).
+			Render(strings.TrimSpace(m.Content))
 	}
 
-	bc := m.borderColor(theme)
-	boxBg := theme.PanelBG
-	headerBg := theme.HeaderBG
-	innerWidth := width - 2
-
-	var headerBlock string
-	if m.Header != "" {
-		headerStyle := lipgloss.NewStyle().
-			Background(headerBg).
-			Foreground(bc).
+	headerColor := m.borderColor(theme)
+	header := strings.TrimSpace(m.Header)
+	content := strings.TrimRight(m.Content, "\n")
+	var blocks []string
+	if header != "" {
+		blocks = append(blocks, lipgloss.NewStyle().
+			Foreground(headerColor).
 			Bold(true).
-			Width(innerWidth)
-		headerBlock = headerStyle.Render(m.Header)
+			Width(width).
+			Render(header))
 	}
-
-	contentStyle := lipgloss.NewStyle().
-		Background(boxBg).
-		Foreground(theme.Text).
-		Width(innerWidth)
-	// Strip trailing blank lines so boxes hug their last content line
-	contentLines := strings.Split(m.Content, "\n")
-	for len(contentLines) > 0 && strings.TrimSpace(contentLines[len(contentLines)-1]) == "" {
-		contentLines = contentLines[:len(contentLines)-1]
+	if strings.TrimSpace(content) != "" {
+		blocks = append(blocks, lipgloss.NewStyle().
+			Foreground(theme.Text).
+			Width(width).
+			Render(content))
 	}
-	contentBlock := contentStyle.Render(strings.Join(contentLines, "\n"))
-
-	var inner string
-	if headerBlock != "" {
-		sepStyle := lipgloss.NewStyle().
-			Background(boxBg).
-			Foreground(bc).
-			Width(innerWidth)
-		sep := sepStyle.Render(strings.Repeat("─", innerWidth))
-		inner = lipgloss.JoinVertical(lipgloss.Left, headerBlock, sep, contentBlock)
-	} else {
-		inner = contentBlock
-	}
-
-	boxStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(bc).
-		Background(boxBg).
-		Width(width - 2)
-	return boxStyle.Render(inner)
+	return lipgloss.JoinVertical(lipgloss.Left, blocks...)
 }
