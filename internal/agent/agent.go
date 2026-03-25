@@ -72,6 +72,17 @@ type scoutSingleFileEvidenceState struct {
 	readTarget bool
 }
 
+type scoutFocusedFilesEvidenceState struct {
+	active         bool
+	targetLang     string
+	targetGlob     string
+	minReads       int
+	usedGlob       bool
+	candidateOrder []string
+	candidateSet   map[string]struct{}
+	readPaths      map[string]struct{}
+}
+
 const targetHistoryTokens = 12000
 const maxCurrentToolResultChars = 12000
 
@@ -179,6 +190,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	autoChainedArchitect := false
 	var currentScoutEvidence *dispatchScoutEvidence
 	scoutSingleFileState := newScoutSingleFileEvidenceState(userMessage)
+	scoutFocusedFilesState := newScoutFocusedFilesEvidenceState(userMessage)
 	scoutRepoReviewState := newScoutRepoReviewEvidenceState(a.workDir, userMessage)
 	if a.role == "dispatch" {
 		a.dispatchTurn++
@@ -288,6 +300,16 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				}
 				return fmt.Errorf("scout stopped before reading the target file")
 			}
+			if a.role == "scout" && scoutFocusedFilesState.NeedsMoreEvidence() {
+				if turn+1 < a.maxTurns {
+					a.history = append(a.history, llm.Message{
+						Role:    llm.RoleUser,
+						Content: scoutFocusedFilesState.NudgeMessage(),
+					})
+					continue
+				}
+				return fmt.Errorf("scout stopped before gathering enough focused-file evidence")
+			}
 			if a.role == "scout" && scoutRepoReviewState.NeedsMoreEvidence() {
 				if turn+1 < a.maxTurns {
 					a.history = append(a.history, llm.Message{
@@ -303,6 +325,9 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 					nudge := subAgentNoOutputNudgeMessage(a.role)
 					if a.role == "scout" && scoutSingleFileState.NeedsMoreEvidence() {
 						nudge = scoutSingleFileState.NudgeMessage()
+					}
+					if a.role == "scout" && scoutFocusedFilesState.NeedsMoreEvidence() {
+						nudge = scoutFocusedFilesState.NudgeMessage()
 					}
 					if a.role == "scout" && scoutRepoReviewState.NeedsMoreEvidence() {
 						nudge = scoutRepoReviewState.NudgeMessage()
@@ -365,7 +390,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 					call.Args["role"] = role
 					call.Args["_auto_chain"] = true
 				}
-				task = rewriteDispatchDelegateTask(role, task)
+				task = rewriteDispatchDelegateTaskForUser(role, task, userMessage)
 				if enriched := enrichDispatchDelegateTask(role, task, a.dispatchResults, a.dispatchArtifacts, a.dispatchScratch); enriched != task {
 					task = enriched
 				}
@@ -399,6 +424,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				result = sanitizeRuntimeArtifactToolResult(call.Name, result)
 			}
 			scoutSingleFileState.Observe(call, result)
+			scoutFocusedFilesState.Observe(call, result)
 			scoutRepoReviewState.Observe(call, result)
 			if call.Name == "delegate" && err == nil {
 				role, _ := call.Args["role"].(string)
@@ -682,15 +708,40 @@ func classifyDispatchIntent(task string) dispatchIntent {
 }
 
 func rewriteDispatchDelegateTask(role, task string) string {
+	return rewriteDispatchDelegateTaskForUser(role, task, "")
+}
+
+func rewriteDispatchDelegateTaskForUser(role, task, userMessage string) string {
 	switch strings.TrimSpace(role) {
 	case "scout":
-		return rewriteDispatchScoutTask(task)
+		return rewriteDispatchScoutTaskForUser(task, userMessage)
+	case "builder", "doctor", "architect":
+		return ensureTaskProfileSections(task, classifyDelegatedTaskProfile(userMessage, task), false)
 	default:
 		return task
 	}
 }
 
 func rewriteDispatchScoutTask(task string) string {
+	return rewriteDispatchScoutTaskForUser(task, "")
+}
+
+func rewriteDispatchScoutTaskForUser(task, userMessage string) string {
+	profile := classifyDelegatedTaskProfile(userMessage, task)
+	task = ensureTaskProfileSections(task, profile, true)
+
+	switch profile.Scope {
+	case taskScopeSingleFile:
+		return task
+	case taskScopeFocusedFiles:
+		return ensureMustNotConstraints(
+			task,
+			"Do not broaden this into a repo-wide review; stay within the matching files and nearby context only.",
+			"Do not stop after listings or globs alone; read representative matching files before concluding.",
+			"Do not start with a recursive root listing when TARGET_GLOB already identifies the scope.",
+		)
+	}
+
 	if target := extractSingleFileTaskTarget(task); target != "" {
 		if strings.TrimSpace(taskSection(task, "SCOPE:")) == "" {
 			task = strings.TrimRight(task, "\n") + "\nSCOPE: single-file"
@@ -713,8 +764,7 @@ func rewriteDispatchScoutTask(task string) string {
 		task,
 		"OUTCOME:",
 		"OUTCOME: Evidence-backed findings only. Gather repository purpose, structure, tech stack, key modules, and concrete maintenance signals with file/path references so an architect can synthesize recommendations.",
-		"CONTEXT:",
-		"MUST NOT:",
+		taskSectionStopLabels("OUTCOME:")...,
 	)
 
 	const recommendationConstraint = "Do not provide final recommendations, cleanup actions, prioritization, or user-facing advice."
@@ -1283,6 +1333,10 @@ func dispatchNudgeMessage(attempt int) string {
 }
 
 func scoutTaskRequiresEvidenceTools(task string) bool {
+	switch classifyTaskProfile(task).Scope {
+	case taskScopeSingleFile, taskScopeFocusedFiles, taskScopeRepoReview:
+		return true
+	}
 	lower := strings.ToLower(normalizePromptText(task))
 	return containsAny(lower, []string{
 		"task:",
@@ -1304,7 +1358,11 @@ func scoutTaskRequiresEvidenceTools(task string) bool {
 }
 
 func newScoutSingleFileEvidenceState(task string) scoutSingleFileEvidenceState {
-	target := extractSingleFileTaskTarget(task)
+	profile := classifyTaskProfile(task)
+	target := profile.Target
+	if profile.Scope != taskScopeSingleFile {
+		target = ""
+	}
 	return scoutSingleFileEvidenceState{
 		active: target != "",
 		target: target,
@@ -1372,6 +1430,170 @@ func (s scoutSingleFileEvidenceState) NudgeMessage() string {
 		return "Single-file evidence is still incomplete. Locate and read the target file before answering: " + s.target + "."
 	}
 	return "Single-file evidence is still incomplete. Read the target file before answering."
+}
+
+func newScoutFocusedFilesEvidenceState(task string) scoutFocusedFilesEvidenceState {
+	profile := classifyTaskProfile(task)
+	if profile.Scope != taskScopeFocusedFiles {
+		return scoutFocusedFilesEvidenceState{}
+	}
+	return scoutFocusedFilesEvidenceState{
+		active:       true,
+		targetLang:   profile.TargetLang,
+		targetGlob:   profile.TargetGlob,
+		minReads:     profile.EvidenceMinReads,
+		candidateSet: make(map[string]struct{}),
+		readPaths:    make(map[string]struct{}),
+	}
+}
+
+func (s *scoutFocusedFilesEvidenceState) Observe(call ToolCall, result string) {
+	if !s.active {
+		return
+	}
+
+	switch call.Name {
+	case "read_file":
+		if path, _ := call.Args["path"].(string); s.matches(path) {
+			s.recordRead(path)
+		}
+	case "glob":
+		pattern, _ := call.Args["pattern"].(string)
+		before := len(s.candidateOrder)
+		s.observeCandidateLines(result)
+		if s.patternCouldMatch(pattern) || len(s.candidateOrder) > before {
+			s.usedGlob = true
+		}
+	case "search", "list_dir":
+		s.observeCandidateLines(result)
+	}
+}
+
+func (s *scoutFocusedFilesEvidenceState) observeCandidateLines(result string) {
+	for _, rawLine := range strings.Split(result, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "...") {
+			continue
+		}
+		candidate := line
+		if idx := strings.Index(candidate, ":"); idx > 0 {
+			candidate = candidate[:idx]
+		}
+		fields := strings.Fields(candidate)
+		if len(fields) == 0 {
+			continue
+		}
+		s.recordCandidate(fields[0])
+	}
+}
+
+func (s *scoutFocusedFilesEvidenceState) recordCandidate(path string) {
+	path = normalizeFileReference(path)
+	if !s.matches(path) {
+		return
+	}
+	if _, ok := s.candidateSet[path]; ok {
+		return
+	}
+	s.candidateSet[path] = struct{}{}
+	s.candidateOrder = append(s.candidateOrder, path)
+}
+
+func (s *scoutFocusedFilesEvidenceState) recordRead(path string) {
+	path = normalizeFileReference(path)
+	if path == "" {
+		return
+	}
+	s.readPaths[path] = struct{}{}
+	s.recordCandidate(path)
+}
+
+func (s scoutFocusedFilesEvidenceState) patternCouldMatch(pattern string) bool {
+	pattern = strings.TrimSpace(filepath.ToSlash(pattern))
+	if pattern == "" {
+		return false
+	}
+	if pattern == s.targetGlob {
+		return true
+	}
+	if strings.Contains(pattern, "*.") {
+		return s.matches("placeholder" + pattern[strings.LastIndex(pattern, "."):])
+	}
+	return strings.Contains(pattern, "*")
+}
+
+func (s scoutFocusedFilesEvidenceState) matches(candidate string) bool {
+	candidate = normalizeFileReference(candidate)
+	if candidate == "" {
+		return false
+	}
+	candidateExt := strings.ToLower(filepath.Ext(candidate))
+	for _, ext := range targetGlobExtensions(s.targetGlob) {
+		if candidateExt == ext {
+			return true
+		}
+	}
+	if s.targetLang != "" {
+		return candidateExt == filepath.Ext(languageGlob(s.targetLang))
+	}
+	if s.targetGlob == "" {
+		return candidateExt != ""
+	}
+	return false
+}
+
+func (s scoutFocusedFilesEvidenceState) requiredReads() int {
+	required := s.minReads
+	if required <= 0 {
+		required = 3
+	}
+	if count := len(s.candidateOrder); s.usedGlob && count > 0 && required > count {
+		required = count
+	}
+	if required < 1 {
+		required = 1
+	}
+	return required
+}
+
+func (s scoutFocusedFilesEvidenceState) NeedsMoreEvidence() bool {
+	if !s.active {
+		return false
+	}
+	if len(s.readPaths) >= s.requiredReads() {
+		return false
+	}
+	if s.usedGlob && len(s.candidateOrder) == 0 {
+		return false
+	}
+	return true
+}
+
+func (s scoutFocusedFilesEvidenceState) NudgeMessage() string {
+	remaining := s.requiredReads() - len(s.readPaths)
+	if remaining < 1 {
+		remaining = 1
+	}
+	nextTargets := make([]string, 0, 3)
+	for _, candidate := range s.candidateOrder {
+		if _, ok := s.readPaths[candidate]; ok {
+			continue
+		}
+		nextTargets = append(nextTargets, candidate)
+		if len(nextTargets) == 3 {
+			break
+		}
+	}
+	if len(nextTargets) > 0 {
+		return fmt.Sprintf("Focused-file evidence is still incomplete. Stay within the declared scope and read %d more matching file(s) before answering: %s.", remaining, strings.Join(nextTargets, ", "))
+	}
+	if s.targetGlob != "" {
+		return "Focused-file evidence is still incomplete. Stay within the declared scope. Use TARGET_GLOB to locate representative matching files and read them before answering: " + s.targetGlob + "."
+	}
+	if s.targetLang != "" {
+		return "Focused-file evidence is still incomplete. Stay within the declared scope and read more " + s.targetLang + " files before answering."
+	}
+	return "Focused-file evidence is still incomplete. Read more matching files before answering."
 }
 
 func newScoutRepoReviewEvidenceState(workDir, task string) scoutRepoReviewEvidenceState {
@@ -1557,6 +1779,10 @@ var taskSectionLabels = []string{
 	"MUST NOT:",
 	"SCOPE:",
 	"TARGET:",
+	"TARGET_LANG:",
+	"TARGET_GLOB:",
+	"TOPIC:",
+	"EVIDENCE_MIN_READS:",
 }
 
 func taskSection(task, label string) string {
@@ -1676,54 +1902,7 @@ var repoReviewHealthCandidates = []string{
 }
 
 func scoutTaskIsRepoReview(task string) bool {
-	if scope := strings.ToLower(strings.TrimSpace(taskSection(task, "SCOPE:"))); scope != "" {
-		if strings.Contains(scope, "single-file") || strings.Contains(scope, "file") {
-			return false
-		}
-		if strings.Contains(scope, "repo") {
-			return true
-		}
-	}
-	if extractSingleFileTaskTarget(task) != "" {
-		return false
-	}
-
-	lower := strings.ToLower(normalizePromptText(task))
-	if containsAny(lower, []string{
-		"repo review",
-		"repository review",
-		"inspect the repository",
-		"inspect the go repository",
-	}) {
-		return true
-	}
-
-	if !containsAny(lower, []string{"repo", "repository", "codebase"}) {
-		return false
-	}
-	if !containsAny(lower, []string{
-		"review",
-		"assess",
-		"assessment",
-		"recommend",
-		"recommendation",
-		"improve",
-		"improvement",
-		"cleanup",
-		"maintenance",
-	}) {
-		return false
-	}
-	return containsAny(lower, []string{
-		"purpose",
-		"tech stack",
-		"key modules",
-		"main packages/binaries",
-		"dependencies",
-		"test/build health",
-		"maintenance signals",
-		"cleanup opportunities",
-	})
+	return classifyTaskProfile(task).Scope == taskScopeRepoReview
 }
 
 func normalizeRepoReviewPath(workDir, path string) string {
