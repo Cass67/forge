@@ -65,6 +65,13 @@ type scoutRepoReviewEvidenceState struct {
 	sawHealth   bool
 }
 
+type scoutSingleFileEvidenceState struct {
+	active     bool
+	target     string
+	matched    string
+	readTarget bool
+}
+
 const targetHistoryTokens = 12000
 const maxCurrentToolResultChars = 12000
 
@@ -171,6 +178,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	currentDispatchTopic := ""
 	autoChainedArchitect := false
 	var currentScoutEvidence *dispatchScoutEvidence
+	scoutSingleFileState := newScoutSingleFileEvidenceState(userMessage)
 	scoutRepoReviewState := newScoutRepoReviewEvidenceState(a.workDir, userMessage)
 	if a.role == "dispatch" {
 		a.dispatchTurn++
@@ -270,6 +278,16 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				}
 				return fmt.Errorf("scout produced no evidence-gathering tool call before answering")
 			}
+			if a.role == "scout" && scoutSingleFileState.NeedsMoreEvidence() {
+				if turn+1 < a.maxTurns {
+					a.history = append(a.history, llm.Message{
+						Role:    llm.RoleUser,
+						Content: scoutSingleFileState.NudgeMessage(),
+					})
+					continue
+				}
+				return fmt.Errorf("scout stopped before reading the target file")
+			}
 			if a.role == "scout" && scoutRepoReviewState.NeedsMoreEvidence() {
 				if turn+1 < a.maxTurns {
 					a.history = append(a.history, llm.Message{
@@ -283,6 +301,9 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			if a.isSubAgent && strings.TrimSpace(response) == "" {
 				if turn+1 < a.maxTurns {
 					nudge := subAgentNoOutputNudgeMessage(a.role)
+					if a.role == "scout" && scoutSingleFileState.NeedsMoreEvidence() {
+						nudge = scoutSingleFileState.NudgeMessage()
+					}
 					if a.role == "scout" && scoutRepoReviewState.NeedsMoreEvidence() {
 						nudge = scoutRepoReviewState.NudgeMessage()
 					}
@@ -377,6 +398,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			if err == nil && a.isSubAgent && subAgentFiltersRuntimeArtifacts(a.role) && !subAgentAllowsRuntimeArtifactInspection(a.role, userMessage) {
 				result = sanitizeRuntimeArtifactToolResult(call.Name, result)
 			}
+			scoutSingleFileState.Observe(call, result)
 			scoutRepoReviewState.Observe(call, result)
 			if call.Name == "delegate" && err == nil {
 				role, _ := call.Args["role"].(string)
@@ -669,6 +691,16 @@ func rewriteDispatchDelegateTask(role, task string) string {
 }
 
 func rewriteDispatchScoutTask(task string) string {
+	if target := extractSingleFileTaskTarget(task); target != "" {
+		if strings.TrimSpace(taskSection(task, "SCOPE:")) == "" {
+			task = strings.TrimRight(task, "\n") + "\nSCOPE: single-file"
+		}
+		if strings.TrimSpace(taskSection(task, "TARGET:")) == "" {
+			task = strings.TrimRight(task, "\n") + "\nTARGET: " + target
+		}
+		return task
+	}
+
 	lower := strings.ToLower(normalizePromptText(task))
 	if task == "" || strings.Contains(lower, "do not provide final recommendations") {
 		return task
@@ -1271,6 +1303,77 @@ func scoutTaskRequiresEvidenceTools(task string) bool {
 	})
 }
 
+func newScoutSingleFileEvidenceState(task string) scoutSingleFileEvidenceState {
+	target := extractSingleFileTaskTarget(task)
+	return scoutSingleFileEvidenceState{
+		active: target != "",
+		target: target,
+	}
+}
+
+func (s *scoutSingleFileEvidenceState) Observe(call ToolCall, result string) {
+	if !s.active {
+		return
+	}
+
+	switch call.Name {
+	case "read_file":
+		if path, _ := call.Args["path"].(string); s.matches(path) {
+			s.readTarget = true
+			s.matched = normalizeFileReference(path)
+		}
+	case "glob", "list_dir", "search":
+		s.observeCandidateLines(result)
+	}
+}
+
+func (s *scoutSingleFileEvidenceState) observeCandidateLines(result string) {
+	for _, rawLine := range strings.Split(result, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "...") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		candidate := normalizeFileReference(fields[0])
+		if candidate == "" {
+			continue
+		}
+		if s.matches(candidate) {
+			s.matched = candidate
+			return
+		}
+	}
+}
+
+func (s scoutSingleFileEvidenceState) matches(candidate string) bool {
+	target := normalizeFileReference(s.target)
+	candidate = normalizeFileReference(candidate)
+	if target == "" || candidate == "" {
+		return false
+	}
+	if candidate == target {
+		return true
+	}
+	return filepath.Base(candidate) == filepath.Base(target)
+}
+
+func (s scoutSingleFileEvidenceState) NeedsMoreEvidence() bool {
+	return s.active && !s.readTarget
+}
+
+func (s scoutSingleFileEvidenceState) NudgeMessage() string {
+	if s.matched != "" {
+		return "Single-file evidence is still incomplete. Read the matched file now before answering: " + s.matched + "."
+	}
+	if s.target != "" {
+		return "Single-file evidence is still incomplete. Locate and read the target file before answering: " + s.target + "."
+	}
+	return "Single-file evidence is still incomplete. Read the target file before answering."
+}
+
 func newScoutRepoReviewEvidenceState(workDir, task string) scoutRepoReviewEvidenceState {
 	return scoutRepoReviewEvidenceState{
 		active:     scoutTaskIsRepoReview(task),
@@ -1447,6 +1550,88 @@ func (s scoutRepoReviewEvidenceState) firstTopEntry(candidates ...string) string
 	return ""
 }
 
+var taskSectionLabels = []string{
+	"TASK:",
+	"OUTCOME:",
+	"CONTEXT:",
+	"MUST NOT:",
+	"SCOPE:",
+	"TARGET:",
+}
+
+func taskSection(task, label string) string {
+	start := strings.Index(task, label)
+	if start < 0 {
+		return ""
+	}
+	sectionStart := start + len(label)
+	end := len(task)
+	for _, stop := range taskSectionLabels {
+		if stop == label {
+			continue
+		}
+		if idx := strings.Index(task[sectionStart:], stop); idx >= 0 {
+			candidate := sectionStart + idx
+			if candidate < end {
+				end = candidate
+			}
+		}
+	}
+	return strings.TrimSpace(task[sectionStart:end])
+}
+
+func extractSingleFileTaskTarget(task string) string {
+	if target := normalizeFileReference(taskSection(task, "TARGET:")); target != "" {
+		return target
+	}
+	taskText := taskSection(task, "TASK:")
+	if taskText == "" {
+		taskText = task
+	}
+	targets := extractFileReferenceTokens(taskText)
+	if len(targets) != 1 {
+		return ""
+	}
+	return targets[0]
+}
+
+func extractFileReferenceTokens(text string) []string {
+	seen := make(map[string]struct{})
+	var refs []string
+	for _, raw := range strings.Fields(normalizePromptText(text)) {
+		token := normalizeFileReference(raw)
+		if token == "" {
+			continue
+		}
+		if _, ok := seen[token]; ok {
+			continue
+		}
+		seen[token] = struct{}{}
+		refs = append(refs, token)
+	}
+	return refs
+}
+
+func normalizeFileReference(token string) string {
+	token = strings.TrimSpace(token)
+	token = strings.Trim(token, "\"'`()[]{}.,;!?")
+	token = strings.TrimPrefix(token, "@")
+	token = filepath.ToSlash(token)
+	token = strings.TrimPrefix(token, "./")
+	if token == "" || strings.Contains(token, "://") {
+		return ""
+	}
+	if strings.ContainsAny(token, "*?") || strings.HasSuffix(token, "/") {
+		return ""
+	}
+	base := filepath.Base(token)
+	ext := filepath.Ext(base)
+	if ext == "" || len(ext) == 1 || len(ext) > 10 {
+		return ""
+	}
+	return filepath.Clean(token)
+}
+
 var repoReviewOverviewCandidates = []string{
 	"README.md",
 	"README",
@@ -1491,6 +1676,18 @@ var repoReviewHealthCandidates = []string{
 }
 
 func scoutTaskIsRepoReview(task string) bool {
+	if scope := strings.ToLower(strings.TrimSpace(taskSection(task, "SCOPE:"))); scope != "" {
+		if strings.Contains(scope, "single-file") || strings.Contains(scope, "file") {
+			return false
+		}
+		if strings.Contains(scope, "repo") {
+			return true
+		}
+	}
+	if extractSingleFileTaskTarget(task) != "" {
+		return false
+	}
+
 	lower := strings.ToLower(normalizePromptText(task))
 	if containsAny(lower, []string{
 		"repo review",

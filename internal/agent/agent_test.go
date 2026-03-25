@@ -377,6 +377,11 @@ func TestScoutTaskIsRepoReviewRequiresRepositoryScope(t *testing.T) {
 		t.Fatalf("targeted file-summary task should not be treated as a repo review: %q", fileSummaryTask)
 	}
 
+	loggedDispatchTask := "TASK: Inspect the repository and gather comprehensive information about the file named inv_stats_to_influx_elastic.py (or similarly named path if prefixed with @ in the user message). Determine its exact location, summarize its purpose, key functions/classes, inputs/outputs, dependencies, configuration, how it is invoked, and any notable risks or TODOs. OUTCOME: Return a detailed read-only report based on the file contents and nearby context."
+	if scoutTaskIsRepoReview(loggedDispatchTask) {
+		t.Fatalf("single-file task with repository preamble should not be treated as a repo review: %q", loggedDispatchTask)
+	}
+
 	repoReviewTask := "TASK: Gather evidence only for a repo review. OUTCOME: Evidence-backed findings only. Gather repository purpose, structure, tech stack, key modules, dependencies, and test/build health."
 	if !scoutTaskIsRepoReview(repoReviewTask) {
 		t.Fatalf("explicit repo-review task should be detected: %q", repoReviewTask)
@@ -418,6 +423,56 @@ func TestScoutRunAllowsTargetedFileSummaryThatMentionsDependencies(t *testing.T)
 		if strings.Contains(m.Content, "Repo-review evidence is still incomplete") {
 			t.Fatalf("targeted file-summary task should not receive repo-review nudges: %#v", a.history)
 		}
+	}
+}
+
+func TestScoutRunSingleFileRepositoryPreambleReadsTargetBeforeStopping(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "inv_stats_to_influx_elastic.py"), []byte("print('ok')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\": \"glob\", \"args\": {\"pattern\": \"**/inv_stats_to_influx_elastic.py\"}}\n</tool_call>",
+		"I found the file name `inv_stats_to_influx_elastic.py`, but I don't yet have the actual file path or contents to report on.",
+		"<tool_call>\n{\"name\": \"read_file\", \"args\": {\"path\": \"inv_stats_to_influx_elastic.py\"}}\n</tool_call>",
+		`{"status":"complete","message":"Summary ready.","artifact_kind":"evidence","artifact":"Reads the file after locating it.","next_role":"","next_task":""}`,
+	}}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.NewGlob(dir, nil))
+	reg.Register(tools.NewReadFile(dir))
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), dir, 6, renderer, nil, nil)
+	a.SetRole("scout")
+	a.isSubAgent = true
+
+	task := "TASK: Inspect the repository and gather comprehensive information about the file named inv_stats_to_influx_elastic.py (or similarly named path if prefixed with @ in the user message). Determine its exact location, summarize its purpose, key functions/classes, inputs/outputs, dependencies, configuration, how it is invoked, and any notable risks or TODOs. OUTCOME: Return a detailed read-only report based on the file contents and nearby context. MUST NOT: Do not edit files; do not make assumptions without checking the code; do not omit file path and invocation/context if discoverable."
+	if err := a.Run(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callCount != 4 {
+		t.Fatalf("expected scout to keep going until it read the target file, got %d calls", driver.callCount)
+	}
+	for _, m := range a.history {
+		if strings.Contains(m.Content, "Repo-review evidence is still incomplete") {
+			t.Fatalf("single-file task should not receive repo-review nudges: %#v", a.history)
+		}
+	}
+}
+
+func TestRewriteDispatchScoutTaskAddsSingleFileScopeMetadata(t *testing.T) {
+	task := "TASK: Inspect the repository and gather comprehensive information about the file named inv_stats_to_influx_elastic.py (or similarly named path if prefixed with @ in the user message). Determine its exact location, summarize its purpose, key functions/classes, inputs/outputs, dependencies, configuration, how it is invoked, and any notable risks or TODOs. OUTCOME: Return a detailed read-only report based on the file contents and nearby context."
+
+	rewritten := rewriteDispatchScoutTask(task)
+
+	if !strings.Contains(rewritten, "\nSCOPE: single-file") {
+		t.Fatalf("expected single-file scope metadata, got %q", rewritten)
+	}
+	if !strings.Contains(rewritten, "\nTARGET: inv_stats_to_influx_elastic.py") {
+		t.Fatalf("expected single-file target metadata, got %q", rewritten)
 	}
 }
 
