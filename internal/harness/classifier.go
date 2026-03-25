@@ -144,13 +144,16 @@ func wantsInspection(tokens map[string]struct{}, lower string) bool {
 	if !containsAny(tokens, workspaceNouns) {
 		return false
 	}
-	if containsAny(tokens, implementTokens) || containsAny(tokens, debugTokens) {
+	if containsAny(tokens, implementTokens) || containsAny(tokens, debugTokens) || containsAny(tokens, transformTokens) {
 		return false
 	}
 	if containsAny(tokens, inspectVerbs) {
 		return true
 	}
 	if hasToken(tokens, "search") {
+		return true
+	}
+	if hasToken(tokens, "about") {
 		return true
 	}
 	return strings.Contains(lower, "take me through") || strings.Contains(lower, "go over")
@@ -170,6 +173,7 @@ func wantsInterpretation(tokens map[string]struct{}, lower string) bool {
 		return true
 	}
 	return strings.Contains(lower, "what do you think") ||
+		strings.Contains(lower, "what do you make of") ||
 		strings.Contains(lower, "what does that mean") ||
 		strings.Contains(lower, "does that mean") ||
 		strings.Contains(lower, "so what")
