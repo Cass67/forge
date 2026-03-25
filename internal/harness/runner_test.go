@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -14,6 +15,19 @@ type stubLocalExecutor struct {
 
 func (s *stubLocalExecutor) Execute(_ context.Context, _ UserTurn, _ Classification) (Observation, error) {
 	s.calls++
+	return s.obs, s.err
+}
+
+type stubWorkerExecutor struct {
+	obs   Observation
+	err   error
+	calls int
+	task  WorkerTask
+}
+
+func (s *stubWorkerExecutor) Execute(_ context.Context, task WorkerTask) (Observation, error) {
+	s.calls++
+	s.task = task
 	return s.obs, s.err
 }
 
@@ -100,5 +114,125 @@ func TestRunnerBlocksOnLocalFailure(t *testing.T) {
 	}
 	if result.Decision.FinalState != StateBlocked {
 		t.Fatalf("decision = %#v", result.Decision)
+	}
+}
+
+func TestRunnerResearchUsesWorkerWhenConfigured(t *testing.T) {
+	local := &stubLocalExecutor{}
+	worker := &stubWorkerExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Response: "Official docs describe the API.",
+			Summary:  "Official docs describe the API.",
+			TopicKey: "workspace:repository",
+		},
+	}
+	runner := NewRunner(RunnerConfig{
+		Session: NewSession(),
+		Trace:   NewRecorder(),
+		Local:   local,
+		Workers: worker,
+	})
+
+	result, err := runner.Run(context.Background(), "look up the latest API docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Step.Kind != StepWorker || result.Step.Worker != WorkerResearcher {
+		t.Fatalf("step = %#v", result.Step)
+	}
+	if worker.calls != 1 {
+		t.Fatalf("worker calls = %d", worker.calls)
+	}
+	if local.calls != 0 {
+		t.Fatalf("local should not have been used, got %d calls", local.calls)
+	}
+	if worker.task.Objective != "look up the latest API docs" {
+		t.Fatalf("worker task = %#v", worker.task)
+	}
+}
+
+func TestRunnerFallsBackToLocalWhenWorkerFailsClosed(t *testing.T) {
+	local := &stubLocalExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Response: "Forge checked locally after the worker path failed.",
+			Summary:  "local recovery complete",
+			TopicKey: "workspace:repository",
+		},
+	}
+	worker := &stubWorkerExecutor{
+		obs: Observation{
+			Status:   ObservationBlocked,
+			Summary:  "worker unavailable",
+			TopicKey: "workspace:repository",
+		},
+		err: errors.New("worker unavailable"),
+	}
+	runner := NewRunner(RunnerConfig{
+		Session: NewSession(),
+		Trace:   NewRecorder(),
+		Local:   local,
+		Workers: worker,
+	})
+
+	result, err := runner.Run(context.Background(), "look up the latest API docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if worker.calls != 1 {
+		t.Fatalf("worker calls = %d", worker.calls)
+	}
+	if local.calls != 1 {
+		t.Fatalf("local calls = %d", local.calls)
+	}
+	if result.Step.Kind != StepLocal || result.Step.Worker != WorkerNone {
+		t.Fatalf("step = %#v", result.Step)
+	}
+	if result.Response != "Forge checked locally after the worker path failed." {
+		t.Fatalf("response = %q", result.Response)
+	}
+}
+
+func TestRunnerSynthesizesWorkerResultIntoForgeResponse(t *testing.T) {
+	local := &stubLocalExecutor{}
+	worker := &stubWorkerExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Response: "raw worker prose should not be shown",
+			Summary:  "research complete",
+			TopicKey: "workspace:repository",
+			Artifact: ResearcherResult{
+				Status: "complete",
+				Findings: []ResearchFinding{
+					{Summary: "Official docs describe the API shape."},
+					{Summary: "The guide recommends server-side auth."},
+				},
+				Sources: []ResearchSource{
+					{Label: "official docs", Locator: "docs"},
+				},
+				Confidence: "high",
+			},
+		},
+	}
+	runner := NewRunner(RunnerConfig{
+		Session: NewSession(),
+		Trace:   NewRecorder(),
+		Local:   local,
+		Workers: worker,
+	})
+
+	result, err := runner.Run(context.Background(), "look up the latest API docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Response == "raw worker prose should not be shown" {
+		t.Fatalf("worker response leaked directly: %q", result.Response)
+	}
+	if !strings.Contains(result.Response, "Official docs describe the API shape.") {
+		t.Fatalf("response = %q", result.Response)
+	}
+	if !strings.Contains(result.Response, "Sources checked: official docs.") {
+		t.Fatalf("response = %q", result.Response)
 	}
 }

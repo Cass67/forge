@@ -264,6 +264,53 @@ func TestRunChatTurnKernelPathAvoidsDelegationMarkers(t *testing.T) {
 	}
 }
 
+func TestRunChatTurnEmitsForgeResponseForWorkerResults(t *testing.T) {
+	events := make(chan llm.Event, 32)
+	renderer := agent.NewEventRenderer(events)
+	a := agent.NewAgent(&kernelMockDriver{}, tools.NewRegistry(), agent.YoloApproval(), t.TempDir(), 4, renderer, nil, chatstate.New())
+	kernel := harness.NewRunner(harness.RunnerConfig{
+		Session: harness.NewSession(),
+		Trace:   harness.NewRecorder(),
+		Local:   stubHarnessLocalExecutor{},
+		Workers: stubHarnessWorkerExecutor{
+			obs: harness.Observation{
+				Status:   harness.ObservationComplete,
+				Summary:  "research complete",
+				TopicKey: "workspace:repository",
+				Artifact: harness.ResearcherResult{
+					Status: "complete",
+					Findings: []harness.ResearchFinding{
+						{Summary: "Official docs describe the feature."},
+					},
+					Sources: []harness.ResearchSource{
+						{Label: "official docs", Locator: "docs"},
+					},
+					Confidence: "high",
+				},
+			},
+		},
+	})
+
+	if err := runChatTurn(context.Background(), a, kernel, "look up the latest API docs"); err != nil {
+		t.Fatal(err)
+	}
+
+	var sawResponse bool
+	for {
+		select {
+		case ev := <-events:
+			if ev.Kind == llm.EventToken && strings.Contains(ev.Text, "Official docs describe the feature.") {
+				sawResponse = true
+			}
+		default:
+			if !sawResponse {
+				t.Fatal("expected forge response event for worker result")
+			}
+			return
+		}
+	}
+}
+
 type stubHarnessLocalExecutor struct {
 	response string
 }
@@ -275,6 +322,15 @@ func (s stubHarnessLocalExecutor) Execute(_ context.Context, _ harness.UserTurn,
 		Summary:  s.response,
 		TopicKey: class.TopicKey,
 	}, nil
+}
+
+type stubHarnessWorkerExecutor struct {
+	obs harness.Observation
+	err error
+}
+
+func (s stubHarnessWorkerExecutor) Execute(_ context.Context, _ harness.WorkerTask) (harness.Observation, error) {
+	return s.obs, s.err
 }
 
 type kernelMockDriver struct {

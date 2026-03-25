@@ -99,6 +99,21 @@ func TestAgentRunNoTools(t *testing.T) {
 	}
 }
 
+func TestAgentRunSetsLastResponseOnSuccess(t *testing.T) {
+	driver := &mockDriver{responses: []string{"Hello! I can help with that."}}
+	reg := tools.NewRegistry()
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+
+	agent := NewAgent(driver, reg, YoloApproval(), "/tmp", 10, renderer, nil, nil)
+	if err := agent.Run(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if got := agent.LastResponse(); got != "Hello! I can help with that." {
+		t.Fatalf("LastResponse() = %q", got)
+	}
+}
+
 func TestAgentRunWithToolCall(t *testing.T) {
 	dir := t.TempDir()
 	driver := &mockDriver{responses: []string{

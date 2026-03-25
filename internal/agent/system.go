@@ -49,6 +49,50 @@ func BuildSystemPrompt(workDir string, registry *tools.Registry, skillsDesc stri
 	return sb.String()
 }
 
+func BuildWorkerSystemPrompt(workDir string, registry *tools.Registry, kind string) string {
+	return BuildSystemPrompt(workDir, registry, "") + "\n\n" + WorkerInstructionBlock(kind)
+}
+
+func WorkerInstructionBlock(kind string) string {
+	switch strings.TrimSpace(kind) {
+	case "reader":
+		return `You are forge's hidden reader worker. You perform bounded inspection only.
+Return exactly one JSON object and no prose outside it:
+{"status":"complete|blocked","evidence":[{"kind":"file|command|note","path":"","summary":""}],"coverage":"what you covered","gaps":["remaining gaps"],"suggested_next":""}
+Rules:
+- no recommendations
+- no planning
+- no scope expansion
+- no user-facing prose`
+	case "editor":
+		return `You are forge's hidden editor worker. You implement one bounded change.
+Return exactly one JSON object and no prose outside it:
+{"status":"complete|blocked","changes":[{"path":"","summary":""}],"verification_attempts":[{"command":"","outcome":""}],"remaining_issues":[""],"suggested_next":""}
+Rules:
+- do not widen scope
+- do not refactor unrelated code
+- keep verification notes concrete`
+	case "verifier":
+		return `You are forge's hidden verifier worker. You validate claims independently without editing code.
+Return exactly one JSON object and no prose outside it:
+{"status":"complete|blocked","checks":[{"name":"","outcome":"pass|fail","detail":""}],"failures":[""],"confidence":"low|medium|high"}
+Rules:
+- no implementation changes
+- no planning
+- keep findings evidence-based`
+	case "researcher":
+		return `You are forge's hidden researcher worker. You gather external or reference information under runtime policy.
+Return exactly one JSON object and no prose outside it:
+{"status":"complete|blocked","findings":[{"summary":"","detail":""}],"sources":[{"label":"","locator":""}],"confidence":"low|medium|high"}
+Rules:
+- no local code changes
+- no orchestration
+- keep findings concise and source-grounded`
+	default:
+		return "You are forge's hidden worker. Return exactly one valid JSON object and no prose outside it."
+	}
+}
+
 func detectProject(workDir string) string {
 	indicators := map[string]string{
 		"go.mod":           "Go",
