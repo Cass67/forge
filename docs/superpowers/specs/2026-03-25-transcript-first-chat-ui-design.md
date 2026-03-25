@@ -73,10 +73,16 @@ While a subagent is active, the UI should surface only a lightweight inline prog
 
 Requirements:
 
-- only one live working item per active role should be visible by default
+- exactly one live working line should be visible in the default transcript for the current turn
 - repeated or low-signal progress lines should update/replace the current working line rather than create a growing stack
 - working lines should be visually lighter than final answers
 - working state should disappear or collapse once the final answer is available
+
+Clarification:
+
+- the approved default is one working line total, not one line per role
+- if multiple specialist roles run sequentially in the same turn, the working line should update from one role to the next
+- if multiple roles ever become active concurrently in a future implementation, the default transcript should still show one aggregated line such as `working: scout + architect...`, not multiple stacked working messages
 
 ### 3. Final Answer Over Status Chrome
 
@@ -113,6 +119,31 @@ This design does not allow:
 - automatic dumping of raw delegate JSON into the transcript
 - showing every tool result inline by default
 
+### 4a. Details UX
+
+The default inspection path is `/expand`.
+
+Approved interaction model:
+
+- when a final answer hides additional useful detail, the visible answer may end with a short suffix such as `... (/expand)`
+- `/expand` expands only the most recent hidden detail payload
+- the expanded content is rendered as a new full-width inline detail message directly below the answer it belongs to
+- expanding does not reopen or recreate a side tools pane
+- only one expandable payload is tracked at a time via the existing `lastExpandable` concept
+- a new meaningful result replaces the previous expandable payload
+
+Content source for `/expand`:
+
+- the full structured artifact string when the inline answer is a summary of a larger artifact
+- the full untruncated answer body when the visible answer was shortened for readability
+- explicit debug detail only when it was already associated with the most recent meaningful answer
+
+Not in scope for this redesign:
+
+- a dedicated keyboard shortcut for expand
+- per-message expand history
+- restoring the old tools pane behind a toggle
+
 ## Behavior Changes
 
 ## Delegate Result Summarization
@@ -129,9 +160,55 @@ When a structured delegate result is available, the system should derive a user-
 
 Role defaults are allowed only when no meaningful extraction is possible.
 
+### Generic-message suppression
+
+The transcript renderer must treat the following normalized messages as generic placeholders:
+
+- `evidence gathered`
+- `architect output ready`
+- `diagnosis ready`
+- `implementation complete`
+- `recommendations ready`
+- `plan ready`
+
+Normalization rules:
+
+- trim leading/trailing whitespace
+- lowercase
+- strip one trailing period
+
+Selection rules:
+
+- if `message` is not generic, prefer it
+- if `message` is generic and extraction succeeds, use the extracted summary
+- if `message` is generic and extraction fails, use the role default fallback
+- if both `message` and extracted summary exist and the message is specific, keep the message and store the extracted artifact for `/expand`
+
+### Minimal role artifact schemas
+
+These are extraction schemas, not hard validation contracts. Missing fields are allowed. Extraction should use the first available populated field in the listed order.
+
 ### Role-specific expectations
 
 #### Scout
+
+Preferred artifact fields:
+
+- `source_file`
+- `source_line`
+- `exact_text`
+- `trigger`
+- `most_likely_trigger`
+- `why_it_was_sent`
+- `source`
+- `evidence`
+
+Extraction precedence:
+
+1. `source_file` + `source_line`
+2. `source`
+3. `trigger` or `most_likely_trigger`
+4. first useful entry from `evidence`
 
 Expected visible result:
 
@@ -144,7 +221,34 @@ Examples:
 - `The alert is sent by util-rancid/update_cerner_daily.sh:753.`
 - `Found the alert source and mailx subject in update_cerner_daily.sh.`
 
+Example artifact:
+
+```json
+{
+  "source_file": "util-rancid/update_cerner_daily.sh",
+  "source_line": 753,
+  "most_likely_trigger": "missing verify script at runtime"
+}
+```
+
 #### Architect
+
+Preferred artifact fields:
+
+- `severity`
+- `worry_level`
+- `actionability`
+- `assessment`
+- `recommended_next_check`
+- `suggested_next_checks`
+- `likely_impact`
+
+Extraction precedence:
+
+1. `assessment`
+2. `severity` or `worry_level` plus `recommended_next_check`
+3. `actionability` plus `likely_impact`
+4. first useful item from `suggested_next_checks`
 
 Expected visible result:
 
@@ -157,19 +261,73 @@ Examples:
 - `Low-to-medium severity. Check the verify script path and permissions.`
 - `Actionable maintenance issue, not a panic-level incident.`
 
+Example artifact:
+
+```json
+{
+  "worry_level": "low_to_medium",
+  "actionability": "actionable",
+  "recommended_next_check": "Verify the expected verify script path exists and is executable."
+}
+```
+
 #### Doctor
+
+Preferred artifact fields:
+
+- `root_cause`
+- `fix`
+- `risk`
+- `evidence`
+
+Extraction precedence:
+
+1. `root_cause`
+2. `root_cause` plus `fix`
+3. `fix`
 
 Expected visible result:
 
 - root cause
 - recommended fix
 
+Example artifact:
+
+```json
+{
+  "root_cause": "delegate parser rejected a bare JSON object",
+  "fix": "coerce bare JSON objects into typed delegate outcomes"
+}
+```
+
 #### Builder
+
+Preferred artifact fields:
+
+- `summary`
+- `files_changed`
+- `verification`
+- `result`
+
+Extraction precedence:
+
+1. `summary`
+2. `result`
+3. `files_changed` plus `verification`
 
 Expected visible result:
 
 - what changed
 - verification result
+
+Example artifact:
+
+```json
+{
+  "summary": "Removed the tools pane and switched to a transcript-first layout.",
+  "verification": "go test ./internal/tui && go build ./cmd/forge"
+}
+```
 
 ### Generic fallback text
 
@@ -186,6 +344,19 @@ These may remain internal defaults, but the transcript renderer must not prefer 
 
 Dispatch should not stop on a scout/evidence-only result when the user asked for interpretation, worry level, urgency, recommendation, or actionability.
 
+This should be implemented without adding brittle English-language patch tables for every wording variant.
+
+### Intent classes
+
+At turn start, dispatch should classify the user turn into one of these existing routing intents:
+
+- `trace`: origin, source, evidence, repository inspection
+- `interpret`: meaning, severity, risk, actionability, recommendation, next step
+- `debug`: root cause and fix explanation
+- `implement`: code or file changes
+
+This classification is a routing decision, not a transcript heuristic. The redesign only changes what happens after a completed evidence result.
+
 Examples of interpretive user asks:
 
 - `is this something i need to worry about?`
@@ -200,6 +371,28 @@ Approved behavior:
 - architect returns the user-facing interpretation in the same turn
 
 This avoids ending the turn on evidence-only text when the user asked a decision question.
+
+### Decision table
+
+| Turn intent | Existing scout artifact for same topic | Delegate sequence | Stop condition |
+|-------------|-----------------------------------------|-------------------|----------------|
+| `trace` | no | `scout` | stop after scout unless scout explicitly requests next role |
+| `trace` | yes | `scout` or none, at dispatch's discretion | stop after evidence answer |
+| `interpret` | no | `scout -> architect` | stop after architect |
+| `interpret` | yes | `architect` | stop after architect |
+
+Rules:
+
+- dispatch should not run a second scout if a current-turn or immediately prior-turn scout artifact already covers the same topic
+- dispatch should not synthesize additional follow-on roles after architect for this redesign
+- if scout explicitly returns `next_role:"architect"` and a concrete `next_task`, dispatch should honor it
+- if scout returns complete evidence for an `interpret` turn but no `next_role`, dispatch should synthesize one architect follow-on using the scout artifact
+
+### Failure and timeout behavior
+
+- if architect blocks, errors, or times out after scout has already produced evidence, dispatch should surface the best scout evidence summary plus a one-line note that interpretation was unavailable
+- if scout blocks, dispatch should stop and surface the blocked result
+- no retry loop should create more than one automatic architect follow-on for a single user turn
 
 ## UI Structure
 
