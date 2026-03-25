@@ -335,6 +335,138 @@ func TestChatModelDelegateResultStillShowsWhenPendingSummaryWasLost(t *testing.T
 	}
 }
 
+func TestChatModelMirrorsRichSubAgentProseIntoChat(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "runtime", Text: "[architect] starting", SubAgent: "architect"})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{Kind: llm.EventToken, Text: "Here is the plain-language version.\n\nThis repo is a toolbox of scripts for recurring data work.", SubAgent: "architect"})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "runtime", Text: "[architect] done", SubAgent: "architect"})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{
+		Kind:    llm.EventToolResult,
+		Agent:   "delegate",
+		Text:    "Provided a plain-language explanation of the repository.",
+		Content: "This repository is a practical toolbox of scripts used for routine data operations.\n\n1) Create one Start Here guide.\n2) Add safety checks.",
+		IsError: false,
+	})
+	m = updated.(ChatModel)
+
+	var agentMsgs []ChatMessage
+	for _, msg := range m.messages {
+		if msg.Kind == MsgAgent {
+			agentMsgs = append(agentMsgs, msg)
+		}
+	}
+	if len(agentMsgs) != 1 {
+		t.Fatalf("expected one visible architect answer, got %#v", agentMsgs)
+	}
+	if got := agentMsgs[0].Header; !strings.HasPrefix(got, "Architect • ") {
+		t.Fatalf("header = %q", got)
+	}
+	if got := agentMsgs[0].Content; !strings.Contains(got, "Here is the plain-language version.") {
+		t.Fatalf("content = %q", got)
+	}
+	if got := agentMsgs[0].Content; strings.Contains(got, "Provided a plain-language explanation of the repository.") {
+		t.Fatalf("unexpected delegate summary leaked into transcript: %q", got)
+	}
+}
+
+func TestChatModelMirroredSubAgentProseStaysSeparatedByRole(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "runtime", Text: "[scout] starting", SubAgent: "scout"})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{Kind: llm.EventToken, Text: "Scout found the source file.", SubAgent: "scout"})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "runtime", Text: "[scout] done", SubAgent: "scout"})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{Kind: llm.EventToolResult, Agent: "delegate", Text: "Source: /repo/main.go:12.", Content: `{"source_file":"/repo/main.go","source_line":12}`})
+	m = updated.(ChatModel)
+
+	updated, _ = m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "runtime", Text: "[architect] starting", SubAgent: "architect"})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{Kind: llm.EventToken, Text: "Architect recommends a simpler explanation.", SubAgent: "architect"})
+	m = updated.(ChatModel)
+
+	var agentMsgs []ChatMessage
+	for _, msg := range m.messages {
+		if msg.Kind == MsgAgent {
+			agentMsgs = append(agentMsgs, msg)
+		}
+	}
+	if len(agentMsgs) != 2 {
+		t.Fatalf("expected separate scout and architect messages, got %#v", agentMsgs)
+	}
+	if got := agentMsgs[0].Header; !strings.HasPrefix(got, "Scout • ") {
+		t.Fatalf("first header = %q", got)
+	}
+	if got := agentMsgs[1].Header; !strings.HasPrefix(got, "Architect • ") {
+		t.Fatalf("second header = %q", got)
+	}
+}
+
+func TestChatModelDelegateResultUsesRichArtifactWhenNoVisibleSubAgentTranscript(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+	m.pendingSubAgentSummary = &subAgentSummary{role: "architect", turns: 1, tools: 1}
+
+	updated, _ := m.Update(llm.Event{
+		Kind:    llm.EventToolResult,
+		Agent:   "delegate",
+		Text:    "Provided a plain-language explanation of the repository.",
+		Content: "This repository is a practical toolbox of scripts used for routine data operations.\n\n1) Create one Start Here guide.\n2) Add safety checks.",
+		IsError: false,
+	})
+	m = updated.(ChatModel)
+
+	var agentMsgs []ChatMessage
+	for _, msg := range m.messages {
+		if msg.Kind == MsgAgent {
+			agentMsgs = append(agentMsgs, msg)
+		}
+	}
+	if len(agentMsgs) != 1 {
+		t.Fatalf("expected one visible architect answer, got %#v", agentMsgs)
+	}
+	if got := agentMsgs[0].Header; !strings.HasPrefix(got, "Architect • ") {
+		t.Fatalf("header = %q", got)
+	}
+	if got := agentMsgs[0].Content; !strings.Contains(got, "This repository is a practical toolbox of scripts used for routine data operations.") {
+		t.Fatalf("expected artifact body in transcript, got %q", got)
+	}
+	if got := agentMsgs[0].Content; strings.Contains(got, "Provided a plain-language explanation of the repository.") {
+		t.Fatalf("expected transcript to prefer artifact over summary, got %q", got)
+	}
+}
+
+func TestChatModelStructuredSubAgentEnvelopeDoesNotLeakIntoChat(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "runtime", Text: "[architect] starting", SubAgent: "architect"})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{
+		Kind:     llm.EventToken,
+		Text:     `{"status":"complete","message":"Provided a plain-language explanation.","artifact_kind":"summary","artifact":"full body","next_role":"","next_task":""}`,
+		SubAgent: "architect",
+	})
+	m = updated.(ChatModel)
+
+	for _, msg := range m.messages {
+		if msg.Kind == MsgAgent {
+			t.Fatalf("unexpected structured envelope in transcript: %#v", msg)
+		}
+	}
+}
+
 func TestChatModelSlashClear(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 80
