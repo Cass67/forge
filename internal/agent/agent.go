@@ -60,6 +60,7 @@ type scoutRepoReviewEvidenceState struct {
 	active      bool
 	workDir     string
 	topEntries  map[string]string
+	sawTopLevel bool
 	sawOverview bool
 	sawManifest bool
 	sawSource   bool
@@ -1651,11 +1652,14 @@ func (s *scoutRepoReviewEvidenceState) Observe(call ToolCall, result string) {
 			s.observePath(path)
 		}
 	case "list_dir":
-		if path, _ := call.Args["path"].(string); path != "" {
-			s.observePath(path)
-			if isRootRepoPath(s.workDir, path) {
-				s.observeTopEntries(result)
-			}
+		path, _ := call.Args["path"].(string)
+		if strings.TrimSpace(path) == "" {
+			path = "."
+		}
+		s.observePath(path)
+		if isRootRepoPath(s.workDir, path) {
+			s.sawTopLevel = true
+			s.observeTopEntries(result)
 		}
 	case "search":
 		if path, _ := call.Args["path"].(string); path != "" {
@@ -1743,7 +1747,7 @@ func (s *scoutRepoReviewEvidenceState) recordTopEntry(path string) {
 	if idx := strings.Index(first, "/"); idx >= 0 {
 		first = first[:idx+1]
 	}
-	key := strings.ToLower(first)
+	key := normalizeRepoReviewEntryKey(first)
 	if _, exists := s.topEntries[key]; !exists {
 		s.topEntries[key] = first
 	}
@@ -1755,6 +1759,9 @@ func (s scoutRepoReviewEvidenceState) NeedsMoreEvidence() bool {
 	}
 	if !s.sawOverview && !s.sawManifest {
 		return true
+	}
+	if !s.sawTopLevel {
+		return !(s.sawManifest && s.sawSource && s.sawHealth)
 	}
 	if s.hasTopEntry(repoReviewManifestCandidates...) && !s.sawManifest {
 		return true
@@ -1769,6 +1776,9 @@ func (s scoutRepoReviewEvidenceState) NeedsMoreEvidence() bool {
 }
 
 func (s scoutRepoReviewEvidenceState) NudgeMessage() string {
+	if !s.sawTopLevel {
+		return "Repo-review evidence is still incomplete. Determine the repo shape first: use list_dir on . (non-recursive) or inspect a likely manifest/source/health target next. Do not stop until manifest/source/health coverage is established or ruled out."
+	}
 	targets := make([]string, 0, 3)
 	if s.hasTopEntry(repoReviewManifestCandidates...) && !s.sawManifest {
 		targets = append(targets, s.firstTopEntry(repoReviewManifestCandidates...))
@@ -1792,7 +1802,7 @@ func (s scoutRepoReviewEvidenceState) NudgeMessage() string {
 
 func (s scoutRepoReviewEvidenceState) hasTopEntry(candidates ...string) bool {
 	for _, candidate := range candidates {
-		if _, ok := s.topEntries[strings.ToLower(candidate)]; ok {
+		if _, ok := s.topEntries[normalizeRepoReviewEntryKey(candidate)]; ok {
 			return true
 		}
 	}
@@ -1801,7 +1811,7 @@ func (s scoutRepoReviewEvidenceState) hasTopEntry(candidates ...string) bool {
 
 func (s scoutRepoReviewEvidenceState) firstTopEntry(candidates ...string) string {
 	for _, candidate := range candidates {
-		if value, ok := s.topEntries[strings.ToLower(candidate)]; ok {
+		if value, ok := s.topEntries[normalizeRepoReviewEntryKey(candidate)]; ok {
 			return value
 		}
 	}
@@ -1964,6 +1974,13 @@ func normalizeRepoReviewPath(workDir, path string) string {
 	return filepath.ToSlash(filepath.Clean(path))
 }
 
+func normalizeRepoReviewEntryKey(path string) string {
+	path = strings.TrimSpace(filepath.ToSlash(path))
+	path = strings.TrimPrefix(path, "./")
+	path = strings.TrimSuffix(path, "/")
+	return strings.ToLower(path)
+}
+
 func isRootRepoPath(workDir, path string) bool {
 	rel := normalizeRepoReviewPath(workDir, path)
 	return rel == "."
@@ -1975,7 +1992,7 @@ func isRepoOverviewPath(lower, base string) bool {
 		return true
 	case base == "architecture.md":
 		return true
-	case strings.HasPrefix(lower, "docs/"):
+	case base == "docs", strings.HasPrefix(lower, "docs/"):
 		return true
 	default:
 		return false
@@ -2002,6 +2019,13 @@ func isRepoSourcePath(lower, base string) bool {
 	switch {
 	case base == "main.go":
 		return true
+	case base == "cmd",
+		base == "internal",
+		base == "pkg",
+		base == "src",
+		base == "app",
+		base == "lib":
+		return true
 	case strings.HasPrefix(lower, "cmd/"),
 		strings.HasPrefix(lower, "internal/"),
 		strings.HasPrefix(lower, "pkg/"),
@@ -2022,7 +2046,11 @@ func isRepoHealthPath(lower, base string) bool {
 		base == "makefile",
 		base == ".golangci.yml",
 		base == ".golangci.yaml",
-		base == "contributing.md":
+		base == "contributing.md",
+		base == ".github",
+		base == "ci",
+		base == "test",
+		base == "tests":
 		return true
 	case strings.HasPrefix(lower, ".github/"),
 		strings.HasPrefix(lower, "ci/"),

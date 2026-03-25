@@ -159,8 +159,6 @@ func inferRepoReviewScope(task string) bool {
 		"audit the repo",
 		"audit the repository",
 		"audit the codebase",
-		"inspect the repository",
-		"inspect the go repository",
 	}) {
 		return true
 	}
