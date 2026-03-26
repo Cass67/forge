@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestDefaultChatViewSingleColumnLayout(t *testing.T) {
@@ -39,5 +41,45 @@ func TestDefaultChatViewSingleColumnLayout(t *testing.T) {
 	}
 	if !strings.Contains(lastNonEmpty, "Type a message or /help") {
 		t.Fatalf("expected composer to be the bottom-most rendered element, got last line %q in:\n%s", lastNonEmpty, view)
+	}
+}
+
+func TestDefaultChatViewShowsFlashAboveComposer(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test-model", WorkDir: "/tmp"})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
+	m = updated.(ChatModel)
+	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Forge • 12:00:00", Content: "latest transcript line"})
+
+	m.inputBuf = "/trace"
+	m.inputPos = len(m.inputBuf)
+	updated, _ = m.submitInput()
+	m = updated.(ChatModel)
+
+	if got := m.flash; got != "trace unavailable without -d" {
+		t.Fatalf("flash = %q", got)
+	}
+
+	view := m.View()
+	if count := strings.Count(strippedLine(view), "trace unavailable without -d"); count != 1 {
+		t.Fatalf("expected flash once in default view, found %d in:\n%s", count, strippedLine(view))
+	}
+
+	lines := strings.Split(view, "\n")
+	promptLine := -1
+	flashLine := -1
+	for i, line := range lines {
+		stripped := strippedLine(line)
+		if strings.Contains(stripped, "Prompt") {
+			promptLine = i
+		}
+		if strings.Contains(stripped, "trace unavailable without -d") {
+			flashLine = i
+		}
+	}
+	if promptLine <= 0 || flashLine < 0 {
+		t.Fatalf("expected flash slot and composer, got:\n%s", strippedLine(view))
+	}
+	if flashLine != promptLine-1 {
+		t.Fatalf("expected flash directly above composer, got flash line %d prompt line %d in:\n%s", flashLine, promptLine, strippedLine(view))
 	}
 }
