@@ -24,6 +24,7 @@ import (
 type ChatLiveConfig struct {
 	Model                 string
 	WorkDir               string
+	SurfaceKind           ChatSurfaceKind
 	DebugEnabled          bool
 	AvailableModels       []string
 	Providers             []ProviderOption
@@ -56,6 +57,13 @@ type ProviderOption struct {
 	Status       string
 	DefaultModel string
 }
+
+type ChatSurfaceKind string
+
+const (
+	ChatSurfaceDefault ChatSurfaceKind = "default"
+	ChatSurfaceDebug   ChatSurfaceKind = "debug"
+)
 
 type ChatLiveResult struct {
 	Aborted bool
@@ -98,7 +106,11 @@ func (cfg ChatLiveConfig) SurfaceMode() SurfaceModeConfig {
 		EnableBracketedPaste: true,
 		EnableLiveRegion:     true,
 	}
-	if cfg.DebugEnabled {
+	surfaceKind := cfg.SurfaceKind
+	if surfaceKind == "" {
+		surfaceKind = ChatSurfaceDefault
+	}
+	if surfaceKind == ChatSurfaceDebug {
 		mode.UseAltScreen = true
 		mode.EnableMouseCapture = true
 	}
