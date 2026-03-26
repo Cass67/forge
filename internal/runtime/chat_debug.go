@@ -57,6 +57,7 @@ func EnableChatDebug(setup *ChatSetup, path string) (string, error) {
 		"path":           resolved,
 		"model":          setup.ChatModel,
 		"work_dir":       setup.WorkDir,
+		"surface_mode":   "debug",
 		"runtime_mode":   runtimeMode,
 		"agents_enabled": visibleAgents,
 	})

@@ -68,6 +68,16 @@ func TestPrintHelpPromotesMakeAndKeepsImproveAlias(t *testing.T) {
 	}
 }
 
+func TestPrintChatHelpMentionsAdvancedDebugView(t *testing.T) {
+	output := captureStdout(t, printHelp)
+	if strings.Contains(output, "--live") {
+		t.Fatalf("expected --live to be removed from chat help, got:\n%s", output)
+	}
+	if !strings.Contains(output, "-d") || !strings.Contains(output, "advanced debug view") {
+		t.Fatalf("expected chat help to mention -d advanced debug view, got:\n%s", output)
+	}
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	prev := os.Stdout
