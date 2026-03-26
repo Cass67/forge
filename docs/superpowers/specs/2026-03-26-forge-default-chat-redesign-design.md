@@ -135,6 +135,31 @@ Requirements:
 
 The user should not see the previous prompt linger in the composer after Enter.
 
+#### Composer Interaction Contract
+
+The composer behavior is fixed by this spec.
+
+Keybindings:
+
+- `Enter` submits the current prompt
+- `Shift+Enter` inserts a newline
+- bracketed paste inserts pasted text verbatim and must never auto-submit
+
+Sizing:
+
+- the composer opens at 3 visible lines when empty or short
+- it may grow to 5 visible lines as content wraps
+- beyond 5 visible lines, the composer scrolls internally rather than expanding further
+
+Submission acceptance criteria:
+
+- once `Enter` submits, the user prompt is appended to the visible transcript immediately
+- the input buffer clears immediately after the prompt is echoed
+- the cursor returns to an empty composer without waiting for model output
+- resize events must not restore the previous submitted prompt into the composer
+
+This keeps multi-line composition explicit while preserving the fast single-key submit behavior the product wants.
+
 ### 5. One Visible Assistant, Hidden Workers Behind It
 
 The user talks to `Forge`, not to a roster of worker personalities.
@@ -193,6 +218,23 @@ Not allowed in default chat:
 - internal role transitions
 - raw orchestration traces
 
+#### Live Progress Semantics
+
+Because default chat runs in the normal terminal buffer, live progress must not rewrite old scrollback.
+
+The progress presenter uses one live progress slot anchored directly above the active composer.
+
+Rules:
+
+- at most one live progress row exists for the active turn
+- new progress updates replace the current live progress row in place while the user remains at the live prompt
+- the live progress row is not committed into scrollback on every update
+- when the turn completes, the live progress row either disappears or collapses into one final dim transcript line if that context is still useful
+- if the user scrolls away or the terminal can no longer safely redraw the live slot, Forge stops updating progress in place and waits for the final answer
+- progress updates must never create an unbounded stack of near-duplicate lines in normal chat
+
+This resolves the tension between native terminal scrollback and useful live feedback.
+
 ### 8. Debug Mode Owns the Extra Machinery
 
 `forge -d` is the place where the harness can expose its deeper machinery.
@@ -213,6 +255,23 @@ This creates a clean product split:
 
 - default mode optimizes for usability and trust
 - debug mode optimizes for harness development and diagnosis
+
+#### Mode Matrix
+
+The terminal feature split is part of the design, not an implementation detail.
+
+| Feature | Default `forge` | `forge -d` |
+|---|---|---|
+| Alternate screen | disabled | allowed |
+| Mouse capture | disabled | allowed |
+| Private transcript viewport | disabled | allowed |
+| Native terminal scrollback | required | optional |
+| Bracketed paste | enabled | enabled |
+| Inline live progress slot | enabled | optional |
+| Worker / tool / trace detail | hidden | visible |
+| Skill metadata | hidden | visible |
+
+The default chat path must keep the terminal in the least surprising state. Debug mode may use a richer managed surface because its purpose is harness diagnosis, not transcript ergonomics.
 
 ## Worker Skill Access Model
 
@@ -246,8 +305,28 @@ Worker execution should receive:
 - the relevant repo instructions and agent rules
 - the visible skill catalog or resolved applicable skills
 - the same internal skill-loading mechanism used by the primary assistant
+- working directory
+- tool permission profile
+- deadline or cancellation token
+- output schema for the worker class
 
 The orchestrator remains responsible for the worker boundary, but the worker must not be put into a fake environment where skills are only mentioned textually.
+
+#### Adapter Contract
+
+The shared skill runtime adapter must expose a non-shell contract equivalent to:
+
+- `ListSkills() -> []SkillDescriptor`
+- `LoadSkill(id) -> SkillDocument`
+- `RecordSkillUse(id, workerID, outcome)`
+
+`SkillDescriptor` must at least include:
+
+- stable skill identifier
+- short description
+- path to `SKILL.md`
+
+The adapter may pre-resolve applicable skills for a worker, but the worker still receives a real skill document and not just a textual mention that a skill exists.
 
 ### Failure Handling
 
@@ -368,6 +447,43 @@ Boundary:
 - can launch and supervise workers
 - cannot let workers redefine visible product identity
 
+#### Worker Contract
+
+Workers use a typed bounded interface.
+
+`WorkerRequest` must include:
+
+- worker class
+- bounded task text
+- request family
+- working directory
+- instruction bundle
+- skill context
+- tool permission profile
+- deadline or cancellation handle
+- expected output schema
+
+`WorkerResult` must include:
+
+- terminal status: `success`, `blocked`, `failed`, `cancelled`, or `timed_out`
+- short internal summary
+- structured observations or artifact
+- optional touched-file list
+- optional verification evidence
+- optional structured error payload
+
+Streaming:
+
+- workers may emit internal progress events
+- workers do not stream user-facing transcript prose directly
+- the top-level assistant remains the only owner of visible final-answer prose in default chat
+
+Retries and cancellation:
+
+- the orchestrator owns retry policy
+- worker cancellation must yield a structured cancelled result
+- worker timeouts must yield a structured timed-out result
+
 ### 6. Skill Runtime Adapter
 
 Purpose:
@@ -414,6 +530,22 @@ Boundary:
 6. transcript renderer shows one final Forge answer
 7. any temporary progress line is replaced, collapsed, or left visually subordinate
 
+### Transcript Event Model
+
+The default renderer consumes a small typed event model:
+
+- `UserTurn`
+- `AssistantTurn`
+- `ProgressUpdate`
+- `ErrorRow`
+- `SystemNote`
+
+Rules:
+
+- only `UserTurn`, `AssistantTurn`, `ErrorRow`, and the optional final collapsed progress note become durable transcript rows
+- `ProgressUpdate` targets the one live progress slot rather than appending durable history each time
+- `SystemNote` is reserved for compact, rare, non-error states such as `nothing to expand`
+
 ### Worker Skill Path
 
 1. orchestrator creates a bounded worker task
@@ -451,6 +583,17 @@ Requirements:
 - allow retry, fallback-to-local, or graceful degradation
 - prevent raw worker confusion from becoming the visible assistant answer
 
+User-visible fallback policy:
+
+- if Forge can recover locally or retry safely, the worker failure remains invisible
+- if the failure materially changes what Forge can do for the user, Forge discloses the effect in user terms without naming internal workers unless that detail is necessary in `-d`
+- user-facing phrasing describes the outcome and fallback, not harness internals
+
+Examples:
+
+- acceptable: `I couldn't verify that path automatically, so I inspected the code directly instead`
+- not acceptable: `reader worker timed out, retrying architect`
+
 ### Skill Errors
 
 Skill access failures are harness bugs, not normal user-facing discourse.
@@ -460,6 +603,7 @@ Requirements:
 - fail closed
 - expose detail in `-d`
 - degrade to local handling only if that keeps behavior safe and coherent
+- keep the normal transcript focused on task impact, not on the missing skill plumbing
 
 Not acceptable:
 
@@ -469,6 +613,16 @@ Not acceptable:
 
 The redesign needs explicit regression coverage because these failures are easy to reintroduce.
 
+### Test Strategy
+
+The implementation plan must include three layers of verification:
+
+1. unit tests for isolated policy and rendering helpers
+2. golden transcript tests for stable visible output
+3. PTY-backed integration tests for terminal-mode behavior
+
+This redesign is not complete if it is only manually verified.
+
 ### Interaction Tests
 
 - default chat does not enable the alternate screen
@@ -476,6 +630,8 @@ The redesign needs explicit regression coverage because these failures are easy 
 - submitted prompts appear in the transcript immediately
 - submitted prompts clear from the input immediately
 - composer retains multi-line behavior
+- `Enter` submits and `Shift+Enter` inserts a newline
+- bracketed paste inserts multi-line text without accidental submission
 
 ### Rendering Tests
 
@@ -484,6 +640,7 @@ The redesign needs explicit regression coverage because these failures are easy 
 - message rendering uses spacing and labels instead of left-border cards
 - code blocks remain visually distinct
 - progress rows render in subdued style
+- live progress updates do not append duplicate durable transcript rows
 
 ### Behavior Tests
 
@@ -491,6 +648,7 @@ The redesign needs explicit regression coverage because these failures are easy 
 - default chat suppresses internal worker naming and role-transition chatter
 - top-level assistant owns the final visible answer after worker use
 - worker routing remains capability-based and does not depend on brittle keyword patches
+- worker timeout and cancellation remain structured and recoverable
 
 ### Skill Contract Tests
 
@@ -505,6 +663,8 @@ The redesign needs explicit regression coverage because these failures are easy 
 - `forge -d` surfaces trace detail that normal chat hides
 - default chat never shows debug-only orchestration metadata
 - debug skill metadata remains off by default
+- default mode disables alternate screen and mouse capture
+- debug mode may enable them without affecting the default path
 
 ### Log-Driven Regression
 
