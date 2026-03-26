@@ -45,3 +45,44 @@ func renderTraceOverlayPanel(theme chatTheme, content string, width, height int)
 		Render(strings.Join(body, "\n"))
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, box)
 }
+
+func renderTraceDockPanel(theme chatTheme, content string, width, height int) string {
+	if width <= 0 || height <= 0 {
+		return ""
+	}
+	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true)
+	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
+	textStyle := lipgloss.NewStyle().Foreground(theme.Text)
+
+	lines := []string{
+		titleStyle.Render("Debug trace"),
+		dimStyle.Render("Visible because forge was started with -d."),
+	}
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		lines = append(lines, dimStyle.Render("No trace captured yet."))
+	} else {
+		traceLines := strings.Split(trimmed, "\n")
+		if len(traceLines) > height-2 {
+			traceLines = traceLines[len(traceLines)-(height-2):]
+		}
+		lines = append(lines, traceLines...)
+	}
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	body := make([]string, 0, len(lines))
+	for _, line := range lines {
+		body = append(body, textStyle.Width(max(1, width-6)).Render(line))
+	}
+
+	return lipgloss.NewStyle().
+		BorderTop(true).
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(theme.Border).
+		Background(theme.HeaderBG).
+		Padding(0, 1).
+		Width(width - 2).
+		Height(height).
+		Render(strings.Join(body, "\n"))
+}

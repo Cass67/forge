@@ -227,6 +227,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	inspectMixedToolCallRetries := 0
 	scoutNoToolRetries := 0
 	scoutMalformedToolRetries := 0
+	subAgentMalformedToolRetries := 0
 	sawToolCallThisRun := false
 	dispatchCanStop := false
 	dispatchStopAfterTurn := false
@@ -301,6 +302,22 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			}
 			return fmt.Errorf("scout produced malformed tool markup")
 		}
+		if a.isSubAgent && strings.TrimSpace(a.role) != "scout" && containsRawToolMarkup(response) && len(calls) == 0 {
+			if turn+1 < a.maxTurns {
+				subAgentMalformedToolRetries++
+				a.history = append(a.history, llm.Message{
+					Role:    llm.RoleUser,
+					Content: subAgentMalformedToolMarkupNudgeMessage(a.role, subAgentMalformedToolRetries),
+				})
+				continue
+			}
+			role := strings.TrimSpace(a.role)
+			if role == "" {
+				role = "sub-agent"
+			}
+			return fmt.Errorf("%s produced malformed tool markup", role)
+		}
+		subAgentMalformedToolRetries = 0
 		inspectMixedToolCallProse := isInspectTurn && len(calls) > 0 && strings.TrimSpace(visibleText) != ""
 		if inspectMixedToolCallProse {
 			inspectMixedToolCallRetries++
@@ -1479,6 +1496,20 @@ func scoutMalformedToolMarkupNudgeMessage(attempt int) string {
 
 func scoutFirstTurnToolCallNudgeMessage() string {
 	return "For evidence-gathering scout tasks, the first working turn must contain exactly one valid tool call."
+}
+
+func subAgentMalformedToolMarkupNudgeMessage(role string, attempt int) string {
+	if strings.TrimSpace(role) == "scout" {
+		return scoutMalformedToolMarkupNudgeMessage(attempt)
+	}
+	switch attempt {
+	case 1:
+		return "Sub-agent emitted malformed tool markup. Return exactly one valid <tool_call>...</tool_call> block and nothing else."
+	case 2:
+		return "Malformed tool markup again. Emit one valid tool call block only. No prose, no JSON result yet."
+	default:
+		return "Return one valid tool call block only. No prose."
+	}
 }
 
 func subAgentToolCallNudgeMessage(role string, attempt int) string {
