@@ -69,6 +69,41 @@ func TestClassifyVagueScopedReviewPrompts(t *testing.T) {
 	}
 }
 
+func TestClassifyTypoTolerantScopedReviewPrompts(t *testing.T) {
+	cases := []struct {
+		input          string
+		wantFamily     RequestFamily
+		wantTopic      string
+		wantEvaluation bool
+	}{
+		{
+			input:          "please take a look at this repo and tell me whats happeingin and what improvments could be made",
+			wantFamily:     FamilyInspect,
+			wantTopic:      "workspace:repository",
+			wantEvaluation: true,
+		},
+		{
+			input:          "desribe this direcotry",
+			wantFamily:     FamilyInspect,
+			wantTopic:      "workspace:directory",
+			wantEvaluation: false,
+		},
+	}
+
+	for _, tc := range cases {
+		got := Classify(UserTurn{Text: tc.input}, SessionState{})
+		if got.Family != tc.wantFamily {
+			t.Fatalf("%q family = %q, want %q", tc.input, got.Family, tc.wantFamily)
+		}
+		if got.TopicKey != tc.wantTopic {
+			t.Fatalf("%q topic = %q, want %q", tc.input, got.TopicKey, tc.wantTopic)
+		}
+		if got.WantsEvaluation != tc.wantEvaluation {
+			t.Fatalf("%q evaluation = %v, want %v", tc.input, got.WantsEvaluation, tc.wantEvaluation)
+		}
+	}
+}
+
 func TestClassifyInterpretiveFollowUpNeedsRecentEvidence(t *testing.T) {
 	noEvidence := Classify(UserTurn{Text: "what do you think?"}, SessionState{})
 	if noEvidence.WantsInterpretation {
