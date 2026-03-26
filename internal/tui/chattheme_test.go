@@ -30,7 +30,7 @@ func TestChatThemeLookupSupportsLegacyAliases(t *testing.T) {
 	}
 }
 
-func TestDefaultChatThemeUsesGraphiteMutedBluePalette(t *testing.T) {
+func TestChatThemeDefaultUsesGraphiteMutedBluePalette(t *testing.T) {
 	theme, ok := lookupChatTheme("default")
 	if !ok {
 		t.Fatal("missing default theme")
