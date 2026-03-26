@@ -125,6 +125,20 @@ func TestChatComposerCtrlDExitsOnlyWhenEmptyAndIdle(t *testing.T) {
 	})
 }
 
+func TestChatComposerWhitespaceOnlyDraftRendersAsDraft(t *testing.T) {
+	c := NewChatComposer()
+	c.InsertString("   ")
+
+	rendered := strippedLine(c.Render(lookupThemeForTest(t, "default"), 24))
+
+	if strings.Contains(rendered, "Type a message or /help") {
+		t.Fatalf("expected whitespace draft to avoid placeholder, got %q", rendered)
+	}
+	if got := c.visibleBodyLines(22)[0]; got != "   " {
+		t.Fatalf("visible draft = %q", got)
+	}
+}
+
 func TestChatComposerVisibleLineBudget(t *testing.T) {
 	c := NewChatComposer()
 	c.InsertString("short")
