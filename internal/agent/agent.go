@@ -201,7 +201,14 @@ func (a *Agent) ClearHistory() {
 
 func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	a.lastFullResponse = ""
+	historyUserMessage := normalizeUserMessageForHistory(userMessage)
 	a.history = append(a.history, llm.Message{Role: llm.RoleUser, Content: userMessage})
+	historyUserIdx := len(a.history) - 1
+	defer func() {
+		if historyUserIdx >= 0 && historyUserIdx < len(a.history) {
+			a.history[historyUserIdx].Content = historyUserMessage
+		}
+	}()
 	turnStart := time.Now()
 	actionPreambleRetries := 0
 	subAgentMixedProseRetries := 0
@@ -1370,6 +1377,30 @@ func nudgeMessage(attempt int) string {
 
 func isHarnessInspectTurn(userMessage string) bool {
 	return strings.HasPrefix(strings.TrimSpace(userMessage), "HARNESS MODE: inspect")
+}
+
+func normalizeUserMessageForHistory(userMessage string) string {
+	if extracted, ok := extractHarnessUserRequest(userMessage); ok {
+		return extracted
+	}
+	return userMessage
+}
+
+func extractHarnessUserRequest(userMessage string) (string, bool) {
+	trimmed := strings.TrimSpace(strings.ReplaceAll(userMessage, "\r\n", "\n"))
+	if !strings.HasPrefix(trimmed, "HARNESS MODE:") {
+		return "", false
+	}
+	const marker = "\nUSER REQUEST:\n"
+	idx := strings.Index(trimmed, marker)
+	if idx < 0 {
+		return "", false
+	}
+	request := strings.TrimSpace(trimmed[idx+len(marker):])
+	if request == "" {
+		return "", false
+	}
+	return request, true
 }
 
 func inspectToolCallNudgeMessage(attempt int) string {
