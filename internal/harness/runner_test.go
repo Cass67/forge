@@ -148,6 +148,40 @@ func TestRunnerEvaluativeInspectStaysOnLocalInspectPath(t *testing.T) {
 	}
 }
 
+func TestRunnerRepoTellMeWhatYouThinkStaysOnLocalInspectPath(t *testing.T) {
+	local := &stubLocalExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Response: "The repo looks workable but needs clearer boundaries and stronger automation.",
+			Summary:  "repo review complete",
+			TopicKey: "workspace:repository",
+		},
+	}
+	worker := &stubWorkerExecutor{}
+
+	result, err := NewRunner(RunnerConfig{
+		Session: NewSession(),
+		Trace:   NewRecorder(),
+		Local:   local,
+		Workers: worker,
+	}).Run(context.Background(), "take a look at this repo and tell me what you think")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Step.Kind != StepLocal || result.Step.Worker != WorkerNone {
+		t.Fatalf("step = %#v", result.Step)
+	}
+	if worker.calls != 0 {
+		t.Fatalf("worker should not have been used, got %d calls", worker.calls)
+	}
+	if local.calls != 1 {
+		t.Fatalf("local calls = %d", local.calls)
+	}
+	if !result.Classification.WantsEvaluation {
+		t.Fatalf("classification = %#v", result.Classification)
+	}
+}
+
 func TestRunnerImplementationUsesEditorWorkerWhenConfigured(t *testing.T) {
 	local := &stubLocalExecutor{}
 	worker := &stubWorkerExecutor{
