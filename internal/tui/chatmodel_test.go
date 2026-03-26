@@ -134,7 +134,7 @@ func TestChatModelHandlesAbortClearsLiveProgress(t *testing.T) {
 	m.height = 24
 	m.busy = true
 
-	updated, _ := m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "scout: reading README.md"})
+	updated, _ := m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "reading README.md"})
 	m = updated.(ChatModel)
 	if len(m.messages) != 1 || m.messages[0].Kind != MsgWorking {
 		t.Fatalf("expected working row before abort, got %#v", m.messages)
@@ -216,10 +216,10 @@ func TestChatModelProgressUpdatesActiveSubAgentInPlace(t *testing.T) {
 	m.height = 24
 
 	for _, text := range []string{
-		"scout: reading README.md",
-		"scout: finding \"**/*.go\"",
-		"scout: reading main.go",
-		"scout: reading app.go",
+		"reading README.md",
+		"looking for \"**/*.go\"",
+		"reading main.go",
+		"reading app.go",
 	} {
 		updated, _ := m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: text})
 		m = updated.(ChatModel)
@@ -235,7 +235,7 @@ func TestChatModelProgressUpdatesActiveSubAgentInPlace(t *testing.T) {
 	if msg.Header != "" {
 		t.Fatalf("header = %q, want empty", msg.Header)
 	}
-	if got := msg.Content; got != "scout: reading app.go" {
+	if got := msg.Content; got != "reading app.go" {
 		t.Fatalf("content = %q, want last progress line", got)
 	}
 }
@@ -245,17 +245,17 @@ func TestChatModelProgressHandoffReplacesPreviousWorkingLine(t *testing.T) {
 	m.width = 80
 	m.height = 24
 
-	updated, _ := m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "scout: reading README.md"})
+	updated, _ := m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "reading README.md"})
 	m = updated.(ChatModel)
 	updated, _ = m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "runtime", Text: "delegating to builder"})
 	m = updated.(ChatModel)
-	updated, _ = m.Update(llm.Event{Kind: llm.EventProgress, Agent: "builder", Text: "builder: editing main.go"})
+	updated, _ = m.Update(llm.Event{Kind: llm.EventProgress, Agent: "builder", Text: "editing main.go"})
 	m = updated.(ChatModel)
 
 	if len(m.messages) != 1 {
 		t.Fatalf("messages = %#v", m.messages)
 	}
-	if got := m.messages[0]; got.Kind != MsgWorking || got.Content != "builder: editing main.go" {
+	if got := m.messages[0]; got.Kind != MsgWorking || got.Content != "editing main.go" {
 		t.Fatalf("unexpected working handoff state: %#v", got)
 	}
 }
@@ -295,18 +295,18 @@ func TestLiveProgressChatModelKeepsProgressTransientUntilDone(t *testing.T) {
 	m.width = 80
 	m.height = 24
 
-	updated, _ := m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "scout: reading README.md"})
+	updated, _ := m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "reading README.md"})
 	m = updated.(ChatModel)
-	updated, _ = m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "scout: reading app.go"})
+	updated, _ = m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "reading app.go"})
 	m = updated.(ChatModel)
 
-	if len(m.messages) != 1 || m.messages[0].Kind != MsgWorking || m.messages[0].Content != "scout: reading app.go" {
+	if len(m.messages) != 1 || m.messages[0].Kind != MsgWorking || m.messages[0].Content != "reading app.go" {
 		t.Fatalf("messages = %#v", m.messages)
 	}
 	if len(m.records) != 0 {
 		t.Fatalf("records = %#v", m.records)
 	}
-	if m.liveProgress.Message != "scout: reading app.go" {
+	if m.liveProgress.Message != "reading app.go" {
 		t.Fatalf("live progress = %#v", m.liveProgress)
 	}
 
@@ -322,7 +322,7 @@ func TestLiveProgressChatModelKeepsProgressTransientUntilDone(t *testing.T) {
 	if len(m.records) != 1 {
 		t.Fatalf("records after done = %#v", m.records)
 	}
-	if m.records[0].Kind != RecordSystem || len(m.records[0].Segments) != 1 || m.records[0].Segments[0].Text != "scout: reading app.go" {
+	if m.records[0].Kind != RecordSystem || len(m.records[0].Segments) != 1 || m.records[0].Segments[0].Text != "reading app.go" {
 		t.Fatalf("record after done = %#v", m.records[0])
 	}
 }
@@ -333,7 +333,7 @@ func TestChatModelDoneFinalizesAssistantRecordBeforeProgressNote(t *testing.T) {
 	m.height = 24
 
 	m.AppendToLastAgentLabeled("hello", "Agent")
-	updated, _ := m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "scout: reading app.go"})
+	updated, _ := m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "reading app.go"})
 	m = updated.(ChatModel)
 
 	if len(m.records) != 1 || m.records[0].Kind != RecordAssistant || m.records[0].Final {
@@ -3155,14 +3155,14 @@ func TestProgressSlotRendersAboveComposerWithoutLeakingIntoTranscript(t *testing
 	m = updated.(ChatModel)
 	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Forge • 12:00:00", Content: "latest transcript line"})
 
-	updated, _ = m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "scout: reading app.go"})
+	updated, _ = m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "reading app.go"})
 	m = updated.(ChatModel)
 
 	view := m.View()
 	if !strings.Contains(strippedLine(view), "latest transcript line") {
 		t.Fatalf("expected transcript content to remain visible, got:\n%s", strippedLine(view))
 	}
-	if count := strings.Count(strippedLine(view), "scout: reading app.go"); count != 1 {
+	if count := strings.Count(strippedLine(view), "reading app.go"); count != 1 {
 		t.Fatalf("expected one live progress slot, found %d in:\n%s", count, strippedLine(view))
 	}
 
@@ -3174,7 +3174,7 @@ func TestProgressSlotRendersAboveComposerWithoutLeakingIntoTranscript(t *testing
 		if strings.Contains(stripped, "Prompt") {
 			promptLine = i
 		}
-		if strings.Contains(stripped, "scout: reading app.go") {
+		if strings.Contains(stripped, "reading app.go") {
 			progressLine = i
 		}
 	}
@@ -3192,7 +3192,7 @@ func TestProgressSlotTruncatesLongMessageToSingleLine(t *testing.T) {
 	m = updated.(ChatModel)
 	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Forge • 12:00:00", Content: "latest transcript line"})
 
-	longProgress := "scout: reading this path and that path and every other path until the slot would otherwise wrap into the composer"
+	longProgress := "reading this path and that path and every other path until the slot would otherwise wrap into the composer"
 	updated, _ = m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: longProgress})
 	m = updated.(ChatModel)
 
@@ -3205,7 +3205,7 @@ func TestProgressSlotTruncatesLongMessageToSingleLine(t *testing.T) {
 		if strings.Contains(stripped, "Prompt") {
 			promptLine = i
 		}
-		if strings.Contains(stripped, "scout:") {
+		if strings.Contains(stripped, "reading this path") {
 			progressLines = append(progressLines, i)
 		}
 	}
@@ -3515,7 +3515,7 @@ func TestChatModelRestoreSessionRebuildsTranscriptState(t *testing.T) {
 	m = updated.(ChatModel)
 
 	m.AddMessage(ChatMessage{Kind: MsgStatus, Content: "Error: stale"})
-	updated, _ = m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "scout: stale progress"})
+	updated, _ = m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "stale progress"})
 	m = updated.(ChatModel)
 	if m.liveProgress == (LiveProgressState{}) {
 		t.Fatal("expected stale progress before restore")
