@@ -52,6 +52,9 @@ var (
 	continuationNegativeTokens = tokenSet(
 		"no", "nah", "nope", "stop", "cancel", "dont", "don't", "not", "later", "thanks", "thank", "cheers",
 	)
+	continuationReferentialTokens = tokenSet(
+		"see", "above", "earlier", "previous", "prior", "same",
+	)
 	promptBoundaryTokens = tokenSet(
 		"prompt", "prompts", "instruction", "instructions",
 	)
@@ -674,9 +677,28 @@ func looksLikePendingActionContinuation(text, lower string, tokens map[string]st
 	}
 	if len(ordered) == 1 {
 		_, ok := continuationConfirmTokens[ordered[0]]
-		return ok
+		return ok || isPendingReferentialToken(ordered[0])
 	}
 	_, ok := continuationConfirmTokens[ordered[0]]
+	if ok {
+		return true
+	}
+	seenReferential := false
+	for _, token := range ordered {
+		if isPendingReferentialToken(token) {
+			seenReferential = true
+			continue
+		}
+		if isWeakFollowUpToken(token) {
+			continue
+		}
+		return false
+	}
+	return seenReferential
+}
+
+func isPendingReferentialToken(token string) bool {
+	_, ok := continuationReferentialTokens[token]
 	return ok
 }
 

@@ -358,6 +358,32 @@ func TestClassifyPendingActionContinuationUsesStoredTask(t *testing.T) {
 	}
 }
 
+func TestClassifyReferentialPendingActionContinuationUsesStoredTask(t *testing.T) {
+	got := Classify(UserTurn{Text: "see above"}, SessionState{
+		Turn: 2,
+		PendingAction: PendingAction{
+			SetAtTurn:       1,
+			Family:          FamilyInspect,
+			TopicKey:        "path:.pre-commit-config.yaml",
+			TaskText:        "inspect `.pre-commit-config.yaml` and summarize what it does",
+			CanStayLocal:    true,
+			WantsEvaluation: false,
+		},
+	})
+	if got.Family != FamilyInspect {
+		t.Fatalf("family = %q", got.Family)
+	}
+	if !got.IsFollowUp {
+		t.Fatalf("expected follow-up classification: %#v", got)
+	}
+	if got.TopicKey != "path:.pre-commit-config.yaml" {
+		t.Fatalf("topic = %q", got.TopicKey)
+	}
+	if got.TaskText != "inspect `.pre-commit-config.yaml` and summarize what it does" {
+		t.Fatalf("task text = %q", got.TaskText)
+	}
+}
+
 func TestClassifyProcessFollowUpUsesRecentMetaContext(t *testing.T) {
 	got := Classify(UserTurn{Text: "ive lost mine, can i copy yours ?"}, SessionState{
 		Turn:         2,

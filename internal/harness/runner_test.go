@@ -435,6 +435,95 @@ func TestRunnerAnswerOfferCreatesPendingActionForNextTurn(t *testing.T) {
 	}
 }
 
+func TestRunnerAnswerOfferCreatesInspectPendingActionFromConcreteTarget(t *testing.T) {
+	local := &stubLocalExecutor{
+		obs: Observation{
+			Status: ObservationComplete,
+			Response: "I haven’t checked them yet in this thread.\n\n" +
+				"If you want, I can inspect the `.pre-commit-config.yaml` / related pre-commit files and summarize what they do.",
+			Summary: "offered pre-commit inspection",
+		},
+	}
+	session := NewSession()
+	_, err := NewRunner(RunnerConfig{
+		Session: session,
+		Trace:   NewRecorder(),
+		Local:   local,
+	}).Run(context.Background(), "did yuo look at the  .precommits ?")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	state := session.Snapshot()
+	if !state.HasPendingAction() {
+		t.Fatalf("expected pending action: %#v", state)
+	}
+	if state.PendingAction.Family != FamilyInspect {
+		t.Fatalf("pending family = %q", state.PendingAction.Family)
+	}
+	if state.PendingAction.TopicKey != "path:.pre-commit-config.yaml" {
+		t.Fatalf("pending topic = %q", state.PendingAction.TopicKey)
+	}
+	if !strings.Contains(state.PendingAction.TaskText, ".pre-commit-config.yaml") {
+		t.Fatalf("pending action missing concrete target: %#v", state.PendingAction)
+	}
+	if state.PendingAction.WantsEvaluation {
+		t.Fatalf("unexpected evaluation flag on inspect offer: %#v", state.PendingAction)
+	}
+}
+
+func TestRunnerContinuationResumesConcreteInspectOffer(t *testing.T) {
+	firstLocal := &stubLocalExecutor{
+		obs: Observation{
+			Status: ObservationComplete,
+			Response: "I haven’t checked them yet in this thread.\n\n" +
+				"If you want, I can inspect the `.pre-commit-config.yaml` / related pre-commit files and summarize what they do.",
+			Summary: "offered pre-commit inspection",
+		},
+	}
+	session := NewSession()
+	_, err := NewRunner(RunnerConfig{
+		Session: session,
+		Trace:   NewRecorder(),
+		Local:   firstLocal,
+	}).Run(context.Background(), "did yuo look at the  .precommits ?")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	secondLocal := &stubLocalExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Response: "Yes — I checked `.pre-commit-config.yaml`.",
+			Summary:  "checked pre-commit config",
+			TopicKey: "path:.pre-commit-config.yaml",
+		},
+	}
+	result, err := NewRunner(RunnerConfig{
+		Session: session,
+		Trace:   NewRecorder(),
+		Local:   secondLocal,
+	}).Run(context.Background(), "sure")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Classification.Family != FamilyInspect {
+		t.Fatalf("family = %q", result.Classification.Family)
+	}
+	if !result.Classification.IsFollowUp {
+		t.Fatalf("expected follow-up classification: %#v", result.Classification)
+	}
+	if result.Classification.TopicKey != "path:.pre-commit-config.yaml" {
+		t.Fatalf("topic = %q", result.Classification.TopicKey)
+	}
+	if !strings.Contains(secondLocal.lastClas.TaskText, ".pre-commit-config.yaml") {
+		t.Fatalf("task text = %q", secondLocal.lastClas.TaskText)
+	}
+	if result.Response != "Yes — I checked `.pre-commit-config.yaml`." {
+		t.Fatalf("response = %q", result.Response)
+	}
+}
+
 func TestRunnerAppendsDetachedPolicyRefusalAfterPrimaryTask(t *testing.T) {
 	local := &stubLocalExecutor{
 		obs: Observation{
