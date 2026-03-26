@@ -97,8 +97,15 @@ func TestRunnerLocalImplementationUsesLocalStep(t *testing.T) {
 	}
 }
 
-func TestRunnerEvaluativeInspectUsesReaderWorkerWhenConfigured(t *testing.T) {
-	local := &stubLocalExecutor{}
+func TestRunnerEvaluativeInspectStaysOnLocalInspectPath(t *testing.T) {
+	local := &stubLocalExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Response: "Top improvement areas are repo hygiene at the root and clearer cross-host ownership boundaries.",
+			Summary:  "repo review complete",
+			TopicKey: "workspace:directory",
+		},
+	}
 	worker := &stubWorkerExecutor{
 		obs: Observation{
 			Status:   ObservationComplete,
@@ -127,19 +134,16 @@ func TestRunnerEvaluativeInspectUsesReaderWorkerWhenConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Step.Kind != StepWorker || result.Step.Worker != WorkerReader {
+	if result.Step.Kind != StepLocal || result.Step.Worker != WorkerNone {
 		t.Fatalf("step = %#v", result.Step)
 	}
-	if worker.calls != 1 {
-		t.Fatalf("worker calls = %d", worker.calls)
+	if worker.calls != 0 {
+		t.Fatalf("worker should not have been used, got %d calls", worker.calls)
 	}
-	if local.calls != 0 {
-		t.Fatalf("local should not have been used, got %d calls", local.calls)
+	if local.calls != 1 {
+		t.Fatalf("local calls = %d", local.calls)
 	}
-	if !strings.Contains(worker.task.Context, "evidence-backed findings") {
-		t.Fatalf("worker context = %q", worker.task.Context)
-	}
-	if !strings.Contains(result.Response, "poor repo hygiene") {
+	if !strings.Contains(result.Response, "Top improvement areas") {
 		t.Fatalf("response = %q", result.Response)
 	}
 }

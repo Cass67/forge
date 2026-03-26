@@ -6,6 +6,7 @@ func AdmitWorker(class Classification, _ SessionState) (WorkerKind, string, bool
 	workspaceInspect := strings.HasPrefix(class.TopicKey, "workspace:directory") || strings.HasPrefix(class.TopicKey, "workspace:repository")
 	if class.Family == FamilyInspect &&
 		workspaceInspect &&
+		!class.WantsEvaluation &&
 		!class.WantsInterpretation &&
 		!class.WantsAction {
 		return WorkerReader, "workspace inspection benefits from a bounded reader worker", true
