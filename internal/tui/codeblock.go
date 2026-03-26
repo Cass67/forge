@@ -28,6 +28,7 @@ func renderMessageContent(content string, width int, theme chatTheme) string {
 			continue
 		}
 		rendered = append(rendered, lipgloss.NewStyle().
+			Background(theme.AppBG).
 			Foreground(theme.Text).
 			Width(width).
 			Render(body))

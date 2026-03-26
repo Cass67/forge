@@ -3192,6 +3192,31 @@ func TestChatModelViewPaintsSpacerWithAppBackground(t *testing.T) {
 	}
 }
 
+func TestChatModelViewPaintsTranscriptLinesWithAppBackground(t *testing.T) {
+	withTrueColorProfile(t)
+
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
+	m = updated.(ChatModel)
+	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Forge • 12:00:00", Content: "latest transcript line"})
+
+	view := m.View()
+	wantBG := ansiBackgroundFragment(m.theme().AppBG)
+	lines := strings.Split(view, "\n")
+	var sawTranscript bool
+	for _, line := range lines {
+		if strings.Contains(line, "latest transcript line") {
+			sawTranscript = true
+			if !strings.Contains(line, wantBG) {
+				t.Fatalf("transcript line missing app background %q: %q", wantBG, line)
+			}
+		}
+	}
+	if !sawTranscript {
+		t.Fatalf("expected transcript line in view: %q", strippedLine(view))
+	}
+}
+
 func TestProgressSlotRendersAboveComposerWithoutLeakingIntoTranscript(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})

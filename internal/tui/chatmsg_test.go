@@ -91,6 +91,50 @@ func TestChatMessageRenderWorking(t *testing.T) {
 	}
 }
 
+func TestChatMessageRenderPaintsAppBackground(t *testing.T) {
+	withTrueColorProfile(t)
+
+	theme := lookupThemeForTest(t, "default")
+	m := ChatMessage{
+		Kind:    MsgUser,
+		Header:  "You • 22:59:50",
+		Content: "hello world",
+	}
+
+	got := m.Render(60, theme)
+	wantBG := ansiBackgroundFragment(theme.AppBG)
+	lines := strings.Split(got, "\n")
+	var sawHeader bool
+	var sawBody bool
+	for _, line := range lines {
+		if strings.Contains(line, "You") {
+			sawHeader = true
+			if !strings.Contains(line, wantBG) {
+				t.Fatalf("header line missing app background %q: %q", wantBG, line)
+			}
+		}
+		if strings.Contains(line, "hello world") {
+			sawBody = true
+			if !strings.Contains(line, wantBG) {
+				t.Fatalf("body line missing app background %q: %q", wantBG, line)
+			}
+		}
+	}
+	if !sawHeader || !sawBody {
+		t.Fatalf("expected header and body lines in render: %q", got)
+	}
+}
+
+func TestChatMessageStatusRenderPaintsAppBackground(t *testing.T) {
+	withTrueColorProfile(t)
+
+	theme := lookupThemeForTest(t, "default")
+	got := (ChatMessage{Kind: MsgStatus, Content: "Agent complete"}).Render(60, theme)
+	if !strings.Contains(got, ansiBackgroundFragment(theme.AppBG)) {
+		t.Fatalf("status render missing app background: %q", got)
+	}
+}
+
 func TestChatMessageRenderChangesAcrossThemes(t *testing.T) {
 	prevProfile := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
