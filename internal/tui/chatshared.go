@@ -106,6 +106,7 @@ func (cfg ChatLiveConfig) SurfaceMode() SurfaceModeConfig {
 	mode := SurfaceModeConfig{
 		EnableBracketedPaste: true,
 		EnableLiveRegion:     true,
+		EnableMouseCapture:   true,
 	}
 	return mode
 }
