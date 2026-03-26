@@ -206,6 +206,8 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	actionPreambleRetries := 0
 	subAgentMixedProseRetries := 0
 	dispatchDirectAnswerRetries := 0
+	inspectNoToolRetries := 0
+	inspectMixedToolCallRetries := 0
 	scoutNoToolRetries := 0
 	scoutMalformedToolRetries := 0
 	sawToolCallThisRun := false
@@ -219,6 +221,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	scoutSingleFileState := newScoutSingleFileEvidenceState(userMessage)
 	scoutFocusedFilesState := newScoutFocusedFilesEvidenceState(userMessage)
 	scoutRepoReviewState := newScoutRepoReviewEvidenceState(a.workDir, userMessage)
+	isInspectTurn := !a.isSubAgent && isHarnessInspectTurn(userMessage)
 	if a.role == "dispatch" {
 		a.dispatchTurn++
 		currentDispatchTurn = a.dispatchTurn
@@ -281,6 +284,13 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			}
 			return fmt.Errorf("scout produced malformed tool markup")
 		}
+		inspectMixedToolCallProse := isInspectTurn && len(calls) > 0 && strings.TrimSpace(visibleText) != ""
+		if inspectMixedToolCallProse {
+			inspectMixedToolCallRetries++
+			visibleText = ""
+		} else {
+			inspectMixedToolCallRetries = 0
+		}
 		mixedSubAgentToolCallProse := a.isSubAgent && len(calls) > 0 && strings.TrimSpace(visibleText) != ""
 		if mixedSubAgentToolCallProse {
 			subAgentMixedProseRetries++
@@ -316,6 +326,17 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 					continue
 				}
 				return fmt.Errorf("scout produced no evidence-gathering tool call before answering")
+			}
+			if isInspectTurn && !sawToolCallThisRun {
+				if turn+1 < a.maxTurns {
+					inspectNoToolRetries++
+					a.history = append(a.history, llm.Message{
+						Role:    llm.RoleUser,
+						Content: inspectEvidenceNudgeMessage(inspectNoToolRetries),
+					})
+					continue
+				}
+				return fmt.Errorf("inspect turn produced no evidence-gathering tool call before answering")
 			}
 			if a.role == "scout" && scoutSingleFileState.NeedsMoreEvidence() {
 				if turn+1 < a.maxTurns {
@@ -384,11 +405,16 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		}
 		actionPreambleRetries = 0
 		dispatchDirectAnswerRetries = 0
+		inspectNoToolRetries = 0
 		scoutNoToolRetries = 0
 		scoutMalformedToolRetries = 0
 		sawToolCallThisRun = true
 
 		if a.role == "dispatch" && len(calls) > 1 {
+			calls = calls[:1]
+		}
+		inspectMultipleToolCalls := isInspectTurn && len(calls) > 1
+		if inspectMultipleToolCalls {
 			calls = calls[:1]
 		}
 		scoutFirstTurnMultipleCalls := a.role == "scout" && turn == 0 && scoutTaskRequiresEvidenceTools(userMessage) && len(calls) > 1
@@ -593,6 +619,18 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			a.history = append(a.history, llm.Message{
 				Role:    llm.RoleUser,
 				Content: subAgentToolCallNudgeMessage(a.role, subAgentMixedProseRetries),
+			})
+		}
+		if inspectMixedToolCallProse && turn+1 < a.maxTurns {
+			a.history = append(a.history, llm.Message{
+				Role:    llm.RoleUser,
+				Content: inspectToolCallNudgeMessage(inspectMixedToolCallRetries),
+			})
+		}
+		if inspectMultipleToolCalls && turn+1 < a.maxTurns {
+			a.history = append(a.history, llm.Message{
+				Role:    llm.RoleUser,
+				Content: inspectSingleToolCallNudgeMessage(),
 			})
 		}
 		if scoutFirstTurnMultipleCalls && turn+1 < a.maxTurns {
@@ -1328,6 +1366,36 @@ func nudgeMessage(attempt int) string {
 	default:
 		return "Call a tool now. No more text without a tool call."
 	}
+}
+
+func isHarnessInspectTurn(userMessage string) bool {
+	return strings.HasPrefix(strings.TrimSpace(userMessage), "HARNESS MODE: inspect")
+}
+
+func inspectToolCallNudgeMessage(attempt int) string {
+	switch attempt {
+	case 1:
+		return "Inspect turns must not mix visible prose with tool calls. Use tool calls only while gathering evidence."
+	case 2:
+		return "Stop mixing prose with inspect tool calls. Emit one tool call only until you are ready to answer."
+	default:
+		return "Inspect turns are tool calls only until evidence gathering is complete."
+	}
+}
+
+func inspectEvidenceNudgeMessage(attempt int) string {
+	switch attempt {
+	case 1:
+		return "Inspect turns must inspect the workspace with a tool before answering. Call the next read/list/search tool now."
+	case 2:
+		return "No direct inspect answer yet. Use one inspection tool call now, not a summary."
+	default:
+		return "Call one inspection tool now. Do not answer before collecting evidence."
+	}
+}
+
+func inspectSingleToolCallNudgeMessage() string {
+	return "Inspect turns must emit exactly one tool call per working turn."
 }
 
 func scoutNudgeMessage() string {
