@@ -207,6 +207,7 @@ func RunChatLive(setup *ChatSetup) {
 	baseReg := reg.Filter(nil)
 	inspectReg := buildInspectToolRegistry(baseReg)
 	loadedSkills := skills.Load(setup.WorkDir)
+	workerAutoMode := skills.NormalizeAutoMode(setup.Config.Chat.AutoSkills)
 	state := chatstate.New()
 
 	a := agent.NewAgent(setup.Driver, reg, approve, setup.WorkDir, setup.Config.Chat.MaxTurns, evRenderer, loadedSkills, state)
@@ -228,7 +229,9 @@ func RunChatLive(setup *ChatSetup) {
 				DefaultTools: baseReg,
 				InspectTools: inspectReg,
 			},
-			Workers: workers,
+			Workers:        workers,
+			WorkerSkills:   loadedSkills,
+			WorkerAutoMode: workerAutoMode,
 		})
 	}
 
@@ -474,6 +477,7 @@ func RunChatConsole(setup *ChatSetup) {
 	baseReg := reg.Filter(nil)
 	inspectReg := buildInspectToolRegistry(baseReg)
 	loadedSkills := skills.Load(setup.WorkDir)
+	workerAutoMode := skills.NormalizeAutoMode(setup.Config.Chat.AutoSkills)
 
 	renderer := agent.NewRenderer(os.Stdout, 80, true)
 	state := chatstate.New()
@@ -496,7 +500,9 @@ func RunChatConsole(setup *ChatSetup) {
 				DefaultTools: baseReg,
 				InspectTools: inspectReg,
 			},
-			Workers: workers,
+			Workers:        workers,
+			WorkerSkills:   loadedSkills,
+			WorkerAutoMode: workerAutoMode,
 		})
 	}
 

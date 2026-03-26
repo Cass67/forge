@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"forge/internal/agent/tools"
+	"forge/internal/skills"
 )
 
 func BuildSystemPrompt(workDir string, registry *tools.Registry, skillsDesc string) string {
@@ -49,8 +50,8 @@ func BuildSystemPrompt(workDir string, registry *tools.Registry, skillsDesc stri
 	return sb.String()
 }
 
-func BuildWorkerSystemPrompt(workDir string, registry *tools.Registry, kind string) string {
-	return BuildSystemPrompt(workDir, registry, "") + "\n\n" + WorkerInstructionBlock(kind)
+func BuildWorkerSystemPrompt(workDir string, registry *tools.Registry, kind string, loadedSkills []skills.Skill) string {
+	return BuildSystemPrompt(workDir, registry, workerSkillsPrompt(loadedSkills)) + "\n\n" + WorkerInstructionBlock(kind)
 }
 
 func WorkerInstructionBlock(kind string) string {
@@ -102,6 +103,22 @@ Rules:
 	default:
 		return "You are forge's hidden worker. Return exactly one valid JSON object and no prose outside it."
 	}
+}
+
+func workerSkillsPrompt(loadedSkills []skills.Skill) string {
+	descriptors := skills.Descriptors(loadedSkills)
+	if len(descriptors) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Available runtime skills:\n")
+	for _, d := range descriptors {
+		fmt.Fprintf(&sb, "  - %s: %s\n", d.Name, d.Description)
+	}
+	sb.WriteString("When a skill applies, load its document through the runtime and follow it as instructions.\n")
+	sb.WriteString("Do not treat skill names or slash forms as shell commands or external binaries.\n")
+	return strings.TrimSpace(sb.String())
 }
 
 func detectProject(workDir string) string {

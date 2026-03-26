@@ -4,20 +4,26 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"forge/internal/skills"
 )
 
 type Runner struct {
-	session *Session
-	trace   *Recorder
-	local   LocalExecutor
-	workers WorkerExecutor
+	session        *Session
+	trace          *Recorder
+	local          LocalExecutor
+	workers        WorkerExecutor
+	workerSkills   []skills.Skill
+	workerAutoMode string
 }
 
 type RunnerConfig struct {
-	Session *Session
-	Trace   *Recorder
-	Local   LocalExecutor
-	Workers WorkerExecutor
+	Session        *Session
+	Trace          *Recorder
+	Local          LocalExecutor
+	Workers        WorkerExecutor
+	WorkerSkills   []skills.Skill
+	WorkerAutoMode string
 }
 
 func NewRunner(cfg RunnerConfig) *Runner {
@@ -30,10 +36,12 @@ func NewRunner(cfg RunnerConfig) *Runner {
 		trace = NewRecorder()
 	}
 	return &Runner{
-		session: session,
-		trace:   trace,
-		local:   cfg.Local,
-		workers: cfg.Workers,
+		session:        session,
+		trace:          trace,
+		local:          cfg.Local,
+		workers:        cfg.Workers,
+		workerSkills:   append([]skills.Skill(nil), cfg.WorkerSkills...),
+		workerAutoMode: cfg.WorkerAutoMode,
 	}
 }
 
@@ -91,12 +99,19 @@ func (r *Runner) executeWorker(ctx context.Context, turn UserTurn, class Classif
 	}
 
 	r.trace.Add(StateAct, class.Family, step.Kind, step.Worker, step.Summary, class.TopicKey)
+	deadline, _ := ctx.Deadline()
 	obs, err := r.workers.Execute(ctx, WorkerTask{
 		Kind:          step.Worker,
 		Objective:     turn.Text,
 		Context:       workerContext(class, session, step),
 		TopicKey:      class.TopicKey,
 		StopCondition: step.Reason,
+		SkillContext: WorkerSkillContext{
+			Loaded:   append([]skills.Skill(nil), r.workerSkills...),
+			AutoMode: r.workerAutoMode,
+		},
+		PermissionProfile: append([]string(nil), workerToolAllowlist(step.Worker)...),
+		Deadline:          deadline,
 	})
 	r.trace.Add(StateObserve, class.Family, step.Kind, step.Worker, firstNonEmpty(obs.Summary, "worker execution complete"), class.TopicKey)
 	if err == nil && obs.Status != ObservationBlocked {

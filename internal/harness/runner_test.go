@@ -5,6 +5,9 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
+
+	"forge/internal/skills"
 )
 
 type stubLocalExecutor struct {
@@ -196,6 +199,56 @@ func TestRunnerImplementationUsesEditorWorkerWhenConfigured(t *testing.T) {
 	}
 	if !strings.Contains(result.Response, "cleanup script") {
 		t.Fatalf("response = %q", result.Response)
+	}
+}
+
+func TestRunnerPassesWorkerSkillContextAndDeadline(t *testing.T) {
+	local := &stubLocalExecutor{}
+	worker := &stubWorkerExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Summary:  "editor complete",
+			TopicKey: "workspace:directory",
+			Artifact: EditorResult{
+				Status: "complete",
+				Changes: []ChangeRecord{
+					{Path: "tools/cleanup_workspace.sh", Summary: "Added a cleanup script for generated repo artifacts."},
+				},
+				VerificationAttempts: []VerificationAttempt{},
+				RemainingIssues:      []string{},
+				SuggestedNext:        "none",
+			},
+		},
+	}
+	deadline := time.Unix(1_700_000_000, 0).UTC()
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+
+	result, err := NewRunner(RunnerConfig{
+		Session:        NewSession(),
+		Trace:          NewRecorder(),
+		Local:          local,
+		Workers:        worker,
+		WorkerSkills:   []skills.Skill{{Name: "test-driven-development", Description: "write tests first", Body: "Write a failing test before implementation."}},
+		WorkerAutoMode: skills.AutoSkillsAuto,
+	}).Run(ctx, "can you write me a script to clean this up?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Step.Kind != StepWorker || result.Step.Worker != WorkerEditor {
+		t.Fatalf("step = %#v", result.Step)
+	}
+	if worker.task.SkillContext.AutoMode != skills.AutoSkillsAuto {
+		t.Fatalf("worker auto mode = %q", worker.task.SkillContext.AutoMode)
+	}
+	if len(worker.task.SkillContext.Loaded) != 1 || worker.task.SkillContext.Loaded[0].Name != "test-driven-development" {
+		t.Fatalf("worker skills = %#v", worker.task.SkillContext.Loaded)
+	}
+	if len(worker.task.PermissionProfile) == 0 {
+		t.Fatalf("permission profile = %#v", worker.task.PermissionProfile)
+	}
+	if !worker.task.Deadline.Equal(deadline) {
+		t.Fatalf("deadline = %v, want %v", worker.task.Deadline, deadline)
 	}
 }
 
