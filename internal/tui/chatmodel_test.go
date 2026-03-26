@@ -3186,6 +3186,40 @@ func TestProgressSlotRendersAboveComposerWithoutLeakingIntoTranscript(t *testing
 	}
 }
 
+func TestProgressSlotTruncatesLongMessageToSingleLine(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 36, Height: 16})
+	m = updated.(ChatModel)
+	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Forge • 12:00:00", Content: "latest transcript line"})
+
+	longProgress := "scout: reading this path and that path and every other path until the slot would otherwise wrap into the composer"
+	updated, _ = m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: longProgress})
+	m = updated.(ChatModel)
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+	promptLine := -1
+	progressLines := []int{}
+	for i, line := range lines {
+		stripped := strippedLine(line)
+		if strings.Contains(stripped, "Prompt") {
+			promptLine = i
+		}
+		if strings.Contains(stripped, "scout:") {
+			progressLines = append(progressLines, i)
+		}
+	}
+	if promptLine <= 0 {
+		t.Fatalf("expected composer in view, got:\n%s", strippedLine(view))
+	}
+	if len(progressLines) != 1 {
+		t.Fatalf("expected exactly one rendered progress line, got %d in:\n%s", len(progressLines), strippedLine(view))
+	}
+	if progressLines[0] != promptLine-1 {
+		t.Fatalf("expected truncated progress directly above composer, got progress line %d prompt line %d in:\n%s", progressLines[0], promptLine, strippedLine(view))
+	}
+}
+
 func TestDebugChatViewShowsTraceOverlayAndDebugContent(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "openai/gpt-5", WorkDir: "/tmp", DebugEnabled: true})
 	m.width = 100
