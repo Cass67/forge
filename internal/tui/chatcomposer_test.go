@@ -139,6 +139,19 @@ func TestChatComposerWhitespaceOnlyDraftRendersAsDraft(t *testing.T) {
 	}
 }
 
+func TestChatComposerRenderUsesBoxedShell(t *testing.T) {
+	c := NewChatComposer()
+
+	rendered := strippedLine(c.Render(lookupThemeForTest(t, "default"), 32))
+
+	if !strings.ContainsAny(rendered, "╭╮╰╯│") {
+		t.Fatalf("expected boxed composer shell, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Prompt") || !strings.Contains(rendered, "Type a message or /help") {
+		t.Fatalf("expected prompt label and placeholder, got %q", rendered)
+	}
+}
+
 func TestChatComposerVisibleLineBudget(t *testing.T) {
 	c := NewChatComposer()
 	c.InsertString("short")

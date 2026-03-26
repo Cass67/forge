@@ -72,14 +72,40 @@ func (m ChatMessage) Render(width int, theme chatTheme) string {
 	content := strings.TrimRight(m.Content, "\n")
 	var blocks []string
 	if header != "" {
-		blocks = append(blocks, lipgloss.NewStyle().
-			Foreground(headerColor).
-			Bold(true).
-			Width(width).
-			Render(header))
+		blocks = append(blocks, renderMessageHeader(header, width, theme, headerColor))
 	}
 	if strings.TrimSpace(content) != "" {
-		blocks = append(blocks, renderMessageContent(content, max(10, width), theme))
+		body := renderMessageContent(content, max(10, width-2), theme)
+		blocks = append(blocks, lipgloss.NewStyle().
+			Width(width).
+			Render(indentRenderedBlock(body, "  ")))
 	}
 	return lipgloss.NewStyle().Width(width).Render(lipgloss.JoinVertical(lipgloss.Left, blocks...))
+}
+
+func renderMessageHeader(header string, width int, theme chatTheme, accent lipgloss.Color) string {
+	name, meta, found := strings.Cut(strings.TrimSpace(header), " • ")
+	if !found {
+		return lipgloss.NewStyle().
+			Foreground(accent).
+			Bold(true).
+			Width(width).
+			Render(header)
+	}
+	return lipgloss.NewStyle().
+		Width(width).
+		Render(lipgloss.JoinHorizontal(
+			lipgloss.Left,
+			lipgloss.NewStyle().Foreground(accent).Bold(true).Render(strings.TrimSpace(name)),
+			lipgloss.NewStyle().Foreground(theme.Border).Render(" • "),
+			lipgloss.NewStyle().Foreground(theme.TextDim).Render(strings.TrimSpace(meta)),
+		))
+}
+
+func indentRenderedBlock(text, prefix string) string {
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		lines[i] = prefix + line
+	}
+	return strings.Join(lines, "\n")
 }

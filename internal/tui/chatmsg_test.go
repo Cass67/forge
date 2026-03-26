@@ -46,6 +46,26 @@ func TestChatMessageRenderAgent(t *testing.T) {
 	}
 }
 
+func TestChatMessageRenderIndentsBodyUnderHeader(t *testing.T) {
+	m := ChatMessage{
+		Kind:    MsgUser,
+		Header:  "You • 22:59:50",
+		Content: "hello world",
+	}
+	got := m.Render(60, lookupThemeForTest(t, "default"))
+	lines := strings.Split(got, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected header and body lines, got %q", got)
+	}
+	bodyLine := strippedLine(lines[1])
+	if !strings.HasPrefix(strings.TrimRight(bodyLine, " "), "  ") {
+		t.Fatalf("expected indented body line, got %q", bodyLine)
+	}
+	if !strings.Contains(bodyLine, "hello world") {
+		t.Fatalf("expected body content on indented line, got %q", bodyLine)
+	}
+}
+
 func TestChatMessageRenderStatus(t *testing.T) {
 	m := ChatMessage{
 		Kind:    MsgStatus,

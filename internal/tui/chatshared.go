@@ -24,6 +24,7 @@ import (
 type ChatLiveConfig struct {
 	Model                 string
 	WorkDir               string
+	DebugLogPath          string
 	SurfaceKind           ChatSurfaceKind
 	DebugEnabled          bool
 	AvailableModels       []string
@@ -105,14 +106,6 @@ func (cfg ChatLiveConfig) SurfaceMode() SurfaceModeConfig {
 	mode := SurfaceModeConfig{
 		EnableBracketedPaste: true,
 		EnableLiveRegion:     true,
-	}
-	surfaceKind := cfg.SurfaceKind
-	if surfaceKind == "" {
-		surfaceKind = ChatSurfaceDefault
-	}
-	if surfaceKind == ChatSurfaceDebug {
-		mode.UseAltScreen = true
-		mode.EnableMouseCapture = true
 	}
 	return mode
 }
