@@ -61,6 +61,8 @@ Return exactly one JSON object and no prose outside it:
 {"status":"complete|blocked","evidence":[{"kind":"file|command|note","path":"","summary":""}],"coverage":"what you covered","gaps":["remaining gaps"],"suggested_next":""}
 Rules:
 - use at least one real inspection tool before completing
+- while gathering evidence, emit exactly one tool call and no JSON or prose outside it
+- only emit the final JSON object after tool results are back and you can finish without another tool
 - a complete result must include at least one file or command evidence entry
 - no recommendations
 - no planning
@@ -71,6 +73,8 @@ Rules:
 Return exactly one JSON object and no prose outside it:
 {"status":"complete|blocked","changes":[{"path":"","summary":""}],"verification_attempts":[{"command":"","outcome":""}],"remaining_issues":[""],"suggested_next":""}
 Rules:
+- if you need another tool, emit exactly one tool call and nothing else for that turn
+- only emit the final JSON object once the work is complete
 - do not widen scope
 - do not refactor unrelated code
 - keep verification notes concrete`
@@ -79,6 +83,8 @@ Rules:
 Return exactly one JSON object and no prose outside it:
 {"status":"complete|blocked","checks":[{"name":"","outcome":"pass|fail","detail":""}],"failures":[""],"confidence":"low|medium|high"}
 Rules:
+- if you need another tool, emit exactly one tool call and nothing else for that turn
+- only emit the final JSON object once the checks are complete
 - no implementation changes
 - no planning
 - keep findings evidence-based`
@@ -87,6 +93,8 @@ Rules:
 Return exactly one JSON object and no prose outside it:
 {"status":"complete|blocked","findings":[{"summary":"","detail":""}],"sources":[{"label":"","locator":""}],"confidence":"low|medium|high"}
 Rules:
+- if you need another tool, emit exactly one tool call and nothing else for that turn
+- only emit the final JSON object once the research is complete
 - no local code changes
 - no orchestration
 - keep findings concise and source-grounded`

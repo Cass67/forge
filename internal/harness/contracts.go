@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
+
+	"forge/internal/agent"
 )
 
 type ReaderEvidence struct {
@@ -138,6 +141,24 @@ func ValidateWorkerResult(kind WorkerKind, raw string) (ValidatedWorkerResult, e
 	}
 }
 
+func ValidateWorkerResultWithToolCalls(kind WorkerKind, raw string, calls []agent.ToolCall) (ValidatedWorkerResult, error) {
+	validated, err := ValidateWorkerResult(kind, raw)
+	if err != nil {
+		return ValidatedWorkerResult{}, err
+	}
+	if kind != WorkerReader {
+		return validated, nil
+	}
+	result, ok := validated.Parsed.(ReaderResult)
+	if !ok {
+		return ValidatedWorkerResult{}, fmt.Errorf("reader result type mismatch")
+	}
+	if err := validateReaderGrounding(result, calls); err != nil {
+		return ValidatedWorkerResult{}, err
+	}
+	return validated, nil
+}
+
 func decodeStrictJSON(raw string, target any, requiredFields ...string) error {
 	if err := decodeSingleJSON(raw, target); err != nil {
 		return err
@@ -197,6 +218,46 @@ func validateReaderResult(result ReaderResult) error {
 	}
 	if strings.TrimSpace(result.Status) == "complete" && !hasConcreteEvidence {
 		return fmt.Errorf("reader complete result must include concrete evidence from at least one file or command")
+	}
+	return nil
+}
+
+func validateReaderGrounding(result ReaderResult, calls []agent.ToolCall) error {
+	if workerStatus(result.Status) != ObservationComplete {
+		return nil
+	}
+
+	readFiles := make(map[string]struct{})
+	hasConcreteInspectionCall := false
+	hasCommandGrounding := false
+	for _, call := range calls {
+		name := strings.TrimSpace(call.Name)
+		switch name {
+		case "read_file":
+			path, _ := call.Args["path"].(string)
+			if normalized := normalizeEvidencePath(path); normalized != "" {
+				readFiles[normalized] = struct{}{}
+				hasConcreteInspectionCall = true
+			}
+		case "list_dir", "glob", "search", "git_status", "git_log", "git_diff":
+			hasConcreteInspectionCall = true
+			hasCommandGrounding = true
+		}
+	}
+	if !hasConcreteInspectionCall {
+		return fmt.Errorf("reader complete result requires grounded inspection tool calls")
+	}
+	for _, evidence := range result.Evidence {
+		switch evidence.Kind {
+		case "file":
+			if _, ok := readFiles[normalizeEvidencePath(evidence.Path)]; !ok {
+				return fmt.Errorf("reader file evidence requires a matching read_file call for %q", strings.TrimSpace(evidence.Path))
+			}
+		case "command":
+			if !hasCommandGrounding {
+				return fmt.Errorf("reader command evidence requires at least one matching inspection command call")
+			}
+		}
 	}
 	return nil
 }
@@ -272,6 +333,18 @@ func validateReaderEvidenceKind(kind string) error {
 	default:
 		return fmt.Errorf("reader evidence kind must be file, command, or note")
 	}
+}
+
+func normalizeEvidencePath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	cleaned := filepath.Clean(path)
+	if cleaned == "." {
+		return ""
+	}
+	return strings.TrimPrefix(cleaned, "./")
 }
 
 func validateVerifierOutcome(outcome string) error {
