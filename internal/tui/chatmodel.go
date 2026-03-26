@@ -169,8 +169,6 @@ const (
 const chatHeaderHeight = 1
 const chatPaneBorderHeight = 0
 const chatComposerGapHeight = 1
-const chatComposerBodyHeight = 2
-const chatInputHeight = 5
 const chatStatusHeight = 1
 
 type subAgentSummary struct {
@@ -683,6 +681,7 @@ func selectDelegateTranscript(summary, artifact string) string {
 }
 
 func (m *ChatModel) refreshViewport() {
+	m.resizeChatViewport()
 	contentWidth := m.chatContentWidth()
 	if contentWidth < 10 {
 		contentWidth = 60
@@ -712,6 +711,41 @@ func (m *ChatModel) refreshViewport() {
 	totalLines := strings.Count(visible, "\n") + 1
 	if totalLines == 0 {
 		totalLines = 1
+	}
+	m.applyViewportFollow(totalLines)
+}
+
+func (m ChatModel) composer() ChatComposer {
+	composer := NewChatComposer()
+	composer.SetText(m.inputBuf)
+	composer.SetCursor(m.inputPos)
+	return composer
+}
+
+func (m ChatModel) inputHeight() int {
+	if m.pendingApproval != nil {
+		return 5
+	}
+	width := m.width
+	if width <= 0 {
+		width = 40
+	}
+	return m.composer().Height(width)
+}
+
+func (m *ChatModel) resizeChatViewport() {
+	if m.width <= 0 || m.height <= 0 {
+		return
+	}
+	m.chatViewport.Width = m.chatContentWidth()
+	bodyH := max(3, m.height-chatHeaderHeight-chatPaneBorderHeight-chatComposerGapHeight-m.inputHeight()-chatStatusHeight)
+	if m.chatViewport.Height == bodyH {
+		return
+	}
+	m.chatViewport.Height = bodyH
+	totalLines := 1
+	if strings.TrimSpace(m.chatVisible) != "" {
+		totalLines = strings.Count(m.chatVisible, "\n") + 1
 	}
 	m.applyViewportFollow(totalLines)
 }
@@ -1134,10 +1168,7 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		headerH := chatHeaderHeight
-		bodyH := max(3, m.height-headerH-chatPaneBorderHeight-chatComposerGapHeight-chatInputHeight-chatStatusHeight)
-		m.chatViewport.Width = m.chatContentWidth()
-		m.chatViewport.Height = bodyH
+		m.resizeChatViewport()
 		m.refreshViewport()
 		return m, nil
 
@@ -1466,139 +1497,6 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen] + "…"
 }
 
-func flattenComposerText(raw string) string {
-	if raw == "" {
-		return ""
-	}
-	var b strings.Builder
-	lastSpace := false
-	for _, r := range raw {
-		switch r {
-		case '\n', '\r', '\t':
-			if !lastSpace {
-				b.WriteByte(' ')
-				lastSpace = true
-			}
-		default:
-			if r < 32 {
-				continue
-			}
-			b.WriteRune(r)
-			lastSpace = r == ' '
-		}
-	}
-	return strings.TrimSpace(b.String())
-}
-
-func renderComposerText(raw string, cursorPos, width int) string {
-	if width <= 0 {
-		return ""
-	}
-	content := []rune(flattenComposerText(raw))
-	prefix := []rune("> ")
-	if len(content) == 0 {
-		return fitCell("> Type a message or /help", width)
-	}
-	cursorPos = clamp(cursorPos, 0, len([]rune(raw)))
-	flatCursor := len([]rune(flattenComposerText(string([]rune(raw)[:cursorPos]))))
-	flatCursor = clamp(flatCursor, 0, len(content))
-	avail := max(1, width-len(prefix))
-	if len(content) <= avail {
-		return fitCell(string(prefix)+string(content), width)
-	}
-	start := clamp(flatCursor-avail+1, 0, max(0, len(content)-avail))
-	end := min(len(content), start+avail)
-	segment := append([]rune(nil), content[start:end]...)
-	if start > 0 && len(segment) > 0 {
-		segment[0] = '…'
-	}
-	if end < len(content) && len(segment) > 0 {
-		segment[len(segment)-1] = '…'
-	}
-	return fitCell(string(prefix)+string(segment), width)
-}
-
-func renderComposerLines(raw string, cursorPos, width, rows int) []string {
-	rows = max(1, rows)
-	lines := make([]string, rows)
-	if width <= 0 {
-		return lines
-	}
-
-	content := []rune(flattenComposerText(raw))
-	prefix := []rune("> ")
-	if len(content) == 0 {
-		lines[0] = fitCell("> Type a message or /help", width)
-		for i := 1; i < rows; i++ {
-			lines[i] = fitCell("", width)
-		}
-		return lines
-	}
-
-	cursorPos = clamp(cursorPos, 0, len([]rune(raw)))
-	flatCursor := len([]rune(flattenComposerText(string([]rune(raw)[:cursorPos]))))
-	flatCursor = clamp(flatCursor, 0, len(content))
-
-	avail := max(1, rows*width-len(prefix))
-	segment := append([]rune(nil), content...)
-	if len(segment) > avail {
-		start := clamp(flatCursor-avail+1, 0, max(0, len(segment)-avail))
-		end := min(len(segment), start+avail)
-		segment = append([]rune(nil), segment[start:end]...)
-		if start > 0 && len(segment) > 0 {
-			segment[0] = '…'
-		}
-		if end < len(content) && len(segment) > 0 {
-			segment[len(segment)-1] = '…'
-		}
-	}
-
-	firstWidth := max(1, width-len(prefix))
-	firstTake := min(len(segment), firstWidth)
-	lines[0] = fitCell(string(prefix)+string(segment[:firstTake]), width)
-	segment = segment[firstTake:]
-	for i := 1; i < rows; i++ {
-		take := min(len(segment), width)
-		if take > 0 {
-			lines[i] = fitCell(string(segment[:take]), width)
-			segment = segment[take:]
-			continue
-		}
-		lines[i] = fitCell("", width)
-	}
-	return lines
-}
-
-func renderComposerBox(theme chatTheme, raw string, cursorPos, width int) string {
-	contentWidth := max(1, width-4)
-	contentLines := renderComposerLines(raw, cursorPos, contentWidth, chatComposerBodyHeight)
-
-	titleStyle := lipgloss.NewStyle().
-		Foreground(theme.TextDim).
-		Bold(true).
-		Width(contentWidth)
-	bodyStyle := lipgloss.NewStyle().
-		Foreground(theme.Text).
-		Width(contentWidth).
-		Height(chatComposerBodyHeight)
-	if strings.TrimSpace(flattenComposerText(raw)) == "" {
-		bodyStyle = bodyStyle.Foreground(theme.TextDim)
-	}
-
-	inner := lipgloss.JoinVertical(
-		lipgloss.Left,
-		titleStyle.Render("Prompt"),
-		bodyStyle.Render(strings.Join(contentLines, "\n")),
-	)
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.Border).
-		Background(theme.PanelBG).
-		Padding(0, 1).
-		Width(contentWidth).
-		Render(inner)
-}
-
 func latestFencedCodeBlock(content string) string {
 	parts := strings.Split(content, "```")
 	if len(parts) < 3 {
@@ -1719,8 +1617,6 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.Type {
-	case tea.KeyCtrlC:
-		return m, tea.Quit
 	case tea.KeyCtrlF:
 		m.openSearchOverlay("")
 		return m, nil
@@ -1745,32 +1641,6 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.resetSlashCompletion()
 		return m, nil
 	case tea.KeyEnter:
-		m.flash = ""
-		m.resetSlashCompletion()
-		return m.submitInput()
-	case tea.KeyBackspace:
-		m.resetSlashCompletion()
-		if len(m.inputBuf) > 0 && m.inputPos > 0 {
-			runes := []rune(m.inputBuf)
-			m.inputBuf = string(append(runes[:m.inputPos-1], runes[m.inputPos:]...))
-			m.inputPos--
-		}
-	case tea.KeyLeft:
-		m.resetSlashCompletion()
-		if m.inputPos > 0 {
-			m.inputPos--
-		}
-	case tea.KeyRight:
-		m.resetSlashCompletion()
-		if m.inputPos < len([]rune(m.inputBuf)) {
-			m.inputPos++
-		}
-	case tea.KeyHome:
-		m.resetSlashCompletion()
-		m.inputPos = 0
-	case tea.KeyEnd:
-		m.resetSlashCompletion()
-		m.inputPos = len([]rune(m.inputBuf))
 	case tea.KeyPgUp:
 		m.resetSlashCompletion()
 		m.markManualScroll()
@@ -1790,17 +1660,9 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, nil
-	case tea.KeySpace:
-		m.flash = ""
-		m.resetSlashCompletion()
-		runes := []rune(m.inputBuf)
-		newRunes := make([]rune, 0, len(runes)+1)
-		newRunes = append(newRunes, runes[:m.inputPos]...)
-		newRunes = append(newRunes, ' ')
-		newRunes = append(newRunes, runes[m.inputPos:]...)
-		m.inputBuf = string(newRunes)
-		m.inputPos++
-	case tea.KeyRunes:
+	}
+
+	if msg.Type == tea.KeyRunes {
 		m.flash = ""
 		if len(msg.Runes) == 1 {
 			switch msg.Runes[0] {
@@ -1814,48 +1676,94 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		m.resetSlashCompletion()
-		for _, r := range msg.Runes {
-			runes := []rune(m.inputBuf)
-			newRunes := make([]rune, 0, len(runes)+1)
-			newRunes = append(newRunes, runes[:m.inputPos]...)
-			newRunes = append(newRunes, r)
-			newRunes = append(newRunes, runes[m.inputPos:]...)
-			m.inputBuf = string(newRunes)
-			m.inputPos++
-			if r == '@' {
-				m.openFilePicker("")
+	}
+
+	switch msg.Type {
+	case tea.KeyCtrlC, tea.KeyCtrlD, tea.KeyEnter, tea.KeyBackspace, tea.KeyLeft, tea.KeyRight, tea.KeyHome, tea.KeyEnd, tea.KeySpace, tea.KeyRunes:
+		if msg.Type == tea.KeyEnter || msg.Type == tea.KeyBackspace || msg.Type == tea.KeyLeft || msg.Type == tea.KeyRight || msg.Type == tea.KeyHome || msg.Type == tea.KeyEnd || msg.Type == tea.KeySpace || msg.Type == tea.KeyRunes {
+			m.resetSlashCompletion()
+		}
+		if msg.Type == tea.KeyEnter || msg.Type == tea.KeySpace || msg.Type == tea.KeyRunes {
+			m.flash = ""
+		}
+
+		prevText := m.inputBuf
+		prevPos := m.inputPos
+		composer := m.composer()
+		action := composer.HandleKey(msg, m.busy)
+		if action == (ComposerAction{}) && composer.Text() == prevText && composer.Cursor() == prevPos {
+			return m, nil
+		}
+
+		m.inputBuf = composer.Text()
+		m.inputPos = composer.Cursor()
+		m.resizeChatViewport()
+
+		switch {
+		case action.SubmitText != "":
+			updated, cmd, submitted := m.trySubmitText(action.SubmitText)
+			m = updated
+			if !submitted {
+				m.inputBuf = prevText
+				m.inputPos = prevPos
+				m.resizeChatViewport()
 			}
+			return m, cmd
+		case action.CancelTurn:
+			if m.inputCh != nil {
+				ch := m.inputCh
+				m.flash = "canceling..."
+				return m, func() tea.Msg {
+					ch <- "__cancel_turn__"
+					return nil
+				}
+			}
+			return m, nil
+		case action.Exit:
+			return m, tea.Quit
+		default:
+			if msg.Type == tea.KeyRunes && !msg.Paste {
+				for _, r := range msg.Runes {
+					if r == '@' {
+						m.openFilePicker("")
+						break
+					}
+				}
+			}
+			return m, nil
 		}
 	}
 	return m, nil
 }
 
-func (m ChatModel) submitInput() (tea.Model, tea.Cmd) {
-	input := strings.TrimSpace(m.inputBuf)
+func (m ChatModel) trySubmitText(input string) (ChatModel, tea.Cmd, bool) {
+	input = strings.TrimSpace(input)
 	if input == "" {
-		return m, nil
+		return m, nil, false
 	}
 
 	if input == "/exit" || input == "/quit" {
-		return m, tea.Quit
+		return m, tea.Quit, true
 	}
 
 	if strings.HasPrefix(input, "/") {
 		cmd := strings.TrimPrefix(input, "/")
 		// Built-in commands first, then skill activation
 		if m.isBuiltinCommand(input) {
-			return m.handleSlashCommand(input)
+			updated, submitCmd := m.handleSlashCommand(input)
+			return updated.(ChatModel), submitCmd, true
 		}
 		if s, ok := skills.Get(m.skills, cmd); ok {
-			return m.submitSkillInput(s, fmt.Sprintf("/%s", s.Name), skills.SkillMessage(s))
+			updated, submitCmd := m.submitSkillInput(s, fmt.Sprintf("/%s", s.Name), skills.SkillMessage(s))
+			return updated.(ChatModel), submitCmd, true
 		}
-		return m.handleSlashCommand(input) // falls through to "unknown command"
+		updated, submitCmd := m.handleSlashCommand(input)
+		return updated.(ChatModel), submitCmd, true
 	}
 
 	if strings.TrimSpace(m.model) == "" {
 		m.flash = "configure a provider first with /provider, then pick a model with /models"
-		return m, nil
+		return m, nil, false
 	}
 
 	// Auto-skill detection
@@ -1863,7 +1771,8 @@ func (m ChatModel) submitInput() (tea.Model, tea.Cmd) {
 		switch m.autoSkillsMode {
 		case skills.AutoSkillsAuto:
 			if s, ok := skills.DetectAuto(m.skills, input); ok {
-				return m.submitSkillInput(s, input, skills.SkillMessageWithUserInput(s, input))
+				updated, submitCmd := m.submitSkillInput(s, input, skills.SkillMessageWithUserInput(s, input))
+				return updated.(ChatModel), submitCmd, true
 			}
 		case "", skills.AutoSkillsSuggest:
 			if s, ok := skills.DetectAuto(m.skills, input); ok {
@@ -1877,7 +1786,7 @@ func (m ChatModel) submitInput() (tea.Model, tea.Cmd) {
 	if requiredSkill != "" && !m.state.SkillActivated(requiredSkill) && skills.NormalizeAutoMode(m.autoSkillsMode) != skills.AutoSkillsSuggest {
 		if _, ok := skills.Get(m.skills, requiredSkill); ok {
 			m.flash = fmt.Sprintf("required skill: /%s", requiredSkill)
-			return m, nil
+			return m, nil, false
 		}
 	}
 
@@ -1890,8 +1799,6 @@ func (m ChatModel) submitInput() (tea.Model, tea.Cmd) {
 	m.anchorLatestTurnToBottom()
 	m.refreshViewport()
 
-	m.inputBuf = ""
-	m.inputPos = 0
 	m.busy = true
 	m.status = "running"
 	m.syncStatusData()
@@ -1901,10 +1808,21 @@ func (m ChatModel) submitInput() (tea.Model, tea.Cmd) {
 		return m, func() tea.Msg {
 			ch <- input
 			return nil
-		}
+		}, true
 	}
 
-	return m, nil
+	return m, nil, true
+}
+
+func (m ChatModel) submitInput() (tea.Model, tea.Cmd) {
+	updated, cmd, submitted := m.trySubmitText(m.inputBuf)
+	m = updated
+	if submitted {
+		m.inputBuf = ""
+		m.inputPos = 0
+		m.resizeChatViewport()
+	}
+	return m, cmd
 }
 
 func (m *ChatModel) resetSlashCompletion() {
@@ -4220,7 +4138,7 @@ func (m ChatModel) View() string {
 		approvalText := fmt.Sprintf("Tool: %s\n%s\n\n[y]es / [n]o", m.pendingApproval.Tool, m.pendingApproval.Summary)
 		inputBox = approvalStyle.Render(approvalText)
 	} else {
-		inputBox = renderComposerBox(theme, m.inputBuf, m.inputPos, m.width)
+		inputBox = m.composer().Render(theme, m.width)
 	}
 
 	// Status bar with spinner and flash
