@@ -1761,6 +1761,10 @@ func (m ChatModel) trySubmitText(input string) (ChatModel, tea.Cmd, bool) {
 		return updated.(ChatModel), submitCmd, true
 	}
 
+	if m.busy {
+		return m, nil, false
+	}
+
 	if strings.TrimSpace(m.model) == "" {
 		m.flash = "configure a provider first with /provider, then pick a model with /models"
 		return m, nil, false
