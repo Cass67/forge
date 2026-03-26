@@ -18,6 +18,7 @@ type regressionFixture struct {
 	WantStep           StepKind      `json:"want_step"`
 	WantWorker         WorkerKind    `json:"want_worker"`
 	WantTopicKey       string        `json:"want_topic_key"`
+	WantEvaluation     bool          `json:"want_evaluation"`
 	WantInterpretation bool          `json:"want_interpretation"`
 	WantFollowUp       bool          `json:"want_follow_up"`
 }
@@ -37,6 +38,9 @@ func TestRegressionFixturesRouteWithoutEscalation(t *testing.T) {
 				}
 				if class.TopicKey != fixture.WantTopicKey {
 					t.Fatalf("%s topic = %q, want %q", fixture.Source, class.TopicKey, fixture.WantTopicKey)
+				}
+				if class.WantsEvaluation != fixture.WantEvaluation {
+					t.Fatalf("%s evaluation = %v, want %v", fixture.Source, class.WantsEvaluation, fixture.WantEvaluation)
 				}
 				if class.WantsInterpretation != fixture.WantInterpretation {
 					t.Fatalf("%s interpretation = %v, want %v", fixture.Source, class.WantsInterpretation, fixture.WantInterpretation)

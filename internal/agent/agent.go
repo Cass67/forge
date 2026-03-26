@@ -30,6 +30,7 @@ type Agent struct {
 	isSubAgent                bool
 	structuredOutputRetryMode bool
 	lastFullResponse          string
+	lastToolCalls             []ToolCall
 	role                      string
 	dispatchResults           map[string]string
 	dispatchArtifacts         map[string]string
@@ -168,6 +169,14 @@ func (a *Agent) LastResponse() string {
 	return a.lastFullResponse
 }
 
+func (a *Agent) LastToolCalls() []ToolCall {
+	out := make([]ToolCall, 0, len(a.lastToolCalls))
+	for _, call := range a.lastToolCalls {
+		out = append(out, copyToolCall(call))
+	}
+	return out
+}
+
 func (a *Agent) EmitSyntheticResponse(text string) {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -201,6 +210,7 @@ func (a *Agent) ClearHistory() {
 
 func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	a.lastFullResponse = ""
+	a.lastToolCalls = nil
 	historyUserMessage := normalizeUserMessageForHistory(userMessage)
 	a.history = append(a.history, llm.Message{Role: llm.RoleUser, Content: userMessage})
 	historyUserIdx := len(a.history) - 1
@@ -472,6 +482,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				results = append(results, fmt.Sprintf("[%s] %s", call.Name, result))
 				continue
 			}
+			a.lastToolCalls = append(a.lastToolCalls, copyToolCall(call))
 
 			a.renderer.ToolCall(call.Name, formatCallSummary(call))
 
@@ -690,6 +701,17 @@ func truncateResult(result string) string {
 		return strings.Join(lines[:20], "\n") + fmt.Sprintf("\n... (%d more lines)", len(lines)-20)
 	}
 	return result
+}
+
+func copyToolCall(call ToolCall) ToolCall {
+	cloned := ToolCall{Name: call.Name}
+	if len(call.Args) > 0 {
+		cloned.Args = make(map[string]any, len(call.Args))
+		for key, value := range call.Args {
+			cloned.Args[key] = value
+		}
+	}
+	return cloned
 }
 
 func dispatchScratchpadWriteAllowed(content string, delegateResults map[string]string, delegateArtifacts map[string]string, scratchpadResult string) bool {

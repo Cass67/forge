@@ -3,6 +3,8 @@ package harness
 import (
 	"strings"
 	"testing"
+
+	"forge/internal/agent"
 )
 
 func TestValidateWorkerResultRejectsUnknownField(t *testing.T) {
@@ -71,6 +73,36 @@ func TestValidateWorkerResultParsesReaderPayload(t *testing.T) {
 	}
 	if result.Response != "README outlines the CLI." {
 		t.Fatalf("response = %q", result.Response)
+	}
+}
+
+func TestValidateWorkerResultWithToolCallsRejectsUngroundedReaderFileEvidence(t *testing.T) {
+	_, err := ValidateWorkerResultWithToolCalls(
+		WorkerReader,
+		`{"status":"complete","evidence":[{"kind":"file","path":"README.md","summary":"README outlines the CLI."}],"coverage":"repo root","gaps":[],"suggested_next":"inspect cmd/forge next"}`,
+		[]agent.ToolCall{
+			{Name: "list_dir", Args: map[string]any{"path": ".", "recursive": false}},
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "reader file evidence requires a matching read_file call") {
+		t.Fatalf("expected grounded file evidence error, got %v", err)
+	}
+}
+
+func TestValidateWorkerResultWithToolCallsAcceptsGroundedReaderEvidence(t *testing.T) {
+	result, err := ValidateWorkerResultWithToolCalls(
+		WorkerReader,
+		`{"status":"complete","evidence":[{"kind":"command","summary":"Top-level listing shows the repo layout."},{"kind":"file","path":"README.md","summary":"README outlines the CLI."}],"coverage":"repo root","gaps":[],"suggested_next":"inspect cmd/forge next"}`,
+		[]agent.ToolCall{
+			{Name: "list_dir", Args: map[string]any{"path": ".", "recursive": false}},
+			{Name: "read_file", Args: map[string]any{"path": "README.md", "start_line": 1, "end_line": 40}},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != ObservationComplete {
+		t.Fatalf("result = %#v", result)
 	}
 }
 

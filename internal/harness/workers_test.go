@@ -5,6 +5,7 @@ import (
 	"sync"
 	"testing"
 
+	"forge/internal/agent/tools"
 	"forge/internal/llm"
 )
 
@@ -73,12 +74,35 @@ func TestManagerExecuteRetriesInvalidStructuredOutput(t *testing.T) {
 }
 
 func TestManagerExecuteRetriesReaderWithoutConcreteEvidence(t *testing.T) {
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{
+		Name:        "list_dir",
+		Description: "list directory contents",
+		Execute: func(context.Context, map[string]any) (string, error) {
+			return "go.mod\nREADME.md\ninternal/", nil
+		},
+	})
+	reg.Register(tools.Tool{
+		Name:        "read_file",
+		Description: "read file contents",
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			path, _ := args["path"].(string)
+			if path == "go.mod" {
+				return "module forge\nrequire github.com/charmbracelet/bubbletea v1.3.4", nil
+			}
+			return "", nil
+		},
+	})
+
 	manager := NewManager(ManagerConfig{
-		WorkDir: ".",
+		WorkDir:   ".",
+		BaseTools: reg,
 		DriverFor: func(WorkerKind) llm.Driver {
 			return &sequenceDriver{responses: []string{
+				"<tool_call>\n{\"name\":\"list_dir\",\"args\":{\"path\":\".\",\"recursive\":false}}\n</tool_call>",
 				`{"status":"complete","evidence":[{"kind":"note","summary":"This looks like a Go project."}],"coverage":"ambient context only","gaps":["No files inspected."],"suggested_next":"inspect top-level files"}`,
-				`{"status":"complete","evidence":[{"kind":"file","path":"go.mod","summary":"go.mod declares the forge module and Bubble Tea dependencies."},{"kind":"command","summary":"git_status confirmed the worktree is dirty with harness/runtime edits."}],"coverage":"Checked the module file and current git state.","gaps":[],"suggested_next":"read README.md for a user-facing overview"}`,
+				"<tool_call>\n{\"name\":\"read_file\",\"args\":{\"path\":\"go.mod\",\"start_line\":1,\"end_line\":40}}\n</tool_call>",
+				`{"status":"complete","evidence":[{"kind":"file","path":"go.mod","summary":"go.mod declares the forge module and Bubble Tea dependencies."}],"coverage":"Checked the module file.","gaps":[],"suggested_next":"read README.md for a user-facing overview"}`,
 			}}
 		},
 	})
@@ -95,10 +119,61 @@ func TestManagerExecuteRetriesReaderWithoutConcreteEvidence(t *testing.T) {
 	if !ok {
 		t.Fatalf("artifact = %#v", obs.Artifact)
 	}
-	if len(result.Evidence) != 2 {
+	if len(result.Evidence) != 1 {
 		t.Fatalf("artifact = %#v", result)
 	}
 	if result.Evidence[0].Path != "go.mod" {
+		t.Fatalf("artifact = %#v", result)
+	}
+}
+
+func TestManagerExecuteRetriesUngroundedReaderEvidenceUntilItReadsTheClaimedFile(t *testing.T) {
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{
+		Name:        "list_dir",
+		Description: "list directory contents",
+		Execute: func(context.Context, map[string]any) (string, error) {
+			return "README.md\ncmd/\ninternal/", nil
+		},
+	})
+	reg.Register(tools.Tool{
+		Name:        "read_file",
+		Description: "read file contents",
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			path, _ := args["path"].(string)
+			if path == "README.md" {
+				return "README explains the forge CLI.", nil
+			}
+			return "", nil
+		},
+	})
+
+	manager := NewManager(ManagerConfig{
+		WorkDir:   ".",
+		BaseTools: reg,
+		DriverFor: func(WorkerKind) llm.Driver {
+			return &sequenceDriver{responses: []string{
+				"<tool_call>\n{\"name\":\"list_dir\",\"args\":{\"path\":\".\",\"recursive\":false}}\n</tool_call>{\"status\":\"complete\",\"evidence\":[{\"kind\":\"command\",\"summary\":\"Top-level listing shows the repo layout.\"}],\"coverage\":\"repo root\",\"gaps\":[\"Need to inspect a representative file.\"],\"suggested_next\":\"read README.md\"}",
+				`{"status":"complete","evidence":[{"kind":"command","summary":"Top-level listing shows the repo layout."},{"kind":"file","path":"README.md","summary":"README outlines the CLI."}],"coverage":"repo root","gaps":[],"suggested_next":"none"}`,
+				"<tool_call>\n{\"name\":\"read_file\",\"args\":{\"path\":\"README.md\",\"start_line\":1,\"end_line\":40}}\n</tool_call>",
+				`{"status":"complete","evidence":[{"kind":"file","path":"README.md","summary":"README outlines the CLI."}],"coverage":"repo root","gaps":[],"suggested_next":"none"}`,
+			}}
+		},
+	})
+
+	obs, err := manager.Execute(context.Background(), WorkerTask{
+		Kind:      WorkerReader,
+		Objective: "describe this directory",
+		TopicKey:  "workspace:directory",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, ok := obs.Artifact.(ReaderResult)
+	if !ok {
+		t.Fatalf("artifact = %#v", obs.Artifact)
+	}
+	if len(result.Evidence) != 1 || result.Evidence[0].Path != "README.md" {
 		t.Fatalf("artifact = %#v", result)
 	}
 }

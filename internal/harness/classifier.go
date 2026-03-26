@@ -80,7 +80,7 @@ func Classify(turn UserTurn, session SessionState) Classification {
 	}
 
 	class.WantsEvaluation = wantsEvaluation(tokens, lower)
-	if wantsContextualEvaluationFollowUp(text, ordered, class, session) {
+	if wantsContextualEvaluationFollowUp(text, lower, ordered, tokens, class, session) {
 		class.Family = FamilyInspect
 		class.WantsEvaluation = true
 		class.WantsAction = false
@@ -279,23 +279,32 @@ func looksLikeReferentialFollowUp(tokens map[string]struct{}, lower string) bool
 	return false
 }
 
-func wantsContextualEvaluationFollowUp(text string, ordered []string, class Classification, session SessionState) bool {
+func wantsContextualEvaluationFollowUp(text, lower string, ordered []string, tokens map[string]struct{}, class Classification, session SessionState) bool {
 	if !session.HasRecentEvidence() || strings.TrimSpace(session.LastEvidence.TopicKey) == "" {
 		return false
 	}
 	if strings.TrimSpace(class.TopicKey) != "" {
 		return false
 	}
-	if class.Family == FamilyDebug || class.Family == FamilyResearch || class.Family == FamilyTransform {
+	if class.Family == FamilyDebug || class.Family == FamilyResearch || class.Family == FamilyTransform || class.WantsAction {
 		return false
 	}
-	if !looksQuestionLike(text) {
+	if len(ordered) == 0 || len(ordered) > 12 {
 		return false
 	}
-	if len(ordered) == 0 || len(ordered) > 8 {
+	if class.WantsEvaluation {
+		if looksLikeReferentialFollowUp(tokens, lower) || looksLikeContextualContinuation(lower) {
+			return true
+		}
+		if looksQuestionLike(text) && containsImplementToken(ordered) {
+			return lacksConcreteActionTarget(ordered)
+		}
 		return false
 	}
 	if !containsImplementToken(ordered) {
+		return false
+	}
+	if !looksQuestionLike(text) && !looksLikeReferentialFollowUp(tokens, lower) && !looksLikeContextualContinuation(lower) {
 		return false
 	}
 	return lacksConcreteActionTarget(ordered)
@@ -314,6 +323,15 @@ func wantsScopedEvaluation(scope requestScope, tokens map[string]struct{}, lower
 
 func looksQuestionLike(text string) bool {
 	return strings.Contains(text, "?")
+}
+
+func looksLikeContextualContinuation(lower string) bool {
+	return strings.HasPrefix(lower, "and ") ||
+		strings.HasPrefix(lower, "also ") ||
+		strings.HasPrefix(lower, "so ") ||
+		strings.HasPrefix(lower, "then ") ||
+		strings.HasPrefix(lower, "what about ") ||
+		strings.HasPrefix(lower, "how about ")
 }
 
 func lacksConcreteActionTarget(ordered []string) bool {
