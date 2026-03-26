@@ -141,12 +141,22 @@ type EvidenceSnapshot struct {
 	Summary  string
 }
 
+type MetaIntent string
+
+const (
+	MetaNone           MetaIntent = ""
+	MetaProcess        MetaIntent = "process"
+	MetaPromptBoundary MetaIntent = "prompt-boundary"
+)
+
 type SessionState struct {
 	Turn         int
 	LastFamily   RequestFamily
 	LastTopicKey string
 	LastResponse string
 	LastEvidence EvidenceSnapshot
+	LastMeta     MetaIntent
+	LastMetaTurn int
 }
 
 func (s SessionState) HasRecentEvidence() bool {
@@ -154,6 +164,13 @@ func (s SessionState) HasRecentEvidence() bool {
 		return false
 	}
 	return s.LastEvidence.Turn >= s.Turn-1
+}
+
+func (s SessionState) HasRecentMeta() bool {
+	if s.Turn <= 0 || s.LastMetaTurn <= 0 {
+		return false
+	}
+	return s.LastMetaTurn >= s.Turn-1
 }
 
 type TraceRecord struct {

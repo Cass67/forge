@@ -39,6 +39,12 @@ func (s *Session) Apply(class Classification, obs Observation) {
 	s.state.LastFamily = class.Family
 	s.state.LastTopicKey = strings.TrimSpace(class.TopicKey)
 	s.state.LastResponse = strings.TrimSpace(obs.Response)
+	s.state.LastMeta = deriveMetaIntent(class)
+	if s.state.LastMeta != MetaNone {
+		s.state.LastMetaTurn = s.state.Turn
+	} else {
+		s.state.LastMetaTurn = 0
+	}
 
 	if obs.Status != ObservationComplete {
 		return
@@ -78,4 +84,14 @@ func retainsEvidence(class Classification) bool {
 	default:
 		return true
 	}
+}
+
+func deriveMetaIntent(class Classification) MetaIntent {
+	if class.NeedsPolicyGuard {
+		return MetaPromptBoundary
+	}
+	if class.Family == FamilyAnswer && class.NeedsTerseAnswer {
+		return MetaProcess
+	}
+	return MetaNone
 }

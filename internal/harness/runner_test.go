@@ -16,7 +16,7 @@ type stubLocalExecutor struct {
 	calls int
 }
 
-func (s *stubLocalExecutor) Execute(_ context.Context, _ UserTurn, _ Classification) (Observation, error) {
+func (s *stubLocalExecutor) Execute(_ context.Context, _ UserTurn, _ Classification, _ SessionState) (Observation, error) {
 	s.calls++
 	return s.obs, s.err
 }
