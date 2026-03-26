@@ -1,6 +1,10 @@
 package harness
 
-import "time"
+import (
+	"time"
+
+	"forge/internal/skills"
+)
 
 type RequestFamily string
 
@@ -81,22 +85,31 @@ type Step struct {
 	Summary string
 }
 
+type WorkerSkillContext struct {
+	Loaded   []skills.Skill
+	AutoMode string
+}
+
 type WorkerTask struct {
-	Kind           WorkerKind
-	Objective      string
-	Context        string
-	TopicKey       string
-	StopCondition  string
-	EvidenceBudget int
+	Kind              WorkerKind
+	Objective         string
+	Context           string
+	TopicKey          string
+	StopCondition     string
+	EvidenceBudget    int
+	SkillContext      WorkerSkillContext
+	PermissionProfile []string
+	Deadline          time.Time
 }
 
 type Observation struct {
-	Status   ObservationStatus
-	Response string
-	Summary  string
-	TopicKey string
-	Artifact any
-	Err      error
+	Status    ObservationStatus
+	Response  string
+	Summary   string
+	TopicKey  string
+	Artifact  any
+	SkillUses []skills.UseRecord
+	Err       error
 }
 
 type Decision struct {

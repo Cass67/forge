@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"forge/internal/agent"
 	"forge/internal/agent/tools"
+	"forge/internal/chatstate"
 	"forge/internal/llm"
+	"forge/internal/skills"
 )
 
 type WorkerDriverResolver func(WorkerKind) llm.Driver
@@ -65,14 +68,24 @@ func (m *Manager) Execute(ctx context.Context, task WorkerTask) (Observation, er
 		}, fmt.Errorf("worker driver unavailable")
 	}
 
+	profile := append([]string(nil), task.PermissionProfile...)
+	if len(profile) == 0 {
+		profile = workerToolAllowlist(task.Kind)
+	}
 	reg := tools.NewRegistry()
 	if m.baseTools != nil {
-		reg = m.baseTools.Filter(workerToolAllowlist(task.Kind))
+		reg = m.baseTools.Filter(profile)
 	}
-	worker := agent.NewAgent(driver, reg, m.approve, m.workDir, workerMaxTurns(task.Kind), agent.NewHiddenWorkerRenderer(nil), nil, nil)
+	loadedSkills := append([]skills.Skill(nil), task.SkillContext.Loaded...)
+	worker := agent.NewAgent(driver, reg, m.approve, m.workDir, workerMaxTurns(task.Kind), agent.NewHiddenWorkerRenderer(nil), loadedSkills, chatstate.New())
 	worker.SetRole(string(task.Kind))
 	worker.SetSubAgentMode(true)
-	worker.SetSystem(agent.BuildWorkerSystemPrompt(m.workDir, reg, string(task.Kind)))
+	worker.SetSystem(agent.BuildWorkerSystemPrompt(m.workDir, reg, string(task.Kind), loadedSkills))
+
+	skillRuntime := skills.NewRuntime(loadedSkills)
+	if err := applyWorkerSkillContext(worker, skillRuntime, task); err != nil {
+		return blockedWorkerObservation(task, err, skillRuntime.UseRecords())
+	}
 
 	var raw string
 	for attempt := 0; attempt < 3; attempt++ {
@@ -81,32 +94,23 @@ func (m *Manager) Execute(ctx context.Context, task WorkerTask) (Observation, er
 			prompt = workerRetryPrompt(task.Kind, raw)
 		}
 		if err := worker.Run(ctx, prompt); err != nil {
-			return Observation{
-				Status:   ObservationBlocked,
-				Summary:  err.Error(),
-				TopicKey: task.TopicKey,
-				Err:      err,
-			}, err
+			return blockedWorkerObservation(task, err, skillRuntime.UseRecords())
 		}
 		raw = worker.LastResponse()
 		validated, err := ValidateWorkerResultWithToolCalls(task.Kind, raw, worker.LastToolCalls())
 		if err == nil {
 			return Observation{
-				Status:   validated.Status,
-				Summary:  validated.Summary,
-				TopicKey: task.TopicKey,
-				Artifact: validated.Parsed,
+				Status:    validated.Status,
+				Summary:   validated.Summary,
+				TopicKey:  task.TopicKey,
+				Artifact:  validated.Parsed,
+				SkillUses: skillRuntime.UseRecords(),
 			}, nil
 		}
 	}
 
 	err := fmt.Errorf("%s produced invalid structured output after retries", task.Kind)
-	return Observation{
-		Status:   ObservationBlocked,
-		Summary:  err.Error(),
-		TopicKey: task.TopicKey,
-		Err:      err,
-	}, err
+	return blockedWorkerObservation(task, err, skillRuntime.UseRecords())
 }
 
 func workerToolAllowlist(kind WorkerKind) []string {
@@ -146,6 +150,12 @@ func buildWorkerPrompt(task WorkerTask) string {
 	if strings.TrimSpace(task.StopCondition) != "" {
 		sb.WriteString("\nSTOP CONDITION: " + strings.TrimSpace(task.StopCondition))
 	}
+	if len(task.PermissionProfile) > 0 {
+		sb.WriteString("\nALLOWED TOOLS: " + strings.Join(task.PermissionProfile, ", "))
+	}
+	if !task.Deadline.IsZero() {
+		sb.WriteString("\nDEADLINE: " + task.Deadline.UTC().Format(time.RFC3339))
+	}
 	if task.EvidenceBudget > 0 {
 		sb.WriteString(fmt.Sprintf("\nEVIDENCE BUDGET: %d", task.EvidenceBudget))
 	}
@@ -159,4 +169,49 @@ func workerRetryPrompt(kind WorkerKind, raw string) string {
 			"Previous output:\n%s",
 		kind, strings.TrimSpace(raw),
 	))
+}
+
+func applyWorkerSkillContext(worker *agent.Agent, runtime *skills.Runtime, task WorkerTask) error {
+	if worker == nil || runtime == nil {
+		return nil
+	}
+
+	requiredName := skills.RequiredForInput(task.Objective)
+	injected := make(map[string]struct{})
+	if requiredName != "" {
+		required, ok := runtime.ResolveRequired(task.Objective)
+		if !ok {
+			runtime.RecordSkillUse(requiredName, string(task.Kind), "required_missing")
+			return fmt.Errorf("required skill unavailable: %s", requiredName)
+		}
+		worker.InjectSkill(required)
+		runtime.RecordSkillUse(required.Name, string(task.Kind), "required_applied")
+		injected[required.Name] = struct{}{}
+	}
+
+	if skills.NormalizeAutoMode(task.SkillContext.AutoMode) != skills.AutoSkillsAuto {
+		return nil
+	}
+	autoSkill, ok := runtime.ResolveAuto(task.Objective)
+	if !ok {
+		return nil
+	}
+	if _, seen := injected[autoSkill.Name]; seen {
+		return nil
+	}
+	worker.InjectSkill(autoSkill)
+	runtime.RecordSkillUse(autoSkill.Name, string(task.Kind), "auto_applied")
+	return nil
+}
+
+func blockedWorkerObservation(task WorkerTask, err error, uses []skills.UseRecord) (Observation, error) {
+	summary := firstNonEmpty(errorString(err), "worker failed closed")
+	obs := Observation{
+		Status:    ObservationBlocked,
+		Summary:   summary,
+		TopicKey:  task.TopicKey,
+		SkillUses: uses,
+		Err:       err,
+	}
+	return obs, err
 }
