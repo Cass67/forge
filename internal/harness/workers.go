@@ -157,6 +157,12 @@ func buildWorkerPrompt(task WorkerTask) string {
 	if len(task.PermissionProfile) > 0 {
 		sb.WriteString("\nALLOWED TOOLS: " + strings.Join(task.PermissionProfile, ", "))
 	}
+	if task.RequireRepresentativeFileEvidence {
+		sb.WriteString("\nREQUIRED EVIDENCE: grounded representative file via read_file")
+	}
+	if task.RequireNonReadmeFileEvidence {
+		sb.WriteString("\nREQUIRED EVIDENCE: grounded non-README file via read_file")
+	}
 	if !task.Deadline.IsZero() {
 		sb.WriteString("\nDEADLINE: " + task.Deadline.UTC().Format(time.RFC3339))
 	}
@@ -180,6 +186,9 @@ func workerRetryPrompt(task WorkerTask, cause error) string {
 	}
 	if task.Kind == WorkerReader && readerTaskRequiresRepresentativeFile(task) {
 		sb.WriteString("- this walkthrough is not complete until you inspect at least one representative file with read_file and include grounded file evidence\n")
+	}
+	if task.Kind == WorkerReader && readerTaskRequiresNonReadmeFile(task) {
+		sb.WriteString("- this evaluative review is not complete until you inspect at least one grounded non-README implementation, config, or entrypoint file\n")
 	}
 	sb.WriteString("Do not repeat the previous invalid format.\n")
 	return strings.TrimSpace(sb.String())
