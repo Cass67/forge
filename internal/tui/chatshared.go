@@ -93,6 +93,18 @@ type chatSessionEntry struct {
 	modTime time.Time
 }
 
+func (cfg ChatLiveConfig) SurfaceMode() SurfaceModeConfig {
+	mode := SurfaceModeConfig{
+		EnableBracketedPaste: true,
+		EnableLiveRegion:     true,
+	}
+	if cfg.DebugEnabled {
+		mode.UseAltScreen = true
+		mode.EnableMouseCapture = true
+	}
+	return mode
+}
+
 func RunChatLive(events <-chan llm.Event, cfg ChatLiveConfig, inputCh chan<- string, doneCh <-chan struct{}) ChatLiveResult {
 	return RunChatLiveBubbleTea(events, cfg, inputCh, doneCh)
 }
