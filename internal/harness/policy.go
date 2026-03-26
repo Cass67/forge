@@ -3,12 +3,16 @@ package harness
 import "strings"
 
 func AdmitWorker(class Classification, _ SessionState) (WorkerKind, string, bool) {
+	workspaceInspect := strings.HasPrefix(class.TopicKey, "workspace:directory") || strings.HasPrefix(class.TopicKey, "workspace:repository")
 	if class.Family == FamilyInspect &&
-		!class.WantsEvaluation &&
+		workspaceInspect &&
 		!class.WantsInterpretation &&
-		!class.WantsAction &&
-		(strings.HasPrefix(class.TopicKey, "workspace:directory") || strings.HasPrefix(class.TopicKey, "workspace:repository")) {
-		return WorkerReader, "plain inspection benefits from a bounded reader worker", true
+		!class.WantsAction {
+		return WorkerReader, "workspace inspection benefits from a bounded reader worker", true
+	}
+	if class.Family == FamilyImplement &&
+		class.CanStayLocal {
+		return WorkerEditor, "implementation work benefits from a bounded editor worker", true
 	}
 	if class.Family == FamilyResearch && class.NeedsExternalSources && !class.CanStayLocal {
 		return WorkerResearcher, "external research benefits from an isolated researcher worker", true

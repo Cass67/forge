@@ -94,6 +94,111 @@ func TestRunnerLocalImplementationUsesLocalStep(t *testing.T) {
 	}
 }
 
+func TestRunnerEvaluativeInspectUsesReaderWorkerWhenConfigured(t *testing.T) {
+	local := &stubLocalExecutor{}
+	worker := &stubWorkerExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Summary:  "repo review complete",
+			TopicKey: "workspace:directory",
+			Artifact: ReaderResult{
+				Status: "complete",
+				Evidence: []ReaderEvidence{
+					{Kind: "command", Summary: "git_status shows many untracked generated files, indicating poor repo hygiene."},
+					{Kind: "file", Path: "README.md", Summary: "README explains the active producer and consumer pipeline layout."},
+				},
+				Coverage:      "repo root",
+				Gaps:          []string{},
+				SuggestedNext: "none",
+			},
+		},
+	}
+	runner := NewRunner(RunnerConfig{
+		Session: NewSession(),
+		Trace:   NewRecorder(),
+		Local:   local,
+		Workers: worker,
+	})
+
+	result, err := runner.Run(context.Background(), "have a look at the dir and repo within and recommend whats up and whats needed to be fixed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Step.Kind != StepWorker || result.Step.Worker != WorkerReader {
+		t.Fatalf("step = %#v", result.Step)
+	}
+	if worker.calls != 1 {
+		t.Fatalf("worker calls = %d", worker.calls)
+	}
+	if local.calls != 0 {
+		t.Fatalf("local should not have been used, got %d calls", local.calls)
+	}
+	if !strings.Contains(worker.task.Context, "evidence-backed findings") {
+		t.Fatalf("worker context = %q", worker.task.Context)
+	}
+	if !strings.Contains(result.Response, "poor repo hygiene") {
+		t.Fatalf("response = %q", result.Response)
+	}
+}
+
+func TestRunnerImplementationUsesEditorWorkerWhenConfigured(t *testing.T) {
+	local := &stubLocalExecutor{}
+	worker := &stubWorkerExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Summary:  "editor complete",
+			TopicKey: "workspace:directory",
+			Artifact: EditorResult{
+				Status: "complete",
+				Changes: []ChangeRecord{
+					{Path: "tools/cleanup_workspace.sh", Summary: "Added a cleanup script for generated repo artifacts."},
+				},
+				VerificationAttempts: []VerificationAttempt{
+					{Command: "bash -n tools/cleanup_workspace.sh", Outcome: "pass"},
+				},
+				RemainingIssues: []string{},
+				SuggestedNext:   "run the script in dry-run mode",
+			},
+		},
+	}
+	session := NewSession()
+	session.BeginTurn("have a look at this directory")
+	session.Apply(Classification{Family: FamilyInspect, TopicKey: "workspace:directory"}, Observation{
+		Status:   ObservationComplete,
+		Response: "directory overview",
+		Summary:  "repo hygiene issues and generated files at the root",
+		TopicKey: "workspace:directory",
+	})
+
+	result, err := NewRunner(RunnerConfig{
+		Session: session,
+		Trace:   NewRecorder(),
+		Local:   local,
+		Workers: worker,
+	}).Run(context.Background(), "can you write me a script to clean this up?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Step.Kind != StepWorker || result.Step.Worker != WorkerEditor {
+		t.Fatalf("step = %#v", result.Step)
+	}
+	if worker.calls != 1 {
+		t.Fatalf("worker calls = %d", worker.calls)
+	}
+	if local.calls != 0 {
+		t.Fatalf("local should not have been used, got %d calls", local.calls)
+	}
+	if worker.task.TopicKey != "workspace:directory" {
+		t.Fatalf("worker topic = %q", worker.task.TopicKey)
+	}
+	if !strings.Contains(worker.task.Context, "repo hygiene issues and generated files at the root") {
+		t.Fatalf("worker context = %q", worker.task.Context)
+	}
+	if !strings.Contains(result.Response, "cleanup script") {
+		t.Fatalf("response = %q", result.Response)
+	}
+}
+
 func TestRunnerBlocksOnLocalFailure(t *testing.T) {
 	local := &stubLocalExecutor{
 		obs: Observation{
