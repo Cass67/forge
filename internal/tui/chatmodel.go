@@ -4188,12 +4188,23 @@ func (m ChatModel) View() string {
 }
 
 func (m ChatModel) renderLiveProgressSlot(theme chatTheme) string {
-	message := strings.TrimSpace(m.liveProgress.Message)
+	message := m.transientStatusMessage()
 	slotStyle := lipgloss.NewStyle().
 		Foreground(theme.TextDim).
 		Width(m.width)
 	if message == "" {
 		return slotStyle.Render("")
 	}
-	return slotStyle.Render("· " + message)
+	return slotStyle.Render(fitCell("· "+message, max(1, m.width)))
+}
+
+func (m ChatModel) transientStatusMessage() string {
+	if message := normalizeStatusMessage(m.liveProgress.Message); message != "" {
+		return message
+	}
+	return normalizeStatusMessage(m.flash)
+}
+
+func normalizeStatusMessage(message string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(message)), " ")
 }
