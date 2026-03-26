@@ -47,21 +47,23 @@ func (m ChatMessage) Render(width int, theme chatTheme) string {
 
 	if m.Kind == MsgStatus {
 		style := lipgloss.NewStyle().
+			Background(theme.AppBG).
 			Foreground(theme.TextDim).
 			Width(width).
 			Render("· " + strings.TrimSpace(m.Content))
 		content := strings.ToLower(strings.TrimSpace(m.Content))
 		switch {
 		case strings.Contains(content, "error"), strings.Contains(content, "failed"), strings.Contains(content, "denied"):
-			style = lipgloss.NewStyle().Foreground(theme.Error).Width(width).Render("✗ " + strings.TrimSpace(m.Content))
+			style = lipgloss.NewStyle().Background(theme.AppBG).Foreground(theme.Error).Width(width).Render("✗ " + strings.TrimSpace(m.Content))
 		case strings.Contains(content, "complete"), strings.Contains(content, "ready"), strings.Contains(content, "approved"):
-			style = lipgloss.NewStyle().Foreground(theme.Success).Width(width).Render("✓ " + strings.TrimSpace(m.Content))
+			style = lipgloss.NewStyle().Background(theme.AppBG).Foreground(theme.Success).Width(width).Render("✓ " + strings.TrimSpace(m.Content))
 		}
 		return style
 	}
 
 	if m.Kind == MsgWorking {
 		return lipgloss.NewStyle().
+			Background(theme.AppBG).
 			Foreground(theme.TextDim).
 			Width(width).
 			Render("· " + strings.TrimSpace(m.Content))
@@ -77,28 +79,34 @@ func (m ChatMessage) Render(width int, theme chatTheme) string {
 	if strings.TrimSpace(content) != "" {
 		body := renderMessageContent(content, max(10, width-2), theme)
 		blocks = append(blocks, lipgloss.NewStyle().
+			Background(theme.AppBG).
 			Width(width).
 			Render(indentRenderedBlock(body, "  ")))
 	}
-	return lipgloss.NewStyle().Width(width).Render(lipgloss.JoinVertical(lipgloss.Left, blocks...))
+	return lipgloss.NewStyle().
+		Background(theme.AppBG).
+		Width(width).
+		Render(lipgloss.JoinVertical(lipgloss.Left, blocks...))
 }
 
 func renderMessageHeader(header string, width int, theme chatTheme, accent lipgloss.Color) string {
 	name, meta, found := strings.Cut(strings.TrimSpace(header), " • ")
 	if !found {
 		return lipgloss.NewStyle().
+			Background(theme.AppBG).
 			Foreground(accent).
 			Bold(true).
 			Width(width).
 			Render(header)
 	}
 	return lipgloss.NewStyle().
+		Background(theme.AppBG).
 		Width(width).
 		Render(lipgloss.JoinHorizontal(
 			lipgloss.Left,
-			lipgloss.NewStyle().Foreground(accent).Bold(true).Render(strings.TrimSpace(name)),
-			lipgloss.NewStyle().Foreground(theme.Border).Render(" • "),
-			lipgloss.NewStyle().Foreground(theme.TextDim).Render(strings.TrimSpace(meta)),
+			lipgloss.NewStyle().Background(theme.AppBG).Foreground(accent).Bold(true).Render(strings.TrimSpace(name)),
+			lipgloss.NewStyle().Background(theme.AppBG).Foreground(theme.Border).Render(" • "),
+			lipgloss.NewStyle().Background(theme.AppBG).Foreground(theme.TextDim).Render(strings.TrimSpace(meta)),
 		))
 }
 
