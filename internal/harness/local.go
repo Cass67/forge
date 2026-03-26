@@ -87,6 +87,18 @@ func buildInspectTurnPrompt(class Classification, userMessage string) string {
 			"- make it clear when the answer is based on sampled files rather than exhaustive coverage",
 		)
 	}
+	if class.WantsEvaluation {
+		lines = append(lines,
+			"- lead with the highest-value improvements or findings instead of a neutral walkthrough",
+			"- distinguish observed facts from recommendations so the user can see what you saw versus what you advise",
+			"- keep the answer actionable: explain why each issue matters and what to do next",
+		)
+		if scope == "repository" || scope == "directory" {
+			lines = append(lines,
+				"- inspect at least one representative implementation file when one is present; do not stop at README or directory listings alone",
+			)
+		}
+	}
 	lines = append(lines, "", "USER REQUEST:", userMessage)
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
