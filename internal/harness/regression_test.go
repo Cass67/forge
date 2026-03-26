@@ -21,12 +21,15 @@ type regressionFixture struct {
 	WantEvaluation     bool          `json:"want_evaluation"`
 	WantInterpretation bool          `json:"want_interpretation"`
 	WantFollowUp       bool          `json:"want_follow_up"`
+	WantPolicyGuard    bool          `json:"want_policy_guard"`
+	WantTerseAnswer    bool          `json:"want_terse_answer"`
 }
 
 func TestRegressionFixturesRouteWithoutEscalation(t *testing.T) {
 	paths := []string{
 		filepath.Join("testdata", "debuglogs", "repo-inspect-stall.jsonl"),
 		filepath.Join("testdata", "debuglogs", "follow-up-misroute.jsonl"),
+		filepath.Join("testdata", "debuglogs", "meta-answer-guard.jsonl"),
 	}
 	for _, path := range paths {
 		fixtures := loadRegressionFixtures(t, path)
@@ -47,6 +50,12 @@ func TestRegressionFixturesRouteWithoutEscalation(t *testing.T) {
 				}
 				if class.IsFollowUp != fixture.WantFollowUp {
 					t.Fatalf("%s follow_up = %v, want %v", fixture.Source, class.IsFollowUp, fixture.WantFollowUp)
+				}
+				if class.NeedsPolicyGuard != fixture.WantPolicyGuard {
+					t.Fatalf("%s policy_guard = %v, want %v", fixture.Source, class.NeedsPolicyGuard, fixture.WantPolicyGuard)
+				}
+				if class.NeedsTerseAnswer != fixture.WantTerseAnswer {
+					t.Fatalf("%s terse_answer = %v, want %v", fixture.Source, class.NeedsTerseAnswer, fixture.WantTerseAnswer)
 				}
 				step := Plan(class, fixture.Session)
 				if step.Kind != fixture.WantStep {
