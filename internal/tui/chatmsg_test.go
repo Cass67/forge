@@ -24,6 +24,9 @@ func TestChatMessageRenderUser(t *testing.T) {
 	if !strings.Contains(got, "hello world") {
 		t.Fatalf("render missing content: %s", got)
 	}
+	if strings.ContainsAny(strippedLine(got), "│╭╮╰╯") {
+		t.Fatalf("expected flat user message, got: %s", strippedLine(got))
+	}
 }
 
 func TestChatMessageRenderAgent(t *testing.T) {
@@ -37,6 +40,9 @@ func TestChatMessageRenderAgent(t *testing.T) {
 	}
 	if !strings.Contains(got, "I can help with that.") {
 		t.Fatalf("render missing content: %s", got)
+	}
+	if strings.ContainsAny(strippedLine(got), "│╭╮╰╯") {
+		t.Fatalf("expected flat agent message, got: %s", strippedLine(got))
 	}
 }
 
@@ -90,16 +96,16 @@ func TestChatMessageRenderChangesAcrossThemes(t *testing.T) {
 func TestChatMessageAccentRoles(t *testing.T) {
 	theme := lookupThemeForTest(t, "default")
 
-	if got := (ChatMessage{Kind: MsgUser}).borderColor(theme); got != theme.Success {
+	if got := (ChatMessage{Kind: MsgUser}).accentColor(theme); got != theme.Success {
 		t.Fatalf("user accent = %q, want %q", got, theme.Success)
 	}
-	if got := (ChatMessage{Kind: MsgAgent}).borderColor(theme); got != theme.AccentPrimary {
+	if got := (ChatMessage{Kind: MsgAgent}).accentColor(theme); got != theme.AccentPrimary {
 		t.Fatalf("agent accent = %q, want %q", got, theme.AccentPrimary)
 	}
-	if got := (ChatMessage{Kind: MsgForge}).borderColor(theme); got != theme.AccentSecondary {
+	if got := (ChatMessage{Kind: MsgForge}).accentColor(theme); got != theme.AccentSecondary {
 		t.Fatalf("forge accent = %q, want %q", got, theme.AccentSecondary)
 	}
-	if got := (ChatMessage{Kind: MsgWorking}).borderColor(theme); got != theme.TextDim {
+	if got := (ChatMessage{Kind: MsgWorking}).accentColor(theme); got != theme.TextDim {
 		t.Fatalf("working accent = %q, want %q", got, theme.TextDim)
 	}
 }
