@@ -116,6 +116,49 @@ func TestClassifyQuestionLikeFollowUpWithoutConcreteTargetStaysInspect(t *testin
 	}
 }
 
+func TestClassifyPunctuatedContinuationFollowUpStaysInspect(t *testing.T) {
+	got := Classify(UserTurn{Text: "(but any recommendations?)"}, SessionState{
+		Turn: 2,
+		LastEvidence: EvidenceSnapshot{
+			Turn:     1,
+			TopicKey: "workspace:directory",
+			Summary:  "directory overview",
+		},
+	})
+	if got.Family != FamilyInspect {
+		t.Fatalf("family = %q", got.Family)
+	}
+	if !got.WantsEvaluation {
+		t.Fatal("expected evaluation follow-up")
+	}
+	if !got.IsFollowUp {
+		t.Fatal("expected follow-up classification")
+	}
+	if got.TopicKey != "workspace:directory" {
+		t.Fatalf("topic = %q", got.TopicKey)
+	}
+}
+
+func TestClassifyLongPronounPromptDoesNotHijackRecentEvidence(t *testing.T) {
+	got := Classify(UserTurn{Text: "this is a separate question about terminal chat ux and whether dense trace output should be collapsed by default for long sessions"}, SessionState{
+		Turn: 2,
+		LastEvidence: EvidenceSnapshot{
+			Turn:     1,
+			TopicKey: "workspace:directory",
+			Summary:  "directory overview",
+		},
+	})
+	if got.Family != FamilyAnswer {
+		t.Fatalf("family = %q", got.Family)
+	}
+	if got.IsFollowUp {
+		t.Fatalf("unexpected follow-up classification: %#v", got)
+	}
+	if got.TopicKey != "" {
+		t.Fatalf("topic = %q", got.TopicKey)
+	}
+}
+
 func TestClassifyRecognizesImplementationAndDebugFamilies(t *testing.T) {
 	if got := Classify(UserTurn{Text: "fix the broken auth flow"}, SessionState{}); got.Family != FamilyImplement {
 		t.Fatalf("fix request family = %q", got.Family)
