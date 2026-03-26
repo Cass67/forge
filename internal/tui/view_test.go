@@ -83,3 +83,23 @@ func TestDefaultChatViewShowsFlashAboveComposer(t *testing.T) {
 		t.Fatalf("expected flash directly above composer, got flash line %d prompt line %d in:\n%s", flashLine, promptLine, strippedLine(view))
 	}
 }
+
+func TestDebugSurfaceShowsVisibleTraceChromeByDefault(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{
+		Model:        "test-model",
+		WorkDir:      "/tmp",
+		DebugEnabled: true,
+		SurfaceKind:  ChatSurfaceDebug,
+	})
+	m.width = 100
+	m.height = 24
+	setToolsContent(&m, "tool_call read_file\nstatus: complete\n")
+
+	view := m.View()
+	if !strings.Contains(view, "Debug trace") {
+		t.Fatalf("expected debug surface to render visible trace chrome, got:\n%s", strippedLine(view))
+	}
+	if !strings.Contains(view, "tool_call read_file") {
+		t.Fatalf("expected debug surface to render trace content, got:\n%s", strippedLine(view))
+	}
+}

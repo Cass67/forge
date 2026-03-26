@@ -170,6 +170,7 @@ const chatHeaderHeight = 1
 const chatPaneBorderHeight = 0
 const chatComposerGapHeight = 1
 const chatStatusHeight = 0
+const chatDebugDockHeight = 8
 
 type subAgentSummary struct {
 	role              string
@@ -735,12 +736,27 @@ func (m ChatModel) inputHeight() int {
 	return m.composer().Height(width)
 }
 
+func (m ChatModel) debugSurfaceActive() bool {
+	surfaceKind := m.config.SurfaceKind
+	if surfaceKind == "" {
+		surfaceKind = ChatSurfaceDefault
+	}
+	return surfaceKind == ChatSurfaceDebug
+}
+
+func (m ChatModel) debugDockHeight() int {
+	if !m.debugSurfaceActive() {
+		return 0
+	}
+	return chatDebugDockHeight
+}
+
 func (m *ChatModel) resizeChatViewport() {
 	if m.width <= 0 || m.height <= 0 {
 		return
 	}
 	m.chatViewport.Width = m.chatContentWidth()
-	bodyH := max(3, m.height-chatHeaderHeight-chatPaneBorderHeight-chatComposerGapHeight-m.inputHeight()-chatStatusHeight)
+	bodyH := max(3, m.height-chatHeaderHeight-chatPaneBorderHeight-chatComposerGapHeight-m.inputHeight()-chatStatusHeight-m.debugDockHeight())
 	if m.chatViewport.Height == bodyH {
 		return
 	}
@@ -780,7 +796,7 @@ func (m ChatModel) mouseContext() chatLayoutMouseContext {
 		chatY:  headerH,
 		chatW:  chatPaneWidth,
 		chatH:  chatH,
-		inputY: headerH + chatH + chatComposerGapHeight,
+		inputY: headerH + chatH + m.debugDockHeight() + chatComposerGapHeight,
 	}
 	if m.toolsVisible {
 		ctx.toolsX = chatPaneWidth
@@ -4132,6 +4148,10 @@ func (m ChatModel) View() string {
 		Width(m.width).
 		Height(chatBodyHeight).
 		Render(chatBody)
+	debugDock := ""
+	if m.debugSurfaceActive() {
+		debugDock = m.renderTraceDock(theme)
+	}
 	liveRegion := m.renderLiveProgressSlot(theme)
 
 	var inputBox string
@@ -4148,12 +4168,12 @@ func (m ChatModel) View() string {
 		inputBox = m.composer().Render(theme, m.width)
 	}
 
-	base := lipgloss.JoinVertical(lipgloss.Left,
-		header,
-		chatPane,
-		liveRegion,
-		inputBox,
-	)
+	parts := []string{header, chatPane}
+	if debugDock != "" {
+		parts = append(parts, debugDock)
+	}
+	parts = append(parts, liveRegion, inputBox)
+	base := lipgloss.JoinVertical(lipgloss.Left, parts...)
 	if m.helpVisible {
 		return m.renderHelpOverlay()
 	}
@@ -4195,6 +4215,10 @@ func (m ChatModel) renderLiveProgressSlot(theme chatTheme) string {
 		return slotStyle.Render("")
 	}
 	return slotStyle.Render(fitCell("· "+message, max(1, m.width)))
+}
+
+func (m ChatModel) renderTraceDock(theme chatTheme) string {
+	return renderTraceDockPanel(theme, m.renderedToolsBuf(), m.width, m.debugDockHeight())
 }
 
 func (m ChatModel) transientStatusMessage() string {
