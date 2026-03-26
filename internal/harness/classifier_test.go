@@ -33,6 +33,38 @@ func TestClassifyDirectoryParaphrasesStayInspect(t *testing.T) {
 	}
 }
 
+func TestClassifyVagueScopedReviewPrompts(t *testing.T) {
+	cases := []struct {
+		input          string
+		wantTopic      string
+		wantEvaluation bool
+	}{
+		{input: "check the repo", wantTopic: "workspace:repository", wantEvaluation: false},
+		{input: "how we looking in this dir", wantTopic: "workspace:directory", wantEvaluation: true},
+		{input: "take a look over this repo", wantTopic: "workspace:repository", wantEvaluation: false},
+		{input: "audit the repo for problems", wantTopic: "workspace:repository", wantEvaluation: true},
+		{input: "can you check the py files and tell me if they look ok ?", wantTopic: "files:python", wantEvaluation: true},
+		{input: "look at the python files and let me know if they seem ok", wantTopic: "files:python", wantEvaluation: true},
+		{input: "review the .sql files and see if they look okay", wantTopic: "files:sql", wantEvaluation: true},
+	}
+
+	for _, tc := range cases {
+		got := Classify(UserTurn{Text: tc.input}, SessionState{})
+		if got.Family != FamilyInspect {
+			t.Fatalf("%q family = %q", tc.input, got.Family)
+		}
+		if got.WantsAction {
+			t.Fatalf("%q unexpectedly wanted action", tc.input)
+		}
+		if got.WantsEvaluation != tc.wantEvaluation {
+			t.Fatalf("%q evaluation = %v, want %v", tc.input, got.WantsEvaluation, tc.wantEvaluation)
+		}
+		if got.TopicKey != tc.wantTopic {
+			t.Fatalf("%q topic = %q, want %q", tc.input, got.TopicKey, tc.wantTopic)
+		}
+	}
+}
+
 func TestClassifyInterpretiveFollowUpNeedsRecentEvidence(t *testing.T) {
 	noEvidence := Classify(UserTurn{Text: "what do you think?"}, SessionState{})
 	if noEvidence.WantsInterpretation {
@@ -90,6 +122,9 @@ func TestClassifyRecognizesImplementationAndDebugFamilies(t *testing.T) {
 	}
 	if got := Classify(UserTurn{Text: "debug the failing auth flow"}, SessionState{}); got.Family != FamilyDebug {
 		t.Fatalf("debug request family = %q", got.Family)
+	}
+	if got := Classify(UserTurn{Text: "take a look over this repo, look at the py files and let me know if there is anything that should be cleaned up or changed"}, SessionState{}); got.Family != FamilyInspect {
+		t.Fatalf("scoped cleanup review family = %q", got.Family)
 	}
 }
 

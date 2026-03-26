@@ -576,7 +576,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		// Append compact history entries; preserve UI output separately via the renderer only.
 		a.lastFullResponse = visibleText
 		assistantText := visibleText
-		if a.role == "dispatch" && len(calls) > 0 {
+		if len(calls) > 0 {
 			assistantText = ""
 		}
 		if assistantSummary := compactAssistantHistory(assistantText); assistantSummary != "" {
