@@ -464,8 +464,7 @@ func hasAgentHeaderForLabel(msg ChatMessage, label string) bool {
 func formatWorkingLine(role, content string) string {
 	content = strings.TrimSpace(content)
 	if role != "" {
-		content = strings.TrimPrefix(content, role+": ")
-		content = role + ": " + content
+		content = strings.TrimSpace(strings.TrimPrefix(content, role+": "))
 	}
 	if content == "" {
 		return ""

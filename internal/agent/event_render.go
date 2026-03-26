@@ -144,9 +144,6 @@ func (r *SubAgentRenderer) ToolResult(name, output, diff string, isError bool) {
 		IsError:  isError,
 		SubAgent: r.role,
 	}
-	if isError {
-		r.parent.events <- llm.Event{Kind: llm.EventProgress, Agent: r.role, Text: fmt.Sprintf("%s: %s failed", r.role, name)}
-	}
 }
 
 func (r *SubAgentRenderer) Stats(duration time.Duration, usage llm.Usage) {
