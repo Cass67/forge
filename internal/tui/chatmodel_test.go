@@ -3024,26 +3024,6 @@ func TestChatModelViewShowsChatScrollbarWhenOverflowing(t *testing.T) {
 	}
 }
 
-func TestRenderComposerTextShowsTailNearCursorForLongPaste(t *testing.T) {
-	got := renderComposerText(strings.Repeat("prefix ", 8)+"important ending", len([]rune(strings.Repeat("prefix ", 8)+"important ending")), 30)
-	if !strings.Contains(got, "important ending") {
-		t.Fatalf("expected rendered composer text to include tail near cursor, got %q", got)
-	}
-	if !strings.Contains(got, "…") {
-		t.Fatalf("expected long composer text to be clipped with ellipsis, got %q", got)
-	}
-}
-
-func TestRenderComposerTextFlattensPastedNewlines(t *testing.T) {
-	got := renderComposerText("first line\nsecond line\nthird line", len([]rune("first line\nsecond line\nthird line")), 80)
-	if strings.Contains(got, "\n") {
-		t.Fatalf("expected composer render to stay single-line, got %q", got)
-	}
-	if !strings.Contains(got, "first line second line third line") {
-		t.Fatalf("expected pasted newlines to be flattened, got %q", got)
-	}
-}
-
 func TestChatModelSubmitKeepsTranscriptVisibleAndClearsComposer(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 12})
@@ -3053,12 +3033,15 @@ func TestChatModelSubmitKeepsTranscriptVisibleAndClearsComposer(t *testing.T) {
 
 	m.inputBuf = "question should stay visible"
 	m.inputPos = len([]rune(m.inputBuf))
-	updated, _ = m.submitInput()
+	updated, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(ChatModel)
 
 	got := strippedLine(m.View())
 	if !strings.Contains(got, "previous answer remains visible") {
 		t.Fatalf("expected previous transcript to stay visible, got:\n%s", got)
+	}
+	if !strings.Contains(got, "question should stay visible") {
+		t.Fatalf("expected same-cycle user echo in transcript, got:\n%s", got)
 	}
 	tail := strings.Join(strings.Split(got, "\n")[max(0, len(strings.Split(got, "\n"))-8):], "\n")
 	if !strings.Contains(tail, "Type a message or /help") {
@@ -3069,17 +3052,18 @@ func TestChatModelSubmitKeepsTranscriptVisibleAndClearsComposer(t *testing.T) {
 	}
 }
 
-func TestChatModelViewUsesBoxedComposer(t *testing.T) {
+func TestChatModelViewUsesFlatComposer(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
 	m = updated.(ChatModel)
 
-	got := strippedLine(m.View())
-	if !strings.ContainsAny(got, "╭╮╰╯") {
-		t.Fatalf("expected boxed composer, got:\n%s", got)
+	lines := strings.Split(strippedLine(m.View()), "\n")
+	tail := strings.Join(lines[max(0, len(lines)-6):], "\n")
+	if strings.ContainsAny(tail, "│╭╮╰╯") {
+		t.Fatalf("expected flat composer, got:\n%s", tail)
 	}
-	if !strings.Contains(got, "Type a message or /help") {
-		t.Fatalf("expected composer placeholder, got:\n%s", got)
+	if !strings.Contains(tail, "Prompt") || !strings.Contains(tail, "Type a message or /help") {
+		t.Fatalf("expected prompt label and placeholder, got:\n%s", tail)
 	}
 }
 
@@ -3091,18 +3075,18 @@ func TestChatModelViewAddsSpacerBeforeComposer(t *testing.T) {
 
 	view := m.View()
 	lines := strings.Split(view, "\n")
-	topBorder := -1
+	promptLine := -1
 	for i := len(lines) - 1; i >= 0; i-- {
-		if strings.Contains(strippedLine(lines[i]), "╭") {
-			topBorder = i
+		if strings.Contains(strippedLine(lines[i]), "Prompt") {
+			promptLine = i
 			break
 		}
 	}
-	if topBorder <= 0 {
-		t.Fatalf("expected composer top border, got:\n%s", view)
+	if promptLine <= 0 {
+		t.Fatalf("expected composer prompt line, got:\n%s", view)
 	}
-	if strings.TrimSpace(strippedLine(lines[topBorder-1])) != "" {
-		t.Fatalf("expected blank spacer before composer, got line %q in view:\n%s", strippedLine(lines[topBorder-1]), view)
+	if strings.TrimSpace(strippedLine(lines[promptLine-1])) != "" {
+		t.Fatalf("expected blank spacer before composer, got line %q in view:\n%s", strippedLine(lines[promptLine-1]), view)
 	}
 }
 

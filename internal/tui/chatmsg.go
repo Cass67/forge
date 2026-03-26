@@ -24,7 +24,7 @@ type ChatMessage struct {
 	Content string // message body (may be multi-line)
 }
 
-func (m ChatMessage) borderColor(theme chatTheme) lipgloss.Color {
+func (m ChatMessage) accentColor(theme chatTheme) lipgloss.Color {
 	switch m.Kind {
 	case MsgUser:
 		return theme.Success
@@ -67,7 +67,7 @@ func (m ChatMessage) Render(width int, theme chatTheme) string {
 			Render("· " + strings.TrimSpace(m.Content))
 	}
 
-	headerColor := m.borderColor(theme)
+	headerColor := m.accentColor(theme)
 	header := strings.TrimSpace(m.Header)
 	content := strings.TrimRight(m.Content, "\n")
 	var blocks []string
@@ -79,12 +79,7 @@ func (m ChatMessage) Render(width int, theme chatTheme) string {
 			Render(header))
 	}
 	if strings.TrimSpace(content) != "" {
-		blocks = append(blocks, renderMessageContent(content, max(10, width-3), theme))
+		blocks = append(blocks, renderMessageContent(content, max(10, width), theme))
 	}
-	return lipgloss.NewStyle().
-		BorderLeft(true).
-		BorderForeground(headerColor).
-		PaddingLeft(1).
-		Width(width).
-		Render(lipgloss.JoinVertical(lipgloss.Left, blocks...))
+	return lipgloss.NewStyle().Width(width).Render(lipgloss.JoinVertical(lipgloss.Left, blocks...))
 }
