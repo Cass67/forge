@@ -694,6 +694,9 @@ func (m *ChatModel) refreshViewport() {
 		messageBlockIndex[i] = -1
 	}
 	for i, msg := range m.messages {
+		if msg.Kind == MsgWorking {
+			continue
+		}
 		// Skip agent/forge boxes with no content — they render as blank space
 		// (created before first token arrives; if error occurs, they stay empty)
 		if (msg.Kind == MsgAgent || msg.Kind == MsgForge) && strings.TrimSpace(msg.Content) == "" {
@@ -4130,6 +4133,7 @@ func (m ChatModel) View() string {
 		Width(m.width).
 		Height(chatBodyHeight).
 		Render(chatBody)
+	liveRegion := m.renderLiveProgressSlot(theme)
 
 	var inputBox string
 	if m.pendingApproval != nil {
@@ -4167,7 +4171,7 @@ func (m ChatModel) View() string {
 	base := lipgloss.JoinVertical(lipgloss.Left,
 		header,
 		chatPane,
-		"",
+		liveRegion,
 		inputBox,
 		statusBar,
 	)
@@ -4177,8 +4181,10 @@ func (m ChatModel) View() string {
 	if m.statsVisible {
 		return m.renderStatsOverlay()
 	}
-	if m.traceVisible {
-		return m.renderTraceOverlay()
+	if m.traceVisible && m.debugEnabled {
+		if overlay := m.renderTraceOverlay(); overlay != "" {
+			return overlay
+		}
 	}
 	if m.searchVisible {
 		return m.renderSearchOverlay()
@@ -4199,4 +4205,15 @@ func (m ChatModel) View() string {
 		return m.renderSessionsOverlay()
 	}
 	return base
+}
+
+func (m ChatModel) renderLiveProgressSlot(theme chatTheme) string {
+	message := strings.TrimSpace(m.liveProgress.Message)
+	slotStyle := lipgloss.NewStyle().
+		Foreground(theme.TextDim).
+		Width(m.width)
+	if message == "" {
+		return slotStyle.Render("")
+	}
+	return slotStyle.Render("· " + message)
 }

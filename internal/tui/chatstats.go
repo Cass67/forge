@@ -311,13 +311,18 @@ func renderStatusHeader(theme chatTheme, data chatStatusData, width int) string 
 		Foreground(theme.Border).
 		Render(" • ")
 
-	var parts []string
-	parts = append(parts, brandStyle.Render("forge"))
-	if model := strings.TrimSpace(data.Model); model != "" {
-		parts = append(parts, metaStyle.Render(model))
-	}
-	if workDir := strings.TrimSpace(data.WorkDir); workDir != "" {
-		parts = append(parts, metaStyle.Render(workDir))
+	lineParts := strings.Split(buildStatusLine1(data), " • ")
+	parts := make([]string, 0, len(lineParts))
+	for idx, part := range lineParts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if idx == 0 {
+			parts = append(parts, brandStyle.Render(part))
+			continue
+		}
+		parts = append(parts, metaStyle.Render(part))
 	}
 	line := strings.Join(parts, sep)
 	return lipgloss.NewStyle().
