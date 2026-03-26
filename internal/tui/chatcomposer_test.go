@@ -7,7 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func TestComposerEnterSubmitsAndClears(t *testing.T) {
+func TestChatComposerEnterSubmitsAndClears(t *testing.T) {
 	c := NewChatComposer()
 	c.InsertString("review this repo")
 
@@ -21,7 +21,9 @@ func TestComposerEnterSubmitsAndClears(t *testing.T) {
 	}
 }
 
-func TestComposerModifiedEnterInsertsNewline(t *testing.T) {
+// Bubble Tea exposes modified Enter via KeyMsg.Alt; Forge treats that as the
+// Shift+Enter multiline contract.
+func TestChatComposerShiftEnterInsertsNewline(t *testing.T) {
 	c := NewChatComposer()
 	c.InsertString("first line")
 
@@ -36,7 +38,7 @@ func TestComposerModifiedEnterInsertsNewline(t *testing.T) {
 	}
 }
 
-func TestComposerBracketedPasteKeepsLiteralMultilineText(t *testing.T) {
+func TestChatComposerBracketedPasteKeepsLiteralMultilineText(t *testing.T) {
 	c := NewChatComposer()
 
 	action := c.HandleKey(tea.KeyMsg{
@@ -53,7 +55,7 @@ func TestComposerBracketedPasteKeepsLiteralMultilineText(t *testing.T) {
 	}
 }
 
-func TestComposerCtrlCClearsDraftWhenIdle(t *testing.T) {
+func TestChatComposerCtrlCClearsDraftWhenIdle(t *testing.T) {
 	c := NewChatComposer()
 	c.InsertString("keep this local")
 
@@ -67,7 +69,7 @@ func TestComposerCtrlCClearsDraftWhenIdle(t *testing.T) {
 	}
 }
 
-func TestComposerCtrlCRequestsCancelWhenBusy(t *testing.T) {
+func TestChatComposerCtrlCRequestsCancelWhenBusy(t *testing.T) {
 	c := NewChatComposer()
 	c.InsertString("still here")
 
@@ -81,7 +83,7 @@ func TestComposerCtrlCRequestsCancelWhenBusy(t *testing.T) {
 	}
 }
 
-func TestComposerCtrlDExitsOnlyWhenEmptyAndIdle(t *testing.T) {
+func TestChatComposerCtrlDExitsOnlyWhenEmptyAndIdle(t *testing.T) {
 	t.Run("empty and idle exits", func(t *testing.T) {
 		c := NewChatComposer()
 		action := c.HandleKey(tea.KeyMsg{Type: tea.KeyCtrlD}, false)
@@ -102,6 +104,18 @@ func TestComposerCtrlDExitsOnlyWhenEmptyAndIdle(t *testing.T) {
 		}
 	})
 
+	t.Run("whitespace-only draft does not exit", func(t *testing.T) {
+		c := NewChatComposer()
+		c.InsertString("   ")
+		action := c.HandleKey(tea.KeyMsg{Type: tea.KeyCtrlD}, false)
+		if action.Exit {
+			t.Fatalf("action = %#v", action)
+		}
+		if got := c.Text(); got != "   " {
+			t.Fatalf("text = %q", got)
+		}
+	})
+
 	t.Run("busy does not exit", func(t *testing.T) {
 		c := NewChatComposer()
 		action := c.HandleKey(tea.KeyMsg{Type: tea.KeyCtrlD}, true)
@@ -111,7 +125,7 @@ func TestComposerCtrlDExitsOnlyWhenEmptyAndIdle(t *testing.T) {
 	})
 }
 
-func TestComposerVisibleLineBudget(t *testing.T) {
+func TestChatComposerVisibleLineBudget(t *testing.T) {
 	c := NewChatComposer()
 	c.InsertString("short")
 	if got := len(c.visibleLines(12)); got != 3 {

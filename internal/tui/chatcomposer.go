@@ -116,6 +116,13 @@ func (c ChatComposer) Render(theme chatTheme, width int) string {
 	return strings.Join(out, "\n")
 }
 
+// Bubble Tea doesn't expose a separate Shift flag on KeyMsg. Modified Enter is
+// surfaced via the Alt bit, so Forge treats that representation as the
+// Shift+Enter multiline path.
+func isComposerMultilineEnter(msg tea.KeyMsg) bool {
+	return msg.Type == tea.KeyEnter && msg.Alt
+}
+
 func (c *ChatComposer) HandleKey(msg tea.KeyMsg, busy bool) ComposerAction {
 	switch msg.Type {
 	case tea.KeyCtrlC:
@@ -124,12 +131,11 @@ func (c *ChatComposer) HandleKey(msg tea.KeyMsg, busy bool) ComposerAction {
 		}
 		c.clear()
 	case tea.KeyCtrlD:
-		if !busy && strings.TrimSpace(c.text) == "" {
+		if !busy && c.text == "" {
 			return ComposerAction{Exit: true}
 		}
 	case tea.KeyEnter:
-		// Terminals typically expose modified Enter as alt+enter.
-		if msg.Alt {
+		if isComposerMultilineEnter(msg) {
 			c.InsertString("\n")
 			return ComposerAction{}
 		}
