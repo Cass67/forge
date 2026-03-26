@@ -3,7 +3,7 @@ package harness
 import "testing"
 
 func TestPlanUsesReaderWorkerForPlainInspectTurns(t *testing.T) {
-	step := Plan(Classification{Family: FamilyInspect}, SessionState{})
+	step := Plan(Classification{Family: FamilyInspect, TopicKey: "workspace:directory"}, SessionState{})
 	if step.Kind != StepWorker {
 		t.Fatalf("step = %#v", step)
 	}

@@ -134,6 +134,31 @@ func TestAgentRunWithToolCall(t *testing.T) {
 	}
 }
 
+func TestAgentRunDoesNotPersistVisibleProseFromToolTurns(t *testing.T) {
+	dir := t.TempDir()
+	driver := &mockDriver{responses: []string{
+		"Reviewing the repo structure now.\n\n<tool_call>\n{\"name\": \"list_dir\", \"args\": {}}\n</tool_call>",
+		"Done.",
+	}}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.NewListDir(dir, nil))
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+
+	agent := NewAgent(driver, reg, YoloApproval(), dir, 10, renderer, nil, nil)
+	if err := agent.Run(context.Background(), "list files"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, msg := range agent.history {
+		if msg.Role == llm.RoleAssistant && strings.Contains(msg.Content, "Reviewing the repo structure now.") {
+			t.Fatalf("tool-turn prose leaked into assistant history: %#v", agent.history)
+		}
+	}
+}
+
 func TestAgentRunWithFunctionCallsDoesNotLeakRawWrapper(t *testing.T) {
 	dir := t.TempDir()
 	driver := &mockDriver{responses: []string{
