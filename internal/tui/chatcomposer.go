@@ -107,7 +107,7 @@ func (c ChatComposer) Render(theme chatTheme, width int) string {
 	bodyStyle := lipgloss.NewStyle().
 		Foreground(theme.Text).
 		Width(width)
-	if strings.TrimSpace(c.text) == "" {
+	if c.text == "" {
 		bodyStyle = bodyStyle.Foreground(theme.TextDim)
 	}
 	for _, line := range lines[1:] {
@@ -168,7 +168,7 @@ func (c *ChatComposer) HandleKey(msg tea.KeyMsg, busy bool) ComposerAction {
 }
 
 func (c ChatComposer) visibleBodyLines(width int) []string {
-	if strings.TrimSpace(c.text) == "" {
+	if c.text == "" {
 		lines := []string{"Type a message or /help"}
 		for len(lines) < chatComposerMinBodyLines {
 			lines = append(lines, "")

@@ -3052,6 +3052,37 @@ func TestChatModelSubmitKeepsTranscriptVisibleAndClearsComposer(t *testing.T) {
 	}
 }
 
+func TestChatModelEnterWhileBusyDoesNotSubmitNewTurn(t *testing.T) {
+	inputCh := make(chan string, 1)
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.inputCh = inputCh
+	m.busy = true
+	m.inputBuf = "draft while running"
+	m.inputPos = len([]rune(m.inputBuf))
+	m.messages = []ChatMessage{
+		{Kind: MsgUser, Header: "You • 12:00:00", Content: "first prompt"},
+		{Kind: MsgAgent, Header: "Forge • 12:00:01", Content: "working on it"},
+	}
+
+	updated, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+
+	if cmd != nil {
+		t.Fatal("expected no submit command while busy")
+	}
+	if got := len(m.messages); got != 2 {
+		t.Fatalf("messages = %#v", m.messages)
+	}
+	if got := m.inputBuf; got != "draft while running" {
+		t.Fatalf("inputBuf = %q", got)
+	}
+	select {
+	case prompt := <-inputCh:
+		t.Fatalf("unexpected queued prompt %q", prompt)
+	default:
+	}
+}
+
 func TestChatModelViewUsesFlatComposer(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
