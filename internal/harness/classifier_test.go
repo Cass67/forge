@@ -166,8 +166,34 @@ func TestClassifyRecognizesImplementationAndDebugFamilies(t *testing.T) {
 	if got := Classify(UserTurn{Text: "debug the failing auth flow"}, SessionState{}); got.Family != FamilyDebug {
 		t.Fatalf("debug request family = %q", got.Family)
 	}
+	if got := Classify(UserTurn{Text: "can you write me a script to clean this up?"}, SessionState{}); got.Family != FamilyImplement {
+		t.Fatalf("script request family = %q", got.Family)
+	}
 	if got := Classify(UserTurn{Text: "take a look over this repo, look at the py files and let me know if there is anything that should be cleaned up or changed"}, SessionState{}); got.Family != FamilyInspect {
 		t.Fatalf("scoped cleanup review family = %q", got.Family)
+	}
+}
+
+func TestClassifyContextualActionFollowUpReusesRecentEvidence(t *testing.T) {
+	got := Classify(UserTurn{Text: "can you write me a script to clean this up?"}, SessionState{
+		Turn: 2,
+		LastEvidence: EvidenceSnapshot{
+			Turn:     1,
+			TopicKey: "workspace:directory",
+			Summary:  "directory overview",
+		},
+	})
+	if got.Family != FamilyImplement {
+		t.Fatalf("family = %q", got.Family)
+	}
+	if !got.WantsAction {
+		t.Fatal("expected action request")
+	}
+	if !got.IsFollowUp {
+		t.Fatal("expected follow-up classification")
+	}
+	if got.TopicKey != "workspace:directory" {
+		t.Fatalf("topic = %q", got.TopicKey)
 	}
 }
 
