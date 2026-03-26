@@ -742,6 +742,29 @@ func containsAlphaNum(text string) bool {
 	return false
 }
 
+func defaultSemanticTheme() chatTheme {
+	theme, ok := lookupChatTheme("default")
+	if !ok {
+		return chatTheme{}
+	}
+	return theme
+}
+
+func ansiPrintableWidth(text string) int {
+	return lipgloss.Width(text)
+}
+
+func padStyledWidth(text string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	printable := ansiPrintableWidth(text)
+	if printable >= width {
+		return text
+	}
+	return text + strings.Repeat(" ", width-printable)
+}
+
 func hasTerminalPathPunctuation(token string) bool {
 	if strings.HasSuffix(token, "...") {
 		return false

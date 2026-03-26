@@ -55,3 +55,24 @@ func TestRenderTraceDockPanelUsesAppBackground(t *testing.T) {
 		t.Fatalf("trace dock missing app background fill: %q", rendered)
 	}
 }
+
+func TestRenderTraceOverlayPanelUsesSemanticTraceProfile(t *testing.T) {
+	withTrueColorProfile(t)
+
+	theme := lookupThemeForTest(t, "default")
+	got := renderTraceOverlayPanel(theme, "tool_call: forge -d\nstatus: approved in 1.2s", "/tmp/forge-debug.jsonl", 100, 24)
+
+	assertStyledSubstring(t, got, "tool_call:", theme.TextDim)
+	assertStyledSubstring(t, got, "forge -d", theme.AccentSecondary)
+	assertStyledSubstring(t, got, "approved", theme.Success)
+	assertStyledSubstring(t, got, "/tmp/forge-debug.jsonl", theme.AccentPrimary)
+}
+
+func TestRenderTraceOverlayPanelPreservesPreStyledANSI(t *testing.T) {
+	theme := lookupThemeForTest(t, "default")
+	got := renderTraceOverlayPanel(theme, "\x1b[31merror\x1b[0m", "", 100, 24)
+
+	if !strings.Contains(got, "\x1b[31merror\x1b[0m") {
+		t.Fatalf("expected original ANSI span to survive trace rendering: %q", got)
+	}
+}

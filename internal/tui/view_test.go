@@ -109,3 +109,17 @@ func TestDebugSurfaceShowsVisibleTraceChromeByDefault(t *testing.T) {
 		t.Fatalf("expected debug surface to show debug log path, got:\n%s", strippedLine(view))
 	}
 }
+
+func TestDefaultChatViewEmptyStateOnlyShowsReadyCopy(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test-model", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	view := strippedLine(m.View())
+	if !strings.Contains(view, "Forge is ready.") {
+		t.Fatalf("expected ready copy in default empty view:\n%s", view)
+	}
+	if strings.Contains(view, "Ask for a code change, bugfix, or investigation.") {
+		t.Fatalf("old helper line should be gone:\n%s", view)
+	}
+}

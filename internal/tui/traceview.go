@@ -21,14 +21,16 @@ func renderTraceOverlayPanel(theme chatTheme, content, debugLogPath string, widt
 		dimStyle.Render("Available only because forge was started with -d."),
 	}
 	if path := strings.TrimSpace(debugLogPath); path != "" {
-		lines = append(lines, dimStyle.Render("Log: "+path))
+		lines = append(lines, RenderSemanticPlain("Log: "+path, profileTrace, theme))
 	}
 	lines = append(lines, "")
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {
 		lines = append(lines, dimStyle.Render("No trace captured yet."))
 	} else {
-		lines = append(lines, strings.Split(trimmed, "\n")...)
+		for _, line := range strings.Split(trimmed, "\n") {
+			lines = append(lines, RenderSemanticPlain(line, profileTrace, theme))
+		}
 	}
 	lines = append(lines, "", dimStyle.Render("Esc / Enter closes this overlay"))
 
@@ -68,7 +70,9 @@ func renderTraceDockPanel(theme chatTheme, content, debugLogPath string, width, 
 	lines = appendTraceStyledLine(lines, titleStyle, "Debug trace", contentWidth)
 	lines = appendTraceStyledLine(lines, dimStyle, "Visible because forge was started with -d.", contentWidth)
 	if path := strings.TrimSpace(debugLogPath); path != "" {
-		lines = appendTraceStyledLine(lines, dimStyle, "Log: "+path, contentWidth)
+		for _, line := range wrapTraceText("Log: "+path, contentWidth) {
+			lines = append(lines, traceStyledLine{text: RenderSemanticPlain(line, profileTrace, theme), style: textStyle})
+		}
 	}
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {
@@ -79,7 +83,7 @@ func renderTraceDockPanel(theme chatTheme, content, debugLogPath string, width, 
 			traceLines = traceLines[len(traceLines)-(contentHeight-len(lines)):]
 		}
 		for _, line := range traceLines {
-			lines = append(lines, traceStyledLine{text: line, style: textStyle})
+			lines = append(lines, traceStyledLine{text: RenderSemanticPlain(line, profileTrace, theme), style: textStyle})
 		}
 	}
 	if len(lines) > contentHeight {

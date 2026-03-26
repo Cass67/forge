@@ -169,13 +169,15 @@ func styledSegments(rendered string) []styledSegment {
 		if rendered[i] == '\x1b' && i+1 < len(rendered) && rendered[i+1] == '[' {
 			flush()
 			end := i + 2
-			for end < len(rendered) && rendered[end] != 'm' {
+			for end < len(rendered) && (rendered[end] < '@' || rendered[end] > '~') {
 				end++
 			}
 			if end >= len(rendered) {
 				break
 			}
-			currentFG = applySGRForeground(currentFG, rendered[i+2:end])
+			if rendered[end] == 'm' {
+				currentFG = applySGRForeground(currentFG, rendered[i+2:end])
+			}
 			i = end + 1
 			continue
 		}
