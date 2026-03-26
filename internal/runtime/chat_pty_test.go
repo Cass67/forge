@@ -91,6 +91,9 @@ func TestDefaultChatDoesNotEnterAltScreen(t *testing.T) {
 	if strings.Contains(output, "\x1b[?1049h") {
 		t.Fatalf("default chat entered alt screen: %q", output)
 	}
+	if !strings.Contains(output, "\x1b[?1002h") || !strings.Contains(output, "\x1b[?1006h") {
+		t.Fatalf("default chat did not enable mouse capture: %q", output)
+	}
 	if !strings.Contains(output, prompt) {
 		t.Fatalf("expected echoed user prompt in output:\n%s", output)
 	}
@@ -155,8 +158,8 @@ func TestDebugChatDoesNotEnterAltScreen(t *testing.T) {
 	if strings.Contains(output, "\x1b[?1049h") {
 		t.Fatalf("debug chat entered alt screen: %q", output)
 	}
-	if strings.Contains(output, "\x1b[?1002h") || strings.Contains(output, "\x1b[?1006h") {
-		t.Fatalf("debug chat enabled mouse capture: %q", output)
+	if !strings.Contains(output, "\x1b[?1002h") || !strings.Contains(output, "\x1b[?1006h") {
+		t.Fatalf("debug chat did not enable mouse capture: %q", output)
 	}
 	if strings.Contains(output, "chat debug log:") {
 		t.Fatalf("debug chat should not print a prelude before the shared UI: %q", output)
