@@ -1138,6 +1138,18 @@ func TestChatModelHelpOverlayTabNavigation(t *testing.T) {
 	}
 }
 
+func TestChatModelHelpOverlayAvoidsHiddenToolLogTerminology(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 30
+	m.helpTab = 1
+
+	lines := strings.Join(m.helpLines(), "\n")
+	if strings.Contains(lines, "hidden tool log") {
+		t.Fatalf("expected help overlay to avoid hidden tool log wording, got:\n%s", lines)
+	}
+}
+
 func TestChatModelApprovalFlow(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 80

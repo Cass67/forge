@@ -187,6 +187,16 @@ func TestPrintChatHelpOmitsExpandCommand(t *testing.T) {
 	}
 }
 
+func TestPrintChatHelpMentionsDebugViewAndTraceCommand(t *testing.T) {
+	output := captureRuntimeStdout(t, PrintChatHelp)
+	if !strings.Contains(output, "forge -d") {
+		t.Fatalf("expected chat help to mention forge -d, got:\n%s", output)
+	}
+	if !strings.Contains(output, "/trace") {
+		t.Fatalf("expected chat help to mention /trace, got:\n%s", output)
+	}
+}
+
 func TestHandleChatSlashCommandExpandIsUnknown(t *testing.T) {
 	var buf bytes.Buffer
 	renderer := agent.NewRenderer(&buf, 80, false)
