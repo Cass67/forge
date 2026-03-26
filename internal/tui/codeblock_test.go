@@ -53,3 +53,22 @@ func TestRenderCodeBlockUsesAppBackground(t *testing.T) {
 		t.Fatalf("code block missing app background fill: %q", rendered)
 	}
 }
+
+func TestRenderMessageContentStylesCommandsAndPaths(t *testing.T) {
+	withTrueColorProfile(t)
+
+	theme := lookupThemeForTest(t, "default")
+	got := renderMessageContent("Run go test ./... from ./internal/tui", 60, theme)
+
+	assertStyledSubstring(t, got, "go test ./...", theme.AccentSecondary)
+	assertStyledSubstring(t, got, "./internal/tui", theme.AccentPrimary)
+}
+
+func TestRenderMessageContentLeavesInlineCodeOpaque(t *testing.T) {
+	withTrueColorProfile(t)
+
+	theme := lookupThemeForTest(t, "default")
+	got := renderMessageContent("Use `go test ./...` if you want the exact command.", 60, theme)
+
+	assertSubstringNotColor(t, got, "go test ./...", theme.AccentSecondary)
+}
