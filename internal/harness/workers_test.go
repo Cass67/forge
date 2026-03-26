@@ -2,11 +2,13 @@ package harness
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
 	"forge/internal/agent/tools"
 	"forge/internal/llm"
+	"forge/internal/skills"
 )
 
 type sequenceDriver struct {
@@ -27,6 +29,110 @@ func (d *sequenceDriver) Stream(_ context.Context, _ []llm.Message, out chan<- l
 	}
 	out <- llm.Token{Text: response}
 	return nil
+}
+
+type inspectingDriver struct {
+	mu                sync.Mutex
+	response          string
+	callCount         int
+	lastInjectedSkill string
+}
+
+func (d *inspectingDriver) Name() string { return "inspecting" }
+
+func (d *inspectingDriver) Stream(_ context.Context, messages []llm.Message, out chan<- llm.Token) error {
+	defer close(out)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.callCount++
+	d.lastInjectedSkill = ""
+	for _, msg := range messages {
+		if msg.Role != llm.RoleUser || !strings.HasPrefix(msg.Content, "[Skill: ") {
+			continue
+		}
+		rest := strings.TrimPrefix(msg.Content, "[Skill: ")
+		if end := strings.Index(rest, "]"); end >= 0 {
+			d.lastInjectedSkill = rest[:end]
+			break
+		}
+	}
+	out <- llm.Token{Text: d.response}
+	return nil
+}
+
+func TestWorkersUseInjectedSkillContext(t *testing.T) {
+	driver := &inspectingDriver{
+		response: `{"status":"complete","changes":[{"path":"tools/cleanup_workspace.sh","summary":"Added a cleanup helper."}],"verification_attempts":[],"remaining_issues":[],"suggested_next":"none"}`,
+	}
+	manager := NewManager(ManagerConfig{
+		WorkDir: ".",
+		DriverFor: func(WorkerKind) llm.Driver {
+			return driver
+		},
+	})
+
+	obs, err := manager.Execute(context.Background(), WorkerTask{
+		Kind:      WorkerEditor,
+		Objective: "implement a cleanup helper",
+		TopicKey:  "workspace:directory",
+		SkillContext: WorkerSkillContext{
+			AutoMode: skills.AutoSkillsAuto,
+			Loaded: []skills.Skill{{
+				Name:        "test-driven-development",
+				Description: "write tests first",
+				Body:        "Write a failing test before implementation.",
+				Source:      "/tmp/tdd/SKILL.md",
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obs.Status != ObservationComplete {
+		t.Fatalf("observation = %#v", obs)
+	}
+	if driver.lastInjectedSkill != "test-driven-development" {
+		t.Fatalf("lastInjectedSkill = %q", driver.lastInjectedSkill)
+	}
+	if len(obs.SkillUses) != 1 || obs.SkillUses[0].Name != "test-driven-development" {
+		t.Fatalf("skill uses = %#v", obs.SkillUses)
+	}
+}
+
+func TestWorkersMissingRequiredSkillFailsClosed(t *testing.T) {
+	driver := &inspectingDriver{
+		response: `{"status":"complete","changes":[{"path":"tools/cleanup_workspace.sh","summary":"Added a cleanup helper."}],"verification_attempts":[],"remaining_issues":[],"suggested_next":"none"}`,
+	}
+	manager := NewManager(ManagerConfig{
+		WorkDir: ".",
+		DriverFor: func(WorkerKind) llm.Driver {
+			return driver
+		},
+	})
+
+	obs, err := manager.Execute(context.Background(), WorkerTask{
+		Kind:      WorkerEditor,
+		Objective: "implement a cleanup helper",
+		TopicKey:  "workspace:directory",
+		SkillContext: WorkerSkillContext{
+			AutoMode: skills.AutoSkillsAuto,
+		},
+	})
+	if err == nil {
+		t.Fatal("expected missing required skill error")
+	}
+	if obs.Status != ObservationBlocked {
+		t.Fatalf("observation = %#v", obs)
+	}
+	if !strings.Contains(obs.Summary, "required skill") {
+		t.Fatalf("observation summary = %q", obs.Summary)
+	}
+	if driver.callCount != 0 {
+		t.Fatalf("driver call count = %d, want 0", driver.callCount)
+	}
+	if len(obs.SkillUses) != 1 || obs.SkillUses[0].Outcome != "required_missing" {
+		t.Fatalf("skill uses = %#v", obs.SkillUses)
+	}
 }
 
 func TestPlanResearchUsesResearcherWorker(t *testing.T) {

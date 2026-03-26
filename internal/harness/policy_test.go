@@ -96,3 +96,13 @@ func TestDecideBlocksErroredObservation(t *testing.T) {
 		t.Fatalf("decision = %#v", got)
 	}
 }
+
+func TestPolicyFallbackBlocksWorkerSkillFailures(t *testing.T) {
+	got := Decide(Classification{Family: FamilyImplement}, Observation{
+		Status:  ObservationBlocked,
+		Summary: "required skill unavailable: test-driven-development",
+	})
+	if got.FinalState != StateBlocked {
+		t.Fatalf("decision = %#v", got)
+	}
+}
