@@ -291,12 +291,19 @@ func errorString(err error) string {
 
 func enrichObservation(turn UserTurn, class Classification, _ SessionState, obs Observation) Observation {
 	if obs.PendingAction.IsZero() {
-		obs.PendingAction = inferPendingAction(turn, class)
+		obs.PendingAction = inferPendingAction(turn, class, obs)
 	}
 	return obs
 }
 
-func inferPendingAction(turn UserTurn, class Classification) PendingAction {
+func inferPendingAction(turn UserTurn, class Classification, obs Observation) PendingAction {
+	if pending := inferPendingReviewAction(turn, class); !pending.IsZero() {
+		return pending
+	}
+	return inferPendingInspectOffer(turn, class, obs)
+}
+
+func inferPendingReviewAction(turn UserTurn, class Classification) PendingAction {
 	if class.Family != FamilyAnswer ||
 		class.NeedsPolicyGuard ||
 		class.NeedsTerseAnswer ||
@@ -322,6 +329,86 @@ func inferPendingAction(turn UserTurn, class Classification) PendingAction {
 		TaskText:        reviewTaskTextForScope(scope),
 		WantsEvaluation: true,
 		CanStayLocal:    true,
+	}
+}
+
+func inferPendingInspectOffer(turn UserTurn, class Classification, obs Observation) PendingAction {
+	if obs.Status != ObservationComplete ||
+		class.Family != FamilyAnswer ||
+		class.NeedsPolicyGuard ||
+		class.NeedsTerseAnswer ||
+		class.WantsAction ||
+		class.WantsInterpretation {
+		return PendingAction{}
+	}
+
+	response := strings.TrimSpace(obs.Response)
+	if response == "" {
+		return PendingAction{}
+	}
+
+	lower := strings.ToLower(response)
+	tokens := tokenize(lower)
+	if !looksLikeAssistantOffer(lower) || !mentionsInspectOffer(lower, tokens) {
+		return PendingAction{}
+	}
+
+	topicKey := resolvePendingInspectOfferTopic(turn, class, response)
+	if topicKey == "" {
+		return PendingAction{}
+	}
+
+	return PendingAction{
+		Family:          FamilyInspect,
+		TopicKey:        topicKey,
+		TaskText:        inspectTaskTextForTopic(topicKey),
+		WantsEvaluation: wantsEvaluation(tokens, lower),
+		CanStayLocal:    true,
+	}
+}
+
+func looksLikeAssistantOffer(lower string) bool {
+	return strings.Contains(lower, "if you want") ||
+		strings.Contains(lower, "want me to") ||
+		strings.Contains(lower, "i can ") ||
+		strings.Contains(lower, "i could ") ||
+		strings.Contains(lower, "happy to")
+}
+
+func mentionsInspectOffer(lower string, tokens map[string]struct{}) bool {
+	if hasToken(tokens, "inspect") || hasToken(tokens, "check") || hasToken(tokens, "review") ||
+		hasToken(tokens, "examine") || hasToken(tokens, "read") {
+		return true
+	}
+	return strings.Contains(lower, "look at") || strings.Contains(lower, "go over")
+}
+
+func resolvePendingInspectOfferTopic(turn UserTurn, class Classification, response string) string {
+	responseLower := strings.ToLower(response)
+	responseTokens := tokenize(responseLower)
+	if topicKey := resolveTopicKey(response, inferRequestScope(responseLower, responseTokens)); topicKey != "" {
+		return topicKey
+	}
+	if topicKey := strings.TrimSpace(class.TopicKey); topicKey != "" {
+		return topicKey
+	}
+	turnLower := strings.ToLower(strings.TrimSpace(turn.Text))
+	turnTokens := tokenize(turnLower)
+	return resolveTopicKey(turn.Text, inferRequestScope(turnLower, turnTokens))
+}
+
+func inspectTaskTextForTopic(topicKey string) string {
+	switch {
+	case strings.HasPrefix(topicKey, "path:"):
+		return "inspect `" + strings.TrimSpace(strings.TrimPrefix(topicKey, "path:")) + "`"
+	case topicKey == "workspace:repository":
+		return "inspect the repository"
+	case topicKey == "workspace:directory":
+		return "inspect the current directory"
+	case strings.HasPrefix(topicKey, "files:"):
+		return "inspect the matching files"
+	default:
+		return ""
 	}
 }
 
