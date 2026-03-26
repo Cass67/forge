@@ -30,6 +30,7 @@ var (
 	loadChatTokens    = bootstrap.LoadTokens
 	saveLastChatModel = config.SaveChatLastModel
 	defaultConfigPath = config.DefaultPath
+	runChatLiveUI     = tui.RunChatLive
 )
 
 type ChatSetup struct {
@@ -411,7 +412,7 @@ func RunChatLive(setup *ChatSetup) {
 		State:           state,
 		CopilotClientID: setup.Config.CopilotClientID(),
 	}
-	tui.RunChatLive(eventsCh, liveCfg, inputCh, doneCh)
+	runChatLiveUI(eventsCh, liveCfg, inputCh, doneCh)
 }
 
 func configureMultiAgent(a *agent.Agent, baseReg *tools.Registry, setup *ChatSetup) {

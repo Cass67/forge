@@ -16,6 +16,7 @@ import (
 	"forge/internal/config"
 	"forge/internal/harness"
 	"forge/internal/llm"
+	"forge/internal/tui"
 )
 
 func TestResolveModelExactAndIndexed(t *testing.T) {
@@ -214,6 +215,49 @@ func TestUseHarnessKernelRuntimeReadsEnv(t *testing.T) {
 	t.Setenv("FORGE_CHAT_RUNTIME", "kernel")
 	if !useHarnessKernelRuntime() {
 		t.Fatal("kernel runtime should be enabled when env requests it")
+	}
+}
+
+func TestRunChatLiveUsesSurfaceMode(t *testing.T) {
+	t.Setenv("FORGE_CHAT_RUNTIME", "legacy")
+
+	oldRunChatLiveUI := runChatLiveUI
+	defer func() {
+		runChatLiveUI = oldRunChatLiveUI
+	}()
+
+	var got []tui.SurfaceModeConfig
+	runChatLiveUI = func(_ <-chan llm.Event, cfg tui.ChatLiveConfig, inputCh chan<- string, _ <-chan struct{}) tui.ChatLiveResult {
+		got = append(got, cfg.SurfaceMode())
+		close(inputCh)
+		return tui.ChatLiveResult{}
+	}
+
+	setup := &ChatSetup{
+		Config:    &config.Config{},
+		ChatModel: "openai/gpt-5.4",
+		WorkDir:   t.TempDir(),
+		Driver:    &kernelMockDriver{response: "ok"},
+	}
+
+	RunChatLive(setup)
+	setup.debugRec = &chatDebugRecorder{}
+	RunChatLive(setup)
+
+	if len(got) != 2 {
+		t.Fatalf("surface modes captured = %d, want 2", len(got))
+	}
+	if got[0].UseAltScreen || got[0].EnableMouseCapture {
+		t.Fatalf("default surface mode = %#v", got[0])
+	}
+	if !got[1].UseAltScreen || !got[1].EnableMouseCapture {
+		t.Fatalf("debug surface mode = %#v", got[1])
+	}
+	if !got[0].EnableBracketedPaste || !got[0].EnableLiveRegion {
+		t.Fatalf("default surface missing required flags: %#v", got[0])
+	}
+	if !got[1].EnableBracketedPaste || !got[1].EnableLiveRegion {
+		t.Fatalf("debug surface missing required flags: %#v", got[1])
 	}
 }
 

@@ -13,10 +13,7 @@ func RunChatLiveBubbleTea(events <-chan llm.Event, cfg ChatLiveConfig, inputCh c
 	m.inputCh = inputCh
 	m.responseCh = cfg.ResponseCh
 
-	p := tea.NewProgram(m,
-		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
-	)
+	p := tea.NewProgram(m, programOptionsForSurfaceMode(cfg.SurfaceMode())...)
 
 	// Feed LLM events into the program
 	go func() {
