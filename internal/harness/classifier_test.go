@@ -58,6 +58,32 @@ func TestClassifyInterpretiveFollowUpNeedsRecentEvidence(t *testing.T) {
 	}
 }
 
+func TestClassifyQuestionLikeFollowUpWithoutConcreteTargetStaysInspect(t *testing.T) {
+	got := Classify(UserTurn{Text: "anything i need change?"}, SessionState{
+		Turn: 2,
+		LastEvidence: EvidenceSnapshot{
+			Turn:     1,
+			TopicKey: "workspace:repository",
+			Summary:  "repo overview",
+		},
+	})
+	if got.Family != FamilyInspect {
+		t.Fatalf("family = %q", got.Family)
+	}
+	if !got.WantsEvaluation {
+		t.Fatal("expected evaluation follow-up")
+	}
+	if got.WantsAction {
+		t.Fatal("did not expect action request")
+	}
+	if !got.IsFollowUp {
+		t.Fatal("expected follow-up classification")
+	}
+	if got.TopicKey != "workspace:repository" {
+		t.Fatalf("topic = %q", got.TopicKey)
+	}
+}
+
 func TestClassifyRecognizesImplementationAndDebugFamilies(t *testing.T) {
 	if got := Classify(UserTurn{Text: "fix the broken auth flow"}, SessionState{}); got.Family != FamilyImplement {
 		t.Fatalf("fix request family = %q", got.Family)
