@@ -159,6 +159,61 @@ func TestAgentRunDoesNotPersistVisibleProseFromToolTurns(t *testing.T) {
 	}
 }
 
+func TestAgentRunDoesNotPersistHarnessInspectWrapperIntoFollowUpTurns(t *testing.T) {
+	dir := t.TempDir()
+	driver := &inspectingDriver{
+		responses: []string{
+			"<tool_call>\n{\"name\": \"list_dir\", \"args\": {}}\n</tool_call>",
+			"Directory contains cmd and internal.",
+			"cleanup_folder.py would be a good start.",
+		},
+		checks: []func([]llm.Message) error{
+			nil,
+			nil,
+			func(messages []llm.Message) error {
+				joined := ""
+				for _, msg := range messages {
+					joined += msg.Content + "\n"
+				}
+				if strings.Contains(joined, "HARNESS MODE: inspect") {
+					return fmt.Errorf("inspect wrapper leaked into follow-up turn: %s", joined)
+				}
+				if strings.Contains(joined, "USER REQUEST:") {
+					return fmt.Errorf("inspect user-request wrapper leaked into follow-up turn: %s", joined)
+				}
+				if !strings.Contains(joined, "describe this directory") {
+					return fmt.Errorf("expected raw inspect request to remain in history, got: %s", joined)
+				}
+				if !strings.Contains(joined, "Directory contains cmd and internal.") {
+					return fmt.Errorf("expected prior inspect answer to remain in history, got: %s", joined)
+				}
+				return nil
+			},
+		},
+	}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.NewListDir(dir, nil))
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	agent := NewAgent(driver, reg, YoloApproval(), dir, 10, renderer, nil, nil)
+
+	if err := agent.Run(context.Background(), strings.TrimSpace(`HARNESS MODE: inspect
+INSPECT SCOPE: directory
+This is a read-only inspection turn.
+USER REQUEST:
+describe this directory`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.Run(context.Background(), "write me a py script that cleans up the folder"); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); !strings.Contains(got, "cleanup_folder.py would be a good start.") {
+		t.Fatalf("expected follow-up answer to render, got %q", got)
+	}
+}
+
 func TestAgentRunWithFunctionCallsDoesNotLeakRawWrapper(t *testing.T) {
 	dir := t.TempDir()
 	driver := &mockDriver{responses: []string{
