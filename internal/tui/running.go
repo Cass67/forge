@@ -360,6 +360,8 @@ func wrapLine(line string, width int) []string {
 }
 
 func joinColumns(left, right []string, leftWidth, rightWidth int) string {
+	_ = leftWidth
+	_ = rightWidth
 	leftLines := append([]string(nil), left...)
 	rightLines := append([]string(nil), right...)
 	totalLines := max(len(leftLines), len(rightLines))
@@ -371,7 +373,7 @@ func joinColumns(left, right []string, leftWidth, rightWidth int) string {
 	}
 	out := make([]string, 0, totalLines)
 	for i := 0; i < totalLines; i++ {
-		out = append(out, fitCell(leftLines[i], leftWidth)+"|"+fitCell(rightLines[i], rightWidth))
+		out = append(out, leftLines[i]+"|"+rightLines[i])
 	}
 	return strings.Join(out, "\n")
 }
@@ -395,6 +397,7 @@ func fitCell(s string, width int) string {
 }
 
 func (m RunningModel) renderPane(title, subtitle, content string, width, height, scroll int, focused bool) []string {
+	theme := defaultSemanticTheme()
 	lines := make([]string, 0, max(1, height))
 	label := title
 	if focused {
@@ -414,7 +417,8 @@ func (m RunningModel) renderPane(title, subtitle, content string, width, height,
 	end := min(len(bodyLines), scroll+bodyHeight)
 	visible := bodyLines[scroll:end]
 	for _, line := range visible {
-		lines = append(lines, fitCell(line, width))
+		styled := RenderSemanticPlain(line, profileStatus, theme)
+		lines = append(lines, padStyledWidth(styled, width))
 	}
 	for len(lines) < height {
 		lines = append(lines, strings.Repeat(" ", width))
@@ -499,7 +503,7 @@ func paintRows(lines []string, width int) string {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		b.WriteString(fitCell(line, width))
+		b.WriteString(padStyledWidth(line, width))
 	}
 	return b.String()
 }

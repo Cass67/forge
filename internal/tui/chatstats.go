@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -302,43 +303,167 @@ func joinStatsParts(parts ...string) string {
 }
 
 func renderStatusHeader(theme chatTheme, data chatStatusData, width int) string {
-	pillStyle := lipgloss.NewStyle().
-		Foreground(theme.HeaderBG).
-		Background(theme.AccentPrimary).
-		Bold(true).
-		Padding(0, 1)
-	modelStyle := lipgloss.NewStyle().
-		Foreground(theme.Text).
-		Bold(true)
-	metaStyle := lipgloss.NewStyle().
-		Foreground(theme.TextDim)
-	sep := lipgloss.NewStyle().
-		Foreground(theme.Border).
-		Render(" • ")
-
-	lineParts := strings.Split(buildStatusLine1(data), " • ")
-	parts := make([]string, 0, len(lineParts))
-	for idx, part := range lineParts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		switch idx {
-		case 0:
-			parts = append(parts, pillStyle.Render(strings.ToUpper(part)))
-		case 1:
-			parts = append(parts, modelStyle.Render(part))
-		default:
-			parts = append(parts, metaStyle.Render(part))
-		}
+	if theme.AppBG == "" {
+		theme, _ = lookupChatTheme("default")
 	}
-	line := strings.Join(parts, sep)
+	if width <= 0 {
+		width = 1
+	}
+
+	innerWidth := min(68, max(20, width-4))
+	modelValue := headerModelValue(data.Model)
+	workDirValue := headerWorkDirValue(data.WorkDir)
+
+	var lines []string
+	switch {
+	case width >= 72:
+		lines = buildWideHeaderLines(theme, modelValue, workDirValue, innerWidth)
+	case width >= 56:
+		lines = buildMediumHeaderLines(theme, modelValue, workDirValue, innerWidth)
+	default:
+		lines = buildNarrowHeaderLines(theme, modelValue, workDirValue, innerWidth)
+	}
+
+	card := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(theme.Border).
+		Background(theme.AppBG).
+		Padding(0, 1).
+		Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+
 	return lipgloss.NewStyle().
 		Background(theme.AppBG).
+		Render(card)
+}
+
+func renderStatusHeaderForHeight(theme chatTheme, data chatStatusData, width, height int) string {
+	if height > 0 && height < 14 {
+		return renderCompactStatusHeader(theme, data, width)
+	}
+	return renderStatusHeader(theme, data, width)
+}
+
+func buildWideHeaderLines(theme chatTheme, modelValue, workDirValue string, width int) []string {
+	const railWidth = 5
+	const sep = " │ "
+	metaWidth := max(12, width-railWidth-len(sep))
+	modelProminent := lipgloss.NewStyle().
 		Foreground(theme.HeaderFG).
-		Width(max(1, width-2)).
+		Bold(true).
+		Render(truncateRightEllipsis(modelValue, metaWidth))
+	labelStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
+	valueStyle := lipgloss.NewStyle().Foreground(theme.Text)
+	railStyle := lipgloss.NewStyle().Foreground(theme.AccentSecondary).Bold(true)
+
+	lines := []string{
+		padStyledWidth(railStyle.Render("FORGE")+sep+modelProminent, width),
+		padStyledWidth(strings.Repeat(" ", railWidth)+sep+labelStyle.Render("model  ")+valueStyle.Render(truncateRightEllipsis(modelValue, max(1, metaWidth-7))), width),
+		padStyledWidth(strings.Repeat(" ", railWidth)+sep+labelStyle.Render("dir    ")+valueStyle.Render(truncateLeftEllipsis(workDirValue, max(1, metaWidth-7))), width),
+	}
+	return lines
+}
+
+func buildMediumHeaderLines(theme chatTheme, modelValue, workDirValue string, width int) []string {
+	labelStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
+	valueStyle := lipgloss.NewStyle().Foreground(theme.Text)
+	railStyle := lipgloss.NewStyle().Foreground(theme.AccentSecondary).Bold(true)
+	prominentWidth := max(1, width-7)
+
+	lines := []string{
+		padStyledWidth(railStyle.Render("FORGE  ")+lipgloss.NewStyle().Foreground(theme.HeaderFG).Bold(true).Render(truncateRightEllipsis(modelValue, prominentWidth)), width),
+		padStyledWidth(labelStyle.Render("model  ")+valueStyle.Render(truncateRightEllipsis(modelValue, max(1, width-7))), width),
+		padStyledWidth(labelStyle.Render("dir    ")+valueStyle.Render(truncateLeftEllipsis(workDirValue, max(1, width-7))), width),
+	}
+	return lines
+}
+
+func buildNarrowHeaderLines(theme chatTheme, modelValue, workDirValue string, width int) []string {
+	labelStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
+	valueStyle := lipgloss.NewStyle().Foreground(theme.Text)
+
+	lines := []string{
+		padStyledWidth(lipgloss.NewStyle().Foreground(theme.HeaderFG).Bold(true).Render(truncateRightEllipsis(modelValue, width)), width),
+		padStyledWidth(labelStyle.Render("model  ")+valueStyle.Render(truncateRightEllipsis(modelValue, max(1, width-7))), width),
+		padStyledWidth(labelStyle.Render("dir    ")+valueStyle.Render(truncateLeftEllipsis(workDirValue, max(1, width-7))), width),
+	}
+	return lines
+}
+
+func renderCompactStatusHeader(theme chatTheme, data chatStatusData, width int) string {
+	if theme.AppBG == "" {
+		theme, _ = lookupChatTheme("default")
+	}
+	innerWidth := min(68, max(16, width-4))
+	wordmark := lipgloss.NewStyle().Foreground(theme.AccentSecondary).Bold(true).Render("FORGE")
+	model := lipgloss.NewStyle().Foreground(theme.HeaderFG).Bold(true).Render(truncateRightEllipsis(headerModelValue(data.Model), max(1, innerWidth/2)))
+	dirWidth := max(1, innerWidth-ansiPrintableWidth(wordmark+"  "+model)-2)
+	dir := lipgloss.NewStyle().Foreground(theme.TextDim).Render(truncateLeftEllipsis(headerWorkDirValue(data.WorkDir), dirWidth))
+	line := padStyledWidth(wordmark+"  "+model+"  "+dir, innerWidth)
+	card := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(theme.Border).
+		Background(theme.AppBG).
 		Padding(0, 1).
 		Render(line)
+	return lipgloss.NewStyle().Background(theme.AppBG).Render(card)
+}
+
+func headerModelValue(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "unavailable"
+	}
+	return model
+}
+
+func headerWorkDirValue(workDir string) string {
+	workDir = strings.TrimSpace(workDir)
+	if workDir == "" {
+		return "-"
+	}
+	return homeRelativePath(workDir)
+}
+
+func homeRelativePath(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+	if path == home {
+		return "~"
+	}
+	if strings.HasPrefix(path, home+"/") {
+		return "~" + strings.TrimPrefix(path, home)
+	}
+	return path
+}
+
+func truncateRightEllipsis(text string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) <= width {
+		return text
+	}
+	if width == 1 {
+		return "…"
+	}
+	return string(runes[:width-1]) + "…"
+}
+
+func truncateLeftEllipsis(text string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) <= width {
+		return text
+	}
+	if width == 1 {
+		return "…"
+	}
+	return "…" + string(runes[len(runes)-width+1:])
 }
 
 func (m *ChatModel) syncStatusData() {

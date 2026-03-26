@@ -166,7 +166,6 @@ const (
 	followManual
 )
 
-const chatHeaderHeight = 1
 const chatPaneBorderHeight = 0
 const chatComposerGapHeight = 1
 const chatStatusHeight = 0
@@ -760,12 +759,24 @@ func (m ChatModel) debugDockHeight() int {
 	return chatDebugDockHeight
 }
 
+func (m ChatModel) headerHeight() int {
+	if m.width <= 0 {
+		return 1
+	}
+	header := renderStatusHeaderForHeight(m.theme(), m.statusSnapshot(), m.width, m.height)
+	height := strings.Count(header, "\n") + 1
+	if height < 1 {
+		return 1
+	}
+	return height
+}
+
 func (m *ChatModel) resizeChatViewport() {
 	if m.width <= 0 || m.height <= 0 {
 		return
 	}
 	m.chatViewport.Width = m.chatContentWidth()
-	bodyH := max(3, m.height-chatHeaderHeight-chatPaneBorderHeight-chatComposerGapHeight-m.inputHeight()-chatStatusHeight-m.debugDockHeight())
+	bodyH := max(3, m.height-m.headerHeight()-chatPaneBorderHeight-chatComposerGapHeight-m.inputHeight()-chatStatusHeight-m.debugDockHeight())
 	if m.chatViewport.Height == bodyH {
 		return
 	}
@@ -796,7 +807,7 @@ type chatLayoutMouseContext struct {
 }
 
 func (m ChatModel) mouseContext() chatLayoutMouseContext {
-	headerH := chatHeaderHeight
+	headerH := m.headerHeight()
 	chatPaneWidth := m.chatPaneWidth()
 	chatBodyHeight := max(1, m.chatViewport.Height)
 	chatH := chatBodyHeight + chatPaneBorderHeight
@@ -4132,7 +4143,7 @@ func (m ChatModel) View() string {
 	}
 	theme := m.theme()
 	headerData := m.statusSnapshot()
-	header := renderStatusHeader(theme, headerData, m.width)
+	header := renderStatusHeaderForHeight(theme, headerData, m.width, m.height)
 
 	chatBodyHeight := max(1, m.chatViewport.Height)
 	chatContentWidth := max(1, m.chatContentWidth())
@@ -4142,9 +4153,6 @@ func (m ChatModel) View() string {
 	if strings.TrimSpace(m.chatVisible) == "" {
 		empty := []string{
 			"Forge is ready.",
-			"",
-			"Ask for a code change, bugfix, or investigation.",
-			"Use /help for commands, /find to search.",
 		}
 		chatLines = empty
 		chatTotalLines = len(empty)
