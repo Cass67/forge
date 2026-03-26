@@ -128,7 +128,7 @@ func (r *Runner) executeWorker(ctx context.Context, turn UserTurn, class Classif
 
 func (r *Runner) executeLocal(ctx context.Context, turn UserTurn, class Classification, step Step) (Step, Observation, error) {
 	r.trace.Add(StateAct, class.Family, step.Kind, step.Worker, step.Summary, class.TopicKey)
-	obs, err := r.local.Execute(ctx, turn, class)
+	obs, err := r.local.Execute(ctx, turn, class, r.session.Snapshot())
 	r.trace.Add(StateObserve, class.Family, step.Kind, step.Worker, firstNonEmpty(obs.Summary, "local execution complete"), class.TopicKey)
 	return step, obs, err
 }

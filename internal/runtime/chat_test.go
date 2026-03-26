@@ -435,7 +435,7 @@ type stubHarnessLocalExecutor struct {
 	response string
 }
 
-func (s stubHarnessLocalExecutor) Execute(_ context.Context, _ harness.UserTurn, class harness.Classification) (harness.Observation, error) {
+func (s stubHarnessLocalExecutor) Execute(_ context.Context, _ harness.UserTurn, class harness.Classification, _ harness.SessionState) (harness.Observation, error) {
 	return harness.Observation{
 		Status:   harness.ObservationComplete,
 		Response: s.response,
