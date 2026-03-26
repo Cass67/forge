@@ -26,6 +26,11 @@ var (
 		"implement", "implementation", "build", "create", "add", "change", "update",
 		"modify", "remove", "delete", "refactor", "wire", "replace", "fix",
 	)
+	implementArtifactTokens = tokenSet(
+		"script", "scripts", "test", "tests", "tool", "tools", "helper", "helpers",
+		"function", "functions", "command", "commands", "file", "files", "module", "modules",
+		"handler", "handlers", "workflow", "workflows", "migration", "migrations", "patch", "patches",
+	)
 	debugTokens = tokenSet(
 		"debug", "bug", "bugs", "broken", "failing", "failure", "failures", "error",
 		"errors", "regression", "regressions", "root", "cause", "diagnose", "diagnosis",
@@ -93,6 +98,16 @@ func Classify(turn UserTurn, session SessionState) Classification {
 			class.TopicKey = session.LastEvidence.TopicKey
 		}
 		class.Reason = "contextual follow-up"
+	}
+	if wantsContextualActionFollowUp(lower, ordered, tokens, class, session) {
+		class.Family = FamilyImplement
+		class.WantsAction = true
+		class.IsFollowUp = true
+		class.CanStayLocal = true
+		if strings.TrimSpace(class.TopicKey) == "" {
+			class.TopicKey = session.LastEvidence.TopicKey
+		}
+		class.Reason = "contextual action follow-up"
 	}
 	if wantsInterpretation(tokens, lower) && session.HasRecentEvidence() && !class.WantsAction {
 		class.WantsInterpretation = true
@@ -192,7 +207,7 @@ func wantsInspection(scope requestScope, tokens map[string]struct{}, lower strin
 }
 
 func wantsImplementation(scope requestScope, ordered []string, tokens map[string]struct{}, lower, text string) bool {
-	if !containsAny(tokens, implementTokens) {
+	if !containsImplementationSignal(tokens) {
 		return false
 	}
 	if scope.Inspectable() && wantsScopedEvaluation(scope, tokens, lower) {
@@ -202,6 +217,13 @@ func wantsImplementation(scope requestScope, ordered []string, tokens map[string
 		return false
 	}
 	return true
+}
+
+func containsImplementationSignal(tokens map[string]struct{}) bool {
+	if containsAny(tokens, implementTokens) {
+		return true
+	}
+	return hasToken(tokens, "write") && containsAny(tokens, implementArtifactTokens)
 }
 
 func wantsEvaluation(tokens map[string]struct{}, lower string) bool {
@@ -314,6 +336,22 @@ func wantsContextualEvaluationFollowUp(text, lower string, ordered []string, tok
 		return false
 	}
 	return lacksConcreteActionTarget(ordered)
+}
+
+func wantsContextualActionFollowUp(lower string, ordered []string, tokens map[string]struct{}, class Classification, session SessionState) bool {
+	if !session.HasRecentEvidence() || strings.TrimSpace(session.LastEvidence.TopicKey) == "" {
+		return false
+	}
+	if strings.TrimSpace(class.TopicKey) != "" {
+		return false
+	}
+	if class.Family != FamilyImplement && !class.WantsAction {
+		return false
+	}
+	if class.Family == FamilyDebug || class.Family == FamilyResearch || class.Family == FamilyTransform {
+		return false
+	}
+	return looksLikeReferentialFollowUp(tokens, lower, ordered) || looksLikeContextualContinuation(lower)
 }
 
 func wantsScopedEvaluation(scope requestScope, tokens map[string]struct{}, lower string) bool {
