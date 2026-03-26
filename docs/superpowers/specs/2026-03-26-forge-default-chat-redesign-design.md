@@ -158,6 +158,14 @@ Submission acceptance criteria:
 - the cursor returns to an empty composer without waiting for model output
 - resize events must not restore the previous submitted prompt into the composer
 
+Edge cases:
+
+- `Ctrl+C` while a turn is running cancels the active turn and preserves transcript history
+- `Ctrl+C` while idle clears the current draft and does not exit the app
+- `Ctrl+D` or EOF exits only when no turn is running and the composer is empty
+- only one submitted turn may be active at a time
+- while a turn is still running, the user may type a draft, but `Enter` does not submit a second turn; Forge keeps the draft and waits for the current turn to finish or be cancelled
+
 This keeps multi-line composition explicit while preserving the fast single-key submit behavior the product wants.
 
 ### 5. One Visible Assistant, Hidden Workers Behind It
@@ -228,9 +236,10 @@ Rules:
 
 - at most one live progress row exists for the active turn
 - new progress updates replace the current live progress row in place while the user remains at the live prompt
+- the live region is limited to the active prompt area and the one progress row immediately above it
 - the live progress row is not committed into scrollback on every update
 - when the turn completes, the live progress row either disappears or collapses into one final dim transcript line if that context is still useful
-- if the user scrolls away or the terminal can no longer safely redraw the live slot, Forge stops updating progress in place and waits for the final answer
+- if Forge can no longer safely redraw the live region because of terminal capability limits, interrupt handling, external output interleaving, or loss of prompt ownership, it stops in-place updates and waits for the final answer
 - progress updates must never create an unbounded stack of near-duplicate lines in normal chat
 
 This resolves the tension between native terminal scrollback and useful live feedback.
@@ -272,6 +281,28 @@ The terminal feature split is part of the design, not an implementation detail.
 | Skill metadata | hidden | visible |
 
 The default chat path must keep the terminal in the least surprising state. Debug mode may use a richer managed surface because its purpose is harness diagnosis, not transcript ergonomics.
+
+## Terminal I/O Model
+
+Default mode uses an append-first terminal model with one small live region.
+
+Append-only region:
+
+- durable transcript rows
+- final assistant answers
+- durable error rows
+
+Live region:
+
+- the active composer
+- the one progress row immediately above it
+
+Rules:
+
+- Forge may redraw only the live region in default mode
+- Forge must not rewrite older durable transcript rows in the normal buffer
+- when live-region redraw is unsafe or unsupported, Forge falls back to append-only behavior until the turn completes
+- debug mode may use broader managed redraw because it is explicitly a diagnostics surface
 
 ## Worker Skill Access Model
 
@@ -376,6 +407,18 @@ Boundary:
 - decides presentation mode
 - does not own transcript content, worker policy, or skill loading
 
+Interface:
+
+- input: launch flags, terminal capability probe
+- output: `SurfaceModeConfig`
+
+`SurfaceModeConfig` must at least specify:
+
+- alternate-screen enabled or disabled
+- mouse capture enabled or disabled
+- bracketed paste enabled or disabled
+- live-region support enabled or disabled
+
 ### 2. Transcript Renderer
 
 Purpose:
@@ -393,6 +436,11 @@ Boundary:
 - consumes already-selected content
 - does not decide whether a worker should run
 - does not contain orchestration policy
+
+Interface:
+
+- input: durable transcript records plus optional live-region state
+- output: rendered default-chat frame or append operations
 
 ### 3. Composer Controller
 
@@ -412,6 +460,11 @@ Boundary:
 - owns active input state only
 - does not manage transcript history policy or worker execution
 
+Interface:
+
+- input: keyboard events, paste events, running-state notifications
+- output: `SubmitRequest`, `DraftUpdated`, `InterruptRequested`, `ExitRequested`
+
 ### 4. Progress Presenter
 
 Purpose:
@@ -428,6 +481,11 @@ Boundary:
 
 - presentation only
 - does not invent policy or decide whether to delegate
+
+Interface:
+
+- input: internal work-state events from the orchestrator
+- output: one `LiveProgressState` plus an optional final collapsed progress note
 
 ### 5. Worker Orchestrator
 
@@ -484,6 +542,11 @@ Retries and cancellation:
 - worker cancellation must yield a structured cancelled result
 - worker timeouts must yield a structured timed-out result
 
+Interface:
+
+- input: `TurnRequest`, capability signals, tool results, worker results
+- output: `TranscriptRecord`, `LiveProgressState`, `WorkerRequest`, `DebugTraceEvent`
+
 ### 6. Skill Runtime Adapter
 
 Purpose:
@@ -502,6 +565,11 @@ Boundary:
 - owns skill loading and execution contract
 - does not decide product copy or transcript rendering
 
+Interface:
+
+- input: skill lookup requests from the primary assistant or a worker
+- output: concrete skill descriptors and loaded skill documents
+
 ### 7. Debug Trace Renderer
 
 Purpose:
@@ -517,6 +585,11 @@ Boundary:
 
 - debug-only
 - must not leak back into the default chat path
+
+Interface:
+
+- input: debug trace events, worker events, tool events, classifier decisions
+- output: debug-only rendered trace surface
 
 ## Data Flow
 
@@ -545,6 +618,52 @@ Rules:
 - only `UserTurn`, `AssistantTurn`, `ErrorRow`, and the optional final collapsed progress note become durable transcript rows
 - `ProgressUpdate` targets the one live progress slot rather than appending durable history each time
 - `SystemNote` is reserved for compact, rare, non-error states such as `nothing to expand`
+- streaming token chunks are assembled upstream and do not become independent durable transcript records in default mode
+
+Minimum schema:
+
+`UserTurn`
+
+- `id`
+- `turn_id`
+- `text`
+
+`AssistantTurn`
+
+- `id`
+- `turn_id`
+- `segments`
+- `final`
+
+`ProgressUpdate`
+
+- `turn_id`
+- `message`
+- `replace_key`
+
+`ErrorRow`
+
+- `id`
+- `turn_id`
+- `summary`
+- optional `detail`
+
+`SystemNote`
+
+- `id`
+- `turn_id`
+- `message`
+
+Segment schema for `AssistantTurn`:
+
+- `TextSegment{text}`
+- `CodeSegment{language, code}`
+
+Ordering:
+
+- records are ordered by emission within a turn
+- the final `AssistantTurn` for a turn closes the live progress slot
+- at most one unresolved live progress slot exists per active turn
 
 ### Worker Skill Path
 
@@ -572,6 +691,15 @@ Examples of acceptable user-facing outcomes:
 
 - `test run failed in internal/tui: <brief reason>`
 - `I couldn't access the required provider session, so I stayed local and inspected the code instead`
+
+Hard surfacing rules:
+
+- local tool failures that materially change the final answer must be surfaced
+- recovered local tool failures may stay internal
+- recovered worker failures stay internal
+- worker failures that prevent completion are surfaced only as user-impact statements, not as harness chatter
+- internal skill-loading failures stay internal unless they change the user-facing outcome
+- user interrupts are surfaced as a compact visible state such as `stopped`
 
 ### Worker Errors
 
@@ -622,6 +750,14 @@ The implementation plan must include three layers of verification:
 3. PTY-backed integration tests for terminal-mode behavior
 
 This redesign is not complete if it is only manually verified.
+
+Golden examples:
+
+The test suite should include at least:
+
+1. one normal-mode transcript example with a user turn, one live progress update, one final Forge answer, and a cleared composer
+2. one debug-mode example showing visible worker and trace detail
+3. one error-path example showing a compact visible failure row without raw harness leakage
 
 ### Interaction Tests
 
