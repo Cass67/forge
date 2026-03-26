@@ -230,6 +230,7 @@ func (m liveModel) View() string {
 }
 
 func (m liveModel) renderPane(label, modelName, content string, width, height, scroll int, focused bool) string {
+	theme := defaultSemanticTheme()
 	titleColor := lipgloss.Color("#8b949e")
 	borderColor := lipgloss.Color("#30363d")
 	if focused {
@@ -246,6 +247,9 @@ func (m liveModel) renderPane(label, modelName, content string, width, height, s
 	scroll = clamp(scroll, 0, max(0, len(lines)-height))
 	end := min(len(lines), scroll+height)
 	visible := append([]string(nil), lines[scroll:end]...)
+	for i, line := range visible {
+		visible[i] = RenderSemanticPlain(line, profileStatus, theme)
+	}
 	scrollbar := scrollbarColumn(len(lines), height, scroll, height)
 	contentBody := joinWithScrollbar(visible, scrollbar, bodyWidth, height)
 

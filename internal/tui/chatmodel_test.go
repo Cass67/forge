@@ -688,7 +688,7 @@ func TestChatModelSlashThemeChangesRenderedViewportStyle(t *testing.T) {
 	}
 }
 
-func TestChatModelViewHeaderStaysCompact(t *testing.T) {
+func TestChatModelViewHeaderUsesCardLayout(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test-model", WorkDir: "/tmp"})
 	m.width = 80
 	m.height = 24
@@ -697,33 +697,26 @@ func TestChatModelViewHeaderStaysCompact(t *testing.T) {
 
 	v := m.View()
 	lines := strings.Split(v, "\n")
-	if len(lines) == 0 {
+	if len(lines) < 5 {
 		t.Fatalf("view missing header: %q", v)
 	}
-	if !strings.Contains(lines[0], "FORGE") || !strings.Contains(lines[0], "test-model") || !strings.Contains(lines[0], "/tmp") {
-		t.Fatalf("view header missing compact identity line: %q", lines[0])
+	header := strings.Join(lines[:5], "\n")
+	if !strings.Contains(header, "FORGE") || !strings.Contains(header, "test-model") || !strings.Contains(header, "/tmp") {
+		t.Fatalf("view header missing card content:\n%s", header)
 	}
-	if strings.Contains(lines[0], "theme:") {
-		t.Fatalf("view header should omit theme chrome: %q", lines[0])
+	if strings.Contains(header, "theme:") {
+		t.Fatalf("view header should omit theme chrome:\n%s", header)
 	}
 }
 
-func TestChatModelViewShowsCompactHeaderIdentity(t *testing.T) {
+func TestChatModelViewUsesRenderedHeaderHeightForLayout(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "copilot/gpt-5", WorkDir: "/tmp"})
-	m.width = 120
-	m.height = 30
-	m.themeID = "light"
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(ChatModel)
 
-	got := m.View()
-	lines := strings.Split(got, "\n")
-	if len(lines) < 1 {
-		t.Fatalf("view missing header: %q", got)
-	}
-	if !strings.Contains(lines[0], "FORGE") || !strings.Contains(lines[0], "copilot/gpt-5") || !strings.Contains(lines[0], "/tmp") {
-		t.Fatalf("header line missing model or workdir: %q", lines[0])
-	}
-	if strings.Contains(lines[0], "theme: light") {
-		t.Fatalf("header line should stay compact: %q", lines[0])
+	wantHeaderHeight := strings.Count(renderStatusHeaderForHeight(m.theme(), m.statusSnapshot(), m.width, m.height), "\n") + 1
+	if got := m.mouseContext().chatY; got != wantHeaderHeight {
+		t.Fatalf("chatY = %d, want rendered header height %d", got, wantHeaderHeight)
 	}
 }
 
@@ -735,6 +728,25 @@ func TestChatModelViewFitsWithinWindowHeight(t *testing.T) {
 	lines := strings.Split(m.View(), "\n")
 	if len(lines) > 24 {
 		t.Fatalf("view has %d lines, want <= 24", len(lines))
+	}
+}
+
+func TestChatModelViewEmptyStateRemovesOldHelperCopy(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "copilot/gpt-5", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	view := strippedLine(m.View())
+	if !strings.Contains(view, "Forge is ready.") {
+		t.Fatalf("expected ready copy in empty state:\n%s", view)
+	}
+	for _, unwanted := range []string{
+		"Ask for a code change, bugfix, or investigation.",
+		"Use /help for commands, /find to search.",
+	} {
+		if strings.Contains(view, unwanted) {
+			t.Fatalf("empty state should omit %q:\n%s", unwanted, view)
+		}
 	}
 }
 
