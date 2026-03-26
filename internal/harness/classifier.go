@@ -3,6 +3,7 @@ package harness
 import (
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -31,6 +32,9 @@ var (
 		"script", "scripts", "test", "tests", "tool", "tools", "helper", "helpers",
 		"function", "functions", "command", "commands", "file", "files", "module", "modules",
 		"handler", "handlers", "workflow", "workflows", "migration", "migrations", "patch", "patches",
+	)
+	inspectScopeArtifactTokens = tokenSet(
+		"file", "files", "module", "modules", "code",
 	)
 	debugTokens = tokenSet(
 		"debug", "bug", "bugs", "broken", "failing", "failure", "failures", "error",
@@ -76,6 +80,11 @@ var (
 	processFollowUpTokens = tokenSet(
 		"skill", "skills", "use", "using", "used", "copy", "yours", "mine",
 	)
+)
+
+var (
+	classifierLexiconWords = buildClassifierLexiconWords()
+	classifierLexiconSet   = tokenSet(classifierLexiconWords...)
 )
 
 func Classify(turn UserTurn, session SessionState) Classification {
@@ -217,9 +226,17 @@ func tokenize(input string) map[string]struct{} {
 }
 
 func tokenList(input string) []string {
-	return strings.FieldsFunc(input, func(r rune) bool {
+	fields := strings.FieldsFunc(input, func(r rune) bool {
 		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
 	})
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if field == "" {
+			continue
+		}
+		out = append(out, canonicalizeClassifierToken(field))
+	}
+	return out
 }
 
 func tokenSet(values ...string) map[string]struct{} {
@@ -228,6 +245,117 @@ func tokenSet(values ...string) map[string]struct{} {
 		out[value] = struct{}{}
 	}
 	return out
+}
+
+func buildClassifierLexiconWords() []string {
+	set := make(map[string]struct{})
+	addSet := func(values map[string]struct{}) {
+		for value := range values {
+			set[value] = struct{}{}
+		}
+	}
+	addWords := func(values ...string) {
+		for _, value := range values {
+			value = strings.TrimSpace(strings.ToLower(value))
+			if value != "" {
+				set[value] = struct{}{}
+			}
+		}
+	}
+
+	addSet(inspectVerbs)
+	addSet(evaluationTokens)
+	addSet(interpretationTokens)
+	addSet(implementTokens)
+	addSet(implementArtifactTokens)
+	addSet(debugTokens)
+	addSet(transformTokens)
+	addSet(followUpPronouns)
+	addSet(continuationHeadTokens)
+	addSet(continuationConfirmTokens)
+	addSet(continuationNegativeTokens)
+	addSet(continuationReferentialTokens)
+	addSet(promptBoundaryTokens)
+	addSet(promptBoundaryReferenceTokens)
+	addSet(promptDisclosureTokens)
+	addSet(promptQualifierTokens)
+	addSet(selfReferenceTokens)
+	addSet(processPromptTokens)
+	addSet(processFollowUpTokens)
+	addWords(
+		"directory", "folder", "tree", "dir", "repo", "repository", "codebase", "project",
+		"file", "files", "script", "scripts", "source", "sources", "module", "modules", "code",
+		"extension", "extensions", "search", "about", "check", "look",
+		"verify", "validation", "validate", "confirm", "prove", "test", "tests", "build", "compile", "compiles", "lint", "syntax", "pass", "passes",
+		"internet", "online", "look", "latest", "recent", "docs", "documentation", "news", "web", "site",
+		"what", "whats", "tell", "know", "made", "make", "good", "okay",
+	)
+	for _, hint := range languageScopeHints {
+		addWords(hint.Language)
+		addWords(hint.Aliases...)
+	}
+
+	words := make([]string, 0, len(set))
+	for word := range set {
+		words = append(words, word)
+	}
+	sort.Strings(words)
+	return words
+}
+
+func canonicalizeClassifierToken(token string) string {
+	if token == "" {
+		return ""
+	}
+	if _, ok := classifierLexiconSet[token]; ok {
+		return token
+	}
+	if len(token) < 4 {
+		return token
+	}
+
+	for _, candidate := range classifierLexiconWords {
+		if len(candidate) < 4 {
+			continue
+		}
+		if token[0] != candidate[0] {
+			continue
+		}
+		if absInt(len(token)-len(candidate)) > 1 {
+			continue
+		}
+		if withinClassifierTypoDistance(token, candidate) {
+			return candidate
+		}
+	}
+	return token
+}
+
+func withinClassifierTypoDistance(a, b string) bool {
+	return withinEditDistanceOne(a, b) || withinAdjacentTransposition(a, b)
+}
+
+func withinAdjacentTransposition(a, b string) bool {
+	if len(a) != len(b) || len(a) < 2 {
+		return false
+	}
+	for i := 0; i < len(a)-1; i++ {
+		if a[i] == b[i] {
+			continue
+		}
+		if a[i] == b[i+1] && a[i+1] == b[i] && a[i+2:] == b[i+2:] {
+			return a[:i] == b[:i]
+		}
+		return false
+	}
+	return false
+}
+
+func absInt(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 func containsAny(tokens, candidates map[string]struct{}) bool {
@@ -297,7 +425,16 @@ func containsImplementationSignal(tokens map[string]struct{}) bool {
 }
 
 func hasExplicitImplementationDeliverable(tokens map[string]struct{}) bool {
-	return containsAny(tokens, implementArtifactTokens)
+	for token := range implementArtifactTokens {
+		if _, ok := tokens[token]; !ok {
+			continue
+		}
+		if _, generic := inspectScopeArtifactTokens[token]; generic {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func wantsEvaluation(tokens map[string]struct{}, lower string) bool {
