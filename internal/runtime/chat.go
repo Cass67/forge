@@ -605,9 +605,14 @@ func runChatTurn(ctx context.Context, a *agent.Agent, kernel *harness.Runner, in
 	if kernel == nil {
 		return a.Run(ctx, input)
 	}
+	if a != nil {
+		a.ResetTurnState()
+	}
 	result, err := kernel.Run(ctx, input)
-	if err == nil && a != nil && result.Step.Kind == harness.StepWorker {
-		a.EmitSyntheticResponse(result.Response)
+	if err == nil && a != nil && strings.TrimSpace(result.Response) != "" {
+		if result.Step.Kind == harness.StepWorker || strings.TrimSpace(a.LastResponse()) == "" {
+			a.EmitSyntheticResponse(result.Response)
+		}
 	}
 	return err
 }
