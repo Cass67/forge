@@ -78,7 +78,7 @@ func TestValidateWorkerResultParsesReaderPayload(t *testing.T) {
 
 func TestValidateWorkerResultWithToolCallsRejectsUngroundedReaderFileEvidence(t *testing.T) {
 	_, err := ValidateWorkerResultWithToolCalls(
-		WorkerReader,
+		WorkerTask{Kind: WorkerReader},
 		`{"status":"complete","evidence":[{"kind":"file","path":"README.md","summary":"README outlines the CLI."}],"coverage":"repo root","gaps":[],"suggested_next":"inspect cmd/forge next"}`,
 		[]agent.ToolCall{
 			{Name: "list_dir", Args: map[string]any{"path": ".", "recursive": false}},
@@ -91,7 +91,7 @@ func TestValidateWorkerResultWithToolCallsRejectsUngroundedReaderFileEvidence(t 
 
 func TestValidateWorkerResultWithToolCallsAcceptsGroundedReaderEvidence(t *testing.T) {
 	result, err := ValidateWorkerResultWithToolCalls(
-		WorkerReader,
+		WorkerTask{Kind: WorkerReader},
 		`{"status":"complete","evidence":[{"kind":"command","summary":"Top-level listing shows the repo layout."},{"kind":"file","path":"README.md","summary":"README outlines the CLI."}],"coverage":"repo root","gaps":[],"suggested_next":"inspect cmd/forge next"}`,
 		[]agent.ToolCall{
 			{Name: "list_dir", Args: map[string]any{"path": ".", "recursive": false}},
@@ -103,6 +103,54 @@ func TestValidateWorkerResultWithToolCallsAcceptsGroundedReaderEvidence(t *testi
 	}
 	if result.Status != ObservationComplete {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestValidateWorkerResultWithToolCallsRejectsRepositoryWalkthroughWithoutRepresentativeFileEvidence(t *testing.T) {
+	_, err := ValidateWorkerResultWithToolCalls(
+		WorkerTask{
+			Kind:     WorkerReader,
+			TopicKey: "workspace:repository",
+			Context:  "inspect one or two representative files such as README.md when present",
+		},
+		`{"status":"complete","evidence":[{"kind":"command","summary":"Top-level listing shows the repo layout."}],"coverage":"repo root","gaps":["No representative files inspected yet."],"suggested_next":"read README.md"}`,
+		[]agent.ToolCall{
+			{Name: "list_dir", Args: map[string]any{"path": ".", "recursive": false}},
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "representative file evidence") {
+		t.Fatalf("expected representative file evidence error, got %v", err)
+	}
+}
+
+func TestValidateWorkerResultWithToolCallsDowngradesUngroundedExtraFileEvidenceWhenRepresentativeFileIsGrounded(t *testing.T) {
+	result, err := ValidateWorkerResultWithToolCalls(
+		WorkerTask{
+			Kind:     WorkerReader,
+			TopicKey: "workspace:repository",
+			Context:  "inspect one or two representative files such as README.md when present",
+		},
+		`{"status":"complete","evidence":[{"kind":"command","summary":"Top-level listing shows the repo layout."},{"kind":"file","path":"README.md","summary":"README identifies Forge as a terminal coding assistant."},{"kind":"file","path":"go.mod","summary":"go.mod confirms this is a Go module."}],"coverage":"repo root plus README","gaps":[],"suggested_next":"none"}`,
+		[]agent.ToolCall{
+			{Name: "list_dir", Args: map[string]any{"path": ".", "recursive": false}},
+			{Name: "read_file", Args: map[string]any{"path": "README.md", "start_line": 1, "end_line": 40}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("expected normalization to salvage extra file mention, got %v", err)
+	}
+	reader, ok := result.Parsed.(ReaderResult)
+	if !ok {
+		t.Fatalf("parsed = %#v", result.Parsed)
+	}
+	if len(reader.Evidence) != 3 {
+		t.Fatalf("evidence = %#v", reader.Evidence)
+	}
+	if reader.Evidence[2].Kind != "note" {
+		t.Fatalf("expected ungrounded extra file evidence to downgrade to note, got %#v", reader.Evidence[2])
+	}
+	if reader.Evidence[2].Path != "" {
+		t.Fatalf("expected downgraded note evidence path to be cleared, got %#v", reader.Evidence[2])
 	}
 }
 

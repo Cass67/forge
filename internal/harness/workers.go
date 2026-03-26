@@ -88,16 +88,19 @@ func (m *Manager) Execute(ctx context.Context, task WorkerTask) (Observation, er
 	}
 
 	var raw string
+	var validationErr error
+	var cumulativeCalls []agent.ToolCall
 	for attempt := 0; attempt < 3; attempt++ {
 		prompt := buildWorkerPrompt(task)
 		if attempt > 0 {
-			prompt = workerRetryPrompt(task.Kind, raw)
+			prompt = workerRetryPrompt(task, validationErr)
 		}
 		if err := worker.Run(ctx, prompt); err != nil {
 			return blockedWorkerObservation(task, err, skillRuntime.UseRecords())
 		}
 		raw = worker.LastResponse()
-		validated, err := ValidateWorkerResultWithToolCalls(task.Kind, raw, worker.LastToolCalls())
+		cumulativeCalls = append(cumulativeCalls, worker.LastToolCalls()...)
+		validated, err := ValidateWorkerResultWithToolCalls(task, raw, cumulativeCalls)
 		if err == nil {
 			return Observation{
 				Status:    validated.Status,
@@ -107,6 +110,7 @@ func (m *Manager) Execute(ctx context.Context, task WorkerTask) (Observation, er
 				SkillUses: skillRuntime.UseRecords(),
 			}, nil
 		}
+		validationErr = err
 	}
 
 	err := fmt.Errorf("%s produced invalid structured output after retries", task.Kind)
@@ -162,13 +166,23 @@ func buildWorkerPrompt(task WorkerTask) string {
 	return sb.String()
 }
 
-func workerRetryPrompt(kind WorkerKind, raw string) string {
-	return strings.TrimSpace(fmt.Sprintf(
-		"Your previous %s output was invalid for the runtime contract.\n"+
-			"Re-emit exactly one valid JSON object and no prose outside it.\n"+
-			"Previous output:\n%s",
-		kind, strings.TrimSpace(raw),
-	))
+func workerRetryPrompt(task WorkerTask, cause error) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Your previous %s output was invalid for the runtime contract.\n", task.Kind)
+	if cause != nil {
+		fmt.Fprintf(&sb, "Validation error: %s\n", strings.TrimSpace(cause.Error()))
+	}
+	sb.WriteString("Return to the strict worker state machine:\n")
+	sb.WriteString("- if you still need more information or work, emit exactly one tool call and nothing else\n")
+	sb.WriteString("- if you are fully done, emit exactly one valid JSON object and nothing else\n")
+	if task.Kind == WorkerReader {
+		sb.WriteString("- do not cite file evidence unless you actually called read_file on that exact path\n")
+	}
+	if task.Kind == WorkerReader && readerTaskRequiresRepresentativeFile(task) {
+		sb.WriteString("- this walkthrough is not complete until you inspect at least one representative file with read_file and include grounded file evidence\n")
+	}
+	sb.WriteString("Do not repeat the previous invalid format.\n")
+	return strings.TrimSpace(sb.String())
 }
 
 func applyWorkerSkillContext(worker *agent.Agent, runtime *skills.Runtime, task WorkerTask) error {

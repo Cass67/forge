@@ -223,3 +223,27 @@ func TestParseStructuredDelegateEnvelopeIsNotToolCall(t *testing.T) {
 		t.Fatalf("visible = %q, want original input", visible)
 	}
 }
+
+func TestNormalizeStrictWorkerTurnForLoggingDropsTrailingStructuredLeak(t *testing.T) {
+	input := "<tool_call>\n{\"name\":\"list_dir\",\"args\":{\"path\":\".\",\"recursive\":false}}\n</tool_call><tool_call>\n{\"name\":\"read_file\",\"args\":{\"path\":\"README.md\",\"start_line\":1,\"end_line\":40}}\n</tool_call>{\"status\":\"complete\"}"
+	got, changed := NormalizeStrictWorkerTurnForLogging(input)
+	if !changed {
+		t.Fatal("expected normalization to report a change")
+	}
+	want := "<tool_call>\n{\"args\":{\"path\":\".\",\"recursive\":false},\"name\":\"list_dir\"}\n</tool_call>"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestNormalizeStrictWorkerTurnForLoggingSalvagesMalformedLeadingToolCall(t *testing.T) {
+	input := "<tool_call>{\"name\":\"list_dir\",\"args\":{\"path\":\".\",\"recursive\":false}}></tool_call><tool_call>{\"name\":\"read_file\",\"args\":{\"path\":\"README.md\"}}{\"status\":\"complete\"}"
+	got, changed := NormalizeStrictWorkerTurnForLogging(input)
+	if !changed {
+		t.Fatal("expected malformed worker turn to normalize")
+	}
+	want := "<tool_call>\n{\"args\":{\"path\":\".\",\"recursive\":false},\"name\":\"list_dir\"}\n</tool_call>"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
