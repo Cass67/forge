@@ -45,9 +45,14 @@ func (s *Session) Apply(class Classification, obs Observation) {
 	} else {
 		s.state.LastMetaTurn = 0
 	}
+	s.state.PendingAction = PendingAction{}
 
 	if obs.Status != ObservationComplete {
 		return
+	}
+
+	if pending := finalizePendingAction(obs.PendingAction, s.state.Turn); !pending.IsZero() {
+		s.state.PendingAction = pending
 	}
 
 	topic := strings.TrimSpace(obs.TopicKey)
@@ -66,6 +71,22 @@ func (s *Session) Apply(class Classification, obs Observation) {
 		TopicKey: topic,
 		Summary:  firstNonEmpty(strings.TrimSpace(obs.Summary), strings.TrimSpace(obs.Response)),
 	}
+}
+
+func finalizePendingAction(action PendingAction, turn int) PendingAction {
+	if action.IsZero() {
+		return PendingAction{}
+	}
+	if action.SetAtTurn <= 0 {
+		action.SetAtTurn = turn
+	}
+	action.TaskText = strings.TrimSpace(action.TaskText)
+	action.TopicKey = strings.TrimSpace(action.TopicKey)
+	action.ResponsePostlude = strings.TrimSpace(action.ResponsePostlude)
+	if !action.CanStayLocal && action.Family != FamilyResearch {
+		action.CanStayLocal = true
+	}
+	return action
 }
 
 func firstNonEmpty(values ...string) string {

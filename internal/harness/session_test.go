@@ -110,3 +110,56 @@ func TestSessionApplyTracksRecentMetaIntent(t *testing.T) {
 		t.Fatalf("expected meta state to expire after one turn: %#v", state)
 	}
 }
+
+func TestSessionApplyStoresPendingAction(t *testing.T) {
+	session := NewSession()
+	_ = session.BeginTurn("how can you tell me if there are improvements to be made")
+	session.Apply(Classification{
+		Family:   FamilyAnswer,
+		TopicKey: "workspace:repository",
+	}, Observation{
+		Status:   ObservationComplete,
+		Response: "I can inspect the repo and give you a prioritized list.",
+		PendingAction: PendingAction{
+			SetAtTurn:       1,
+			Family:          FamilyInspect,
+			TopicKey:        "workspace:repository",
+			TaskText:        "review the whole repo for improvement opportunities",
+			WantsEvaluation: true,
+		},
+	})
+
+	state := session.Snapshot()
+	if !state.HasPendingAction() {
+		t.Fatalf("expected pending action: %#v", state)
+	}
+	if state.PendingAction.TaskText != "review the whole repo for improvement opportunities" {
+		t.Fatalf("pending action = %#v", state.PendingAction)
+	}
+}
+
+func TestSessionPendingActionExpiresAfterOneTurn(t *testing.T) {
+	session := NewSession()
+	_ = session.BeginTurn("how can you tell me if there are improvements to be made")
+	session.Apply(Classification{
+		Family:   FamilyAnswer,
+		TopicKey: "workspace:repository",
+	}, Observation{
+		Status:   ObservationComplete,
+		Response: "I can inspect the repo and give you a prioritized list.",
+		PendingAction: PendingAction{
+			SetAtTurn:       1,
+			Family:          FamilyInspect,
+			TopicKey:        "workspace:repository",
+			TaskText:        "review the whole repo for improvement opportunities",
+			WantsEvaluation: true,
+		},
+	})
+	_ = session.BeginTurn("thanks")
+	_ = session.BeginTurn("later")
+
+	state := session.Snapshot()
+	if state.HasPendingAction() {
+		t.Fatalf("expected pending action to expire after one turn: %#v", state)
+	}
+}
