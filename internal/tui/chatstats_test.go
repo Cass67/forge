@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"forge/internal/codexusage"
 	"forge/internal/copilot"
 	"forge/internal/llm"
@@ -118,6 +120,32 @@ func TestBuildStatsOverlayShowsRequestModeAndMetadata(t *testing.T) {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("rendered overlay missing %q: %s", want, rendered)
 		}
+	}
+}
+
+func TestRenderStatusHeaderUsesAppBackground(t *testing.T) {
+	withTrueColorProfile(t)
+
+	theme := chatTheme{
+		AppBG:         lipgloss.Color("#112233"),
+		HeaderBG:      lipgloss.Color("#445566"),
+		HeaderFG:      lipgloss.Color("#ddeeff"),
+		AccentPrimary: lipgloss.Color("#88aaff"),
+		Text:          lipgloss.Color("#eef2f7"),
+		TextDim:       lipgloss.Color("#8b97a8"),
+		Border:        lipgloss.Color("#334455"),
+	}
+
+	rendered := renderStatusHeader(theme, chatStatusData{
+		Model:   "openai/gpt-5",
+		WorkDir: "/tmp/work",
+	}, 80)
+
+	if strings.Contains(rendered, ansiBackground(theme.HeaderBG)) {
+		t.Fatalf("header should not use header background as the surface fill: %q", rendered)
+	}
+	if !strings.Contains(rendered, ansiBackground(theme.AppBG)) {
+		t.Fatalf("header missing app background fill: %q", rendered)
 	}
 }
 

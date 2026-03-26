@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"forge/internal/agent"
 	"forge/internal/harness"
 	"forge/internal/llm"
 	"forge/internal/logger"
@@ -163,9 +164,20 @@ func (d *chatDebugDriver) Stream(ctx context.Context, messages []llm.Message, ou
 	}
 	err := <-errCh
 	if d.rec != nil {
+		responseText := response.String()
+		normalized := false
+		if isStrictTurnRequest(messages) {
+			if normalizedText, changed := agent.NormalizeStrictWorkerTurnForLogging(responseText); changed {
+				responseText = normalizedText
+				normalized = true
+			}
+		}
 		fields := map[string]any{
 			"driver":   d.inner.Name(),
-			"response": response.String(),
+			"response": responseText,
+		}
+		if normalized {
+			fields["response_normalized"] = true
 		}
 		if err != nil {
 			fields["error"] = err.Error()
@@ -202,4 +214,16 @@ func (d *chatDebugDriver) ResetConversation() {
 	if resetter, ok := d.inner.(llm.ConversationResetter); ok {
 		resetter.ResetConversation()
 	}
+}
+
+func isStrictTurnRequest(messages []llm.Message) bool {
+	for _, msg := range messages {
+		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "You are forge's hidden worker runtime.") {
+			return true
+		}
+		if msg.Role == llm.RoleUser && strings.Contains(msg.Content, "HARNESS MODE: inspect") {
+			return true
+		}
+	}
+	return false
 }

@@ -141,21 +141,25 @@ func ValidateWorkerResult(kind WorkerKind, raw string) (ValidatedWorkerResult, e
 	}
 }
 
-func ValidateWorkerResultWithToolCalls(kind WorkerKind, raw string, calls []agent.ToolCall) (ValidatedWorkerResult, error) {
-	validated, err := ValidateWorkerResult(kind, raw)
+func ValidateWorkerResultWithToolCalls(task WorkerTask, raw string, calls []agent.ToolCall) (ValidatedWorkerResult, error) {
+	validated, err := ValidateWorkerResult(task.Kind, raw)
 	if err != nil {
 		return ValidatedWorkerResult{}, err
 	}
-	if kind != WorkerReader {
+	if task.Kind != WorkerReader {
 		return validated, nil
 	}
 	result, ok := validated.Parsed.(ReaderResult)
 	if !ok {
 		return ValidatedWorkerResult{}, fmt.Errorf("reader result type mismatch")
 	}
-	if err := validateReaderGrounding(result, calls); err != nil {
+	normalized, err := normalizeReaderGrounding(task, result, calls)
+	if err != nil {
 		return ValidatedWorkerResult{}, err
 	}
+	validated.Parsed = normalized
+	validated.Response = summarizeReaderResult(normalized)
+	validated.Summary = normalized.Coverage
 	return validated, nil
 }
 
@@ -222,9 +226,9 @@ func validateReaderResult(result ReaderResult) error {
 	return nil
 }
 
-func validateReaderGrounding(result ReaderResult, calls []agent.ToolCall) error {
+func normalizeReaderGrounding(task WorkerTask, result ReaderResult, calls []agent.ToolCall) (ReaderResult, error) {
 	if workerStatus(result.Status) != ObservationComplete {
-		return nil
+		return result, nil
 	}
 
 	readFiles := make(map[string]struct{})
@@ -245,21 +249,66 @@ func validateReaderGrounding(result ReaderResult, calls []agent.ToolCall) error 
 		}
 	}
 	if !hasConcreteInspectionCall {
-		return fmt.Errorf("reader complete result requires grounded inspection tool calls")
+		return ReaderResult{}, fmt.Errorf("reader complete result requires grounded inspection tool calls")
 	}
-	for _, evidence := range result.Evidence {
+	normalized := result
+	if len(result.Evidence) > 0 {
+		normalized.Evidence = append([]ReaderEvidence(nil), result.Evidence...)
+	}
+	for i, evidence := range normalized.Evidence {
 		switch evidence.Kind {
 		case "file":
 			if _, ok := readFiles[normalizeEvidencePath(evidence.Path)]; !ok {
-				return fmt.Errorf("reader file evidence requires a matching read_file call for %q", strings.TrimSpace(evidence.Path))
+				if hasCommandGrounding && readerResultHasGroundedFileEvidence(normalized, readFiles) {
+					normalized.Evidence[i].Kind = "note"
+					normalized.Evidence[i].Path = ""
+					continue
+				}
+				return ReaderResult{}, fmt.Errorf("reader file evidence requires a matching read_file call for %q", strings.TrimSpace(evidence.Path))
 			}
 		case "command":
 			if !hasCommandGrounding {
-				return fmt.Errorf("reader command evidence requires at least one matching inspection command call")
+				return ReaderResult{}, fmt.Errorf("reader command evidence requires at least one matching inspection command call")
 			}
 		}
 	}
-	return nil
+	if readerTaskRequiresRepresentativeFile(task) && !readerResultHasGroundedFileEvidence(normalized, readFiles) {
+		return ReaderResult{}, fmt.Errorf("reader walkthrough complete result requires representative file evidence")
+	}
+	return normalized, nil
+}
+
+func readerTaskRequiresRepresentativeFile(task WorkerTask) bool {
+	if task.Kind != WorkerReader {
+		return false
+	}
+	topic := strings.TrimSpace(task.TopicKey)
+	if strings.HasPrefix(topic, "workspace:repository") || strings.HasPrefix(topic, "workspace:directory") {
+		return true
+	}
+	context := strings.ToLower(strings.TrimSpace(task.Context))
+	return strings.Contains(context, "representative file")
+}
+
+func readerResultHasFileEvidence(result ReaderResult) bool {
+	for _, evidence := range result.Evidence {
+		if strings.TrimSpace(evidence.Kind) == "file" && normalizeEvidencePath(evidence.Path) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func readerResultHasGroundedFileEvidence(result ReaderResult, readFiles map[string]struct{}) bool {
+	for _, evidence := range result.Evidence {
+		if strings.TrimSpace(evidence.Kind) != "file" {
+			continue
+		}
+		if _, ok := readFiles[normalizeEvidencePath(evidence.Path)]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func validateEditorResult(result EditorResult) error {

@@ -3165,6 +3165,33 @@ func TestChatModelViewAddsSpacerBeforeComposer(t *testing.T) {
 	}
 }
 
+func TestChatModelViewPaintsSpacerWithAppBackground(t *testing.T) {
+	withTrueColorProfile(t)
+
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
+	m = updated.(ChatModel)
+	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Forge • 12:00:00", Content: "latest transcript line"})
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+	promptLine := -1
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.Contains(strippedLine(lines[i]), "Prompt") {
+			promptLine = i
+			break
+		}
+	}
+	if promptLine <= 0 {
+		t.Fatalf("expected composer prompt line, got:\n%s", strippedLine(view))
+	}
+
+	wantBG := ansiBackground(m.theme().AppBG)
+	if !strings.Contains(lines[promptLine-1], wantBG) {
+		t.Fatalf("expected spacer line to use app background %q, got %q", wantBG, lines[promptLine-1])
+	}
+}
+
 func TestProgressSlotRendersAboveComposerWithoutLeakingIntoTranscript(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})

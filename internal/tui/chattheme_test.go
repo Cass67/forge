@@ -35,11 +35,14 @@ func TestChatThemeDefaultUsesGraphiteMutedBluePalette(t *testing.T) {
 	if !ok {
 		t.Fatal("missing default theme")
 	}
-	if theme.AppBG != lipgloss.Color("#0b0d10") {
+	if theme.AppBG != lipgloss.Color("#10141a") {
 		t.Fatalf("app background = %q", theme.AppBG)
 	}
-	if theme.PanelBG != lipgloss.Color("#10141a") {
+	if theme.PanelBG != theme.AppBG {
 		t.Fatalf("panel background = %q", theme.PanelBG)
+	}
+	if theme.HeaderBG != theme.AppBG {
+		t.Fatalf("header background = %q", theme.HeaderBG)
 	}
 	if theme.Text != lipgloss.Color("#e6ebf2") {
 		t.Fatalf("text = %q", theme.Text)
@@ -52,9 +55,6 @@ func TestChatThemeDefaultUsesGraphiteMutedBluePalette(t *testing.T) {
 	}
 	if theme.Border != lipgloss.Color("#26303b") {
 		t.Fatalf("border = %q", theme.Border)
-	}
-	if theme.HeaderBG != lipgloss.Color("#0e1217") {
-		t.Fatalf("header background = %q", theme.HeaderBG)
 	}
 	if theme.BorderFocus != theme.AccentPrimary {
 		t.Fatalf("expected focus border to match primary accent, got focus=%q primary=%q", theme.BorderFocus, theme.AccentPrimary)

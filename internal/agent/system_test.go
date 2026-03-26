@@ -43,3 +43,38 @@ func TestBuildSystemPrompt(t *testing.T) {
 		t.Error("missing act-first guidance")
 	}
 }
+
+func TestBuildWorkerSystemPromptUsesStrictSingleToolContract(t *testing.T) {
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{Name: "read_file", Description: "Read a file"})
+
+	prompt := BuildWorkerSystemPrompt("/home/user/project", reg, "reader", nil)
+
+	if !strings.Contains(prompt, "/home/user/project") {
+		t.Error("missing workDir")
+	}
+	if !strings.Contains(prompt, "read_file") {
+		t.Error("missing tool description")
+	}
+	if strings.Contains(prompt, "If you give a short progress update") {
+		t.Error("worker prompt should not inherit chat progress-update guidance")
+	}
+	if strings.Contains(prompt, "Continue working after progress updates") {
+		t.Error("worker prompt should not inherit chat progress guidance")
+	}
+	if strings.Contains(prompt, "You may call multiple tools") {
+		t.Error("worker prompt should not advertise multi-tool turns")
+	}
+	if !strings.Contains(prompt, "Call at most one tool in a single response") {
+		t.Error("worker prompt should require single-tool turns")
+	}
+	if !strings.Contains(prompt, "Every non-final turn must be exactly one valid <tool_call>...</tool_call> block and nothing else") {
+		t.Error("worker prompt should require tool-only non-final turns")
+	}
+	if !strings.Contains(prompt, "Never mix a tool call with JSON, analysis, status text, or prose in the same response") {
+		t.Error("worker prompt should forbid mixed tool-call responses")
+	}
+	if !strings.Contains(prompt, "Seeing a file name in list_dir or glob does not count as inspecting that file") {
+		t.Error("worker prompt should distinguish filename discovery from read_file evidence")
+	}
+}

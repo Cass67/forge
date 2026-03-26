@@ -104,10 +104,18 @@ func (r *Registry) Filter(allowed []string) *Registry {
 
 // Describe formats all tools for injection into the system prompt.
 func (r *Registry) Describe() string {
-	return r.describeTools(r.All(), true)
+	return r.describeTools(r.All(), true, false)
 }
 
 func (r *Registry) DescribeForPrompt() string {
+	return r.describeForPrompt(false)
+}
+
+func (r *Registry) DescribeForSingleToolPrompt() string {
+	return r.describeForPrompt(true)
+}
+
+func (r *Registry) describeForPrompt(singleToolTurns bool) string {
 	tools := make([]Tool, 0, len(r.order))
 	for _, name := range r.order {
 		tool := r.tools[name]
@@ -118,7 +126,7 @@ func (r *Registry) DescribeForPrompt() string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(r.describeTools(tools, false))
+	sb.WriteString(r.describeTools(tools, false, singleToolTurns))
 	if len(r.hiddenToolNames()) > 0 {
 		sb.WriteString("\nSpecialized tools are hidden by default to save context. Use tool_help(query) to reveal only what you need.\n")
 	}
@@ -156,7 +164,7 @@ func (r *Registry) DescribeNamedTools(names []string) string {
 			tools = append(tools, tool)
 		}
 	}
-	return r.describeTools(tools, true)
+	return r.describeTools(tools, true, false)
 }
 
 func (r *Registry) hiddenToolNames() []string {
@@ -169,7 +177,7 @@ func (r *Registry) hiddenToolNames() []string {
 	return names
 }
 
-func (r *Registry) describeTools(tools []Tool, detailed bool) string {
+func (r *Registry) describeTools(tools []Tool, detailed bool, singleToolTurns bool) string {
 	var sb strings.Builder
 	sb.WriteString("You have access to the following tools:\n\n")
 	for _, t := range sortToolsByName(tools) {
@@ -196,9 +204,13 @@ func (r *Registry) describeTools(tools []Tool, detailed bool) string {
 {"name": "tool_name", "args": {"param": "value"}}
 </tool_call>
 
-You may call multiple tools. After tool results are returned, continue your work.
-Wait for results before making decisions based on them.
 `)
+	if singleToolTurns {
+		sb.WriteString("Call at most one tool in a single response. After tool results are returned, continue your work.\n")
+	} else {
+		sb.WriteString("You may call multiple tools. After tool results are returned, continue your work.\n")
+	}
+	sb.WriteString("Wait for results before making decisions based on them.\n")
 	return sb.String()
 }
 
