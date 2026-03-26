@@ -334,6 +334,7 @@ func RunChatLive(setup *ChatSetup) {
 	liveCfg := tui.ChatLiveConfig{
 		Model:           setup.ChatModel,
 		WorkDir:         setup.WorkDir,
+		DebugLogPath:    setup.DebugLog,
 		SurfaceKind:     surfaceKind,
 		DebugEnabled:    debugEnabled,
 		AvailableModels: setup.Available,

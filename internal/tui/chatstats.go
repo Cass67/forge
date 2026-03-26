@@ -302,8 +302,13 @@ func joinStatsParts(parts ...string) string {
 }
 
 func renderStatusHeader(theme chatTheme, data chatStatusData, width int) string {
-	brandStyle := lipgloss.NewStyle().
-		Foreground(theme.AccentPrimary).
+	pillStyle := lipgloss.NewStyle().
+		Foreground(theme.HeaderBG).
+		Background(theme.AccentPrimary).
+		Bold(true).
+		Padding(0, 1)
+	modelStyle := lipgloss.NewStyle().
+		Foreground(theme.Text).
 		Bold(true)
 	metaStyle := lipgloss.NewStyle().
 		Foreground(theme.TextDim)
@@ -318,16 +323,21 @@ func renderStatusHeader(theme chatTheme, data chatStatusData, width int) string 
 		if part == "" {
 			continue
 		}
-		if idx == 0 {
-			parts = append(parts, brandStyle.Render(part))
-			continue
+		switch idx {
+		case 0:
+			parts = append(parts, pillStyle.Render(strings.ToUpper(part)))
+		case 1:
+			parts = append(parts, modelStyle.Render(part))
+		default:
+			parts = append(parts, metaStyle.Render(part))
 		}
-		parts = append(parts, metaStyle.Render(part))
 	}
 	line := strings.Join(parts, sep)
 	return lipgloss.NewStyle().
-		Background(theme.AppBG).
-		Width(width).
+		Background(theme.HeaderBG).
+		Foreground(theme.HeaderFG).
+		Width(max(1, width-2)).
+		Padding(0, 1).
 		Render(line)
 }
 

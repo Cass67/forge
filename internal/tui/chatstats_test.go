@@ -173,7 +173,7 @@ func TestRenderStatusHeaderUsesSingleCompactLine(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("header lines = %d, want 1: %q", len(lines), rendered)
 	}
-	if !strings.Contains(lines[0], "forge • oca/OpenAI GPT 5.4 • /Users/mcassidy/git/work/Cerner/managability") {
+	if !strings.Contains(lines[0], "FORGE") || !strings.Contains(lines[0], "oca/OpenAI GPT 5.4") || !strings.Contains(lines[0], "/Users/mcassidy/git/work/Cerner/managability") {
 		t.Fatalf("header missing compact identity line: %q", lines[0])
 	}
 	for _, unwanted := range []string{"theme:", "ready", "session", "last"} {

@@ -75,7 +75,8 @@ func (c *ChatComposer) deleteBackward() {
 }
 
 func (c ChatComposer) Height(width int) int {
-	return len(c.visibleLines(width))
+	innerWidth := max(1, width-2)
+	return len(c.visibleLines(innerWidth)) + 1
 }
 
 func (c ChatComposer) visibleLines(width int) []string {
@@ -96,23 +97,52 @@ func (c ChatComposer) Render(theme chatTheme, width int) string {
 	if width <= 0 {
 		return ""
 	}
-	lines := c.visibleLines(width)
-	out := make([]string, 0, len(lines))
-	out = append(out, lipgloss.NewStyle().
-		Foreground(theme.TextDim).
-		Bold(true).
-		Width(width).
-		Render(lines[0]))
+	innerWidth := max(1, width-2)
+	bodyWidth := max(1, innerWidth-2)
+	bodyLines := c.visibleBodyLines(bodyWidth)
 
-	bodyStyle := lipgloss.NewStyle().
-		Foreground(theme.Text).
-		Width(width)
-	if c.text == "" {
-		bodyStyle = bodyStyle.Foreground(theme.TextDim)
+	topLabel := " Prompt "
+	topFill := strings.Repeat("─", max(0, innerWidth-len([]rune(topLabel))))
+	top := lipgloss.JoinHorizontal(
+		lipgloss.Left,
+		lipgloss.NewStyle().Foreground(theme.BorderFocus).Background(theme.PanelBG).Render("╭"),
+		lipgloss.NewStyle().Foreground(theme.TextDim).Background(theme.PanelBG).Bold(true).Render(topLabel),
+		lipgloss.NewStyle().Foreground(theme.BorderFocus).Background(theme.PanelBG).Render(topFill+"╮"),
+	)
+
+	out := make([]string, 0, len(bodyLines)+2)
+	out = append(out, top)
+
+	for i, line := range bodyLines {
+		prefix := "> "
+		if i > 0 {
+			prefix = "  "
+		}
+		text := fitCell(prefix+line, innerWidth)
+		bodyStyle := lipgloss.NewStyle().
+			Foreground(theme.Text).
+			Background(theme.PanelBG).
+			Render(text)
+		if c.text == "" {
+			bodyStyle = lipgloss.NewStyle().
+				Foreground(theme.TextDim).
+				Background(theme.PanelBG).
+				Render(text)
+		}
+		row := lipgloss.JoinHorizontal(
+			lipgloss.Left,
+			lipgloss.NewStyle().Foreground(theme.Border).Background(theme.PanelBG).Render("│"),
+			bodyStyle,
+			lipgloss.NewStyle().Foreground(theme.Border).Background(theme.PanelBG).Render("│"),
+		)
+		out = append(out, row)
 	}
-	for _, line := range lines[1:] {
-		out = append(out, bodyStyle.Render(line))
-	}
+
+	bottom := lipgloss.NewStyle().
+		Foreground(theme.Border).
+		Background(theme.PanelBG).
+		Render("╰" + strings.Repeat("─", innerWidth) + "╯")
+	out = append(out, bottom)
 	return strings.Join(out, "\n")
 }
 

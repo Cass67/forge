@@ -700,7 +700,7 @@ func TestChatModelViewHeaderStaysCompact(t *testing.T) {
 	if len(lines) == 0 {
 		t.Fatalf("view missing header: %q", v)
 	}
-	if !strings.Contains(lines[0], "forge • test-model • /tmp") {
+	if !strings.Contains(lines[0], "FORGE") || !strings.Contains(lines[0], "test-model") || !strings.Contains(lines[0], "/tmp") {
 		t.Fatalf("view header missing compact identity line: %q", lines[0])
 	}
 	if strings.Contains(lines[0], "theme:") {
@@ -719,7 +719,7 @@ func TestChatModelViewShowsCompactHeaderIdentity(t *testing.T) {
 	if len(lines) < 1 {
 		t.Fatalf("view missing header: %q", got)
 	}
-	if !strings.Contains(lines[0], "copilot/gpt-5") || !strings.Contains(lines[0], "/tmp") {
+	if !strings.Contains(lines[0], "FORGE") || !strings.Contains(lines[0], "copilot/gpt-5") || !strings.Contains(lines[0], "/tmp") {
 		t.Fatalf("header line missing model or workdir: %q", lines[0])
 	}
 	if strings.Contains(lines[0], "theme: light") {
@@ -3123,15 +3123,19 @@ func TestChatModelEnterWhileBusyDoesNotSubmitNewTurn(t *testing.T) {
 	}
 }
 
-func TestChatModelViewUsesFlatComposer(t *testing.T) {
+func TestChatModelViewUsesBoxedComposer(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
 	m = updated.(ChatModel)
 
-	lines := strings.Split(strippedLine(m.View()), "\n")
-	tail := strings.Join(lines[max(0, len(lines)-6):], "\n")
-	if strings.ContainsAny(tail, "│╭╮╰╯") {
-		t.Fatalf("expected flat composer, got:\n%s", tail)
+	rawLines := strings.Split(m.View(), "\n")
+	lines := make([]string, 0, len(rawLines))
+	for _, line := range rawLines {
+		lines = append(lines, strippedLine(line))
+	}
+	tail := strings.Join(lines[max(0, len(lines)-8):], "\n")
+	if !strings.ContainsAny(tail, "│╭╮╰╯") {
+		t.Fatalf("expected boxed composer, got:\n%s", tail)
 	}
 	if !strings.Contains(tail, "Prompt") || !strings.Contains(tail, "Type a message or /help") {
 		t.Fatalf("expected prompt label and placeholder, got:\n%s", tail)
