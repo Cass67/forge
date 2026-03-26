@@ -14,7 +14,8 @@ func TestDefaultChatViewSingleColumnLayout(t *testing.T) {
 	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Forge • 12:00:00", Content: "latest transcript line"})
 	setToolsContent(&m, "tool output should stay hidden")
 
-	view := strippedLine(m.View())
+	rawView := m.View()
+	view := strippedLine(rawView)
 	if !strings.Contains(view, "latest transcript line") {
 		t.Fatalf("expected transcript content in default view, got:\n%s", view)
 	}
@@ -26,5 +27,17 @@ func TestDefaultChatViewSingleColumnLayout(t *testing.T) {
 	}
 	if strings.ContainsAny(view, "╭╮╰╯") {
 		t.Fatalf("default view should stay single-column without pane chrome, got:\n%s", view)
+	}
+
+	lines := strings.Split(rawView, "\n")
+	lastNonEmpty := ""
+	for i := len(lines) - 1; i >= 0; i-- {
+		if trimmed := strings.TrimSpace(strippedLine(lines[i])); trimmed != "" {
+			lastNonEmpty = trimmed
+			break
+		}
+	}
+	if !strings.Contains(lastNonEmpty, "Type a message or /help") {
+		t.Fatalf("expected composer to be the bottom-most rendered element, got last line %q in:\n%s", lastNonEmpty, view)
 	}
 }

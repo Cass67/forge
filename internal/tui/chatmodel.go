@@ -169,7 +169,7 @@ const (
 const chatHeaderHeight = 1
 const chatPaneBorderHeight = 0
 const chatComposerGapHeight = 1
-const chatStatusHeight = 1
+const chatStatusHeight = 0
 
 type subAgentSummary struct {
 	role              string
@@ -4149,31 +4149,11 @@ func (m ChatModel) View() string {
 		inputBox = m.composer().Render(theme, m.width)
 	}
 
-	// Status bar with spinner and flash
-	var statusText string
-	if m.flash != "" {
-		statusText = m.flash
-	} else if m.busy {
-		spinnerChars := []rune("⠋⠙⠹⠸⠼⠴⠦⠧")
-		if m.activeSubAgent != "" {
-			statusText = fmt.Sprintf("%c %s working...", spinnerChars[m.spinnerFrame], m.activeSubAgent)
-		} else {
-			statusText = fmt.Sprintf("%c running...", spinnerChars[m.spinnerFrame])
-		}
-	} else {
-		statusText = "ready • /help for commands"
-	}
-	statusStyle := lipgloss.NewStyle().
-		Foreground(theme.TextDim).
-		Width(m.width)
-	statusBar := statusStyle.Render(statusText)
-
 	base := lipgloss.JoinVertical(lipgloss.Left,
 		header,
 		chatPane,
 		liveRegion,
 		inputBox,
-		statusBar,
 	)
 	if m.helpVisible {
 		return m.renderHelpOverlay()
