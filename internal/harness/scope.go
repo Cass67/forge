@@ -129,14 +129,37 @@ func inferTargetGlobFromText(task string) string {
 }
 
 func inferLanguageScopeHint(task string) (languageScopeHint, bool) {
+	tokens := tokenize(task)
 	for _, hint := range languageScopeHints {
 		for _, alias := range hint.Aliases {
-			if hasScopedAliasPhrase(task, alias) {
+			if hasScopedAliasPhrase(task, alias) || hasLooseScopedAliasTokens(tokens, alias) {
 				return hint, true
 			}
 		}
 	}
 	return languageScopeHint{}, false
+}
+
+func hasLooseScopedAliasTokens(tokens map[string]struct{}, alias string) bool {
+	if len(tokens) == 0 {
+		return false
+	}
+	if _, ok := tokens[alias]; !ok {
+		return false
+	}
+	if hasToken(tokens, "file") || hasToken(tokens, "files") ||
+		hasToken(tokens, "script") || hasToken(tokens, "scripts") ||
+		hasToken(tokens, "source") || hasToken(tokens, "sources") ||
+		hasToken(tokens, "module") || hasToken(tokens, "modules") ||
+		hasToken(tokens, "code") {
+		return true
+	}
+	for token := range tokens {
+		if withinEditDistanceOne(token, "extension") || withinEditDistanceOne(token, "extensions") {
+			return true
+		}
+	}
+	return false
 }
 
 func hasScopedAliasPhrase(task, alias string) bool {

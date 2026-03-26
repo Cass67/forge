@@ -252,6 +252,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	scoutFocusedFilesState := newScoutFocusedFilesEvidenceState(userMessage)
 	scoutRepoReviewState := newScoutRepoReviewEvidenceState(a.workDir, userMessage)
 	isInspectTurn := !a.isSubAgent && isHarnessInspectTurn(userMessage)
+	isAnswerTurn := !a.isSubAgent && isHarnessAnswerTurn(userMessage)
 	if a.role == "dispatch" {
 		a.dispatchTurn++
 		currentDispatchTurn = a.dispatchTurn
@@ -438,7 +439,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				return fmt.Errorf("%s produced no final output", a.role)
 			}
 			isPreamble := looksLikeActionPreamble(response)
-			if !a.isSubAgent && isPreamble && actionPreambleRetries < 4 && turn+1 < a.maxTurns {
+			if !a.isSubAgent && !isAnswerTurn && isPreamble && actionPreambleRetries < 4 && turn+1 < a.maxTurns {
 				actionPreambleRetries++
 				a.history = append(a.history, llm.Message{
 					Role:    llm.RoleUser,
@@ -1468,6 +1469,10 @@ func nudgeMessage(attempt int) string {
 
 func isHarnessInspectTurn(userMessage string) bool {
 	return strings.HasPrefix(strings.TrimSpace(userMessage), "HARNESS MODE: inspect")
+}
+
+func isHarnessAnswerTurn(userMessage string) bool {
+	return strings.HasPrefix(strings.TrimSpace(userMessage), "HARNESS MODE: answer")
 }
 
 func normalizeUserMessageForHistory(userMessage string) string {

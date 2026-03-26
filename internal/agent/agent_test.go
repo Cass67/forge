@@ -431,6 +431,31 @@ func TestAgentRunDoesNotRetryShortFinalAnswer(t *testing.T) {
 	}
 }
 
+func TestAgentRunDoesNotRetryActionOfferForHarnessAnswerTurn(t *testing.T) {
+	driver := &mockDriver{responses: []string{"I can inspect the repo and give you a prioritized improvement list if you want."}}
+	reg := tools.NewRegistry()
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+
+	agent := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+	err := agent.Run(context.Background(), strings.TrimSpace(`HARNESS MODE: answer
+This is a direct answer turn.
+
+USER REQUEST:
+how can you tell me if there are improvements to be made`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if driver.callCount != 1 {
+		t.Fatalf("expected 1 driver call, got %d", driver.callCount)
+	}
+	for _, msg := range agent.history {
+		if strings.Contains(msg.Content, "Continue by acting. Call the next tool now") {
+			t.Fatalf("harness answer turn should not inject action-preamble nudge: %#v", agent.history)
+		}
+	}
+}
+
 func TestCompactAssistantHistory(t *testing.T) {
 	got := compactAssistantHistory("I'm going to inspect the file first.")
 	if got != "I'm going to inspect the file first." {

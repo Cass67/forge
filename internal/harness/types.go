@@ -72,11 +72,14 @@ type Classification struct {
 	WantsAction          bool
 	WantsInterpretation  bool
 	NeedsPolicyGuard     bool
+	DetachedPolicyGuard  bool
 	NeedsTerseAnswer     bool
 	NeedsExternalSources bool
 	CanStayLocal         bool
 	IsFollowUp           bool
 	TopicKey             string
+	TaskText             string
+	ResponsePostlude     string
 	Reason               string
 }
 
@@ -105,13 +108,14 @@ type WorkerTask struct {
 }
 
 type Observation struct {
-	Status    ObservationStatus
-	Response  string
-	Summary   string
-	TopicKey  string
-	Artifact  any
-	SkillUses []skills.UseRecord
-	Err       error
+	Status        ObservationStatus
+	Response      string
+	Summary       string
+	TopicKey      string
+	Artifact      any
+	PendingAction PendingAction
+	SkillUses     []skills.UseRecord
+	Err           error
 }
 
 type Decision struct {
@@ -141,6 +145,23 @@ type EvidenceSnapshot struct {
 	Summary  string
 }
 
+type PendingAction struct {
+	SetAtTurn            int
+	Family               RequestFamily
+	TopicKey             string
+	TaskText             string
+	WantsEvaluation      bool
+	WantsAction          bool
+	WantsInterpretation  bool
+	NeedsExternalSources bool
+	CanStayLocal         bool
+	ResponsePostlude     string
+}
+
+func (p PendingAction) IsZero() bool {
+	return p.Family == "" && p.TopicKey == "" && p.TaskText == ""
+}
+
 type MetaIntent string
 
 const (
@@ -150,13 +171,14 @@ const (
 )
 
 type SessionState struct {
-	Turn         int
-	LastFamily   RequestFamily
-	LastTopicKey string
-	LastResponse string
-	LastEvidence EvidenceSnapshot
-	LastMeta     MetaIntent
-	LastMetaTurn int
+	Turn          int
+	LastFamily    RequestFamily
+	LastTopicKey  string
+	LastResponse  string
+	LastEvidence  EvidenceSnapshot
+	PendingAction PendingAction
+	LastMeta      MetaIntent
+	LastMetaTurn  int
 }
 
 func (s SessionState) HasRecentEvidence() bool {
@@ -171,6 +193,13 @@ func (s SessionState) HasRecentMeta() bool {
 		return false
 	}
 	return s.LastMetaTurn >= s.Turn-1
+}
+
+func (s SessionState) HasPendingAction() bool {
+	if s.Turn <= 0 || s.PendingAction.IsZero() || s.PendingAction.SetAtTurn <= 0 {
+		return false
+	}
+	return s.PendingAction.SetAtTurn >= s.Turn-1
 }
 
 type TraceRecord struct {
