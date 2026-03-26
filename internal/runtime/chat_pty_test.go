@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -58,12 +59,20 @@ func TestChatPTYHelperProcess(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Chat.MaxTurns = 4
 
-	RunChatLive(&ChatSetup{
+	setup := &ChatSetup{
 		Config:    cfg,
 		ChatModel: "test-model",
 		WorkDir:   workDir,
 		Driver:    &ptyTestDriver{},
-	})
+	}
+	if os.Getenv("FORGE_PTY_DEBUG") == "1" {
+		debugPath := filepath.Join(t.TempDir(), "forge-chat-debug.jsonl")
+		if _, err := EnableChatDebug(setup, debugPath); err != nil {
+			t.Fatalf("EnableChatDebug: %v", err)
+		}
+	}
+
+	RunChatLive(setup)
 	os.Exit(0)
 }
 
@@ -127,7 +136,45 @@ func TestDefaultChatDoesNotEnterAltScreenDuringBracketedPaste(t *testing.T) {
 	waitForPTYExit(t, cmd, 10*time.Second)
 }
 
-func startChatPTYHelper(t *testing.T) (*exec.Cmd, *os.File, *ptyCapture) {
+func TestDebugChatDoesNotEnterAltScreen(t *testing.T) {
+	cmd, ptmx, capture := startChatPTYHelper(t, "FORGE_PTY_DEBUG=1")
+	defer func() {
+		_ = ptmx.Close()
+	}()
+
+	waitForPTYOutput(t, capture, "Type a message or /help", 10*time.Second)
+	initial := capture.String()
+	if !strings.Contains(initial, "test-model") || !strings.Contains(initial, "FORGE") {
+		t.Fatalf("expected shared debug header in initial output, got:\n%s", initial)
+	}
+	const prompt = "debug hello forge"
+	if _, err := ptmx.Write([]byte(prompt + "\r")); err != nil {
+		t.Fatalf("ptmx.Write: %v", err)
+	}
+	output := waitForPTYOutput(t, capture, ptyResponseSentinel, 10*time.Second)
+	if strings.Contains(output, "\x1b[?1049h") {
+		t.Fatalf("debug chat entered alt screen: %q", output)
+	}
+	if strings.Contains(output, "\x1b[?1002h") || strings.Contains(output, "\x1b[?1006h") {
+		t.Fatalf("debug chat enabled mouse capture: %q", output)
+	}
+	if strings.Contains(output, "chat debug log:") {
+		t.Fatalf("debug chat should not print a prelude before the shared UI: %q", output)
+	}
+	if !strings.Contains(output, "Debug trace") {
+		t.Fatalf("expected debug surface to render trace dock, got:\n%s", output)
+	}
+	if !strings.Contains(output, prompt) {
+		t.Fatalf("expected echoed user prompt in output:\n%s", output)
+	}
+
+	if _, err := ptmx.Write([]byte("/quit\r")); err != nil {
+		t.Fatalf("ptmx.Write quit: %v", err)
+	}
+	waitForPTYExit(t, cmd, 10*time.Second)
+}
+
+func startChatPTYHelper(t *testing.T, extraEnv ...string) (*exec.Cmd, *os.File, *ptyCapture) {
 	t.Helper()
 
 	cmd := exec.Command(os.Args[0], "-test.run=TestChatPTYHelperProcess")
@@ -135,6 +182,7 @@ func startChatPTYHelper(t *testing.T) (*exec.Cmd, *os.File, *ptyCapture) {
 		"FORGE_PTY_HELPER=1",
 		"TERM=xterm-256color",
 	)
+	cmd.Env = append(cmd.Env, extraEnv...)
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: 120, Rows: 32})
 	if err != nil {
 		t.Fatalf("pty.StartWithSize: %v", err)

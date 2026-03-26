@@ -6,7 +6,12 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-func renderTraceOverlayPanel(theme chatTheme, content string, width, height int) string {
+type traceStyledLine struct {
+	text  string
+	style lipgloss.Style
+}
+
+func renderTraceOverlayPanel(theme chatTheme, content, debugLogPath string, width, height int) string {
 	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true)
 	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
 	textStyle := lipgloss.NewStyle().Foreground(theme.Text)
@@ -14,8 +19,11 @@ func renderTraceOverlayPanel(theme chatTheme, content string, width, height int)
 	lines := []string{
 		titleStyle.Render("Debug trace"),
 		dimStyle.Render("Available only because forge was started with -d."),
-		"",
 	}
+	if path := strings.TrimSpace(debugLogPath); path != "" {
+		lines = append(lines, dimStyle.Render("Log: "+path))
+	}
+	lines = append(lines, "")
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {
 		lines = append(lines, dimStyle.Render("No trace captured yet."))
@@ -46,34 +54,40 @@ func renderTraceOverlayPanel(theme chatTheme, content string, width, height int)
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, box)
 }
 
-func renderTraceDockPanel(theme chatTheme, content string, width, height int) string {
+func renderTraceDockPanel(theme chatTheme, content, debugLogPath string, width, height int) string {
 	if width <= 0 || height <= 0 {
 		return ""
 	}
 	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true)
 	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
 	textStyle := lipgloss.NewStyle().Foreground(theme.Text)
+	contentWidth := max(1, width-6)
+	contentHeight := max(1, height-1)
 
-	lines := []string{
-		titleStyle.Render("Debug trace"),
-		dimStyle.Render("Visible because forge was started with -d."),
+	lines := make([]traceStyledLine, 0, contentHeight)
+	lines = appendTraceStyledLine(lines, titleStyle, "Debug trace", contentWidth)
+	lines = appendTraceStyledLine(lines, dimStyle, "Visible because forge was started with -d.", contentWidth)
+	if path := strings.TrimSpace(debugLogPath); path != "" {
+		lines = appendTraceStyledLine(lines, dimStyle, "Log: "+path, contentWidth)
 	}
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {
-		lines = append(lines, dimStyle.Render("No trace captured yet."))
+		lines = appendTraceStyledLine(lines, dimStyle, "No trace captured yet.", contentWidth)
 	} else {
-		traceLines := strings.Split(trimmed, "\n")
-		if len(traceLines) > height-2 {
-			traceLines = traceLines[len(traceLines)-(height-2):]
+		traceLines := wrapTraceText(trimmed, contentWidth)
+		if len(traceLines) > contentHeight-len(lines) {
+			traceLines = traceLines[len(traceLines)-(contentHeight-len(lines)):]
 		}
-		lines = append(lines, traceLines...)
+		for _, line := range traceLines {
+			lines = append(lines, traceStyledLine{text: line, style: textStyle})
+		}
 	}
-	if len(lines) > height {
-		lines = lines[:height]
+	if len(lines) > contentHeight {
+		lines = lines[:contentHeight]
 	}
 	body := make([]string, 0, len(lines))
 	for _, line := range lines {
-		body = append(body, textStyle.Width(max(1, width-6)).Render(line))
+		body = append(body, line.style.Width(contentWidth).Render(line.text))
 	}
 
 	return lipgloss.NewStyle().
@@ -83,6 +97,36 @@ func renderTraceDockPanel(theme chatTheme, content string, width, height int) st
 		Background(theme.HeaderBG).
 		Padding(0, 1).
 		Width(width - 2).
-		Height(height).
+		Height(contentHeight).
 		Render(strings.Join(body, "\n"))
+}
+
+func appendTraceStyledLine(lines []traceStyledLine, style lipgloss.Style, text string, width int) []traceStyledLine {
+	for _, line := range wrapTraceText(text, width) {
+		lines = append(lines, traceStyledLine{text: line, style: style})
+	}
+	return lines
+}
+
+func wrapTraceText(text string, width int) []string {
+	width = max(1, width)
+	text = strings.TrimRight(text, "\n")
+	if text == "" {
+		return []string{""}
+	}
+
+	out := make([]string, 0, 4)
+	for _, raw := range strings.Split(text, "\n") {
+		runes := []rune(raw)
+		if len(runes) == 0 {
+			out = append(out, "")
+			continue
+		}
+		for len(runes) > width {
+			out = append(out, string(runes[:width]))
+			runes = runes[width:]
+		}
+		out = append(out, string(runes))
+	}
+	return out
 }

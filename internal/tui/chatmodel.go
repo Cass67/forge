@@ -3631,7 +3631,7 @@ func (m ChatModel) renderStatsOverlay() string {
 }
 
 func (m ChatModel) renderTraceOverlay() string {
-	return renderTraceOverlayPanel(m.theme(), m.renderedToolsBuf(), m.width, m.height)
+	return renderTraceOverlayPanel(m.theme(), m.renderedToolsBuf(), m.config.DebugLogPath, m.width, m.height)
 }
 
 func (m ChatModel) renderSearchOverlay() string {
@@ -4218,7 +4218,7 @@ func (m ChatModel) renderLiveProgressSlot(theme chatTheme) string {
 }
 
 func (m ChatModel) renderTraceDock(theme chatTheme) string {
-	return renderTraceDockPanel(theme, m.renderedToolsBuf(), m.width, m.debugDockHeight())
+	return renderTraceDockPanel(theme, m.renderedToolsBuf(), m.config.DebugLogPath, m.width, m.debugDockHeight())
 }
 
 func (m ChatModel) transientStatusMessage() string {

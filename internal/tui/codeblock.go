@@ -72,15 +72,17 @@ func renderCodeBlock(lang, body string, width int, theme chatTheme) string {
 	}
 	innerWidth := max(8, width-4)
 	title := lipgloss.NewStyle().
-		Foreground(theme.TextDim).
+		Foreground(theme.HeaderBG).
+		Background(codeBlockBorder(lang, theme)).
 		Bold(true).
+		Padding(0, 1).
 		Render(label)
 	content := renderCodeBlockBody(lang, body, innerWidth, theme)
 	stack := lipgloss.JoinVertical(lipgloss.Left, title, content)
 	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+		Border(lipgloss.NormalBorder()).
 		BorderForeground(codeBlockBorder(lang, theme)).
-		Background(theme.PanelBG).
+		Background(theme.HeaderBG).
 		Padding(0, 1).
 		Width(innerWidth).
 		Render(stack)

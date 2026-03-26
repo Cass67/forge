@@ -27,20 +27,22 @@ func TestDefaultChatViewSingleColumnLayout(t *testing.T) {
 	if strings.Contains(view, "tool output should stay hidden") || strings.Contains(view, "Debug trace") {
 		t.Fatalf("default view leaked debug chrome: %s", view)
 	}
-	if strings.ContainsAny(view, "╭╮╰╯") {
-		t.Fatalf("default view should stay single-column without pane chrome, got:\n%s", view)
+	if !strings.ContainsAny(view, "╭╮╰╯") {
+		t.Fatalf("expected designed composer chrome in default view, got:\n%s", view)
 	}
 
 	lines := strings.Split(rawView, "\n")
-	lastNonEmpty := ""
-	for i := len(lines) - 1; i >= 0; i-- {
-		if trimmed := strings.TrimSpace(strippedLine(lines[i])); trimmed != "" {
-			lastNonEmpty = trimmed
-			break
+	promptLine := -1
+	for i, line := range lines {
+		if strings.Contains(strippedLine(line), "Prompt") {
+			promptLine = i
 		}
 	}
-	if !strings.Contains(lastNonEmpty, "Type a message or /help") {
-		t.Fatalf("expected composer to be the bottom-most rendered element, got last line %q in:\n%s", lastNonEmpty, view)
+	if promptLine <= 0 {
+		t.Fatalf("expected composer prompt line in:\n%s", view)
+	}
+	if !strings.Contains(strippedLine(lines[promptLine+1]), "Type a message or /help") {
+		t.Fatalf("expected composer body below prompt line in:\n%s", view)
 	}
 }
 
@@ -89,6 +91,7 @@ func TestDebugSurfaceShowsVisibleTraceChromeByDefault(t *testing.T) {
 		Model:        "test-model",
 		WorkDir:      "/tmp",
 		DebugEnabled: true,
+		DebugLogPath: "/tmp/forge-chat-debug.jsonl",
 		SurfaceKind:  ChatSurfaceDebug,
 	})
 	m.width = 100
@@ -101,5 +104,8 @@ func TestDebugSurfaceShowsVisibleTraceChromeByDefault(t *testing.T) {
 	}
 	if !strings.Contains(view, "tool_call read_file") {
 		t.Fatalf("expected debug surface to render trace content, got:\n%s", strippedLine(view))
+	}
+	if !strings.Contains(view, "/tmp/forge-chat-debug.jsonl") {
+		t.Fatalf("expected debug surface to show debug log path, got:\n%s", strippedLine(view))
 	}
 }

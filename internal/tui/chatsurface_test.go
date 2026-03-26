@@ -21,12 +21,12 @@ func TestDefaultSurfaceModeDisablesAltScreen(t *testing.T) {
 	}
 }
 
-func TestDebugSurfaceModeUsesManagedSurface(t *testing.T) {
+func TestDebugSurfaceModeUsesSharedTranscriptSurface(t *testing.T) {
 	cfg := ChatLiveConfig{SurfaceKind: ChatSurfaceDebug, DebugEnabled: false}
 	mode := cfg.SurfaceMode()
 
-	if !mode.UseAltScreen || !mode.EnableMouseCapture {
-		t.Fatalf("debug mode should use managed surface: %#v", mode)
+	if mode.UseAltScreen || mode.EnableMouseCapture {
+		t.Fatalf("debug mode should reuse transcript surface: %#v", mode)
 	}
 	if !mode.EnableBracketedPaste || !mode.EnableLiveRegion {
 		t.Fatalf("debug mode missing required flags: %#v", mode)
@@ -50,11 +50,11 @@ func TestDefaultSurfaceModeProgramOptions(t *testing.T) {
 func TestDebugSurfaceModeProgramOptions(t *testing.T) {
 	opts := programOptionsForSurfaceMode(ChatLiveConfig{SurfaceKind: ChatSurfaceDebug, DebugEnabled: false}.SurfaceMode())
 
-	if !hasProgramOption(opts, "WithAltScreen") {
-		t.Fatalf("debug options should enable alt screen: %#v", programOptionNames(opts))
+	if hasProgramOption(opts, "WithAltScreen") {
+		t.Fatalf("debug options should not enable alt screen: %#v", programOptionNames(opts))
 	}
-	if !hasProgramOption(opts, "WithMouseCellMotion") {
-		t.Fatalf("debug options should enable mouse capture: %#v", programOptionNames(opts))
+	if hasProgramOption(opts, "WithMouseCellMotion") {
+		t.Fatalf("debug options should not enable mouse capture: %#v", programOptionNames(opts))
 	}
 	if hasProgramOption(opts, "WithoutBracketedPaste") {
 		t.Fatalf("debug options should preserve bracketed paste: %#v", programOptionNames(opts))

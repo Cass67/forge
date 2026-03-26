@@ -1254,12 +1254,10 @@ func runChat(args []string) {
 		return
 	}
 	if *debug {
-		path, err := runtimepkg.EnableChatDebug(setup, *debugFile)
-		if err != nil {
+		if _, err := runtimepkg.EnableChatDebug(setup, *debugFile); err != nil {
 			fmt.Fprintf(os.Stderr, "error enabling chat debug: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Fprintf(os.Stderr, "chat debug log: %s\n", path)
 	}
 	runtimepkg.RunChatLive(setup)
 }
