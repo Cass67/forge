@@ -168,7 +168,9 @@ const (
 
 const chatHeaderHeight = 1
 const chatPaneBorderHeight = 0
-const chatInputHeight = 1
+const chatComposerGapHeight = 1
+const chatComposerBodyHeight = 2
+const chatInputHeight = 5
 const chatStatusHeight = 1
 
 type subAgentSummary struct {
@@ -186,9 +188,8 @@ type ChatModel struct {
 
 	messages []ChatMessage
 
-	inputBuf         string
-	inputPos         int
-	pendingInputEcho string
+	inputBuf string
+	inputPos int
 
 	width  int
 	height int
@@ -656,7 +657,7 @@ func (m ChatModel) mouseContext() chatLayoutMouseContext {
 		chatY:  headerH,
 		chatW:  chatPaneWidth,
 		chatH:  chatH,
-		inputY: headerH + chatH,
+		inputY: headerH + chatH + chatComposerGapHeight,
 	}
 	if m.toolsVisible {
 		ctx.toolsX = chatPaneWidth
@@ -1047,7 +1048,7 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		headerH := chatHeaderHeight
-		bodyH := max(3, m.height-headerH-chatPaneBorderHeight-chatInputHeight-chatStatusHeight)
+		bodyH := max(3, m.height-headerH-chatPaneBorderHeight-chatComposerGapHeight-chatInputHeight-chatStatusHeight)
 		m.chatViewport.Width = m.chatContentWidth()
 		m.chatViewport.Height = bodyH
 		m.refreshViewport()
@@ -1219,7 +1220,6 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 	case llm.EventDone:
 		m.busy = false
 		m.activeSubAgent = ""
-		m.pendingInputEcho = ""
 		m.clearWorkingMessage()
 		m.status = "ready"
 		m.syncStatusData()
@@ -1228,7 +1228,6 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		}
 	case llm.EventError:
 		m.busy = false
-		m.pendingInputEcho = ""
 		m.clearWorkingMessage()
 		m.status = "error"
 		m.syncStatusData()
@@ -1421,6 +1420,87 @@ func renderComposerText(raw string, cursorPos, width int) string {
 		segment[len(segment)-1] = '…'
 	}
 	return fitCell(string(prefix)+string(segment), width)
+}
+
+func renderComposerLines(raw string, cursorPos, width, rows int) []string {
+	rows = max(1, rows)
+	lines := make([]string, rows)
+	if width <= 0 {
+		return lines
+	}
+
+	content := []rune(flattenComposerText(raw))
+	prefix := []rune("> ")
+	if len(content) == 0 {
+		lines[0] = fitCell("> Type a message or /help", width)
+		for i := 1; i < rows; i++ {
+			lines[i] = fitCell("", width)
+		}
+		return lines
+	}
+
+	cursorPos = clamp(cursorPos, 0, len([]rune(raw)))
+	flatCursor := len([]rune(flattenComposerText(string([]rune(raw)[:cursorPos]))))
+	flatCursor = clamp(flatCursor, 0, len(content))
+
+	avail := max(1, rows*width-len(prefix))
+	segment := append([]rune(nil), content...)
+	if len(segment) > avail {
+		start := clamp(flatCursor-avail+1, 0, max(0, len(segment)-avail))
+		end := min(len(segment), start+avail)
+		segment = append([]rune(nil), segment[start:end]...)
+		if start > 0 && len(segment) > 0 {
+			segment[0] = '…'
+		}
+		if end < len(content) && len(segment) > 0 {
+			segment[len(segment)-1] = '…'
+		}
+	}
+
+	firstWidth := max(1, width-len(prefix))
+	firstTake := min(len(segment), firstWidth)
+	lines[0] = fitCell(string(prefix)+string(segment[:firstTake]), width)
+	segment = segment[firstTake:]
+	for i := 1; i < rows; i++ {
+		take := min(len(segment), width)
+		if take > 0 {
+			lines[i] = fitCell(string(segment[:take]), width)
+			segment = segment[take:]
+			continue
+		}
+		lines[i] = fitCell("", width)
+	}
+	return lines
+}
+
+func renderComposerBox(theme chatTheme, raw string, cursorPos, width int) string {
+	contentWidth := max(1, width-4)
+	contentLines := renderComposerLines(raw, cursorPos, contentWidth, chatComposerBodyHeight)
+
+	titleStyle := lipgloss.NewStyle().
+		Foreground(theme.TextDim).
+		Bold(true).
+		Width(contentWidth)
+	bodyStyle := lipgloss.NewStyle().
+		Foreground(theme.Text).
+		Width(contentWidth).
+		Height(chatComposerBodyHeight)
+	if strings.TrimSpace(flattenComposerText(raw)) == "" {
+		bodyStyle = bodyStyle.Foreground(theme.TextDim)
+	}
+
+	inner := lipgloss.JoinVertical(
+		lipgloss.Left,
+		titleStyle.Render("Prompt"),
+		bodyStyle.Render(strings.Join(contentLines, "\n")),
+	)
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(theme.Border).
+		Background(theme.PanelBG).
+		Padding(0, 1).
+		Width(contentWidth).
+		Render(inner)
 }
 
 func latestFencedCodeBlock(content string) string {
@@ -1714,7 +1794,6 @@ func (m ChatModel) submitInput() (tea.Model, tea.Cmd) {
 	m.anchorLatestTurnToBottom()
 	m.refreshViewport()
 
-	m.pendingInputEcho = input
 	m.inputBuf = ""
 	m.inputPos = 0
 	m.busy = true
@@ -1911,7 +1990,6 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.messages = nil
 		m.resetRecentActivity()
 		m.clearToolsSections()
-		m.pendingInputEcho = ""
 		m.turnAnchorMessageIndex = -1
 		m.followMode = followBottom
 		m.refreshViewport()
@@ -1919,7 +1997,6 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 	case input == "/clear agent":
 		m.messages = nil
 		m.resetRecentActivity()
-		m.pendingInputEcho = ""
 		m.turnAnchorMessageIndex = -1
 		m.followMode = followBottom
 		m.refreshViewport()
@@ -4046,21 +4123,7 @@ func (m ChatModel) View() string {
 		approvalText := fmt.Sprintf("Tool: %s\n%s\n\n[y]es / [n]o", m.pendingApproval.Tool, m.pendingApproval.Summary)
 		inputBox = approvalStyle.Render(approvalText)
 	} else {
-		inputStyle := lipgloss.NewStyle().
-			Background(theme.AppBG).
-			Foreground(theme.Text).
-			Width(m.width)
-		displaySource := m.inputBuf
-		cursorPos := m.inputPos
-		if strings.TrimSpace(displaySource) == "" && m.busy && strings.TrimSpace(m.pendingInputEcho) != "" {
-			displaySource = m.pendingInputEcho
-			cursorPos = len([]rune(displaySource))
-		}
-		renderedInput := renderComposerText(displaySource, cursorPos, m.width)
-		if strings.TrimSpace(displaySource) == "" {
-			inputStyle = inputStyle.Foreground(theme.TextDim)
-		}
-		inputBox = inputStyle.Render(renderedInput)
+		inputBox = renderComposerBox(theme, m.inputBuf, m.inputPos, m.width)
 	}
 
 	// Status bar with spinner and flash
@@ -4085,6 +4148,7 @@ func (m ChatModel) View() string {
 	base := lipgloss.JoinVertical(lipgloss.Left,
 		header,
 		chatPane,
+		"",
 		inputBox,
 		statusBar,
 	)
