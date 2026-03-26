@@ -36,14 +36,21 @@ func TestAdmitWorkerUsesReaderForPlainInspectTurns(t *testing.T) {
 	}
 }
 
-func TestAdmitWorkerKeepsEvaluativeInspectTurnsLocal(t *testing.T) {
-	worker, _, ok := AdmitWorker(Classification{
+func TestAdmitWorkerUsesReaderForEvaluativeWorkspaceInspectTurns(t *testing.T) {
+	worker, reason, ok := AdmitWorker(Classification{
 		Family:          FamilyInspect,
 		CanStayLocal:    true,
 		WantsEvaluation: true,
+		TopicKey:        "workspace:directory",
 	}, SessionState{})
-	if ok {
-		t.Fatalf("unexpected worker admission: %q", worker)
+	if !ok {
+		t.Fatal("expected reader worker admission")
+	}
+	if worker != WorkerReader {
+		t.Fatalf("worker = %q", worker)
+	}
+	if reason == "" {
+		t.Fatal("expected admission reason")
 	}
 }
 
@@ -55,6 +62,24 @@ func TestAdmitWorkerKeepsFocusedFileInspectTurnsLocal(t *testing.T) {
 	}, SessionState{})
 	if ok {
 		t.Fatalf("unexpected worker admission: %q", worker)
+	}
+}
+
+func TestAdmitWorkerUsesEditorForImplementationTurns(t *testing.T) {
+	worker, reason, ok := AdmitWorker(Classification{
+		Family:       FamilyImplement,
+		CanStayLocal: true,
+		TopicKey:     "workspace:directory",
+		WantsAction:  true,
+	}, SessionState{})
+	if !ok {
+		t.Fatal("expected editor worker admission")
+	}
+	if worker != WorkerEditor {
+		t.Fatalf("worker = %q", worker)
+	}
+	if reason == "" {
+		t.Fatal("expected admission reason")
 	}
 }
 

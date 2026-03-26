@@ -50,7 +50,7 @@ func (r *Runner) Run(ctx context.Context, input string) (TurnResult, error) {
 	planned := Plan(class, snapshot)
 	r.trace.Add(StatePlanStep, class.Family, planned.Kind, planned.Worker, planned.Reason, class.TopicKey)
 
-	step, obs, err := r.executeStep(ctx, turn, class, planned)
+	step, obs, err := r.executeStep(ctx, turn, class, snapshot, planned)
 	decision := Decide(class, obs)
 	r.trace.Add(StateDecide, class.Family, step.Kind, step.Worker, decision.Reason, class.TopicKey)
 
@@ -77,14 +77,14 @@ func (r *Runner) Trace() []TraceRecord {
 	return r.trace.Records()
 }
 
-func (r *Runner) executeStep(ctx context.Context, turn UserTurn, class Classification, step Step) (Step, Observation, error) {
+func (r *Runner) executeStep(ctx context.Context, turn UserTurn, class Classification, session SessionState, step Step) (Step, Observation, error) {
 	if step.Kind == StepWorker {
-		return r.executeWorker(ctx, turn, class, step)
+		return r.executeWorker(ctx, turn, class, session, step)
 	}
 	return r.executeLocal(ctx, turn, class, step)
 }
 
-func (r *Runner) executeWorker(ctx context.Context, turn UserTurn, class Classification, step Step) (Step, Observation, error) {
+func (r *Runner) executeWorker(ctx context.Context, turn UserTurn, class Classification, session SessionState, step Step) (Step, Observation, error) {
 	if r.workers == nil {
 		r.trace.Add(StateBlocked, class.Family, step.Kind, step.Worker, "worker executor unavailable; recovering locally", class.TopicKey)
 		return r.executeLocal(ctx, turn, class, localRecoveryStep())
@@ -94,7 +94,7 @@ func (r *Runner) executeWorker(ctx context.Context, turn UserTurn, class Classif
 	obs, err := r.workers.Execute(ctx, WorkerTask{
 		Kind:          step.Worker,
 		Objective:     turn.Text,
-		Context:       workerContext(class, step),
+		Context:       workerContext(class, session, step),
 		TopicKey:      class.TopicKey,
 		StopCondition: step.Reason,
 	})
@@ -127,19 +127,51 @@ func localRecoveryStep() Step {
 	}
 }
 
-func workerContext(class Classification, step Step) string {
-	if step.Worker != WorkerReader {
-		return ""
-	}
-	if class.Family != FamilyInspect {
-		return ""
-	}
-	return strings.TrimSpace(`Gather concrete workspace evidence before you conclude.
+func workerContext(class Classification, session SessionState, step Step) string {
+	switch step.Worker {
+	case WorkerReader:
+		if class.Family != FamilyInspect {
+			return ""
+		}
+		lines := []string{`Gather concrete workspace evidence before you conclude.
 For a directory or repository walkthrough:
 - inspect the top-level structure with list_dir
 - inspect one or two representative files such as README.md, go.mod, package.json, or a relevant entrypoint when present
 - use git_status or git_log only when they materially help explain the state
-- stop once you can explain what the directory is and how it is organized`)
+- stop once you can explain what the directory is and how it is organized`}
+		if class.WantsEvaluation {
+			lines = append(lines,
+				"The user wants evidence-backed findings or cleanup recommendations, not just a neutral walkthrough.",
+				"Make each evidence summary explain the concrete observation and why it matters.",
+			)
+		}
+		if session.HasRecentEvidence() && strings.TrimSpace(session.LastEvidence.TopicKey) != "" {
+			lines = append(lines,
+				"Recent evidence topic: "+strings.TrimSpace(session.LastEvidence.TopicKey),
+				"Recent evidence summary: "+strings.TrimSpace(session.LastEvidence.Summary),
+			)
+		}
+		return strings.TrimSpace(strings.Join(lines, "\n"))
+	case WorkerEditor:
+		lines := []string{
+			"Implement the requested change in the workspace instead of drafting code in chat.",
+			"Inspect relevant files before editing, then create or update the actual file that delivers the request.",
+			"When the user asks for a script, tool, helper, or test, return a real file change with its path in the JSON result.",
+			"Run a focused verification command for the touched files when possible.",
+		}
+		if strings.TrimSpace(class.TopicKey) != "" {
+			lines = append(lines, "Primary scope: "+strings.TrimSpace(class.TopicKey))
+		}
+		if session.HasRecentEvidence() && strings.TrimSpace(session.LastEvidence.TopicKey) != "" {
+			lines = append(lines,
+				"Recent evidence topic: "+strings.TrimSpace(session.LastEvidence.TopicKey),
+				"Recent evidence summary: "+strings.TrimSpace(session.LastEvidence.Summary),
+			)
+		}
+		return strings.TrimSpace(strings.Join(lines, "\n"))
+	default:
+		return ""
+	}
 }
 
 func buildForgeResponse(step Step, obs Observation) string {
