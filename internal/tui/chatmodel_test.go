@@ -3052,6 +3052,34 @@ func TestChatModelSubmitKeepsTranscriptVisibleAndClearsComposer(t *testing.T) {
 	}
 }
 
+func TestPromptEchoSubmitClearsComposerAndKeepsUserTurnVisible(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 12})
+	m = updated.(ChatModel)
+	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Forge • 12:00:00", Content: "previous answer remains visible"})
+
+	m.inputBuf = "question should stay visible"
+	m.inputPos = len([]rune(m.inputBuf))
+	updated, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+
+	view := strippedLine(m.View())
+	if !strings.Contains(view, "previous answer remains visible") {
+		t.Fatalf("expected previous transcript to stay visible, got:\n%s", view)
+	}
+	if !strings.Contains(view, "question should stay visible") {
+		t.Fatalf("expected submitted prompt echoed into transcript, got:\n%s", view)
+	}
+	tailLines := strings.Split(view, "\n")
+	tail := strings.Join(tailLines[max(0, len(tailLines)-8):], "\n")
+	if !strings.Contains(tail, "Type a message or /help") {
+		t.Fatalf("expected empty composer placeholder after submit, got:\n%s", view)
+	}
+	if strings.Contains(tail, "> question should stay visible") {
+		t.Fatalf("expected submitted prompt to clear from composer after Enter, got:\n%s", view)
+	}
+}
+
 func TestChatModelEnterWhileBusyDoesNotSubmitNewTurn(t *testing.T) {
 	inputCh := make(chan string, 1)
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
@@ -3118,6 +3146,56 @@ func TestChatModelViewAddsSpacerBeforeComposer(t *testing.T) {
 	}
 	if strings.TrimSpace(strippedLine(lines[promptLine-1])) != "" {
 		t.Fatalf("expected blank spacer before composer, got line %q in view:\n%s", strippedLine(lines[promptLine-1]), view)
+	}
+}
+
+func TestProgressSlotRendersAboveComposerWithoutLeakingIntoTranscript(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
+	m = updated.(ChatModel)
+	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Forge • 12:00:00", Content: "latest transcript line"})
+
+	updated, _ = m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "scout: reading app.go"})
+	m = updated.(ChatModel)
+
+	view := m.View()
+	if !strings.Contains(strippedLine(view), "latest transcript line") {
+		t.Fatalf("expected transcript content to remain visible, got:\n%s", strippedLine(view))
+	}
+	if count := strings.Count(strippedLine(view), "scout: reading app.go"); count != 1 {
+		t.Fatalf("expected one live progress slot, found %d in:\n%s", count, strippedLine(view))
+	}
+
+	lines := strings.Split(view, "\n")
+	promptLine := -1
+	progressLine := -1
+	for i, line := range lines {
+		stripped := strippedLine(line)
+		if strings.Contains(stripped, "Prompt") {
+			promptLine = i
+		}
+		if strings.Contains(stripped, "scout: reading app.go") {
+			progressLine = i
+		}
+	}
+	if promptLine <= 0 || progressLine < 0 {
+		t.Fatalf("expected progress slot and composer, got:\n%s", strippedLine(view))
+	}
+	if progressLine != promptLine-1 {
+		t.Fatalf("expected live progress directly above composer, got progress line %d prompt line %d in:\n%s", progressLine, promptLine, strippedLine(view))
+	}
+}
+
+func TestDebugChatViewShowsTraceOverlayAndDebugContent(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "openai/gpt-5", WorkDir: "/tmp", DebugEnabled: true})
+	m.width = 100
+	m.height = 24
+	m.toolsSections = []toolsSection{{buf: "tool_call read_file\nobserve complete\n"}}
+	m.traceVisible = true
+
+	view := m.View()
+	if !strings.Contains(view, "Debug trace") || !strings.Contains(view, "tool_call read_file") {
+		t.Fatalf("debug trace overlay missing content: %s", view)
 	}
 }
 
