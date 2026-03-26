@@ -102,3 +102,35 @@ func TestAgentExecutorLeavesNonInspectTurnsOnDefaultTools(t *testing.T) {
 		t.Fatalf("run messages = %#v", agent.runMessages)
 	}
 }
+
+func TestAgentExecutorFocusedInspectPromptRequestsSerialSampledEvidence(t *testing.T) {
+	defaultTools := tools.NewRegistry()
+	inspectTools := tools.NewRegistry()
+	agent := &stubScopedAgent{response: "sampled a few Python files"}
+	exec := AgentExecutor{
+		Agent:        agent,
+		DefaultTools: defaultTools,
+		InspectTools: inspectTools,
+	}
+
+	_, err := exec.Execute(context.Background(), UserTurn{Text: "check the py files and let me know if they are up to scratch"}, Classification{
+		Family:   FamilyInspect,
+		TopicKey: "files:python",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.runMessages) != 1 {
+		t.Fatalf("run messages = %d", len(agent.runMessages))
+	}
+	msg := agent.runMessages[0]
+	if !strings.Contains(msg, "INSPECT SCOPE: focused-files") {
+		t.Fatalf("inspect prompt missing focused-files scope: %q", msg)
+	}
+	if !strings.Contains(msg, "each working turn must emit exactly one tool call and no prose") {
+		t.Fatalf("inspect prompt missing serial tool-call guidance: %q", msg)
+	}
+	if !strings.Contains(msg, "sample a small representative set of matching files") {
+		t.Fatalf("inspect prompt missing bounded sampling guidance: %q", msg)
+	}
+}

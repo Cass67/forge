@@ -240,12 +240,23 @@ func TestRunChatTurnUsesKernelWhenProvided(t *testing.T) {
 func TestRunChatTurnKernelPathAvoidsDelegationMarkers(t *testing.T) {
 	events := make(chan llm.Event, 16)
 	renderer := agent.NewEventRenderer(events)
-	driver := &kernelMockDriver{response: "Directory contains cmd and internal."}
-	a := agent.NewAgent(driver, tools.NewRegistry(), agent.YoloApproval(), t.TempDir(), 4, renderer, nil, chatstate.New())
+	toolReg := tools.NewRegistry()
+	toolReg.Register(tools.NewListDir(t.TempDir(), nil))
+	driver := &kernelMockDriver{
+		responses: []string{
+			"<tool_call>\n{\"name\": \"list_dir\", \"args\": {}}\n</tool_call>",
+			"Directory contains cmd and internal.",
+		},
+	}
+	a := agent.NewAgent(driver, toolReg, agent.YoloApproval(), t.TempDir(), 4, renderer, nil, chatstate.New())
 	kernel := harness.NewRunner(harness.RunnerConfig{
 		Session: harness.NewSession(),
 		Trace:   harness.NewRecorder(),
-		Local:   harness.AgentExecutor{Agent: a},
+		Local: harness.AgentExecutor{
+			Agent:        a,
+			DefaultTools: toolReg,
+			InspectTools: toolReg,
+		},
 	})
 
 	if err := runChatTurn(context.Background(), a, kernel, "describe this directory"); err != nil {
@@ -368,13 +379,20 @@ func (s stubHarnessWorkerExecutor) Execute(_ context.Context, _ harness.WorkerTa
 }
 
 type kernelMockDriver struct {
-	response string
+	response  string
+	responses []string
+	callIdx   int
 }
 
 func (d *kernelMockDriver) Name() string { return "kernel-mock" }
 
 func (d *kernelMockDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
 	defer close(out)
+	if d.callIdx < len(d.responses) {
+		out <- llm.Token{Text: d.responses[d.callIdx]}
+		d.callIdx++
+		return nil
+	}
 	out <- llm.Token{Text: d.response}
 	return nil
 }

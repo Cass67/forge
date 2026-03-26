@@ -769,6 +769,135 @@ func TestScoutExecutesToolCallsAndSuppressesVisibleProse(t *testing.T) {
 	}
 }
 
+func TestHarnessInspectTurnFirstWorkingTurnUsesSingleToolCall(t *testing.T) {
+	driver := &inspectingDriver{
+		responses: []string{
+			"<tool_call>\n{\"name\": \"glob\", \"args\": {\"pattern\": \"**/*.py\", \"path\": \".\"}}\n</tool_call>\n<tool_call>\n{\"name\": \"git_status\", \"args\": {}}\n</tool_call>",
+			"Focused Python review complete.",
+		},
+		checks: []func([]llm.Message) error{
+			nil,
+			func(messages []llm.Message) error {
+				joined := ""
+				for _, msg := range messages {
+					joined += msg.Content + "\n"
+				}
+				if !strings.Contains(joined, "[glob]") {
+					return fmt.Errorf("second turn missing executed first tool result")
+				}
+				if !strings.Contains(joined, "exactly one tool call per working turn") {
+					return fmt.Errorf("second turn missing inspect single-tool-call nudge")
+				}
+				return nil
+			},
+		},
+	}
+
+	reg := tools.NewRegistry()
+	var executed []string
+	reg.Register(tools.Tool{
+		Name:        "glob",
+		Description: "Glob",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			executed = append(executed, "glob")
+			return "alpha.py\nbeta.py", nil
+		},
+	})
+	reg.Register(tools.Tool{
+		Name:        "git_status",
+		Description: "Git status",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			executed = append(executed, "git_status")
+			return "?? alpha.py", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+
+	err := a.Run(context.Background(), strings.TrimSpace(`HARNESS MODE: inspect
+INSPECT SCOPE: focused-files
+This is a read-only inspection turn.
+USER REQUEST:
+check the py files`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(executed, ","); got != "glob" {
+		t.Fatalf("expected only first inspect tool call to execute, got %q", got)
+	}
+}
+
+func TestHarnessInspectTurnSerializesLaterToolCallsAndSuppressesVisibleProse(t *testing.T) {
+	driver := &inspectingDriver{
+		responses: []string{
+			"<tool_call>\n{\"name\": \"glob\", \"args\": {\"pattern\": \"**/*.py\", \"path\": \".\"}}\n</tool_call>",
+			"<tool_call>\n{\"name\": \"read_file\", \"args\": {\"path\": \"alpha.py\"}}\n</tool_call>\n<tool_call>\n{\"name\": \"read_file\", \"args\": {\"path\": \"beta.py\"}}\n</tool_call>\nI inspected enough to answer now.",
+			"Alpha and beta look like ad hoc scripts with no shared project structure.",
+		},
+		checks: []func([]llm.Message) error{
+			nil,
+			nil,
+			func(messages []llm.Message) error {
+				joined := ""
+				for _, msg := range messages {
+					joined += msg.Content + "\n"
+				}
+				if !strings.Contains(joined, "[read_file] alpha.py") {
+					return fmt.Errorf("third turn missing first read_file result")
+				}
+				if !strings.Contains(joined, "must not mix visible prose with tool calls") {
+					return fmt.Errorf("third turn missing inspect mixed-prose nudge")
+				}
+				if !strings.Contains(joined, "exactly one tool call per working turn") {
+					return fmt.Errorf("third turn missing inspect single-tool-call nudge")
+				}
+				return nil
+			},
+		},
+	}
+
+	reg := tools.NewRegistry()
+	var executed []string
+	reg.Register(tools.Tool{
+		Name:        "glob",
+		Description: "Glob",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			executed = append(executed, "glob")
+			return "alpha.py\nbeta.py", nil
+		},
+	})
+	reg.Register(tools.Tool{
+		Name:        "read_file",
+		Description: "Read file",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			path, _ := args["path"].(string)
+			executed = append(executed, "read_file:"+path)
+			return path, nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 10, renderer, nil, nil)
+
+	err := a.Run(context.Background(), strings.TrimSpace(`HARNESS MODE: inspect
+INSPECT SCOPE: focused-files
+This is a read-only inspection turn.
+USER REQUEST:
+check the py files`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(executed, ","); got != "glob,read_file:alpha.py" {
+		t.Fatalf("expected inspect turn to serialize tool calls, got %q", got)
+	}
+	if got := output.String(); strings.Contains(got, "I inspected enough to answer now.") {
+		t.Fatalf("inspect prose leak should be suppressed, got %q", got)
+	}
+}
+
 func TestScoutExecutesBareJSONToolCallPrefixAndSuppressesVisibleProse(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Repo\n"), 0o644); err != nil {
