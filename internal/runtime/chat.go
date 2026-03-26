@@ -322,10 +322,17 @@ func RunChatLive(setup *ChatSetup) {
 		}
 	}()
 
+	debugEnabled := setup.debugRec != nil
+	surfaceKind := tui.ChatSurfaceDefault
+	if debugEnabled {
+		surfaceKind = tui.ChatSurfaceDebug
+	}
+
 	liveCfg := tui.ChatLiveConfig{
 		Model:           setup.ChatModel,
 		WorkDir:         setup.WorkDir,
-		DebugEnabled:    setup.debugRec != nil,
+		SurfaceKind:     surfaceKind,
+		DebugEnabled:    debugEnabled,
 		AvailableModels: setup.Available,
 		Providers:       append([]tui.ProviderOption(nil), setup.Providers...),
 		AgentsEnabled:   !useKernel && setup.Config.Chat.Agents.Enabled,

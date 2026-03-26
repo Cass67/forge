@@ -226,9 +226,9 @@ func TestRunChatLiveUsesSurfaceMode(t *testing.T) {
 		runChatLiveUI = oldRunChatLiveUI
 	}()
 
-	var got []tui.SurfaceModeConfig
+	var got []tui.ChatLiveConfig
 	runChatLiveUI = func(_ <-chan llm.Event, cfg tui.ChatLiveConfig, inputCh chan<- string, _ <-chan struct{}) tui.ChatLiveResult {
-		got = append(got, cfg.SurfaceMode())
+		got = append(got, cfg)
 		close(inputCh)
 		return tui.ChatLiveResult{}
 	}
@@ -247,17 +247,32 @@ func TestRunChatLiveUsesSurfaceMode(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("surface modes captured = %d, want 2", len(got))
 	}
-	if got[0].UseAltScreen || got[0].EnableMouseCapture {
-		t.Fatalf("default surface mode = %#v", got[0])
+	if got[0].SurfaceKind != tui.ChatSurfaceDefault {
+		t.Fatalf("default surface kind = %q", got[0].SurfaceKind)
 	}
-	if !got[1].UseAltScreen || !got[1].EnableMouseCapture {
-		t.Fatalf("debug surface mode = %#v", got[1])
+	if got[1].SurfaceKind != tui.ChatSurfaceDebug {
+		t.Fatalf("debug surface kind = %q", got[1].SurfaceKind)
 	}
-	if !got[0].EnableBracketedPaste || !got[0].EnableLiveRegion {
-		t.Fatalf("default surface missing required flags: %#v", got[0])
+	if got[0].DebugEnabled {
+		t.Fatalf("default debug enabled = %v", got[0].DebugEnabled)
 	}
-	if !got[1].EnableBracketedPaste || !got[1].EnableLiveRegion {
-		t.Fatalf("debug surface missing required flags: %#v", got[1])
+	if !got[1].DebugEnabled {
+		t.Fatalf("debug debug enabled = %v", got[1].DebugEnabled)
+	}
+
+	defaultMode := got[0].SurfaceMode()
+	debugMode := got[1].SurfaceMode()
+	if defaultMode.UseAltScreen || defaultMode.EnableMouseCapture {
+		t.Fatalf("default surface mode = %#v", defaultMode)
+	}
+	if !debugMode.UseAltScreen || !debugMode.EnableMouseCapture {
+		t.Fatalf("debug surface mode = %#v", debugMode)
+	}
+	if !defaultMode.EnableBracketedPaste || !defaultMode.EnableLiveRegion {
+		t.Fatalf("default surface missing required flags: %#v", defaultMode)
+	}
+	if !debugMode.EnableBracketedPaste || !debugMode.EnableLiveRegion {
+		t.Fatalf("debug surface missing required flags: %#v", debugMode)
 	}
 }
 

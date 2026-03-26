@@ -10,7 +10,7 @@ import (
 )
 
 func TestDefaultSurfaceModeDisablesAltScreen(t *testing.T) {
-	cfg := ChatLiveConfig{DebugEnabled: false}
+	cfg := ChatLiveConfig{SurfaceKind: ChatSurfaceDefault, DebugEnabled: false}
 	mode := cfg.SurfaceMode()
 
 	if mode.UseAltScreen || mode.EnableMouseCapture {
@@ -22,7 +22,7 @@ func TestDefaultSurfaceModeDisablesAltScreen(t *testing.T) {
 }
 
 func TestDebugSurfaceModeUsesManagedSurface(t *testing.T) {
-	cfg := ChatLiveConfig{DebugEnabled: true}
+	cfg := ChatLiveConfig{SurfaceKind: ChatSurfaceDebug, DebugEnabled: false}
 	mode := cfg.SurfaceMode()
 
 	if !mode.UseAltScreen || !mode.EnableMouseCapture {
@@ -34,7 +34,7 @@ func TestDebugSurfaceModeUsesManagedSurface(t *testing.T) {
 }
 
 func TestDefaultSurfaceModeProgramOptions(t *testing.T) {
-	opts := programOptionsForSurfaceMode(ChatLiveConfig{DebugEnabled: false}.SurfaceMode())
+	opts := programOptionsForSurfaceMode(ChatLiveConfig{SurfaceKind: ChatSurfaceDefault, DebugEnabled: true}.SurfaceMode())
 
 	if hasProgramOption(opts, "WithAltScreen") {
 		t.Fatalf("default options should not enable alt screen: %#v", programOptionNames(opts))
@@ -48,7 +48,7 @@ func TestDefaultSurfaceModeProgramOptions(t *testing.T) {
 }
 
 func TestDebugSurfaceModeProgramOptions(t *testing.T) {
-	opts := programOptionsForSurfaceMode(ChatLiveConfig{DebugEnabled: true}.SurfaceMode())
+	opts := programOptionsForSurfaceMode(ChatLiveConfig{SurfaceKind: ChatSurfaceDebug, DebugEnabled: false}.SurfaceMode())
 
 	if !hasProgramOption(opts, "WithAltScreen") {
 		t.Fatalf("debug options should enable alt screen: %#v", programOptionNames(opts))
