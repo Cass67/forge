@@ -89,7 +89,7 @@ func (m *Manager) Execute(ctx context.Context, task WorkerTask) (Observation, er
 			}, err
 		}
 		raw = worker.LastResponse()
-		validated, err := ValidateWorkerResult(task.Kind, raw)
+		validated, err := ValidateWorkerResultWithToolCalls(task.Kind, raw, worker.LastToolCalls())
 		if err == nil {
 			return Observation{
 				Status:   validated.Status,
