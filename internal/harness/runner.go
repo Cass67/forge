@@ -59,11 +59,13 @@ func (r *Runner) Run(ctx context.Context, input string) (TurnResult, error) {
 	r.trace.Add(StatePlanStep, class.Family, planned.Kind, planned.Worker, planned.Reason, class.TopicKey)
 
 	step, obs, err := r.executeStep(ctx, turn, class, snapshot, planned)
+	obs = enrichObservation(turn, class, snapshot, obs)
 	decision := Decide(class, obs)
 	r.trace.Add(StateDecide, class.Family, step.Kind, step.Worker, decision.Reason, class.TopicKey)
 
 	if decision.FinalState != StateBlocked {
 		obs.Response = buildForgeResponse(step, obs)
+		obs.Response = appendResponsePostlude(obs.Response, class.ResponsePostlude)
 		r.session.Apply(class, obs)
 		r.trace.Add(StateRespond, class.Family, StepRespond, WorkerNone, "emit final forge response", class.TopicKey)
 		r.trace.Add(StateComplete, class.Family, StepRespond, WorkerNone, "turn complete", class.TopicKey)
@@ -285,4 +287,90 @@ func errorString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+func enrichObservation(turn UserTurn, class Classification, _ SessionState, obs Observation) Observation {
+	if obs.PendingAction.IsZero() {
+		obs.PendingAction = inferPendingAction(turn, class)
+	}
+	return obs
+}
+
+func inferPendingAction(turn UserTurn, class Classification) PendingAction {
+	if class.Family != FamilyAnswer ||
+		class.NeedsPolicyGuard ||
+		class.NeedsTerseAnswer ||
+		class.WantsAction ||
+		class.WantsInterpretation ||
+		!class.WantsEvaluation ||
+		!looksLikeQuestionishReviewPrompt(turn.Text) {
+		return PendingAction{}
+	}
+
+	lower := strings.ToLower(strings.TrimSpace(turn.Text))
+	tokens := tokenize(lower)
+	if !mentionsImprovementReviewIntent(tokens, lower) {
+		return PendingAction{}
+	}
+	scope := inferRequestScope(lower, tokens)
+	if !scope.Inspectable() {
+		scope = requestScope{Kind: scopeRepository, TopicKey: "workspace:repository"}
+	}
+	return PendingAction{
+		Family:          FamilyInspect,
+		TopicKey:        resolveTopicKey(turn.Text, scope),
+		TaskText:        reviewTaskTextForScope(scope),
+		WantsEvaluation: true,
+		CanStayLocal:    true,
+	}
+}
+
+func mentionsImprovementReviewIntent(tokens map[string]struct{}, lower string) bool {
+	return strings.Contains(lower, "improvement") ||
+		strings.Contains(lower, "improvements") ||
+		strings.Contains(lower, "review") ||
+		strings.Contains(lower, "audit") ||
+		hasToken(tokens, "recommend") ||
+		hasToken(tokens, "recommendations") ||
+		hasToken(tokens, "issue") ||
+		hasToken(tokens, "issues") ||
+		hasToken(tokens, "problem") ||
+		hasToken(tokens, "problems") ||
+		hasToken(tokens, "fix") ||
+		hasToken(tokens, "fixes")
+}
+
+func reviewTaskTextForScope(scope requestScope) string {
+	switch scope.Kind {
+	case scopeDirectory:
+		return "review the current directory for improvement opportunities"
+	case scopeFocusedFiles:
+		return "review the matching files for improvement opportunities"
+	default:
+		return "review the whole repo for improvement opportunities"
+	}
+}
+
+func looksLikeQuestionishReviewPrompt(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	if looksQuestionLike(text) {
+		return true
+	}
+	return startsWithAny(lower, "how can", "how do", "can you", "could you", "what would", "what could", "why would")
+}
+
+func appendResponsePostlude(response, postlude string) string {
+	response = strings.TrimSpace(response)
+	postlude = strings.TrimSpace(postlude)
+	switch {
+	case response == "":
+		return postlude
+	case postlude == "":
+		return response
+	default:
+		return response + "\n\n" + postlude
+	}
 }

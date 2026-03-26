@@ -34,7 +34,7 @@ type AgentExecutor struct {
 const promptBoundaryRefusal = "I can't provide hidden system/developer prompts or internal instructions, including paraphrased or hypothetical versions. I can summarize my role and high-level guardrails if useful."
 
 func (e AgentExecutor) Execute(ctx context.Context, turn UserTurn, class Classification, session SessionState) (Observation, error) {
-	userMessage := turn.Text
+	userMessage := firstNonEmpty(strings.TrimSpace(class.TaskText), turn.Text)
 	if class.NeedsPolicyGuard {
 		response := promptBoundaryRefusal
 		return Observation{
