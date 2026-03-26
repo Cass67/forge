@@ -272,11 +272,17 @@ func TestRunChatLiveUsesSurfaceMode(t *testing.T) {
 
 	defaultMode := got[0].SurfaceMode()
 	debugMode := got[1].SurfaceMode()
-	if defaultMode.UseAltScreen || defaultMode.EnableMouseCapture {
+	if defaultMode.UseAltScreen {
 		t.Fatalf("default surface mode = %#v", defaultMode)
 	}
-	if debugMode.UseAltScreen || debugMode.EnableMouseCapture {
+	if !defaultMode.EnableMouseCapture {
+		t.Fatalf("default surface mode should enable mouse capture = %#v", defaultMode)
+	}
+	if debugMode.UseAltScreen {
 		t.Fatalf("debug surface mode = %#v", debugMode)
+	}
+	if !debugMode.EnableMouseCapture {
+		t.Fatalf("debug surface mode should enable mouse capture = %#v", debugMode)
 	}
 	if !defaultMode.EnableBracketedPaste || !defaultMode.EnableLiveRegion {
 		t.Fatalf("default surface missing required flags: %#v", defaultMode)

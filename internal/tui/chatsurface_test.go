@@ -13,8 +13,11 @@ func TestDefaultSurfaceModeDisablesAltScreen(t *testing.T) {
 	cfg := ChatLiveConfig{SurfaceKind: ChatSurfaceDefault, DebugEnabled: false}
 	mode := cfg.SurfaceMode()
 
-	if mode.UseAltScreen || mode.EnableMouseCapture {
+	if mode.UseAltScreen {
 		t.Fatalf("default mode = %#v", mode)
+	}
+	if !mode.EnableMouseCapture {
+		t.Fatalf("default mode should enable mouse capture: %#v", mode)
 	}
 	if !mode.EnableBracketedPaste || !mode.EnableLiveRegion {
 		t.Fatalf("default mode missing required flags: %#v", mode)
@@ -25,8 +28,11 @@ func TestDebugSurfaceModeUsesSharedTranscriptSurface(t *testing.T) {
 	cfg := ChatLiveConfig{SurfaceKind: ChatSurfaceDebug, DebugEnabled: false}
 	mode := cfg.SurfaceMode()
 
-	if mode.UseAltScreen || mode.EnableMouseCapture {
+	if mode.UseAltScreen {
 		t.Fatalf("debug mode should reuse transcript surface: %#v", mode)
+	}
+	if !mode.EnableMouseCapture {
+		t.Fatalf("debug mode should enable mouse capture: %#v", mode)
 	}
 	if !mode.EnableBracketedPaste || !mode.EnableLiveRegion {
 		t.Fatalf("debug mode missing required flags: %#v", mode)
@@ -39,8 +45,8 @@ func TestDefaultSurfaceModeProgramOptions(t *testing.T) {
 	if hasProgramOption(opts, "WithAltScreen") {
 		t.Fatalf("default options should not enable alt screen: %#v", programOptionNames(opts))
 	}
-	if hasProgramOption(opts, "WithMouseCellMotion") {
-		t.Fatalf("default options should not enable mouse capture: %#v", programOptionNames(opts))
+	if !hasProgramOption(opts, "WithMouseCellMotion") {
+		t.Fatalf("default options should enable mouse capture: %#v", programOptionNames(opts))
 	}
 	if hasProgramOption(opts, "WithoutBracketedPaste") {
 		t.Fatalf("default options should preserve bracketed paste: %#v", programOptionNames(opts))
@@ -53,8 +59,8 @@ func TestDebugSurfaceModeProgramOptions(t *testing.T) {
 	if hasProgramOption(opts, "WithAltScreen") {
 		t.Fatalf("debug options should not enable alt screen: %#v", programOptionNames(opts))
 	}
-	if hasProgramOption(opts, "WithMouseCellMotion") {
-		t.Fatalf("debug options should not enable mouse capture: %#v", programOptionNames(opts))
+	if !hasProgramOption(opts, "WithMouseCellMotion") {
+		t.Fatalf("debug options should enable mouse capture: %#v", programOptionNames(opts))
 	}
 	if hasProgramOption(opts, "WithoutBracketedPaste") {
 		t.Fatalf("debug options should preserve bracketed paste: %#v", programOptionNames(opts))

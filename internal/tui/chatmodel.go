@@ -354,6 +354,7 @@ func copyStringMap(fn func() map[string]string) map[string]string {
 
 func (m ChatModel) Init() tea.Cmd {
 	return tea.Batch(
+		tea.ClearScreen,
 		m.chatViewport.Init(),
 		tickCmd(),
 	)
@@ -363,6 +364,14 @@ func tickCmd() tea.Cmd {
 	return tea.Tick(120*time.Millisecond, func(t time.Time) tea.Msg {
 		return chatTickMsg(t)
 	})
+}
+
+func chatSpinnerGlyph(frame int) string {
+	frames := []string{"-", "\\", "|", "/"}
+	if len(frames) == 0 {
+		return "-"
+	}
+	return frames[frame%len(frames)]
 }
 
 func (m *ChatModel) AddMessage(msg ChatMessage) {
@@ -4212,7 +4221,7 @@ func (m ChatModel) View() string {
 }
 
 func (m ChatModel) renderLiveProgressSlot(theme chatTheme) string {
-	message := m.transientStatusMessage()
+	message, busy := m.transientStatusMessage()
 	slotStyle := lipgloss.NewStyle().
 		Background(theme.AppBG).
 		Foreground(theme.TextDim).
@@ -4220,18 +4229,29 @@ func (m ChatModel) renderLiveProgressSlot(theme chatTheme) string {
 	if message == "" {
 		return slotStyle.Render("")
 	}
-	return slotStyle.Render(fitCell("· "+message, max(1, m.width)))
+	prefix := "·"
+	if busy {
+		prefix = chatSpinnerGlyph(m.spinnerFrame)
+		slotStyle = slotStyle.Foreground(theme.AccentPrimary).Bold(true)
+	}
+	return slotStyle.Render(fitCell(prefix+" "+message, max(1, m.width)))
 }
 
 func (m ChatModel) renderTraceDock(theme chatTheme) string {
 	return renderTraceDockPanel(theme, m.renderedToolsBuf(), m.config.DebugLogPath, m.width, m.debugDockHeight())
 }
 
-func (m ChatModel) transientStatusMessage() string {
+func (m ChatModel) transientStatusMessage() (string, bool) {
 	if message := normalizeStatusMessage(m.liveProgress.Message); message != "" {
-		return message
+		return message, m.busy
 	}
-	return normalizeStatusMessage(m.flash)
+	if m.busy {
+		if status := normalizeStatusMessage(m.status); status != "" {
+			return status, true
+		}
+		return "working", true
+	}
+	return normalizeStatusMessage(m.flash), false
 }
 
 func normalizeStatusMessage(message string) string {

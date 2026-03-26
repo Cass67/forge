@@ -3288,6 +3288,35 @@ func TestProgressSlotTruncatesLongMessageToSingleLine(t *testing.T) {
 	}
 }
 
+func TestProgressSlotShowsSpinnerWhileBusy(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
+	m = updated.(ChatModel)
+	m.busy = true
+	m.spinnerFrame = 2
+	updated, _ = m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "reading app.go"})
+	m = updated.(ChatModel)
+
+	view := strippedLine(m.View())
+	if !strings.Contains(view, "| reading app.go") {
+		t.Fatalf("expected spinner-prefixed progress while busy, got:\n%s", view)
+	}
+}
+
+func TestProgressSlotFallsBackToRunningStatusWhileBusy(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
+	m = updated.(ChatModel)
+	m.busy = true
+	m.status = "running"
+	m.spinnerFrame = 1
+
+	view := strippedLine(m.View())
+	if !strings.Contains(view, "\\ running") {
+		t.Fatalf("expected busy indicator without explicit progress event, got:\n%s", view)
+	}
+}
+
 func TestDebugChatViewShowsTraceOverlayAndDebugContent(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "openai/gpt-5", WorkDir: "/tmp", DebugEnabled: true})
 	m.width = 100
