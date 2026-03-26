@@ -13,7 +13,7 @@ func renderTraceOverlayPanel(theme chatTheme, content string, width, height int)
 
 	lines := []string{
 		titleStyle.Render("Debug trace"),
-		dimStyle.Render("Available because forge was started with -d."),
+		dimStyle.Render("Available only because forge was started with -d."),
 		"",
 	}
 	trimmed := strings.TrimSpace(content)
