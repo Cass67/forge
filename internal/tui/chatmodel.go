@@ -187,6 +187,7 @@ type ChatModel struct {
 	copyFn  func(string) error
 
 	messages []ChatMessage
+	records  []TranscriptRecord
 
 	inputBuf string
 	inputPos int
@@ -223,6 +224,7 @@ type ChatModel struct {
 	recentActivityRole     string
 	recentActivityLines    []string
 	recentActivityIndex    int
+	liveProgress           LiveProgressState
 	turnAnchorMessageIndex int
 	pendingSubAgentSummary *subAgentSummary
 	skills                 []skills.Skill
@@ -296,6 +298,7 @@ type ChatModel struct {
 	inputCh         chan<- string
 	responseCh      chan<- bool
 	slashComplete   chatSlashCompletionState
+	nextRecordSeq   int
 }
 
 func NewChatModel(cfg ChatLiveConfig) ChatModel {
@@ -365,6 +368,7 @@ func tickCmd() tea.Cmd {
 
 func (m *ChatModel) AddMessage(msg ChatMessage) {
 	m.messages = append(m.messages, msg)
+	m.appendTranscriptRecordFromMessage(msg)
 	m.refreshViewport()
 }
 
@@ -394,6 +398,10 @@ func (m *ChatModel) upsertWorkingMessage(content string) {
 	if content == "" {
 		return
 	}
+	m.liveProgress = m.liveProgress.Apply(ProgressUpdate{
+		ReplaceKey: "active",
+		Message:    content,
+	})
 	if m.hasLiveWorkingMessage() {
 		if strings.TrimSpace(m.messages[m.recentActivityIndex].Content) == content {
 			return
@@ -413,11 +421,13 @@ func (m *ChatModel) upsertWorkingMessage(content string) {
 
 func (m *ChatModel) clearWorkingMessage() {
 	if !m.hasLiveWorkingMessage() {
+		m.liveProgress = m.liveProgress.Reset()
 		m.resetRecentActivity()
 		return
 	}
 	idx := m.recentActivityIndex
 	m.messages = append(m.messages[:idx], m.messages[idx+1:]...)
+	m.liveProgress = m.liveProgress.Reset()
 	m.resetRecentActivity()
 	m.refreshViewport()
 }
@@ -473,13 +483,78 @@ func (m *ChatModel) AppendToLastAgentLabeled(text, label string) {
 	if m.hasLiveWorkingMessage() {
 		m.clearWorkingMessage()
 	}
+	startedNew := false
 	if len(m.messages) == 0 || m.messages[len(m.messages)-1].Kind != MsgAgent || !hasAgentHeaderForLabel(m.messages[len(m.messages)-1], label) {
 		stamp := time.Now().Format("15:04:05")
 		m.messages = append(m.messages, ChatMessage{Kind: MsgAgent, Header: displayAgentLabel(label) + " • " + stamp})
+		startedNew = true
 	}
 	m.messages[len(m.messages)-1].Content += text
+	m.syncAssistantTranscriptRecord(label, m.messages[len(m.messages)-1].Header, m.messages[len(m.messages)-1].Content, startedNew)
 	m.lastCodeBlock = latestFencedCodeBlock(m.messages[len(m.messages)-1].Content)
 	m.viewportDirty = true
+}
+
+func (m *ChatModel) appendTranscriptRecord(record TranscriptRecord) {
+	if len(record.Segments) == 0 {
+		return
+	}
+	if strings.TrimSpace(record.ID) == "" {
+		m.nextRecordSeq++
+		record.ID = formatTranscriptRecordID(m.nextRecordSeq)
+	}
+	m.records = append(m.records, record)
+}
+
+func (m *ChatModel) appendTranscriptRecordFromMessage(msg ChatMessage) {
+	record, ok := transcriptRecordFromMessage(msg, "", 0)
+	if !ok {
+		return
+	}
+	m.appendTranscriptRecord(record)
+}
+
+func (m *ChatModel) syncAssistantTranscriptRecord(label, header, content string, startedNew bool) {
+	record := TranscriptRecord{
+		Kind:     RecordAssistant,
+		Label:    displayAgentLabel(label),
+		Segments: segmentsFromContent(content),
+		Final:    false,
+	}
+	if header != "" {
+		record.Label = strings.TrimSpace(header)
+	}
+	if len(record.Segments) == 0 {
+		return
+	}
+	if startedNew || len(m.records) == 0 || m.records[len(m.records)-1].Kind != RecordAssistant {
+		m.appendTranscriptRecord(record)
+		return
+	}
+	last := &m.records[len(m.records)-1]
+	last.Label = record.Label
+	last.Segments = record.Segments
+	last.Final = false
+}
+
+func (m *ChatModel) markLastAssistantRecordFinal() {
+	if len(m.records) == 0 {
+		return
+	}
+	last := &m.records[len(m.records)-1]
+	if last.Kind == RecordAssistant {
+		last.Final = true
+	}
+}
+
+func (m *ChatModel) finalizeLiveProgressRecord() {
+	record, ok := m.liveProgress.Finalize()
+	if !ok {
+		m.clearWorkingMessage()
+		return
+	}
+	m.clearWorkingMessage()
+	m.appendTranscriptRecord(record)
 }
 
 func (m *ChatModel) anchorLatestTurnToBottom() {
@@ -1220,7 +1295,8 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 	case llm.EventDone:
 		m.busy = false
 		m.activeSubAgent = ""
-		m.clearWorkingMessage()
+		m.finalizeLiveProgressRecord()
+		m.markLastAssistantRecordFinal()
 		m.status = "ready"
 		m.syncStatusData()
 		if len(m.toolsSections) > 0 {
@@ -1228,7 +1304,8 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		}
 	case llm.EventError:
 		m.busy = false
-		m.clearWorkingMessage()
+		m.finalizeLiveProgressRecord()
+		m.markLastAssistantRecordFinal()
 		m.status = "error"
 		m.syncStatusData()
 		errMsg := eventErrorMessage(ev)

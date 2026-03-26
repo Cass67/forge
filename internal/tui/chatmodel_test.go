@@ -231,6 +231,73 @@ func TestChatModelProgressHandoffReplacesPreviousWorkingLine(t *testing.T) {
 	}
 }
 
+func TestTranscriptRecordChatModelTracksDurableKindsAndAssistantSegments(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	m.AddMessage(ChatMessage{Kind: MsgUser, Header: "You • 12:00:00", Content: "hello"})
+	m.AppendToLastAgentLabeled("Before\n```go\nfmt.Println(\"hi\")\n```\nAfter", "Agent")
+	m.AddMessage(ChatMessage{Kind: MsgStatus, Content: "Error: boom"})
+	m.AddMessage(ChatMessage{Kind: MsgStatus, Content: "status: ready"})
+
+	if len(m.records) != 4 {
+		t.Fatalf("records = %#v", m.records)
+	}
+	if m.records[0].Kind != RecordUser {
+		t.Fatalf("user record = %#v", m.records[0])
+	}
+	if m.records[1].Kind != RecordAssistant {
+		t.Fatalf("assistant record = %#v", m.records[1])
+	}
+	if got := m.records[1].Segments; len(got) != 3 || got[0].Kind != SegmentText || got[1].Kind != SegmentCode || got[2].Kind != SegmentText {
+		t.Fatalf("assistant segments = %#v", got)
+	}
+	if m.records[2].Kind != RecordError {
+		t.Fatalf("error record = %#v", m.records[2])
+	}
+	if m.records[3].Kind != RecordSystem {
+		t.Fatalf("system record = %#v", m.records[3])
+	}
+}
+
+func TestLiveProgressChatModelKeepsProgressTransientUntilDone(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "scout: reading README.md"})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "scout: reading app.go"})
+	m = updated.(ChatModel)
+
+	if len(m.messages) != 1 || m.messages[0].Kind != MsgWorking || m.messages[0].Content != "scout: reading app.go" {
+		t.Fatalf("messages = %#v", m.messages)
+	}
+	if len(m.records) != 0 {
+		t.Fatalf("records = %#v", m.records)
+	}
+	if m.liveProgress.Message != "scout: reading app.go" {
+		t.Fatalf("live progress = %#v", m.liveProgress)
+	}
+
+	updated, _ = m.Update(llm.Event{Kind: llm.EventDone})
+	m = updated.(ChatModel)
+
+	if len(m.messages) != 0 {
+		t.Fatalf("messages after done = %#v", m.messages)
+	}
+	if m.liveProgress != (LiveProgressState{}) {
+		t.Fatalf("live progress after done = %#v", m.liveProgress)
+	}
+	if len(m.records) != 1 {
+		t.Fatalf("records after done = %#v", m.records)
+	}
+	if m.records[0].Kind != RecordSystem || len(m.records[0].Segments) != 1 || m.records[0].Segments[0].Text != "scout: reading app.go" {
+		t.Fatalf("record after done = %#v", m.records[0])
+	}
+}
+
 func TestChatModelDelegatingRuntimeEventUsesWorkingLine(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 80
