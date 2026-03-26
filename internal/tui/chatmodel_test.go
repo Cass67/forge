@@ -128,6 +128,35 @@ func TestChatModelHandlesDoneEvent(t *testing.T) {
 	}
 }
 
+func TestChatModelHandlesAbortClearsLiveProgress(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+	m.busy = true
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "scout: reading README.md"})
+	m = updated.(ChatModel)
+	if len(m.messages) != 1 || m.messages[0].Kind != MsgWorking {
+		t.Fatalf("expected working row before abort, got %#v", m.messages)
+	}
+
+	updated, _ = m.Update(llm.Event{Kind: llm.EventAbort})
+	m = updated.(ChatModel)
+
+	if m.busy {
+		t.Fatal("expected busy=false after abort")
+	}
+	if len(m.messages) != 0 {
+		t.Fatalf("expected abort to clear working rows, got %#v", m.messages)
+	}
+	if m.liveProgress != (LiveProgressState{}) {
+		t.Fatalf("expected abort to clear live progress, got %#v", m.liveProgress)
+	}
+	if len(m.records) != 0 {
+		t.Fatalf("expected abort not to persist progress, got %#v", m.records)
+	}
+}
+
 func TestChatModelHandlesErrorEventFromText(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 80
@@ -295,6 +324,33 @@ func TestLiveProgressChatModelKeepsProgressTransientUntilDone(t *testing.T) {
 	}
 	if m.records[0].Kind != RecordSystem || len(m.records[0].Segments) != 1 || m.records[0].Segments[0].Text != "scout: reading app.go" {
 		t.Fatalf("record after done = %#v", m.records[0])
+	}
+}
+
+func TestChatModelDoneFinalizesAssistantRecordBeforeProgressNote(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	m.AppendToLastAgentLabeled("hello", "Agent")
+	updated, _ := m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "scout: reading app.go"})
+	m = updated.(ChatModel)
+
+	if len(m.records) != 1 || m.records[0].Kind != RecordAssistant || m.records[0].Final {
+		t.Fatalf("assistant state before done = %#v", m.records)
+	}
+
+	updated, _ = m.Update(llm.Event{Kind: llm.EventDone})
+	m = updated.(ChatModel)
+
+	if len(m.records) != 2 {
+		t.Fatalf("records after done = %#v", m.records)
+	}
+	if m.records[0].Kind != RecordAssistant || !m.records[0].Final {
+		t.Fatalf("assistant record after done = %#v", m.records[0])
+	}
+	if m.records[1].Kind != RecordSystem {
+		t.Fatalf("progress note after done = %#v", m.records[1])
 	}
 }
 
@@ -3315,5 +3371,57 @@ func TestChatModelSaveAndRestoreSessionCommands(t *testing.T) {
 	}
 	if m.renderedToolsBuf() != "tool output" {
 		t.Fatalf("expected restored tools, got %q", m.renderedToolsBuf())
+	}
+}
+
+func TestChatModelRestoreSessionRebuildsTranscriptState(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+	m.AddMessage(ChatMessage{Kind: MsgUser, Header: "You", Content: "saved hello"})
+
+	m.inputBuf = "/save named-session"
+	m.inputPos = len(m.inputBuf)
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+
+	m.AddMessage(ChatMessage{Kind: MsgStatus, Content: "Error: stale"})
+	updated, _ = m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "scout: stale progress"})
+	m = updated.(ChatModel)
+	if m.liveProgress == (LiveProgressState{}) {
+		t.Fatal("expected stale progress before restore")
+	}
+
+	m.inputBuf = "/restore named-session"
+	m.inputPos = len(m.inputBuf)
+	updated, _ = m.submitInput()
+	m = updated.(ChatModel)
+
+	if m.liveProgress != (LiveProgressState{}) {
+		t.Fatalf("expected restore to clear live progress, got %#v", m.liveProgress)
+	}
+	for _, msg := range m.messages {
+		if msg.Kind == MsgWorking {
+			t.Fatalf("expected restore to remove working rows, got %#v", m.messages)
+		}
+	}
+	if len(m.records) != 1 {
+		t.Fatalf("expected restore to rebuild transcript records, got %#v", m.records)
+	}
+	if m.records[0].Kind != RecordSystem {
+		t.Fatalf("expected restored record kind to match restored message, got %#v", m.records[0])
+	}
+	if len(m.records[0].Segments) != 1 || !strings.Contains(m.records[0].Segments[0].Text, "saved hello") || strings.Contains(m.records[0].Segments[0].Text, "stale") {
+		t.Fatalf("unexpected restored record segments: %#v", m.records[0].Segments)
+	}
+	if m.nextRecordSeq != len(m.records) {
+		t.Fatalf("expected record sequence to match rebuilt transcript, seq=%d records=%d", m.nextRecordSeq, len(m.records))
+	}
+
+	m.AddMessage(ChatMessage{Kind: MsgUser, Header: "You", Content: "after restore"})
+	if got := m.records[len(m.records)-1].ID; got != "record-2" {
+		t.Fatalf("expected next record id after restore to continue rebuilt transcript, got %q", got)
 	}
 }

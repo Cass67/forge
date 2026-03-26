@@ -514,6 +514,19 @@ func (m *ChatModel) appendTranscriptRecordFromMessage(msg ChatMessage) {
 	m.appendTranscriptRecord(record)
 }
 
+func (m *ChatModel) resetTranscriptState() {
+	m.records = nil
+	m.liveProgress = LiveProgressState{}
+	m.nextRecordSeq = 0
+}
+
+func (m *ChatModel) rebuildTranscriptStateFromMessages() {
+	m.resetTranscriptState()
+	for _, msg := range m.messages {
+		m.appendTranscriptRecordFromMessage(msg)
+	}
+}
+
 func (m *ChatModel) syncAssistantTranscriptRecord(label, header, content string, startedNew bool) {
 	record := TranscriptRecord{
 		Kind:     RecordAssistant,
@@ -538,12 +551,11 @@ func (m *ChatModel) syncAssistantTranscriptRecord(label, header, content string,
 }
 
 func (m *ChatModel) markLastAssistantRecordFinal() {
-	if len(m.records) == 0 {
-		return
-	}
-	last := &m.records[len(m.records)-1]
-	if last.Kind == RecordAssistant {
-		last.Final = true
+	for i := len(m.records) - 1; i >= 0; i-- {
+		if m.records[i].Kind == RecordAssistant {
+			m.records[i].Final = true
+			return
+		}
 	}
 }
 
@@ -1315,6 +1327,13 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 			Kind:    MsgStatus,
 			Content: "Error: " + errMsg,
 		})
+	case llm.EventAbort:
+		m.busy = false
+		m.activeSubAgent = ""
+		m.clearWorkingMessage()
+		m.markLastAssistantRecordFinal()
+		m.status = "ready"
+		m.syncStatusData()
 	case llm.EventStats:
 		m.statsDuration = ev.Duration
 		m.statsUsage = ev.Usage
@@ -4122,6 +4141,7 @@ func (m *ChatModel) applySnapshot(s chatSessionSnapshot) {
 	if strings.TrimSpace(s.AgentBuf) != "" {
 		m.messages = append(m.messages, ChatMessage{Kind: MsgStatus, Content: s.AgentBuf})
 	}
+	m.rebuildTranscriptStateFromMessages()
 	m.chatViewport.SetContent(m.chatVisible)
 }
 
