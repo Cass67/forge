@@ -22,41 +22,19 @@ func NormalizeAutoMode(mode string) string {
 }
 
 func SkillMessage(s Skill) string {
-	return "[Skill: " + s.Name + "]\n\n" + s.Body
+	return NewRuntime([]Skill{s}).InjectableMessage(s)
 }
 
 func SkillMessageWithUserInput(s Skill, input string) string {
-	return SkillMessage(s) + "\n\n" + input
+	msg := SkillMessage(s)
+	if strings.TrimSpace(input) == "" {
+		return msg
+	}
+	return msg + "\n\n" + input
 }
 
 func DetectAuto(loaded []Skill, input string) (Skill, bool) {
-	lower := strings.ToLower(input)
-	for _, s := range loaded {
-		name := strings.ToLower(s.Name)
-		desc := strings.ToLower(s.Description)
-		if strings.Contains(lower, name) {
-			return s, true
-		}
-		switch name {
-		case "brainstorming":
-			if containsAny(lower, "plan", "planning", "brainstorm", "design", "architecture", "approach", "review", "code review", "audit") {
-				return s, true
-			}
-		case "systematic-debugging":
-			if containsAny(lower, "debug", "bug", "failing", "failure", "regression", "investigate", "root cause", "broken") {
-				return s, true
-			}
-		case "test-driven-development", "tdd":
-			if containsAny(lower, "implement", "implementation", "develop", "development", "build", "feature", "refactor", "add tests", "write tests") {
-				return s, true
-			}
-		default:
-			if desc != "" && strings.Contains(lower, desc) {
-				return s, true
-			}
-		}
-	}
-	return Skill{}, false
+	return NewRuntime(loaded).ResolveAuto(input)
 }
 
 func containsAny(input string, terms ...string) bool {

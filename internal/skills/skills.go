@@ -135,6 +135,23 @@ func Load(workDir string) []Skill {
 	return out
 }
 
+// Descriptors returns a stable descriptor list for loaded skills.
+func Descriptors(skills []Skill) []Descriptor {
+	if len(skills) == 0 {
+		return nil
+	}
+	descriptors := make([]Descriptor, 0, len(skills))
+	for _, s := range skills {
+		descriptors = append(descriptors, Descriptor{
+			Name:        s.Name,
+			Description: s.Description,
+			Source:      s.Source,
+		})
+	}
+	sort.Slice(descriptors, func(i, j int) bool { return descriptors[i].Name < descriptors[j].Name })
+	return descriptors
+}
+
 // Describe returns a formatted string listing available skills for the system prompt.
 func Describe(skills []Skill) string {
 	if len(skills) == 0 {
@@ -142,8 +159,8 @@ func Describe(skills []Skill) string {
 	}
 	var sb strings.Builder
 	sb.WriteString("Available skills (activate with /skillname):\n")
-	for _, s := range skills {
-		fmt.Fprintf(&sb, "  - /%s: %s\n", s.Name, s.Description)
+	for _, d := range Descriptors(skills) {
+		fmt.Fprintf(&sb, "  - /%s: %s\n", d.Name, d.Description)
 	}
 	return sb.String()
 }

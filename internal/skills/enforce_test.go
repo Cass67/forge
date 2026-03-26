@@ -20,3 +20,19 @@ func TestRequiredForInput(t *testing.T) {
 	}
 }
 
+func TestRequiredForInputMatchesRuntimeResolver(t *testing.T) {
+	t.Parallel()
+	rt := NewRuntime([]Skill{{
+		Name:        "brainstorming",
+		Description: "plan first",
+		Body:        "Do not implement yet.",
+	}})
+
+	skill, ok := rt.ResolveRequired("please design the chat ui")
+	if !ok {
+		t.Fatal("expected ResolveRequired to return brainstorming")
+	}
+	if got := RequiredForInput("please design the chat ui"); got != skill.Name {
+		t.Fatalf("RequiredForInput() = %q, want %q", got, skill.Name)
+	}
+}
