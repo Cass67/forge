@@ -402,3 +402,63 @@ For a directory or repository walkthrough:
 		t.Fatalf("expected README grounding after retry, got %#v", result)
 	}
 }
+
+func TestManagerExecuteRetriesEvaluativeRepoReviewUntilNonReadmeFileIsRead(t *testing.T) {
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{
+		Name:        "list_dir",
+		Description: "list directory contents",
+		Execute: func(context.Context, map[string]any) (string, error) {
+			return "README.md\n.pre-commit-config.yaml\nutil-ies-mgmt-03/\n", nil
+		},
+	})
+	reg.Register(tools.Tool{
+		Name:        "read_file",
+		Description: "read file contents",
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			path, _ := args["path"].(string)
+			switch path {
+			case "README.md":
+				return "README explains the multi-host Cerner automation flows.", nil
+			case ".pre-commit-config.yaml":
+				return "repos:\n  - repo: https://github.com/astral-sh/ruff-pre-commit", nil
+			default:
+				return "", nil
+			}
+		},
+	})
+
+	manager := NewManager(ManagerConfig{
+		WorkDir:   ".",
+		BaseTools: reg,
+		DriverFor: func(WorkerKind) llm.Driver {
+			return &sequenceDriver{responses: []string{
+				"<tool_call>\n{\"name\":\"list_dir\",\"args\":{\"path\":\".\",\"recursive\":false}}\n</tool_call>",
+				"<tool_call>\n{\"name\":\"read_file\",\"args\":{\"path\":\"README.md\",\"start_line\":1,\"end_line\":80}}\n</tool_call>",
+				`{"status":"complete","evidence":[{"kind":"command","summary":"Top-level listing shows the repo layout."},{"kind":"file","path":"README.md","summary":"README explains the multi-host automation layout."}],"coverage":"repo root plus README","gaps":["Need one non-README file for a grounded evaluative review."],"suggested_next":"read .pre-commit-config.yaml"}`,
+				"<tool_call>\n{\"name\":\"read_file\",\"args\":{\"path\":\".pre-commit-config.yaml\",\"start_line\":1,\"end_line\":80}}\n</tool_call>",
+				`{"status":"complete","evidence":[{"kind":"command","summary":"Top-level listing shows the repo layout."},{"kind":"file","path":"README.md","summary":"README explains the multi-host automation layout."},{"kind":"file","path":".pre-commit-config.yaml","summary":"The pre-commit config layers secret scanning, Ruff, Bandit, and local guardrails, which suggests repo hygiene is enforced but duplicated Python checks may exist."}],"coverage":"repo root, README, and pre-commit config","gaps":[],"suggested_next":"inspect a producer entrypoint if deeper workflow risk analysis is needed"}`,
+			}}
+		},
+	})
+
+	obs, err := manager.Execute(context.Background(), WorkerTask{
+		Kind:                         WorkerReader,
+		Objective:                    "please take a look at this repo and tell me whats happeingin and what improvments could be made",
+		TopicKey:                     "workspace:repository",
+		RequireNonReadmeFileEvidence: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, ok := obs.Artifact.(ReaderResult)
+	if !ok {
+		t.Fatalf("artifact = %#v", obs.Artifact)
+	}
+	if len(result.Evidence) < 3 {
+		t.Fatalf("expected non-README evidence after retry, got %#v", result)
+	}
+	if result.Evidence[2].Kind != "file" || result.Evidence[2].Path != ".pre-commit-config.yaml" {
+		t.Fatalf("expected non-README grounding after retry, got %#v", result)
+	}
+}

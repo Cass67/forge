@@ -103,11 +103,13 @@ func (r *Runner) executeWorker(ctx context.Context, turn UserTurn, class Classif
 	r.trace.Add(StateAct, class.Family, step.Kind, step.Worker, step.Summary, class.TopicKey)
 	deadline, _ := ctx.Deadline()
 	obs, err := r.workers.Execute(ctx, WorkerTask{
-		Kind:          step.Worker,
-		Objective:     turn.Text,
-		Context:       workerContext(class, session, step),
-		TopicKey:      class.TopicKey,
-		StopCondition: step.Reason,
+		Kind:                              step.Worker,
+		Objective:                         turn.Text,
+		Context:                           workerContext(class, session, step),
+		TopicKey:                          class.TopicKey,
+		StopCondition:                     step.Reason,
+		RequireRepresentativeFileEvidence: readerTaskNeedsRepresentativeFile(step, class),
+		RequireNonReadmeFileEvidence:      readerTaskNeedsNonReadmeFile(step, class),
 		SkillContext: WorkerSkillContext{
 			Loaded:   append([]skills.Skill(nil), r.workerSkills...),
 			AutoMode: r.workerAutoMode,
@@ -161,6 +163,12 @@ For a directory or repository walkthrough:
 				"The user wants evidence-backed findings or cleanup recommendations, not just a neutral walkthrough.",
 				"Make each evidence summary explain the concrete observation and why it matters.",
 			)
+			if isInspectableWorkspaceTopic(class.TopicKey) {
+				lines = append(lines,
+					"For an evaluative repository or directory review, README-only evidence is not enough.",
+					"Inspect at least one grounded implementation, config, or entrypoint file beyond README before you conclude.",
+				)
+			}
 		}
 		if session.HasRecentEvidence() && strings.TrimSpace(session.LastEvidence.TopicKey) != "" {
 			lines = append(lines,
@@ -189,6 +197,17 @@ For a directory or repository walkthrough:
 	default:
 		return ""
 	}
+}
+
+func readerTaskNeedsRepresentativeFile(step Step, class Classification) bool {
+	return step.Worker == WorkerReader && class.Family == FamilyInspect && isInspectableWorkspaceTopic(class.TopicKey)
+}
+
+func readerTaskNeedsNonReadmeFile(step Step, class Classification) bool {
+	return step.Worker == WorkerReader &&
+		class.Family == FamilyInspect &&
+		class.WantsEvaluation &&
+		isInspectableWorkspaceTopic(class.TopicKey)
 }
 
 func buildForgeResponse(step Step, obs Observation) string {

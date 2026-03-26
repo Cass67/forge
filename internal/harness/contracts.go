@@ -275,6 +275,9 @@ func normalizeReaderGrounding(task WorkerTask, result ReaderResult, calls []agen
 	if readerTaskRequiresRepresentativeFile(task) && !readerResultHasGroundedFileEvidence(normalized, readFiles) {
 		return ReaderResult{}, fmt.Errorf("reader walkthrough complete result requires representative file evidence")
 	}
+	if readerTaskRequiresNonReadmeFile(task) && !readerResultHasGroundedNonReadmeFileEvidence(normalized, readFiles) {
+		return ReaderResult{}, fmt.Errorf("reader evaluative review complete result requires grounded non-README file evidence")
+	}
 	return normalized, nil
 }
 
@@ -282,12 +285,14 @@ func readerTaskRequiresRepresentativeFile(task WorkerTask) bool {
 	if task.Kind != WorkerReader {
 		return false
 	}
-	topic := strings.TrimSpace(task.TopicKey)
-	if strings.HasPrefix(topic, "workspace:repository") || strings.HasPrefix(topic, "workspace:directory") {
+	if task.RequireRepresentativeFileEvidence || task.RequireNonReadmeFileEvidence {
 		return true
 	}
-	context := strings.ToLower(strings.TrimSpace(task.Context))
-	return strings.Contains(context, "representative file")
+	return isInspectableWorkspaceTopic(task.TopicKey)
+}
+
+func readerTaskRequiresNonReadmeFile(task WorkerTask) bool {
+	return task.Kind == WorkerReader && task.RequireNonReadmeFileEvidence
 }
 
 func readerResultHasFileEvidence(result ReaderResult) bool {
@@ -309,6 +314,32 @@ func readerResultHasGroundedFileEvidence(result ReaderResult, readFiles map[stri
 		}
 	}
 	return false
+}
+
+func readerResultHasGroundedNonReadmeFileEvidence(result ReaderResult, readFiles map[string]struct{}) bool {
+	for _, evidence := range result.Evidence {
+		if strings.TrimSpace(evidence.Kind) != "file" {
+			continue
+		}
+		path := normalizeEvidencePath(evidence.Path)
+		if isReadmeEvidencePath(path) {
+			continue
+		}
+		if _, ok := readFiles[path]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func isInspectableWorkspaceTopic(topic string) bool {
+	topic = strings.TrimSpace(topic)
+	return strings.HasPrefix(topic, "workspace:repository") || strings.HasPrefix(topic, "workspace:directory")
+}
+
+func isReadmeEvidencePath(path string) bool {
+	base := strings.ToLower(filepath.Base(normalizeEvidencePath(path)))
+	return base == "readme" || strings.HasPrefix(base, "readme.")
 }
 
 func validateEditorResult(result EditorResult) error {
