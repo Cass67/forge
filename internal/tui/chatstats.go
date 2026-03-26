@@ -185,7 +185,7 @@ func renderStatsOverlayPanel(theme chatTheme, data chatStatsData, width, height 
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(theme.BorderFocus).
-		Background(theme.HeaderBG).
+		Background(theme.AppBG).
 		Padding(1, 2).
 		Width(boxW - 6).
 		Height(contentHeight).
@@ -334,7 +334,7 @@ func renderStatusHeader(theme chatTheme, data chatStatusData, width int) string 
 	}
 	line := strings.Join(parts, sep)
 	return lipgloss.NewStyle().
-		Background(theme.HeaderBG).
+		Background(theme.AppBG).
 		Foreground(theme.HeaderFG).
 		Width(max(1, width-2)).
 		Padding(0, 1).

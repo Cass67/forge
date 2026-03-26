@@ -135,6 +135,33 @@ func ParseToolCalls(text string) ([]ToolCall, string) {
 	return calls, strings.Join(textParts, "\n")
 }
 
+func NormalizeStrictToolTurn(text string) (string, bool) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", false
+	}
+
+	calls, visible := ParseToolCalls(text)
+	if len(calls) > 0 {
+		normalized := formatToolCallBlock(calls[0])
+		if len(calls) == 1 && strings.TrimSpace(visible) == "" {
+			return normalized, normalized != text
+		}
+		return normalized, true
+	}
+	if !containsRawToolMarkup(text) {
+		return text, false
+	}
+	if call, ok := parseFirstToolCallCandidate(text); ok {
+		return formatToolCallBlock(call), true
+	}
+	return text, false
+}
+
+func NormalizeStrictWorkerTurnForLogging(text string) (string, bool) {
+	return NormalizeStrictToolTurn(text)
+}
+
 func parseInlineToolCallsLine(line string) inlineToolCallParse {
 	remaining := line
 	var calls []ToolCall
@@ -183,6 +210,24 @@ func nextToolCallOpener(line string) (int, int) {
 		}
 	}
 	return bestPos, bestIdx
+}
+
+func parseFirstToolCallCandidate(text string) (ToolCall, bool) {
+	trimmed := strings.TrimSpace(text)
+	if call, _, ok := parseLeadingToolCallJSON(trimmed); ok {
+		return call, true
+	}
+	for _, opener := range toolCallOpeners {
+		idx := strings.Index(trimmed, opener)
+		if idx < 0 {
+			continue
+		}
+		after := strings.TrimSpace(trimmed[idx+len(opener):])
+		if call, _, ok := parseLeadingToolCallJSON(after); ok {
+			return call, true
+		}
+	}
+	return ToolCall{}, false
 }
 
 func parseLooseToolCallLine(line string) (ToolCall, string, bool) {
@@ -279,6 +324,17 @@ func parseBlock(raw string) []ToolCall {
 	}
 
 	return nil
+}
+
+func formatToolCallBlock(call ToolCall) string {
+	payload, err := json.Marshal(map[string]any{
+		"name": call.Name,
+		"args": call.Args,
+	})
+	if err != nil {
+		return "<tool_call>\n{}\n</tool_call>"
+	}
+	return "<tool_call>\n" + string(payload) + "\n</tool_call>"
 }
 
 func parseCallJSON(raw string) ToolCall {

@@ -293,6 +293,17 @@ func TestManagerExecuteRecoversFromMalformedReaderToolMarkup(t *testing.T) {
 			return "README.md\ncmd/\ninternal/", nil
 		},
 	})
+	reg.Register(tools.Tool{
+		Name:        "read_file",
+		Description: "read file contents",
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			path, _ := args["path"].(string)
+			if path == "README.md" {
+				return "README explains the project layout.", nil
+			}
+			return "", nil
+		},
+	})
 
 	manager := NewManager(ManagerConfig{
 		WorkDir:   ".",
@@ -301,7 +312,8 @@ func TestManagerExecuteRecoversFromMalformedReaderToolMarkup(t *testing.T) {
 			return &sequenceDriver{responses: []string{
 				"<tool_call>\n{\"name\":\"list_dir\",\"args\":{\"path\":\".\",\"recursive\":false}}{\"status\":\"complete\",\"evidence\":[{\"kind\":\"command\",\"summary\":\"Top-level listing shows the repo layout.\"}],\"coverage\":\"repo root\",\"gaps\":[],\"suggested_next\":\"none\"}",
 				"<tool_call>\n{\"name\":\"list_dir\",\"args\":{\"path\":\".\",\"recursive\":false}}\n</tool_call>",
-				`{"status":"complete","evidence":[{"kind":"command","summary":"Top-level listing shows the repo layout."}],"coverage":"repo root","gaps":[],"suggested_next":"none"}`,
+				"<tool_call>\n{\"name\":\"read_file\",\"args\":{\"path\":\"README.md\",\"start_line\":1,\"end_line\":40}}\n</tool_call>",
+				`{"status":"complete","evidence":[{"kind":"command","summary":"Top-level listing shows the repo layout."},{"kind":"file","path":"README.md","summary":"README explains the project layout."}],"coverage":"repo root","gaps":[],"suggested_next":"none"}`,
 			}}
 		},
 	})
@@ -318,10 +330,75 @@ func TestManagerExecuteRecoversFromMalformedReaderToolMarkup(t *testing.T) {
 	if !ok {
 		t.Fatalf("artifact = %#v", obs.Artifact)
 	}
-	if len(result.Evidence) != 1 || result.Evidence[0].Kind != "command" {
+	if len(result.Evidence) != 2 {
+		t.Fatalf("artifact = %#v", result)
+	}
+	if result.Evidence[1].Kind != "file" || result.Evidence[1].Path != "README.md" {
 		t.Fatalf("artifact = %#v", result)
 	}
 	if result.Coverage != "repo root" {
 		t.Fatalf("artifact = %#v", result)
+	}
+}
+
+func TestManagerExecuteRetriesRepositoryWalkthroughUntilRepresentativeFileIsRead(t *testing.T) {
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{
+		Name:        "list_dir",
+		Description: "list directory contents",
+		Execute: func(context.Context, map[string]any) (string, error) {
+			return "README.md\ngo.mod\ninternal/\n", nil
+		},
+	})
+	reg.Register(tools.Tool{
+		Name:        "read_file",
+		Description: "read file contents",
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			path, _ := args["path"].(string)
+			switch path {
+			case "README.md":
+				return "Forge is a terminal coding assistant.", nil
+			case "go.mod":
+				return "module forge", nil
+			default:
+				return "", nil
+			}
+		},
+	})
+
+	manager := NewManager(ManagerConfig{
+		WorkDir:   ".",
+		BaseTools: reg,
+		DriverFor: func(WorkerKind) llm.Driver {
+			return &sequenceDriver{responses: []string{
+				"<tool_call>\n{\"name\":\"list_dir\",\"args\":{\"path\":\".\",\"recursive\":false}}\n</tool_call>",
+				`{"status":"complete","evidence":[{"kind":"command","summary":"Top-level listing shows the repo layout."}],"coverage":"repo root","gaps":["No representative files inspected yet."],"suggested_next":"read README.md"}`,
+				"<tool_call>\n{\"name\":\"read_file\",\"args\":{\"path\":\"README.md\",\"start_line\":1,\"end_line\":40}}\n</tool_call>",
+				`{"status":"complete","evidence":[{"kind":"command","summary":"Top-level listing shows the repo layout."},{"kind":"file","path":"README.md","summary":"README identifies Forge as a terminal coding assistant."}],"coverage":"repo root plus README","gaps":[],"suggested_next":"none"}`,
+			}}
+		},
+	})
+
+	obs, err := manager.Execute(context.Background(), WorkerTask{
+		Kind:      WorkerReader,
+		Objective: "have a look at this repo and tell me what you think",
+		Context: `Gather concrete workspace evidence before you conclude.
+For a directory or repository walkthrough:
+- inspect the top-level structure with list_dir
+- inspect one or two representative files such as README.md, go.mod, package.json, or a relevant entrypoint when present`,
+		TopicKey: "workspace:repository",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, ok := obs.Artifact.(ReaderResult)
+	if !ok {
+		t.Fatalf("artifact = %#v", obs.Artifact)
+	}
+	if len(result.Evidence) < 2 {
+		t.Fatalf("expected representative file evidence after retry, got %#v", result)
+	}
+	if result.Evidence[1].Kind != "file" || result.Evidence[1].Path != "README.md" {
+		t.Fatalf("expected README grounding after retry, got %#v", result)
 	}
 }

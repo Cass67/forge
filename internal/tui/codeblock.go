@@ -82,7 +82,7 @@ func renderCodeBlock(lang, body string, width int, theme chatTheme) string {
 	return lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder()).
 		BorderForeground(codeBlockBorder(lang, theme)).
-		Background(theme.HeaderBG).
+		Background(theme.AppBG).
 		Padding(0, 1).
 		Width(innerWidth).
 		Render(stack)

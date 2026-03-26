@@ -1067,7 +1067,6 @@ func TestReaderSubAgentRecoversFromMalformedToolMarkup(t *testing.T) {
 	driver := &inspectingDriver{
 		responses: []string{
 			"<tool_call>\n{\"name\":\"list_dir\",\"args\":{\"path\":\".\",\"recursive\":false}}{\"status\":\"complete\",\"evidence\":[{\"kind\":\"command\",\"summary\":\"Top-level listing shows the repo layout.\"}],\"coverage\":\"repo root\",\"gaps\":[],\"suggested_next\":\"none\"}",
-			"<tool_call>\n{\"name\":\"list_dir\",\"args\":{\"path\":\".\",\"recursive\":false}}\n</tool_call>",
 			`{"status":"complete","evidence":[{"kind":"command","summary":"Top-level listing shows the repo layout."}],"coverage":"repo root","gaps":[],"suggested_next":"none"}`,
 		},
 		checks: []func([]llm.Message) error{
@@ -1077,8 +1076,11 @@ func TestReaderSubAgentRecoversFromMalformedToolMarkup(t *testing.T) {
 				for _, msg := range messages {
 					joined += msg.Content + "\n"
 				}
-				if !strings.Contains(joined, subAgentMalformedToolMarkupNudgeMessage("reader", 1)) {
-					return fmt.Errorf("second turn missing malformed-tool-markup nudge")
+				if strings.Contains(joined, subAgentMalformedToolMarkupNudgeMessage("reader", 1)) {
+					return fmt.Errorf("second turn should not retry malformed tool markup when the first tool call is salvageable")
+				}
+				if !strings.Contains(joined, "[list_dir]") {
+					return fmt.Errorf("second turn missing executed salvaged list_dir result")
 				}
 				return nil
 			},
@@ -1097,10 +1099,78 @@ func TestReaderSubAgentRecoversFromMalformedToolMarkup(t *testing.T) {
 	if err := a.Run(context.Background(), "describe this directory"); err != nil {
 		t.Fatal(err)
 	}
-	if driver.callIdx != 3 {
-		t.Fatalf("expected malformed reader tool-call recovery flow, got %d driver calls", driver.callIdx)
+	if driver.callIdx != 2 {
+		t.Fatalf("expected malformed reader tool-call recovery flow without retry tax, got %d driver calls", driver.callIdx)
 	}
 	if got := a.LastResponse(); !strings.Contains(got, `"coverage":"repo root"`) {
+		t.Fatalf("final reader result missing: %q", got)
+	}
+}
+
+func TestReaderSubAgentSerializesSingleToolTurnsAndSuppressesStructuredLeak(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Forge\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	driver := &inspectingDriver{
+		responses: []string{
+			"<tool_call>\n{\"name\":\"list_dir\",\"args\":{\"path\":\".\",\"recursive\":false}}\n</tool_call><tool_call>\n{\"name\":\"read_file\",\"args\":{\"path\":\"README.md\",\"start_line\":1,\"end_line\":40}}\n</tool_call>{\"status\":\"complete\",\"evidence\":[{\"kind\":\"command\",\"summary\":\"Top-level listing shows the repo layout.\"},{\"kind\":\"file\",\"path\":\"README.md\",\"summary\":\"README explains Forge.\"}],\"coverage\":\"repo root plus README\",\"gaps\":[],\"suggested_next\":\"none\"}",
+			"<tool_call>\n{\"name\":\"read_file\",\"args\":{\"path\":\"README.md\",\"start_line\":1,\"end_line\":40}}\n</tool_call>",
+			`{"status":"complete","evidence":[{"kind":"command","summary":"Top-level listing shows the repo layout."},{"kind":"file","path":"README.md","summary":"README explains Forge."}],"coverage":"repo root plus README","gaps":[],"suggested_next":"none"}`,
+		},
+		checks: []func([]llm.Message) error{
+			nil,
+			func(messages []llm.Message) error {
+				joined := ""
+				for _, msg := range messages {
+					joined += msg.Content + "\n"
+				}
+				if !strings.Contains(joined, "[list_dir]") {
+					return fmt.Errorf("second turn missing first executed tool result")
+				}
+				if strings.Contains(joined, subAgentToolCallNudgeMessage("reader", 1)) {
+					return fmt.Errorf("second turn should continue from the salvaged first tool call without a mixed-output nudge")
+				}
+				if strings.Contains(joined, subAgentSingleToolCallNudgeMessage("reader", 1)) {
+					return fmt.Errorf("second turn should not need a single-tool-call nudge after salvage")
+				}
+				return nil
+			},
+		},
+	}
+
+	reg := tools.NewRegistry()
+	var executed []string
+	reg.Register(tools.Tool{
+		Name:        "list_dir",
+		Description: "List dir",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			executed = append(executed, "list_dir")
+			return "README.md\ninternal/", nil
+		},
+	})
+	reg.Register(tools.Tool{
+		Name:        "read_file",
+		Description: "Read file",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			executed = append(executed, "read_file")
+			return "1 | # Forge", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), dir, 10, renderer, nil, nil)
+	a.SetRole("reader")
+	a.isSubAgent = true
+
+	if err := a.Run(context.Background(), "describe this directory"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(executed, ","); got != "list_dir,read_file" {
+		t.Fatalf("expected reader worker to serialize tool calls, got %q", got)
+	}
+	if got := a.LastResponse(); !strings.Contains(got, `"coverage":"repo root plus README"`) {
 		t.Fatalf("final reader result missing: %q", got)
 	}
 }
@@ -3137,6 +3207,52 @@ func TestAgentRunParsesCloseOnlyToolCallFragment(t *testing.T) {
 	got := output.String()
 	if strings.Contains(got, "</tool_call>") || strings.Contains(got, `{"name": "list_dir"`) {
 		t.Fatalf("raw malformed tool call leaked to renderer output: %q", got)
+	}
+}
+
+func TestHiddenWorkerSalvagesMalformedStrictToolTurnWithoutRetryTax(t *testing.T) {
+	dir := t.TempDir()
+	driver := &inspectingDriver{
+		checks: []func([]llm.Message) error{
+			nil,
+			func(messages []llm.Message) error {
+				if len(messages) == 0 {
+					return fmt.Errorf("missing second turn messages")
+				}
+				last := messages[len(messages)-1].Content
+				if strings.Contains(last, "malformed tool markup") {
+					return fmt.Errorf("unexpected malformed tool nudge: %q", last)
+				}
+				if !strings.Contains(last, "Tool results:") {
+					return fmt.Errorf("expected tool results after salvaged tool call, got %q", last)
+				}
+				return nil
+			},
+		},
+		responses: []string{
+			"<tool_call>{\"name\":\"list_dir\",\"args\":{\"path\":\".\",\"recursive\":false}}></tool_call><tool_call>{\"name\":\"read_file\",\"args\":{\"path\":\"README.md\"}}{\"status\":\"complete\"}",
+			`{"status":"complete","evidence":[{"kind":"command","path":"list_dir","summary":"listed repo root"}],"coverage":"inspected root","gaps":[],"suggested_next":"none"}`,
+		},
+	}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.NewListDir(dir, nil))
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	worker := NewAgent(driver, reg, YoloApproval(), dir, 6, renderer, nil, nil)
+	worker.SetSubAgentMode(true)
+	worker.SetRole("reader")
+	worker.SetSystem(BuildWorkerSystemPrompt(dir, reg, "reader", nil))
+
+	if err := worker.Run(context.Background(), "OBJECTIVE: inspect the repo root"); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callIdx != 2 {
+		t.Fatalf("expected strict worker to accept salvaged first tool turn, got %d driver calls", driver.callIdx)
+	}
+	if len(worker.LastToolCalls()) != 1 || worker.LastToolCalls()[0].Name != "list_dir" {
+		t.Fatalf("last tool calls = %#v", worker.LastToolCalls())
 	}
 }
 

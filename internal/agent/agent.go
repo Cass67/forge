@@ -222,6 +222,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	turnStart := time.Now()
 	actionPreambleRetries := 0
 	subAgentMixedProseRetries := 0
+	subAgentMultipleToolCallRetries := 0
 	dispatchDirectAnswerRetries := 0
 	inspectNoToolRetries := 0
 	inspectMixedToolCallRetries := 0
@@ -288,6 +289,9 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		}
 
 		response := sb.String()
+		if normalized, changed := normalizeStrictTurnForExecution(response, a.role, a.isSubAgent, isInspectTurn); changed {
+			response = normalized
+		}
 
 		// Parse tool calls
 		calls, visibleText := ParseToolCalls(response)
@@ -446,6 +450,13 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 
 		if a.role == "dispatch" && len(calls) > 1 {
 			calls = calls[:1]
+		}
+		strictWorkerMultipleToolCalls := isStrictWorkerRole(a.role) && len(calls) > 1
+		if strictWorkerMultipleToolCalls {
+			subAgentMultipleToolCallRetries++
+			calls = calls[:1]
+		} else {
+			subAgentMultipleToolCallRetries = 0
 		}
 		inspectMultipleToolCalls := isInspectTurn && len(calls) > 1
 		if inspectMultipleToolCalls {
@@ -656,6 +667,12 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				Content: subAgentToolCallNudgeMessage(a.role, subAgentMixedProseRetries),
 			})
 		}
+		if strictWorkerMultipleToolCalls && turn+1 < a.maxTurns {
+			a.history = append(a.history, llm.Message{
+				Role:    llm.RoleUser,
+				Content: subAgentSingleToolCallNudgeMessage(a.role, subAgentMultipleToolCallRetries),
+			})
+		}
 		if inspectMixedToolCallProse && turn+1 < a.maxTurns {
 			a.history = append(a.history, llm.Message{
 				Role:    llm.RoleUser,
@@ -729,6 +746,15 @@ func copyToolCall(call ToolCall) ToolCall {
 		}
 	}
 	return cloned
+}
+
+func isStrictWorkerRole(role string) bool {
+	switch strings.TrimSpace(role) {
+	case "reader", "editor", "verifier", "researcher":
+		return true
+	default:
+		return false
+	}
 }
 
 func dispatchScratchpadWriteAllowed(content string, delegateResults map[string]string, delegateArtifacts map[string]string, scratchpadResult string) bool {
@@ -1086,6 +1112,21 @@ func resolveScoutFallbackEvidence(currentTurn int, current *dispatchScoutEvidenc
 		return &latest
 	}
 	return nil
+}
+
+func normalizeStrictTurnForExecution(response, role string, isSubAgent, isInspectTurn bool) (string, bool) {
+	strictTurn := isSubAgent && isStrictWorkerRole(role)
+	if !strictTurn {
+		return response, false
+	}
+	normalized, changed := NormalizeStrictToolTurn(response)
+	if !changed {
+		return response, false
+	}
+	if calls, _ := ParseToolCalls(normalized); len(calls) > 0 {
+		return normalized, true
+	}
+	return response, false
 }
 
 func labelInterpretationUnavailable(message string) string {
@@ -1518,11 +1559,34 @@ func subAgentToolCallNudgeMessage(role string, attempt int) string {
 	}
 	switch attempt {
 	case 1:
-		return "Sub-agent must not mix visible prose with tool calls. Use tool calls while working; give plain-text output only when finished."
+		if isStrictWorkerRole(role) {
+			return "Hidden worker must not mix visible text with tool calls. Use exactly one tool call while working; emit the final JSON object only when finished."
+		}
+		return "Sub-agent must not mix visible prose with tool calls. Use tool calls while working; emit the required final output only when finished."
 	case 2:
-		return "Do not ask for pasted tool output while also calling tools. Either call the next tool or give the final answer."
+		if isStrictWorkerRole(role) {
+			return "Do not combine tool calls with JSON or status text. Either call the next tool or emit the final JSON object."
+		}
+		return "Do not ask for pasted tool output while also calling tools. Either call the next tool or emit the final output."
 	default:
+		if isStrictWorkerRole(role) {
+			return "Stop mixing tool calls with visible text. Tool calls only until the final JSON object is ready."
+		}
 		return "Stop mixing prose with tool calls. Tool calls only until the task is complete."
+	}
+}
+
+func subAgentSingleToolCallNudgeMessage(role string, attempt int) string {
+	if !isStrictWorkerRole(role) {
+		return "Sub-agent must emit exactly one tool call per working turn."
+	}
+	switch attempt {
+	case 1:
+		return "Hidden worker must emit exactly one tool call per working turn."
+	case 2:
+		return "Still too many tool calls in one worker turn. Emit one tool call only, wait for results, then continue."
+	default:
+		return "One tool call only per worker turn until the final JSON object is ready."
 	}
 }
 
@@ -1530,7 +1594,10 @@ func subAgentNoOutputNudgeMessage(role string) string {
 	if strings.TrimSpace(role) == "scout" {
 		return "Scout produced no final output after gathering evidence. Either call the next evidence tool or return findings now."
 	}
-	return "Sub-agent produced no final output. Either call the next tool or return the final plain-text answer now."
+	if isStrictWorkerRole(role) {
+		return "Hidden worker produced no final output. Either call the next tool or return the final JSON object now."
+	}
+	return "Sub-agent produced no final output. Either call the next tool or return the final output now."
 }
 
 func dispatchNudgeMessage(attempt int) string {

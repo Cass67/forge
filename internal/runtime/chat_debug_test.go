@@ -90,6 +90,96 @@ func TestEnableChatDebugWrapsDriverAndLogsRequestResponse(t *testing.T) {
 	}
 }
 
+func TestEnableChatDebugNormalizesHiddenWorkerResponses(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chat-debug.jsonl")
+	inner := &debugMockDriver{
+		response: "<tool_call>{\"name\":\"list_dir\",\"args\":{\"path\":\".\",\"recursive\":false}}></tool_call><tool_call>{\"name\":\"read_file\",\"args\":{\"path\":\"README.md\"}}{\"status\":\"complete\"}",
+	}
+	setup := &ChatSetup{
+		ChatModel: "openai/gpt-5",
+		WorkDir:   t.TempDir(),
+		Driver:    inner,
+	}
+	if _, err := EnableChatDebug(setup, path); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: "You are forge's hidden worker runtime."},
+		{Role: llm.RoleUser, Content: "OBJECTIVE: inspect"},
+	}
+	out := make(chan llm.Token, 4)
+	errCh := make(chan error, 1)
+	go func() { errCh <- setup.Driver.Stream(context.Background(), msgs, out) }()
+	for range out {
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+
+	lines := readDebugLines(t, path)
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &entry); err != nil {
+		t.Fatal(err)
+	}
+	fields, _ := entry["fields"].(map[string]any)
+	if got := fields["response_normalized"]; got != true {
+		t.Fatalf("response_normalized = %#v, want true", got)
+	}
+	response, _ := fields["response"].(string)
+	if strings.Contains(response, "\"name\":\"read_file\"") {
+		t.Fatalf("expected hidden-worker debug log to suppress later malformed tool calls, got %s", response)
+	}
+	if !strings.Contains(response, "\"name\":\"list_dir\"") {
+		t.Fatalf("expected canonical first tool call to remain in log, got %s", response)
+	}
+}
+
+func TestEnableChatDebugNormalizesInspectTurnResponses(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chat-debug.jsonl")
+	inner := &debugMockDriver{
+		response: "<tool_call>\n{\"name\":\"list_dir\",\"args\":{\"path\":\".\",\"recursive\":false}}\n</tool_call>I inspected enough to answer.",
+	}
+	setup := &ChatSetup{
+		ChatModel: "openai/gpt-5",
+		WorkDir:   t.TempDir(),
+		Driver:    inner,
+	}
+	if _, err := EnableChatDebug(setup, path); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: "You are forge, a coding agent."},
+		{Role: llm.RoleUser, Content: "HARNESS MODE: inspect\nUSER REQUEST:\ndescribe this directory"},
+	}
+	out := make(chan llm.Token, 4)
+	errCh := make(chan error, 1)
+	go func() { errCh <- setup.Driver.Stream(context.Background(), msgs, out) }()
+	for range out {
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+
+	lines := readDebugLines(t, path)
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &entry); err != nil {
+		t.Fatal(err)
+	}
+	fields, _ := entry["fields"].(map[string]any)
+	if got := fields["response_normalized"]; got != true {
+		t.Fatalf("response_normalized = %#v, want true", got)
+	}
+	response, _ := fields["response"].(string)
+	if strings.Contains(response, "I inspected enough to answer") {
+		t.Fatalf("expected inspect turn debug log to suppress visible prose, got %s", response)
+	}
+	if !strings.Contains(response, "\"name\":\"list_dir\"") {
+		t.Fatalf("expected inspect tool call to remain in log, got %s", response)
+	}
+}
+
 func TestEnableChatDebugWrapsMakeDriverAndDelegatesInterfaces(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "chat-debug.jsonl")
 	setup := &ChatSetup{

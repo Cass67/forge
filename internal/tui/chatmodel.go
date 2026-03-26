@@ -4173,7 +4173,12 @@ func (m ChatModel) View() string {
 		parts = append(parts, debugDock)
 	}
 	parts = append(parts, liveRegion, inputBox)
-	base := lipgloss.JoinVertical(lipgloss.Left, parts...)
+	base := lipgloss.NewStyle().
+		Background(theme.AppBG).
+		Foreground(theme.Text).
+		Width(m.width).
+		Height(m.height).
+		Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
 	if m.helpVisible {
 		return m.renderHelpOverlay()
 	}
@@ -4209,6 +4214,7 @@ func (m ChatModel) View() string {
 func (m ChatModel) renderLiveProgressSlot(theme chatTheme) string {
 	message := m.transientStatusMessage()
 	slotStyle := lipgloss.NewStyle().
+		Background(theme.AppBG).
 		Foreground(theme.TextDim).
 		Width(m.width)
 	if message == "" {

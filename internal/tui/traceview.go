@@ -46,7 +46,7 @@ func renderTraceOverlayPanel(theme chatTheme, content, debugLogPath string, widt
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(theme.BorderFocus).
-		Background(theme.HeaderBG).
+		Background(theme.AppBG).
 		Padding(1, 2).
 		Width(boxW - 6).
 		Height(contentHeight).
@@ -94,7 +94,7 @@ func renderTraceDockPanel(theme chatTheme, content, debugLogPath string, width, 
 		BorderTop(true).
 		BorderStyle(lipgloss.NormalBorder()).
 		BorderForeground(theme.Border).
-		Background(theme.HeaderBG).
+		Background(theme.AppBG).
 		Padding(0, 1).
 		Width(width - 2).
 		Height(contentHeight).
