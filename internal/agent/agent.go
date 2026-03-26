@@ -169,6 +169,11 @@ func (a *Agent) LastResponse() string {
 	return a.lastFullResponse
 }
 
+func (a *Agent) ResetTurnState() {
+	a.lastFullResponse = ""
+	a.lastToolCalls = nil
+}
+
 func (a *Agent) LastToolCalls() []ToolCall {
 	out := make([]ToolCall, 0, len(a.lastToolCalls))
 	for _, call := range a.lastToolCalls {
