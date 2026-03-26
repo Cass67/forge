@@ -2921,7 +2921,7 @@ func TestRenderComposerTextFlattensPastedNewlines(t *testing.T) {
 	}
 }
 
-func TestChatModelSubmitKeepsTranscriptVisibleAndEchoesSubmittedPrompt(t *testing.T) {
+func TestChatModelSubmitKeepsTranscriptVisibleAndClearsComposer(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 12})
 	m = updated.(ChatModel)
@@ -2937,22 +2937,49 @@ func TestChatModelSubmitKeepsTranscriptVisibleAndEchoesSubmittedPrompt(t *testin
 	if !strings.Contains(got, "previous answer remains visible") {
 		t.Fatalf("expected previous transcript to stay visible, got:\n%s", got)
 	}
-	if !strings.Contains(got, "question should stay visible") {
-		t.Fatalf("expected submitted prompt to remain visible in the shell while running, got:\n%s", got)
+	tail := strings.Join(strings.Split(got, "\n")[max(0, len(strings.Split(got, "\n"))-8):], "\n")
+	if !strings.Contains(tail, "Type a message or /help") {
+		t.Fatalf("expected empty composer placeholder after submit, got:\n%s", got)
+	}
+	if strings.Contains(tail, "> question should stay visible") {
+		t.Fatalf("expected submitted prompt to clear from composer after Enter, got:\n%s", got)
 	}
 }
 
-func TestChatModelViewUsesSingleColumnPromptShell(t *testing.T) {
+func TestChatModelViewUsesBoxedComposer(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
 	m = updated.(ChatModel)
 
 	got := strippedLine(m.View())
-	if strings.ContainsAny(got, "╭╮╰╯") {
-		t.Fatalf("expected unboxed shell layout, got:\n%s", got)
+	if !strings.ContainsAny(got, "╭╮╰╯") {
+		t.Fatalf("expected boxed composer, got:\n%s", got)
 	}
-	if !strings.Contains(got, "> Type a message") {
-		t.Fatalf("expected inline prompt placeholder, got:\n%s", got)
+	if !strings.Contains(got, "Type a message or /help") {
+		t.Fatalf("expected composer placeholder, got:\n%s", got)
+	}
+}
+
+func TestChatModelViewAddsSpacerBeforeComposer(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
+	m = updated.(ChatModel)
+	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Forge • 12:00:00", Content: "latest transcript line"})
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+	topBorder := -1
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.Contains(strippedLine(lines[i]), "╭") {
+			topBorder = i
+			break
+		}
+	}
+	if topBorder <= 0 {
+		t.Fatalf("expected composer top border, got:\n%s", view)
+	}
+	if strings.TrimSpace(strippedLine(lines[topBorder-1])) != "" {
+		t.Fatalf("expected blank spacer before composer, got line %q in view:\n%s", strippedLine(lines[topBorder-1]), view)
 	}
 }
 
