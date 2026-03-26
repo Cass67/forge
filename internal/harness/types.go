@@ -96,15 +96,17 @@ type WorkerSkillContext struct {
 }
 
 type WorkerTask struct {
-	Kind              WorkerKind
-	Objective         string
-	Context           string
-	TopicKey          string
-	StopCondition     string
-	EvidenceBudget    int
-	SkillContext      WorkerSkillContext
-	PermissionProfile []string
-	Deadline          time.Time
+	Kind                              WorkerKind
+	Objective                         string
+	Context                           string
+	TopicKey                          string
+	StopCondition                     string
+	EvidenceBudget                    int
+	RequireRepresentativeFileEvidence bool
+	RequireNonReadmeFileEvidence      bool
+	SkillContext                      WorkerSkillContext
+	PermissionProfile                 []string
+	Deadline                          time.Time
 }
 
 type Observation struct {

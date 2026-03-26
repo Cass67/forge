@@ -123,6 +123,23 @@ func TestValidateWorkerResultWithToolCallsRejectsRepositoryWalkthroughWithoutRep
 	}
 }
 
+func TestValidateWorkerResultWithToolCallsRejectsEvaluativeRepoReviewWithoutNonReadmeFileEvidence(t *testing.T) {
+	_, err := ValidateWorkerResultWithToolCalls(
+		WorkerTask{
+			Kind:                         WorkerReader,
+			TopicKey:                     "workspace:repository",
+			RequireNonReadmeFileEvidence: true,
+		},
+		`{"status":"complete","evidence":[{"kind":"command","summary":"Top-level listing shows the repo layout."},{"kind":"file","path":"README.md","summary":"README explains the automation layout."}],"coverage":"repo root plus README","gaps":["Need one implementation or entrypoint file for a grounded review."],"suggested_next":"read util-ies-mgmt-03/update_cerner_daily.sh"}`,
+		[]agent.ToolCall{
+			{Name: "list_dir", Args: map[string]any{"path": ".", "recursive": false}},
+			{Name: "read_file", Args: map[string]any{"path": "README.md", "start_line": 1, "end_line": 40}},
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "non-README file evidence") {
+		t.Fatalf("expected non-README file evidence error, got %v", err)
+	}
+}
 func TestValidateWorkerResultWithToolCallsDowngradesUngroundedExtraFileEvidenceWhenRepresentativeFileIsGrounded(t *testing.T) {
 	result, err := ValidateWorkerResultWithToolCalls(
 		WorkerTask{
