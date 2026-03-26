@@ -36,6 +36,9 @@ var (
 	followUpPronouns = tokenSet(
 		"this", "that", "it", "they", "those", "these",
 	)
+	continuationHeadTokens = tokenSet(
+		"and", "also", "but", "or", "so", "then", "yet",
+	)
 )
 
 func Classify(turn UserTurn, session SessionState) Classification {
@@ -103,7 +106,7 @@ func Classify(turn UserTurn, session SessionState) Classification {
 		class.Reason = "interpretive follow-up"
 	}
 
-	if !class.WantsInterpretation && session.HasRecentEvidence() && looksLikeReferentialFollowUp(tokens, lower) {
+	if !class.WantsInterpretation && session.HasRecentEvidence() && looksLikeReferentialFollowUp(tokens, lower, ordered) {
 		class.IsFollowUp = true
 		if strings.TrimSpace(class.TopicKey) == "" {
 			class.TopicKey = session.LastEvidence.TopicKey
@@ -264,12 +267,15 @@ func wantsResearch(tokens map[string]struct{}, lower string) bool {
 	return false
 }
 
-func looksLikeReferentialFollowUp(tokens map[string]struct{}, lower string) bool {
+func looksLikeReferentialFollowUp(tokens map[string]struct{}, lower string, ordered []string) bool {
 	if len(tokens) == 0 {
 		return false
 	}
-	if strings.Contains(lower, "what do you think") || strings.Contains(lower, "what does that mean") {
+	if strings.Contains(lower, "what do you think") || strings.Contains(lower, "what does that mean") || strings.Contains(lower, "so what") {
 		return true
+	}
+	if len(ordered) > 15 && !startsWithContinuationHeadToken(ordered) {
+		return false
 	}
 	for pronoun := range followUpPronouns {
 		if _, ok := tokens[pronoun]; ok {
@@ -293,7 +299,7 @@ func wantsContextualEvaluationFollowUp(text, lower string, ordered []string, tok
 		return false
 	}
 	if class.WantsEvaluation {
-		if looksLikeReferentialFollowUp(tokens, lower) || looksLikeContextualContinuation(lower) {
+		if looksLikeReferentialFollowUp(tokens, lower, ordered) || looksLikeContextualContinuation(lower) {
 			return true
 		}
 		if looksQuestionLike(text) && containsImplementToken(ordered) {
@@ -304,7 +310,7 @@ func wantsContextualEvaluationFollowUp(text, lower string, ordered []string, tok
 	if !containsImplementToken(ordered) {
 		return false
 	}
-	if !looksQuestionLike(text) && !looksLikeReferentialFollowUp(tokens, lower) && !looksLikeContextualContinuation(lower) {
+	if !looksQuestionLike(text) && !looksLikeReferentialFollowUp(tokens, lower, ordered) && !looksLikeContextualContinuation(lower) {
 		return false
 	}
 	return lacksConcreteActionTarget(ordered)
@@ -326,12 +332,21 @@ func looksQuestionLike(text string) bool {
 }
 
 func looksLikeContextualContinuation(lower string) bool {
-	return strings.HasPrefix(lower, "and ") ||
-		strings.HasPrefix(lower, "also ") ||
-		strings.HasPrefix(lower, "so ") ||
-		strings.HasPrefix(lower, "then ") ||
-		strings.HasPrefix(lower, "what about ") ||
-		strings.HasPrefix(lower, "how about ")
+	trimmed := strings.TrimLeft(lower, `"'([{ `)
+	ordered := tokenList(trimmed)
+	if startsWithContinuationHeadToken(ordered) {
+		return true
+	}
+	return strings.HasPrefix(trimmed, "what about ") ||
+		strings.HasPrefix(trimmed, "how about ")
+}
+
+func startsWithContinuationHeadToken(ordered []string) bool {
+	if len(ordered) == 0 {
+		return false
+	}
+	_, ok := continuationHeadTokens[ordered[0]]
+	return ok
 }
 
 func lacksConcreteActionTarget(ordered []string) bool {
