@@ -88,6 +88,9 @@ func Classify(turn UserTurn, session SessionState) Classification {
 	}
 
 	class.WantsEvaluation = wantsEvaluation(tokens, lower)
+	if class.Family == FamilyImplement && hasExplicitImplementationDeliverable(tokens) {
+		class.WantsEvaluation = false
+	}
 	if wantsContextualEvaluationFollowUp(text, lower, ordered, tokens, class, session) {
 		class.Family = FamilyInspect
 		class.WantsEvaluation = true
@@ -210,7 +213,7 @@ func wantsImplementation(scope requestScope, ordered []string, tokens map[string
 	if !containsImplementationSignal(tokens) {
 		return false
 	}
-	if scope.Inspectable() && wantsScopedEvaluation(scope, tokens, lower) {
+	if scope.Inspectable() && wantsScopedEvaluation(scope, tokens, lower) && !hasExplicitImplementationDeliverable(tokens) {
 		return false
 	}
 	if looksQuestionLike(text) && lacksConcreteActionTarget(ordered) {
@@ -224,6 +227,10 @@ func containsImplementationSignal(tokens map[string]struct{}) bool {
 		return true
 	}
 	return hasToken(tokens, "write") && containsAny(tokens, implementArtifactTokens)
+}
+
+func hasExplicitImplementationDeliverable(tokens map[string]struct{}) bool {
+	return containsAny(tokens, implementArtifactTokens)
 }
 
 func wantsEvaluation(tokens map[string]struct{}, lower string) bool {

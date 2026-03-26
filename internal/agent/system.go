@@ -64,7 +64,7 @@ Rules:
 - while gathering evidence, emit exactly one tool call and no JSON or prose outside it
 - only emit the final JSON object after tool results are back and you can finish without another tool
 - a complete result must include at least one file or command evidence entry
-- no recommendations
+- evidence summaries may include concise evidence-backed findings or cleanup recommendations when the task explicitly asks for them
 - no planning
 - no scope expansion
 - no user-facing prose`
@@ -75,6 +75,7 @@ Return exactly one JSON object and no prose outside it:
 Rules:
 - if you need another tool, emit exactly one tool call and nothing else for that turn
 - only emit the final JSON object once the work is complete
+- implement the change in the workspace; do not stop at draft code or pseudocode when tools can create or edit the file
 - do not widen scope
 - do not refactor unrelated code
 - keep verification notes concrete`
