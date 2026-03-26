@@ -283,3 +283,45 @@ func TestManagerExecuteRetriesUngroundedReaderEvidenceUntilItReadsTheClaimedFile
 		t.Fatalf("artifact = %#v", result)
 	}
 }
+
+func TestManagerExecuteRecoversFromMalformedReaderToolMarkup(t *testing.T) {
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{
+		Name:        "list_dir",
+		Description: "list directory contents",
+		Execute: func(context.Context, map[string]any) (string, error) {
+			return "README.md\ncmd/\ninternal/", nil
+		},
+	})
+
+	manager := NewManager(ManagerConfig{
+		WorkDir:   ".",
+		BaseTools: reg,
+		DriverFor: func(WorkerKind) llm.Driver {
+			return &sequenceDriver{responses: []string{
+				"<tool_call>\n{\"name\":\"list_dir\",\"args\":{\"path\":\".\",\"recursive\":false}}{\"status\":\"complete\",\"evidence\":[{\"kind\":\"command\",\"summary\":\"Top-level listing shows the repo layout.\"}],\"coverage\":\"repo root\",\"gaps\":[],\"suggested_next\":\"none\"}",
+				"<tool_call>\n{\"name\":\"list_dir\",\"args\":{\"path\":\".\",\"recursive\":false}}\n</tool_call>",
+				`{"status":"complete","evidence":[{"kind":"command","summary":"Top-level listing shows the repo layout."}],"coverage":"repo root","gaps":[],"suggested_next":"none"}`,
+			}}
+		},
+	})
+
+	obs, err := manager.Execute(context.Background(), WorkerTask{
+		Kind:      WorkerReader,
+		Objective: "describe this directory",
+		TopicKey:  "workspace:directory",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, ok := obs.Artifact.(ReaderResult)
+	if !ok {
+		t.Fatalf("artifact = %#v", obs.Artifact)
+	}
+	if len(result.Evidence) != 1 || result.Evidence[0].Kind != "command" {
+		t.Fatalf("artifact = %#v", result)
+	}
+	if result.Coverage != "repo root" {
+		t.Fatalf("artifact = %#v", result)
+	}
+}

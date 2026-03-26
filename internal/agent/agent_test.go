@@ -1062,6 +1062,49 @@ func TestSpawnSubAgentScoutRecoversFromMalformedToolMarkup(t *testing.T) {
 	}
 }
 
+func TestReaderSubAgentRecoversFromMalformedToolMarkup(t *testing.T) {
+	dir := t.TempDir()
+	driver := &inspectingDriver{
+		responses: []string{
+			"<tool_call>\n{\"name\":\"list_dir\",\"args\":{\"path\":\".\",\"recursive\":false}}{\"status\":\"complete\",\"evidence\":[{\"kind\":\"command\",\"summary\":\"Top-level listing shows the repo layout.\"}],\"coverage\":\"repo root\",\"gaps\":[],\"suggested_next\":\"none\"}",
+			"<tool_call>\n{\"name\":\"list_dir\",\"args\":{\"path\":\".\",\"recursive\":false}}\n</tool_call>",
+			`{"status":"complete","evidence":[{"kind":"command","summary":"Top-level listing shows the repo layout."}],"coverage":"repo root","gaps":[],"suggested_next":"none"}`,
+		},
+		checks: []func([]llm.Message) error{
+			nil,
+			func(messages []llm.Message) error {
+				joined := ""
+				for _, msg := range messages {
+					joined += msg.Content + "\n"
+				}
+				if !strings.Contains(joined, subAgentMalformedToolMarkupNudgeMessage("reader", 1)) {
+					return fmt.Errorf("second turn missing malformed-tool-markup nudge")
+				}
+				return nil
+			},
+		},
+	}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.NewListDir(dir, nil))
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), dir, 10, renderer, nil, nil)
+	a.SetRole("reader")
+	a.isSubAgent = true
+
+	if err := a.Run(context.Background(), "describe this directory"); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callIdx != 3 {
+		t.Fatalf("expected malformed reader tool-call recovery flow, got %d driver calls", driver.callIdx)
+	}
+	if got := a.LastResponse(); !strings.Contains(got, `"coverage":"repo root"`) {
+		t.Fatalf("final reader result missing: %q", got)
+	}
+}
+
 func TestSpawnSubAgentScoutRecoversFromBareJSONToolCallPrefix(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Repo\n"), 0o644); err != nil {
