@@ -91,6 +91,27 @@ func TestChatMessageRenderWorking(t *testing.T) {
 	}
 }
 
+func TestChatMessageRenderStatusUsesSemanticStatusProfile(t *testing.T) {
+	withTrueColorProfile(t)
+
+	theme := lookupThemeForTest(t, "default")
+	got := (ChatMessage{Kind: MsgStatus, Content: "status: approved in 1.2s"}).Render(60, theme)
+
+	assertStyledSubstring(t, got, "status:", theme.TextDim)
+	assertStyledSubstring(t, got, "approved", theme.Success)
+	assertStyledSubstring(t, got, "1.2s", theme.Success)
+}
+
+func TestChatMessageRenderWorkingHighlightsHighSignalTokens(t *testing.T) {
+	withTrueColorProfile(t)
+
+	theme := lookupThemeForTest(t, "default")
+	got := (ChatMessage{Kind: MsgWorking, Content: "running go test ./... in ./internal/tui"}).Render(80, theme)
+
+	assertStyledSubstring(t, got, "go test ./...", theme.AccentSecondary)
+	assertStyledSubstring(t, got, "./internal/tui", theme.AccentPrimary)
+}
+
 func TestChatMessageRenderPaintsAppBackground(t *testing.T) {
 	withTrueColorProfile(t)
 

@@ -46,27 +46,23 @@ func (m ChatMessage) Render(width int, theme chatTheme) string {
 	}
 
 	if m.Kind == MsgStatus {
-		style := lipgloss.NewStyle().
+		body := RenderSemanticPlain(strings.TrimSpace(m.Content), profileStatus, theme)
+		return lipgloss.NewStyle().
 			Background(theme.AppBG).
-			Foreground(theme.TextDim).
 			Width(width).
-			Render("· " + strings.TrimSpace(m.Content))
-		content := strings.ToLower(strings.TrimSpace(m.Content))
-		switch {
-		case strings.Contains(content, "error"), strings.Contains(content, "failed"), strings.Contains(content, "denied"):
-			style = lipgloss.NewStyle().Background(theme.AppBG).Foreground(theme.Error).Width(width).Render("✗ " + strings.TrimSpace(m.Content))
-		case strings.Contains(content, "complete"), strings.Contains(content, "ready"), strings.Contains(content, "approved"):
-			style = lipgloss.NewStyle().Background(theme.AppBG).Foreground(theme.Success).Width(width).Render("✓ " + strings.TrimSpace(m.Content))
-		}
-		return style
+			Render(body)
 	}
 
 	if m.Kind == MsgWorking {
-		return lipgloss.NewStyle().
+		body := RenderSemanticPlain(strings.TrimSpace(m.Content), profileStatus, theme)
+		prefix := lipgloss.NewStyle().
 			Background(theme.AppBG).
 			Foreground(theme.TextDim).
+			Render("· ")
+		return lipgloss.NewStyle().
+			Background(theme.AppBG).
 			Width(width).
-			Render("· " + strings.TrimSpace(m.Content))
+			Render(prefix + body)
 	}
 
 	headerColor := m.accentColor(theme)

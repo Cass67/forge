@@ -27,6 +27,7 @@ func renderMessageContent(content string, width int, theme chatTheme) string {
 			rendered = append(rendered, renderCodeBlock(block.Lang, body, width, theme))
 			continue
 		}
+		body = RenderSemanticPlain(body, profileProse, theme)
 		rendered = append(rendered, lipgloss.NewStyle().
 			Background(theme.AppBG).
 			Foreground(theme.Text).
