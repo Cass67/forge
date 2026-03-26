@@ -141,6 +141,24 @@ func TestDescribeEmpty(t *testing.T) {
 	}
 }
 
+func TestDescriptors(t *testing.T) {
+	t.Parallel()
+	got := Descriptors([]Skill{
+		{Name: "systematic-debugging", Description: "debug carefully", Source: "/tmp/debug/SKILL.md"},
+		{Name: "brainstorming", Description: "plan first", Source: "/tmp/brain/SKILL.md"},
+	})
+
+	if len(got) != 2 {
+		t.Fatalf("len(Descriptors()) = %d, want 2", len(got))
+	}
+	if got[0] != (Descriptor{Name: "brainstorming", Description: "plan first", Source: "/tmp/brain/SKILL.md"}) {
+		t.Fatalf("first descriptor = %#v", got[0])
+	}
+	if got[1] != (Descriptor{Name: "systematic-debugging", Description: "debug carefully", Source: "/tmp/debug/SKILL.md"}) {
+		t.Fatalf("second descriptor = %#v", got[1])
+	}
+}
+
 func TestGetSkill(t *testing.T) {
 	t.Parallel()
 	skills := []Skill{
