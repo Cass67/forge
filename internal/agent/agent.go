@@ -208,6 +208,17 @@ func (a *Agent) ClearHistory() {
 	}
 }
 
+func (a *Agent) ResetConversationState() {
+	a.history = nil
+	clear(a.dispatchResults)
+	clear(a.dispatchArtifacts)
+	a.dispatchScratch = ""
+	a.latestScout = dispatchScoutEvidence{}
+	if resetter, ok := a.driver.(llm.ConversationResetter); ok {
+		resetter.ResetConversation()
+	}
+}
+
 func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	a.lastFullResponse = ""
 	a.lastToolCalls = nil

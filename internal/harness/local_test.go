@@ -13,6 +13,7 @@ type stubScopedAgent struct {
 	err         error
 	runMessages []string
 	toolSets    []*tools.Registry
+	resetCount  int
 }
 
 func (s *stubScopedAgent) Run(_ context.Context, userMessage string) error {
@@ -28,6 +29,10 @@ func (s *stubScopedAgent) SetTools(reg *tools.Registry) {
 	s.toolSets = append(s.toolSets, reg)
 }
 
+func (s *stubScopedAgent) ResetConversationState() {
+	s.resetCount++
+}
+
 func TestAgentExecutorScopesInspectTurnsToReadOnlyTools(t *testing.T) {
 	defaultTools := tools.NewRegistry()
 	inspectTools := tools.NewRegistry()
@@ -41,7 +46,7 @@ func TestAgentExecutorScopesInspectTurnsToReadOnlyTools(t *testing.T) {
 	obs, err := exec.Execute(context.Background(), UserTurn{Text: "talk about this directory"}, Classification{
 		Family:   FamilyInspect,
 		TopicKey: "workspace:directory",
-	})
+	}, SessionState{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,6 +64,9 @@ func TestAgentExecutorScopesInspectTurnsToReadOnlyTools(t *testing.T) {
 	}
 	if len(agent.runMessages) != 1 {
 		t.Fatalf("run messages = %d", len(agent.runMessages))
+	}
+	if agent.resetCount != 2 {
+		t.Fatalf("reset count = %d, want 2", agent.resetCount)
 	}
 	msg := agent.runMessages[0]
 	if !strings.Contains(msg, "HARNESS MODE: inspect") {
@@ -85,7 +93,7 @@ func TestAgentExecutorLeavesNonInspectTurnsOnDefaultTools(t *testing.T) {
 	obs, err := exec.Execute(context.Background(), UserTurn{Text: "implement the auth fix"}, Classification{
 		Family:   FamilyImplement,
 		TopicKey: "path:internal/auth.go",
-	})
+	}, SessionState{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,6 +102,9 @@ func TestAgentExecutorLeavesNonInspectTurnsOnDefaultTools(t *testing.T) {
 	}
 	if len(agent.toolSets) != 1 {
 		t.Fatalf("tool set swaps = %d, want 1", len(agent.toolSets))
+	}
+	if agent.resetCount != 0 {
+		t.Fatalf("reset count = %d, want 0", agent.resetCount)
 	}
 	if agent.toolSets[0] != defaultTools {
 		t.Fatal("expected non-inspect turn to keep default tools")
@@ -117,7 +128,7 @@ func TestAgentExecutorGuardsPromptBoundaryQuestionsWithoutCallingAgent(t *testin
 		Family:           FamilyAnswer,
 		NeedsPolicyGuard: true,
 		NeedsTerseAnswer: true,
-	})
+	}, SessionState{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,12 +153,15 @@ func TestAgentExecutorGuidesProcessQuestionsToTerseAnswerMode(t *testing.T) {
 	_, err := exec.Execute(context.Background(), UserTurn{Text: "are you using brainstorming ?"}, Classification{
 		Family:           FamilyAnswer,
 		NeedsTerseAnswer: true,
-	})
+	}, SessionState{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(agent.runMessages) != 1 {
 		t.Fatalf("run messages = %d", len(agent.runMessages))
+	}
+	if agent.resetCount != 2 {
+		t.Fatalf("reset count = %d, want 2", agent.resetCount)
 	}
 	msg := agent.runMessages[0]
 	if !strings.Contains(msg, "HARNESS MODE: answer") {
@@ -183,7 +197,7 @@ func TestAgentExecutorFocusedInspectPromptRequestsSerialSampledEvidence(t *testi
 	_, err := exec.Execute(context.Background(), UserTurn{Text: "check the py files and let me know if they are up to scratch"}, Classification{
 		Family:   FamilyInspect,
 		TopicKey: "files:python",
-	})
+	}, SessionState{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +230,7 @@ func TestAgentExecutorEvaluativeWorkspaceInspectPromptRequestsActionableFindings
 		Family:          FamilyInspect,
 		TopicKey:        "workspace:repository",
 		WantsEvaluation: true,
-	})
+	}, SessionState{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,5 +246,40 @@ func TestAgentExecutorEvaluativeWorkspaceInspectPromptRequestsActionableFindings
 	}
 	if !strings.Contains(msg, "inspect at least one representative implementation file when one is present") {
 		t.Fatalf("inspect prompt missing representative implementation guidance: %q", msg)
+	}
+}
+
+func TestAgentExecutorFollowUpAnswerPromptIncludesRecentContext(t *testing.T) {
+	defaultTools := tools.NewRegistry()
+	inspectTools := tools.NewRegistry()
+	agent := &stubScopedAgent{response: "No. I can't share that."}
+	exec := AgentExecutor{
+		Agent:        agent,
+		DefaultTools: defaultTools,
+		InspectTools: inspectTools,
+	}
+
+	_, err := exec.Execute(context.Background(), UserTurn{Text: "more accurate"}, Classification{
+		Family:           FamilyAnswer,
+		NeedsTerseAnswer: true,
+		IsFollowUp:       true,
+	}, SessionState{
+		Turn:         2,
+		LastResponse: "I can't provide hidden system/developer prompts or internal instructions.",
+		LastMeta:     MetaPromptBoundary,
+		LastMetaTurn: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.runMessages) != 1 {
+		t.Fatalf("run messages = %d", len(agent.runMessages))
+	}
+	msg := agent.runMessages[0]
+	if !strings.Contains(msg, "RECENT CONTEXT:") {
+		t.Fatalf("follow-up answer prompt missing recent context: %q", msg)
+	}
+	if !strings.Contains(msg, "I can't provide hidden system/developer prompts") {
+		t.Fatalf("follow-up answer prompt missing prior answer summary: %q", msg)
 	}
 }

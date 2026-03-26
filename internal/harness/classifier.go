@@ -48,11 +48,23 @@ var (
 	promptBoundaryTokens = tokenSet(
 		"prompt", "prompts", "instruction", "instructions",
 	)
+	promptBoundaryReferenceTokens = tokenSet(
+		"you", "your", "yours", "forge", "harness", "system", "developer", "hidden", "internal",
+	)
+	promptDisclosureTokens = tokenSet(
+		"tell", "show", "give", "share", "copy", "paste", "send", "provide", "reveal", "quote", "repeat", "paraphrase",
+	)
+	promptQualifierTokens = tokenSet(
+		"exact", "real", "actual", "accurate", "verbatim", "full",
+	)
 	selfReferenceTokens = tokenSet(
 		"you", "your", "yourself",
 	)
 	processPromptTokens = tokenSet(
 		"prompt", "prompts", "prompted", "prompting",
+	)
+	processFollowUpTokens = tokenSet(
+		"skill", "skills", "use", "using", "used", "copy", "yours", "mine",
 	)
 )
 
@@ -69,17 +81,25 @@ func Classify(turn UserTurn, session SessionState) Classification {
 		TopicKey:     resolveTopicKey(text, scope),
 	}
 
-	if isPromptBoundaryQuestion(text, lower, tokens) {
+	if followUp := isPromptBoundaryFollowUp(lower, tokens, scope, session); followUp || isPromptBoundaryQuestion(text, lower, tokens) {
 		class.TopicKey = ""
 		class.NeedsPolicyGuard = true
 		class.NeedsTerseAnswer = true
+		class.IsFollowUp = followUp
 		class.Reason = "prompt boundary question"
+		if followUp {
+			class.Reason = "prompt boundary follow-up"
+		}
 		return class
 	}
-	if isProcessQuestion(text, lower, tokens, scope, class.TopicKey) {
+	if followUp := isProcessFollowUp(lower, tokens, scope, session); followUp || isProcessQuestion(text, lower, tokens, scope, class.TopicKey) {
 		class.TopicKey = ""
 		class.NeedsTerseAnswer = true
+		class.IsFollowUp = followUp
 		class.Reason = "process question"
+		if followUp {
+			class.Reason = "process follow-up"
+		}
 		return class
 	}
 
@@ -503,27 +523,38 @@ func isPromptBoundaryQuestion(text, lower string, tokens map[string]struct{}) bo
 	if !containsAny(tokens, promptBoundaryTokens) {
 		return false
 	}
-	if strings.Contains(lower, "your prompt") ||
-		strings.Contains(lower, "your system prompt") ||
-		strings.Contains(lower, "your developer prompt") ||
-		strings.Contains(lower, "your instructions") ||
-		strings.Contains(lower, "tell me your prompt") ||
-		strings.Contains(lower, "tell me your instructions") ||
-		strings.Contains(lower, "allowed to tell me your prompt") ||
-		strings.Contains(lower, "allowed to tell me your instructions") {
+	if len(tokenList(lower)) <= 3 && hasToken(tokens, "prompt") && (hasToken(tokens, "forge") || hasToken(tokens, "harness")) {
 		return true
 	}
-	if strings.Contains(lower, "system prompt") ||
-		strings.Contains(lower, "developer prompt") ||
-		strings.Contains(lower, "hidden prompt") ||
-		strings.Contains(lower, "internal instructions") ||
-		strings.Contains(lower, "developer instructions") ||
-		strings.Contains(lower, "system instructions") {
-		return looksQuestionLike(text) || startsWithAny(lower,
-			"what", "whats", "what's", "tell me", "show me", "if you were allowed",
-		)
+	if containsAny(tokens, promptBoundaryReferenceTokens) &&
+		(looksQuestionLike(text) ||
+			startsWithAny(lower,
+				"what", "whats", "what's", "tell me", "show me", "give me", "share", "copy", "paste", "reveal", "provide", "if you were allowed",
+			) ||
+			containsAny(tokens, promptDisclosureTokens) ||
+			containsAny(tokens, promptQualifierTokens)) {
+		return true
 	}
 	return false
+}
+
+func isPromptBoundaryFollowUp(lower string, tokens map[string]struct{}, scope requestScope, session SessionState) bool {
+	if !session.HasRecentMeta() || session.LastMeta != MetaPromptBoundary {
+		return false
+	}
+	if scope.Inspectable() || containsAny(tokens, debugTokens) || containsImplementationSignal(tokens) || wantsResearch(tokens, lower) {
+		return false
+	}
+	ordered := tokenList(lower)
+	if len(ordered) == 0 || len(ordered) > 5 {
+		return false
+	}
+	if containsAny(tokens, promptBoundaryTokens) ||
+		containsAny(tokens, promptDisclosureTokens) ||
+		containsAny(tokens, promptQualifierTokens) {
+		return true
+	}
+	return looksLikeReferentialFollowUp(tokens, lower, ordered)
 }
 
 func isProcessQuestion(text, lower string, tokens map[string]struct{}, scope requestScope, topicKey string) bool {
@@ -551,6 +582,23 @@ func isProcessQuestion(text, lower string, tokens map[string]struct{}, scope req
 		return true
 	}
 	return slashCommandMentioned(lower)
+}
+
+func isProcessFollowUp(lower string, tokens map[string]struct{}, scope requestScope, session SessionState) bool {
+	if !session.HasRecentMeta() || session.LastMeta != MetaProcess {
+		return false
+	}
+	if scope.Inspectable() || containsAny(tokens, debugTokens) || containsImplementationSignal(tokens) || wantsResearch(tokens, lower) {
+		return false
+	}
+	ordered := tokenList(lower)
+	if len(ordered) == 0 || len(ordered) > 10 {
+		return false
+	}
+	if containsAny(tokens, processPromptTokens) || containsAny(tokens, processFollowUpTokens) {
+		return true
+	}
+	return looksLikeReferentialFollowUp(tokens, lower, ordered)
 }
 
 func slashCommandMentioned(lower string) bool {

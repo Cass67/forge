@@ -18,7 +18,11 @@ type ScopedAgentRunner interface {
 }
 
 type LocalExecutor interface {
-	Execute(ctx context.Context, turn UserTurn, class Classification) (Observation, error)
+	Execute(ctx context.Context, turn UserTurn, class Classification, session SessionState) (Observation, error)
+}
+
+type conversationIsolator interface {
+	ResetConversationState()
 }
 
 type AgentExecutor struct {
@@ -29,7 +33,7 @@ type AgentExecutor struct {
 
 const promptBoundaryRefusal = "I can't provide hidden system/developer prompts or internal instructions, including paraphrased or hypothetical versions. I can summarize my role and high-level guardrails if useful."
 
-func (e AgentExecutor) Execute(ctx context.Context, turn UserTurn, class Classification) (Observation, error) {
+func (e AgentExecutor) Execute(ctx context.Context, turn UserTurn, class Classification, session SessionState) (Observation, error) {
 	userMessage := turn.Text
 	if class.NeedsPolicyGuard {
 		response := promptBoundaryRefusal
@@ -40,9 +44,15 @@ func (e AgentExecutor) Execute(ctx context.Context, turn UserTurn, class Classif
 			TopicKey: class.TopicKey,
 		}, nil
 	}
+	if shouldIsolateConversation(class) {
+		if isolator, ok := e.Agent.(conversationIsolator); ok {
+			isolator.ResetConversationState()
+			defer isolator.ResetConversationState()
+		}
+	}
 
 	if useReadOnlyInspectScope(class) {
-		userMessage = buildInspectTurnPrompt(class, turn.Text)
+		userMessage = buildInspectTurnPrompt(class, turn.Text, session)
 		if e.InspectTools != nil {
 			e.Agent.SetTools(e.InspectTools)
 			if e.DefaultTools != nil {
@@ -50,7 +60,7 @@ func (e AgentExecutor) Execute(ctx context.Context, turn UserTurn, class Classif
 			}
 		}
 	} else if useGuidedAnswerScope(class) {
-		userMessage = buildAnswerTurnPrompt(class, turn.Text)
+		userMessage = buildAnswerTurnPrompt(class, turn.Text, session)
 		if e.DefaultTools != nil {
 			e.Agent.SetTools(e.DefaultTools)
 		}
@@ -85,7 +95,11 @@ func useGuidedAnswerScope(class Classification) bool {
 	return class.Family == FamilyAnswer
 }
 
-func buildInspectTurnPrompt(class Classification, userMessage string) string {
+func shouldIsolateConversation(class Classification) bool {
+	return class.Family == FamilyInspect || class.Family == FamilyAnswer
+}
+
+func buildInspectTurnPrompt(class Classification, userMessage string, session SessionState) string {
 	userMessage = strings.TrimSpace(userMessage)
 	scope := inspectPromptScope(class)
 	lines := []string{
@@ -120,11 +134,19 @@ func buildInspectTurnPrompt(class Classification, userMessage string) string {
 			)
 		}
 	}
+	if class.IsFollowUp && session.HasRecentEvidence() && strings.TrimSpace(session.LastEvidence.TopicKey) != "" {
+		lines = append(lines,
+			"",
+			"RECENT EVIDENCE:",
+			"- topic: "+strings.TrimSpace(session.LastEvidence.TopicKey),
+			"- summary: "+clipPromptContext(session.LastEvidence.Summary, 240),
+		)
+	}
 	lines = append(lines, "", "USER REQUEST:", userMessage)
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
-func buildAnswerTurnPrompt(class Classification, userMessage string) string {
+func buildAnswerTurnPrompt(class Classification, userMessage string, session SessionState) string {
 	userMessage = strings.TrimSpace(userMessage)
 	lines := []string{
 		"HARNESS MODE: answer",
@@ -145,6 +167,13 @@ func buildAnswerTurnPrompt(class Classification, userMessage string) string {
 			"- Avoid bullet lists unless they make the answer materially clearer.",
 		)
 	}
+	if followUpContext := recentAnswerContext(class, session); followUpContext != "" {
+		lines = append(lines,
+			"",
+			"RECENT CONTEXT:",
+			followUpContext,
+		)
+	}
 	lines = append(lines, "", "USER REQUEST:", userMessage)
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
@@ -160,4 +189,28 @@ func inspectPromptScope(class Classification) string {
 	default:
 		return "generic"
 	}
+}
+
+func recentAnswerContext(class Classification, session SessionState) string {
+	if !class.IsFollowUp {
+		return ""
+	}
+	if session.HasRecentMeta() && strings.TrimSpace(session.LastResponse) != "" {
+		return "- prior assistant answer: " + clipPromptContext(session.LastResponse, 240)
+	}
+	if session.HasRecentEvidence() && strings.TrimSpace(session.LastEvidence.Summary) != "" {
+		return "- recent evidence: " + clipPromptContext(session.LastEvidence.Summary, 240)
+	}
+	return ""
+}
+
+func clipPromptContext(text string, limit int) string {
+	text = strings.TrimSpace(text)
+	if text == "" || limit <= 0 || len(text) <= limit {
+		return text
+	}
+	if limit <= 3 {
+		return text[:limit]
+	}
+	return text[:limit-3] + "..."
 }
