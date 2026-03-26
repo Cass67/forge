@@ -36,21 +36,15 @@ func TestAdmitWorkerUsesReaderForPlainInspectTurns(t *testing.T) {
 	}
 }
 
-func TestAdmitWorkerUsesReaderForEvaluativeWorkspaceInspectTurns(t *testing.T) {
+func TestAdmitWorkerKeepsEvaluativeWorkspaceInspectTurnsLocal(t *testing.T) {
 	worker, reason, ok := AdmitWorker(Classification{
 		Family:          FamilyInspect,
 		CanStayLocal:    true,
 		WantsEvaluation: true,
 		TopicKey:        "workspace:directory",
 	}, SessionState{})
-	if !ok {
-		t.Fatal("expected reader worker admission")
-	}
-	if worker != WorkerReader {
-		t.Fatalf("worker = %q", worker)
-	}
-	if reason == "" {
-		t.Fatal("expected admission reason")
+	if ok {
+		t.Fatalf("unexpected worker admission: %q (%s)", worker, reason)
 	}
 }
 

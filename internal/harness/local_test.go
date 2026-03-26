@@ -134,3 +134,36 @@ func TestAgentExecutorFocusedInspectPromptRequestsSerialSampledEvidence(t *testi
 		t.Fatalf("inspect prompt missing bounded sampling guidance: %q", msg)
 	}
 }
+
+func TestAgentExecutorEvaluativeWorkspaceInspectPromptRequestsActionableFindings(t *testing.T) {
+	defaultTools := tools.NewRegistry()
+	inspectTools := tools.NewRegistry()
+	agent := &stubScopedAgent{response: "Here are the top improvements."}
+	exec := AgentExecutor{
+		Agent:        agent,
+		DefaultTools: defaultTools,
+		InspectTools: inspectTools,
+	}
+
+	_, err := exec.Execute(context.Background(), UserTurn{Text: "have a look at this repo and tell me where i can improve it"}, Classification{
+		Family:          FamilyInspect,
+		TopicKey:        "workspace:repository",
+		WantsEvaluation: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.runMessages) != 1 {
+		t.Fatalf("run messages = %d", len(agent.runMessages))
+	}
+	msg := agent.runMessages[0]
+	if !strings.Contains(msg, "lead with the highest-value improvements") {
+		t.Fatalf("inspect prompt missing evaluative guidance: %q", msg)
+	}
+	if !strings.Contains(msg, "distinguish observed facts from recommendations") {
+		t.Fatalf("inspect prompt missing fact/recommendation guidance: %q", msg)
+	}
+	if !strings.Contains(msg, "inspect at least one representative implementation file when one is present") {
+		t.Fatalf("inspect prompt missing representative implementation guidance: %q", msg)
+	}
+}
