@@ -71,6 +71,8 @@ type Classification struct {
 	WantsEvaluation      bool
 	WantsAction          bool
 	WantsInterpretation  bool
+	NeedsPolicyGuard     bool
+	NeedsTerseAnswer     bool
 	NeedsExternalSources bool
 	CanStayLocal         bool
 	IsFollowUp           bool

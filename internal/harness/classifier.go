@@ -7,6 +7,7 @@ import (
 )
 
 var pathLikePattern = regexp.MustCompile(`(?i)(?:^|[\s"'` + "`" + `])((?:\.{0,2}/|/)[^"'\s]+|[\w.-]+\.[\w.-]+(?:/[^"'\s]+)*)`)
+var slashCommandPattern = regexp.MustCompile(`(?:^|[\s"'([{])/[a-z][a-z0-9-]*\b`)
 
 var (
 	inspectVerbs = tokenSet(
@@ -44,6 +45,15 @@ var (
 	continuationHeadTokens = tokenSet(
 		"and", "also", "but", "or", "so", "then", "yet",
 	)
+	promptBoundaryTokens = tokenSet(
+		"prompt", "prompts", "instruction", "instructions",
+	)
+	selfReferenceTokens = tokenSet(
+		"you", "your", "yourself",
+	)
+	processPromptTokens = tokenSet(
+		"prompt", "prompts", "prompted", "prompting",
+	)
 )
 
 func Classify(turn UserTurn, session SessionState) Classification {
@@ -57,6 +67,20 @@ func Classify(turn UserTurn, session SessionState) Classification {
 		Family:       FamilyAnswer,
 		CanStayLocal: true,
 		TopicKey:     resolveTopicKey(text, scope),
+	}
+
+	if isPromptBoundaryQuestion(text, lower, tokens) {
+		class.TopicKey = ""
+		class.NeedsPolicyGuard = true
+		class.NeedsTerseAnswer = true
+		class.Reason = "prompt boundary question"
+		return class
+	}
+	if isProcessQuestion(text, lower, tokens, scope, class.TopicKey) {
+		class.TopicKey = ""
+		class.NeedsTerseAnswer = true
+		class.Reason = "process question"
+		return class
 	}
 
 	switch {
@@ -238,6 +262,8 @@ func wantsEvaluation(tokens map[string]struct{}, lower string) bool {
 		return true
 	}
 	return strings.Contains(lower, "what do you think") ||
+		strings.Contains(lower, "tell me what you think") ||
+		strings.Contains(lower, "let me know what you think") ||
 		strings.Contains(lower, "how we looking") ||
 		strings.Contains(lower, "how's this looking") ||
 		strings.Contains(lower, "how is this looking") ||
@@ -471,4 +497,71 @@ func resolveTopicKey(text string, scope requestScope) string {
 func hasToken(tokens map[string]struct{}, token string) bool {
 	_, ok := tokens[token]
 	return ok
+}
+
+func isPromptBoundaryQuestion(text, lower string, tokens map[string]struct{}) bool {
+	if !containsAny(tokens, promptBoundaryTokens) {
+		return false
+	}
+	if strings.Contains(lower, "your prompt") ||
+		strings.Contains(lower, "your system prompt") ||
+		strings.Contains(lower, "your developer prompt") ||
+		strings.Contains(lower, "your instructions") ||
+		strings.Contains(lower, "tell me your prompt") ||
+		strings.Contains(lower, "tell me your instructions") ||
+		strings.Contains(lower, "allowed to tell me your prompt") ||
+		strings.Contains(lower, "allowed to tell me your instructions") {
+		return true
+	}
+	if strings.Contains(lower, "system prompt") ||
+		strings.Contains(lower, "developer prompt") ||
+		strings.Contains(lower, "hidden prompt") ||
+		strings.Contains(lower, "internal instructions") ||
+		strings.Contains(lower, "developer instructions") ||
+		strings.Contains(lower, "system instructions") {
+		return looksQuestionLike(text) || startsWithAny(lower,
+			"what", "whats", "what's", "tell me", "show me", "if you were allowed",
+		)
+	}
+	return false
+}
+
+func isProcessQuestion(text, lower string, tokens map[string]struct{}, scope requestScope, topicKey string) bool {
+	if !containsAny(tokens, selfReferenceTokens) {
+		return false
+	}
+	if !looksQuestionLike(text) && !startsWithAny(lower,
+		"are you", "do you", "did you", "why do you", "why did you", "why didnt you", "why didn't you", "what do you", "what did you", "which skills", "what skills",
+	) {
+		return false
+	}
+	if containsAny(tokens, processPromptTokens) {
+		return true
+	}
+	if hasToken(tokens, "skill") || hasToken(tokens, "skills") {
+		return true
+	}
+	if hasToken(tokens, "use") || hasToken(tokens, "using") || hasToken(tokens, "used") {
+		if slashCommandMentioned(lower) {
+			return true
+		}
+		if scope.Inspectable() || strings.HasPrefix(topicKey, "path:") || strings.HasPrefix(topicKey, "files:") {
+			return false
+		}
+		return true
+	}
+	return slashCommandMentioned(lower)
+}
+
+func slashCommandMentioned(lower string) bool {
+	return slashCommandPattern.FindStringIndex(lower) != nil
+}
+
+func startsWithAny(input string, prefixes ...string) bool {
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(input, prefix) {
+			return true
+		}
+	}
+	return false
 }
