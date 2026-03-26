@@ -51,7 +51,7 @@ func (s *Session) Apply(class Classification, obs Observation) {
 	if topic == "" {
 		return
 	}
-	if class.Family != FamilyInspect && !class.WantsInterpretation {
+	if !retainsEvidence(class) {
 		return
 	}
 
@@ -69,4 +69,13 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func retainsEvidence(class Classification) bool {
+	switch class.Family {
+	case FamilyImplement, FamilyDebug:
+		return false
+	default:
+		return true
+	}
 }

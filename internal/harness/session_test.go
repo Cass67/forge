@@ -56,3 +56,29 @@ func TestSessionRecentEvidenceExpiresAfterOneTurn(t *testing.T) {
 		t.Fatalf("expected evidence to expire after one turn: %#v", state)
 	}
 }
+
+func TestSessionApplyRetainsObservationalEvidenceOutsideInspectFamily(t *testing.T) {
+	session := NewSession()
+	_ = session.BeginTurn("check the repo")
+	session.Apply(Classification{
+		Family:      FamilyVerify,
+		WantsAction: true,
+		TopicKey:    "workspace:repository",
+	}, Observation{
+		Status:   ObservationComplete,
+		Response: "Repo contains scripts and data exports.",
+		Summary:  "repository overview",
+		TopicKey: "workspace:repository",
+	})
+
+	state := session.Snapshot()
+	if !state.HasRecentEvidence() {
+		t.Fatalf("expected recent evidence: %#v", state)
+	}
+	if state.LastEvidence.TopicKey != "workspace:repository" {
+		t.Fatalf("last evidence = %#v", state.LastEvidence)
+	}
+	if state.LastEvidence.Summary != "repository overview" {
+		t.Fatalf("summary = %q", state.LastEvidence.Summary)
+	}
+}

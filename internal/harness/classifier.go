@@ -47,6 +47,7 @@ var (
 func Classify(turn UserTurn, session SessionState) Classification {
 	text := strings.TrimSpace(turn.Text)
 	lower := strings.ToLower(text)
+	ordered := tokenList(lower)
 	tokens := tokenize(lower)
 
 	class := Classification{
@@ -56,7 +57,7 @@ func Classify(turn UserTurn, session SessionState) Classification {
 	}
 
 	switch {
-	case containsAny(tokens, implementTokens):
+	case wantsImplementation(ordered, tokens, text):
 		class.Family = FamilyImplement
 		class.WantsAction = true
 		class.Reason = "implementation language"
@@ -84,6 +85,17 @@ func Classify(turn UserTurn, session SessionState) Classification {
 	}
 
 	class.WantsEvaluation = wantsEvaluation(tokens, lower)
+	if wantsContextualEvaluationFollowUp(text, ordered, class, session) {
+		class.Family = FamilyInspect
+		class.WantsEvaluation = true
+		class.WantsAction = false
+		class.IsFollowUp = true
+		class.CanStayLocal = true
+		if strings.TrimSpace(class.TopicKey) == "" {
+			class.TopicKey = session.LastEvidence.TopicKey
+		}
+		class.Reason = "contextual follow-up"
+	}
 	if wantsInterpretation(tokens, lower) && session.HasRecentEvidence() && !class.WantsAction {
 		class.WantsInterpretation = true
 		class.IsFollowUp = true
@@ -110,9 +122,7 @@ func Classify(turn UserTurn, session SessionState) Classification {
 }
 
 func tokenize(input string) map[string]struct{} {
-	fields := strings.FieldsFunc(input, func(r rune) bool {
-		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
-	})
+	fields := tokenList(input)
 	out := make(map[string]struct{}, len(fields))
 	for _, field := range fields {
 		if field == "" {
@@ -121,6 +131,12 @@ func tokenize(input string) map[string]struct{} {
 		out[field] = struct{}{}
 	}
 	return out
+}
+
+func tokenList(input string) []string {
+	return strings.FieldsFunc(input, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
+	})
 }
 
 func tokenSet(values ...string) map[string]struct{} {
@@ -157,6 +173,16 @@ func wantsInspection(tokens map[string]struct{}, lower string) bool {
 		return true
 	}
 	return strings.Contains(lower, "take me through") || strings.Contains(lower, "go over")
+}
+
+func wantsImplementation(ordered []string, tokens map[string]struct{}, text string) bool {
+	if !containsAny(tokens, implementTokens) {
+		return false
+	}
+	if looksQuestionLike(text) && lacksConcreteActionTarget(ordered) {
+		return false
+	}
+	return true
 }
 
 func wantsEvaluation(tokens map[string]struct{}, lower string) bool {
@@ -218,6 +244,71 @@ func looksLikeReferentialFollowUp(tokens map[string]struct{}, lower string) bool
 		}
 	}
 	return false
+}
+
+func wantsContextualEvaluationFollowUp(text string, ordered []string, class Classification, session SessionState) bool {
+	if !session.HasRecentEvidence() || strings.TrimSpace(session.LastEvidence.TopicKey) == "" {
+		return false
+	}
+	if strings.TrimSpace(class.TopicKey) != "" {
+		return false
+	}
+	if class.Family == FamilyDebug || class.Family == FamilyResearch || class.Family == FamilyTransform {
+		return false
+	}
+	if !looksQuestionLike(text) {
+		return false
+	}
+	if len(ordered) == 0 || len(ordered) > 8 {
+		return false
+	}
+	if !containsImplementToken(ordered) {
+		return false
+	}
+	return lacksConcreteActionTarget(ordered)
+}
+
+func looksQuestionLike(text string) bool {
+	return strings.Contains(text, "?")
+}
+
+func lacksConcreteActionTarget(ordered []string) bool {
+	lastVerb := lastImplementTokenIndex(ordered)
+	if lastVerb < 0 {
+		return false
+	}
+	for _, token := range ordered[lastVerb+1:] {
+		if isWeakFollowUpToken(token) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func containsImplementToken(ordered []string) bool {
+	return lastImplementTokenIndex(ordered) >= 0
+}
+
+func lastImplementTokenIndex(ordered []string) int {
+	lastVerb := -1
+	for i, token := range ordered {
+		if _, ok := implementTokens[token]; ok {
+			lastVerb = i
+		}
+	}
+	return lastVerb
+}
+
+func isWeakFollowUpToken(token string) bool {
+	switch token {
+	case "", "a", "an", "the", "to", "i", "me", "my", "we", "us", "our", "you", "your",
+		"need", "needs", "should", "can", "could", "would", "must", "please":
+		return true
+	default:
+		_, ok := followUpPronouns[token]
+		return ok
+	}
 }
 
 func resolveTopicKey(text string, tokens map[string]struct{}) string {
