@@ -940,8 +940,10 @@ Pipeline flags:
 
 Chat flags:
   --yolo            Skip all approval prompts
-  --live            Use split-pane live view (not yet implemented)
   --model MODEL     Override chat model
+  --auto-skills M   Auto skill mode: off, suggest, or auto
+  -d                Open advanced debug view and write a fresh debug log
+  --debug-file PATH Write debug log to PATH (default: temp dir forge-chat-debug-<timestamp>.jsonl)
   -C PATH           Set working directory (default: cwd)
 
 Interactive session keys:
@@ -1220,10 +1222,9 @@ func runChat(args []string) {
 	yolo := fs.Bool("yolo", false, "skip all approval prompts")
 	model := fs.String("model", "", "model override")
 	workDir := fs.String("C", "", "working directory (default: cwd)")
-	live := fs.Bool("live", true, "use split-pane live view")
 	autoSkills := fs.String("auto-skills", "", "auto skill mode: off, suggest, or auto")
-	debug := fs.Bool("d", false, "write chat debug log")
-	debugFile := fs.String("debug-file", "", "chat debug log path (default: ./forge-chat-debug-<timestamp>.jsonl)")
+	debug := fs.Bool("d", false, "open advanced debug view and write a fresh chat debug log")
+	debugFile := fs.String("debug-file", "", "chat debug log path (default: temp dir forge-chat-debug-<timestamp>.jsonl)")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
@@ -1260,8 +1261,6 @@ func runChat(args []string) {
 		}
 		fmt.Fprintf(os.Stderr, "chat debug log: %s\n", path)
 	}
-
-	_ = live
 	runtimepkg.RunChatLive(setup)
 }
 

@@ -240,6 +240,29 @@ func TestEnableChatDebugLogsActiveRuntimeMode(t *testing.T) {
 	}
 }
 
+func TestEnableChatDebugLogsDebugSurfaceMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chat-debug.jsonl")
+	setup := &ChatSetup{
+		ChatModel: "openai/gpt-5",
+		WorkDir:   t.TempDir(),
+		Driver:    &debugMockDriver{response: "ok"},
+	}
+
+	if _, err := EnableChatDebug(setup, path); err != nil {
+		t.Fatal(err)
+	}
+
+	lines := readDebugLines(t, path)
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
+		t.Fatal(err)
+	}
+	fields, _ := entry["fields"].(map[string]any)
+	if got := fields["surface_mode"]; got != "debug" {
+		t.Fatalf("surface_mode = %#v, want debug", got)
+	}
+}
+
 func TestChatDebugRecorderLogsHarnessTrace(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "chat-debug.jsonl")
 	setup := &ChatSetup{WorkDir: t.TempDir()}
