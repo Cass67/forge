@@ -269,6 +269,8 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	subAgentMalformedToolRetries := 0
 	lastStrictProgressSignature := ""
 	strictNoProgressRepeats := 0
+	lastStrictPreviewArtifactTarget := ""
+	strictPreviewArtifactRepeats := 0
 	sawToolCallThisRun := false
 	dispatchCanStop := false
 	dispatchStopAfterTurn := false
@@ -712,9 +714,11 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		})
 		nextTurnControls := make([]string, 0, 2)
 		if isStrictActionTurn {
+			exactStrictMutationRepeat := false
 			if signature, ok := strictProgressSignature(calls); ok {
 				if signature == lastStrictProgressSignature {
 					strictNoProgressRepeats++
+					exactStrictMutationRepeat = true
 				} else {
 					lastStrictProgressSignature = signature
 					strictNoProgressRepeats = 0
@@ -729,9 +733,28 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				lastStrictProgressSignature = ""
 				strictNoProgressRepeats = 0
 			}
+			if target, ok := strictPreviewArtifactTarget(calls); ok {
+				if target == lastStrictPreviewArtifactTarget {
+					strictPreviewArtifactRepeats++
+				} else {
+					lastStrictPreviewArtifactTarget = target
+					strictPreviewArtifactRepeats = 0
+				}
+				if strictPreviewArtifactRepeats >= 2 || (strictPreviewArtifactRepeats >= 1 && turn+1 >= a.maxTurns) {
+					return fmt.Errorf("strict action turn made no progress after repeatedly rewriting preview artifact %s without validation", target)
+				}
+				if strictPreviewArtifactRepeats == 1 && !exactStrictMutationRepeat && turn+1 < a.maxTurns {
+					nextTurnControls = append(nextTurnControls, strictPreviewArtifactChurnNudgeMessage(target))
+				}
+			} else {
+				lastStrictPreviewArtifactTarget = ""
+				strictPreviewArtifactRepeats = 0
+			}
 		} else {
 			lastStrictProgressSignature = ""
 			strictNoProgressRepeats = 0
+			lastStrictPreviewArtifactTarget = ""
+			strictPreviewArtifactRepeats = 0
 		}
 		if mixedSubAgentToolCallProse && turn+1 < a.maxTurns {
 			nextTurnControls = append(nextTurnControls, subAgentToolCallNudgeMessage(a.role, subAgentMixedProseRetries))
@@ -1255,6 +1278,55 @@ func strictNoProgressNudgeMessage(call ToolCall) string {
 	default:
 		return "No progress: do not repeat the same mutation again."
 	}
+}
+
+func strictPreviewArtifactTarget(calls []ToolCall) (string, bool) {
+	if len(calls) != 1 {
+		return "", false
+	}
+	call := calls[0]
+	if strings.TrimSpace(call.Name) != "artifact_write" {
+		return "", false
+	}
+	path, _ := call.Args["path"].(string)
+	path = filepath.ToSlash(strings.TrimSpace(path))
+	if path == "" {
+		return "", false
+	}
+	mimeType, _ := call.Args["mime_type"].(string)
+	if !looksLikePreviewArtifact(path, mimeType) {
+		return "", false
+	}
+	return path, true
+}
+
+func looksLikePreviewArtifact(path, mimeType string) bool {
+	lowerPath := strings.ToLower(filepath.ToSlash(strings.TrimSpace(path)))
+	if lowerPath == "" {
+		return false
+	}
+	base := strings.ToLower(filepath.Base(lowerPath))
+	mimeType = strings.ToLower(strings.TrimSpace(mimeType))
+	if strings.HasPrefix(lowerPath, "preview/") || strings.Contains(lowerPath, "/preview/") || strings.Contains(base, "preview") {
+		return true
+	}
+	if strings.HasPrefix(mimeType, "text/html") || strings.HasPrefix(mimeType, "image/svg+xml") {
+		return true
+	}
+	switch strings.ToLower(filepath.Ext(base)) {
+	case ".html", ".htm", ".svg":
+		return true
+	default:
+		return false
+	}
+}
+
+func strictPreviewArtifactChurnNudgeMessage(target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return "No progress: you are rewriting the same preview artifact without validating it. Stop iterating blindly. Either run preview_server_ensure, inspect the current preview or artifact state, or give the final answer if it is already ready."
+	}
+	return fmt.Sprintf("No progress: you are rewriting the same preview artifact %s without validating it. Stop iterating blindly. Either run preview_server_ensure for it, inspect the current preview or artifact state, or give the final answer if it is already ready.", target)
 }
 
 func labelInterpretationUnavailable(message string) string {
