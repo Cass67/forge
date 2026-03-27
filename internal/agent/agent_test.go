@@ -491,6 +491,22 @@ func TestCompactToolResults(t *testing.T) {
 	}
 }
 
+func TestCompactOldHistoryMessageUsesNeutralToolSummaryPrefix(t *testing.T) {
+	got, ok := compactOldHistoryMessage(llm.Message{
+		Role:    llm.RoleUser,
+		Content: "Tool results:\n- [read_file] alpha.py\n  1 | package main\n- [list_dir] README.md\n  internal/",
+	})
+	if !ok {
+		t.Fatal("expected tool results to be compacted")
+	}
+	if strings.HasPrefix(got, "Tool results:") || strings.HasPrefix(got, "Tool results (summarized):") {
+		t.Fatalf("compacted tool summary should not masquerade as fresh tool output: %q", got)
+	}
+	if !strings.HasPrefix(got, "Earlier tool outputs summary:") {
+		t.Fatalf("unexpected compacted tool summary prefix: %q", got)
+	}
+}
+
 func TestScoutTaskIsRepoReviewRequiresRepositoryScope(t *testing.T) {
 	fileSummaryTask := "TASK: Inspect and summarize the file @util-rancid/influx/update-influx-file.py for the user. OUTCOME: Provide a concise explanation of what the script does, its key functions/flow, inputs/outputs, dependencies, and any noteworthy implementation details."
 	if scoutTaskIsRepoReview(fileSummaryTask) {
@@ -849,7 +865,7 @@ func TestScoutExecutesToolCallsAndSuppressesVisibleProse(t *testing.T) {
 	}
 }
 
-func TestHarnessInspectTurnFirstWorkingTurnUsesSingleToolCall(t *testing.T) {
+func TestHarnessInspectTurnFirstWorkingTurnSalvagesSingleToolCallWithoutRetryTax(t *testing.T) {
 	driver := &inspectingDriver{
 		responses: []string{
 			"<tool_call>\n{\"name\": \"glob\", \"args\": {\"pattern\": \"**/*.py\", \"path\": \".\"}}\n</tool_call>\n<tool_call>\n{\"name\": \"git_status\", \"args\": {}}\n</tool_call>",
@@ -865,8 +881,8 @@ func TestHarnessInspectTurnFirstWorkingTurnUsesSingleToolCall(t *testing.T) {
 				if !strings.Contains(joined, "[glob]") {
 					return fmt.Errorf("second turn missing executed first tool result")
 				}
-				if !strings.Contains(joined, "exactly one tool call per working turn") {
-					return fmt.Errorf("second turn missing inspect single-tool-call nudge")
+				if strings.Contains(joined, inspectSingleToolCallNudgeMessage()) {
+					return fmt.Errorf("second turn should continue from the salvaged first tool call without a single-tool-call nudge")
 				}
 				return nil
 			},
@@ -909,7 +925,7 @@ check the py files`))
 	}
 }
 
-func TestHarnessInspectTurnSerializesLaterToolCallsAndSuppressesVisibleProse(t *testing.T) {
+func TestHarnessInspectTurnSalvagesLaterToolCallsWithoutRetryTax(t *testing.T) {
 	driver := &inspectingDriver{
 		responses: []string{
 			"<tool_call>\n{\"name\": \"glob\", \"args\": {\"pattern\": \"**/*.py\", \"path\": \".\"}}\n</tool_call>",
@@ -927,11 +943,11 @@ func TestHarnessInspectTurnSerializesLaterToolCallsAndSuppressesVisibleProse(t *
 				if !strings.Contains(joined, "[read_file] alpha.py") {
 					return fmt.Errorf("third turn missing first read_file result")
 				}
-				if !strings.Contains(joined, "must not mix visible prose with tool calls") {
-					return fmt.Errorf("third turn missing inspect mixed-prose nudge")
+				if strings.Contains(joined, inspectToolCallNudgeMessage(1)) {
+					return fmt.Errorf("third turn should continue from the salvaged first tool call without a mixed-output nudge")
 				}
-				if !strings.Contains(joined, "exactly one tool call per working turn") {
-					return fmt.Errorf("third turn missing inspect single-tool-call nudge")
+				if strings.Contains(joined, inspectSingleToolCallNudgeMessage()) {
+					return fmt.Errorf("third turn should not need a single-tool-call nudge after salvage")
 				}
 				return nil
 			},
@@ -975,6 +991,68 @@ check the py files`))
 	}
 	if got := output.String(); strings.Contains(got, "I inspected enough to answer now.") {
 		t.Fatalf("inspect prose leak should be suppressed, got %q", got)
+	}
+}
+
+func TestHarnessInspectTurnClearsResolvedInspectNudges(t *testing.T) {
+	dir := t.TempDir()
+	driver := &inspectingDriver{
+		responses: []string{
+			"I should inspect the repo before answering.",
+			"<tool_call>\n{\"name\": \"list_dir\", \"args\": {\"path\": \".\", \"recursive\": false}}\n</tool_call>",
+			"Repo root inspected.",
+		},
+		checks: []func([]llm.Message) error{
+			nil,
+			func(messages []llm.Message) error {
+				joined := ""
+				for _, msg := range messages {
+					joined += msg.Content + "\n"
+				}
+				if !strings.Contains(joined, inspectEvidenceNudgeMessage(1)) {
+					return fmt.Errorf("second turn missing inspect evidence nudge")
+				}
+				return nil
+			},
+			func(messages []llm.Message) error {
+				joined := ""
+				for _, msg := range messages {
+					joined += msg.Content + "\n"
+				}
+				if !strings.Contains(joined, "[list_dir] README.md") {
+					return fmt.Errorf("third turn missing executed list_dir result")
+				}
+				if strings.Contains(joined, inspectEvidenceNudgeMessage(1)) {
+					return fmt.Errorf("third turn should not carry the resolved inspect evidence nudge forward")
+				}
+				return nil
+			},
+		},
+	}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{
+		Name:        "list_dir",
+		Description: "List dir",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			return "README.md\ninternal/", nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	a := NewAgent(driver, reg, YoloApproval(), dir, 10, renderer, nil, nil)
+
+	err := a.Run(context.Background(), strings.TrimSpace(`HARNESS MODE: inspect
+INSPECT SCOPE: repository
+This is a read-only inspection turn.
+USER REQUEST:
+check the repo`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); !strings.Contains(got, "Repo root inspected.") {
+		t.Fatalf("final inspect answer missing: %q", got)
 	}
 }
 
@@ -1043,7 +1121,6 @@ func TestSpawnSubAgentScoutRecoversFromMalformedToolMarkup(t *testing.T) {
 		},
 		checks: []func([]llm.Message) error{
 			nil,
-			nil,
 			func(messages []llm.Message) error {
 				joined := ""
 				for _, msg := range messages {
@@ -1051,6 +1128,16 @@ func TestSpawnSubAgentScoutRecoversFromMalformedToolMarkup(t *testing.T) {
 				}
 				if !strings.Contains(joined, scoutMalformedToolMarkupNudgeMessage(1)) {
 					return fmt.Errorf("second turn missing malformed-tool-markup nudge")
+				}
+				return nil
+			},
+			func(messages []llm.Message) error {
+				joined := ""
+				for _, msg := range messages {
+					joined += msg.Content + "\n"
+				}
+				if strings.Contains(joined, scoutMalformedToolMarkupNudgeMessage(1)) {
+					return fmt.Errorf("third turn should not carry the resolved malformed-tool-markup nudge forward")
 				}
 				return nil
 			},
