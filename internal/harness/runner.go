@@ -12,6 +12,7 @@ type Runner struct {
 	session        *Session
 	trace          *Recorder
 	local          LocalExecutor
+	strictLocal    LocalExecutor
 	workers        WorkerExecutor
 	workerSkills   []skills.Skill
 	workerAutoMode string
@@ -21,6 +22,7 @@ type RunnerConfig struct {
 	Session        *Session
 	Trace          *Recorder
 	Local          LocalExecutor
+	StrictLocal    LocalExecutor
 	Workers        WorkerExecutor
 	WorkerSkills   []skills.Skill
 	WorkerAutoMode string
@@ -39,6 +41,7 @@ func NewRunner(cfg RunnerConfig) *Runner {
 		session:        session,
 		trace:          trace,
 		local:          cfg.Local,
+		strictLocal:    cfg.StrictLocal,
 		workers:        cfg.Workers,
 		workerSkills:   append([]skills.Skill(nil), cfg.WorkerSkills...),
 		workerAutoMode: cfg.WorkerAutoMode,
@@ -91,6 +94,9 @@ func (r *Runner) executeStep(ctx context.Context, turn UserTurn, class Classific
 	if step.Kind == StepWorker {
 		return r.executeWorker(ctx, turn, class, session, step)
 	}
+	if step.Kind == StepStrictLocal {
+		return r.executeStrictLocal(ctx, turn, class, step)
+	}
 	return r.executeLocal(ctx, turn, class, step)
 }
 
@@ -134,6 +140,19 @@ func (r *Runner) executeLocal(ctx context.Context, turn UserTurn, class Classifi
 	r.trace.Add(StateAct, class.Family, step.Kind, step.Worker, step.Summary, class.TopicKey)
 	obs, err := r.local.Execute(ctx, turn, class, r.session.Snapshot())
 	r.trace.Add(StateObserve, class.Family, step.Kind, step.Worker, firstNonEmpty(obs.Summary, "local execution complete"), class.TopicKey)
+	return step, obs, err
+}
+
+func (r *Runner) executeStrictLocal(ctx context.Context, turn UserTurn, class Classification, step Step) (Step, Observation, error) {
+	if r.strictLocal == nil {
+		r.trace.Add(StateBlocked, class.Family, step.Kind, step.Worker, "strict local executor unavailable; recovering locally", class.TopicKey)
+		fallback := localRecoveryStep()
+		r.trace.Add(StatePlanStep, class.Family, fallback.Kind, fallback.Worker, fallback.Reason, class.TopicKey)
+		return r.executeLocal(ctx, turn, class, fallback)
+	}
+	r.trace.Add(StateAct, class.Family, step.Kind, step.Worker, step.Summary, class.TopicKey)
+	obs, err := r.strictLocal.Execute(ctx, turn, class, r.session.Snapshot())
+	r.trace.Add(StateObserve, class.Family, step.Kind, step.Worker, firstNonEmpty(obs.Summary, "strict local execution complete"), class.TopicKey)
 	return step, obs, err
 }
 

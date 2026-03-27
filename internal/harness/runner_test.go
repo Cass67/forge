@@ -186,6 +186,39 @@ func TestRunnerRepoTellMeWhatYouThinkStaysOnLocalInspectPath(t *testing.T) {
 	}
 }
 
+func TestRunnerVisibleCollaborationUsesStrictLocalStep(t *testing.T) {
+	local := &stubLocalExecutor{}
+	strictLocal := &stubLocalExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Response: "Theme mockups are ready in a verified preview.",
+			Summary:  "verified preview ready",
+		},
+	}
+
+	result, err := NewRunner(RunnerConfig{
+		Session:     NewSession(),
+		Trace:       NewRecorder(),
+		Local:       local,
+		StrictLocal: strictLocal,
+	}).Run(context.Background(), "i need you to mock up 3 themes and show me them in a local web preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Step.Kind != StepStrictLocal {
+		t.Fatalf("step = %#v", result.Step)
+	}
+	if strictLocal.calls != 1 {
+		t.Fatalf("strict local calls = %d", strictLocal.calls)
+	}
+	if local.calls != 0 {
+		t.Fatalf("local calls = %d, want 0", local.calls)
+	}
+	if !result.Classification.PrefersVisibleExecution {
+		t.Fatalf("classification = %#v", result.Classification)
+	}
+}
+
 func TestRunnerImplementationUsesEditorWorkerWhenConfigured(t *testing.T) {
 	local := &stubLocalExecutor{}
 	worker := &stubWorkerExecutor{
@@ -241,6 +274,36 @@ func TestRunnerImplementationUsesEditorWorkerWhenConfigured(t *testing.T) {
 	}
 	if !strings.Contains(result.Response, "cleanup script") {
 		t.Fatalf("response = %q", result.Response)
+	}
+}
+
+func TestRunnerCollaborativeIdeationPromptStaysOnLocalPath(t *testing.T) {
+	local := &stubLocalExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Response: "I can sketch a few directions and show them in a local preview.",
+			Summary:  "collaborative ideation stays local",
+		},
+	}
+	worker := &stubWorkerExecutor{}
+
+	result, err := NewRunner(RunnerConfig{
+		Session: NewSession(),
+		Trace:   NewRecorder(),
+		Local:   local,
+		Workers: worker,
+	}).Run(context.Background(), "i dont like the theme in this app, i need some ideas, can you mock up 3 for me and help me decide, id like you to spin up a web server and show me your ideas, update me at every step whats going on")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Step.Kind != StepLocal || result.Step.Worker != WorkerNone {
+		t.Fatalf("step = %#v, class = %#v", result.Step, result.Classification)
+	}
+	if worker.calls != 0 {
+		t.Fatalf("worker should not have been used, got %d calls", worker.calls)
+	}
+	if local.calls != 1 {
+		t.Fatalf("local calls = %d", local.calls)
 	}
 }
 

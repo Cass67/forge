@@ -89,8 +89,10 @@ func largePromptStressCorpus() []stressFixture {
 	fixtures := make([]stressFixture, 0, 1000)
 	fixtures = append(fixtures, repoReviewStressFixtures()...)
 	fixtures = append(fixtures, directoryInspectStressFixtures()...)
+	fixtures = append(fixtures, visibleCollaborationStressFixtures()...)
 	fixtures = append(fixtures, planningFollowUpStressFixtures()...)
 	fixtures = append(fixtures, actionFollowUpStressFixtures()...)
+	fixtures = append(fixtures, collaborativeIdeationStressFixtures()...)
 	fixtures = append(fixtures, promptBoundaryStressFixtures()...)
 	fixtures = append(fixtures, processQuestionStressFixtures()...)
 	return fixtures
@@ -171,6 +173,85 @@ func directoryInspectStressFixtures() []stressFixture {
 					WantEvaluation:  false,
 					WantStep:        StepWorker,
 					WantWorker:      WorkerReader,
+					WantFollowUp:    false,
+					WantPolicyGuard: false,
+					WantTerseAnswer: false,
+				})
+			}
+		}
+	}
+	return fixtures
+}
+
+func visibleCollaborationStressFixtures() []stressFixture {
+	base := []struct {
+		name      string
+		input     string
+		wantTopic string
+	}{
+		{name: "repo", input: "take a look at this repo", wantTopic: "workspace:repository"},
+		{name: "directory", input: "describe this directory", wantTopic: "workspace:directory"},
+		{name: "python-files", input: "check the py files", wantTopic: "files:python"},
+	}
+	suffixes := []string{
+		"and update me at every step",
+		"and keep me updated as you go",
+		"and talk me through it as you go",
+	}
+	fixtures := make([]stressFixture, 0, len(base)*len(suffixes))
+	idx := 0
+	for _, prompt := range base {
+		for _, suffix := range suffixes {
+			idx++
+			fixtures = append(fixtures, stressFixture{
+				Name:            fmt.Sprintf("visible-collaboration/%s/%02d", prompt.name, idx),
+				Category:        "visible-collaboration",
+				Input:           prompt.input + " " + suffix,
+				WantFamily:      FamilyInspect,
+				WantTopicKey:    prompt.wantTopic,
+				WantEvaluation:  false,
+				WantStep:        StepStrictLocal,
+				WantWorker:      WorkerNone,
+				WantFollowUp:    false,
+				WantPolicyGuard: false,
+				WantTerseAnswer: false,
+			})
+		}
+	}
+	return fixtures
+}
+
+func collaborativeIdeationStressFixtures() []stressFixture {
+	leads := []string{
+		"i need some ideas for the theme in this app",
+		"brainstorm a few directions for this interface",
+		"show me a few theme options for this app",
+	}
+	tails := []string{
+		"and help me decide",
+		"and help me choose",
+		"and show me your ideas",
+	}
+	suffixes := []string{
+		"",
+		", update me at every step whats going on",
+		", id like you to spin up a web server and show me your ideas",
+	}
+	fixtures := make([]stressFixture, 0, len(leads)*len(tails)*len(suffixes))
+	idx := 0
+	for _, lead := range leads {
+		for _, tail := range tails {
+			for _, suffix := range suffixes {
+				idx++
+				fixtures = append(fixtures, stressFixture{
+					Name:            fmt.Sprintf("collaborative-ideation/%03d", idx),
+					Category:        "collaborative-ideation",
+					Input:           strings.TrimSpace(lead + " " + tail + suffix),
+					WantFamily:      FamilyAnswer,
+					WantTopicKey:    "",
+					WantEvaluation:  false,
+					WantStep:        StepStrictLocal,
+					WantWorker:      WorkerNone,
 					WantFollowUp:    false,
 					WantPolicyGuard: false,
 					WantTerseAnswer: false,
@@ -283,9 +364,10 @@ func actionFollowUpStressFixtures() []stressFixture {
 				idx++
 				input := fmt.Sprintf(template, target) + suffix
 				lower := strings.ToLower(input)
+				ordered := tokenList(lower)
 				tokens := tokenize(lower)
 				wantEvaluation := wantsEvaluation(tokens, lower)
-				if containsImplementationSignal(tokens) && hasExplicitImplementationDeliverable(tokens) {
+				if containsImplementationSignal(ordered, tokens) && hasExplicitImplementationDeliverable(tokens) {
 					wantEvaluation = false
 				}
 				fixtures = append(fixtures, stressFixture{

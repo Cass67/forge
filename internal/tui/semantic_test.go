@@ -76,6 +76,17 @@ func TestRenderSemanticProseStylesStructuredStatusAndNumbers(t *testing.T) {
 	assertStyledSubstring(t, rendered, "1.2s", theme.Success)
 }
 
+func TestRenderSemanticProseStylesInlineCodeContents(t *testing.T) {
+	withTrueColorProfile(t)
+
+	theme := lookupThemeForTest(t, "default")
+	rendered := RenderSemanticPlain("Use `go test ./...` from `./internal/tui` and inspect `verify_cpe_transfer_and_ack.sh`.", profileProse, theme)
+
+	assertStyledSubstring(t, rendered, "go test ./...", theme.AccentSecondary)
+	assertStyledSubstring(t, rendered, "./internal/tui", theme.AccentPrimary)
+	assertStyledSubstring(t, rendered, "verify_cpe_transfer_and_ack.sh", theme.AccentPrimary)
+}
+
 func TestRenderSemanticPreservesPrintableWidth(t *testing.T) {
 	withTrueColorProfile(t)
 

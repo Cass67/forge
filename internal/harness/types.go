@@ -36,11 +36,12 @@ const (
 type StepKind string
 
 const (
-	StepRespond StepKind = "respond"
-	StepLocal   StepKind = "local"
-	StepWorker  StepKind = "worker"
-	StepClarify StepKind = "clarify"
-	StepBlocked StepKind = "blocked"
+	StepRespond     StepKind = "respond"
+	StepLocal       StepKind = "local"
+	StepStrictLocal StepKind = "strict_local"
+	StepWorker      StepKind = "worker"
+	StepClarify     StepKind = "clarify"
+	StepBlocked     StepKind = "blocked"
 )
 
 type WorkerKind string
@@ -67,20 +68,21 @@ type UserTurn struct {
 }
 
 type Classification struct {
-	Family               RequestFamily
-	WantsEvaluation      bool
-	WantsAction          bool
-	WantsInterpretation  bool
-	NeedsPolicyGuard     bool
-	DetachedPolicyGuard  bool
-	NeedsTerseAnswer     bool
-	NeedsExternalSources bool
-	CanStayLocal         bool
-	IsFollowUp           bool
-	TopicKey             string
-	TaskText             string
-	ResponsePostlude     string
-	Reason               string
+	Family                  RequestFamily
+	WantsEvaluation         bool
+	WantsAction             bool
+	WantsInterpretation     bool
+	NeedsPolicyGuard        bool
+	DetachedPolicyGuard     bool
+	NeedsTerseAnswer        bool
+	NeedsExternalSources    bool
+	CanStayLocal            bool
+	PrefersVisibleExecution bool
+	IsFollowUp              bool
+	TopicKey                string
+	TaskText                string
+	ResponsePostlude        string
+	Reason                  string
 }
 
 type Step struct {

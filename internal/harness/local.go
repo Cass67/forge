@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"forge/internal/agent/tools"
@@ -59,6 +60,11 @@ func (e AgentExecutor) Execute(ctx context.Context, turn UserTurn, class Classif
 				defer e.Agent.SetTools(e.DefaultTools)
 			}
 		}
+	} else if useVisibleCollaborationScope(class) {
+		userMessage = buildVisibleCollaborationTurnPrompt(class, turn.Text, session)
+		if e.DefaultTools != nil {
+			e.Agent.SetTools(e.DefaultTools)
+		}
 	} else if useGuidedAnswerScope(class) {
 		userMessage = buildAnswerTurnPrompt(class, turn.Text, session)
 		if e.DefaultTools != nil {
@@ -79,6 +85,15 @@ func (e AgentExecutor) Execute(ctx context.Context, turn UserTurn, class Classif
 	}
 
 	response := strings.TrimSpace(e.Agent.LastResponse())
+	if err := validateLocalResponse(class, response); err != nil {
+		return Observation{
+			Status:   ObservationBlocked,
+			Response: "",
+			Summary:  err.Error(),
+			TopicKey: class.TopicKey,
+			Err:      err,
+		}, err
+	}
 	return Observation{
 		Status:   ObservationComplete,
 		Response: response,
@@ -92,10 +107,44 @@ func useReadOnlyInspectScope(class Classification) bool {
 }
 
 func useGuidedAnswerScope(class Classification) bool {
-	return class.Family == FamilyAnswer
+	return class.Family == FamilyAnswer && !class.PrefersVisibleExecution
+}
+
+func useVisibleCollaborationScope(class Classification) bool {
+	return class.PrefersVisibleExecution
+}
+
+func validateLocalResponse(class Classification, response string) error {
+	if !requiresConcreteLocalResponse(class) {
+		return nil
+	}
+	if response == "" {
+		return fmt.Errorf("local action turn produced no final response")
+	}
+	if startsWithToolCallMarkup(response) {
+		return fmt.Errorf("local action turn produced malformed tool markup")
+	}
+	return nil
+}
+
+func requiresConcreteLocalResponse(class Classification) bool {
+	return class.PrefersVisibleExecution || class.Family != FamilyAnswer
+}
+
+func startsWithToolCallMarkup(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	for _, opener := range []string{"<tool_call>", "<function_calls>", "<tool_calls>"} {
+		if strings.HasPrefix(trimmed, opener) {
+			return true
+		}
+	}
+	return false
 }
 
 func shouldIsolateConversation(class Classification) bool {
+	if class.PrefersVisibleExecution {
+		return false
+	}
 	return class.Family == FamilyInspect || class.Family == FamilyAnswer
 }
 
@@ -182,6 +231,31 @@ func buildAnswerTurnPrompt(class Classification, userMessage string, session Ses
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
+func buildVisibleCollaborationTurnPrompt(class Classification, userMessage string, session SessionState) string {
+	userMessage = strings.TrimSpace(userMessage)
+	lines := []string{
+		"HARNESS MODE: visible-collaboration",
+		"This is a visible collaboration turn.",
+		"Rules for this turn:",
+		"- stay on the main local path and keep working with tools until you have a concrete result or a real blocker",
+		"- if the user asks for a mockup, preview, browser view, file artifact, or running server, create or start it before reporting status",
+		"- do not claim a server, preview, file, URL, or port is available unless tool results from this turn confirm it",
+		"- if you start or restart a server, verify it with a local fetch or equivalent check before telling the user it is live",
+		"- if a command times out or fails, say that plainly and choose a safer alternative when possible",
+		"- prefer bounded previews such as static HTML files when they satisfy the request; use a server only when it materially helps",
+		"- keep updates concise and ground claims in tool results from this turn or relevant recent context",
+	}
+	if context := recentVisibleCollaborationContext(session); context != "" {
+		lines = append(lines,
+			"",
+			"RECENT CONTEXT:",
+			context,
+		)
+	}
+	lines = append(lines, "", "USER REQUEST:", userMessage)
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
 func inspectPromptScope(class Classification) string {
 	switch {
 	case strings.HasPrefix(class.TopicKey, "files:"):
@@ -200,6 +274,16 @@ func recentAnswerContext(class Classification, session SessionState) string {
 		return ""
 	}
 	if session.HasRecentMeta() && strings.TrimSpace(session.LastResponse) != "" {
+		return "- prior assistant answer: " + clipPromptContext(session.LastResponse, 240)
+	}
+	if session.HasRecentEvidence() && strings.TrimSpace(session.LastEvidence.Summary) != "" {
+		return "- recent evidence: " + clipPromptContext(session.LastEvidence.Summary, 240)
+	}
+	return ""
+}
+
+func recentVisibleCollaborationContext(session SessionState) string {
+	if strings.TrimSpace(session.LastResponse) != "" {
 		return "- prior assistant answer: " + clipPromptContext(session.LastResponse, 240)
 	}
 	if session.HasRecentEvidence() && strings.TrimSpace(session.LastEvidence.Summary) != "" {
