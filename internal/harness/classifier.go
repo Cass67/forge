@@ -48,6 +48,21 @@ var (
 	transformTokens = tokenSet(
 		"rewrite", "rephrase", "translate", "convert", "format", "transform",
 	)
+	ideationTokens = tokenSet(
+		"idea", "ideas", "brainstorm", "brainstorming", "concept", "concepts",
+		"direction", "directions", "option", "options", "theme", "themes",
+		"mock", "mockup", "mockups", "prototype", "prototypes",
+	)
+	decisionSupportTokens = tokenSet(
+		"decide", "decision", "choose", "choice", "choices", "pick",
+		"compare", "comparison", "comparisons",
+	)
+	previewTokens = tokenSet(
+		"server", "preview", "browser", "mockup", "mockups", "localhost", "port", "ports",
+	)
+	previewActionTokens = tokenSet(
+		"start", "launch", "open", "serve", "show", "restart", "see", "view",
+	)
 	followUpPronouns = tokenSet(
 		"this", "that", "it", "they", "those", "these",
 	)
@@ -105,10 +120,11 @@ func Classify(turn UserTurn, session SessionState) Classification {
 	scope := inferRequestScope(lower, tokens)
 
 	class := Classification{
-		Family:       FamilyAnswer,
-		CanStayLocal: true,
-		TopicKey:     resolveTopicKey(text, scope),
-		TaskText:     text,
+		Family:                  FamilyAnswer,
+		CanStayLocal:            true,
+		PrefersVisibleExecution: prefersVisibleExecution(lower, tokens),
+		TopicKey:                resolveTopicKey(text, scope),
+		TaskText:                text,
 	}
 	if detachedPolicyGuard {
 		class.DetachedPolicyGuard = true
@@ -146,7 +162,7 @@ func Classify(turn UserTurn, session SessionState) Classification {
 		class.Family = FamilyDebug
 		class.WantsAction = true
 		class.Reason = "debugging language"
-	case wantsInspection(scope, tokens, lower):
+	case wantsInspection(scope, ordered, tokens, lower):
 		class.Family = FamilyInspect
 		class.Reason = "inspection language"
 	case wantsVerification(scope, tokens, lower):
@@ -286,6 +302,10 @@ func buildClassifierLexiconWords() []string {
 	addSet(implementArtifactTokens)
 	addSet(debugTokens)
 	addSet(transformTokens)
+	addSet(ideationTokens)
+	addSet(decisionSupportTokens)
+	addSet(previewTokens)
+	addSet(previewActionTokens)
 	addSet(followUpPronouns)
 	addSet(continuationHeadTokens)
 	addSet(continuationConfirmTokens)
@@ -383,14 +403,14 @@ func containsAny(tokens, candidates map[string]struct{}) bool {
 	return false
 }
 
-func wantsInspection(scope requestScope, tokens map[string]struct{}, lower string) bool {
+func wantsInspection(scope requestScope, ordered []string, tokens map[string]struct{}, lower string) bool {
 	if !scope.Inspectable() {
 		return false
 	}
 	if containsAny(tokens, debugTokens) || containsAny(tokens, transformTokens) {
 		return false
 	}
-	if containsAny(tokens, implementTokens) && !wantsScopedEvaluation(scope, tokens, lower) {
+	if containsImplementationVerb(ordered) && !wantsScopedEvaluation(scope, tokens, lower) {
 		return false
 	}
 	if containsAny(tokens, inspectVerbs) {
@@ -421,7 +441,7 @@ func wantsInspection(scope requestScope, tokens map[string]struct{}, lower strin
 }
 
 func wantsImplementation(scope requestScope, ordered []string, tokens map[string]struct{}, lower, text string) bool {
-	if !containsImplementationSignal(tokens) {
+	if !containsImplementationSignal(ordered, tokens) {
 		return false
 	}
 	if scope.Inspectable() && wantsScopedEvaluation(scope, tokens, lower) && !hasExplicitImplementationDeliverable(tokens) {
@@ -433,11 +453,15 @@ func wantsImplementation(scope requestScope, ordered []string, tokens map[string
 	return true
 }
 
-func containsImplementationSignal(tokens map[string]struct{}) bool {
-	if containsAny(tokens, implementTokens) {
+func containsImplementationSignal(ordered []string, tokens map[string]struct{}) bool {
+	if containsImplementationVerb(ordered) {
 		return true
 	}
 	return hasToken(tokens, "write") && containsAny(tokens, implementArtifactTokens)
+}
+
+func containsImplementationVerb(ordered []string) bool {
+	return lastImplementTokenIndex(ordered) >= 0
 }
 
 func hasExplicitImplementationDeliverable(tokens map[string]struct{}) bool {
@@ -464,11 +488,19 @@ func wantsEvaluation(tokens map[string]struct{}, lower string) bool {
 		strings.Contains(lower, "how's this looking") ||
 		strings.Contains(lower, "how is this looking") ||
 		hasQualityAssessmentPhrase(lower) ||
+		hasWouldChangeReviewPhrase(lower) ||
 		strings.Contains(lower, "anything to change") ||
 		strings.Contains(lower, "anything i need") ||
 		strings.Contains(lower, "cleaned up or changed") ||
 		strings.Contains(lower, "how good") ||
 		strings.Contains(lower, "what stands out")
+}
+
+func hasWouldChangeReviewPhrase(lower string) bool {
+	return strings.Contains(lower, "anything you would change") ||
+		strings.Contains(lower, "anything you'd change") ||
+		strings.Contains(lower, "what you would change") ||
+		strings.Contains(lower, "what you'd change")
 }
 
 func wantsPlanning(tokens map[string]struct{}, lower string) bool {
@@ -490,6 +522,47 @@ func wantsInterpretation(tokens map[string]struct{}, lower string) bool {
 		strings.Contains(lower, "what does that mean") ||
 		strings.Contains(lower, "does that mean") ||
 		strings.Contains(lower, "so what")
+}
+
+func prefersVisibleExecution(lower string, tokens map[string]struct{}) bool {
+	return asksForProgressUpdates(lower) || wantsCollaborativeIdeation(lower, tokens) || wantsVisiblePreviewExecution(lower, tokens)
+}
+
+func asksForProgressUpdates(lower string) bool {
+	return strings.Contains(lower, "update me") ||
+		strings.Contains(lower, "update us") ||
+		strings.Contains(lower, "keep me updated") ||
+		strings.Contains(lower, "keep us updated") ||
+		strings.Contains(lower, "at every step") ||
+		strings.Contains(lower, "each step") ||
+		strings.Contains(lower, "as you go") ||
+		strings.Contains(lower, "along the way")
+}
+
+func wantsCollaborativeIdeation(lower string, tokens map[string]struct{}) bool {
+	wantsIdeas := containsAny(tokens, ideationTokens) ||
+		strings.Contains(lower, "mock up") ||
+		strings.Contains(lower, "mockup")
+	wantsDecisionHelp := containsAny(tokens, decisionSupportTokens) ||
+		strings.Contains(lower, "help me decide") ||
+		strings.Contains(lower, "help me choose") ||
+		strings.Contains(lower, "which one") ||
+		strings.Contains(lower, "which should")
+	wantsIdeaPresentation := strings.Contains(lower, "show me your ideas") ||
+		strings.Contains(lower, "show me the ideas") ||
+		strings.Contains(lower, "show me some ideas")
+	return (wantsIdeas && wantsDecisionHelp) || (wantsIdeas && wantsIdeaPresentation)
+}
+
+func wantsVisiblePreviewExecution(lower string, tokens map[string]struct{}) bool {
+	mentionsPreviewTarget := containsAny(tokens, previewTokens) ||
+		strings.Contains(lower, "127.0.0.1") ||
+		strings.Contains(lower, "http://") ||
+		strings.Contains(lower, "https://")
+	requestsPreviewAction := containsAny(tokens, previewActionTokens) ||
+		strings.Contains(lower, "spin up") ||
+		strings.Contains(lower, "showing me")
+	return mentionsPreviewTarget && requestsPreviewAction
 }
 
 func wantsVerification(scope requestScope, tokens map[string]struct{}, lower string) bool {
@@ -668,12 +741,42 @@ func containsImplementToken(ordered []string) bool {
 
 func lastImplementTokenIndex(ordered []string) int {
 	lastVerb := -1
-	for i, token := range ordered {
-		if _, ok := implementTokens[token]; ok {
+	for i := range ordered {
+		if isImplementationVerbToken(ordered, i) {
 			lastVerb = i
 		}
 	}
 	return lastVerb
+}
+
+func isImplementationVerbToken(ordered []string, idx int) bool {
+	if idx < 0 || idx >= len(ordered) {
+		return false
+	}
+	token := ordered[idx]
+	if _, ok := implementTokens[token]; !ok {
+		return false
+	}
+	if token == "update" && isProgressUpdateVerbContext(ordered, idx) {
+		return false
+	}
+	return true
+}
+
+func isProgressUpdateVerbContext(ordered []string, idx int) bool {
+	if idx+1 < len(ordered) {
+		switch ordered[idx+1] {
+		case "me", "us", "them", "him", "her":
+			return true
+		}
+	}
+	if idx-1 >= 0 {
+		switch ordered[idx-1] {
+		case "me", "us", "them", "him", "her":
+			return true
+		}
+	}
+	return false
 }
 
 func isWeakFollowUpToken(token string) bool {
@@ -715,11 +818,52 @@ func hasQualityAssessmentPhrase(lower string) bool {
 }
 
 func resolveTopicKey(text string, scope requestScope) string {
-	matches := pathLikePattern.FindStringSubmatch(text)
-	if len(matches) > 1 {
-		return "path:" + filepath.Clean(strings.Trim(matches[1], `"'`))
+	if candidate := firstConcretePathCandidate(text); candidate != "" {
+		return "path:" + filepath.Clean(candidate)
 	}
 	return strings.TrimSpace(scope.TopicKey)
+}
+
+func firstConcretePathCandidate(text string) string {
+	matches := pathLikePattern.FindAllStringSubmatch(text, -1)
+	for _, match := range matches {
+		if len(match) <= 1 {
+			continue
+		}
+		candidate := strings.Trim(match[1], `"'`)
+		if !looksLikeConcretePathCandidate(candidate) {
+			continue
+		}
+		return candidate
+	}
+	return ""
+}
+
+func looksLikeConcretePathCandidate(candidate string) bool {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return false
+	}
+	if strings.HasPrefix(candidate, "/") || strings.HasPrefix(candidate, "./") || strings.HasPrefix(candidate, "../") {
+		return true
+	}
+	if strings.Contains(candidate, "/") {
+		return true
+	}
+	if strings.HasPrefix(candidate, ".") {
+		return candidate != "." && candidate != ".."
+	}
+	ext := strings.TrimPrefix(filepath.Ext(candidate), ".")
+	return containsASCIIAlpha(ext)
+}
+
+func containsASCIIAlpha(value string) bool {
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			return true
+		}
+	}
+	return false
 }
 
 func hasToken(tokens map[string]struct{}, token string) bool {
@@ -756,10 +900,10 @@ func isPromptBoundaryFollowUp(lower string, tokens map[string]struct{}, scope re
 	if !session.HasRecentMeta() || session.LastMeta != MetaPromptBoundary {
 		return false
 	}
-	if scope.Inspectable() || containsAny(tokens, debugTokens) || containsImplementationSignal(tokens) || wantsResearch(tokens, lower) {
+	ordered := tokenList(lower)
+	if scope.Inspectable() || containsAny(tokens, debugTokens) || containsImplementationSignal(ordered, tokens) || wantsResearch(tokens, lower) {
 		return false
 	}
-	ordered := tokenList(lower)
 	if len(ordered) == 0 || len(ordered) > 5 {
 		return false
 	}
@@ -812,10 +956,10 @@ func isProcessFollowUp(lower string, tokens map[string]struct{}, scope requestSc
 	if !session.HasRecentMeta() || session.LastMeta != MetaProcess {
 		return false
 	}
-	if scope.Inspectable() || containsAny(tokens, debugTokens) || containsImplementationSignal(tokens) || wantsResearch(tokens, lower) {
+	ordered := tokenList(lower)
+	if scope.Inspectable() || containsAny(tokens, debugTokens) || containsImplementationSignal(ordered, tokens) || wantsResearch(tokens, lower) {
 		return false
 	}
-	ordered := tokenList(lower)
 	if len(ordered) == 0 || len(ordered) > 10 {
 		return false
 	}
@@ -859,7 +1003,7 @@ func classifyPendingActionContinuation(text string, session SessionState) (Class
 }
 
 func looksLikePendingActionContinuation(text, lower string, tokens map[string]struct{}) bool {
-	if strings.Contains(text, "?") || pathLikePattern.FindStringIndex(text) != nil || slashCommandMentioned(lower) {
+	if strings.Contains(text, "?") || firstConcretePathCandidate(text) != "" || slashCommandMentioned(lower) {
 		return false
 	}
 	ordered := tokenList(lower)
@@ -884,7 +1028,7 @@ func hasExplicitPendingContinuationOverride(text, lower string, ordered []string
 		containsAny(tokens, inspectVerbs) ||
 		containsAny(tokens, debugTokens) ||
 		containsAny(tokens, transformTokens) ||
-		containsImplementationSignal(tokens) ||
+		containsImplementationSignal(ordered, tokens) ||
 		wantsVerification(scope, tokens, lower) ||
 		wantsResearch(tokens, lower) ||
 		isPromptBoundaryQuestion(text, lower, tokens) ||

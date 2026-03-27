@@ -655,8 +655,10 @@ func lineHasStructuredLabel(line []semanticSpan) bool {
 
 func renderSemanticSpan(span semanticSpan, profile semanticProfile, theme chatTheme, structured bool) string {
 	switch span.Kind {
-	case semanticPlain, semanticInlineCode, semanticANSI:
+	case semanticPlain, semanticANSI:
 		return span.Text
+	case semanticInlineCode:
+		return renderInlineCodeSpan(span.Text, profile, theme)
 	}
 
 	style, ok := semanticStyle(span.Kind, profile, theme, structured, span.Text)
@@ -664,6 +666,22 @@ func renderSemanticSpan(span semanticSpan, profile semanticProfile, theme chatTh
 		return span.Text
 	}
 	return style.Render(span.Text)
+}
+
+func renderInlineCodeSpan(text string, profile semanticProfile, theme chatTheme) string {
+	if len(text) < 2 || !strings.HasPrefix(text, "`") || !strings.HasSuffix(text, "`") {
+		return text
+	}
+
+	inner := text[1 : len(text)-1]
+	delimiter := lipgloss.NewStyle().Foreground(theme.TextDim).Render("`")
+	if inner == "" {
+		return delimiter + delimiter
+	}
+	innerRendered := lipgloss.NewStyle().
+		Foreground(theme.Text).
+		Render(RenderSemantic(tokenizePlainSegment(inner), profile, theme))
+	return delimiter + innerRendered + delimiter
 }
 
 func semanticStyle(kind semanticKind, profile semanticProfile, theme chatTheme, structured bool, text string) (lipgloss.Style, bool) {

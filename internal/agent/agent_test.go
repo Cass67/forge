@@ -1116,7 +1116,6 @@ func TestSpawnSubAgentScoutRecoversFromMalformedToolMarkup(t *testing.T) {
 	driver := &inspectingDriver{
 		responses: []string{
 			"<tool_call>{\"name\":\"search\",\"args\":{\"pattern\":\"Rancid f5 objstor verify script missing\",\"path\":\".\",\"glob\":\"**/*\"}}<tool_call>{\"name\":\"search\",\"args\":{\"pattern\":\"objstor verify\",\"path\":\".\",\"glob\":\"**/*\"}}",
-			"<tool_call>\n{\"name\": \"search\", \"args\": {\"pattern\": \"Rancid f5 objstor verify script missing\", \"path\": \".\", \"glob\": \"**/*\"}}\n</tool_call>",
 			`{"status":"complete","message":"Found the alert source.","artifact_kind":"evidence","artifact":"/repo/util-rancid/update_cerner_daily.sh:753 emits the alert","next_role":"","next_task":""}`,
 		},
 		checks: []func([]llm.Message) error{
@@ -1126,22 +1125,14 @@ func TestSpawnSubAgentScoutRecoversFromMalformedToolMarkup(t *testing.T) {
 				for _, msg := range messages {
 					joined += msg.Content + "\n"
 				}
-				if !strings.Contains(joined, scoutMalformedToolMarkupNudgeMessage(1)) {
-					return fmt.Errorf("second turn missing malformed-tool-markup nudge")
-				}
-				return nil
-			},
-			func(messages []llm.Message) error {
-				joined := ""
-				for _, msg := range messages {
-					joined += msg.Content + "\n"
-				}
 				if strings.Contains(joined, scoutMalformedToolMarkupNudgeMessage(1)) {
-					return fmt.Errorf("third turn should not carry the resolved malformed-tool-markup nudge forward")
+					return fmt.Errorf("second turn should not retry malformed tool markup when the first tool call is salvageable")
+				}
+				if !strings.Contains(joined, "[search]") {
+					return fmt.Errorf("second turn missing executed salvaged search result")
 				}
 				return nil
 			},
-			nil,
 		},
 	}
 
@@ -3322,6 +3313,87 @@ func TestAgentRunParsesCloseOnlyToolCallFragment(t *testing.T) {
 	}
 }
 
+func TestAgentSalvagesMalformedMainToolTurnWithoutRetryTax(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("preview theme notes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	driver := &inspectingDriver{
+		checks: []func([]llm.Message) error{
+			nil,
+			func(messages []llm.Message) error {
+				if len(messages) == 0 {
+					return fmt.Errorf("missing second turn messages")
+				}
+				last := messages[len(messages)-1].Content
+				if strings.Contains(last, "malformed tool markup") {
+					return fmt.Errorf("unexpected malformed tool nudge: %q", last)
+				}
+				if !strings.Contains(last, "[read_file]") {
+					return fmt.Errorf("expected tool results after salvaged read_file call, got %q", last)
+				}
+				return nil
+			},
+		},
+		responses: []string{
+			"<tool_call>\n{\"name\":\"read_file\",\"args\":{\"path\":\"README.md\"}}\n<parameter name=\"path\">.</parameter>\n<parameter name=\"name\">list_dir</parameter>\n</tool_call>",
+			"Preview updated.",
+		},
+	}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.NewReadFile(dir))
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	agent := NewAgent(driver, reg, YoloApproval(), dir, 6, renderer, nil, nil)
+
+	if err := agent.Run(context.Background(), "show me the preview"); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callIdx != 2 {
+		t.Fatalf("expected malformed main tool turn to be salvaged without retry tax, got %d driver calls", driver.callIdx)
+	}
+	got := output.String()
+	if strings.Contains(got, "<tool_call>") || strings.Contains(got, "<parameter name=") {
+		t.Fatalf("raw malformed tool markup leaked to renderer output: %q", got)
+	}
+	if !strings.Contains(got, "Preview updated.") {
+		t.Fatalf("final output missing completion text: %q", got)
+	}
+}
+
+func TestAgentRetriesUnsalvageableMalformedMainToolTurn(t *testing.T) {
+	dir := t.TempDir()
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"args\":{\"path\":\".\",\"recursive\":false}}\n</tool_call>",
+		"<tool_call>\n{\"name\":\"list_dir\",\"args\":{\"path\":\".\",\"recursive\":false}}\n</tool_call>",
+		"Preview ready.",
+	}}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.NewListDir(dir, nil))
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	agent := NewAgent(driver, reg, YoloApproval(), dir, 6, renderer, nil, nil)
+
+	if err := agent.Run(context.Background(), "show me the preview"); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callIdx != 3 {
+		t.Fatalf("expected malformed main tool turn to retry through a valid tool call, got %d driver calls", driver.callIdx)
+	}
+	got := output.String()
+	if strings.Contains(got, "<tool_call>") {
+		t.Fatalf("raw malformed tool markup leaked to renderer output: %q", got)
+	}
+	if !strings.Contains(got, "Preview ready.") {
+		t.Fatalf("final output missing completion text: %q", got)
+	}
+}
+
 func TestHiddenWorkerSalvagesMalformedStrictToolTurnWithoutRetryTax(t *testing.T) {
 	dir := t.TempDir()
 	driver := &inspectingDriver{
@@ -3365,6 +3437,59 @@ func TestHiddenWorkerSalvagesMalformedStrictToolTurnWithoutRetryTax(t *testing.T
 	}
 	if len(worker.LastToolCalls()) != 1 || worker.LastToolCalls()[0].Name != "list_dir" {
 		t.Fatalf("last tool calls = %#v", worker.LastToolCalls())
+	}
+}
+
+func TestStrictLocalTurnLimitsEachWorkingResponseToOneToolCall(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("preview notes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	driver := &inspectingDriver{
+		checks: []func([]llm.Message) error{
+			nil,
+			func(messages []llm.Message) error {
+				if len(messages) == 0 {
+					return fmt.Errorf("missing second turn messages")
+				}
+				last := messages[len(messages)-1].Content
+				if !strings.Contains(last, "[list_dir]") {
+					return fmt.Errorf("expected list_dir tool result, got %q", last)
+				}
+				if strings.Contains(last, "[read_file]") {
+					return fmt.Errorf("expected strict local turn to drop later tool calls, got %q", last)
+				}
+				return nil
+			},
+		},
+		responses: []string{
+			"<tool_call>\n{\"name\":\"list_dir\",\"args\":{\"path\":\".\",\"recursive\":false}}\n</tool_call>\n<tool_call>\n{\"name\":\"read_file\",\"args\":{\"path\":\"README.md\"}}\n</tool_call>",
+			"Preview ready.",
+		},
+	}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.NewListDir(dir, nil))
+	reg.Register(tools.NewReadFile(dir))
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	agent := NewAgent(driver, reg, YoloApproval(), dir, 6, renderer, nil, nil)
+	agent.SetRole("strictlocal")
+	agent.SetSystem(BuildStrictLocalSystemPrompt(dir, reg, nil))
+
+	if err := agent.Run(context.Background(), "show me the preview"); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callIdx != 2 {
+		t.Fatalf("expected strict local turn to continue after one tool call, got %d driver calls", driver.callIdx)
+	}
+	if len(agent.LastToolCalls()) != 1 || agent.LastToolCalls()[0].Name != "list_dir" {
+		t.Fatalf("last tool calls = %#v", agent.LastToolCalls())
+	}
+	if !strings.Contains(output.String(), "Preview ready.") {
+		t.Fatalf("final output missing completion text: %q", output.String())
 	}
 }
 

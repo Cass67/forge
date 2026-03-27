@@ -77,6 +77,17 @@ func TestAdmitWorkerUsesEditorForImplementationTurns(t *testing.T) {
 	}
 }
 
+func TestAdmitWorkerKeepsVisibleCollaborationTurnsLocal(t *testing.T) {
+	worker, reason, ok := AdmitWorker(Classification{
+		Family:                  FamilyImplement,
+		CanStayLocal:            true,
+		PrefersVisibleExecution: true,
+	}, SessionState{})
+	if ok {
+		t.Fatalf("unexpected worker admission: %q (%s)", worker, reason)
+	}
+}
+
 func TestDecideCompletesSuccessfulObservation(t *testing.T) {
 	got := Decide(Classification{Family: FamilyInspect}, Observation{Status: ObservationComplete})
 	if got.FinalState != StateComplete {

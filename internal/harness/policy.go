@@ -3,6 +3,9 @@ package harness
 import "strings"
 
 func AdmitWorker(class Classification, _ SessionState) (WorkerKind, string, bool) {
+	if class.PrefersVisibleExecution {
+		return WorkerNone, "", false
+	}
 	workspaceInspect := strings.HasPrefix(class.TopicKey, "workspace:directory") || strings.HasPrefix(class.TopicKey, "workspace:repository")
 	if class.Family == FamilyInspect &&
 		workspaceInspect &&

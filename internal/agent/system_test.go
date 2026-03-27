@@ -78,3 +78,33 @@ func TestBuildWorkerSystemPromptUsesStrictSingleToolContract(t *testing.T) {
 		t.Error("worker prompt should distinguish filename discovery from read_file evidence")
 	}
 }
+
+func TestBuildStrictLocalSystemPromptUsesSingleToolContract(t *testing.T) {
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{Name: "artifact_write", Description: "Write a tracked artifact"})
+	reg.Register(tools.Tool{Name: "preview_server_ensure", Description: "Ensure a localhost preview server"})
+
+	prompt := BuildStrictLocalSystemPrompt("/home/user/project", reg, nil)
+
+	if !strings.Contains(prompt, "/home/user/project") {
+		t.Error("missing workDir")
+	}
+	if !strings.Contains(prompt, "preview_server_ensure") {
+		t.Error("missing preview lifecycle tool")
+	}
+	if strings.Contains(prompt, "You may call multiple tools") {
+		t.Error("strict local prompt should not advertise multi-tool turns")
+	}
+	if !strings.Contains(prompt, "Call at most one tool in a single response") {
+		t.Error("strict local prompt should require single-tool turns")
+	}
+	if !strings.Contains(prompt, "Every working turn must be exactly one valid <tool_call>...</tool_call> block and nothing else") {
+		t.Error("strict local prompt should require tool-only working turns")
+	}
+	if !strings.Contains(prompt, "Final turn must be plain user-facing text only") {
+		t.Error("strict local prompt should require a plain-text final answer")
+	}
+	if !strings.Contains(prompt, "Prefer artifact_write and preview_server_ensure") {
+		t.Error("strict local prompt should steer preview requests to host-owned tools")
+	}
+}

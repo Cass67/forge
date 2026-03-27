@@ -297,6 +297,9 @@ func parseBlock(raw string) []ToolCall {
 		if call := parseCallJSON(raw); call.Name != "" {
 			return []ToolCall{call}
 		}
+		if call, _, ok := parseLeadingToolCallJSON(raw); ok {
+			return []ToolCall{call}
+		}
 	}
 
 	// Try JSON array: [{"name": "...", "args": {...}}, ...]

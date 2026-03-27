@@ -140,9 +140,13 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, appr
 	if len(forcePrompt) > 0 {
 		fp = forcePrompt[0]
 	}
+	previewRuntime := tools.NewPreviewRuntime(workDir, approve)
 	reg.Register(tools.NewReadFile(workDir))
 	reg.Register(tools.NewWriteFile(workDir, approve))
 	reg.Register(tools.NewEditFile(workDir, approve))
+	reg.Register(tools.NewArtifactWrite(previewRuntime))
+	reg.Register(tools.NewPreviewServerEnsure(previewRuntime))
+	reg.Register(tools.NewPreviewServerStatus(previewRuntime))
 	reg.Register(tools.NewListDir(workDir, cfg.Chat.IgnoreDirs))
 	reg.Register(tools.NewSearch(workDir))
 	reg.Register(tools.NewRunCommand(workDir, cfg.Chat.CommandTimeout, approve, fp))
@@ -215,24 +219,7 @@ func RunChatLive(setup *ChatSetup) {
 	var kernel *harness.Runner
 
 	if useKernel {
-		workers := harness.NewManager(harness.ManagerConfig{
-			WorkDir:   setup.WorkDir,
-			BaseTools: baseReg,
-			Approve:   approve,
-			DriverFor: func(kind harness.WorkerKind) llm.Driver { return workerDriverFor(setup, kind) },
-		})
-		kernel = harness.NewRunner(harness.RunnerConfig{
-			Session: harness.NewSession(),
-			Trace:   harness.NewRecorder(),
-			Local: harness.AgentExecutor{
-				Agent:        a,
-				DefaultTools: baseReg,
-				InspectTools: inspectReg,
-			},
-			Workers:        workers,
-			WorkerSkills:   loadedSkills,
-			WorkerAutoMode: workerAutoMode,
-		})
+		kernel = harness.NewRunner(buildHarnessRunnerConfig(setup, a, baseReg, inspectReg, loadedSkills, workerAutoMode, approve))
 	}
 
 	if setup.Config.Chat.Agents.Enabled && !useKernel {
@@ -487,24 +474,7 @@ func RunChatConsole(setup *ChatSetup) {
 	var kernel *harness.Runner
 
 	if useKernel {
-		workers := harness.NewManager(harness.ManagerConfig{
-			WorkDir:   setup.WorkDir,
-			BaseTools: baseReg,
-			Approve:   approve,
-			DriverFor: func(kind harness.WorkerKind) llm.Driver { return workerDriverFor(setup, kind) },
-		})
-		kernel = harness.NewRunner(harness.RunnerConfig{
-			Session: harness.NewSession(),
-			Trace:   harness.NewRecorder(),
-			Local: harness.AgentExecutor{
-				Agent:        a,
-				DefaultTools: baseReg,
-				InspectTools: inspectReg,
-			},
-			Workers:        workers,
-			WorkerSkills:   loadedSkills,
-			WorkerAutoMode: workerAutoMode,
-		})
+		kernel = harness.NewRunner(buildHarnessRunnerConfig(setup, a, baseReg, inspectReg, loadedSkills, workerAutoMode, approve))
 	}
 
 	if setup.Config.Chat.Agents.Enabled && !useKernel {
@@ -569,6 +539,37 @@ func useHarnessKernelRuntime() bool {
 		return true
 	}
 	return !strings.EqualFold(mode, "legacy")
+}
+
+func buildHarnessRunnerConfig(setup *ChatSetup, a *agent.Agent, baseReg, inspectReg *tools.Registry, loadedSkills []skills.Skill, workerAutoMode string, approve tools.ApprovalFunc) harness.RunnerConfig {
+	workDir := ""
+	if setup != nil {
+		workDir = setup.WorkDir
+	}
+	workers := harness.NewManager(harness.ManagerConfig{
+		WorkDir:   workDir,
+		BaseTools: baseReg,
+		Approve:   approve,
+		DriverFor: func(kind harness.WorkerKind) llm.Driver { return workerDriverFor(setup, kind) },
+	})
+	return harness.RunnerConfig{
+		Session: harness.NewSession(),
+		Trace:   harness.NewRecorder(),
+		Local: harness.AgentExecutor{
+			Agent:        a,
+			DefaultTools: baseReg,
+			InspectTools: inspectReg,
+		},
+		StrictLocal: harness.StrictAgentExecutor{
+			Agent:        a,
+			DefaultTools: baseReg,
+			WorkDir:      workDir,
+			LoadedSkills: loadedSkills,
+		},
+		Workers:        workers,
+		WorkerSkills:   loadedSkills,
+		WorkerAutoMode: workerAutoMode,
+	}
 }
 
 func workerDriverFor(setup *ChatSetup, kind harness.WorkerKind) llm.Driver {

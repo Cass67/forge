@@ -184,6 +184,13 @@ func TestValidateWorkerResultParsesEditorPayload(t *testing.T) {
 	}
 }
 
+func TestValidateWorkerResultRejectsEditorCompleteWithoutChanges(t *testing.T) {
+	_, err := ValidateWorkerResult(WorkerEditor, `{"status":"complete","changes":[],"verification_attempts":[{"command":"go test ./internal/runtime","outcome":"pass"}],"remaining_issues":["repo review notes"],"suggested_next":"narrow the target"}`)
+	if err == nil || !strings.Contains(err.Error(), "at least one change") {
+		t.Fatalf("expected zero-change editor completion error, got %v", err)
+	}
+}
+
 func TestValidateWorkerResultParsesVerifierPayload(t *testing.T) {
 	result, err := ValidateWorkerResult(WorkerVerifier, `{"status":"complete","checks":[{"name":"unit","outcome":"pass","detail":"go test ./internal/harness"}],"failures":[],"confidence":"high"}`)
 	if err != nil {

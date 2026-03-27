@@ -87,6 +87,40 @@ func BuildWorkerSystemPrompt(workDir string, registry *tools.Registry, kind stri
 	return sb.String()
 }
 
+func BuildStrictLocalSystemPrompt(workDir string, registry *tools.Registry, loadedSkills []skills.Skill) string {
+	if registry == nil {
+		registry = tools.NewRegistry()
+	}
+
+	var sb strings.Builder
+	sb.WriteString("You are forge, the user's coding assistant. This is a strict visible collaboration turn.\n\n")
+	sb.WriteString(fmt.Sprintf("Working directory: %s\n", workDir))
+
+	info := detectProject(workDir)
+	if info != "" {
+		sb.WriteString(info + "\n")
+	}
+
+	sb.WriteString("\n")
+	sb.WriteString(registry.DescribeForSingleToolPrompt())
+	sb.WriteString("\nStrict local execution rules:\n")
+	sb.WriteString("- Every working turn must be exactly one valid <tool_call>...</tool_call> block and nothing else.\n")
+	sb.WriteString("- Final turn must be plain user-facing text only.\n")
+	sb.WriteString("- Never mix a tool call with status text, narration, or prose in the same response.\n")
+	sb.WriteString("- Wait for tool results before deciding what to do next.\n")
+	sb.WriteString("- Prefer artifact_write and preview_server_ensure for previewable artifacts instead of shelling out to create ad hoc servers.\n")
+	sb.WriteString("- Use preview_server_status to confirm whether a preview is already live before claiming it is available.\n")
+	sb.WriteString("- Do not claim a preview, server, URL, or file is ready unless tool results in this turn confirm it.\n")
+	sb.WriteString("- Keep going until you have a concrete preview, artifact, or blocker.\n")
+
+	if skillsDesc := workerSkillsPrompt(loadedSkills); skillsDesc != "" {
+		sb.WriteString("\n\n")
+		sb.WriteString(skillsDesc)
+	}
+
+	return sb.String()
+}
+
 func WorkerInstructionBlock(kind string) string {
 	switch strings.TrimSpace(kind) {
 	case "reader":

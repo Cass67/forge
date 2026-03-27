@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -198,13 +199,9 @@ func (r *Registry) describeTools(tools []Tool, detailed bool, singleToolTurns bo
 		}
 		_, _ = fmt.Fprintf(&sb, "- %s: %s\n", formatToolSignature(t), t.Description)
 	}
-	sb.WriteString(`To call a tool, use this exact format:
-
-<tool_call>
-{"name": "tool_name", "args": {"param": "value"}}
-</tool_call>
-
-`)
+	sb.WriteString("To call a tool, use this exact format:\n\n")
+	sb.WriteString(toolCallExample(tools))
+	sb.WriteString("\n\n")
 	if singleToolTurns {
 		sb.WriteString("Call at most one tool in a single response. After tool results are returned, continue your work.\n")
 	} else {
@@ -212,6 +209,80 @@ func (r *Registry) describeTools(tools []Tool, detailed bool, singleToolTurns bo
 	}
 	sb.WriteString("Wait for results before making decisions based on them.\n")
 	return sb.String()
+}
+
+func toolCallExample(tools []Tool) string {
+	if example, ok := marshalToolCallExample(preferredExampleTool(tools)); ok {
+		return example
+	}
+	return "<tool_call>\n{\"name\":\"read_file\",\"args\":{\"path\":\"README.md\"}}\n</tool_call>"
+}
+
+func preferredExampleTool(tools []Tool) Tool {
+	preferred := []string{"read_file", "list_dir", "search", "glob", "git_status"}
+	for _, name := range preferred {
+		for _, tool := range tools {
+			if tool.Name == name {
+				return tool
+			}
+		}
+	}
+	sorted := sortToolsByName(tools)
+	if len(sorted) == 0 {
+		return Tool{}
+	}
+	return sorted[0]
+}
+
+func marshalToolCallExample(tool Tool) (string, bool) {
+	if strings.TrimSpace(tool.Name) == "" {
+		return "", false
+	}
+	payload := map[string]any{
+		"name": tool.Name,
+		"args": toolExampleArgs(tool),
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return "", false
+	}
+	return "<tool_call>\n" + string(encoded) + "\n</tool_call>", true
+}
+
+func toolExampleArgs(tool Tool) map[string]any {
+	args := make(map[string]any)
+	for _, param := range tool.Parameters {
+		if !param.Required {
+			continue
+		}
+		args[param.Name] = exampleValueForParameter(param)
+	}
+	return args
+}
+
+func exampleValueForParameter(param ParameterDef) any {
+	switch param.Type {
+	case "int":
+		return 1
+	case "bool":
+		return true
+	}
+
+	name := strings.ToLower(strings.TrimSpace(param.Name))
+	switch {
+	case strings.Contains(name, "path"):
+		return "README.md"
+	case strings.Contains(name, "pattern"):
+		return "TODO"
+	case strings.Contains(name, "query"):
+		return "inspect repository"
+	case strings.Contains(name, "command"):
+		return "go test ./..."
+	case strings.Contains(name, "ref"):
+		return "HEAD~1"
+	default:
+		return "example"
+	}
 }
 
 func sortToolsByName(tools []Tool) []Tool {

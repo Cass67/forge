@@ -46,9 +46,12 @@ func TestClassifyVagueScopedReviewPrompts(t *testing.T) {
 		{input: "how we looking in this dir", wantTopic: "workspace:directory", wantEvaluation: true},
 		{input: "take a look at this repo and tell me what you think", wantTopic: "workspace:repository", wantEvaluation: true},
 		{input: "take a look over this repo", wantTopic: "workspace:repository", wantEvaluation: false},
+		{input: "look over this repo and tell me if there is anything you would change", wantTopic: "workspace:repository", wantEvaluation: true},
+		{input: "look over this directory and tell me if there is anything you would change", wantTopic: "workspace:directory", wantEvaluation: true},
 		{input: "audit the repo for problems", wantTopic: "workspace:repository", wantEvaluation: true},
 		{input: "can you check the py files and tell me if they look ok ?", wantTopic: "files:python", wantEvaluation: true},
 		{input: "look at the python files and let me know if they seem ok", wantTopic: "files:python", wantEvaluation: true},
+		{input: "look at the python files and tell me if there is anything you would change", wantTopic: "files:python", wantEvaluation: true},
 		{input: "review the .sql files and see if they look okay", wantTopic: "files:sql", wantEvaluation: true},
 	}
 
@@ -101,6 +104,77 @@ func TestClassifyTypoTolerantScopedReviewPrompts(t *testing.T) {
 		if got.WantsEvaluation != tc.wantEvaluation {
 			t.Fatalf("%q evaluation = %v, want %v", tc.input, got.WantsEvaluation, tc.wantEvaluation)
 		}
+	}
+}
+
+func TestClassifyProgressUpdateInspectPromptsStayInspect(t *testing.T) {
+	cases := []struct {
+		input     string
+		wantTopic string
+	}{
+		{input: "take a look at this repo and update me at every step", wantTopic: "workspace:repository"},
+		{input: "describe this directory and keep me updated as you go", wantTopic: "workspace:directory"},
+		{input: "check the py files and update me as you go", wantTopic: "files:python"},
+	}
+
+	for _, tc := range cases {
+		got := Classify(UserTurn{Text: tc.input}, SessionState{})
+		if got.Family != FamilyInspect {
+			t.Fatalf("%q family = %q", tc.input, got.Family)
+		}
+		if !got.PrefersVisibleExecution {
+			t.Fatalf("%q expected visible execution preference: %#v", tc.input, got)
+		}
+		if got.TopicKey != tc.wantTopic {
+			t.Fatalf("%q topic = %q, want %q", tc.input, got.TopicKey, tc.wantTopic)
+		}
+		step := Plan(got, SessionState{})
+		if step.Kind != StepStrictLocal || step.Worker != WorkerNone {
+			t.Fatalf("%q step = %#v", tc.input, step)
+		}
+	}
+}
+
+func TestClassifyVisiblePreviewFollowUpPrefersVisibleExecution(t *testing.T) {
+	got := Classify(UserTurn{Text: "you start the server as your supposed to be showing me the mockups there"}, SessionState{
+		Turn:         2,
+		LastResponse: "Theme mockups are ready in a local preview.",
+	})
+	if got.Family != FamilyAnswer {
+		t.Fatalf("family = %q", got.Family)
+	}
+	if !got.PrefersVisibleExecution {
+		t.Fatalf("expected visible execution preference: %#v", got)
+	}
+	if got.TopicKey != "" {
+		t.Fatalf("topic = %q", got.TopicKey)
+	}
+}
+
+func TestClassifyWebServicePreviewFollowUpPrefersVisibleExecution(t *testing.T) {
+	got := Classify(UserTurn{Text: "i want to see the new mockups in teh web service"}, SessionState{
+		Turn:         2,
+		LastResponse: "Theme mockups are ready in a local preview.",
+	})
+	if got.Family != FamilyAnswer {
+		t.Fatalf("family = %q", got.Family)
+	}
+	if !got.PrefersVisibleExecution {
+		t.Fatalf("expected visible execution preference: %#v", got)
+	}
+	if got.TopicKey != "" {
+		t.Fatalf("topic = %q", got.TopicKey)
+	}
+	step := Plan(got, SessionState{})
+	if step.Kind != StepStrictLocal || step.Worker != WorkerNone {
+		t.Fatalf("step = %#v", step)
+	}
+}
+
+func TestClassifyShellPasteDoesNotCreateVersionPathTopic(t *testing.T) {
+	got := Classify(UserTurn{Text: "you sure ~ curl -v http://127.0.0.1:8080/themes_preview.html py3.14.3 12:17:42\r* Trying 127.0.0.1:8080...\r* connect to 127.0.0.1 port 8080 failed: Connection refused"}, SessionState{})
+	if got.TopicKey != "" {
+		t.Fatalf("topic = %q", got.TopicKey)
 	}
 }
 
