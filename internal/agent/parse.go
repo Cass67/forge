@@ -3,6 +3,8 @@ package agent
 import (
 	"encoding/json"
 	"strings"
+
+	"forge/internal/agent/tools"
 )
 
 type ToolCall struct {
@@ -158,6 +160,20 @@ func NormalizeStrictToolTurn(text string) (string, bool) {
 	return text, false
 }
 
+func NormalizeStrictToolTurnForExecution(text string, reg *tools.Registry) (string, bool) {
+	normalized, changed := NormalizeStrictToolTurn(text)
+	if changed {
+		return normalized, true
+	}
+	if !containsRawToolMarkup(text) {
+		return text, false
+	}
+	if call, ok := salvageStrictToolCall(text, reg); ok {
+		return formatToolCallBlock(call), true
+	}
+	return text, false
+}
+
 func NormalizeStrictWorkerTurnForLogging(text string) (string, bool) {
 	return NormalizeStrictToolTurn(text)
 }
@@ -194,6 +210,327 @@ func parseInlineToolCallsLine(line string) inlineToolCallParse {
 		remaining = remaining[closeEnd:]
 		parsedAny = true
 	}
+}
+
+func salvageStrictToolCall(text string, reg *tools.Registry) (ToolCall, bool) {
+	if reg == nil {
+		return ToolCall{}, false
+	}
+	raw := firstToolCallPayload(text)
+	if raw == "" {
+		return ToolCall{}, false
+	}
+	return parseTolerantToolCallJSON(raw, reg)
+}
+
+func firstToolCallPayload(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
+	}
+	for _, opener := range toolCallOpeners {
+		idx := strings.Index(trimmed, opener)
+		if idx < 0 {
+			continue
+		}
+		after := trimmed[idx+len(opener):]
+		end := len(after)
+		for _, closer := range toolCallClosers {
+			if closeIdx := strings.Index(after, closer); closeIdx >= 0 && closeIdx < end {
+				end = closeIdx
+			}
+		}
+		return strings.TrimSpace(after[:end])
+	}
+	return trimmed
+}
+
+func parseTolerantToolCallJSON(raw string, reg *tools.Registry) (ToolCall, bool) {
+	raw = strings.TrimSpace(raw)
+	if !strings.HasPrefix(raw, "{") {
+		return ToolCall{}, false
+	}
+	var parsed struct {
+		Name string         `json:"name"`
+		Args map[string]any `json:"args"`
+	}
+	if !unmarshalTolerantToolCallJSON(raw, &parsed) {
+		return ToolCall{}, false
+	}
+	if parsed.Args == nil {
+		parsed.Args = make(map[string]any)
+	}
+	name := strings.TrimSpace(parsed.Name)
+	if name == "" {
+		name = inferToolNameFromArgs(parsed.Args, reg)
+	}
+	if name == "" {
+		return ToolCall{}, false
+	}
+	return ToolCall{Name: name, Args: parsed.Args}, true
+}
+
+func unmarshalTolerantToolCallJSON(raw string, dest any) bool {
+	for _, candidate := range tolerantToolCallJSONCandidates(raw) {
+		if err := json.Unmarshal([]byte(candidate), dest); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func tolerantToolCallJSONCandidates(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+
+	transforms := []func(string) (string, bool){
+		escapeBareJSONStringControls,
+		escapeLikelyBareInnerQuotes,
+		appendMissingJSONClosers,
+	}
+
+	queue := []string{raw}
+	seen := make(map[string]struct{}, 8)
+	candidates := make([]string, 0, 8)
+
+	for len(queue) > 0 {
+		current := strings.TrimSpace(queue[0])
+		queue = queue[1:]
+		if current == "" {
+			continue
+		}
+		if _, ok := seen[current]; ok {
+			continue
+		}
+		seen[current] = struct{}{}
+		candidates = append(candidates, current)
+		for _, transform := range transforms {
+			if next, changed := transform(current); changed {
+				next = strings.TrimSpace(next)
+				if next == "" {
+					continue
+				}
+				if _, ok := seen[next]; !ok {
+					queue = append(queue, next)
+				}
+			}
+		}
+	}
+
+	return candidates
+}
+
+func escapeBareJSONStringControls(raw string) (string, bool) {
+	var out strings.Builder
+	out.Grow(len(raw))
+	inString := false
+	escaped := false
+	changed := false
+
+	for i := 0; i < len(raw); i++ {
+		ch := raw[i]
+		if inString {
+			if escaped {
+				out.WriteByte(ch)
+				escaped = false
+				continue
+			}
+			switch ch {
+			case '\\':
+				out.WriteByte(ch)
+				escaped = true
+			case '"':
+				out.WriteByte(ch)
+				inString = false
+			case '\n':
+				out.WriteString(`\n`)
+				changed = true
+			case '\r':
+				out.WriteString(`\r`)
+				changed = true
+			case '\t':
+				out.WriteString(`\t`)
+				changed = true
+			default:
+				out.WriteByte(ch)
+			}
+			continue
+		}
+		out.WriteByte(ch)
+		if ch == '"' {
+			inString = true
+		}
+	}
+	return out.String(), changed
+}
+
+func escapeLikelyBareInnerQuotes(raw string) (string, bool) {
+	var out strings.Builder
+	out.Grow(len(raw))
+	inString := false
+	escaped := false
+	changed := false
+
+	for i := 0; i < len(raw); i++ {
+		ch := raw[i]
+		if inString {
+			if escaped {
+				out.WriteByte(ch)
+				escaped = false
+				continue
+			}
+			switch ch {
+			case '\\':
+				out.WriteByte(ch)
+				escaped = true
+			case '"':
+				if shouldEscapeJSONStringQuote(raw, i+1) {
+					out.WriteString(`\"`)
+					changed = true
+					continue
+				}
+				out.WriteByte(ch)
+				inString = false
+			default:
+				out.WriteByte(ch)
+			}
+			continue
+		}
+		out.WriteByte(ch)
+		if ch == '"' {
+			inString = true
+		}
+	}
+
+	return out.String(), changed
+}
+
+func shouldEscapeJSONStringQuote(raw string, next int) bool {
+	for next < len(raw) {
+		switch raw[next] {
+		case ' ', '\n', '\r', '\t':
+			next++
+			continue
+		case ':', ',', '}', ']':
+			return false
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+func appendMissingJSONClosers(raw string) (string, bool) {
+	var stack []byte
+	inString := false
+	escaped := false
+
+	for i := 0; i < len(raw); i++ {
+		ch := raw[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch ch {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+
+		switch ch {
+		case '"':
+			inString = true
+		case '{':
+			stack = append(stack, '}')
+		case '[':
+			stack = append(stack, ']')
+		case '}', ']':
+			if len(stack) == 0 || stack[len(stack)-1] != ch {
+				return raw, false
+			}
+			stack = stack[:len(stack)-1]
+		}
+	}
+
+	if inString || len(stack) == 0 {
+		return raw, false
+	}
+
+	var out strings.Builder
+	out.Grow(len(raw) + len(stack))
+	out.WriteString(raw)
+	for i := len(stack) - 1; i >= 0; i-- {
+		out.WriteByte(stack[i])
+	}
+	return out.String(), true
+}
+
+func inferToolNameFromArgs(args map[string]any, reg *tools.Registry) string {
+	if reg == nil || len(args) == 0 {
+		return ""
+	}
+	argKeys := make(map[string]struct{}, len(args))
+	for key := range args {
+		trimmed := strings.TrimSpace(key)
+		if trimmed != "" {
+			argKeys[trimmed] = struct{}{}
+		}
+	}
+	if len(argKeys) == 0 {
+		return ""
+	}
+
+	candidates := make([]string, 0, 2)
+	for _, tool := range reg.All() {
+		if !toolArgsMatchRegistryEntry(argKeys, tool) {
+			continue
+		}
+		candidates = append(candidates, tool.Name)
+		if len(candidates) > 1 {
+			return ""
+		}
+	}
+	if len(candidates) == 1 {
+		return candidates[0]
+	}
+	return ""
+}
+
+func toolArgsMatchRegistryEntry(argKeys map[string]struct{}, tool tools.Tool) bool {
+	if strings.TrimSpace(tool.Name) == "" {
+		return false
+	}
+	params := make(map[string]tools.ParameterDef, len(tool.Parameters))
+	required := 0
+	for _, param := range tool.Parameters {
+		params[param.Name] = param
+		if param.Required {
+			required++
+		}
+	}
+	if len(argKeys) < required {
+		return false
+	}
+	for _, param := range tool.Parameters {
+		if !param.Required {
+			continue
+		}
+		if _, ok := argKeys[param.Name]; !ok {
+			return false
+		}
+	}
+	for key := range argKeys {
+		if _, ok := params[key]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func nextToolCallOpener(line string) (int, int) {

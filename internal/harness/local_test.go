@@ -402,6 +402,9 @@ func TestAgentExecutorVisiblePreviewFollowUpPromptRequiresVerifiedServerClaims(t
 	if !strings.Contains(msg, "Theme mockups are ready in a local preview.") {
 		t.Fatalf("visible preview prompt missing prior response context: %q", msg)
 	}
+	if !strings.Contains(msg, "preview_server_ensure already verifies the returned localhost URL") {
+		t.Fatalf("visible preview prompt missing host-owned verification guidance: %q", msg)
+	}
 }
 
 func TestAgentExecutorRejectsMalformedVisibleCollaborationToolMarkup(t *testing.T) {
@@ -420,6 +423,31 @@ func TestAgentExecutorRejectsMalformedVisibleCollaborationToolMarkup(t *testing.
 	}, SessionState{})
 	if err == nil {
 		t.Fatal("expected malformed visible collaboration tool markup to fail closed")
+	}
+	if obs.Status != ObservationBlocked {
+		t.Fatalf("status = %q, want %q", obs.Status, ObservationBlocked)
+	}
+	if !strings.Contains(obs.Summary, "malformed tool markup") {
+		t.Fatalf("summary = %q, want malformed tool markup context", obs.Summary)
+	}
+}
+
+func TestAgentExecutorRejectsProsePrefixedMalformedVisibleCollaborationToolMarkup(t *testing.T) {
+	defaultTools := tools.NewRegistry()
+	inspectTools := tools.NewRegistry()
+	agent := &stubScopedAgent{response: "Checking now.\n<tool_call>\n{\"args\":{\"command\":\"echo hi\"}}\n</tool_call>"}
+	exec := AgentExecutor{
+		Agent:        agent,
+		DefaultTools: defaultTools,
+		InspectTools: inspectTools,
+	}
+
+	obs, err := exec.Execute(context.Background(), UserTurn{Text: "start the preview server"}, Classification{
+		Family:                  FamilyAnswer,
+		PrefersVisibleExecution: true,
+	}, SessionState{})
+	if err == nil {
+		t.Fatal("expected prose-prefixed malformed visible collaboration tool markup to fail closed")
 	}
 	if obs.Status != ObservationBlocked {
 		t.Fatalf("status = %q, want %q", obs.Status, ObservationBlocked)

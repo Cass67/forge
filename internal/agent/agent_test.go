@@ -726,6 +726,42 @@ func TestEnforceHistoryBudgetCompactsLargestOldMessagesFirst(t *testing.T) {
 	}
 }
 
+func TestEnforceHistoryBudgetDoesNotCompactActiveHarnessRootPrompt(t *testing.T) {
+	activeRoot := strings.TrimSpace(`HARNESS MODE: visible-collaboration
+This is a visible collaboration turn.
+Rules for this turn:
+- stay on the main local path and keep working with tools until you have a concrete result or a real blocker
+- if the user asks for a mockup, preview, browser view, file artifact, or running server, create or start it before reporting status
+- do not claim a server, preview, file, URL, or port is available unless tool results from this turn confirm it
+- if a command times out or fails, say that plainly and choose a safer alternative when possible
+
+USER REQUEST:
+i dont like the current theme, i need you to mock up 3 new ones, dark in nature, really modern and cool looking, create a web server and show me them on the screen`)
+
+	a := &Agent{
+		workDir: t.TempDir(),
+		tools:   tools.NewRegistry(),
+		history: []llm.Message{
+			{Role: llm.RoleUser, Content: strings.Repeat("older user context ", 120)},
+			{Role: llm.RoleAssistant, Content: strings.Repeat("older assistant context ", 120)},
+			{Role: llm.RoleUser, Content: activeRoot},
+			{Role: llm.RoleAssistant, Content: strings.Repeat("working turn output ", 80)},
+			{Role: llm.RoleUser, Content: "Tool results:\n- [read_file] themes_preview.html\n  " + strings.Repeat("line ", 200)},
+			{Role: llm.RoleAssistant, Content: "Continuing."},
+		},
+	}
+
+	before := a.history[2].Content
+	a.enforceHistoryBudget(a.estimatedRequestTokens() / 2)
+
+	if got := a.history[2].Content; got != before {
+		t.Fatalf("active harness root prompt was compacted:\n%s", got)
+	}
+	if !strings.Contains(a.history[2].Content, "USER REQUEST:") {
+		t.Fatalf("active harness root prompt lost USER REQUEST: %q", a.history[2].Content)
+	}
+}
+
 func TestDispatchProseFilteredOnToolCallTurns(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"Let me delegate to scout.\n\n<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"find it\"}}\n</tool_call>",
@@ -3394,6 +3430,36 @@ func TestAgentRetriesUnsalvageableMalformedMainToolTurn(t *testing.T) {
 	}
 }
 
+func TestAgentRetriesProsePrefixedMalformedMainToolTurn(t *testing.T) {
+	dir := t.TempDir()
+	driver := &mockDriver{responses: []string{
+		"SERVER_LIVE:no\n<tool_call>\n{\"args\":{\"path\":\".\",\"recursive\":false}}\n</tool_call>",
+		"<tool_call>\n{\"name\":\"list_dir\",\"args\":{\"path\":\".\",\"recursive\":false}}\n</tool_call>",
+		"Preview ready.",
+	}}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.NewListDir(dir, nil))
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	agent := NewAgent(driver, reg, YoloApproval(), dir, 6, renderer, nil, nil)
+
+	if err := agent.Run(context.Background(), "show me the preview"); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callIdx != 3 {
+		t.Fatalf("expected diagnostic-prefixed malformed main tool turn to retry through a valid tool call, got %d driver calls", driver.callIdx)
+	}
+	got := output.String()
+	if strings.Contains(got, "<tool_call>") {
+		t.Fatalf("raw malformed tool markup leaked to renderer output: %q", got)
+	}
+	if !strings.Contains(got, "Preview ready.") {
+		t.Fatalf("final output missing completion text: %q", got)
+	}
+}
+
 func TestHiddenWorkerSalvagesMalformedStrictToolTurnWithoutRetryTax(t *testing.T) {
 	dir := t.TempDir()
 	driver := &inspectingDriver{
@@ -3437,6 +3503,254 @@ func TestHiddenWorkerSalvagesMalformedStrictToolTurnWithoutRetryTax(t *testing.T
 	}
 	if len(worker.LastToolCalls()) != 1 || worker.LastToolCalls()[0].Name != "list_dir" {
 		t.Fatalf("last tool calls = %#v", worker.LastToolCalls())
+	}
+}
+
+func TestStrictLocalSalvagesNameLessEditFileToolTurnWithoutRetryTax(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "themes_preview.html")
+	if err := os.WriteFile(target, []byte("alpha\nbeta\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	driver := &inspectingDriver{
+		checks: []func([]llm.Message) error{
+			nil,
+			func(messages []llm.Message) error {
+				if len(messages) == 0 {
+					return fmt.Errorf("missing second turn messages")
+				}
+				last := messages[len(messages)-1].Content
+				if strings.Contains(last, "Malformed tool markup") {
+					return fmt.Errorf("unexpected malformed tool nudge: %q", last)
+				}
+				if !strings.Contains(last, "[edit_file]") {
+					return fmt.Errorf("expected edit_file tool result, got %q", last)
+				}
+				return nil
+			},
+		},
+		responses: []string{
+			"<tool_call>\n{\"args\":{\"path\":\"themes_preview.html\",\"old_text\":\"alpha\\nbeta\",\"new_text\":\"alpha\\ngamma\"}}\n</tool_call>",
+			"Preview updated.",
+		},
+	}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.NewReadFile(dir))
+	reg.Register(tools.NewWriteFile(dir, YoloApproval()))
+	reg.Register(tools.NewEditFile(dir, YoloApproval()))
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	agent := NewAgent(driver, reg, YoloApproval(), dir, 6, renderer, nil, nil)
+	agent.SetRole("strictlocal")
+	agent.SetSystem(BuildStrictLocalSystemPrompt(dir, reg, nil))
+
+	if err := agent.Run(context.Background(), "fix that and show me again"); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callIdx != 2 {
+		t.Fatalf("expected strict local edit_file call to be salvaged without retry tax, got %d driver calls", driver.callIdx)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "alpha\ngamma\n" {
+		t.Fatalf("file content = %q", string(got))
+	}
+}
+
+func TestStrictLocalSalvagesLiteralNewlinesInEditFileToolTurnWithoutRetryTax(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "themes_preview.html")
+	if err := os.WriteFile(target, []byte("alpha\nbeta\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	driver := &inspectingDriver{
+		checks: []func([]llm.Message) error{
+			nil,
+			func(messages []llm.Message) error {
+				if len(messages) == 0 {
+					return fmt.Errorf("missing second turn messages")
+				}
+				last := messages[len(messages)-1].Content
+				if strings.Contains(last, "Malformed tool markup") {
+					return fmt.Errorf("unexpected malformed tool nudge: %q", last)
+				}
+				if !strings.Contains(last, "[edit_file]") {
+					return fmt.Errorf("expected edit_file tool result, got %q", last)
+				}
+				return nil
+			},
+		},
+		responses: []string{
+			"<tool_call>\n{\"name\":\"edit_file\",\"args\":{\"path\":\"themes_preview.html\",\"old_text\":\"alpha\nbeta\",\"new_text\":\"alpha\ngamma\"}}\n</tool_call>",
+			"Preview updated.",
+		},
+	}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.NewReadFile(dir))
+	reg.Register(tools.NewWriteFile(dir, YoloApproval()))
+	reg.Register(tools.NewEditFile(dir, YoloApproval()))
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	agent := NewAgent(driver, reg, YoloApproval(), dir, 6, renderer, nil, nil)
+	agent.SetRole("strictlocal")
+	agent.SetSystem(BuildStrictLocalSystemPrompt(dir, reg, nil))
+
+	if err := agent.Run(context.Background(), "fix that and show me again"); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callIdx != 2 {
+		t.Fatalf("expected strict local edit_file call with literal newlines to be salvaged without retry tax, got %d driver calls", driver.callIdx)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "alpha\ngamma\n" {
+		t.Fatalf("file content = %q", string(got))
+	}
+}
+
+func TestStrictLocalSalvagesNameLessEditFileToolTurnWithLiteralNewlinesAndMissingOuterBraceWithoutRetryTax(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "themes_preview.html")
+	original := "before\n        .label { text-align: center; padding: 8px; font-weight: 500; }\n    </style>\nafter\n"
+	updated := "before\n        .label { text-align: center; padding: 8px; font-weight: 500; }\n        .cool-interface {\n            max-width: 680px;\n        }\n    </style>\nafter\n"
+	if err := os.WriteFile(target, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	driver := &inspectingDriver{
+		checks: []func([]llm.Message) error{
+			nil,
+			func(messages []llm.Message) error {
+				if len(messages) == 0 {
+					return fmt.Errorf("missing second turn messages")
+				}
+				last := messages[len(messages)-1].Content
+				if strings.Contains(last, "Malformed tool markup") {
+					return fmt.Errorf("unexpected malformed tool nudge: %q", last)
+				}
+				if !strings.Contains(last, "[edit_file]") {
+					return fmt.Errorf("expected edit_file tool result, got %q", last)
+				}
+				return nil
+			},
+		},
+		responses: []string{
+			"<tool_call>\n{\"args\":{\"path\":\"themes_preview.html\",\"old_text\":\"        .label { text-align: center; padding: 8px; font-weight: 500; }\n    </style>\",\"new_text\":\"        .label { text-align: center; padding: 8px; font-weight: 500; }\n        .cool-interface {\n            max-width: 680px;\n        }\n    </style>\"}\n</tool_call>",
+			"Preview updated.",
+		},
+	}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.NewReadFile(dir))
+	reg.Register(tools.NewWriteFile(dir, YoloApproval()))
+	reg.Register(tools.NewEditFile(dir, YoloApproval()))
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	agent := NewAgent(driver, reg, YoloApproval(), dir, 6, renderer, nil, nil)
+	agent.SetRole("strictlocal")
+	agent.SetSystem(BuildStrictLocalSystemPrompt(dir, reg, nil))
+
+	if err := agent.Run(context.Background(), "fix that and show me again"); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callIdx != 2 {
+		t.Fatalf("expected strict local malformed edit_file call to be salvaged without retry tax, got %d driver calls", driver.callIdx)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != updated {
+		t.Fatalf("file content = %q", string(got))
+	}
+}
+
+func TestStrictLocalSalvagesNameLessEditFileToolTurnWithBareHTMLQuotesLiteralNewlinesAndMissingOuterBraceWithoutRetryTax(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "themes_preview.html")
+	original := "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n  <style>\n    body { font-family: sans-serif; background: #111; color: #ddd; margin: 0; padding: 20px; }\n    .header { background: #111; color: #79c0ff; padding: 12px 16px; }\n    .label { text-align: center; padding: 8px; font-weight: 500; }\n  </style>\n</head>\n<body>\n  <div class=\"header\">forge <span style=\"color:#79c0ff\">preview</span></div>\n  <div class=\"label\">Preview target</div>\n</body>\n</html>\n"
+	updated := "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n  <style>\n    body { font-family: sans-serif; background: #111; color: #ddd; margin: 0; padding: 20px; }\n    .header { background: #111; color: #ddd; padding: 12px 16px; }\n    .label { text-align: center; padding: 8px; font-weight: 500; }\n  </style>\n</head>\n<body>\n  <div class=\"header\">forge <span style=\"color:#ddd\">preview</span></div>\n  <div class=\"label\">Preview target</div>\n</body>\n</html>\n"
+	if err := os.WriteFile(target, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	driver := &inspectingDriver{
+		checks: []func([]llm.Message) error{
+			nil,
+			func(messages []llm.Message) error {
+				if len(messages) == 0 {
+					return fmt.Errorf("missing second turn messages")
+				}
+				last := messages[len(messages)-1].Content
+				if strings.Contains(last, "Malformed tool markup") {
+					return fmt.Errorf("unexpected malformed tool nudge: %q", last)
+				}
+				if !strings.Contains(last, "[edit_file]") {
+					return fmt.Errorf("expected edit_file tool result, got %q", last)
+				}
+				return nil
+			},
+		},
+		responses: []string{
+			`<tool_call>
+{"args":{"path":"themes_preview.html","old_text":"  <style>
+    body { font-family: sans-serif; background: #111; color: #ddd; margin: 0; padding: 20px; }
+    .header { background: #111; color: #79c0ff; padding: 12px 16px; }
+    .label { text-align: center; padding: 8px; font-weight: 500; }
+  </style>
+</head>
+<body>
+  <div class="header">forge <span style=\"color:#79c0ff\">preview</span></div>
+  <div class="label">Preview target</div>
+</body>","new_text":"  <style>
+    body { font-family: sans-serif; background: #111; color: #ddd; margin: 0; padding: 20px; }
+    .header { background: #111; color: #ddd; padding: 12px 16px; }
+    .label { text-align: center; padding: 8px; font-weight: 500; }
+  </style>
+</head>
+<body>
+  <div class="header">forge <span style=\"color:#ddd\">preview</span></div>
+  <div class="label">Preview target</div>
+</body>"}
+</tool_call>`,
+			"Preview updated.",
+		},
+	}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.NewReadFile(dir))
+	reg.Register(tools.NewWriteFile(dir, YoloApproval()))
+	reg.Register(tools.NewEditFile(dir, YoloApproval()))
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	agent := NewAgent(driver, reg, YoloApproval(), dir, 6, renderer, nil, nil)
+	agent.SetRole("strictlocal")
+	agent.SetSystem(BuildStrictLocalSystemPrompt(dir, reg, nil))
+
+	if err := agent.Run(context.Background(), "fix that and show me again"); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callIdx != 2 {
+		t.Fatalf("expected strict local malformed edit_file HTML call to be salvaged without retry tax, got %d driver calls", driver.callIdx)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != updated {
+		t.Fatalf("file content = %q", string(got))
 	}
 }
 
@@ -3490,6 +3804,97 @@ func TestStrictLocalTurnLimitsEachWorkingResponseToOneToolCall(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "Preview ready.") {
 		t.Fatalf("final output missing completion text: %q", output.String())
+	}
+}
+
+func TestStrictLocalRepeatedArtifactWriteGetsNoProgressNudge(t *testing.T) {
+	driver := &inspectingDriver{
+		checks: []func([]llm.Message) error{
+			nil,
+			nil,
+			func(messages []llm.Message) error {
+				joined := ""
+				for _, msg := range messages {
+					joined += msg.Content + "\n"
+				}
+				if !strings.Contains(strings.ToLower(joined), "same artifact") && !strings.Contains(strings.ToLower(joined), "no progress") {
+					return fmt.Errorf("expected repeated-write no-progress nudge, got %q", joined)
+				}
+				return nil
+			},
+		},
+		responses: []string{
+			"<tool_call>\n{\"name\":\"artifact_write\",\"args\":{\"path\":\"themes_preview.html\",\"content\":\"<html>obsidian</html>\",\"mime_type\":\"text/html\"}}\n</tool_call>",
+			"<tool_call>\n{\"name\":\"artifact_write\",\"args\":{\"path\":\"themes_preview.html\",\"content\":\"<html>obsidian</html>\",\"mime_type\":\"text/html\"}}\n</tool_call>",
+			"<tool_call>\n{\"name\":\"preview_server_status\",\"args\":{}}\n</tool_call>",
+			"Preview updated at http://127.0.0.1:4173/themes_preview.html",
+		},
+	}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{
+		Name:        "artifact_write",
+		Description: "Write a tracked artifact",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			_ = ctx
+			_ = args
+			return `{"handle":"artifact-1","path":"themes_preview.html","mime_type":"text/html","bytes":22}`, nil
+		},
+	})
+	reg.Register(tools.Tool{
+		Name:        "preview_server_status",
+		Description: "Show preview server status",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			_ = ctx
+			_ = args
+			return `{"status":"live","path":"themes_preview.html","port":4173,"url":"http://127.0.0.1:4173/themes_preview.html","reused":true}`, nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	agent := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 8, renderer, nil, nil)
+	agent.SetRole("strictlocal")
+	agent.SetSystem(BuildStrictLocalSystemPrompt(t.TempDir(), reg, nil))
+
+	if err := agent.Run(context.Background(), "pick 3 others, no neon"); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callIdx != 4 {
+		t.Fatalf("expected strict local run to recover after no-progress nudge, got %d driver calls", driver.callIdx)
+	}
+	if !strings.Contains(output.String(), "Preview updated at http://127.0.0.1:4173/themes_preview.html") {
+		t.Fatalf("final output missing preview confirmation: %q", output.String())
+	}
+}
+
+func TestStrictLocalRepeatedArtifactWriteFailsClosedBeforeMaxTurnLoop(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\":\"artifact_write\",\"args\":{\"path\":\"themes_preview.html\",\"content\":\"<html>obsidian</html>\",\"mime_type\":\"text/html\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\":\"artifact_write\",\"args\":{\"path\":\"themes_preview.html\",\"content\":\"<html>obsidian</html>\",\"mime_type\":\"text/html\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\":\"artifact_write\",\"args\":{\"path\":\"themes_preview.html\",\"content\":\"<html>obsidian</html>\",\"mime_type\":\"text/html\"}}\n</tool_call>",
+	}}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{
+		Name:        "artifact_write",
+		Description: "Write a tracked artifact",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			_ = ctx
+			_ = args
+			return `{"handle":"artifact-1","path":"themes_preview.html","mime_type":"text/html","bytes":22}`, nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	agent := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 8, renderer, nil, nil)
+	agent.SetRole("strictlocal")
+	agent.SetSystem(BuildStrictLocalSystemPrompt(t.TempDir(), reg, nil))
+
+	err := agent.Run(context.Background(), "pick 3 others, no neon")
+	if err == nil || (!strings.Contains(strings.ToLower(err.Error()), "no progress") && !strings.Contains(strings.ToLower(err.Error()), "same artifact")) {
+		t.Fatalf("expected repeated artifact write to fail closed with no-progress error, got %v", err)
 	}
 }
 

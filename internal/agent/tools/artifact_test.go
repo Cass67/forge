@@ -49,3 +49,36 @@ func TestArtifactWriteReturnsTrackedHandleAndMetadata(t *testing.T) {
 		t.Fatalf("artifact file missing: %v", err)
 	}
 }
+
+func TestArtifactReadReturnsTrackedContentByHandle(t *testing.T) {
+	dir := t.TempDir()
+	runtime := NewPreviewRuntime(dir, approveAll)
+	t.Cleanup(func() { _ = runtime.Close() })
+
+	writeRaw, err := NewArtifactWrite(runtime).Execute(context.Background(), map[string]any{
+		"path":    "mockups/themes_preview.html",
+		"content": "<html><body>preview</body></html>",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	written := parseToolJSONResult(t, writeRaw)
+
+	readRaw, err := NewArtifactRead(runtime).Execute(context.Background(), map[string]any{
+		"handle": written["handle"],
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := parseToolJSONResult(t, readRaw)
+	if got["handle"] != written["handle"] {
+		t.Fatalf("handle = %#v, want %#v", got["handle"], written["handle"])
+	}
+	if got["path"] != "mockups/themes_preview.html" {
+		t.Fatalf("unexpected path: %#v", got)
+	}
+	if got["content"] != "<html><body>preview</body></html>" {
+		t.Fatalf("unexpected content: %#v", got["content"])
+	}
+}

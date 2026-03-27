@@ -180,6 +180,51 @@ func TestEnableChatDebugNormalizesInspectTurnResponses(t *testing.T) {
 	}
 }
 
+func TestEnableChatDebugNormalizesStrictLocalResponses(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chat-debug.jsonl")
+	inner := &debugMockDriver{
+		response: "<tool_call>\n{\"name\":\"preview_server_status\",\"args\":{}}\n</tool_call>Preview is already live.",
+	}
+	setup := &ChatSetup{
+		ChatModel: "openai/gpt-5",
+		WorkDir:   t.TempDir(),
+		Driver:    inner,
+	}
+	if _, err := EnableChatDebug(setup, path); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: "You are forge, the user's coding assistant. This is a strict visible collaboration turn."},
+		{Role: llm.RoleUser, Content: "HARNESS MODE: visible-collaboration\nUSER REQUEST:\nshow me the preview"},
+	}
+	out := make(chan llm.Token, 4)
+	errCh := make(chan error, 1)
+	go func() { errCh <- setup.Driver.Stream(context.Background(), msgs, out) }()
+	for range out {
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+
+	lines := readDebugLines(t, path)
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &entry); err != nil {
+		t.Fatal(err)
+	}
+	fields, _ := entry["fields"].(map[string]any)
+	if got := fields["response_normalized"]; got != true {
+		t.Fatalf("response_normalized = %#v, want true", got)
+	}
+	response, _ := fields["response"].(string)
+	if strings.Contains(response, "Preview is already live.") {
+		t.Fatalf("expected strict-local debug log to suppress visible prose, got %s", response)
+	}
+	if !strings.Contains(response, "\"name\":\"preview_server_status\"") {
+		t.Fatalf("expected strict-local tool call to remain in log, got %s", response)
+	}
+}
+
 func TestEnableChatDebugWrapsMakeDriverAndDelegatesInterfaces(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "chat-debug.jsonl")
 	setup := &ChatSetup{

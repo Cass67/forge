@@ -37,3 +37,72 @@ func TestPlanKeepsCollaborativeIdeationPromptsOnMainPath(t *testing.T) {
 		t.Fatalf("step = %#v, class = %#v", step, class)
 	}
 }
+
+func TestPlanKeepsPreviewFollowUpsOnStrictLocalPath(t *testing.T) {
+	session := SessionState{
+		Turn: 2,
+		LastPreview: PreviewSnapshot{
+			Turn:   1,
+			Status: "live",
+			URL:    "http://127.0.0.1:4173/themes_preview.html",
+			Path:   "themes_preview.html",
+			Port:   4173,
+		},
+	}
+
+	class := Classify(UserTurn{Text: "fix that and show me again"}, session)
+	if !class.PrefersVisibleExecution {
+		t.Fatalf("expected preview follow-up to prefer visible execution: %#v", class)
+	}
+
+	step := Plan(class, session)
+	if step.Kind != StepStrictLocal || step.Worker != WorkerNone {
+		t.Fatalf("step = %#v, class = %#v", step, class)
+	}
+}
+
+func TestPlanKeepsReferentialPreviewTroubleshootingOnStrictLocalPath(t *testing.T) {
+	session := SessionState{
+		Turn: 2,
+		LastPreview: PreviewSnapshot{
+			Turn:   1,
+			Status: "live",
+			URL:    "http://127.0.0.1:4173/themes_preview.html",
+			Path:   "themes_preview.html",
+			Port:   4173,
+		},
+	}
+
+	class := Classify(UserTurn{Text: "it still looks wrong"}, session)
+	if !class.PrefersVisibleExecution {
+		t.Fatalf("expected referential preview follow-up to prefer visible execution: %#v", class)
+	}
+
+	step := Plan(class, session)
+	if step.Kind != StepStrictLocal || step.Worker != WorkerNone {
+		t.Fatalf("step = %#v, class = %#v", step, class)
+	}
+}
+
+func TestPlanKeepsPreviewReplayFollowUpOnStrictLocalPath(t *testing.T) {
+	session := SessionState{
+		Turn: 2,
+		LastPreview: PreviewSnapshot{
+			Turn:   1,
+			Status: "live",
+			URL:    "http://127.0.0.1:4173/themes_preview.html",
+			Path:   "themes_preview.html",
+			Port:   4173,
+		},
+	}
+
+	class := Classify(UserTurn{Text: "show me again"}, session)
+	if !class.PrefersVisibleExecution {
+		t.Fatalf("expected preview replay follow-up to prefer visible execution: %#v", class)
+	}
+
+	step := Plan(class, session)
+	if step.Kind != StepStrictLocal || step.Worker != WorkerNone {
+		t.Fatalf("step = %#v, class = %#v", step, class)
+	}
+}

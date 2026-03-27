@@ -221,6 +221,9 @@ func isStrictTurnRequest(messages []llm.Message) bool {
 		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "You are forge's hidden worker runtime.") {
 			return true
 		}
+		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "This is a strict visible collaboration turn.") {
+			return true
+		}
 		if msg.Role == llm.RoleUser && strings.Contains(msg.Content, "HARNESS MODE: inspect") {
 			return true
 		}
