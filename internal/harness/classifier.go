@@ -24,9 +24,14 @@ var (
 		"think", "thoughts", "mean", "means", "imply", "implies", "impression",
 		"standout", "stands", "suggests", "suggest", "takeaway", "takeaways",
 	)
+	planningTokens = tokenSet(
+		"plan", "plans", "roadmap", "roadmaps", "priority", "priorities",
+		"prioritize", "prioritise", "phase", "phases", "sequence", "sequencing",
+	)
 	implementTokens = tokenSet(
 		"implement", "implementation", "build", "create", "add", "change", "update",
-		"modify", "remove", "delete", "refactor", "wire", "replace", "fix",
+		"clean",
+		"modify", "remove", "delete", "refactor", "wire", "replace", "fix", "patch",
 	)
 	implementArtifactTokens = tokenSet(
 		"script", "scripts", "test", "tests", "tool", "tools", "helper", "helpers",
@@ -185,6 +190,16 @@ func Classify(turn UserTurn, session SessionState) Classification {
 		}
 		class.Reason = "contextual action follow-up"
 	}
+	if wantsContextualPlanningFollowUp(lower, ordered, tokens, class, session) {
+		class.Family = FamilyAnswer
+		class.WantsAction = false
+		class.IsFollowUp = true
+		class.CanStayLocal = true
+		if strings.TrimSpace(class.TopicKey) == "" {
+			class.TopicKey = session.LastEvidence.TopicKey
+		}
+		class.Reason = "planning follow-up"
+	}
 	if wantsInterpretation(tokens, lower) && session.HasRecentEvidence() && !class.WantsAction {
 		class.WantsInterpretation = true
 		class.IsFollowUp = true
@@ -266,6 +281,7 @@ func buildClassifierLexiconWords() []string {
 	addSet(inspectVerbs)
 	addSet(evaluationTokens)
 	addSet(interpretationTokens)
+	addSet(planningTokens)
 	addSet(implementTokens)
 	addSet(implementArtifactTokens)
 	addSet(debugTokens)
@@ -455,6 +471,16 @@ func wantsEvaluation(tokens map[string]struct{}, lower string) bool {
 		strings.Contains(lower, "what stands out")
 }
 
+func wantsPlanning(tokens map[string]struct{}, lower string) bool {
+	if containsAny(tokens, planningTokens) {
+		return true
+	}
+	return strings.Contains(lower, "next steps") ||
+		strings.Contains(lower, "what should we fix first") ||
+		strings.Contains(lower, "what should i fix first") ||
+		strings.Contains(lower, "what should change first")
+}
+
 func wantsInterpretation(tokens map[string]struct{}, lower string) bool {
 	if containsAny(tokens, interpretationTokens) {
 		return true
@@ -565,6 +591,28 @@ func wantsContextualActionFollowUp(lower string, ordered []string, tokens map[st
 		return false
 	}
 	return looksLikeReferentialFollowUp(tokens, lower, ordered) || looksLikeContextualContinuation(lower)
+}
+
+func wantsContextualPlanningFollowUp(lower string, ordered []string, tokens map[string]struct{}, class Classification, session SessionState) bool {
+	if !session.HasRecentEvidence() || strings.TrimSpace(session.LastEvidence.TopicKey) == "" {
+		return false
+	}
+	if class.NeedsPolicyGuard || class.NeedsTerseAnswer || class.WantsInterpretation {
+		return false
+	}
+	if class.Family != FamilyAnswer && class.Family != FamilyInspect && class.Family != FamilyImplement {
+		return false
+	}
+	if class.Family == FamilyImplement && hasExplicitImplementationDeliverable(tokens) {
+		return false
+	}
+	if strings.TrimSpace(class.TopicKey) != "" && class.TopicKey != session.LastEvidence.TopicKey {
+		return false
+	}
+	if len(ordered) == 0 || len(ordered) > 12 {
+		return false
+	}
+	return wantsPlanning(tokens, lower)
 }
 
 func wantsScopedEvaluation(scope requestScope, tokens map[string]struct{}, lower string) bool {
@@ -695,6 +743,12 @@ func isPromptBoundaryQuestion(text, lower string, tokens map[string]struct{}) bo
 			containsAny(tokens, promptQualifierTokens)) {
 		return true
 	}
+	scope := inferRequestScope(lower, tokens)
+	if !scope.Inspectable() &&
+		len(tokenList(lower)) <= 6 &&
+		(containsAny(tokens, promptDisclosureTokens) || containsAny(tokens, promptQualifierTokens)) {
+		return true
+	}
 	return false
 }
 
@@ -729,7 +783,10 @@ func isProcessQuestion(text, lower string, tokens map[string]struct{}, scope req
 		return false
 	}
 	if !looksQuestionLike(text) && !startsWithAny(lower,
-		"are you", "do you", "did you", "why do you", "why did you", "why didnt you", "why didn't you", "what do you", "what did you", "which skills", "what skills",
+		"are you", "do you", "did you", "can you", "could you",
+		"have you", "do you have",
+		"why do you", "why did you", "why didnt you", "why didn't you", "why are you",
+		"what", "what do you", "what did you", "which", "which skills", "what skills",
 	) {
 		return false
 	}
@@ -812,31 +869,73 @@ func looksLikePendingActionContinuation(text, lower string, tokens map[string]st
 	if containsAny(tokens, continuationNegativeTokens) {
 		return false
 	}
-	if len(ordered) == 1 {
-		_, ok := continuationConfirmTokens[ordered[0]]
-		return ok || isPendingReferentialToken(ordered[0])
-	}
-	_, ok := continuationConfirmTokens[ordered[0]]
-	if ok {
-		return true
-	}
-	seenReferential := false
-	for _, token := range ordered {
-		if isPendingReferentialToken(token) {
-			seenReferential = true
-			continue
-		}
-		if isWeakFollowUpToken(token) {
-			continue
-		}
+	scope := inferRequestScope(lower, tokens)
+	if hasExplicitPendingContinuationOverride(text, lower, ordered, tokens, scope) {
 		return false
 	}
-	return seenReferential
+	if onlyContinuationScaffolding(ordered) {
+		return true
+	}
+	return looksLikeOpaqueShortContinuation(ordered)
+}
+
+func hasExplicitPendingContinuationOverride(text, lower string, ordered []string, tokens map[string]struct{}, scope requestScope) bool {
+	if mentionsConcreteInspectScope(scope, tokens, lower) ||
+		containsAny(tokens, inspectVerbs) ||
+		containsAny(tokens, debugTokens) ||
+		containsAny(tokens, transformTokens) ||
+		containsImplementationSignal(tokens) ||
+		wantsVerification(scope, tokens, lower) ||
+		wantsResearch(tokens, lower) ||
+		isPromptBoundaryQuestion(text, lower, tokens) ||
+		isProcessQuestion(text, lower, tokens, scope, "") {
+		return true
+	}
+	if len(ordered) == 0 {
+		return false
+	}
+	return startsWithAny(lower,
+		"what", "why", "how", "which", "when", "where", "who",
+		"can ", "could ", "should ", "would ", "will ",
+	)
 }
 
 func isPendingReferentialToken(token string) bool {
 	_, ok := continuationReferentialTokens[token]
 	return ok
+}
+
+func onlyContinuationScaffolding(ordered []string) bool {
+	if len(ordered) == 0 {
+		return false
+	}
+	for _, token := range ordered {
+		if _, ok := continuationConfirmTokens[token]; ok {
+			continue
+		}
+		if isPendingReferentialToken(token) || isWeakFollowUpToken(token) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func looksLikeOpaqueShortContinuation(ordered []string) bool {
+	if len(ordered) == 0 || len(ordered) > 2 {
+		return false
+	}
+	meaningful := 0
+	for _, token := range ordered {
+		if _, ok := continuationConfirmTokens[token]; ok {
+			continue
+		}
+		if isPendingReferentialToken(token) || isWeakFollowUpToken(token) {
+			continue
+		}
+		meaningful++
+	}
+	return meaningful > 0
 }
 
 func stripDetachedPromptBoundary(text string) (string, bool) {

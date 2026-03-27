@@ -169,6 +169,10 @@ func buildAnswerTurnPrompt(class Classification, userMessage string, session Ses
 	}
 	if followUpContext := recentAnswerContext(class, session); followUpContext != "" {
 		lines = append(lines,
+			"- ground the answer in the recent evidence above when it is relevant",
+			"- do not restart with a generic checklist or ask to inspect again unless the recent evidence is clearly insufficient",
+		)
+		lines = append(lines,
 			"",
 			"RECENT CONTEXT:",
 			followUpContext,

@@ -237,6 +237,37 @@ func TestChatTranscriptRepoReviewConversationEndsWithVisiblePromptBoundaryRefusa
 	}
 }
 
+func TestChatTranscriptRepoReviewPlanningFollowUpStaysGrounded(t *testing.T) {
+	workDir := writeTranscriptFixtureRepo(t)
+	cfg := &config.Config{}
+	cfg.Chat.MaxTurns = 8
+
+	driver := &scriptedTranscriptDriver{}
+	setup := &ChatSetup{
+		Config:    cfg,
+		ChatModel: "test-model",
+		WorkDir:   workDir,
+		Driver:    driver,
+	}
+
+	runChatTranscript(t, setup, []transcriptStep{
+		{
+			Input:           "tell me about this repo and tell me what i need to improve upon",
+			WantContains:    []string{"Top improvement areas are stronger pre-commit hygiene", "service entrypoint"},
+			WantNotContains: []string{"<tool_call>", "{\"status\":", "unexpected driver input"},
+		},
+		{
+			Input:           "make a plan for improvements",
+			WantContains:    []string{"Start with focused tests around service/main.py", "tighten the pre-commit checks"},
+			WantNotContains: []string{"Baseline the current state", "<tool_call>", "{\"status\":", "unexpected driver input"},
+		},
+	})
+
+	if len(driver.unexpected) > 0 {
+		t.Fatalf("unexpected driver paths: %#v", driver.unexpected)
+	}
+}
+
 func runChatTranscript(t *testing.T, setup *ChatSetup, steps []transcriptStep) []transcriptTurn {
 	t.Helper()
 	if len(steps) > 50 {
@@ -447,6 +478,8 @@ func (d *scriptedTranscriptDriver) answerResponse(root string) string {
 	switch {
 	case strings.Contains(request, "brainstorming"):
 		return "No. I use that when planning or design work is needed."
+	case strings.Contains(request, "plan") && strings.Contains(root, "RECENT CONTEXT:") && strings.Contains(root, "service entrypoint"):
+		return "Start with focused tests around service/main.py, then tighten the pre-commit checks so the service path is verified automatically."
 	default:
 		return "Direct answer."
 	}

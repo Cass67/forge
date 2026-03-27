@@ -403,6 +403,56 @@ func TestRunnerContinuationUsesPendingActionInsteadOfPlainAnswer(t *testing.T) {
 	}
 }
 
+func TestRunnerPlanningFollowUpUsesRecentEvidenceInAnswerMode(t *testing.T) {
+	local := &stubLocalExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Response: "Start with tests around service/main.py, then tighten the pre-commit checks.",
+			Summary:  "grounded repo improvement plan",
+			TopicKey: "workspace:repository",
+		},
+	}
+	session := NewSession()
+	session.BeginTurn("tell me about this repo and tell me what i need to improve upon")
+	session.Apply(Classification{
+		Family:          FamilyInspect,
+		TopicKey:        "workspace:repository",
+		WantsEvaluation: true,
+	}, Observation{
+		Status:   ObservationComplete,
+		Response: "Top improvement areas are stronger pre-commit hygiene and better test coverage around the service entrypoint.",
+		Summary:  "Top improvement areas are stronger pre-commit hygiene and better test coverage around the service entrypoint.",
+		TopicKey: "workspace:repository",
+	})
+
+	result, err := NewRunner(RunnerConfig{
+		Session: session,
+		Trace:   NewRecorder(),
+		Local:   local,
+	}).Run(context.Background(), "make a plan for improvements")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Classification.Family != FamilyAnswer {
+		t.Fatalf("family = %q", result.Classification.Family)
+	}
+	if !result.Classification.IsFollowUp {
+		t.Fatalf("expected follow-up classification: %#v", result.Classification)
+	}
+	if result.Classification.TopicKey != "workspace:repository" {
+		t.Fatalf("topic = %q", result.Classification.TopicKey)
+	}
+	if result.Step.Kind != StepLocal || result.Step.Worker != WorkerNone {
+		t.Fatalf("step = %#v", result.Step)
+	}
+	if !local.lastClas.IsFollowUp {
+		t.Fatalf("local classification missing follow-up flag: %#v", local.lastClas)
+	}
+	if local.lastClas.TopicKey != "workspace:repository" {
+		t.Fatalf("local topic = %q", local.lastClas.TopicKey)
+	}
+}
+
 func TestRunnerAnswerOfferCreatesPendingActionForNextTurn(t *testing.T) {
 	local := &stubLocalExecutor{
 		obs: Observation{
@@ -472,6 +522,39 @@ func TestRunnerAnswerOfferCreatesInspectPendingActionFromConcreteTarget(t *testi
 	}
 }
 
+func TestRunnerInspectOfferCreatesPendingActionForNextTurn(t *testing.T) {
+	local := &stubLocalExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Response: "Yes.\n\nIf you want, I can next do a targeted inspection of tracked root artifacts and tell you exactly which files look safe to remove, ignore, move, or keep.",
+			Summary:  "offered targeted cleanup inspection",
+		},
+	}
+	session := NewSession()
+	_, err := NewRunner(RunnerConfig{
+		Session: session,
+		Trace:   NewRecorder(),
+		Local:   local,
+	}).Run(context.Background(), "do i need to cleanup this repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	state := session.Snapshot()
+	if !state.HasPendingAction() {
+		t.Fatalf("expected pending action: %#v", state)
+	}
+	if state.PendingAction.Family != FamilyInspect {
+		t.Fatalf("pending family = %q", state.PendingAction.Family)
+	}
+	if state.PendingAction.TopicKey != "workspace:repository" {
+		t.Fatalf("pending topic = %q", state.PendingAction.TopicKey)
+	}
+	if state.PendingAction.TaskText != "inspect the repository" {
+		t.Fatalf("pending task = %q", state.PendingAction.TaskText)
+	}
+}
+
 func TestRunnerContinuationResumesConcreteInspectOffer(t *testing.T) {
 	firstLocal := &stubLocalExecutor{
 		obs: Observation{
@@ -520,6 +603,57 @@ func TestRunnerContinuationResumesConcreteInspectOffer(t *testing.T) {
 		t.Fatalf("task text = %q", secondLocal.lastClas.TaskText)
 	}
 	if result.Response != "Yes — I checked `.pre-commit-config.yaml`." {
+		t.Fatalf("response = %q", result.Response)
+	}
+}
+
+func TestRunnerContinuationResumesInspectOfferFromInspectTurn(t *testing.T) {
+	firstLocal := &stubLocalExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Response: "Yes.\n\nIf you want, I can next do a targeted inspection of tracked root artifacts and tell you exactly which files look safe to remove, ignore, move, or keep.",
+			Summary:  "offered targeted cleanup inspection",
+		},
+	}
+	session := NewSession()
+	_, err := NewRunner(RunnerConfig{
+		Session: session,
+		Trace:   NewRecorder(),
+		Local:   firstLocal,
+	}).Run(context.Background(), "do i need to cleanup this repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	secondLocal := &stubLocalExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Response: "Tracked root artifacts look like the safest cleanup target.",
+			Summary:  "targeted cleanup inspection complete",
+			TopicKey: "workspace:repository",
+		},
+	}
+	result, err := NewRunner(RunnerConfig{
+		Session: session,
+		Trace:   NewRecorder(),
+		Local:   secondLocal,
+	}).Run(context.Background(), "sounds good")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Classification.Family != FamilyInspect {
+		t.Fatalf("family = %q", result.Classification.Family)
+	}
+	if !result.Classification.IsFollowUp {
+		t.Fatalf("expected follow-up classification: %#v", result.Classification)
+	}
+	if result.Classification.TopicKey != "workspace:repository" {
+		t.Fatalf("topic = %q", result.Classification.TopicKey)
+	}
+	if secondLocal.lastClas.TaskText != "inspect the repository" {
+		t.Fatalf("task text = %q", secondLocal.lastClas.TaskText)
+	}
+	if result.Response != "Tracked root artifacts look like the safest cleanup target." {
 		t.Fatalf("response = %q", result.Response)
 	}
 }

@@ -155,6 +155,43 @@ func TestClassifyQuestionLikeFollowUpWithoutConcreteTargetStaysInspect(t *testin
 	}
 }
 
+func TestClassifyPlanningFollowUpUsesRecentEvidence(t *testing.T) {
+	session := SessionState{
+		Turn: 2,
+		LastEvidence: EvidenceSnapshot{
+			Turn:     1,
+			TopicKey: "workspace:repository",
+			Summary:  "Top improvement areas are stronger pre-commit hygiene and better test coverage around the service entrypoint.",
+		},
+	}
+
+	cases := []string{
+		"make a plan for improvements",
+		"make a plan for improvments",
+		"prioritize the improvements",
+		"give me next steps",
+	}
+
+	for _, input := range cases {
+		got := Classify(UserTurn{Text: input}, session)
+		if got.Family != FamilyAnswer {
+			t.Fatalf("%q family = %q", input, got.Family)
+		}
+		if !got.IsFollowUp {
+			t.Fatalf("%q expected follow-up classification: %#v", input, got)
+		}
+		if got.TopicKey != "workspace:repository" {
+			t.Fatalf("%q topic = %q", input, got.TopicKey)
+		}
+		if got.WantsAction {
+			t.Fatalf("%q unexpectedly wanted action: %#v", input, got)
+		}
+		if got.NeedsTerseAnswer {
+			t.Fatalf("%q unexpectedly wanted terse answer: %#v", input, got)
+		}
+	}
+}
+
 func TestClassifyPunctuatedContinuationFollowUpStaysInspect(t *testing.T) {
 	got := Classify(UserTurn{Text: "(but any recommendations?)"}, SessionState{
 		Turn: 2,
@@ -416,6 +453,47 @@ func TestClassifyReferentialPendingActionContinuationUsesStoredTask(t *testing.T
 	}
 	if got.TaskText != "inspect `.pre-commit-config.yaml` and summarize what it does" {
 		t.Fatalf("task text = %q", got.TaskText)
+	}
+}
+
+func TestClassifyOpaquePendingActionContinuationUsesStoredTask(t *testing.T) {
+	got := Classify(UserTurn{Text: "sounds good"}, SessionState{
+		Turn: 2,
+		PendingAction: PendingAction{
+			SetAtTurn:    1,
+			Family:       FamilyInspect,
+			TopicKey:     "workspace:repository",
+			TaskText:     "inspect the repository",
+			CanStayLocal: true,
+		},
+	})
+	if got.Family != FamilyInspect {
+		t.Fatalf("family = %q", got.Family)
+	}
+	if !got.IsFollowUp {
+		t.Fatalf("expected follow-up classification: %#v", got)
+	}
+	if got.TaskText != "inspect the repository" {
+		t.Fatalf("task text = %q", got.TaskText)
+	}
+}
+
+func TestClassifyPendingActionContinuationDoesNotOverrideExplicitImplementation(t *testing.T) {
+	got := Classify(UserTurn{Text: "fix it"}, SessionState{
+		Turn: 2,
+		PendingAction: PendingAction{
+			SetAtTurn:    1,
+			Family:       FamilyInspect,
+			TopicKey:     "workspace:repository",
+			TaskText:     "inspect the repository",
+			CanStayLocal: true,
+		},
+	})
+	if got.Family != FamilyImplement {
+		t.Fatalf("family = %q", got.Family)
+	}
+	if got.IsFollowUp {
+		t.Fatalf("explicit implementation request should not resume pending action: %#v", got)
 	}
 }
 
