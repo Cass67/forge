@@ -47,6 +47,22 @@ func TestEditFileNotFound(t *testing.T) {
 	}
 }
 
+func TestEditFileReportsReplacementAlreadyPresentWhenOldTextIsStale(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package foo\n"), 0o644)
+
+	tool := NewEditFile(dir, func(a Action) (bool, error) { return true, nil })
+	result, err := tool.Execute(context.Background(), map[string]any{
+		"path": "main.go", "old_text": "package main", "new_text": "package foo",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "already present") {
+		t.Errorf("expected already-present result, got: %s", result)
+	}
+}
+
 func TestEditFileMultipleMatches(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "main.go"), []byte("foo\nbar\nfoo\n"), 0o644)

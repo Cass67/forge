@@ -1,6 +1,6 @@
 # Forge Architecture
 
-This document explains how Forge works today at the code level: entrypoints, runtime composition, model/provider routing, the agent loop, multi-agent delegation, the TUI event flow, and the pass-based session runner.
+This document explains how Forge works today at the code level: entrypoints, runtime composition, model/provider routing, the harness kernel, hidden-worker execution, the TUI event flow, and the pass-based session runner.
 
 ## System Overview
 
@@ -31,7 +31,7 @@ Forge has two distinct execution models:
 1. Chat mode
    - interactive
    - acts directly on the current working tree
-   - centered around a single `agent.Agent` with optional delegated sub-agents
+   - centered around the harness kernel, one visible `forge` assistant, and optional hidden bounded workers
 2. Improvement pipeline
    - batch-oriented
    - runs a sequence of writer/auditor/summarizer passes
@@ -60,12 +60,14 @@ The core package boundaries are:
   - config/auth loading, provider/model discovery, driver construction
 - [internal/runtime/chat.go](/Users/cass/git/forge/internal/runtime/chat.go)
   - chat-mode assembly and event loop wiring
+- [internal/harness/](/Users/cass/git/forge/internal/harness)
+  - request classification, session carry-forward, planner/policy logic, strict-local routing, worker orchestration, and trace recording
 - [internal/agent/agent.go](/Users/cass/git/forge/internal/agent/agent.go)
-  - main agent loop, tool-call parsing, tool execution, history management
+  - underlying tool-using execution loop used by local, strict-local, and worker executors
 - [internal/agent/subagent.go](/Users/cass/git/forge/internal/agent/subagent.go)
-  - delegated sub-agent execution
+  - legacy delegated sub-agent execution retained for compatibility paths
 - [internal/agent/roles.go](/Users/cass/git/forge/internal/agent/roles.go)
-  - multi-agent role definitions and tool restrictions
+  - legacy visible-role definitions and tool restrictions used only by compatibility paths
 - [internal/agent/tools/](/Users/cass/git/forge/internal/agent/tools)
   - tool implementations and tool registry
 - [internal/tui/](/Users/cass/git/forge/internal/tui)
@@ -146,7 +148,7 @@ Config contains:
 - retry configuration
 - git behavior
 - provider API keys
-- multi-agent settings
+- optional hidden-worker model overrides and legacy compatibility settings
 
 Authentication and stored credentials live in Forge-owned JSON storage:
 
@@ -441,67 +443,55 @@ The important architectural tradeoff here is that Forge keeps enough history to 
 
 Forge used to retry any short no-tool answer, which caused accidental loops for legitimate short replies. That logic is now narrower: retries only happen for detected “action preamble” responses, not for ordinary short final answers.
 
-## Multi-Agent Delegation
+## Harness Kernel
 
-Multi-agent mode is configured in [internal/runtime/chat.go](/Users/cass/git/forge/internal/runtime/chat.go) and defined in [internal/agent/roles.go](/Users/cass/git/forge/internal/agent/roles.go).
+Chat mode now defaults to a kernel-owned control plane in [internal/runtime/chat.go](/Users/cass/git/forge/internal/runtime/chat.go) and [internal/harness/](/Users/cass/git/forge/internal/harness).
 
-Current roles:
+The visible product model is:
 
-- `dispatch`
-- `scout`
-- `builder`
-- `doctor`
-- `architect`
+- one coherent `forge` assistant in the transcript
+- local execution for direct answers and ordinary sequential work
+- strict-local execution for visible tool-heavy turns such as previews, artifact work, and collaborative edits
+- hidden bounded workers only when a reader/editor/verifier/researcher split materially helps
 
-Each role has:
+### Kernel flow
 
-- a role-specific system prompt
-- an allowed tool subset
-- a max-turn budget
+The runtime uses a small typed state machine:
 
-### How delegation works
+1. intake
+2. classify
+3. plan step
+4. act
+5. observe
+6. decide
+7. respond
 
-When enabled:
+The classifier and policy decide whether a turn stays local, moves onto the strict-local path, or launches a hidden worker. The transcript still shows one visible assistant answer per turn unless `forge -d` is active and the debug trace is open.
 
-1. the top-level agent is reconfigured as `dispatch`
-2. dispatch gets only orchestration tools such as `delegate`, `think`, and scratchpad tools
-3. sub-agents are spawned through [internal/agent/subagent.go](/Users/cass/git/forge/internal/agent/subagent.go)
-4. the selected role gets:
-   - a filtered tool registry
-   - a role prompt appended to the base system prompt
-   - its own model if configured
-5. sub-agent events are tagged and routed back through the shared renderer
+Important kernel details:
 
-### Delegation flow
+- strict-local turns and hidden workers now share a host-managed skill path; when a skill applies, the host injects the `[Skill: ...]` context instead of asking the model to load skills through an in-band tool path
+- visible strict-local turns emit one quiet progress line from the host at turn start and on tool calls so long preview/edit turns do not stay silent until the final response
 
-```mermaid
-sequenceDiagram
-    participant Dispatch
-    participant Runtime
-    participant Sub as Sub-agent
-    participant Driver
-    participant TUI
+### Hidden worker model
 
-    Dispatch->>Runtime: delegate(role, task)
-    Runtime->>Sub: SpawnSubAgent(role, task)
-    Sub->>Driver: Stream(role-specific system + task)
-    Driver-->>Sub: tokens / tool calls
-    Sub-->>TUI: tagged llm.Event{SubAgent: role}
-    Sub-->>Dispatch: final response text
-```
+Hidden workers are runtime helpers, not user-addressable personalities. The current worker kinds are:
 
-### Event handling for sub-agents
+- `reader`
+- `editor`
+- `verifier`
+- `researcher`
 
-[internal/agent/event_render.go](/Users/cass/git/forge/internal/agent/event_render.go) has both:
+Each worker runs under a tighter contract than the visible path:
 
-- `EventRenderer` for the top-level agent
-- `SubAgentRenderer` for delegated agents
+- filtered tools
+- structured result validation
+- bounded retries / fail-closed behavior
+- trace visibility in debug mode without leaking worker chatter into the default transcript
 
-Sub-agent events include the `SubAgent` field on `llm.Event`, which the TUI uses to:
+### Legacy compatibility path
 
-- keep the detailed tool audit trail in the tools pane
-- surface compact “recent activity” blocks in the main chat pane
-- keep completion summaries visible without flooding the transcript
+The older visible multi-agent `dispatch/scout/builder/doctor/architect` path still exists only as a compatibility path behind the legacy runtime selector. It is not the default product model and should not be treated as the primary architecture going forward.
 
 ## TUI Architecture
 

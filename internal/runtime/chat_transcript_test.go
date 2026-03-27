@@ -4,14 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"forge/internal/agent"
+	"forge/internal/agent/tools"
+	"forge/internal/chatstate"
 	"forge/internal/config"
+	"forge/internal/harness"
 	"forge/internal/llm"
+	"forge/internal/skills"
 	"forge/internal/tui"
 )
 
@@ -19,6 +25,7 @@ type transcriptStep struct {
 	Input           string
 	WantContains    []string
 	WantNotContains []string
+	Timeout         time.Duration
 }
 
 type transcriptTurn struct {
@@ -268,6 +275,175 @@ func TestChatTranscriptRepoReviewPlanningFollowUpStaysGrounded(t *testing.T) {
 	}
 }
 
+func TestChatTranscriptPreviewConversationStaysUsefulAcrossTurns(t *testing.T) {
+	workDir := writeTranscriptFixtureRepo(t)
+	cfg := &config.Config{}
+	cfg.Chat.MaxTurns = 10
+
+	driver := &scriptedTranscriptDriver{}
+	setup := &ChatSetup{
+		Config:    cfg,
+		ChatModel: "test-model",
+		WorkDir:   workDir,
+		Driver:    driver,
+	}
+
+	runKernelTranscript(t, setup, []transcriptStep{
+		{
+			Input:           "start a preview for themes_preview.html and tell me the verified url",
+			WantContains:    []string{"verified", "http://127.0.0.1:", "themes_preview.html"},
+			WantNotContains: []string{"<tool_call>", "{\"status\":", "unexpected driver input"},
+		},
+		{
+			Input:           "is it still up?",
+			WantContains:    []string{"still up", "http://127.0.0.1:", "themes_preview.html"},
+			WantNotContains: []string{"<tool_call>", "{\"status\":", "unexpected driver input"},
+		},
+		{
+			Input:           "fix that and show me again",
+			WantContains:    []string{"Updated themes_preview.html", "http://127.0.0.1:", "themes_preview.html"},
+			WantNotContains: []string{"<tool_call>", "{\"status\":", "unexpected driver input"},
+		},
+	})
+
+	if len(driver.unexpected) > 0 {
+		t.Fatalf("unexpected driver paths: %#v", driver.unexpected)
+	}
+}
+
+func TestChatTranscriptPreviewDesignConversationStaysOnVisiblePath(t *testing.T) {
+	workDir := writeTranscriptFixtureRepo(t)
+	cfg := &config.Config{}
+	cfg.Chat.MaxTurns = 20
+
+	driver := &scriptedTranscriptDriver{}
+	setup := &ChatSetup{
+		Config:    cfg,
+		ChatModel: "test-model",
+		WorkDir:   workDir,
+		Driver:    driver,
+	}
+
+	runKernelTranscript(t, setup, []transcriptStep{
+		{
+			Input:           "i dont like the current theme, i need you to mock up 3 new ones, dark in nature, really modern and cool looking, create a web server and show me them on the screen",
+			WantContains:    []string{"3 new dark themes", "http://127.0.0.1:", "themes_preview.html"},
+			WantNotContains: []string{"unexpected driver input", "{\"status\":", "http://localhost:8080"},
+			Timeout:         12 * time.Second,
+		},
+		{
+			Input:           "dont like those, pick 3 others, no neon",
+			WantContains:    []string{"3 different dark themes", "http://127.0.0.1:", "themes_preview.html"},
+			WantNotContains: []string{"unexpected driver input", "{\"status\":", "http://localhost:8080"},
+			Timeout:         8 * time.Second,
+		},
+		{
+			Input:           "ok i like Obsidian, now show me what you will do with graphics for status updates,fail or pass results, general iconography, code boxes, git output etc .. show on web page",
+			WantContains:    []string{"Expanded the Obsidian preview", "http://127.0.0.1:", "themes_preview.html"},
+			WantNotContains: []string{"unexpected driver input", "{\"status\":", "http://localhost:8080"},
+			Timeout:         8 * time.Second,
+		},
+		{
+			Input:           "more colors on git diff and file/numeral detection",
+			WantContains:    []string{"Added more color to git diff and numeral detection", "http://127.0.0.1:", "themes_preview.html"},
+			WantNotContains: []string{"unexpected driver input", "{\"status\":", "Ready for next test run", "http://localhost:8080"},
+			Timeout:         8 * time.Second,
+		},
+		{
+			Input:           "can i see this on the web page",
+			WantContains:    []string{"You can view it at", "http://127.0.0.1:", "themes_preview.html"},
+			WantNotContains: []string{"unexpected driver input", "http://localhost:8080"},
+			Timeout:         8 * time.Second,
+		},
+	})
+
+	if len(driver.unexpected) > 0 {
+		t.Fatalf("unexpected driver paths: %#v", driver.unexpected)
+	}
+}
+
+func TestChatTranscriptPreviewHarnessSurvivesFiftyTurns(t *testing.T) {
+	workDir := writeTranscriptFixtureRepo(t)
+	cfg := &config.Config{}
+	cfg.Chat.MaxTurns = 20
+
+	driver := &scriptedTranscriptDriver{}
+	setup := &ChatSetup{
+		Config:    cfg,
+		ChatModel: "test-model",
+		WorkDir:   workDir,
+		Driver:    driver,
+	}
+
+	cycle := []transcriptStep{
+		{
+			Input:           "start a preview for themes_preview.html and tell me the verified url",
+			WantContains:    []string{"verified", "http://127.0.0.1:", "themes_preview.html"},
+			WantNotContains: []string{"unexpected driver input", "{\"status\":", "<tool_call>"},
+		},
+		{
+			Input:           "is it still up?",
+			WantContains:    []string{"still up", "http://127.0.0.1:", "themes_preview.html"},
+			WantNotContains: []string{"unexpected driver input", "{\"status\":", "<tool_call>"},
+		},
+		{
+			Input:           "fix that and show me again",
+			WantContains:    []string{"Updated themes_preview.html", "http://127.0.0.1:", "themes_preview.html"},
+			WantNotContains: []string{"unexpected driver input", "{\"status\":", "<tool_call>"},
+		},
+		{
+			Input:           "can i see this on the web page",
+			WantContains:    []string{"You can view it at", "http://127.0.0.1:", "themes_preview.html"},
+			WantNotContains: []string{"unexpected driver input", "{\"status\":", "<tool_call>"},
+		},
+		{
+			Input:           "i dont like the current theme, i need you to mock up 3 new ones, dark in nature, really modern and cool looking, create a web server and show me them on the screen",
+			WantContains:    []string{"3 new dark themes", "http://127.0.0.1:", "themes_preview.html"},
+			WantNotContains: []string{"unexpected driver input", "{\"status\":", "<tool_call>"},
+			Timeout:         12 * time.Second,
+		},
+		{
+			Input:           "pick three others, no neon",
+			WantContains:    []string{"3 different dark themes", "http://127.0.0.1:", "themes_preview.html"},
+			WantNotContains: []string{"unexpected driver input", "{\"status\":", "<tool_call>"},
+		},
+		{
+			Input:           "put that on the web page",
+			WantContains:    []string{"put it on the web page", "http://127.0.0.1:", "themes_preview.html"},
+			WantNotContains: []string{"unexpected driver input", "{\"status\":", "<tool_call>"},
+		},
+		{
+			Input:           "ok i like Obsidian, now show me what you will do with graphics for status updates,fail or pass results, general iconography, code boxes, git output etc .. show on web page",
+			WantContains:    []string{"Expanded the Obsidian preview", "http://127.0.0.1:", "themes_preview.html"},
+			WantNotContains: []string{"unexpected driver input", "{\"status\":", "<tool_call>"},
+		},
+		{
+			Input:           "more colors on git diff and file/numeral detection",
+			WantContains:    []string{"Added more color to git diff and numeral detection", "http://127.0.0.1:", "themes_preview.html"},
+			WantNotContains: []string{"unexpected driver input", "{\"status\":", "<tool_call>"},
+		},
+		{
+			Input:           "show it on the web page again",
+			WantContains:    []string{"You can view it at", "http://127.0.0.1:", "themes_preview.html"},
+			WantNotContains: []string{"unexpected driver input", "{\"status\":", "<tool_call>"},
+		},
+	}
+
+	steps := make([]transcriptStep, 0, 50)
+	for cycleNum := 0; cycleNum < 5; cycleNum++ {
+		steps = append(steps, cycle...)
+	}
+	if len(steps) != 50 {
+		t.Fatalf("steps = %d, want 50", len(steps))
+	}
+
+	runKernelTranscript(t, setup, steps)
+
+	if len(driver.unexpected) > 0 {
+		t.Fatalf("unexpected driver paths: %#v", driver.unexpected)
+	}
+}
+
 func runChatTranscript(t *testing.T, setup *ChatSetup, steps []transcriptStep) []transcriptTurn {
 	t.Helper()
 	if len(steps) > 50 {
@@ -288,7 +464,11 @@ func runChatTranscript(t *testing.T, setup *ChatSetup, steps []transcriptStep) [
 		defer close(inputCh)
 		for i, step := range steps {
 			inputCh <- step.Input
-			turn, err := collectTranscriptTurn(events, 5*time.Second)
+			timeout := step.Timeout
+			if timeout <= 0 {
+				timeout = 5 * time.Second
+			}
+			turn, err := collectTranscriptTurn(events, timeout)
 			if err != nil {
 				uiErr = fmt.Errorf("step %d (%q): %w", i+1, step.Input, err)
 				return tui.ChatLiveResult{Aborted: true}
@@ -306,6 +486,62 @@ func runChatTranscript(t *testing.T, setup *ChatSetup, steps []transcriptStep) [
 
 	if uiErr != nil {
 		t.Fatal(uiErr)
+	}
+
+	for i, step := range steps {
+		got := collected[i].Response
+		for _, want := range step.WantContains {
+			if !strings.Contains(got, want) {
+				t.Fatalf("step %d response missing %q: %q", i+1, want, got)
+			}
+		}
+		for _, forbidden := range step.WantNotContains {
+			if strings.Contains(got, forbidden) {
+				t.Fatalf("step %d response unexpectedly contains %q: %q", i+1, forbidden, got)
+			}
+		}
+	}
+
+	return collected
+}
+
+func runKernelTranscript(t *testing.T, setup *ChatSetup, steps []transcriptStep) []transcriptTurn {
+	t.Helper()
+	if len(steps) > 50 {
+		t.Fatalf("transcript has %d steps; max supported is 50", len(steps))
+	}
+
+	approve := agent.YoloApproval()
+	reg := tools.NewRegistry()
+	previewRuntime := registerTools(reg, setup.WorkDir, setup.Config, approve)
+	if previewRuntime != nil {
+		defer previewRuntime.Close()
+	}
+	baseReg := reg.Filter(nil)
+	inspectReg := buildInspectToolRegistry(baseReg)
+	loadedSkills := skills.Load(setup.WorkDir)
+	workerAutoMode := skills.NormalizeAutoMode(setup.Config.Chat.AutoSkills)
+	renderer := agent.NewRenderer(io.Discard, 80, false)
+	a := agent.NewAgent(setup.Driver, reg, approve, setup.WorkDir, setup.Config.Chat.MaxTurns, renderer, loadedSkills, chatstate.New())
+	kernel := harness.NewRunner(buildHarnessRunnerConfig(setup, a, baseReg, inspectReg, previewRuntime, loadedSkills, workerAutoMode, approve))
+
+	collected := make([]transcriptTurn, 0, len(steps))
+	for i, step := range steps {
+		timeout := step.Timeout
+		if timeout <= 0 {
+			timeout = 5 * time.Second
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		err := runChatTurn(ctx, a, kernel, step.Input)
+		cancel()
+		if err != nil {
+			t.Fatalf("step %d (%q): %v", i+1, step.Input, err)
+		}
+		turn := transcriptTurn{Response: a.LastResponse()}
+		if err := appendTranscriptLog(t, i+1, step.Input, turn); err != nil {
+			t.Fatalf("step %d (%q): write transcript log: %v", i+1, step.Input, err)
+		}
+		collected = append(collected, turn)
 	}
 
 	for i, step := range steps {
@@ -416,7 +652,7 @@ func (d *scriptedTranscriptDriver) Stream(_ context.Context, messages []llm.Mess
 	root := latestTranscriptRoot(messages)
 	if root == "" {
 		d.unexpected = append(d.unexpected, "missing transcript root prompt")
-		out <- llm.Token{Text: "unexpected driver input"}
+		out <- llm.Token{Text: "unexpected driver input: missing transcript root prompt"}
 		return nil
 	}
 
@@ -425,11 +661,13 @@ func (d *scriptedTranscriptDriver) Stream(_ context.Context, messages []llm.Mess
 		out <- llm.Token{Text: d.inspectResponse(root, messages)}
 	case strings.HasPrefix(root, "HARNESS MODE: answer"):
 		out <- llm.Token{Text: d.answerResponse(root)}
+	case strings.HasPrefix(root, "HARNESS MODE: visible-collaboration"):
+		out <- llm.Token{Text: d.visibleCollaborationResponse(root, messages)}
 	case strings.HasPrefix(root, "OBJECTIVE:"):
 		out <- llm.Token{Text: d.workerResponse(root, messages)}
 	default:
 		d.unexpected = append(d.unexpected, "unexpected root prompt: "+clipTestText(root, 120))
-		out <- llm.Token{Text: "unexpected driver input"}
+		out <- llm.Token{Text: "unexpected driver input: unexpected root prompt"}
 	}
 	return nil
 }
@@ -485,6 +723,98 @@ func (d *scriptedTranscriptDriver) answerResponse(root string) string {
 	}
 }
 
+func (d *scriptedTranscriptDriver) visibleCollaborationResponse(root string, messages []llm.Message) string {
+	request := strings.ToLower(extractTranscriptUserRequest(root))
+	currentToolResults := currentTranscriptToolResults(messages)
+	latestToolResults := latestTranscriptToolResults(messages)
+	url := extractPreviewURLFromToolResults(latestToolResults)
+
+	switch {
+	case strings.Contains(request, "i dont like the current theme"):
+		switch {
+		case !strings.Contains(currentToolResults, "[read_file]") && !strings.Contains(currentToolResults, "[preview_server_ensure]"):
+			return transcriptToolCall("read_file", `{"path":"themes_preview.html","start_line":1,"end_line":80}`)
+		case strings.Contains(currentToolResults, "[read_file]") && !strings.Contains(currentToolResults, "[edit_file]"):
+			return transcriptToolCall("edit_file", `{"path":"themes_preview.html","old_text":"    <div class=\"label\">Preview</div>","new_text":"    <div class=\"label\">Obsidian</div>\n    <div class=\"label\">Harbor</div>\n    <div class=\"label\">Graphite</div>"}`)
+		case strings.Contains(currentToolResults, "[edit_file]") && !strings.Contains(currentToolResults, "[preview_server_ensure]"):
+			return transcriptToolCall("preview_server_ensure", `{"path":"themes_preview.html"}`)
+		default:
+			return "Here are 3 new dark themes in a live preview at " + url
+		}
+	case strings.Contains(request, "pick 3 others") || strings.Contains(request, "pick three others") || strings.Contains(request, "no neon"):
+		switch {
+		case !strings.Contains(currentToolResults, "[read_file]"):
+			return transcriptToolCall("read_file", `{"path":"themes_preview.html","start_line":1,"end_line":120}`)
+		case strings.Contains(currentToolResults, "[read_file]") && !strings.Contains(currentToolResults, "[edit_file]"):
+			return transcriptToolCall("edit_file", `{"path":"themes_preview.html","old_text":"    <div class=\"label\">Obsidian</div>\n    <div class=\"label\">Harbor</div>\n    <div class=\"label\">Graphite</div>","new_text":"    <div class=\"label\">Obsidian</div>\n    <div class=\"label\">Slate</div>\n    <div class=\"label\">Cinder</div>"}`)
+		case strings.Contains(currentToolResults, "[edit_file]") && !strings.Contains(currentToolResults, "[preview_server_status]"):
+			return transcriptToolCall("preview_server_status", `{}`)
+		default:
+			return "Here are 3 different dark themes with no neon, still live at " + url
+		}
+	case strings.Contains(request, "show on web page") && strings.Contains(request, "obsidian"):
+		switch {
+		case !strings.Contains(currentToolResults, "[read_file]"):
+			return transcriptToolCall("read_file", `{"path":"themes_preview.html","start_line":1,"end_line":140}`)
+		case strings.Contains(currentToolResults, "[read_file]") && !strings.Contains(currentToolResults, "[edit_file]"):
+			return transcriptToolCall("edit_file", `{"path":"themes_preview.html","old_text":"    <div class=\"label\">Cinder</div>","new_text":"    <div class=\"label\">Cinder</div>\n    <div class=\"label\">PASS / FAIL / INFO demo</div>\n    <div class=\"label\">Git diff and code box demo</div>"}`)
+		case strings.Contains(currentToolResults, "[edit_file]") && !strings.Contains(currentToolResults, "[preview_server_status]"):
+			return transcriptToolCall("preview_server_status", `{}`)
+		default:
+			return "Expanded the Obsidian preview with status graphics, code boxes, and git output at " + url
+		}
+	case strings.Contains(request, "more colors on git diff") || strings.Contains(request, "file/numeral detection"):
+		switch {
+		case !strings.Contains(currentToolResults, "[read_file]"):
+			return transcriptToolCall("read_file", `{"path":"themes_preview.html","start_line":1,"end_line":180}`)
+		case strings.Contains(currentToolResults, "[read_file]") && !strings.Contains(currentToolResults, "[edit_file]"):
+			return transcriptToolCall("edit_file", `{"path":"themes_preview.html","old_text":"    <div class=\"label\">Git diff and code box demo</div>","new_text":"    <div class=\"label\">Git diff and code box demo</div>\n    <div class=\"label\">Brighter git diff accents and numeral highlighting</div>"}`)
+		case strings.Contains(currentToolResults, "[edit_file]") && !strings.Contains(currentToolResults, "[preview_server_status]"):
+			return transcriptToolCall("preview_server_status", `{}`)
+		default:
+			return "Added more color to git diff and numeral detection in the live preview at " + url
+		}
+	case strings.Contains(request, "put that on the web page"):
+		if !strings.Contains(currentToolResults, "[preview_server_status]") {
+			return transcriptToolCall("preview_server_status", `{}`)
+		}
+		return "I put it on the web page at " + url
+	case strings.Contains(request, "show it on the web page again") ||
+		strings.Contains(request, "refresh the preview page") ||
+		strings.Contains(request, "open the preview again") ||
+		(strings.Contains(request, "web page") && strings.Contains(request, "see this")) ||
+		(strings.Contains(request, "webpage") && strings.Contains(request, "see this")):
+		if !strings.Contains(currentToolResults, "[preview_server_status]") {
+			return transcriptToolCall("preview_server_status", `{}`)
+		}
+		return "You can view it at " + url
+	case strings.Contains(request, "start a preview"):
+		if !strings.Contains(currentToolResults, "[preview_server_ensure]") {
+			return transcriptToolCall("preview_server_ensure", `{"path":"themes_preview.html"}`)
+		}
+		return "The preview is live and verified at " + url
+	case strings.Contains(request, "still up"):
+		if !strings.Contains(currentToolResults, "[preview_server_status]") {
+			return transcriptToolCall("preview_server_status", `{}`)
+		}
+		return "Yes, it's still up at " + url
+	case strings.Contains(request, "fix that and show me again"):
+		switch {
+		case !strings.Contains(currentToolResults, "[read_file]") && !strings.Contains(currentToolResults, "[edit_file]") && !strings.Contains(currentToolResults, "[preview_server_status]"):
+			return transcriptToolCall("read_file", `{"path":"themes_preview.html","start_line":1,"end_line":40}`)
+		case strings.Contains(currentToolResults, "[read_file]") && !strings.Contains(currentToolResults, "[edit_file]"):
+			return transcriptToolCall("edit_file", `{"path":"themes_preview.html","old_text":"        .label { text-align: center; padding: 8px; font-weight: 500; }","new_text":"        .label { text-align: center; padding: 8px; font-weight: 600; color: #67e8f9; }"}`)
+		case strings.Contains(currentToolResults, "[edit_file]") && !strings.Contains(currentToolResults, "[preview_server_status]"):
+			return transcriptToolCall("preview_server_status", `{}`)
+		default:
+			return "Updated themes_preview.html and the preview is live at " + url
+		}
+	default:
+		d.unexpected = append(d.unexpected, "unexpected visible collaboration prompt: "+clipTestText(root, 120))
+		return "unexpected visible collaboration prompt: " + clipTestText(request, 160)
+	}
+}
+
 func (d *scriptedTranscriptDriver) workerResponse(root string, messages []llm.Message) string {
 	if strings.Contains(root, "Implement the requested change in the workspace") {
 		return `{"status":"complete","changes":[{"path":"tools/cleanup_workspace.sh","summary":"Added tools/cleanup_workspace.sh to clean generated artifacts in one place."}],"verification_attempts":[{"command":"bash -n tools/cleanup_workspace.sh","outcome":"pass"}],"remaining_issues":[],"suggested_next":"run the script in dry-run mode first"}`
@@ -506,7 +836,7 @@ func (d *scriptedTranscriptDriver) workerResponse(root string, messages []llm.Me
 	}
 
 	d.unexpected = append(d.unexpected, "unexpected worker prompt: "+clipTestText(root, 120))
-	return "unexpected driver input"
+	return "unexpected worker prompt"
 }
 
 func latestTranscriptRoot(messages []llm.Message) string {
@@ -539,6 +869,59 @@ func hasTranscriptToolEvidence(messages []llm.Message, needle string) bool {
 		}
 	}
 	return false
+}
+
+func latestTranscriptToolResults(messages []llm.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != llm.RoleUser {
+			continue
+		}
+		if strings.Contains(messages[i].Content, "Tool results:") {
+			return messages[i].Content
+		}
+	}
+	return ""
+}
+
+func currentTranscriptToolResults(messages []llm.Message) string {
+	rootIdx := -1
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != llm.RoleUser {
+			continue
+		}
+		content := strings.TrimSpace(messages[i].Content)
+		if strings.HasPrefix(content, "HARNESS MODE:") || strings.HasPrefix(content, "OBJECTIVE:") {
+			rootIdx = i
+			break
+		}
+	}
+	if rootIdx < 0 {
+		return ""
+	}
+	blocks := make([]string, 0, 4)
+	for i := rootIdx + 1; i < len(messages); i++ {
+		if messages[i].Role != llm.RoleUser {
+			continue
+		}
+		if strings.Contains(messages[i].Content, "Tool results:") {
+			blocks = append(blocks, messages[i].Content)
+		}
+	}
+	return strings.Join(blocks, "\n")
+}
+
+func extractPreviewURLFromToolResults(toolResults string) string {
+	marker := `"url":"`
+	idx := strings.Index(toolResults, marker)
+	if idx < 0 {
+		return "http://127.0.0.1:0/themes_preview.html"
+	}
+	start := idx + len(marker)
+	end := strings.Index(toolResults[start:], `"`)
+	if end < 0 {
+		return "http://127.0.0.1:0/themes_preview.html"
+	}
+	return toolResults[start : start+end]
 }
 
 func extractTranscriptField(root, prefix string) string {
@@ -582,6 +965,7 @@ func writeTranscriptFixtureRepo(t *testing.T) string {
 	mustWriteTranscriptFile(t, filepath.Join(dir, "README.md"), "# Forge Fixture Repo\nFORGE_FIXTURE_README\nThis fixture repo contains a small Python service under service/.\n")
 	mustWriteTranscriptFile(t, filepath.Join(dir, ".pre-commit-config.yaml"), "repos:\n  - repo: https://github.com/astral-sh/ruff-pre-commit\n    hooks:\n      - id: ruff\n")
 	mustWriteTranscriptFile(t, filepath.Join(dir, "service", "main.py"), "def main():\n    print('FORGE_FIXTURE_SERVICE')\n")
+	mustWriteTranscriptFile(t, filepath.Join(dir, "themes_preview.html"), "<!DOCTYPE html>\n<html>\n<head>\n    <style>\n        .label { text-align: center; padding: 8px; font-weight: 500; }\n    </style>\n</head>\n<body>\n    <div class=\"label\">Preview</div>\n</body>\n</html>\n")
 	mustWriteTranscriptSkill(t, dir, "test-driven-development", "write tests first")
 	mustWriteTranscriptSkill(t, dir, "brainstorming", "plan before implementation")
 	mustWriteTranscriptSkill(t, dir, "systematic-debugging", "debug root cause first")

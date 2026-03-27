@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"forge/internal/agent"
 	"forge/internal/agent/tools"
@@ -16,6 +17,7 @@ import (
 	"forge/internal/config"
 	"forge/internal/harness"
 	"forge/internal/llm"
+	"forge/internal/skills"
 	"forge/internal/tui"
 )
 
@@ -330,7 +332,7 @@ func TestBuildHarnessRunnerConfigIncludesStrictLocalExecutor(t *testing.T) {
 		Driver:  &kernelMockDriver{response: "ok"},
 	}
 
-	runnerCfg := buildHarnessRunnerConfig(setup, a, baseReg, inspectReg, nil, "", approve)
+	runnerCfg := buildHarnessRunnerConfig(setup, a, baseReg, inspectReg, nil, nil, "", approve)
 	if runnerCfg.StrictLocal == nil {
 		t.Fatal("expected strict local executor in kernel config")
 	}
@@ -387,6 +389,45 @@ func TestRunChatTurnKernelPathAvoidsDelegationMarkers(t *testing.T) {
 	}
 }
 
+func TestRunChatTurnCompletesComplexVisiblePreviewTurn(t *testing.T) {
+	workDir := writeTranscriptFixtureRepo(t)
+	cfg := &config.Config{}
+	cfg.Chat.MaxTurns = 20
+	approve := agent.YoloApproval()
+
+	reg := tools.NewRegistry()
+	previewRuntime := registerTools(reg, workDir, cfg, approve)
+	if previewRuntime != nil {
+		defer previewRuntime.Close()
+	}
+	baseReg := reg.Filter(nil)
+	inspectReg := buildInspectToolRegistry(baseReg)
+
+	driver := &scriptedTranscriptDriver{}
+	renderer := agent.NewRenderer(io.Discard, 80, false)
+	a := agent.NewAgent(driver, reg, approve, workDir, cfg.Chat.MaxTurns, renderer, nil, chatstate.New())
+	setup := &ChatSetup{
+		Config:  cfg,
+		WorkDir: workDir,
+		Driver:  driver,
+	}
+	kernel := harness.NewRunner(buildHarnessRunnerConfig(setup, a, baseReg, inspectReg, previewRuntime, nil, "", approve))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	input := "i dont like the current theme, i need you to mock up 3 new ones, dark in nature, really modern and cool looking, create a web server and show me them on the screen"
+	if err := runChatTurn(ctx, a, kernel, input); err != nil {
+		t.Fatalf("runChatTurn failed after %d driver calls with unexpected=%#v: %v", driver.calls, driver.unexpected, err)
+	}
+	if got := a.LastResponse(); !strings.Contains(got, "http://127.0.0.1:") || !strings.Contains(got, "themes_preview.html") {
+		t.Fatalf("response = %q", got)
+	}
+	if len(driver.unexpected) > 0 {
+		t.Fatalf("unexpected driver paths: %#v", driver.unexpected)
+	}
+}
+
 func TestRunChatTurnEmitsForgeResponseForWorkerResults(t *testing.T) {
 	events := make(chan llm.Event, 32)
 	renderer := agent.NewEventRenderer(events)
@@ -434,6 +475,99 @@ func TestRunChatTurnEmitsForgeResponseForWorkerResults(t *testing.T) {
 	}
 }
 
+func TestRunChatTurnKernelVisibleTurnAvoidsStrictSkillLoop(t *testing.T) {
+	workDir := writeTranscriptFixtureRepo(t)
+	cfg := &config.Config{}
+	cfg.Chat.MaxTurns = 6
+	cfg.Chat.AutoSkills = "auto"
+	approve := agent.YoloApproval()
+
+	reg := tools.NewRegistry()
+	previewRuntime := registerTools(reg, workDir, cfg, approve)
+	if previewRuntime != nil {
+		defer previewRuntime.Close()
+	}
+	baseReg := reg.Filter(nil)
+	inspectReg := buildInspectToolRegistry(baseReg)
+
+	driver := &strictSkillLoopDriver{}
+	events := make(chan llm.Event, 64)
+	renderer := agent.NewEventRenderer(events)
+	loadedSkills := skills.Load(workDir)
+	a := agent.NewAgent(driver, reg, approve, workDir, cfg.Chat.MaxTurns, renderer, loadedSkills, chatstate.New())
+	setup := &ChatSetup{
+		Config:  cfg,
+		WorkDir: workDir,
+		Driver:  driver,
+	}
+	kernel := harness.NewRunner(buildHarnessRunnerConfig(setup, a, baseReg, inspectReg, previewRuntime, loadedSkills, skills.NormalizeAutoMode(cfg.Chat.AutoSkills), approve))
+
+	if err := runChatTurn(context.Background(), a, kernel, "design a new preview theme and show it on the screen"); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callIdx != 2 {
+		t.Fatalf("driver calls = %d, want 2", driver.callIdx)
+	}
+	if !driver.sawHostManagedSkill {
+		t.Fatal("expected strict-local system prompt to use host-managed skill wording")
+	}
+	if !driver.sawInjectedSkill {
+		t.Fatal("expected strict-local turn to receive injected brainstorming skill context")
+	}
+	if got := a.LastResponse(); !strings.Contains(got, "themes_preview.html") {
+		t.Fatalf("response = %q", got)
+	}
+}
+
+func TestRunChatTurnKernelVisibleTurnEmitsProgressBeforeFinalAnswer(t *testing.T) {
+	workDir := writeTranscriptFixtureRepo(t)
+	cfg := &config.Config{}
+	cfg.Chat.MaxTurns = 6
+	approve := agent.YoloApproval()
+
+	reg := tools.NewRegistry()
+	previewRuntime := registerTools(reg, workDir, cfg, approve)
+	if previewRuntime != nil {
+		defer previewRuntime.Close()
+	}
+	baseReg := reg.Filter(nil)
+	inspectReg := buildInspectToolRegistry(baseReg)
+
+	driver := &kernelMockDriver{responses: []string{
+		"<tool_call>\n{\"name\":\"preview_server_ensure\",\"args\":{\"path\":\"themes_preview.html\"}}\n</tool_call>",
+		"You can view it at the verified preview URL for themes_preview.html.",
+	}}
+	events := make(chan llm.Event, 64)
+	renderer := agent.NewEventRenderer(events)
+	loadedSkills := skills.Load(workDir)
+	a := agent.NewAgent(driver, reg, approve, workDir, cfg.Chat.MaxTurns, renderer, loadedSkills, chatstate.New())
+	setup := &ChatSetup{
+		Config:  cfg,
+		WorkDir: workDir,
+		Driver:  driver,
+	}
+	kernel := harness.NewRunner(buildHarnessRunnerConfig(setup, a, baseReg, inspectReg, previewRuntime, loadedSkills, skills.NormalizeAutoMode(cfg.Chat.AutoSkills), approve))
+
+	if err := runChatTurn(context.Background(), a, kernel, "start a preview for themes_preview.html and tell me the verified url"); err != nil {
+		t.Fatal(err)
+	}
+
+	var sawProgress bool
+	var sawFinalToken bool
+	for len(events) > 0 {
+		ev := <-events
+		if ev.Kind == llm.EventProgress && !sawFinalToken {
+			sawProgress = true
+		}
+		if ev.Kind == llm.EventToken {
+			sawFinalToken = true
+		}
+	}
+	if !sawProgress {
+		t.Fatal("expected visible progress event before the final answer")
+	}
+}
+
 func TestWorkerDriverForUsesLegacyScoutModelForReader(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Chat.Agents.Models.Scout = "openai/gpt-5.4-mini"
@@ -473,7 +607,7 @@ func TestRegisterToolsIncludesPreviewLifecycleTools(t *testing.T) {
 	cfg := &config.Config{}
 	registerTools(reg, t.TempDir(), cfg, agent.YoloApproval())
 
-	for _, name := range []string{"artifact_write", "preview_server_ensure", "preview_server_status"} {
+	for _, name := range []string{"artifact_write", "artifact_read", "preview_server_ensure", "preview_server_status"} {
 		if _, ok := reg.Get(name); !ok {
 			t.Fatalf("missing %s in tool registry", name)
 		}
@@ -518,6 +652,50 @@ func (d *kernelMockDriver) Stream(_ context.Context, _ []llm.Message, out chan<-
 		return nil
 	}
 	out <- llm.Token{Text: d.response}
+	return nil
+}
+
+type strictSkillLoopDriver struct {
+	callIdx             int
+	sawInjectedSkill    bool
+	sawHostManagedSkill bool
+}
+
+func (d *strictSkillLoopDriver) Name() string { return "strict-skill-loop" }
+
+func (d *strictSkillLoopDriver) Stream(_ context.Context, messages []llm.Message, out chan<- llm.Token) error {
+	defer close(out)
+	d.callIdx++
+
+	var systemPrompt string
+	for _, msg := range messages {
+		if msg.Role == llm.RoleSystem {
+			systemPrompt = msg.Content
+			break
+		}
+	}
+
+	hasInjectedSkill := false
+	for _, msg := range messages {
+		if msg.Role == llm.RoleUser && strings.HasPrefix(msg.Content, "[Skill: brainstorming]") {
+			hasInjectedSkill = true
+			break
+		}
+	}
+	d.sawInjectedSkill = d.sawInjectedSkill || hasInjectedSkill
+	d.sawHostManagedSkill = d.sawHostManagedSkill || strings.Contains(systemPrompt, "The host decides whether to apply them for this turn")
+
+	if strings.Contains(systemPrompt, "load its document through the runtime") && !hasInjectedSkill {
+		out <- llm.Token{Text: "<tool_call>\n{\"name\":\"tool_help\",\"args\":{\"query\":\"brainstorming\"}}\n</tool_call>"}
+		return nil
+	}
+
+	if d.callIdx%2 == 1 {
+		out <- llm.Token{Text: "<tool_call>\n{\"name\":\"preview_server_ensure\",\"args\":{\"path\":\"themes_preview.html\"}}\n</tool_call>"}
+		return nil
+	}
+
+	out <- llm.Token{Text: "Designed the updated preview and verified it for themes_preview.html."}
 	return nil
 }
 

@@ -163,3 +163,78 @@ func TestSessionPendingActionExpiresAfterOneTurn(t *testing.T) {
 		t.Fatalf("expected pending action to expire after one turn: %#v", state)
 	}
 }
+
+func TestSessionApplyStoresRecentPreviewAndArtifactState(t *testing.T) {
+	session := NewSession()
+	_ = session.BeginTurn("show me the preview")
+	session.Apply(Classification{
+		Family:                  FamilyAnswer,
+		PrefersVisibleExecution: true,
+		TopicKey:                "workspace:repository",
+	}, Observation{
+		Status:   ObservationComplete,
+		Response: "Preview is live.",
+		Runtime: LocalRuntimeSnapshot{
+			Artifact: ArtifactSnapshot{
+				Handle:   "artifact-1",
+				Path:     "mockups/themes_preview.html",
+				MIMEType: "text/html",
+				Bytes:    29,
+			},
+			Preview: PreviewSnapshot{
+				Status: "live",
+				Root:   "mockups",
+				Path:   "mockups/themes_preview.html",
+				Port:   4173,
+				URL:    "http://127.0.0.1:4173/themes_preview.html",
+			},
+		},
+	})
+
+	state := session.Snapshot()
+	if !state.HasRecentArtifact() {
+		t.Fatalf("expected recent artifact state: %#v", state)
+	}
+	if state.LastArtifact.Handle != "artifact-1" {
+		t.Fatalf("last artifact = %#v", state.LastArtifact)
+	}
+	if !state.HasRecentPreview() {
+		t.Fatalf("expected recent preview state: %#v", state)
+	}
+	if state.LastPreview.URL != "http://127.0.0.1:4173/themes_preview.html" {
+		t.Fatalf("last preview = %#v", state.LastPreview)
+	}
+}
+
+func TestSessionRecentPreviewAndArtifactExpireAfterOneTurn(t *testing.T) {
+	session := NewSession()
+	_ = session.BeginTurn("show me the preview")
+	session.Apply(Classification{
+		Family:                  FamilyAnswer,
+		PrefersVisibleExecution: true,
+	}, Observation{
+		Status: ObservationComplete,
+		Runtime: LocalRuntimeSnapshot{
+			Artifact: ArtifactSnapshot{
+				Handle: "artifact-1",
+				Path:   "mockups/themes_preview.html",
+			},
+			Preview: PreviewSnapshot{
+				Status: "live",
+				URL:    "http://127.0.0.1:4173/themes_preview.html",
+				Port:   4173,
+			},
+		},
+	})
+
+	_ = session.BeginTurn("thanks")
+	_ = session.BeginTurn("later")
+
+	state := session.Snapshot()
+	if state.HasRecentArtifact() {
+		t.Fatalf("expected recent artifact to expire after one turn: %#v", state)
+	}
+	if state.HasRecentPreview() {
+		t.Fatalf("expected recent preview to expire after one turn: %#v", state)
+	}
+}

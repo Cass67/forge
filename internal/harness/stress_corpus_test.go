@@ -90,6 +90,8 @@ func largePromptStressCorpus() []stressFixture {
 	fixtures = append(fixtures, repoReviewStressFixtures()...)
 	fixtures = append(fixtures, directoryInspectStressFixtures()...)
 	fixtures = append(fixtures, visibleCollaborationStressFixtures()...)
+	fixtures = append(fixtures, previewFollowUpStressFixtures()...)
+	fixtures = append(fixtures, previewThreadRevisionStressFixtures()...)
 	fixtures = append(fixtures, planningFollowUpStressFixtures()...)
 	fixtures = append(fixtures, actionFollowUpStressFixtures()...)
 	fixtures = append(fixtures, collaborativeIdeationStressFixtures()...)
@@ -218,6 +220,178 @@ func visibleCollaborationStressFixtures() []stressFixture {
 			})
 		}
 	}
+	return fixtures
+}
+
+func previewFollowUpStressFixtures() []stressFixture {
+	session := SessionState{
+		Turn: 2,
+		LastPreview: PreviewSnapshot{
+			Turn:   1,
+			Status: "live",
+			URL:    "http://127.0.0.1:4173/themes_preview.html",
+			Path:   "themes_preview.html",
+			Port:   4173,
+		},
+	}
+	return []stressFixture{
+		{
+			Name:            "preview-follow-up/status",
+			Category:        "preview-follow-up",
+			Input:           "is it still up?",
+			Session:         session,
+			WantFamily:      FamilyAnswer,
+			WantTopicKey:    "",
+			WantEvaluation:  false,
+			WantAction:      false,
+			WantFollowUp:    true,
+			WantPolicyGuard: false,
+			WantTerseAnswer: false,
+			WantStep:        StepStrictLocal,
+			WantWorker:      WorkerNone,
+		},
+		{
+			Name:            "preview-follow-up/show-again",
+			Category:        "preview-follow-up",
+			Input:           "show me again",
+			Session:         session,
+			WantFamily:      FamilyAnswer,
+			WantTopicKey:    "",
+			WantEvaluation:  false,
+			WantAction:      false,
+			WantFollowUp:    true,
+			WantPolicyGuard: false,
+			WantTerseAnswer: false,
+			WantStep:        StepStrictLocal,
+			WantWorker:      WorkerNone,
+		},
+		{
+			Name:            "preview-follow-up/fix-and-show",
+			Category:        "preview-follow-up",
+			Input:           "fix that and show me again",
+			Session:         session,
+			WantFamily:      FamilyImplement,
+			WantTopicKey:    "",
+			WantEvaluation:  false,
+			WantAction:      true,
+			WantFollowUp:    true,
+			WantPolicyGuard: false,
+			WantTerseAnswer: false,
+			WantStep:        StepStrictLocal,
+			WantWorker:      WorkerNone,
+		},
+		{
+			Name:            "preview-follow-up/referential-troubleshoot",
+			Category:        "preview-follow-up",
+			Input:           "it still looks wrong",
+			Session:         session,
+			WantFamily:      FamilyAnswer,
+			WantTopicKey:    "",
+			WantEvaluation:  false,
+			WantAction:      false,
+			WantFollowUp:    true,
+			WantPolicyGuard: false,
+			WantTerseAnswer: false,
+			WantStep:        StepStrictLocal,
+			WantWorker:      WorkerNone,
+		},
+	}
+}
+
+func previewThreadRevisionStressFixtures() []stressFixture {
+	session := SessionState{
+		Turn:         2,
+		LastResponse: "Preview is live with the Obsidian mockup at http://127.0.0.1:4173/themes_preview.html.",
+		LastArtifact: ArtifactSnapshot{
+			Turn:     1,
+			Handle:   "artifact-1",
+			Path:     "themes_preview.html",
+			MIMEType: "text/html",
+			Bytes:    2048,
+		},
+		LastPreview: PreviewSnapshot{
+			Turn:   1,
+			Status: "live",
+			Path:   "themes_preview.html",
+			Port:   4173,
+			URL:    "http://127.0.0.1:4173/themes_preview.html",
+		},
+	}
+
+	actionPrompts := []string{
+		"dont like those, pick 3 others, no neon",
+		"pick three others, no neon",
+		"try 3 different ones, no neon",
+		"give me 3 other dark options, no neon",
+		"keep it dark but no neon",
+		"show the obsidian version on the web page",
+		"put that on the web page",
+		"show me the updated graphics on the web page",
+		"more colors on git diff and file/numeral detection",
+		"more color on git diff, file names, and numerals",
+		"less blue in the header and more contrast on script names",
+		"make the git diff and numerals pop more",
+		"fix the highlighting on script name and file numbers",
+		"add more color to status, git diff, and code boxes",
+	}
+	actionPrefixes := []string{
+		"",
+		"ok ",
+		"please ",
+		"right, ",
+	}
+
+	answerPrompts := []string{
+		"can i see this on the web page",
+		"can i see this on the webpage",
+		"show it on the web page again",
+		"open the preview again",
+		"refresh the preview page",
+		"is it still up on the web page",
+	}
+
+	fixtures := make([]stressFixture, 0, len(actionPrompts)*len(actionPrefixes)+len(answerPrompts))
+	idx := 0
+	for _, prefix := range actionPrefixes {
+		for _, prompt := range actionPrompts {
+			idx++
+			fixtures = append(fixtures, stressFixture{
+				Name:            fmt.Sprintf("preview-thread-action/%03d", idx),
+				Category:        "preview-thread-action",
+				Input:           strings.TrimSpace(prefix + prompt),
+				Session:         session,
+				WantFamily:      FamilyImplement,
+				WantTopicKey:    "",
+				WantEvaluation:  false,
+				WantAction:      true,
+				WantFollowUp:    true,
+				WantPolicyGuard: false,
+				WantTerseAnswer: false,
+				WantStep:        StepStrictLocal,
+				WantWorker:      WorkerNone,
+			})
+		}
+	}
+
+	for _, prompt := range answerPrompts {
+		idx++
+		fixtures = append(fixtures, stressFixture{
+			Name:            fmt.Sprintf("preview-thread-answer/%03d", idx),
+			Category:        "preview-thread-answer",
+			Input:           prompt,
+			Session:         session,
+			WantFamily:      FamilyAnswer,
+			WantTopicKey:    "",
+			WantEvaluation:  false,
+			WantAction:      false,
+			WantFollowUp:    true,
+			WantPolicyGuard: false,
+			WantTerseAnswer: false,
+			WantStep:        StepStrictLocal,
+			WantWorker:      WorkerNone,
+		})
+	}
+
 	return fixtures
 }
 

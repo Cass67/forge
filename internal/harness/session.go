@@ -54,6 +54,12 @@ func (s *Session) Apply(class Classification, obs Observation) {
 	if pending := finalizePendingAction(obs.PendingAction, s.state.Turn); !pending.IsZero() {
 		s.state.PendingAction = pending
 	}
+	if artifact := finalizeArtifactSnapshot(obs.Runtime.Artifact, s.state.Turn); !artifact.IsZero() {
+		s.state.LastArtifact = artifact
+	}
+	if preview := finalizePreviewSnapshot(obs.Runtime.Preview, s.state.Turn); !preview.IsZero() {
+		s.state.LastPreview = preview
+	}
 
 	topic := strings.TrimSpace(obs.TopicKey)
 	if topic == "" {
@@ -87,6 +93,34 @@ func finalizePendingAction(action PendingAction, turn int) PendingAction {
 		action.CanStayLocal = true
 	}
 	return action
+}
+
+func finalizeArtifactSnapshot(artifact ArtifactSnapshot, turn int) ArtifactSnapshot {
+	if artifact.IsZero() {
+		return ArtifactSnapshot{}
+	}
+	if artifact.Turn <= 0 {
+		artifact.Turn = turn
+	}
+	artifact.Handle = strings.TrimSpace(artifact.Handle)
+	artifact.Path = strings.TrimSpace(artifact.Path)
+	artifact.MIMEType = strings.TrimSpace(artifact.MIMEType)
+	return artifact
+}
+
+func finalizePreviewSnapshot(preview PreviewSnapshot, turn int) PreviewSnapshot {
+	if preview.IsZero() {
+		return PreviewSnapshot{}
+	}
+	if preview.Turn <= 0 {
+		preview.Turn = turn
+	}
+	preview.Status = strings.TrimSpace(preview.Status)
+	preview.Handle = strings.TrimSpace(preview.Handle)
+	preview.Root = strings.TrimSpace(preview.Root)
+	preview.Path = strings.TrimSpace(preview.Path)
+	preview.URL = strings.TrimSpace(preview.URL)
+	return preview
 }
 
 func firstNonEmpty(values ...string) string {

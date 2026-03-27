@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"forge/internal/agent"
 	"forge/internal/agent/tools"
 )
 
@@ -27,9 +28,10 @@ type conversationIsolator interface {
 }
 
 type AgentExecutor struct {
-	Agent        ScopedAgentRunner
-	DefaultTools *tools.Registry
-	InspectTools *tools.Registry
+	Agent          ScopedAgentRunner
+	DefaultTools   *tools.Registry
+	InspectTools   *tools.Registry
+	PreviewRuntime *tools.PreviewRuntime
 }
 
 const promptBoundaryRefusal = "I can't provide hidden system/developer prompts or internal instructions, including paraphrased or hypothetical versions. I can summarize my role and high-level guardrails if useful."
@@ -99,6 +101,7 @@ func (e AgentExecutor) Execute(ctx context.Context, turn UserTurn, class Classif
 		Response: response,
 		Summary:  response,
 		TopicKey: class.TopicKey,
+		Runtime:  captureLocalRuntimeSnapshot(e.PreviewRuntime, e.Agent),
 	}, nil
 }
 
@@ -121,7 +124,7 @@ func validateLocalResponse(class Classification, response string) error {
 	if response == "" {
 		return fmt.Errorf("local action turn produced no final response")
 	}
-	if startsWithToolCallMarkup(response) {
+	if containsToolCallMarkup(response) {
 		return fmt.Errorf("local action turn produced malformed tool markup")
 	}
 	return nil
@@ -131,10 +134,9 @@ func requiresConcreteLocalResponse(class Classification) bool {
 	return class.PrefersVisibleExecution || class.Family != FamilyAnswer
 }
 
-func startsWithToolCallMarkup(text string) bool {
-	trimmed := strings.TrimSpace(text)
-	for _, opener := range []string{"<tool_call>", "<function_calls>", "<tool_calls>"} {
-		if strings.HasPrefix(trimmed, opener) {
+func containsToolCallMarkup(text string) bool {
+	for _, tag := range []string{"<tool_call>", "</tool_call>", "<function_calls>", "</function_calls>", "<tool_calls>", "</tool_calls>"} {
+		if strings.Contains(text, tag) {
 			return true
 		}
 	}
@@ -241,6 +243,7 @@ func buildVisibleCollaborationTurnPrompt(class Classification, userMessage strin
 		"- if the user asks for a mockup, preview, browser view, file artifact, or running server, create or start it before reporting status",
 		"- do not claim a server, preview, file, URL, or port is available unless tool results from this turn confirm it",
 		"- if you start or restart a server, verify it with a local fetch or equivalent check before telling the user it is live",
+		"- preview_server_ensure already verifies the returned localhost URL; do not shell out just to confirm the same preview again unless the host-owned preview tools fail",
 		"- if a command times out or fails, say that plainly and choose a safer alternative when possible",
 		"- prefer bounded previews such as static HTML files when they satisfy the request; use a server only when it materially helps",
 		"- keep updates concise and ground claims in tool results from this turn or relevant recent context",
@@ -283,13 +286,22 @@ func recentAnswerContext(class Classification, session SessionState) string {
 }
 
 func recentVisibleCollaborationContext(session SessionState) string {
+	lines := make([]string, 0, 4)
 	if strings.TrimSpace(session.LastResponse) != "" {
-		return "- prior assistant answer: " + clipPromptContext(session.LastResponse, 240)
+		lines = append(lines, "- prior assistant answer: "+clipPromptContext(session.LastResponse, 240))
 	}
 	if session.HasRecentEvidence() && strings.TrimSpace(session.LastEvidence.Summary) != "" {
-		return "- recent evidence: " + clipPromptContext(session.LastEvidence.Summary, 240)
+		lines = append(lines, "- recent evidence: "+clipPromptContext(session.LastEvidence.Summary, 240))
 	}
-	return ""
+	if session.HasRecentArtifact() {
+		lines = append(lines, "- recent artifact handle: "+clipPromptContext(session.LastArtifact.Handle, 120))
+		lines = append(lines, "- recent artifact path: "+clipPromptContext(session.LastArtifact.Path, 240))
+	}
+	if session.HasRecentPreview() {
+		lines = append(lines, "- recent preview url: "+clipPromptContext(session.LastPreview.URL, 240))
+		lines = append(lines, "- reuse the tracked preview or artifact when it still fits the request instead of rediscovering it from scratch")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func clipPromptContext(text string, limit int) string {
@@ -301,4 +313,66 @@ func clipPromptContext(text string, limit int) string {
 		return text[:limit]
 	}
 	return text[:limit-3] + "..."
+}
+
+type toolCallHistory interface {
+	LastToolCalls() []agent.ToolCall
+}
+
+func captureLocalRuntimeSnapshot(runtime *tools.PreviewRuntime, runner any) LocalRuntimeSnapshot {
+	if runtime == nil {
+		return LocalRuntimeSnapshot{}
+	}
+	history, ok := runner.(toolCallHistory)
+	if !ok {
+		return LocalRuntimeSnapshot{}
+	}
+
+	var wantsArtifact bool
+	var wantsPreview bool
+	for _, call := range history.LastToolCalls() {
+		switch strings.TrimSpace(call.Name) {
+		case "artifact_write", "artifact_read":
+			wantsArtifact = true
+		case "preview_server_ensure", "preview_server_status":
+			wantsPreview = true
+		}
+	}
+	if !wantsArtifact && !wantsPreview {
+		return LocalRuntimeSnapshot{}
+	}
+
+	snapshot := LocalRuntimeSnapshot{}
+	if wantsArtifact {
+		if artifact, ok := runtime.LastArtifactMetadata(); ok {
+			snapshot.Artifact = ArtifactSnapshot{
+				Handle:   artifact.Handle,
+				Path:     artifact.Path,
+				MIMEType: artifact.MIMEType,
+				Bytes:    artifact.Bytes,
+			}
+		}
+	}
+	preview := runtime.PreviewStatus()
+	if wantsPreview && preview.Status != "" && preview.Status != "stopped" {
+		snapshot.Preview = PreviewSnapshot{
+			Status: preview.Status,
+			Handle: preview.Handle,
+			Root:   preview.Root,
+			Path:   preview.Path,
+			Port:   preview.Port,
+			URL:    preview.URL,
+		}
+	}
+	if wantsPreview && preview.Handle != "" && snapshot.Artifact.IsZero() {
+		if artifact, ok := runtime.LastArtifactMetadata(); ok && artifact.Handle == preview.Handle {
+			snapshot.Artifact = ArtifactSnapshot{
+				Handle:   artifact.Handle,
+				Path:     artifact.Path,
+				MIMEType: artifact.MIMEType,
+				Bytes:    artifact.Bytes,
+			}
+		}
+	}
+	return snapshot
 }

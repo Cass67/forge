@@ -110,11 +110,32 @@ func NewAgent(driver llm.Driver, toolReg *tools.Registry, approve tools.Approval
 
 // InjectSkill prepends a skill's content into the conversation as context.
 func (a *Agent) InjectSkill(s skills.Skill) {
+	if a.state == nil {
+		a.state = chatstate.New()
+	}
+	if a.state != nil && a.state.SkillActivated(s.Name) {
+		return
+	}
 	a.state.ActivateSkill(s.Name)
 	a.history = append(a.history, llm.Message{
 		Role:    llm.RoleUser,
 		Content: fmt.Sprintf("[Skill: %s]\n\n%s", s.Name, s.Body),
 	})
+}
+
+func (a *Agent) EmitProgress(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" || a.renderer == nil {
+		return
+	}
+	type progressEmitter interface {
+		Progress(string)
+	}
+	if progress, ok := a.renderer.(progressEmitter); ok {
+		progress.Progress(text)
+		return
+	}
+	a.renderer.Info(text)
 }
 
 // Skills returns the loaded skills.
@@ -246,6 +267,8 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	scoutNoToolRetries := 0
 	scoutMalformedToolRetries := 0
 	subAgentMalformedToolRetries := 0
+	lastStrictProgressSignature := ""
+	strictNoProgressRepeats := 0
 	sawToolCallThisRun := false
 	dispatchCanStop := false
 	dispatchStopAfterTurn := false
@@ -259,6 +282,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	scoutRepoReviewState := newScoutRepoReviewEvidenceState(a.workDir, userMessage)
 	isInspectTurn := !a.isSubAgent && isHarnessInspectTurn(userMessage)
 	isAnswerTurn := !a.isSubAgent && isHarnessAnswerTurn(userMessage)
+	isStrictActionTurn := strictActionTurn(a.role, a.isSubAgent, isInspectTurn)
 	pendingControlMsgIdxs := make([]int, 0, 4)
 	var clearPendingControls func()
 	clearPendingControls = func() {
@@ -333,13 +357,13 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		}
 
 		response := sb.String()
-		if normalized, changed := normalizeStrictTurnForExecution(response, a.role, a.isSubAgent, isInspectTurn); changed {
+		if normalized, changed := normalizeStrictTurnForExecution(response, a.role, a.isSubAgent, isInspectTurn, a.tools); changed {
 			response = normalized
 		}
 
 		// Parse tool calls
 		calls, visibleText := ParseToolCalls(response)
-		if !a.isSubAgent && !isAnswerTurn && len(calls) == 0 && startsWithToolCallMarkup(response) {
+		if !a.isSubAgent && !isAnswerTurn && len(calls) == 0 && containsRawToolMarkup(response) {
 			if turn+1 < a.maxTurns {
 				mainMalformedToolRetries++
 				replacePendingControls(mainMalformedToolMarkupNudgeMessage(mainMalformedToolRetries))
@@ -687,6 +711,28 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			Content: compactToolResults(results),
 		})
 		nextTurnControls := make([]string, 0, 2)
+		if isStrictActionTurn {
+			if signature, ok := strictProgressSignature(calls); ok {
+				if signature == lastStrictProgressSignature {
+					strictNoProgressRepeats++
+				} else {
+					lastStrictProgressSignature = signature
+					strictNoProgressRepeats = 0
+				}
+				if strictNoProgressRepeats >= 2 || (strictNoProgressRepeats >= 1 && turn+1 >= a.maxTurns) {
+					return fmt.Errorf("strict action turn made no progress after repeating the same %s", strictProgressTarget(calls[0]))
+				}
+				if strictNoProgressRepeats == 1 && turn+1 < a.maxTurns {
+					nextTurnControls = append(nextTurnControls, strictNoProgressNudgeMessage(calls[0]))
+				}
+			} else {
+				lastStrictProgressSignature = ""
+				strictNoProgressRepeats = 0
+			}
+		} else {
+			lastStrictProgressSignature = ""
+			strictNoProgressRepeats = 0
+		}
 		if mixedSubAgentToolCallProse && turn+1 < a.maxTurns {
 			nextTurnControls = append(nextTurnControls, subAgentToolCallNudgeMessage(a.role, subAgentMixedProseRetries))
 		}
@@ -1128,12 +1174,11 @@ func resolveScoutFallbackEvidence(currentTurn int, current *dispatchScoutEvidenc
 	return nil
 }
 
-func normalizeStrictTurnForExecution(response, role string, isSubAgent, isInspectTurn bool) (string, bool) {
-	strictTurn := isInspectTurn || strings.TrimSpace(role) == "strictlocal" || (isSubAgent && isStrictWorkerRole(role))
-	if !strictTurn {
+func normalizeStrictTurnForExecution(response, role string, isSubAgent, isInspectTurn bool, reg *tools.Registry) (string, bool) {
+	if !strictActionTurn(role, isSubAgent, isInspectTurn) {
 		return response, false
 	}
-	normalized, changed := NormalizeStrictToolTurn(response)
+	normalized, changed := NormalizeStrictToolTurnForExecution(response, reg)
 	if !changed {
 		return response, false
 	}
@@ -1141,6 +1186,75 @@ func normalizeStrictTurnForExecution(response, role string, isSubAgent, isInspec
 		return normalized, true
 	}
 	return response, false
+}
+
+func strictActionTurn(role string, isSubAgent, isInspectTurn bool) bool {
+	return isInspectTurn || strings.TrimSpace(role) == "strictlocal" || (isSubAgent && isStrictWorkerRole(role))
+}
+
+func strictProgressSignature(calls []ToolCall) (string, bool) {
+	if len(calls) != 1 {
+		return "", false
+	}
+	call := calls[0]
+	switch strings.TrimSpace(call.Name) {
+	case "artifact_write":
+		return strictCallSignature(call, "path", "mime_type", "content"), true
+	case "write_file":
+		return strictCallSignature(call, "path", "content"), true
+	case "edit_file":
+		return strictCallSignature(call, "path", "old_text", "new_text"), true
+	default:
+		return "", false
+	}
+}
+
+func strictCallSignature(call ToolCall, argNames ...string) string {
+	parts := make([]string, 0, len(argNames)+1)
+	parts = append(parts, strings.TrimSpace(call.Name))
+	for _, name := range argNames {
+		parts = append(parts, name+"="+stringifyStrictCallArg(call.Args[name]))
+	}
+	return strings.Join(parts, "|")
+}
+
+func stringifyStrictCallArg(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case nil:
+		return ""
+	default:
+		return fmt.Sprintf("%v", typed)
+	}
+}
+
+func strictProgressTarget(call ToolCall) string {
+	callName := strings.TrimSpace(call.Name)
+	path, _ := call.Args["path"].(string)
+	path = strings.TrimSpace(path)
+	if path != "" {
+		return fmt.Sprintf("%s on %s", callName, path)
+	}
+	return callName
+}
+
+func strictNoProgressNudgeMessage(call ToolCall) string {
+	switch strings.TrimSpace(call.Name) {
+	case "artifact_write":
+		path, _ := call.Args["path"].(string)
+		path = strings.TrimSpace(path)
+		if path == "" {
+			return "No progress: you just wrote the same artifact again. Do not rewrite the same artifact repeatedly. Either make a different edit, verify the preview state, or give the final answer if the preview is already ready."
+		}
+		return fmt.Sprintf("No progress: you just wrote the same artifact %s again. Do not rewrite the same artifact repeatedly. Either make a different edit, verify the preview state, or give the final answer if the preview is already ready.", path)
+	case "write_file":
+		return "No progress: you just wrote the same file again. Do not repeat the same write. Either make a different edit, inspect the current file state, or give the final answer if the work is complete."
+	case "edit_file":
+		return "No progress: you just attempted the same edit again. Do not repeat the same edit. Either inspect the updated file state, make a different change, or give the final answer if the work is complete."
+	default:
+		return "No progress: do not repeat the same mutation again."
+	}
 }
 
 func labelInterpretationUnavailable(message string) string {
@@ -2421,6 +2535,9 @@ func (a *Agent) estimatedRequestTokens() int {
 func compactOldHistoryMessage(m llm.Message) (string, bool) {
 	content := strings.TrimSpace(m.Content)
 	if content == "" {
+		return "", false
+	}
+	if m.Role == llm.RoleUser && (strings.HasPrefix(content, "HARNESS MODE:") || strings.HasPrefix(content, "OBJECTIVE:")) {
 		return "", false
 	}
 	if strings.HasPrefix(content, "[Skill: ") {

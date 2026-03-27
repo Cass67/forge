@@ -135,7 +135,7 @@ func refreshChatSetupState(setup *ChatSetup) (*config.Config, *auth.Tokens) {
 	return cfg, tokens
 }
 
-func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, approve tools.ApprovalFunc, forcePrompt ...tools.ApprovalFunc) {
+func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, approve tools.ApprovalFunc, forcePrompt ...tools.ApprovalFunc) *tools.PreviewRuntime {
 	fp := approve
 	if len(forcePrompt) > 0 {
 		fp = forcePrompt[0]
@@ -145,6 +145,7 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, appr
 	reg.Register(tools.NewWriteFile(workDir, approve))
 	reg.Register(tools.NewEditFile(workDir, approve))
 	reg.Register(tools.NewArtifactWrite(previewRuntime))
+	reg.Register(tools.NewArtifactRead(previewRuntime))
 	reg.Register(tools.NewPreviewServerEnsure(previewRuntime))
 	reg.Register(tools.NewPreviewServerStatus(previewRuntime))
 	reg.Register(tools.NewListDir(workDir, cfg.Chat.IgnoreDirs))
@@ -165,6 +166,7 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, appr
 	webSearch.PromptVisibility = tools.PromptHidden
 	reg.Register(webSearch)
 	reg.Register(tools.NewToolHelp(reg))
+	return previewRuntime
 }
 
 func buildInspectToolRegistry(base *tools.Registry) *tools.Registry {
@@ -207,7 +209,10 @@ func RunChatLive(setup *ChatSetup) {
 	}
 
 	reg := tools.NewRegistry()
-	registerTools(reg, setup.WorkDir, setup.Config, approve)
+	previewRuntime := registerTools(reg, setup.WorkDir, setup.Config, approve)
+	if previewRuntime != nil {
+		defer previewRuntime.Close()
+	}
 	baseReg := reg.Filter(nil)
 	inspectReg := buildInspectToolRegistry(baseReg)
 	loadedSkills := skills.Load(setup.WorkDir)
@@ -219,7 +224,7 @@ func RunChatLive(setup *ChatSetup) {
 	var kernel *harness.Runner
 
 	if useKernel {
-		kernel = harness.NewRunner(buildHarnessRunnerConfig(setup, a, baseReg, inspectReg, loadedSkills, workerAutoMode, approve))
+		kernel = harness.NewRunner(buildHarnessRunnerConfig(setup, a, baseReg, inspectReg, previewRuntime, loadedSkills, workerAutoMode, approve))
 	}
 
 	if setup.Config.Chat.Agents.Enabled && !useKernel {
@@ -461,7 +466,10 @@ func RunChatConsole(setup *ChatSetup) {
 
 	reg := tools.NewRegistry()
 	interactiveApprove := agent.InteractiveApproval(os.Stdin, os.Stdout)
-	registerTools(reg, setup.WorkDir, setup.Config, approve, interactiveApprove)
+	previewRuntime := registerTools(reg, setup.WorkDir, setup.Config, approve, interactiveApprove)
+	if previewRuntime != nil {
+		defer previewRuntime.Close()
+	}
 	baseReg := reg.Filter(nil)
 	inspectReg := buildInspectToolRegistry(baseReg)
 	loadedSkills := skills.Load(setup.WorkDir)
@@ -474,7 +482,7 @@ func RunChatConsole(setup *ChatSetup) {
 	var kernel *harness.Runner
 
 	if useKernel {
-		kernel = harness.NewRunner(buildHarnessRunnerConfig(setup, a, baseReg, inspectReg, loadedSkills, workerAutoMode, approve))
+		kernel = harness.NewRunner(buildHarnessRunnerConfig(setup, a, baseReg, inspectReg, previewRuntime, loadedSkills, workerAutoMode, approve))
 	}
 
 	if setup.Config.Chat.Agents.Enabled && !useKernel {
@@ -541,7 +549,7 @@ func useHarnessKernelRuntime() bool {
 	return !strings.EqualFold(mode, "legacy")
 }
 
-func buildHarnessRunnerConfig(setup *ChatSetup, a *agent.Agent, baseReg, inspectReg *tools.Registry, loadedSkills []skills.Skill, workerAutoMode string, approve tools.ApprovalFunc) harness.RunnerConfig {
+func buildHarnessRunnerConfig(setup *ChatSetup, a *agent.Agent, baseReg, inspectReg *tools.Registry, previewRuntime *tools.PreviewRuntime, loadedSkills []skills.Skill, workerAutoMode string, approve tools.ApprovalFunc) harness.RunnerConfig {
 	workDir := ""
 	if setup != nil {
 		workDir = setup.WorkDir
@@ -556,15 +564,19 @@ func buildHarnessRunnerConfig(setup *ChatSetup, a *agent.Agent, baseReg, inspect
 		Session: harness.NewSession(),
 		Trace:   harness.NewRecorder(),
 		Local: harness.AgentExecutor{
-			Agent:        a,
-			DefaultTools: baseReg,
-			InspectTools: inspectReg,
+			Agent:          a,
+			DefaultTools:   baseReg,
+			InspectTools:   inspectReg,
+			PreviewRuntime: previewRuntime,
 		},
 		StrictLocal: harness.StrictAgentExecutor{
-			Agent:        a,
-			DefaultTools: baseReg,
-			WorkDir:      workDir,
-			LoadedSkills: loadedSkills,
+			Agent:          a,
+			DefaultTools:   baseReg,
+			InspectTools:   inspectReg,
+			PreviewRuntime: previewRuntime,
+			WorkDir:        workDir,
+			LoadedSkills:   loadedSkills,
+			AutoSkillsMode: workerAutoMode,
 		},
 		Workers:        workers,
 		WorkerSkills:   loadedSkills,

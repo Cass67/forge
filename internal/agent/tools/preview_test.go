@@ -3,7 +3,10 @@ package tools
 import (
 	"context"
 	"io"
+	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -113,5 +116,36 @@ func TestPreviewServerEnsureReusesServerForSameRoot(t *testing.T) {
 	}
 	if secondPreview["reused"] != true {
 		t.Fatalf("expected reused server, got %#v", secondPreview)
+	}
+}
+
+func TestPreviewServerEnsureUsesRequestedPortFromJSONNumber(t *testing.T) {
+	dir := t.TempDir()
+	runtime := NewPreviewRuntime(dir, approveAll)
+	t.Cleanup(func() { _ = runtime.Close() })
+
+	if err := os.WriteFile(filepath.Join(dir, "themes_preview.html"), []byte("<html>preview</html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := NewPreviewServerEnsure(runtime).Execute(context.Background(), map[string]any{
+		"path": "themes_preview.html",
+		"port": float64(port),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := parseToolJSONResult(t, raw)
+	if got["port"] != float64(port) {
+		t.Fatalf("port = %#v, want %d", got["port"], port)
 	}
 }

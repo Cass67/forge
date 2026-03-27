@@ -63,6 +63,22 @@ var (
 	previewActionTokens = tokenSet(
 		"start", "launch", "open", "serve", "show", "restart", "see", "view",
 	)
+	previewReplayActionTokens = tokenSet(
+		"show", "open", "view", "see", "refresh", "reload", "restart", "reopen", "reshow",
+	)
+	previewThreadRevisionTokens = tokenSet(
+		"other", "others", "another", "different", "more", "less", "darker", "lighter", "brighter",
+		"color", "colors", "colour", "colours", "theme", "themes", "palette", "palettes",
+		"header", "headers", "highlight", "highlighting", "script", "name", "git", "diff",
+		"file", "files", "numeral", "numerals", "detection", "status", "statuses", "pass",
+		"fail", "iconography", "icon", "icons", "code", "box", "boxes", "graphics", "graphic",
+		"preview", "page", "web", "screen",
+	)
+	previewThreadRevisionVerbTokens = tokenSet(
+		"pick", "choose", "swap", "try", "use", "make", "fix", "adjust", "tweak",
+		"change", "add", "remove", "show", "apply", "keep",
+		"put", "render", "bring",
+	)
 	followUpPronouns = tokenSet(
 		"this", "that", "it", "they", "those", "these",
 	)
@@ -216,6 +232,20 @@ func Classify(turn UserTurn, session SessionState) Classification {
 		}
 		class.Reason = "planning follow-up"
 	}
+	if wantsRuntimeThreadActionFollowUp(lower, ordered, tokens, class, session) {
+		class.Family = FamilyImplement
+		class.WantsAction = true
+		class.IsFollowUp = true
+		class.CanStayLocal = true
+		class.Reason = "preview-thread action follow-up"
+	}
+	if wantsRuntimeThreadAnswerFollowUp(lower, ordered, tokens, class, session) {
+		class.IsFollowUp = true
+		class.CanStayLocal = true
+		if class.Reason == "default answer path" {
+			class.Reason = "preview-thread follow-up"
+		}
+	}
 	if wantsInterpretation(tokens, lower) && session.HasRecentEvidence() && !class.WantsAction {
 		class.WantsInterpretation = true
 		class.IsFollowUp = true
@@ -236,6 +266,9 @@ func Classify(turn UserTurn, session SessionState) Classification {
 	}
 	if class.Family == FamilyResearch && strings.TrimSpace(class.TopicKey) == "" {
 		class.TopicKey = session.LastEvidence.TopicKey
+	}
+	if !class.PrefersVisibleExecution && prefersVisibleExecutionFromRecentRuntimeState(class, session, lower, tokens, ordered) {
+		class.PrefersVisibleExecution = true
 	}
 	if strings.TrimSpace(class.TaskText) == "" {
 		class.TaskText = text
@@ -368,6 +401,9 @@ func canonicalizeClassifierToken(token string) string {
 }
 
 func withinClassifierTypoDistance(a, b string) bool {
+	if len(a) != len(b) && minInt(len(a), len(b)) < 5 {
+		return false
+	}
 	return withinEditDistanceOne(a, b) || withinAdjacentTransposition(a, b)
 }
 
@@ -392,6 +428,13 @@ func absInt(v int) int {
 		return -v
 	}
 	return v
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func containsAny(tokens, candidates map[string]struct{}) bool {
@@ -558,11 +601,52 @@ func wantsVisiblePreviewExecution(lower string, tokens map[string]struct{}) bool
 	mentionsPreviewTarget := containsAny(tokens, previewTokens) ||
 		strings.Contains(lower, "127.0.0.1") ||
 		strings.Contains(lower, "http://") ||
-		strings.Contains(lower, "https://")
+		strings.Contains(lower, "https://") ||
+		strings.Contains(lower, "web page") ||
+		strings.Contains(lower, "webpage") ||
+		strings.Contains(lower, "preview page")
 	requestsPreviewAction := containsAny(tokens, previewActionTokens) ||
 		strings.Contains(lower, "spin up") ||
 		strings.Contains(lower, "showing me")
 	return mentionsPreviewTarget && requestsPreviewAction
+}
+
+func prefersVisibleExecutionFromRecentRuntimeState(class Classification, session SessionState, lower string, tokens map[string]struct{}, ordered []string) bool {
+	if !hasRecentRuntimeThread(session) {
+		return false
+	}
+	if class.NeedsPolicyGuard || class.NeedsTerseAnswer || class.NeedsExternalSources || !class.CanStayLocal {
+		return false
+	}
+	if class.Family == FamilyResearch || class.Family == FamilyTransform {
+		return false
+	}
+	if topicMatchesRecentRuntimeState(class.TopicKey, session) {
+		return true
+	}
+	return looksLikeReferentialFollowUp(tokens, lower, ordered) ||
+		looksLikeContextualContinuation(lower) ||
+		looksLikeRuntimeReplayFollowUp(tokens, lower, ordered) ||
+		looksLikeRuntimeThreadRevision(lower, tokens, ordered) ||
+		looksLikeRuntimeThreadQuestion(lower, tokens, ordered)
+}
+
+func topicMatchesRecentRuntimeState(topicKey string, session SessionState) bool {
+	topicKey = strings.TrimSpace(topicKey)
+	if topicKey == "" {
+		return false
+	}
+	if session.HasRecentPreview() && topicKey == "path:"+filepath.Clean(session.LastPreview.Path) {
+		return true
+	}
+	if session.HasRecentArtifact() && topicKey == "path:"+filepath.Clean(session.LastArtifact.Path) {
+		return true
+	}
+	return false
+}
+
+func hasRecentRuntimeThread(session SessionState) bool {
+	return session.HasRecentPreview() || session.HasRecentArtifact()
 }
 
 func wantsVerification(scope requestScope, tokens map[string]struct{}, lower string) bool {
@@ -666,6 +750,32 @@ func wantsContextualActionFollowUp(lower string, ordered []string, tokens map[st
 	return looksLikeReferentialFollowUp(tokens, lower, ordered) || looksLikeContextualContinuation(lower)
 }
 
+func wantsRuntimeThreadActionFollowUp(lower string, ordered []string, tokens map[string]struct{}, class Classification, session SessionState) bool {
+	if !hasRecentRuntimeThread(session) {
+		return false
+	}
+	if class.NeedsPolicyGuard || class.NeedsTerseAnswer || class.NeedsExternalSources || !class.CanStayLocal {
+		return false
+	}
+	if class.Family == FamilyDebug || class.Family == FamilyResearch || class.Family == FamilyTransform {
+		return false
+	}
+	return looksLikeRuntimeThreadRevision(lower, tokens, ordered)
+}
+
+func wantsRuntimeThreadAnswerFollowUp(lower string, ordered []string, tokens map[string]struct{}, class Classification, session SessionState) bool {
+	if !hasRecentRuntimeThread(session) {
+		return false
+	}
+	if class.NeedsPolicyGuard || class.NeedsTerseAnswer || class.NeedsExternalSources || !class.CanStayLocal {
+		return false
+	}
+	if class.Family == FamilyDebug || class.Family == FamilyResearch || class.Family == FamilyTransform {
+		return false
+	}
+	return looksLikeRuntimeThreadQuestion(lower, tokens, ordered)
+}
+
 func wantsContextualPlanningFollowUp(lower string, ordered []string, tokens map[string]struct{}, class Classification, session SessionState) bool {
 	if !session.HasRecentEvidence() || strings.TrimSpace(session.LastEvidence.TopicKey) == "" {
 		return false
@@ -711,6 +821,72 @@ func looksLikeContextualContinuation(lower string) bool {
 	}
 	return strings.HasPrefix(trimmed, "what about ") ||
 		strings.HasPrefix(trimmed, "how about ")
+}
+
+func looksLikeRuntimeReplayFollowUp(tokens map[string]struct{}, lower string, ordered []string) bool {
+	if len(ordered) == 0 || len(ordered) > 8 {
+		return false
+	}
+	hasReplayCue := hasToken(tokens, "again") ||
+		hasToken(tokens, "back") ||
+		strings.Contains(lower, "one more time")
+	if !hasReplayCue {
+		return false
+	}
+	for _, token := range ordered {
+		if _, ok := previewReplayActionTokens[token]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeRuntimeThreadRevision(lower string, tokens map[string]struct{}, ordered []string) bool {
+	if len(ordered) == 0 || len(ordered) > 40 {
+		return false
+	}
+	if looksLikeRuntimeReplayFollowUp(tokens, lower, ordered) {
+		return false
+	}
+	if strings.Contains(lower, "don't like") || strings.Contains(lower, "dont like") {
+		if containsAny(tokens, decisionSupportTokens) || containsAny(tokens, previewThreadRevisionTokens) || hasToken(tokens, "no") {
+			return true
+		}
+	}
+	if strings.Contains(lower, "show on web page") ||
+		strings.Contains(lower, "show it on the web page") ||
+		(strings.Contains(lower, "web page") && containsAny(tokens, previewThreadRevisionTokens) && hasToken(tokens, "show")) {
+		return true
+	}
+	if (hasToken(tokens, "pick") || hasToken(tokens, "choose")) &&
+		(hasToken(tokens, "other") || hasToken(tokens, "others") || hasToken(tokens, "another") || hasToken(tokens, "different")) {
+		return true
+	}
+	if (hasToken(tokens, "more") || hasToken(tokens, "less")) && containsAny(tokens, previewThreadRevisionTokens) {
+		return true
+	}
+	if containsAny(tokens, previewThreadRevisionVerbTokens) && containsAny(tokens, previewThreadRevisionTokens) {
+		return true
+	}
+	if strings.Contains(lower, "no neon") || strings.Contains(lower, "no purple") {
+		return true
+	}
+	return false
+}
+
+func looksLikeRuntimeThreadQuestion(lower string, tokens map[string]struct{}, ordered []string) bool {
+	if len(ordered) == 0 || len(ordered) > 18 {
+		return false
+	}
+	if strings.Contains(lower, "still up") {
+		return true
+	}
+	if (strings.Contains(lower, "web page") || strings.Contains(lower, "webpage") || strings.Contains(lower, "preview page")) &&
+		(hasToken(tokens, "see") || hasToken(tokens, "show") || hasToken(tokens, "view") || hasToken(tokens, "open") ||
+			hasToken(tokens, "refresh") || hasToken(tokens, "reload") || hasToken(tokens, "restart")) {
+		return true
+	}
+	return looksLikeReferentialFollowUp(tokens, lower, ordered) || looksLikeRuntimeReplayFollowUp(tokens, lower, ordered)
 }
 
 func startsWithContinuationHeadToken(ordered []string) bool {

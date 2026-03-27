@@ -4,7 +4,7 @@ Forge is a terminal-first coding agent for local repositories.
 
 It has two primary modes:
 
-- `forge`: an interactive coding loop with tool use, provider switching, approvals, and optional multi-agent delegation
+- `forge`: an interactive coding loop with one visible `forge` assistant, host-owned tool/preview workflows, provider switching, approvals, and bounded hidden workers when the harness decides they help
 - `forge make`: the legacy writer/auditor pipeline for generating or iterating on code with batch-style passes
 
 Forge is designed to run against your local working tree, use multiple model providers, and keep the user in control of destructive actions.
@@ -16,7 +16,7 @@ Forge is optimized for local software work:
 - inspect and edit files in the current repository
 - run commands, tests, and git queries
 - switch models and providers without leaving the chat session
-- delegate work to specialist sub-agents when multi-agent mode is enabled
+- keep one coherent transcript while the harness optionally uses hidden reader/editor/verifier/researcher workers behind the scenes
 - run a separate legacy writer/auditor pipeline for iterative or prompt-driven code generation
 
 Forge is not a hosted SaaS or remote coding sandbox. It is a native local tool that acts on the repository you launch it in.
@@ -25,8 +25,8 @@ Forge is not a hosted SaaS or remote coding sandbox. It is a native local tool t
 
 - local coding agent with file, search, git, command, and web tools
 - provider-aware model routing across ChatGPT, Claude.ai, OpenAI, Anthropic, Copilot, and OpenAI-compatible backends
-- optional multi-agent delegation with `dispatch`, `scout`, `builder`, `doctor`, and `architect` roles
-- live chat TUI with model picker, provider picker, approvals, recent activity, and runtime stats
+- kernel-owned local/strict-local/worker orchestration with hidden bounded workers and host-managed skill context
+- live chat TUI with model picker, provider picker, approvals, recent activity, quiet progress updates, and runtime stats
 - pass-based improvement pipeline for correctness, refactor, security, and production-readiness work
 - session artifacts, summaries, audit logs, and usage tracking
 
@@ -64,7 +64,7 @@ Inside chat you can:
 - type a normal request, such as `fix the failing test in auth.go`
 - switch models with the model picker
 - switch providers or log in through the provider picker
-- enable multi-agent mode so `dispatch` can delegate to `scout`, `builder`, `doctor`, and `architect`
+- use `/trace` under `forge -d` when you need the advanced harness trace
 
 Common examples:
 
@@ -99,9 +99,6 @@ summarizer = "claude-haiku-4-5"
 [chat]
 model = "claude/claude-sonnet-4-6"
 last_model = "claude/claude-sonnet-4-6"
-
-[chat.agents]
-enabled = true
 ```
 
 Chat model startup precedence is:
@@ -247,7 +244,7 @@ flowchart LR
 - [BUILD.md](/Users/cass/git/forge/BUILD.md): local builds and cross-compilation
 - [CONTRIBUTING.md](/Users/cass/git/forge/CONTRIBUTING.md): contributor workflow and repo conventions
 - [LOCAL_TOOLING.md](/Users/cass/git/forge/LOCAL_TOOLING.md): local toolchain requirements for hooks
-- [docs/multi-agent.md](/Users/cass/git/forge/docs/multi-agent.md): older multi-agent design notes
+- [docs/multi-agent.md](/Users/cass/git/forge/docs/multi-agent.md): archived notes for the older visible multi-agent design
 
 ## Notes
 

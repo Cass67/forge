@@ -42,6 +42,13 @@ func NewEditFile(workDir string, approve ApprovalFunc) Tool {
 			content := string(data)
 			count := strings.Count(content, oldText)
 			if count == 0 {
+				if newText != "" {
+					if replacementCount := strings.Count(content, newText); replacementCount == 1 {
+						return fmt.Sprintf("edit_file skipped: requested replacement is already present in %s", path), nil
+					} else if replacementCount > 1 {
+						return fmt.Sprintf("edit_file skipped: requested replacement is already present %d times in %s", replacementCount, path), nil
+					}
+				}
 				return fmt.Sprintf("edit_file failed: old_text not found in %s", path), nil
 			}
 			if count > 1 {

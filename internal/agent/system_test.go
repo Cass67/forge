@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"forge/internal/agent/tools"
+	"forge/internal/skills"
 )
 
 func TestBuildSystemPrompt(t *testing.T) {
@@ -79,6 +80,29 @@ func TestBuildWorkerSystemPromptUsesStrictSingleToolContract(t *testing.T) {
 	}
 }
 
+func TestBuildWorkerSystemPromptUsesHostManagedSkillCatalog(t *testing.T) {
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{Name: "read_file", Description: "Read a file"})
+
+	prompt := BuildWorkerSystemPrompt("/home/user/project", reg, "reader", []skills.Skill{{
+		Name:        "brainstorming",
+		Description: "plan before implementation",
+	}})
+
+	if !strings.Contains(prompt, "Host-managed skill catalog") {
+		t.Fatalf("worker prompt missing host-managed skill catalog: %q", prompt)
+	}
+	if strings.Contains(prompt, "load its document through the runtime") {
+		t.Fatalf("worker prompt should not advertise self-service skill loading: %q", prompt)
+	}
+	if !strings.Contains(prompt, "The host decides whether to apply them for this turn") {
+		t.Fatalf("worker prompt missing host-owned skill instruction: %q", prompt)
+	}
+	if !strings.Contains(prompt, "Do not try to load skills yourself") {
+		t.Fatalf("worker prompt missing anti-loop skill instruction: %q", prompt)
+	}
+}
+
 func TestBuildStrictLocalSystemPromptUsesSingleToolContract(t *testing.T) {
 	reg := tools.NewRegistry()
 	reg.Register(tools.Tool{Name: "artifact_write", Description: "Write a tracked artifact"})
@@ -106,5 +130,32 @@ func TestBuildStrictLocalSystemPromptUsesSingleToolContract(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "Prefer artifact_write and preview_server_ensure") {
 		t.Error("strict local prompt should steer preview requests to host-owned tools")
+	}
+	if !strings.Contains(prompt, "preview_server_ensure already verifies the returned localhost URL") {
+		t.Error("strict local prompt should treat preview_server_ensure as the verified preview path")
+	}
+}
+
+func TestBuildStrictLocalSystemPromptUsesHostManagedSkillCatalog(t *testing.T) {
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{Name: "artifact_write", Description: "Write a tracked artifact"})
+	reg.Register(tools.Tool{Name: "preview_server_ensure", Description: "Ensure a localhost preview server"})
+
+	prompt := BuildStrictLocalSystemPrompt("/home/user/project", reg, []skills.Skill{{
+		Name:        "brainstorming",
+		Description: "plan before implementation",
+	}})
+
+	if !strings.Contains(prompt, "Host-managed skill catalog") {
+		t.Fatalf("strict-local prompt missing host-managed skill catalog: %q", prompt)
+	}
+	if strings.Contains(prompt, "load its document through the runtime") {
+		t.Fatalf("strict-local prompt should not advertise self-service skill loading: %q", prompt)
+	}
+	if !strings.Contains(prompt, "The host decides whether to apply them for this turn") {
+		t.Fatalf("strict-local prompt missing host-owned skill instruction: %q", prompt)
+	}
+	if !strings.Contains(prompt, "Do not try to load skills yourself") {
+		t.Fatalf("strict-local prompt missing anti-loop skill instruction: %q", prompt)
 	}
 }

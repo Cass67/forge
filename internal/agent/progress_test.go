@@ -14,6 +14,9 @@ func TestProgressLine(t *testing.T) {
 		{"builder", "run_command", "go build ./...", "running go build ./..."},
 		{"builder", "run_command", "very long command that exceeds the forty character limit here", "running very long command that exceeds the forty..."},
 		{"builder", "write_file", "/Users/x/new.go", "writing new.go"},
+		{"builder", "preview_server_ensure", "themes_preview.html", "starting the preview for themes_preview.html"},
+		{"builder", "preview_server_status", "", "checking the preview status"},
+		{"builder", "tool_help", "brainstorming", "checking available tools"},
 		{"dispatch", "delegate", "scout", "reviewing the repo"},
 		{"scout", "unknown_tool", "whatever", "working"},
 	}

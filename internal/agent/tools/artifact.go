@@ -14,16 +14,18 @@ import (
 )
 
 type PreviewRuntime struct {
-	mu        sync.Mutex
-	workDir   string
-	approve   ApprovalFunc
-	nextID    int
-	artifacts map[string]artifactRecord
-	server    *http.Server
-	listener  net.Listener
-	root      string
-	port      int
-	lastPath  string
+	mu                sync.Mutex
+	workDir           string
+	approve           ApprovalFunc
+	nextID            int
+	artifacts         map[string]artifactRecord
+	lastArtifact      string
+	server            *http.Server
+	listener          net.Listener
+	root              string
+	port              int
+	lastPath          string
+	lastPreviewHandle string
 }
 
 type artifactRecord struct {
@@ -34,11 +36,19 @@ type artifactRecord struct {
 	Bytes    int
 }
 
-type artifactWriteResult struct {
+type ArtifactMetadata struct {
 	Handle   string `json:"handle"`
 	Path     string `json:"path"`
 	MIMEType string `json:"mime_type"`
 	Bytes    int    `json:"bytes"`
+}
+
+type artifactReadResult struct {
+	Handle   string `json:"handle"`
+	Path     string `json:"path"`
+	MIMEType string `json:"mime_type"`
+	Bytes    int    `json:"bytes"`
+	Content  string `json:"content"`
 }
 
 func NewPreviewRuntime(workDir string, approve ApprovalFunc) *PreviewRuntime {
@@ -65,6 +75,7 @@ func (r *PreviewRuntime) Close() error {
 	r.root = ""
 	r.port = 0
 	r.lastPath = ""
+	r.lastPreviewHandle = ""
 	return closeErr
 }
 
@@ -82,6 +93,7 @@ func (r *PreviewRuntime) recordArtifact(path, absPath, mimeType string, size int
 		Bytes:    size,
 	}
 	r.artifacts[handle] = record
+	r.lastArtifact = handle
 	return record
 }
 
@@ -91,6 +103,22 @@ func (r *PreviewRuntime) artifactByHandle(handle string) (artifactRecord, bool) 
 
 	record, ok := r.artifacts[strings.TrimSpace(handle)]
 	return record, ok
+}
+
+func (r *PreviewRuntime) LastArtifactMetadata() (ArtifactMetadata, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	record, ok := r.artifacts[strings.TrimSpace(r.lastArtifact)]
+	if !ok {
+		return ArtifactMetadata{}, false
+	}
+	return ArtifactMetadata{
+		Handle:   record.Handle,
+		Path:     record.Path,
+		MIMEType: record.MIMEType,
+		Bytes:    record.Bytes,
+	}, true
 }
 
 func NewArtifactWrite(runtime *PreviewRuntime) Tool {
@@ -168,11 +196,45 @@ func NewArtifactWrite(runtime *PreviewRuntime) Tool {
 			}
 
 			record := runtime.recordArtifact(path, resolved, mimeType, len(content))
-			return encodeToolJSON(artifactWriteResult{
+			return encodeToolJSON(ArtifactMetadata{
 				Handle:   record.Handle,
 				Path:     record.Path,
 				MIMEType: record.MIMEType,
 				Bytes:    record.Bytes,
+			})
+		},
+	}
+}
+
+func NewArtifactRead(runtime *PreviewRuntime) Tool {
+	return Tool{
+		Name:        "artifact_read",
+		Description: "Read a tracked artifact by handle.",
+		Parameters: []ParameterDef{
+			{Name: "handle", Type: "string", Description: "artifact handle returned by artifact_write", Required: true},
+		},
+		AutoApprove: true,
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			_ = ctx
+			if runtime == nil {
+				return "", fmt.Errorf("preview runtime unavailable")
+			}
+
+			handle, _ := args["handle"].(string)
+			record, ok := runtime.artifactByHandle(handle)
+			if !ok {
+				return "", fmt.Errorf("unknown artifact handle %q", handle)
+			}
+			content, err := os.ReadFile(record.AbsPath)
+			if err != nil {
+				return "", fmt.Errorf("read artifact: %w", err)
+			}
+			return encodeToolJSON(artifactReadResult{
+				Handle:   record.Handle,
+				Path:     record.Path,
+				MIMEType: record.MIMEType,
+				Bytes:    record.Bytes,
+				Content:  string(content),
 			})
 		},
 	}
