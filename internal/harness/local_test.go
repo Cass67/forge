@@ -283,3 +283,43 @@ func TestAgentExecutorFollowUpAnswerPromptIncludesRecentContext(t *testing.T) {
 		t.Fatalf("follow-up answer prompt missing prior answer summary: %q", msg)
 	}
 }
+
+func TestAgentExecutorPlanningFollowUpAnswerPromptRequestsGroundedPlan(t *testing.T) {
+	defaultTools := tools.NewRegistry()
+	inspectTools := tools.NewRegistry()
+	agent := &stubScopedAgent{response: "Start with tests around service/main.py."}
+	exec := AgentExecutor{
+		Agent:        agent,
+		DefaultTools: defaultTools,
+		InspectTools: inspectTools,
+	}
+
+	_, err := exec.Execute(context.Background(), UserTurn{Text: "make a plan for improvements"}, Classification{
+		Family:     FamilyAnswer,
+		IsFollowUp: true,
+		TopicKey:   "workspace:repository",
+	}, SessionState{
+		Turn: 2,
+		LastEvidence: EvidenceSnapshot{
+			Turn:     1,
+			TopicKey: "workspace:repository",
+			Summary:  "Top improvement areas are stronger pre-commit hygiene and better test coverage around the service entrypoint.",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.runMessages) != 1 {
+		t.Fatalf("run messages = %d", len(agent.runMessages))
+	}
+	msg := agent.runMessages[0]
+	if !strings.Contains(msg, "RECENT CONTEXT:") {
+		t.Fatalf("planning follow-up prompt missing recent context: %q", msg)
+	}
+	if !strings.Contains(msg, "Top improvement areas are stronger pre-commit hygiene") {
+		t.Fatalf("planning follow-up prompt missing recent evidence summary: %q", msg)
+	}
+	if !strings.Contains(msg, "ground the answer in the recent evidence above") {
+		t.Fatalf("planning follow-up prompt missing grounded-plan guidance: %q", msg)
+	}
+}

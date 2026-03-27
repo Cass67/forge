@@ -353,7 +353,7 @@ func inferPendingReviewAction(turn UserTurn, class Classification) PendingAction
 
 func inferPendingInspectOffer(turn UserTurn, class Classification, obs Observation) PendingAction {
 	if obs.Status != ObservationComplete ||
-		class.Family != FamilyAnswer ||
+		(class.Family != FamilyAnswer && class.Family != FamilyInspect) ||
 		class.NeedsPolicyGuard ||
 		class.NeedsTerseAnswer ||
 		class.WantsAction ||
@@ -395,11 +395,25 @@ func looksLikeAssistantOffer(lower string) bool {
 }
 
 func mentionsInspectOffer(lower string, tokens map[string]struct{}) bool {
-	if hasToken(tokens, "inspect") || hasToken(tokens, "check") || hasToken(tokens, "review") ||
-		hasToken(tokens, "examine") || hasToken(tokens, "read") {
-		return true
+	for token := range tokens {
+		if hasInspectOfferStem(token) {
+			return true
+		}
 	}
 	return strings.Contains(lower, "look at") || strings.Contains(lower, "go over")
+}
+
+func hasInspectOfferStem(token string) bool {
+	switch {
+	case strings.HasPrefix(token, "inspect"),
+		strings.HasPrefix(token, "check"),
+		strings.HasPrefix(token, "review"),
+		strings.HasPrefix(token, "examin"),
+		strings.HasPrefix(token, "read"):
+		return true
+	default:
+		return false
+	}
 }
 
 func resolvePendingInspectOfferTopic(turn UserTurn, class Classification, response string) string {
