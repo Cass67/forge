@@ -3898,6 +3898,98 @@ func TestStrictLocalRepeatedArtifactWriteFailsClosedBeforeMaxTurnLoop(t *testing
 	}
 }
 
+func TestStrictLocalRepeatedPreviewArtifactRewriteVariantsGetConvergenceNudge(t *testing.T) {
+	driver := &inspectingDriver{
+		checks: []func([]llm.Message) error{
+			nil,
+			nil,
+			func(messages []llm.Message) error {
+				joined := ""
+				for _, msg := range messages {
+					joined += msg.Content + "\n"
+				}
+				lower := strings.ToLower(joined)
+				if !strings.Contains(lower, "preview artifact") && !strings.Contains(lower, "stop iterating blindly") {
+					return fmt.Errorf("expected preview-churn convergence nudge, got %q", joined)
+				}
+				return nil
+			},
+		},
+		responses: []string{
+			"<tool_call>\n{\"name\":\"artifact_write\",\"args\":{\"path\":\"preview/forge-themes-mockup.html\",\"content\":\"<html>theme-a</html>\",\"mime_type\":\"text/html\"}}\n</tool_call>",
+			"<tool_call>\n{\"name\":\"artifact_write\",\"args\":{\"path\":\"preview/forge-themes-mockup.html\",\"content\":\"<html>theme-b</html>\",\"mime_type\":\"text/html\"}}\n</tool_call>",
+			"<tool_call>\n{\"name\":\"preview_server_ensure\",\"args\":{\"path\":\"preview/forge-themes-mockup.html\"}}\n</tool_call>",
+			"Preview updated at http://127.0.0.1:4173/forge-themes-mockup.html",
+		},
+	}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{
+		Name:        "artifact_write",
+		Description: "Write a tracked artifact",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			_ = ctx
+			_ = args
+			return `{"handle":"artifact-1","path":"preview/forge-themes-mockup.html","mime_type":"text/html","bytes":22}`, nil
+		},
+	})
+	reg.Register(tools.Tool{
+		Name:        "preview_server_ensure",
+		Description: "Ensure preview server",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			_ = ctx
+			_ = args
+			return `{"status":"live","path":"preview/forge-themes-mockup.html","port":4173,"url":"http://127.0.0.1:4173/forge-themes-mockup.html","reused":true}`, nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	agent := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 8, renderer, nil, nil)
+	agent.SetRole("strictlocal")
+	agent.SetSystem(BuildStrictLocalSystemPrompt(t.TempDir(), reg, nil))
+
+	if err := agent.Run(context.Background(), "show me a revised eclipse mockup"); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callIdx != 4 {
+		t.Fatalf("expected strict local run to recover after convergence nudge, got %d driver calls", driver.callIdx)
+	}
+	if !strings.Contains(output.String(), "Preview updated at http://127.0.0.1:4173/forge-themes-mockup.html") {
+		t.Fatalf("final output missing preview confirmation: %q", output.String())
+	}
+}
+
+func TestStrictLocalRepeatedPreviewArtifactRewriteVariantsFailClosed(t *testing.T) {
+	driver := &mockDriver{responses: []string{
+		"<tool_call>\n{\"name\":\"artifact_write\",\"args\":{\"path\":\"preview/forge-themes-mockup.html\",\"content\":\"<html>theme-a</html>\",\"mime_type\":\"text/html\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\":\"artifact_write\",\"args\":{\"path\":\"preview/forge-themes-mockup.html\",\"content\":\"<html>theme-b</html>\",\"mime_type\":\"text/html\"}}\n</tool_call>",
+		"<tool_call>\n{\"name\":\"artifact_write\",\"args\":{\"path\":\"preview/forge-themes-mockup.html\",\"content\":\"<html>theme-c</html>\",\"mime_type\":\"text/html\"}}\n</tool_call>",
+	}}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{
+		Name:        "artifact_write",
+		Description: "Write a tracked artifact",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			_ = ctx
+			_ = args
+			return `{"handle":"artifact-1","path":"preview/forge-themes-mockup.html","mime_type":"text/html","bytes":22}`, nil
+		},
+	})
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	agent := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 8, renderer, nil, nil)
+	agent.SetRole("strictlocal")
+	agent.SetSystem(BuildStrictLocalSystemPrompt(t.TempDir(), reg, nil))
+
+	err := agent.Run(context.Background(), "show me a revised eclipse mockup")
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "preview artifact") {
+		t.Fatalf("expected repeated preview artifact rewrite loop to fail closed, got %v", err)
+	}
+}
+
 func TestAgentRunDoesNotTruncateDelegateResult(t *testing.T) {
 	driver := &mockDriver{responses: []string{
 		"<tool_call>\n{\"name\": \"delegate\", \"args\": {\"role\": \"scout\", \"task\": \"review repo\"}}\n</tool_call>",
