@@ -7,7 +7,7 @@ import (
 )
 
 func TestChatThemeLookupSupportsNamedThemes(t *testing.T) {
-	names := []string{"default", "low", "light", "dusk"}
+	names := []string{"default", "low", "light", "dusk", "eclipse"}
 	for _, name := range names {
 		if _, ok := lookupChatTheme(name); !ok {
 			t.Fatalf("missing theme %q", name)
