@@ -42,6 +42,7 @@ func (r *EventRenderer) AgentText(text string) {
 
 func (r *EventRenderer) ToolCall(name, summary string) {
 	r.events <- llm.Event{Kind: llm.EventToolCall, Agent: name, Text: summary}
+	r.events <- llm.Event{Kind: llm.EventProgress, Agent: r.label, Text: progressLine(r.label, name, summary)}
 }
 
 func (r *EventRenderer) ToolResult(name, output, diff string, isError bool) {
@@ -68,6 +69,10 @@ func (r *EventRenderer) Error(msg string) {
 
 func (r *EventRenderer) Info(msg string) {
 	r.events <- llm.Event{Kind: llm.EventToolCall, Agent: "runtime", Text: msg}
+}
+
+func (r *EventRenderer) Progress(msg string) {
+	r.events <- llm.Event{Kind: llm.EventProgress, Agent: r.label, Text: msg}
 }
 
 // TurnDone signals the agent finished processing a user message.
@@ -161,4 +166,8 @@ func (r *SubAgentRenderer) Error(msg string) {
 
 func (r *SubAgentRenderer) Info(msg string) {
 	r.parent.events <- llm.Event{Kind: llm.EventToolCall, Agent: "runtime", Text: msg, SubAgent: r.role}
+}
+
+func (r *SubAgentRenderer) Progress(msg string) {
+	r.parent.events <- llm.Event{Kind: llm.EventProgress, Agent: r.role, Text: msg, SubAgent: r.role}
 }

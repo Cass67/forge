@@ -38,6 +38,7 @@ func (silentRenderTarget) ToolResult(string, string, string, bool) {}
 func (silentRenderTarget) Stats(time.Duration, llm.Usage)          {}
 func (silentRenderTarget) Error(string)                            {}
 func (silentRenderTarget) Info(string)                             {}
+func (silentRenderTarget) Progress(string)                         {}
 
 func (r spawnedSubAgentRenderer) AgentToken(text string) {}
 
@@ -61,6 +62,12 @@ func (r spawnedSubAgentRenderer) Error(msg string) {
 
 func (r spawnedSubAgentRenderer) Info(msg string) {
 	r.base.Info(msg)
+}
+
+func (r spawnedSubAgentRenderer) Progress(msg string) {
+	if progress, ok := r.base.(interface{ Progress(string) }); ok {
+		progress.Progress(msg)
+	}
 }
 
 // MultiAgentConfig holds the configuration for multi-agent delegation.

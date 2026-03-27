@@ -77,7 +77,7 @@ func BuildWorkerSystemPrompt(workDir string, registry *tools.Registry, kind stri
 	sb.WriteString("- Do not ask the user or parent runtime for information until your allowed tools are exhausted.\n")
 	sb.WriteString("- No planning, no narration, no conversational filler.\n")
 
-	if skillsDesc := workerSkillsPrompt(loadedSkills); skillsDesc != "" {
+	if skillsDesc := hostManagedSkillsPrompt(loadedSkills); skillsDesc != "" {
 		sb.WriteString("\n\n")
 		sb.WriteString(skillsDesc)
 	}
@@ -108,17 +108,30 @@ func BuildStrictLocalSystemPrompt(workDir string, registry *tools.Registry, load
 	sb.WriteString("- Final turn must be plain user-facing text only.\n")
 	sb.WriteString("- Never mix a tool call with status text, narration, or prose in the same response.\n")
 	sb.WriteString("- Wait for tool results before deciding what to do next.\n")
-	sb.WriteString("- Prefer artifact_write and preview_server_ensure for previewable artifacts instead of shelling out to create ad hoc servers.\n")
-	sb.WriteString("- Use preview_server_status to confirm whether a preview is already live before claiming it is available.\n")
-	sb.WriteString("- Do not claim a preview, server, URL, or file is ready unless tool results in this turn confirm it.\n")
+	if registryHasTool(registry, "artifact_write") && registryHasTool(registry, "preview_server_ensure") {
+		sb.WriteString("- Prefer artifact_write and preview_server_ensure for previewable artifacts instead of shelling out to create ad hoc servers.\n")
+		sb.WriteString("- preview_server_ensure already verifies the returned localhost URL; do not shell out just to confirm the same preview again unless the host-owned preview tools fail.\n")
+	}
+	if registryHasTool(registry, "preview_server_status") {
+		sb.WriteString("- Use preview_server_status to confirm whether a preview is already live before claiming it is available.\n")
+		sb.WriteString("- Do not claim a preview, server, URL, or file is ready unless tool results in this turn confirm it.\n")
+	}
 	sb.WriteString("- Keep going until you have a concrete preview, artifact, or blocker.\n")
 
-	if skillsDesc := workerSkillsPrompt(loadedSkills); skillsDesc != "" {
+	if skillsDesc := hostManagedSkillsPrompt(loadedSkills); skillsDesc != "" {
 		sb.WriteString("\n\n")
 		sb.WriteString(skillsDesc)
 	}
 
 	return sb.String()
+}
+
+func registryHasTool(registry *tools.Registry, name string) bool {
+	if registry == nil {
+		return false
+	}
+	_, ok := registry.Get(strings.TrimSpace(name))
+	return ok
 }
 
 func WorkerInstructionBlock(kind string) string {
@@ -174,18 +187,20 @@ Rules:
 	}
 }
 
-func workerSkillsPrompt(loadedSkills []skills.Skill) string {
+func hostManagedSkillsPrompt(loadedSkills []skills.Skill) string {
 	descriptors := skills.Descriptors(loadedSkills)
 	if len(descriptors) == 0 {
 		return ""
 	}
 
 	var sb strings.Builder
-	sb.WriteString("Available runtime skills:\n")
+	sb.WriteString("Host-managed skill catalog:\n")
 	for _, d := range descriptors {
 		fmt.Fprintf(&sb, "  - %s: %s\n", d.Name, d.Description)
 	}
-	sb.WriteString("When a skill applies, load its document through the runtime and follow it as instructions.\n")
+	sb.WriteString("The host decides whether to apply them for this turn.\n")
+	sb.WriteString("If the host injects a skill, it will appear as a [Skill: ...] message in the conversation history; follow it as instructions.\n")
+	sb.WriteString("Do not try to load skills yourself, ask tool_help for skills, or wait for a skill tool.\n")
 	sb.WriteString("Do not treat skill names or slash forms as shell commands or external binaries.\n")
 	return strings.TrimSpace(sb.String())
 }

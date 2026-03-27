@@ -15,6 +15,7 @@ import (
 
 type previewServerResult struct {
 	Status string `json:"status"`
+	Handle string `json:"handle,omitempty"`
 	Root   string `json:"root,omitempty"`
 	Path   string `json:"path,omitempty"`
 	Port   int    `json:"port,omitempty"`
@@ -37,11 +38,14 @@ func NewPreviewServerEnsure(runtime *PreviewRuntime) Tool {
 				return "", fmt.Errorf("preview runtime unavailable")
 			}
 
-			targetPath, root, err := runtime.resolvePreviewTarget(args)
+			targetPath, root, handle, err := runtime.resolvePreviewTarget(args)
 			if err != nil {
 				return "", err
 			}
-			port, _ := args["port"].(int)
+			port, err := optionalIntArg(args["port"])
+			if err != nil {
+				return "", err
+			}
 
 			actualPort, reused, err := runtime.ensurePreviewServer(root, port)
 			if err != nil {
@@ -53,9 +57,10 @@ func NewPreviewServerEnsure(runtime *PreviewRuntime) Tool {
 				return "", err
 			}
 
-			runtime.setLastPreviewPath(targetPath)
+			runtime.setLastPreviewPath(targetPath, handle)
 			return encodeToolJSON(previewServerResult{
 				Status: "live",
+				Handle: handle,
 				Root:   runtime.displayPath(root),
 				Path:   runtime.displayPath(filepath.Join(root, filepath.FromSlash(targetPath))),
 				Port:   actualPort,
@@ -77,38 +82,38 @@ func NewPreviewServerStatus(runtime *PreviewRuntime) Tool {
 			if runtime == nil {
 				return "", fmt.Errorf("preview runtime unavailable")
 			}
-			return encodeToolJSON(runtime.previewStatus())
+			return encodeToolJSON(runtime.PreviewStatus())
 		},
 	}
 }
 
-func (r *PreviewRuntime) resolvePreviewTarget(args map[string]any) (string, string, error) {
+func (r *PreviewRuntime) resolvePreviewTarget(args map[string]any) (string, string, string, error) {
 	handle, _ := args["handle"].(string)
 	if strings.TrimSpace(handle) != "" {
 		record, ok := r.artifactByHandle(handle)
 		if !ok {
-			return "", "", fmt.Errorf("unknown artifact handle %q", handle)
+			return "", "", "", fmt.Errorf("unknown artifact handle %q", handle)
 		}
 		targetPath := filepath.Base(record.AbsPath)
-		return filepath.ToSlash(targetPath), filepath.Dir(record.AbsPath), nil
+		return filepath.ToSlash(targetPath), filepath.Dir(record.AbsPath), record.Handle, nil
 	}
 
 	pathArg, _ := args["path"].(string)
 	if strings.TrimSpace(pathArg) == "" {
-		return "", "", fmt.Errorf("preview_server_ensure requires handle or path")
+		return "", "", "", fmt.Errorf("preview_server_ensure requires handle or path")
 	}
 	resolved, err := ResolvePath(r.workDir, pathArg)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	info, err := os.Stat(resolved)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	if info.IsDir() {
-		return "", resolved, nil
+		return "", resolved, "", nil
 	}
-	return filepath.ToSlash(filepath.Base(resolved)), filepath.Dir(resolved), nil
+	return filepath.ToSlash(filepath.Base(resolved)), filepath.Dir(resolved), "", nil
 }
 
 func (r *PreviewRuntime) ensurePreviewServer(root string, requestedPort int) (int, bool, error) {
@@ -149,13 +154,14 @@ func (r *PreviewRuntime) ensurePreviewServer(root string, requestedPort int) (in
 	return r.port, false, nil
 }
 
-func (r *PreviewRuntime) setLastPreviewPath(targetPath string) {
+func (r *PreviewRuntime) setLastPreviewPath(targetPath, handle string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.lastPath = targetPath
+	r.lastPreviewHandle = strings.TrimSpace(handle)
 }
 
-func (r *PreviewRuntime) previewStatus() previewServerResult {
+func (r *PreviewRuntime) PreviewStatus() previewServerResult {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -165,6 +171,7 @@ func (r *PreviewRuntime) previewStatus() previewServerResult {
 
 	return previewServerResult{
 		Status: "live",
+		Handle: r.lastPreviewHandle,
 		Root:   r.displayPath(r.root),
 		Path:   r.displayPath(filepath.Join(r.root, filepath.FromSlash(r.lastPath))),
 		Port:   r.port,
@@ -209,4 +216,21 @@ func verifyPreviewURL(ctx context.Context, target string) error {
 		return fmt.Errorf("preview returned %s", resp.Status)
 	}
 	return nil
+}
+
+func optionalIntArg(raw any) (int, error) {
+	switch value := raw.(type) {
+	case nil:
+		return 0, nil
+	case int:
+		return value, nil
+	case int32:
+		return int(value), nil
+	case int64:
+		return int(value), nil
+	case float64:
+		return int(value), nil
+	default:
+		return 0, fmt.Errorf("expected numeric port, got %T", raw)
+	}
 }

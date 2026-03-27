@@ -21,12 +21,25 @@ func progressLine(role, toolName, summary string) string {
 		return fmt.Sprintf("editing %s", filepath.Base(summary))
 	case "write_file":
 		return fmt.Sprintf("writing %s", filepath.Base(summary))
+	case "artifact_write":
+		return fmt.Sprintf("writing %s", filepath.Base(summary))
+	case "artifact_read":
+		return fmt.Sprintf("reading %s", filepath.Base(summary))
+	case "preview_server_ensure":
+		if strings.TrimSpace(summary) == "" {
+			return "starting the preview"
+		}
+		return fmt.Sprintf("starting the preview for %s", filepath.Base(summary))
+	case "preview_server_status":
+		return "checking the preview status"
 	case "run_command":
 		cmd := summary
 		if len(cmd) > 40 {
 			cmd = cmd[:40] + "..."
 		}
 		return fmt.Sprintf("running %s", cmd)
+	case "tool_help":
+		return "checking available tools"
 	case "delegate":
 		return delegateProgressLine(summary)
 	default:

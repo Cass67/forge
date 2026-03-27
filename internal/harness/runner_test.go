@@ -219,6 +219,81 @@ func TestRunnerVisibleCollaborationUsesStrictLocalStep(t *testing.T) {
 	}
 }
 
+func TestRunnerPreviewThreadModificationFollowUpsUseStrictLocalStep(t *testing.T) {
+	local := &stubLocalExecutor{}
+	strictLocal := &stubLocalExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Response: "Updated the preview thread.",
+			Summary:  "preview thread updated",
+			Runtime: LocalRuntimeSnapshot{
+				Artifact: ArtifactSnapshot{
+					Handle:   "artifact-2",
+					Path:     "themes_preview.html",
+					MIMEType: "text/html",
+					Bytes:    4096,
+				},
+				Preview: PreviewSnapshot{
+					Status: "live",
+					Path:   "themes_preview.html",
+					Port:   4173,
+					URL:    "http://127.0.0.1:4173/themes_preview.html",
+				},
+			},
+		},
+	}
+	worker := &stubWorkerExecutor{}
+	session := NewSession()
+	_ = session.BeginTurn("start the preview")
+	session.Apply(Classification{
+		Family:                  FamilyImplement,
+		PrefersVisibleExecution: true,
+	}, Observation{
+		Status:   ObservationComplete,
+		Response: "Preview is live with the Obsidian mockup at http://127.0.0.1:4173/themes_preview.html.",
+		Runtime: LocalRuntimeSnapshot{
+			Artifact: ArtifactSnapshot{
+				Handle:   "artifact-1",
+				Path:     "themes_preview.html",
+				MIMEType: "text/html",
+				Bytes:    2048,
+			},
+			Preview: PreviewSnapshot{
+				Status: "live",
+				Path:   "themes_preview.html",
+				Port:   4173,
+				URL:    "http://127.0.0.1:4173/themes_preview.html",
+			},
+		},
+	})
+
+	result, err := NewRunner(RunnerConfig{
+		Session:     session,
+		Trace:       NewRecorder(),
+		Local:       local,
+		StrictLocal: strictLocal,
+		Workers:     worker,
+	}).Run(context.Background(), "more colors on git diff and file/numeral detection")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Step.Kind != StepStrictLocal || result.Step.Worker != WorkerNone {
+		t.Fatalf("step = %#v, class = %#v", result.Step, result.Classification)
+	}
+	if strictLocal.calls != 1 {
+		t.Fatalf("strict local calls = %d", strictLocal.calls)
+	}
+	if worker.calls != 0 {
+		t.Fatalf("worker should not have been used, got %d calls", worker.calls)
+	}
+	if local.calls != 0 {
+		t.Fatalf("local should not have been used, got %d calls", local.calls)
+	}
+	if result.Classification.Family != FamilyImplement || !result.Classification.IsFollowUp {
+		t.Fatalf("classification = %#v", result.Classification)
+	}
+}
+
 func TestRunnerImplementationUsesEditorWorkerWhenConfigured(t *testing.T) {
 	local := &stubLocalExecutor{}
 	worker := &stubWorkerExecutor{

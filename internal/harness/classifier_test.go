@@ -171,6 +171,111 @@ func TestClassifyWebServicePreviewFollowUpPrefersVisibleExecution(t *testing.T) 
 	}
 }
 
+func TestClassifyPreviewThreadModificationFollowUpsStayVisible(t *testing.T) {
+	session := SessionState{
+		Turn:         2,
+		LastResponse: "Preview is live with the Obsidian mockup at http://127.0.0.1:4173/themes_preview.html.",
+		LastArtifact: ArtifactSnapshot{
+			Turn:     1,
+			Handle:   "artifact-1",
+			Path:     "themes_preview.html",
+			MIMEType: "text/html",
+			Bytes:    2048,
+		},
+		LastPreview: PreviewSnapshot{
+			Turn:   1,
+			Status: "live",
+			Path:   "themes_preview.html",
+			Port:   4173,
+			URL:    "http://127.0.0.1:4173/themes_preview.html",
+		},
+	}
+
+	cases := []struct {
+		input      string
+		wantFamily RequestFamily
+	}{
+		{input: "dont like those, pick 3 others, no neon", wantFamily: FamilyImplement},
+		{input: "put that on the web page", wantFamily: FamilyImplement},
+		{input: "ok i like Obsidian, now show me what you will do with graphics for status updates,fail or pass results, general iconography, code boxes, git output etc .. show on web page", wantFamily: FamilyImplement},
+		{input: "more colors on git diff and file/numeral detection", wantFamily: FamilyImplement},
+		{input: "can i see this on the web page", wantFamily: FamilyAnswer},
+	}
+
+	for _, tc := range cases {
+		got := Classify(UserTurn{Text: tc.input}, session)
+		if got.Family != tc.wantFamily {
+			t.Fatalf("%q family = %q, want %q", tc.input, got.Family, tc.wantFamily)
+		}
+		if !got.PrefersVisibleExecution {
+			t.Fatalf("%q expected visible execution preference: %#v", tc.input, got)
+		}
+		if !got.IsFollowUp {
+			t.Fatalf("%q expected follow-up classification: %#v", tc.input, got)
+		}
+		step := Plan(got, session)
+		if step.Kind != StepStrictLocal || step.Worker != WorkerNone {
+			t.Fatalf("%q step = %#v", tc.input, step)
+		}
+	}
+}
+
+func TestClassifyPreviewThreadReplayFollowUpsStayVisible(t *testing.T) {
+	session := SessionState{
+		Turn:         2,
+		LastResponse: "Preview is live with the Obsidian mockup at http://127.0.0.1:4173/themes_preview.html.",
+		LastArtifact: ArtifactSnapshot{
+			Turn:     1,
+			Handle:   "artifact-1",
+			Path:     "themes_preview.html",
+			MIMEType: "text/html",
+			Bytes:    2048,
+		},
+		LastPreview: PreviewSnapshot{
+			Turn:   1,
+			Status: "live",
+			Path:   "themes_preview.html",
+			Port:   4173,
+			URL:    "http://127.0.0.1:4173/themes_preview.html",
+		},
+	}
+
+	for _, input := range []string{
+		"can i see this on the web page",
+		"can i see this on the webpage",
+		"show it on the web page again",
+		"open the preview again",
+		"refresh the preview page",
+		"is it still up on the web page",
+	} {
+		got := Classify(UserTurn{Text: input}, session)
+		if got.Family != FamilyAnswer {
+			t.Fatalf("%q family = %q, want %q", input, got.Family, FamilyAnswer)
+		}
+		if !got.PrefersVisibleExecution {
+			t.Fatalf("%q expected visible execution preference: %#v", input, got)
+		}
+		if !got.IsFollowUp {
+			t.Fatalf("%q expected follow-up classification: %#v", input, got)
+		}
+		if got.TopicKey != "" {
+			t.Fatalf("%q topic = %q", input, got.TopicKey)
+		}
+		step := Plan(got, session)
+		if step.Kind != StepStrictLocal || step.Worker != WorkerNone {
+			t.Fatalf("%q step = %#v", input, step)
+		}
+	}
+}
+
+func TestInferRequestScopeDoesNotTreatThreeAsDirectoryTree(t *testing.T) {
+	lower := "pick three others, no neon"
+	scope := inferRequestScope(lower, tokenize(lower))
+	if scope.Inspectable() {
+		t.Fatalf("scope = %#v", scope)
+	}
+}
+
 func TestClassifyShellPasteDoesNotCreateVersionPathTopic(t *testing.T) {
 	got := Classify(UserTurn{Text: "you sure ~ curl -v http://127.0.0.1:8080/themes_preview.html py3.14.3 12:17:42\r* Trying 127.0.0.1:8080...\r* connect to 127.0.0.1 port 8080 failed: Connection refused"}, SessionState{})
 	if got.TopicKey != "" {

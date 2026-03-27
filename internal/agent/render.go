@@ -103,6 +103,10 @@ func (r *Renderer) Info(msg string) {
 	fmt.Fprintln(r.out, format.LineToANSI(line, r.colors))
 }
 
+func (r *Renderer) Progress(msg string) {
+	r.Info(msg)
+}
+
 func (r *Renderer) Prompt() {
 	if r.colors {
 		fmt.Fprintf(r.out, "\n\033[1;32mforge>\033[0m ")

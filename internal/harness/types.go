@@ -117,6 +117,7 @@ type Observation struct {
 	Summary       string
 	TopicKey      string
 	Artifact      any
+	Runtime       LocalRuntimeSnapshot
 	PendingAction PendingAction
 	SkillUses     []skills.UseRecord
 	Err           error
@@ -147,6 +148,41 @@ type EvidenceSnapshot struct {
 	Turn     int
 	TopicKey string
 	Summary  string
+}
+
+type ArtifactSnapshot struct {
+	Turn     int
+	Handle   string
+	Path     string
+	MIMEType string
+	Bytes    int
+}
+
+func (a ArtifactSnapshot) IsZero() bool {
+	return a.Handle == "" && a.Path == "" && a.MIMEType == "" && a.Bytes == 0
+}
+
+type PreviewSnapshot struct {
+	Turn   int
+	Status string
+	Handle string
+	Root   string
+	Path   string
+	Port   int
+	URL    string
+}
+
+func (p PreviewSnapshot) IsZero() bool {
+	return p.Status == "" && p.Handle == "" && p.Root == "" && p.Path == "" && p.Port == 0 && p.URL == ""
+}
+
+type LocalRuntimeSnapshot struct {
+	Artifact ArtifactSnapshot
+	Preview  PreviewSnapshot
+}
+
+func (s LocalRuntimeSnapshot) IsZero() bool {
+	return s.Artifact.IsZero() && s.Preview.IsZero()
 }
 
 type PendingAction struct {
@@ -180,6 +216,8 @@ type SessionState struct {
 	LastTopicKey  string
 	LastResponse  string
 	LastEvidence  EvidenceSnapshot
+	LastArtifact  ArtifactSnapshot
+	LastPreview   PreviewSnapshot
 	PendingAction PendingAction
 	LastMeta      MetaIntent
 	LastMetaTurn  int
@@ -204,6 +242,20 @@ func (s SessionState) HasPendingAction() bool {
 		return false
 	}
 	return s.PendingAction.SetAtTurn >= s.Turn-1
+}
+
+func (s SessionState) HasRecentArtifact() bool {
+	if s.Turn <= 0 || s.LastArtifact.IsZero() || s.LastArtifact.Turn <= 0 {
+		return false
+	}
+	return s.LastArtifact.Turn >= s.Turn-1
+}
+
+func (s SessionState) HasRecentPreview() bool {
+	if s.Turn <= 0 || s.LastPreview.IsZero() || s.LastPreview.Turn <= 0 {
+		return false
+	}
+	return s.LastPreview.Turn >= s.Turn-1
 }
 
 type TraceRecord struct {
