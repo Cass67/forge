@@ -77,8 +77,11 @@ func TestStrictAgentExecutorUsesStrictSystemPromptAndRole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if obs.Response != "Preview is live." {
-		t.Fatalf("response = %q", obs.Response)
+	if obs.Status != ObservationBlocked {
+		t.Fatalf("status = %q", obs.Status)
+	}
+	if obs.Outcome.Kind != OutcomeRetry {
+		t.Fatalf("outcome = %#v", obs.Outcome)
 	}
 	if len(agent.systemValues) != 1 {
 		t.Fatalf("strict system values = %d", len(agent.systemValues))
@@ -165,11 +168,14 @@ func TestStrictAgentExecutorRejectsMalformedToolMarkup(t *testing.T) {
 		Family:                  FamilyAnswer,
 		PrefersVisibleExecution: true,
 	}, SessionState{})
-	if err == nil {
-		t.Fatal("expected strict executor to fail closed on malformed tool markup")
+	if err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
 	}
 	if obs.Status != ObservationBlocked {
 		t.Fatalf("status = %q", obs.Status)
+	}
+	if obs.Outcome.Kind != OutcomeRetry {
+		t.Fatalf("outcome = %#v", obs.Outcome)
 	}
 }
 
@@ -186,11 +192,14 @@ func TestStrictAgentExecutorRejectsProsePrefixedMalformedToolMarkup(t *testing.T
 		Family:                  FamilyAnswer,
 		PrefersVisibleExecution: true,
 	}, SessionState{})
-	if err == nil {
-		t.Fatal("expected strict executor to fail closed on prose-prefixed malformed tool markup")
+	if err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
 	}
 	if obs.Status != ObservationBlocked {
 		t.Fatalf("status = %q", obs.Status)
+	}
+	if obs.Outcome.Kind != OutcomeRetry {
+		t.Fatalf("outcome = %#v", obs.Outcome)
 	}
 }
 
@@ -198,7 +207,7 @@ func TestStrictAgentExecutorUsesInjectedSkillContext(t *testing.T) {
 	defaultTools := tools.NewRegistry()
 	defaultTools.Register(tools.Tool{Name: "read_file", Description: "read file"})
 
-	agent := &strictScopedAgent{response: "Designed the new preview."}
+	agent := &strictScopedAgent{response: "Designed the new status panel."}
 	exec := StrictAgentExecutor{
 		Agent:        agent,
 		DefaultTools: defaultTools,
@@ -211,7 +220,7 @@ func TestStrictAgentExecutorUsesInjectedSkillContext(t *testing.T) {
 		}},
 	}
 
-	obs, err := exec.Execute(context.Background(), UserTurn{Text: "design a new preview theme and show it on the page"}, Classification{
+	obs, err := exec.Execute(context.Background(), UserTurn{Text: "design a new release status panel and update me as you go"}, Classification{
 		Family:                  FamilyImplement,
 		PrefersVisibleExecution: true,
 	}, SessionState{})

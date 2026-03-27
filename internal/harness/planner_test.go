@@ -7,6 +7,9 @@ func TestPlanUsesReaderWorkerForPlainInspectTurns(t *testing.T) {
 	if step.Kind != StepWorker {
 		t.Fatalf("step = %#v", step)
 	}
+	if step.Lane != LaneWorkerSidecar {
+		t.Fatalf("lane = %q, want %q", step.Lane, LaneWorkerSidecar)
+	}
 	if step.Worker != WorkerReader {
 		t.Fatalf("worker = %q", step.Worker)
 	}
@@ -22,6 +25,9 @@ func TestPlanUsesEditorWorkerForImplementationTurns(t *testing.T) {
 	if step.Kind != StepWorker {
 		t.Fatalf("step = %#v", step)
 	}
+	if step.Lane != LaneWorkerSidecar {
+		t.Fatalf("lane = %q, want %q", step.Lane, LaneWorkerSidecar)
+	}
 	if step.Worker != WorkerEditor {
 		t.Fatalf("worker = %q", step.Worker)
 	}
@@ -35,6 +41,9 @@ func TestPlanKeepsCollaborativeIdeationPromptsOnMainPath(t *testing.T) {
 	step := Plan(class, SessionState{})
 	if step.Kind != StepStrictLocal || step.Worker != WorkerNone {
 		t.Fatalf("step = %#v, class = %#v", step, class)
+	}
+	if step.Lane != LaneStrictAction {
+		t.Fatalf("lane = %q, want %q", step.Lane, LaneStrictAction)
 	}
 }
 
@@ -59,6 +68,9 @@ func TestPlanKeepsPreviewFollowUpsOnStrictLocalPath(t *testing.T) {
 	if step.Kind != StepStrictLocal || step.Worker != WorkerNone {
 		t.Fatalf("step = %#v, class = %#v", step, class)
 	}
+	if step.Lane != LaneStrictAction {
+		t.Fatalf("lane = %q, want %q", step.Lane, LaneStrictAction)
+	}
 }
 
 func TestPlanKeepsReferentialPreviewTroubleshootingOnStrictLocalPath(t *testing.T) {
@@ -82,6 +94,9 @@ func TestPlanKeepsReferentialPreviewTroubleshootingOnStrictLocalPath(t *testing.
 	if step.Kind != StepStrictLocal || step.Worker != WorkerNone {
 		t.Fatalf("step = %#v, class = %#v", step, class)
 	}
+	if step.Lane != LaneStrictAction {
+		t.Fatalf("lane = %q, want %q", step.Lane, LaneStrictAction)
+	}
 }
 
 func TestPlanKeepsPreviewReplayFollowUpOnStrictLocalPath(t *testing.T) {
@@ -104,5 +119,8 @@ func TestPlanKeepsPreviewReplayFollowUpOnStrictLocalPath(t *testing.T) {
 	step := Plan(class, session)
 	if step.Kind != StepStrictLocal || step.Worker != WorkerNone {
 		t.Fatalf("step = %#v, class = %#v", step, class)
+	}
+	if step.Lane != LaneStrictAction {
+		t.Fatalf("lane = %q, want %q", step.Lane, LaneStrictAction)
 	}
 }

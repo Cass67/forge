@@ -125,6 +125,9 @@ var (
 
 func Classify(turn UserTurn, session SessionState) Classification {
 	originalText := strings.TrimSpace(turn.Text)
+	if threadClass, ok := classifyActiveThreadTurn(originalText, session); ok {
+		return threadClass
+	}
 	if pending, ok := classifyPendingActionContinuation(originalText, session); ok {
 		return pending
 	}

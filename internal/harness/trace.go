@@ -58,6 +58,9 @@ func FormatDebugSummary(record TraceRecord) string {
 	if record.Family != "" {
 		parts = append(parts, fmt.Sprintf("family=%s", record.Family))
 	}
+	if record.Lane != "" {
+		parts = append(parts, fmt.Sprintf("lane=%s", record.Lane))
+	}
 	if record.Step != "" {
 		parts = append(parts, fmt.Sprintf("step=%s", record.Step))
 	}
@@ -66,6 +69,27 @@ func FormatDebugSummary(record TraceRecord) string {
 	}
 	if strings.TrimSpace(record.TopicKey) != "" {
 		parts = append(parts, fmt.Sprintf("topic=%s", record.TopicKey))
+	}
+	if strings.TrimSpace(record.ThreadID) != "" {
+		parts = append(parts, fmt.Sprintf("thread_id=%s", record.ThreadID))
+	}
+	if record.ThreadKind != "" {
+		parts = append(parts, fmt.Sprintf("thread_kind=%s", record.ThreadKind))
+	}
+	if record.ThreadStatus != "" {
+		parts = append(parts, fmt.Sprintf("thread_status=%s", record.ThreadStatus))
+	}
+	if record.ThreadIntent != "" {
+		parts = append(parts, fmt.Sprintf("thread_intent=%s", record.ThreadIntent))
+	}
+	if record.OutcomeKind != "" {
+		parts = append(parts, fmt.Sprintf("outcome=%s", record.OutcomeKind))
+	}
+	if record.DeliverableKind != "" {
+		parts = append(parts, fmt.Sprintf("deliverable=%s", record.DeliverableKind))
+	}
+	if record.DeliverableStatus != "" {
+		parts = append(parts, fmt.Sprintf("deliverable_status=%s", record.DeliverableStatus))
 	}
 	if strings.TrimSpace(record.Reason) != "" {
 		parts = append(parts, fmt.Sprintf("reason=%s", record.Reason))

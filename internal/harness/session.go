@@ -35,11 +35,18 @@ func (s *Session) Snapshot() SessionState {
 func (s *Session) Apply(class Classification, obs Observation) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	resolvedClass := class
+	resolvedClass.TaskText = strings.TrimSpace(class.TaskText)
+	step := Step{Lane: inferredLane(resolvedClass), Kind: StepLocal}
+	if step.Lane == LaneStrictAction {
+		step.Kind = StepStrictLocal
+	}
+	obs = normalizeObservation(step, resolvedClass, s.state, obs)
 
-	s.state.LastFamily = class.Family
-	s.state.LastTopicKey = strings.TrimSpace(class.TopicKey)
+	s.state.LastFamily = resolvedClass.Family
+	s.state.LastTopicKey = strings.TrimSpace(resolvedClass.TopicKey)
 	s.state.LastResponse = strings.TrimSpace(obs.Response)
-	s.state.LastMeta = deriveMetaIntent(class)
+	s.state.LastMeta = deriveMetaIntent(resolvedClass)
 	if s.state.LastMeta != MetaNone {
 		s.state.LastMetaTurn = s.state.Turn
 	} else {
@@ -50,6 +57,8 @@ func (s *Session) Apply(class Classification, obs Observation) {
 	if obs.Status != ObservationComplete {
 		return
 	}
+
+	applyThreadLedger(&s.state, resolvedClass, obs)
 
 	if pending := finalizePendingAction(obs.PendingAction, s.state.Turn); !pending.IsZero() {
 		s.state.PendingAction = pending
@@ -63,12 +72,12 @@ func (s *Session) Apply(class Classification, obs Observation) {
 
 	topic := strings.TrimSpace(obs.TopicKey)
 	if topic == "" {
-		topic = strings.TrimSpace(class.TopicKey)
+		topic = strings.TrimSpace(resolvedClass.TopicKey)
 	}
 	if topic == "" {
 		return
 	}
-	if !retainsEvidence(class) {
+	if !retainsEvidence(resolvedClass) {
 		return
 	}
 

@@ -11,7 +11,7 @@ type ProgressUpdate struct {
 type LiveProgressState struct {
 	TurnID     int
 	ReplaceKey string
-	Message    string
+	Entries    []string
 }
 
 func (s LiveProgressState) Apply(update ProgressUpdate) LiveProgressState {
@@ -19,26 +19,52 @@ func (s LiveProgressState) Apply(update ProgressUpdate) LiveProgressState {
 	if message == "" {
 		return s.Reset()
 	}
-	return LiveProgressState{
+	next := LiveProgressState{
 		TurnID:     update.TurnID,
 		ReplaceKey: strings.TrimSpace(update.ReplaceKey),
-		Message:    message,
+		Entries:    append([]string(nil), s.Entries...),
 	}
+	if next.TurnID == 0 {
+		next.TurnID = s.TurnID
+	}
+	if next.ReplaceKey == "" {
+		next.ReplaceKey = s.ReplaceKey
+	}
+	if len(next.Entries) == 0 || next.Entries[len(next.Entries)-1] != message {
+		next.Entries = append(next.Entries, message)
+	}
+	return next
+}
+
+func (s LiveProgressState) LatestMessage() string {
+	if len(s.Entries) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(s.Entries[len(s.Entries)-1])
+}
+
+func (s LiveProgressState) RenderMessage() string {
+	return strings.Join(s.Entries, "\n")
 }
 
 func (s LiveProgressState) Finalize() (TranscriptRecord, bool) {
-	if strings.TrimSpace(s.Message) == "" {
+	message := strings.TrimSpace(s.RenderMessage())
+	if message == "" {
 		return TranscriptRecord{}, false
 	}
 	return TranscriptRecord{
 		TurnID:   s.TurnID,
 		Kind:     RecordSystem,
 		Label:    "progress",
-		Segments: []Segment{{Kind: SegmentText, Text: s.Message}},
+		Segments: []Segment{{Kind: SegmentText, Text: message}},
 		Final:    true,
 	}, true
 }
 
 func (s LiveProgressState) Reset() LiveProgressState {
 	return LiveProgressState{}
+}
+
+func (s LiveProgressState) IsZero() bool {
+	return s.TurnID == 0 && s.ReplaceKey == "" && len(s.Entries) == 0
 }

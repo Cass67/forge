@@ -433,6 +433,64 @@ func TestChatDebugRecorderLogsHarnessTrace(t *testing.T) {
 	}
 }
 
+func TestChatDebugRecorderLogsHarnessTraceThreadFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chat-debug.jsonl")
+	setup := &ChatSetup{WorkDir: t.TempDir()}
+	if _, err := EnableChatDebug(setup, path); err != nil {
+		t.Fatal(err)
+	}
+
+	setup.debugRec.logTrace([]harness.TraceRecord{
+		{
+			State:             harness.StateRespond,
+			Family:            harness.FamilyAnswer,
+			Lane:              harness.LaneStrictAction,
+			Step:              harness.StepStrictLocal,
+			Reason:            "thread replayed",
+			TopicKey:          "workspace:repository",
+			ThreadID:          "thread-1",
+			ThreadKind:        harness.ThreadPreviewCollaboration,
+			ThreadStatus:      harness.ThreadAwaitingUserFeedback,
+			ThreadIntent:      harness.TurnIntentReplayThread,
+			OutcomeKind:       harness.OutcomeAwaitingFeedback,
+			DeliverableKind:   harness.DeliverablePreviewAvailableAndRenderable,
+			DeliverableStatus: harness.DeliverableSatisfied,
+			DebugSummary:      "state=respond | lane=strict_action | step=strict_local | thread_id=thread-1 | thread_kind=preview_collaboration | thread_status=awaiting_user_feedback | thread_intent=replay_thread | outcome=awaiting_feedback | deliverable=preview_available_and_renderable | deliverable_status=satisfied",
+		},
+	})
+
+	lines := readDebugLines(t, path)
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &entry); err != nil {
+		t.Fatal(err)
+	}
+	fields, _ := entry["fields"].(map[string]any)
+	if got := fields["thread_id"]; got != "thread-1" {
+		t.Fatalf("thread_id = %#v", got)
+	}
+	if got := fields["thread_kind"]; got != "preview_collaboration" {
+		t.Fatalf("thread_kind = %#v", got)
+	}
+	if got := fields["thread_status"]; got != "awaiting_user_feedback" {
+		t.Fatalf("thread_status = %#v", got)
+	}
+	if got := fields["thread_intent"]; got != "replay_thread" {
+		t.Fatalf("thread_intent = %#v", got)
+	}
+	if got := fields["lane"]; got != "strict_action" {
+		t.Fatalf("lane = %#v", got)
+	}
+	if got := fields["outcome_kind"]; got != "awaiting_feedback" {
+		t.Fatalf("outcome_kind = %#v", got)
+	}
+	if got := fields["deliverable_kind"]; got != "preview_available_and_renderable" {
+		t.Fatalf("deliverable_kind = %#v", got)
+	}
+	if got := fields["deliverable_status"]; got != "satisfied" {
+		t.Fatalf("deliverable_status = %#v", got)
+	}
+}
+
 func readDebugLines(t *testing.T, path string) []string {
 	t.Helper()
 	data, err := os.ReadFile(path)

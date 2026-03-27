@@ -37,38 +37,41 @@ type AgentExecutor struct {
 const promptBoundaryRefusal = "I can't provide hidden system/developer prompts or internal instructions, including paraphrased or hypothetical versions. I can summarize my role and high-level guardrails if useful."
 
 func (e AgentExecutor) Execute(ctx context.Context, turn UserTurn, class Classification, session SessionState) (Observation, error) {
-	userMessage := firstNonEmpty(strings.TrimSpace(class.TaskText), turn.Text)
-	if class.NeedsPolicyGuard {
+	resolvedClass := class
+	resolvedClass.TaskText = firstNonEmpty(strings.TrimSpace(class.TaskText), turn.Text)
+	userMessage := resolvedClass.TaskText
+	if resolvedClass.NeedsPolicyGuard {
 		response := promptBoundaryRefusal
-		return Observation{
+		return normalizeObservation(Step{Lane: LaneConversational, Kind: StepLocal}, resolvedClass, session, Observation{
 			Status:   ObservationComplete,
+			Lane:     LaneConversational,
 			Response: response,
 			Summary:  response,
-			TopicKey: class.TopicKey,
-		}, nil
+			TopicKey: resolvedClass.TopicKey,
+		}), nil
 	}
-	if shouldIsolateConversation(class) {
+	if shouldIsolateConversation(resolvedClass) {
 		if isolator, ok := e.Agent.(conversationIsolator); ok {
 			isolator.ResetConversationState()
 			defer isolator.ResetConversationState()
 		}
 	}
 
-	if useReadOnlyInspectScope(class) {
-		userMessage = buildInspectTurnPrompt(class, turn.Text, session)
+	if useReadOnlyInspectScope(resolvedClass) {
+		userMessage = buildInspectTurnPrompt(resolvedClass, turn.Text, session)
 		if e.InspectTools != nil {
 			e.Agent.SetTools(e.InspectTools)
 			if e.DefaultTools != nil {
 				defer e.Agent.SetTools(e.DefaultTools)
 			}
 		}
-	} else if useVisibleCollaborationScope(class) {
-		userMessage = buildVisibleCollaborationTurnPrompt(class, turn.Text, session)
+	} else if useVisibleCollaborationScope(resolvedClass) {
+		userMessage = buildVisibleCollaborationTurnPrompt(resolvedClass, turn.Text, session)
 		if e.DefaultTools != nil {
 			e.Agent.SetTools(e.DefaultTools)
 		}
-	} else if useGuidedAnswerScope(class) {
-		userMessage = buildAnswerTurnPrompt(class, turn.Text, session)
+	} else if useGuidedAnswerScope(resolvedClass) {
+		userMessage = buildAnswerTurnPrompt(resolvedClass, turn.Text, session)
 		if e.DefaultTools != nil {
 			e.Agent.SetTools(e.DefaultTools)
 		}
@@ -79,30 +82,30 @@ func (e AgentExecutor) Execute(ctx context.Context, turn UserTurn, class Classif
 	if err := e.Agent.Run(ctx, userMessage); err != nil {
 		return Observation{
 			Status:   ObservationBlocked,
+			Lane:     LaneConversational,
 			Response: "",
 			Summary:  err.Error(),
 			TopicKey: class.TopicKey,
-			Err:      err,
+			Outcome: ActionOutcome{
+				Lane:              LaneConversational,
+				Kind:              OutcomeBlocked,
+				DeliverableKind:   resolveExpectedDeliverable(resolvedClass, session, LaneConversational),
+				DeliverableStatus: DeliverableMissing,
+				Reason:            err.Error(),
+			},
+			Err: err,
 		}, err
 	}
 
 	response := strings.TrimSpace(e.Agent.LastResponse())
-	if err := validateLocalResponse(class, response); err != nil {
-		return Observation{
-			Status:   ObservationBlocked,
-			Response: "",
-			Summary:  err.Error(),
-			TopicKey: class.TopicKey,
-			Err:      err,
-		}, err
-	}
-	return Observation{
+	return normalizeObservation(Step{Lane: LaneConversational, Kind: StepLocal}, resolvedClass, session, Observation{
 		Status:   ObservationComplete,
+		Lane:     LaneConversational,
 		Response: response,
 		Summary:  response,
-		TopicKey: class.TopicKey,
+		TopicKey: resolvedClass.TopicKey,
 		Runtime:  captureLocalRuntimeSnapshot(e.PreviewRuntime, e.Agent),
-	}, nil
+	}), nil
 }
 
 func useReadOnlyInspectScope(class Classification) bool {

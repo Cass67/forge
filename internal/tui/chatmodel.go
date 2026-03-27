@@ -380,7 +380,7 @@ func (m *ChatModel) AddMessage(msg ChatMessage) {
 }
 
 func (m *ChatModel) AddWorkingMessage(content string) {
-	m.upsertWorkingMessage(strings.TrimSpace(content))
+	m.recordWorkingMessage(strings.TrimSpace(content))
 }
 
 func (m *ChatModel) UpdateRecentActivity(role, content string) {
@@ -389,7 +389,7 @@ func (m *ChatModel) UpdateRecentActivity(role, content string) {
 	if content == "" {
 		return
 	}
-	m.upsertWorkingMessage(content)
+	m.recordWorkingMessage(content)
 }
 
 func (m *ChatModel) hasLiveWorkingMessage() bool {
@@ -400,7 +400,7 @@ func (m *ChatModel) hasLiveWorkingMessage() bool {
 	return msg.Kind == MsgWorking
 }
 
-func (m *ChatModel) upsertWorkingMessage(content string) {
+func (m *ChatModel) recordWorkingMessage(content string) {
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return
@@ -409,18 +409,22 @@ func (m *ChatModel) upsertWorkingMessage(content string) {
 		ReplaceKey: "active",
 		Message:    content,
 	})
+	rendered := strings.TrimSpace(m.liveProgress.RenderMessage())
+	if rendered == "" {
+		return
+	}
 	if m.hasLiveWorkingMessage() {
-		if strings.TrimSpace(m.messages[m.recentActivityIndex].Content) == content {
+		if strings.TrimSpace(m.messages[m.recentActivityIndex].Content) == rendered {
 			return
 		}
-		m.messages[m.recentActivityIndex].Content = content
+		m.messages[m.recentActivityIndex].Content = rendered
 		m.messages[m.recentActivityIndex].Header = ""
 		m.refreshViewport()
 		return
 	}
 	m.messages = append(m.messages, ChatMessage{
 		Kind:    MsgWorking,
-		Content: content,
+		Content: rendered,
 	})
 	m.recentActivityIndex = len(m.messages) - 1
 	m.refreshViewport()
@@ -4250,7 +4254,7 @@ func (m ChatModel) renderTraceDock(theme chatTheme) string {
 }
 
 func (m ChatModel) transientStatusMessage() (string, bool) {
-	if message := normalizeStatusMessage(m.liveProgress.Message); message != "" {
+	if message := normalizeStatusMessage(m.liveProgress.LatestMessage()); message != "" {
 		return message, m.busy
 	}
 	if m.busy {

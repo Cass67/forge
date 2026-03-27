@@ -31,6 +31,7 @@ func TestRegressionFixturesRouteWithoutEscalation(t *testing.T) {
 		filepath.Join("testdata", "debuglogs", "repo-inspect-stall.jsonl"),
 		filepath.Join("testdata", "debuglogs", "follow-up-misroute.jsonl"),
 		filepath.Join("testdata", "debuglogs", "meta-answer-guard.jsonl"),
+		filepath.Join("testdata", "debuglogs", "thread-ledger-routing.jsonl"),
 	}
 	for _, path := range paths {
 		fixtures := loadRegressionFixtures(t, path)
