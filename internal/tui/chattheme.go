@@ -99,6 +99,24 @@ var chatThemeRegistry = []chatTheme{
 		Warning:         lipgloss.Color("#fbbf24"),
 		Error:           lipgloss.Color("#fb7185"),
 	},
+	{
+		ID:              "eclipse",
+		Label:           "eclipse",
+		LowContrast:     false,
+		AppBG:           lipgloss.Color("#0a0a0a"),
+		PanelBG:         lipgloss.Color("#0a0a0a"),
+		HeaderBG:        lipgloss.Color("#18181b"),
+		HeaderFG:        lipgloss.Color("#e4e4e7"),
+		Border:          lipgloss.Color("#3f3f46"),
+		BorderFocus:     lipgloss.Color("#34d399"),
+		Text:            lipgloss.Color("#e4e4e7"),
+		TextDim:         lipgloss.Color("#a1a1aa"),
+		AccentPrimary:   lipgloss.Color("#34d399"),
+		AccentSecondary: lipgloss.Color("#60a5fa"),
+		Success:         lipgloss.Color("#34d399"),
+		Warning:         lipgloss.Color("#fbbf24"),
+		Error:           lipgloss.Color("#f87171"),
+	},
 }
 
 var chatThemeAliases = map[string]string{
@@ -109,6 +127,7 @@ var chatThemeAliases = map[string]string{
 	"lowcontrast":  "low",
 	"light":        "light",
 	"dusk":         "dusk",
+	"eclipse":      "eclipse",
 }
 
 func lookupChatTheme(name string) (chatTheme, bool) {
