@@ -519,6 +519,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 
 		// Execute tool calls
 		var results []string
+		strictSuccessfulEditTarget := ""
 		callQueue := append([]ToolCall(nil), calls...)
 		for idx := 0; idx < len(callQueue); idx++ {
 			call := callQueue[idx]
@@ -687,6 +688,11 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				if a.role == "dispatch" && call.Name == "scratchpad_read" {
 					a.dispatchScratch = result
 				}
+				if isStrictActionTurn {
+					if target, ok := strictSuccessfulEditFileTarget(call, result); ok {
+						strictSuccessfulEditTarget = target
+					}
+				}
 				if renderToolResult {
 					a.renderer.ToolResult(call.Name, displayResult, diff, false)
 				}
@@ -712,7 +718,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			Role:    llm.RoleUser,
 			Content: compactToolResults(results),
 		})
-		nextTurnControls := make([]string, 0, 2)
+		nextTurnControls := make([]string, 0, 3)
 		if isStrictActionTurn {
 			exactStrictMutationRepeat := false
 			if signature, ok := strictProgressSignature(calls); ok {
@@ -749,6 +755,9 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			} else {
 				lastStrictPreviewArtifactTarget = ""
 				strictPreviewArtifactRepeats = 0
+			}
+			if strictSuccessfulEditTarget != "" && turn+1 < a.maxTurns {
+				nextTurnControls = append(nextTurnControls, strictEditFileRefreshNudgeMessage(strictSuccessfulEditTarget))
 			}
 		} else {
 			lastStrictProgressSignature = ""
@@ -1327,6 +1336,29 @@ func strictPreviewArtifactChurnNudgeMessage(target string) string {
 		return "No progress: you are rewriting the same preview artifact without validating it. Stop iterating blindly. Either run preview_server_ensure, inspect the current preview or artifact state, or give the final answer if it is already ready."
 	}
 	return fmt.Sprintf("No progress: you are rewriting the same preview artifact %s without validating it. Stop iterating blindly. Either run preview_server_ensure for it, inspect the current preview or artifact state, or give the final answer if it is already ready.", target)
+}
+
+func strictSuccessfulEditFileTarget(call ToolCall, result string) (string, bool) {
+	if strings.TrimSpace(call.Name) != "edit_file" {
+		return "", false
+	}
+	if !strings.HasPrefix(strings.TrimSpace(result), "edited ") {
+		return "", false
+	}
+	path, _ := call.Args["path"].(string)
+	path = filepath.ToSlash(strings.TrimSpace(path))
+	if path == "" {
+		return "", false
+	}
+	return path, true
+}
+
+func strictEditFileRefreshNudgeMessage(target string) string {
+	target = filepath.ToSlash(strings.TrimSpace(target))
+	if target == "" {
+		return "State changed: you just edited a file. Before another edit_file on that same path, call read_file first so old_text matches the current file state. Use write_file instead if you intend a broader rewrite."
+	}
+	return fmt.Sprintf("State changed: you just edited %s. Before another edit_file on %s, call read_file %s first so old_text matches the current file state. Use write_file instead if you intend a broader rewrite.", target, target, target)
 }
 
 func labelInterpretationUnavailable(message string) string {
