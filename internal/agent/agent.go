@@ -258,6 +258,32 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	scoutRepoReviewState := newScoutRepoReviewEvidenceState(a.workDir, userMessage)
 	isInspectTurn := !a.isSubAgent && isHarnessInspectTurn(userMessage)
 	isAnswerTurn := !a.isSubAgent && isHarnessAnswerTurn(userMessage)
+	pendingControlMsgIdxs := make([]int, 0, 4)
+	var clearPendingControls func()
+	clearPendingControls = func() {
+		if len(pendingControlMsgIdxs) == 0 {
+			return
+		}
+		sort.Ints(pendingControlMsgIdxs)
+		for i := len(pendingControlMsgIdxs) - 1; i >= 0; i-- {
+			idx := pendingControlMsgIdxs[i]
+			if idx < 0 || idx >= len(a.history) {
+				continue
+			}
+			a.history = append(a.history[:idx], a.history[idx+1:]...)
+		}
+		pendingControlMsgIdxs = pendingControlMsgIdxs[:0]
+	}
+	replacePendingControls := func(contents ...string) {
+		clearPendingControls()
+		for _, content := range contents {
+			if strings.TrimSpace(content) == "" {
+				continue
+			}
+			a.history = append(a.history, llm.Message{Role: llm.RoleUser, Content: content})
+			pendingControlMsgIdxs = append(pendingControlMsgIdxs, len(a.history)-1)
+		}
+	}
 	if a.role == "dispatch" {
 		a.dispatchTurn++
 		currentDispatchTurn = a.dispatchTurn
@@ -315,10 +341,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		if a.role == "scout" && containsRawToolMarkup(response) && len(calls) == 0 {
 			if turn+1 < a.maxTurns {
 				scoutMalformedToolRetries++
-				a.history = append(a.history, llm.Message{
-					Role:    llm.RoleUser,
-					Content: scoutMalformedToolMarkupNudgeMessage(scoutMalformedToolRetries),
-				})
+				replacePendingControls(scoutMalformedToolMarkupNudgeMessage(scoutMalformedToolRetries))
 				continue
 			}
 			return fmt.Errorf("scout produced malformed tool markup")
@@ -326,10 +349,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		if a.isSubAgent && strings.TrimSpace(a.role) != "scout" && containsRawToolMarkup(response) && len(calls) == 0 {
 			if turn+1 < a.maxTurns {
 				subAgentMalformedToolRetries++
-				a.history = append(a.history, llm.Message{
-					Role:    llm.RoleUser,
-					Content: subAgentMalformedToolMarkupNudgeMessage(a.role, subAgentMalformedToolRetries),
-				})
+				replacePendingControls(subAgentMalformedToolMarkupNudgeMessage(a.role, subAgentMalformedToolRetries))
 				continue
 			}
 			role := strings.TrimSpace(a.role)
@@ -363,10 +383,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				}
 				if turn+1 < a.maxTurns {
 					dispatchDirectAnswerRetries++
-					a.history = append(a.history, llm.Message{
-						Role:    llm.RoleUser,
-						Content: dispatchNudgeMessage(dispatchDirectAnswerRetries),
-					})
+					replacePendingControls(dispatchNudgeMessage(dispatchDirectAnswerRetries))
 					continue
 				}
 				return fmt.Errorf("dispatch produced no delegate call before answering")
@@ -374,10 +391,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			if a.role == "scout" && !a.structuredOutputRetryMode && !sawToolCallThisRun && scoutTaskRequiresEvidenceTools(userMessage) {
 				if turn+1 < a.maxTurns {
 					scoutNoToolRetries++
-					a.history = append(a.history, llm.Message{
-						Role:    llm.RoleUser,
-						Content: scoutEvidenceNudgeMessage(scoutNoToolRetries),
-					})
+					replacePendingControls(scoutEvidenceNudgeMessage(scoutNoToolRetries))
 					continue
 				}
 				return fmt.Errorf("scout produced no evidence-gathering tool call before answering")
@@ -385,40 +399,28 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			if isInspectTurn && !sawToolCallThisRun {
 				if turn+1 < a.maxTurns {
 					inspectNoToolRetries++
-					a.history = append(a.history, llm.Message{
-						Role:    llm.RoleUser,
-						Content: inspectEvidenceNudgeMessage(inspectNoToolRetries),
-					})
+					replacePendingControls(inspectEvidenceNudgeMessage(inspectNoToolRetries))
 					continue
 				}
 				return fmt.Errorf("inspect turn produced no evidence-gathering tool call before answering")
 			}
 			if a.role == "scout" && scoutSingleFileState.NeedsMoreEvidence() {
 				if turn+1 < a.maxTurns {
-					a.history = append(a.history, llm.Message{
-						Role:    llm.RoleUser,
-						Content: scoutSingleFileState.NudgeMessage(),
-					})
+					replacePendingControls(scoutSingleFileState.NudgeMessage())
 					continue
 				}
 				return fmt.Errorf("scout stopped before reading the target file")
 			}
 			if a.role == "scout" && scoutFocusedFilesState.NeedsMoreEvidence() {
 				if turn+1 < a.maxTurns {
-					a.history = append(a.history, llm.Message{
-						Role:    llm.RoleUser,
-						Content: scoutFocusedFilesState.NudgeMessage(),
-					})
+					replacePendingControls(scoutFocusedFilesState.NudgeMessage())
 					continue
 				}
 				return fmt.Errorf("scout stopped before gathering enough focused-file evidence")
 			}
 			if a.role == "scout" && scoutRepoReviewState.NeedsMoreEvidence() {
 				if turn+1 < a.maxTurns {
-					a.history = append(a.history, llm.Message{
-						Role:    llm.RoleUser,
-						Content: scoutRepoReviewState.NudgeMessage(),
-					})
+					replacePendingControls(scoutRepoReviewState.NudgeMessage())
 					continue
 				}
 				return fmt.Errorf("scout stopped before gathering enough repo-review evidence")
@@ -435,10 +437,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 					if a.role == "scout" && scoutRepoReviewState.NeedsMoreEvidence() {
 						nudge = scoutRepoReviewState.NudgeMessage()
 					}
-					a.history = append(a.history, llm.Message{
-						Role:    llm.RoleUser,
-						Content: nudge,
-					})
+					replacePendingControls(nudge)
 					continue
 				}
 				return fmt.Errorf("%s produced no final output", a.role)
@@ -446,12 +445,10 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			isPreamble := looksLikeActionPreamble(response)
 			if !a.isSubAgent && !isAnswerTurn && isPreamble && actionPreambleRetries < 4 && turn+1 < a.maxTurns {
 				actionPreambleRetries++
-				a.history = append(a.history, llm.Message{
-					Role:    llm.RoleUser,
-					Content: nudgeMessage(actionPreambleRetries),
-				})
+				replacePendingControls(nudgeMessage(actionPreambleRetries))
 				continue
 			}
+			clearPendingControls()
 			if strings.TrimSpace(visibleText) != "" {
 				a.renderer.AgentToken(visibleText)
 			}
@@ -663,6 +660,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		}
 
 		// Append compact history entries; preserve UI output separately via the renderer only.
+		clearPendingControls()
 		a.lastFullResponse = visibleText
 		assistantText := visibleText
 		if len(calls) > 0 {
@@ -678,35 +676,24 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			Role:    llm.RoleUser,
 			Content: compactToolResults(results),
 		})
+		nextTurnControls := make([]string, 0, 2)
 		if mixedSubAgentToolCallProse && turn+1 < a.maxTurns {
-			a.history = append(a.history, llm.Message{
-				Role:    llm.RoleUser,
-				Content: subAgentToolCallNudgeMessage(a.role, subAgentMixedProseRetries),
-			})
+			nextTurnControls = append(nextTurnControls, subAgentToolCallNudgeMessage(a.role, subAgentMixedProseRetries))
 		}
 		if strictWorkerMultipleToolCalls && turn+1 < a.maxTurns {
-			a.history = append(a.history, llm.Message{
-				Role:    llm.RoleUser,
-				Content: subAgentSingleToolCallNudgeMessage(a.role, subAgentMultipleToolCallRetries),
-			})
+			nextTurnControls = append(nextTurnControls, subAgentSingleToolCallNudgeMessage(a.role, subAgentMultipleToolCallRetries))
 		}
 		if inspectMixedToolCallProse && turn+1 < a.maxTurns {
-			a.history = append(a.history, llm.Message{
-				Role:    llm.RoleUser,
-				Content: inspectToolCallNudgeMessage(inspectMixedToolCallRetries),
-			})
+			nextTurnControls = append(nextTurnControls, inspectToolCallNudgeMessage(inspectMixedToolCallRetries))
 		}
 		if inspectMultipleToolCalls && turn+1 < a.maxTurns {
-			a.history = append(a.history, llm.Message{
-				Role:    llm.RoleUser,
-				Content: inspectSingleToolCallNudgeMessage(),
-			})
+			nextTurnControls = append(nextTurnControls, inspectSingleToolCallNudgeMessage())
 		}
 		if scoutFirstTurnMultipleCalls && turn+1 < a.maxTurns {
-			a.history = append(a.history, llm.Message{
-				Role:    llm.RoleUser,
-				Content: scoutFirstTurnToolCallNudgeMessage(),
-			})
+			nextTurnControls = append(nextTurnControls, scoutFirstTurnToolCallNudgeMessage())
+		}
+		if len(nextTurnControls) > 0 {
+			replacePendingControls(nextTurnControls...)
 		}
 		if a.role == "dispatch" && dispatchStopAfterTurn {
 			return nil
@@ -1132,7 +1119,7 @@ func resolveScoutFallbackEvidence(currentTurn int, current *dispatchScoutEvidenc
 }
 
 func normalizeStrictTurnForExecution(response, role string, isSubAgent, isInspectTurn bool) (string, bool) {
-	strictTurn := isSubAgent && isStrictWorkerRole(role)
+	strictTurn := isInspectTurn || (isSubAgent && isStrictWorkerRole(role))
 	if !strictTurn {
 		return response, false
 	}
@@ -2423,12 +2410,12 @@ func compactOldHistoryMessage(m llm.Message) (string, bool) {
 			summary = append(summary, clipForHistory(oneLine(line), 80))
 		}
 		if len(summary) == 0 {
-			return "Tool results summarized.", true
+			return "Earlier tool outputs summarized.", true
 		}
 		if len(summary) > 4 {
 			summary = append(summary[:4], "...")
 		}
-		return "Tool results (summarized): " + strings.Join(summary, " | "), true
+		return "Earlier tool outputs summary: " + strings.Join(summary, " | "), true
 	}
 	if m.Role == llm.RoleAssistant || m.Role == llm.RoleUser {
 		flat := oneLine(content)
