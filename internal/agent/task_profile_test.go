@@ -224,7 +224,7 @@ func TestScoutRunFocusedFilesScopeReadsMultipleMatchingFilesBeforeStopping(t *te
 	if strings.Contains(joined, "Repo-review evidence is still incomplete") {
 		t.Fatalf("focused-files task should not receive repo-review nudges: %s", joined)
 	}
-	if strings.Count(joined, "Focused-file evidence is still incomplete") != 2 {
-		t.Fatalf("expected two focused-files nudges after premature summaries, got history: %s", joined)
+	if strings.Contains(joined, "Focused-file evidence is still incomplete") {
+		t.Fatalf("focused-files nudges should not linger after the scout finishes gathering enough evidence: %s", joined)
 	}
 }
