@@ -108,6 +108,9 @@ func BuildStrictLocalSystemPrompt(workDir string, registry *tools.Registry, load
 	sb.WriteString("- Final turn must be plain user-facing text only.\n")
 	sb.WriteString("- Never mix a tool call with status text, narration, or prose in the same response.\n")
 	sb.WriteString("- Wait for tool results before deciding what to do next.\n")
+	if registryHasTool(registry, "edit_file") && registryHasTool(registry, "read_file") {
+		sb.WriteString("- After edit_file changes a file, read_file that file before another edit_file on the same path unless you intentionally replace the whole file.\n")
+	}
 	if registryHasTool(registry, "artifact_write") && registryHasTool(registry, "preview_server_ensure") {
 		sb.WriteString("- Prefer artifact_write and preview_server_ensure for previewable artifacts instead of shelling out to create ad hoc servers.\n")
 		sb.WriteString("- preview_server_ensure already verifies the returned localhost URL; do not shell out just to confirm the same preview again unless the host-owned preview tools fail.\n")
