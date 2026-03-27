@@ -12,50 +12,50 @@ func progressLine(role, toolName, summary string) string {
 	summary = strings.TrimSpace(summary)
 	switch toolName {
 	case "read_file":
-		return fmt.Sprintf("reading %s", filepath.Base(summary))
+		return fmt.Sprintf("Reading %s", filepath.Base(summary))
 	case "search":
-		return fmt.Sprintf("searching for %q", summary)
+		return fmt.Sprintf("Searching for %q", summary)
 	case "glob":
-		return fmt.Sprintf("looking for %q", summary)
+		return fmt.Sprintf("Looking for %q", summary)
 	case "edit_file":
-		return fmt.Sprintf("editing %s", filepath.Base(summary))
+		return fmt.Sprintf("Editing %s", filepath.Base(summary))
 	case "write_file":
-		return fmt.Sprintf("writing %s", filepath.Base(summary))
+		return fmt.Sprintf("Writing %s", filepath.Base(summary))
 	case "artifact_write":
-		return fmt.Sprintf("writing %s", filepath.Base(summary))
+		return fmt.Sprintf("Writing %s", filepath.Base(summary))
 	case "artifact_read":
-		return fmt.Sprintf("reading %s", filepath.Base(summary))
+		return fmt.Sprintf("Reading %s", filepath.Base(summary))
 	case "preview_server_ensure":
 		if strings.TrimSpace(summary) == "" {
-			return "starting the preview"
+			return "Starting the preview"
 		}
-		return fmt.Sprintf("starting the preview for %s", filepath.Base(summary))
+		return fmt.Sprintf("Starting the preview for %s", filepath.Base(summary))
 	case "preview_server_status":
-		return "checking the preview status"
+		return "Checking the preview status"
 	case "run_command":
 		cmd := summary
 		if len(cmd) > 40 {
 			cmd = cmd[:40] + "..."
 		}
-		return fmt.Sprintf("running %s", cmd)
+		return fmt.Sprintf("Running %s", cmd)
 	case "tool_help":
-		return "checking available tools"
+		return "Checking available tools"
 	case "delegate":
 		return delegateProgressLine(summary)
 	default:
-		return "working"
+		return ""
 	}
 }
 
 func delegateProgressLine(summary string) string {
 	switch strings.ToLower(strings.TrimSpace(summary)) {
 	case "builder", "editor":
-		return "making the change"
+		return "Making the change"
 	case "doctor", "verifier":
-		return "checking the issue"
+		return "Checking the issue"
 	case "architect":
-		return "thinking through the approach"
+		return "Thinking through the approach"
 	default:
-		return "reviewing the repo"
+		return "Reviewing the repo"
 	}
 }

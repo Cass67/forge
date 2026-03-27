@@ -37,6 +37,9 @@ func TestBuildSystemPrompt(t *testing.T) {
 	if !strings.Contains(prompt, "Continue working after progress updates") {
 		t.Error("missing continue-by-default instruction")
 	}
+	if !strings.Contains(prompt, "The host owns visible progress updates") {
+		t.Error("missing host-owned progress guidance")
+	}
 	if !strings.Contains(prompt, "Do not narrate intent without acting") {
 		t.Error("missing anti-stalling guidance")
 	}
@@ -129,6 +132,9 @@ func TestBuildStrictLocalSystemPromptUsesSingleToolContract(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "Final turn must be plain user-facing text only") {
 		t.Error("strict local prompt should require a plain-text final answer")
+	}
+	if !strings.Contains(prompt, "Do not narrate incremental progress in prose; the host will emit visible milestone updates") {
+		t.Error("strict local prompt should keep visible progress host-owned")
 	}
 	if !strings.Contains(prompt, "Prefer artifact_write and preview_server_ensure") {
 		t.Error("strict local prompt should steer preview requests to host-owned tools")

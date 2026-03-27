@@ -22,15 +22,18 @@ const (
 type RuntimeState string
 
 const (
-	StateIntake   RuntimeState = "intake"
-	StateClassify RuntimeState = "classify"
-	StatePlanStep RuntimeState = "plan_step"
-	StateAct      RuntimeState = "act"
-	StateObserve  RuntimeState = "observe"
-	StateDecide   RuntimeState = "decide"
-	StateRespond  RuntimeState = "respond"
-	StateComplete RuntimeState = "complete"
-	StateBlocked  RuntimeState = "blocked"
+	StateIntake           RuntimeState = "intake"
+	StateClassify         RuntimeState = "classify"
+	StatePlanStep         RuntimeState = "plan_step"
+	StateAct              RuntimeState = "act"
+	StateObserve          RuntimeState = "observe"
+	StateDecide           RuntimeState = "decide"
+	StateRetry            RuntimeState = "retry"
+	StateReplan           RuntimeState = "replan"
+	StateRespond          RuntimeState = "respond"
+	StateAwaitingFeedback RuntimeState = "awaiting_feedback"
+	StateComplete         RuntimeState = "complete"
+	StateBlocked          RuntimeState = "blocked"
 )
 
 type StepKind string
@@ -61,6 +64,106 @@ const (
 	ObservationBlocked  ObservationStatus = "blocked"
 )
 
+type ExecutionLane string
+
+const (
+	LaneConversational ExecutionLane = "conversational"
+	LaneStrictAction   ExecutionLane = "strict_action"
+	LaneWorkerSidecar  ExecutionLane = "worker_sidecar"
+)
+
+type ThreadKind string
+
+const (
+	ThreadDirectAnswer         ThreadKind = "direct_answer"
+	ThreadWorkspaceInspect     ThreadKind = "workspace_inspect"
+	ThreadWorkspaceChange      ThreadKind = "workspace_change"
+	ThreadPreviewCollaboration ThreadKind = "preview_collaboration"
+	ThreadVerification         ThreadKind = "verification"
+	ThreadExternalResearch     ThreadKind = "external_research"
+	ThreadMetaProcess          ThreadKind = "meta_process"
+)
+
+type ThreadStatus string
+
+const (
+	ThreadActive               ThreadStatus = "active"
+	ThreadAwaitingToolProgress ThreadStatus = "awaiting_tool_progress"
+	ThreadAwaitingUserFeedback ThreadStatus = "awaiting_user_feedback"
+	ThreadAwaitingVerification ThreadStatus = "awaiting_verification"
+	ThreadBlocked              ThreadStatus = "blocked"
+	ThreadCompleted            ThreadStatus = "completed"
+	ThreadCanceled             ThreadStatus = "canceled"
+	ThreadSuperseded           ThreadStatus = "superseded"
+)
+
+type DeliverableKind string
+
+const (
+	DeliverableAnswerOnly                      DeliverableKind = "answer_only"
+	DeliverableEvidenceBackedExplanation       DeliverableKind = "evidence_backed_explanation"
+	DeliverableWorkspaceChangeWithVerification DeliverableKind = "workspace_change_with_verification"
+	DeliverablePreviewAvailableAndRenderable   DeliverableKind = "preview_available_and_renderable"
+	DeliverableResearchSummaryWithSources      DeliverableKind = "research_summary_with_sources"
+)
+
+type DeliverableStatus string
+
+const (
+	DeliverableUnknown     DeliverableStatus = ""
+	DeliverableSatisfied   DeliverableStatus = "satisfied"
+	DeliverableMissing     DeliverableStatus = "missing"
+	DeliverableNotRequired DeliverableStatus = "not_required"
+)
+
+type OutcomeKind string
+
+const (
+	OutcomeNone             OutcomeKind = ""
+	OutcomeComplete         OutcomeKind = "complete"
+	OutcomeRetry            OutcomeKind = "retry"
+	OutcomeReplan           OutcomeKind = "replan"
+	OutcomeAwaitingFeedback OutcomeKind = "awaiting_feedback"
+	OutcomeBlocked          OutcomeKind = "blocked"
+)
+
+type ProgressMilestoneKind string
+
+const (
+	ProgressMilestoneInspect ProgressMilestoneKind = "inspect"
+	ProgressMilestoneChange  ProgressMilestoneKind = "change"
+	ProgressMilestonePreview ProgressMilestoneKind = "preview"
+	ProgressMilestoneVerify  ProgressMilestoneKind = "verify"
+	ProgressMilestoneSkill   ProgressMilestoneKind = "skill"
+	ProgressMilestoneTool    ProgressMilestoneKind = "tool"
+)
+
+type ProgressMilestone struct {
+	Kind    ProgressMilestoneKind
+	Message string
+}
+
+type ActionOutcome struct {
+	Lane              ExecutionLane
+	Kind              OutcomeKind
+	DeliverableKind   DeliverableKind
+	DeliverableStatus DeliverableStatus
+	Reason            string
+}
+
+type TurnIntent string
+
+const (
+	TurnIntentNone            TurnIntent = ""
+	TurnIntentNewTask         TurnIntent = "new_task"
+	TurnIntentContinueThread  TurnIntent = "continue_thread"
+	TurnIntentReplayThread    TurnIntent = "replay_thread"
+	TurnIntentRepairThread    TurnIntent = "repair_thread"
+	TurnIntentCancelThread    TurnIntent = "cancel_thread"
+	TurnIntentMetaQuestion    TurnIntent = "meta_question"
+	TurnIntentSupersedeThread TurnIntent = "supersede_thread"
+)
+
 type UserTurn struct {
 	Text       string
 	Turn       int
@@ -82,10 +185,12 @@ type Classification struct {
 	TopicKey                string
 	TaskText                string
 	ResponsePostlude        string
+	ThreadIntent            TurnIntent
 	Reason                  string
 }
 
 type Step struct {
+	Lane    ExecutionLane
 	Kind    StepKind
 	Worker  WorkerKind
 	Reason  string
@@ -113,18 +218,22 @@ type WorkerTask struct {
 
 type Observation struct {
 	Status        ObservationStatus
+	Lane          ExecutionLane
 	Response      string
 	Summary       string
 	TopicKey      string
 	Artifact      any
 	Runtime       LocalRuntimeSnapshot
 	PendingAction PendingAction
+	Outcome       ActionOutcome
+	Progress      []ProgressMilestone
 	SkillUses     []skills.UseRecord
 	Err           error
 }
 
 type Decision struct {
 	FinalState RuntimeState
+	Outcome    OutcomeKind
 	Reason     string
 }
 
@@ -185,6 +294,43 @@ func (s LocalRuntimeSnapshot) IsZero() bool {
 	return s.Artifact.IsZero() && s.Preview.IsZero()
 }
 
+type ThreadState struct {
+	ID                 string
+	Kind               ThreadKind
+	Status             ThreadStatus
+	Deliverable        DeliverableKind
+	Family             RequestFamily
+	TopicKey           string
+	Goal               string
+	TaskText           string
+	CreatedTurn        int
+	UpdatedTurn        int
+	SupersedesThreadID string
+	Artifact           ArtifactSnapshot
+	Preview            PreviewSnapshot
+}
+
+func (t ThreadState) IsZero() bool {
+	return t.ID == "" && t.Kind == "" && t.Status == "" && t.Deliverable == "" && t.TopicKey == "" &&
+		t.Goal == "" && t.TaskText == "" && t.CreatedTurn == 0 && t.UpdatedTurn == 0 &&
+		t.SupersedesThreadID == "" && t.Artifact.IsZero() && t.Preview.IsZero()
+}
+
+func (t ThreadState) IsOpen() bool {
+	switch t.Status {
+	case ThreadActive, ThreadAwaitingToolProgress, ThreadAwaitingUserFeedback, ThreadAwaitingVerification, ThreadBlocked:
+		return t.ID != ""
+	default:
+		return false
+	}
+}
+
+type ThreadLedger struct {
+	Active ThreadState
+	Last   ThreadState
+	NextID int
+}
+
 type PendingAction struct {
 	SetAtTurn            int
 	Family               RequestFamily
@@ -218,6 +364,7 @@ type SessionState struct {
 	LastEvidence  EvidenceSnapshot
 	LastArtifact  ArtifactSnapshot
 	LastPreview   PreviewSnapshot
+	Threads       ThreadLedger
 	PendingAction PendingAction
 	LastMeta      MetaIntent
 	LastMetaTurn  int
@@ -258,13 +405,29 @@ func (s SessionState) HasRecentPreview() bool {
 	return s.LastPreview.Turn >= s.Turn-1
 }
 
+func (s SessionState) HasActiveThread() bool {
+	return s.Threads.Active.IsOpen()
+}
+
+func (s SessionState) ActiveThread() ThreadState {
+	return s.Threads.Active
+}
+
 type TraceRecord struct {
-	Timestamp    time.Time
-	State        RuntimeState
-	Family       RequestFamily
-	Step         StepKind
-	Worker       WorkerKind
-	Reason       string
-	DebugSummary string
-	TopicKey     string
+	Timestamp         time.Time
+	State             RuntimeState
+	Family            RequestFamily
+	Lane              ExecutionLane
+	Step              StepKind
+	Worker            WorkerKind
+	Reason            string
+	DebugSummary      string
+	TopicKey          string
+	ThreadID          string
+	ThreadKind        ThreadKind
+	ThreadStatus      ThreadStatus
+	ThreadIntent      TurnIntent
+	OutcomeKind       OutcomeKind
+	DeliverableKind   DeliverableKind
+	DeliverableStatus DeliverableStatus
 }

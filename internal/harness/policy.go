@@ -25,14 +25,47 @@ func AdmitWorker(class Classification, _ SessionState) (WorkerKind, string, bool
 }
 
 func Decide(_ Classification, obs Observation) Decision {
-	if obs.Status == ObservationBlocked || obs.Err != nil {
-		return Decision{
-			FinalState: StateBlocked,
-			Reason:     "observation blocked",
+	outcome := obs.Outcome
+	if outcome.Kind == OutcomeNone {
+		if obs.Status == ObservationBlocked || obs.Err != nil {
+			outcome.Kind = OutcomeBlocked
+			outcome.Reason = firstNonEmpty(strings.TrimSpace(outcome.Reason), strings.TrimSpace(obs.Summary), errorString(obs.Err), "observation blocked")
+		} else {
+			outcome.Kind = OutcomeComplete
+			outcome.Reason = firstNonEmpty(strings.TrimSpace(outcome.Reason), strings.TrimSpace(obs.Summary), "observation complete")
 		}
 	}
-	return Decision{
-		FinalState: StateComplete,
-		Reason:     "observation complete",
+
+	switch outcome.Kind {
+	case OutcomeRetry:
+		return Decision{
+			FinalState: StateRetry,
+			Outcome:    outcome.Kind,
+			Reason:     firstNonEmpty(strings.TrimSpace(outcome.Reason), "retry observation"),
+		}
+	case OutcomeReplan:
+		return Decision{
+			FinalState: StateReplan,
+			Outcome:    outcome.Kind,
+			Reason:     firstNonEmpty(strings.TrimSpace(outcome.Reason), "replan observation"),
+		}
+	case OutcomeAwaitingFeedback:
+		return Decision{
+			FinalState: StateAwaitingFeedback,
+			Outcome:    outcome.Kind,
+			Reason:     firstNonEmpty(strings.TrimSpace(outcome.Reason), "awaiting user feedback"),
+		}
+	case OutcomeBlocked:
+		return Decision{
+			FinalState: StateBlocked,
+			Outcome:    outcome.Kind,
+			Reason:     firstNonEmpty(strings.TrimSpace(outcome.Reason), "observation blocked"),
+		}
+	default:
+		return Decision{
+			FinalState: StateComplete,
+			Outcome:    OutcomeComplete,
+			Reason:     firstNonEmpty(strings.TrimSpace(outcome.Reason), "observation complete"),
+		}
 	}
 }

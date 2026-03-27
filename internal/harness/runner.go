@@ -56,24 +56,93 @@ func (r *Runner) Run(ctx context.Context, input string) (TurnResult, error) {
 	r.trace.Add(StateIntake, "", "", WorkerNone, "user turn received", "")
 
 	class := Classify(turn, snapshot)
-	r.trace.Add(StateClassify, class.Family, "", WorkerNone, class.Reason, class.TopicKey)
+	r.trace.Record(TraceRecord{
+		State:        StateClassify,
+		Family:       class.Family,
+		Reason:       class.Reason,
+		TopicKey:     class.TopicKey,
+		ThreadID:     snapshot.ActiveThread().ID,
+		ThreadKind:   snapshot.ActiveThread().Kind,
+		ThreadStatus: snapshot.ActiveThread().Status,
+		ThreadIntent: class.ThreadIntent,
+	})
 
 	planned := Plan(class, snapshot)
-	r.trace.Add(StatePlanStep, class.Family, planned.Kind, planned.Worker, planned.Reason, class.TopicKey)
+	r.trace.Record(TraceRecord{
+		State:    StatePlanStep,
+		Family:   class.Family,
+		Lane:     planned.Lane,
+		Step:     planned.Kind,
+		Worker:   planned.Worker,
+		Reason:   planned.Reason,
+		TopicKey: class.TopicKey,
+	})
 
 	step, obs, err := r.executeStep(ctx, turn, class, snapshot, planned)
 	obs = enrichObservation(turn, class, snapshot, obs)
 	decision := Decide(class, obs)
-	r.trace.Add(StateDecide, class.Family, step.Kind, step.Worker, decision.Reason, class.TopicKey)
+	r.trace.Record(TraceRecord{
+		State:             StateDecide,
+		Family:            class.Family,
+		Lane:              step.Lane,
+		Step:              step.Kind,
+		Worker:            step.Worker,
+		Reason:            decision.Reason,
+		TopicKey:          class.TopicKey,
+		OutcomeKind:       obs.Outcome.Kind,
+		DeliverableKind:   obs.Outcome.DeliverableKind,
+		DeliverableStatus: obs.Outcome.DeliverableStatus,
+	})
 
-	if decision.FinalState != StateBlocked {
-		obs.Response = buildForgeResponse(step, obs)
+	obs.Response = buildForgeResponse(step, obs)
+	if decision.FinalState == StateComplete || decision.FinalState == StateAwaitingFeedback {
 		obs.Response = appendResponsePostlude(obs.Response, class.ResponsePostlude)
 		r.session.Apply(class, obs)
-		r.trace.Add(StateRespond, class.Family, StepRespond, WorkerNone, "emit final forge response", class.TopicKey)
-		r.trace.Add(StateComplete, class.Family, StepRespond, WorkerNone, "turn complete", class.TopicKey)
+		if threadRecord, ok := threadTraceRecord(snapshot, r.session.Snapshot(), class); ok {
+			r.trace.Record(threadRecord)
+		}
+		r.trace.Record(TraceRecord{
+			State:    StateRespond,
+			Family:   class.Family,
+			Lane:     step.Lane,
+			Step:     StepRespond,
+			Reason:   "emit final forge response",
+			TopicKey: class.TopicKey,
+		})
+		r.trace.Record(TraceRecord{
+			State:             decision.FinalState,
+			Family:            class.Family,
+			Lane:              step.Lane,
+			Step:              StepRespond,
+			Reason:            decision.Reason,
+			TopicKey:          class.TopicKey,
+			OutcomeKind:       decision.Outcome,
+			DeliverableKind:   obs.Outcome.DeliverableKind,
+			DeliverableStatus: obs.Outcome.DeliverableStatus,
+		})
 	} else {
-		r.trace.Add(StateBlocked, class.Family, step.Kind, step.Worker, decision.Reason, class.TopicKey)
+		if strings.TrimSpace(obs.Response) != "" {
+			r.trace.Record(TraceRecord{
+				State:    StateRespond,
+				Family:   class.Family,
+				Lane:     step.Lane,
+				Step:     StepRespond,
+				Reason:   "emit blocked forge response",
+				TopicKey: class.TopicKey,
+			})
+		}
+		r.trace.Record(TraceRecord{
+			State:             decision.FinalState,
+			Family:            class.Family,
+			Lane:              step.Lane,
+			Step:              step.Kind,
+			Worker:            step.Worker,
+			Reason:            decision.Reason,
+			TopicKey:          class.TopicKey,
+			OutcomeKind:       decision.Outcome,
+			DeliverableKind:   obs.Outcome.DeliverableKind,
+			DeliverableStatus: obs.Outcome.DeliverableStatus,
+		})
 	}
 
 	return TurnResult{
@@ -102,11 +171,27 @@ func (r *Runner) executeStep(ctx context.Context, turn UserTurn, class Classific
 
 func (r *Runner) executeWorker(ctx context.Context, turn UserTurn, class Classification, session SessionState, step Step) (Step, Observation, error) {
 	if r.workers == nil {
-		r.trace.Add(StateBlocked, class.Family, step.Kind, step.Worker, "worker executor unavailable; recovering locally", class.TopicKey)
+		r.trace.Record(TraceRecord{
+			State:    StateBlocked,
+			Family:   class.Family,
+			Lane:     step.Lane,
+			Step:     step.Kind,
+			Worker:   step.Worker,
+			Reason:   "worker executor unavailable; recovering locally",
+			TopicKey: class.TopicKey,
+		})
 		return r.executeLocal(ctx, turn, class, localRecoveryStep())
 	}
 
-	r.trace.Add(StateAct, class.Family, step.Kind, step.Worker, step.Summary, class.TopicKey)
+	r.trace.Record(TraceRecord{
+		State:    StateAct,
+		Family:   class.Family,
+		Lane:     step.Lane,
+		Step:     step.Kind,
+		Worker:   step.Worker,
+		Reason:   step.Summary,
+		TopicKey: class.TopicKey,
+	})
 	deadline, _ := ctx.Deadline()
 	obs, err := r.workers.Execute(ctx, WorkerTask{
 		Kind:                              step.Worker,
@@ -123,41 +208,80 @@ func (r *Runner) executeWorker(ctx context.Context, turn UserTurn, class Classif
 		PermissionProfile: append([]string(nil), workerToolAllowlist(step.Worker)...),
 		Deadline:          deadline,
 	})
-	r.trace.Add(StateObserve, class.Family, step.Kind, step.Worker, firstNonEmpty(obs.Summary, "worker execution complete"), class.TopicKey)
+	obs = normalizeObservation(step, class, session, obs)
+	r.trace.Record(TraceRecord{
+		State:             StateObserve,
+		Family:            class.Family,
+		Lane:              step.Lane,
+		Step:              step.Kind,
+		Worker:            step.Worker,
+		Reason:            firstNonEmpty(obs.Outcome.Reason, obs.Summary, "worker execution complete"),
+		TopicKey:          class.TopicKey,
+		OutcomeKind:       obs.Outcome.Kind,
+		DeliverableKind:   obs.Outcome.DeliverableKind,
+		DeliverableStatus: obs.Outcome.DeliverableStatus,
+	})
 	if err == nil && obs.Status != ObservationBlocked {
 		return step, obs, nil
 	}
 
-	reason := firstNonEmpty(obs.Summary, errorString(err), "worker failed closed; recovering locally")
-	r.trace.Add(StateBlocked, class.Family, step.Kind, step.Worker, reason, class.TopicKey)
+	reason := firstNonEmpty(obs.Outcome.Reason, obs.Summary, errorString(err), "worker failed closed; recovering locally")
+	r.trace.Record(TraceRecord{
+		State:    StateBlocked,
+		Family:   class.Family,
+		Lane:     step.Lane,
+		Step:     step.Kind,
+		Worker:   step.Worker,
+		Reason:   reason,
+		TopicKey: class.TopicKey,
+	})
 
 	fallback := localRecoveryStep()
-	r.trace.Add(StatePlanStep, class.Family, fallback.Kind, fallback.Worker, fallback.Reason, class.TopicKey)
+	r.trace.Record(TraceRecord{
+		State:    StatePlanStep,
+		Family:   class.Family,
+		Lane:     fallback.Lane,
+		Step:     fallback.Kind,
+		Worker:   fallback.Worker,
+		Reason:   fallback.Reason,
+		TopicKey: class.TopicKey,
+	})
 	return r.executeLocal(ctx, turn, class, fallback)
 }
 
 func (r *Runner) executeLocal(ctx context.Context, turn UserTurn, class Classification, step Step) (Step, Observation, error) {
-	r.trace.Add(StateAct, class.Family, step.Kind, step.Worker, step.Summary, class.TopicKey)
-	obs, err := r.local.Execute(ctx, turn, class, r.session.Snapshot())
-	r.trace.Add(StateObserve, class.Family, step.Kind, step.Worker, firstNonEmpty(obs.Summary, "local execution complete"), class.TopicKey)
-	return step, obs, err
+	return r.executeLocalExecutor(ctx, turn, class, r.session.Snapshot(), step, r.local)
 }
 
 func (r *Runner) executeStrictLocal(ctx context.Context, turn UserTurn, class Classification, step Step) (Step, Observation, error) {
 	if r.strictLocal == nil {
-		r.trace.Add(StateBlocked, class.Family, step.Kind, step.Worker, "strict local executor unavailable; recovering locally", class.TopicKey)
+		r.trace.Record(TraceRecord{
+			State:    StateBlocked,
+			Family:   class.Family,
+			Lane:     step.Lane,
+			Step:     step.Kind,
+			Worker:   step.Worker,
+			Reason:   "strict local executor unavailable; recovering locally",
+			TopicKey: class.TopicKey,
+		})
 		fallback := localRecoveryStep()
-		r.trace.Add(StatePlanStep, class.Family, fallback.Kind, fallback.Worker, fallback.Reason, class.TopicKey)
+		r.trace.Record(TraceRecord{
+			State:    StatePlanStep,
+			Family:   class.Family,
+			Lane:     fallback.Lane,
+			Step:     fallback.Kind,
+			Worker:   fallback.Worker,
+			Reason:   fallback.Reason,
+			TopicKey: class.TopicKey,
+		})
 		return r.executeLocal(ctx, turn, class, fallback)
 	}
-	r.trace.Add(StateAct, class.Family, step.Kind, step.Worker, step.Summary, class.TopicKey)
-	obs, err := r.strictLocal.Execute(ctx, turn, class, r.session.Snapshot())
-	r.trace.Add(StateObserve, class.Family, step.Kind, step.Worker, firstNonEmpty(obs.Summary, "strict local execution complete"), class.TopicKey)
-	return step, obs, err
+	return r.executeLocalExecutor(ctx, turn, class, r.session.Snapshot(), step, r.strictLocal)
 }
 
 func localRecoveryStep() Step {
 	return Step{
+		Lane:    LaneConversational,
 		Kind:    StepLocal,
 		Worker:  WorkerNone,
 		Reason:  "worker failed closed; recover locally",
@@ -231,7 +355,7 @@ func readerTaskNeedsNonReadmeFile(step Step, class Classification) bool {
 
 func buildForgeResponse(step Step, obs Observation) string {
 	if step.Kind != StepWorker {
-		return strings.TrimSpace(obs.Response)
+		return firstNonEmpty(strings.TrimSpace(obs.Response), strings.TrimSpace(obs.Summary))
 	}
 
 	switch artifact := obs.Artifact.(type) {
@@ -251,6 +375,59 @@ func buildForgeResponse(step Step, obs Observation) string {
 		return composeResearchResponse(artifact, obs.Summary)
 	default:
 		return firstNonEmpty(obs.Summary, obs.Response)
+	}
+}
+
+func (r *Runner) executeLocalExecutor(ctx context.Context, turn UserTurn, class Classification, session SessionState, step Step, exec LocalExecutor) (Step, Observation, error) {
+	attempts := 0
+	for {
+		r.trace.Record(TraceRecord{
+			State:    StateAct,
+			Family:   class.Family,
+			Lane:     step.Lane,
+			Step:     step.Kind,
+			Worker:   step.Worker,
+			Reason:   step.Summary,
+			TopicKey: class.TopicKey,
+		})
+
+		obs, err := exec.Execute(ctx, turn, class, r.session.Snapshot())
+		obs = normalizeObservation(step, class, session, obs)
+		r.trace.Record(TraceRecord{
+			State:             StateObserve,
+			Family:            class.Family,
+			Lane:              step.Lane,
+			Step:              step.Kind,
+			Worker:            step.Worker,
+			Reason:            firstNonEmpty(obs.Outcome.Reason, obs.Summary, "local execution complete"),
+			TopicKey:          class.TopicKey,
+			OutcomeKind:       obs.Outcome.Kind,
+			DeliverableKind:   obs.Outcome.DeliverableKind,
+			DeliverableStatus: obs.Outcome.DeliverableStatus,
+		})
+		if err != nil {
+			return step, obs, err
+		}
+		if obs.Outcome.Kind == OutcomeRetry && step.Lane == LaneStrictAction && attempts < maxStrictActionRetries {
+			attempts++
+			r.trace.Record(TraceRecord{
+				State:             StateRetry,
+				Family:            class.Family,
+				Lane:              step.Lane,
+				Step:              step.Kind,
+				Worker:            step.Worker,
+				Reason:            obs.Outcome.Reason,
+				TopicKey:          class.TopicKey,
+				OutcomeKind:       obs.Outcome.Kind,
+				DeliverableKind:   obs.Outcome.DeliverableKind,
+				DeliverableStatus: obs.Outcome.DeliverableStatus,
+			})
+			continue
+		}
+		if obs.Outcome.Kind == OutcomeRetry {
+			obs = exhaustObservationRetry(obs)
+		}
+		return step, obs, nil
 	}
 }
 

@@ -95,6 +95,38 @@ func TestDecideCompletesSuccessfulObservation(t *testing.T) {
 	}
 }
 
+func TestDecideUsesAwaitingFeedbackOutcome(t *testing.T) {
+	got := Decide(Classification{Family: FamilyAnswer}, Observation{
+		Status: ObservationComplete,
+		Outcome: ActionOutcome{
+			Lane:              LaneStrictAction,
+			Kind:              OutcomeAwaitingFeedback,
+			DeliverableKind:   DeliverablePreviewAvailableAndRenderable,
+			DeliverableStatus: DeliverableSatisfied,
+			Reason:            "preview deliverable satisfied; awaiting feedback",
+		},
+	})
+	if got.FinalState != StateAwaitingFeedback {
+		t.Fatalf("decision = %#v", got)
+	}
+}
+
+func TestDecideUsesRetryOutcome(t *testing.T) {
+	got := Decide(Classification{Family: FamilyImplement}, Observation{
+		Status: ObservationBlocked,
+		Outcome: ActionOutcome{
+			Lane:              LaneStrictAction,
+			Kind:              OutcomeRetry,
+			DeliverableKind:   DeliverablePreviewAvailableAndRenderable,
+			DeliverableStatus: DeliverableMissing,
+			Reason:            "strict action finished without a verified preview",
+		},
+	})
+	if got.FinalState != StateRetry {
+		t.Fatalf("decision = %#v", got)
+	}
+}
+
 func TestDecideBlocksErroredObservation(t *testing.T) {
 	got := Decide(Classification{Family: FamilyInspect}, Observation{Status: ObservationBlocked, Summary: "boom"})
 	if got.FinalState != StateBlocked {

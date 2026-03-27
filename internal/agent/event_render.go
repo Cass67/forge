@@ -42,7 +42,9 @@ func (r *EventRenderer) AgentText(text string) {
 
 func (r *EventRenderer) ToolCall(name, summary string) {
 	r.events <- llm.Event{Kind: llm.EventToolCall, Agent: name, Text: summary}
-	r.events <- llm.Event{Kind: llm.EventProgress, Agent: r.label, Text: progressLine(r.label, name, summary)}
+	if progress := progressLine(r.label, name, summary); progress != "" {
+		r.events <- llm.Event{Kind: llm.EventProgress, Agent: r.label, Text: progress}
+	}
 }
 
 func (r *EventRenderer) ToolResult(name, output, diff string, isError bool) {
@@ -137,7 +139,9 @@ func (r *SubAgentRenderer) AgentText(text string) {
 
 func (r *SubAgentRenderer) ToolCall(name, summary string) {
 	r.parent.events <- llm.Event{Kind: llm.EventToolCall, Agent: name, Text: summary, SubAgent: r.role}
-	r.parent.events <- llm.Event{Kind: llm.EventProgress, Agent: r.role, Text: progressLine(r.role, name, summary)}
+	if progress := progressLine(r.role, name, summary); progress != "" {
+		r.parent.events <- llm.Event{Kind: llm.EventProgress, Agent: r.role, Text: progress, SubAgent: r.role}
+	}
 }
 
 func (r *SubAgentRenderer) ToolResult(name, output, diff string, isError bool) {

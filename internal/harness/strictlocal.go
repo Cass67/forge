@@ -31,19 +31,29 @@ type StrictAgentExecutor struct {
 }
 
 func (e StrictAgentExecutor) Execute(ctx context.Context, turn UserTurn, class Classification, session SessionState) (Observation, error) {
+	resolvedClass := class
+	resolvedClass.TaskText = firstNonEmpty(strings.TrimSpace(class.TaskText), turn.Text)
 	if e.Agent == nil {
 		err := fmt.Errorf("strict local agent unavailable")
 		return Observation{
 			Status:   ObservationBlocked,
+			Lane:     LaneStrictAction,
 			Summary:  err.Error(),
-			TopicKey: class.TopicKey,
-			Err:      err,
+			TopicKey: resolvedClass.TopicKey,
+			Outcome: ActionOutcome{
+				Lane:              LaneStrictAction,
+				Kind:              OutcomeBlocked,
+				DeliverableKind:   resolveExpectedDeliverable(resolvedClass, session, LaneStrictAction),
+				DeliverableStatus: DeliverableMissing,
+				Reason:            err.Error(),
+			},
+			Err: err,
 		}, err
 	}
 
-	userMessage := buildStrictLocalTurnPrompt(class, turn.Text, session)
+	userMessage := buildStrictLocalTurnPrompt(resolvedClass, turn.Text, session)
 	selectedTools := e.DefaultTools
-	if useReadOnlyInspectScope(class) && e.InspectTools != nil {
+	if useReadOnlyInspectScope(resolvedClass) && e.InspectTools != nil {
 		selectedTools = e.InspectTools
 		if e.DefaultTools != nil {
 			defer e.Agent.SetTools(e.DefaultTools)
@@ -62,39 +72,38 @@ func (e StrictAgentExecutor) Execute(ctx context.Context, turn UserTurn, class C
 
 	skillRuntime := skills.NewRuntime(e.LoadedSkills)
 	applyStrictLocalSkillContext(e.Agent, skillRuntime, turn.Text, e.AutoSkillsMode)
-	if progress := strictLocalProgressMessage(class, skillRuntime.UseRecords()); progress != "" {
+	if progress := strictLocalProgressMessage(resolvedClass, skillRuntime.UseRecords()); progress != "" {
 		e.Agent.EmitProgress(progress)
 	}
 
 	if err := e.Agent.Run(ctx, userMessage); err != nil {
 		return Observation{
-			Status:    ObservationBlocked,
-			Summary:   err.Error(),
-			TopicKey:  class.TopicKey,
+			Status:   ObservationBlocked,
+			Lane:     LaneStrictAction,
+			Summary:  err.Error(),
+			TopicKey: resolvedClass.TopicKey,
+			Outcome: ActionOutcome{
+				Lane:              LaneStrictAction,
+				Kind:              OutcomeBlocked,
+				DeliverableKind:   resolveExpectedDeliverable(resolvedClass, session, LaneStrictAction),
+				DeliverableStatus: DeliverableMissing,
+				Reason:            err.Error(),
+			},
 			SkillUses: skillRuntime.UseRecords(),
 			Err:       err,
 		}, err
 	}
 
 	response := strings.TrimSpace(e.Agent.LastResponse())
-	if err := validateLocalResponse(class, response); err != nil {
-		return Observation{
-			Status:    ObservationBlocked,
-			Summary:   err.Error(),
-			TopicKey:  class.TopicKey,
-			SkillUses: skillRuntime.UseRecords(),
-			Err:       err,
-		}, err
-	}
-
-	return Observation{
+	return normalizeObservation(Step{Lane: LaneStrictAction, Kind: StepStrictLocal}, resolvedClass, session, Observation{
 		Status:    ObservationComplete,
+		Lane:      LaneStrictAction,
 		Response:  response,
 		Summary:   response,
-		TopicKey:  class.TopicKey,
+		TopicKey:  resolvedClass.TopicKey,
 		Runtime:   captureLocalRuntimeSnapshot(e.PreviewRuntime, e.Agent),
 		SkillUses: skillRuntime.UseRecords(),
-	}, nil
+	}), nil
 }
 
 func applyStrictLocalSkillContext(agent StrictScopedAgent, runtime *skills.Runtime, input, autoMode string) {
