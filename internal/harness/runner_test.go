@@ -38,6 +38,33 @@ func (s *stubWorkerExecutor) Execute(_ context.Context, task WorkerTask) (Observ
 	return s.obs, s.err
 }
 
+func seedActivePreviewThread(session *Session) string {
+	_ = session.BeginTurn("show me three themes in a web preview")
+	session.Apply(Classification{
+		Family:                  FamilyAnswer,
+		PrefersVisibleExecution: true,
+		TaskText:                "show me three themes in a web preview",
+	}, Observation{
+		Status:   ObservationComplete,
+		Response: "Preview is live.",
+		Runtime: LocalRuntimeSnapshot{
+			Artifact: ArtifactSnapshot{
+				Handle:   "artifact-1",
+				Path:     "themes_preview.html",
+				MIMEType: "text/html",
+				Bytes:    2048,
+			},
+			Preview: PreviewSnapshot{
+				Status: "live",
+				Path:   "themes_preview.html",
+				Port:   4173,
+				URL:    "http://127.0.0.1:4173/themes_preview.html",
+			},
+		},
+	})
+	return session.Snapshot().ActiveThread().ID
+}
+
 func TestRunnerLocalInspectUsesLocalStep(t *testing.T) {
 	local := &stubLocalExecutor{
 		obs: Observation{
@@ -193,6 +220,20 @@ func TestRunnerVisibleCollaborationUsesStrictLocalStep(t *testing.T) {
 			Status:   ObservationComplete,
 			Response: "Theme mockups are ready in a verified preview.",
 			Summary:  "verified preview ready",
+			Runtime: LocalRuntimeSnapshot{
+				Artifact: ArtifactSnapshot{
+					Handle:   "artifact-1",
+					Path:     "themes_preview.html",
+					MIMEType: "text/html",
+					Bytes:    2048,
+				},
+				Preview: PreviewSnapshot{
+					Status: "live",
+					Path:   "themes_preview.html",
+					Port:   4173,
+					URL:    "http://127.0.0.1:4173/themes_preview.html",
+				},
+			},
 		},
 	}
 
@@ -208,6 +249,9 @@ func TestRunnerVisibleCollaborationUsesStrictLocalStep(t *testing.T) {
 	if result.Step.Kind != StepStrictLocal {
 		t.Fatalf("step = %#v", result.Step)
 	}
+	if result.Step.Lane != LaneStrictAction {
+		t.Fatalf("lane = %q, want %q", result.Step.Lane, LaneStrictAction)
+	}
 	if strictLocal.calls != 1 {
 		t.Fatalf("strict local calls = %d", strictLocal.calls)
 	}
@@ -216,6 +260,138 @@ func TestRunnerVisibleCollaborationUsesStrictLocalStep(t *testing.T) {
 	}
 	if !result.Classification.PrefersVisibleExecution {
 		t.Fatalf("classification = %#v", result.Classification)
+	}
+}
+
+func TestRunnerVisiblePreviewSuccessAwaitsUserFeedback(t *testing.T) {
+	local := &stubLocalExecutor{}
+	strictLocal := &stubLocalExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Response: "Theme mockups are ready in a verified preview.",
+			Summary:  "verified preview ready",
+			Runtime: LocalRuntimeSnapshot{
+				Artifact: ArtifactSnapshot{
+					Handle:   "artifact-1",
+					Path:     "themes_preview.html",
+					MIMEType: "text/html",
+					Bytes:    2048,
+				},
+				Preview: PreviewSnapshot{
+					Status: "live",
+					Path:   "themes_preview.html",
+					Port:   4173,
+					URL:    "http://127.0.0.1:4173/themes_preview.html",
+				},
+			},
+		},
+	}
+	session := NewSession()
+
+	result, err := NewRunner(RunnerConfig{
+		Session:     session,
+		Trace:       NewRecorder(),
+		Local:       local,
+		StrictLocal: strictLocal,
+	}).Run(context.Background(), "i need you to mock up 3 themes and show me them in a local web preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Decision.FinalState != StateAwaitingFeedback {
+		t.Fatalf("decision = %#v", result.Decision)
+	}
+	if result.Observation.Outcome.Kind != OutcomeAwaitingFeedback {
+		t.Fatalf("outcome = %#v", result.Observation.Outcome)
+	}
+	if !session.Snapshot().HasActiveThread() {
+		t.Fatalf("expected active thread: %#v", session.Snapshot())
+	}
+	if got := session.Snapshot().ActiveThread().Status; got != ThreadAwaitingUserFeedback {
+		t.Fatalf("thread status = %q", got)
+	}
+}
+
+func TestRunnerVisiblePreviewArtifactWithoutVerifiedPreviewRetriesThenBlocks(t *testing.T) {
+	strictLocal := &stubLocalExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Response: "The theme preview artifact is ready.",
+			Summary:  "artifact written",
+			Runtime: LocalRuntimeSnapshot{
+				Artifact: ArtifactSnapshot{
+					Handle:   "artifact-1",
+					Path:     "themes_preview.html",
+					MIMEType: "text/html",
+					Bytes:    2048,
+				},
+			},
+		},
+	}
+	runner := NewRunner(RunnerConfig{
+		Session:     NewSession(),
+		Trace:       NewRecorder(),
+		Local:       &stubLocalExecutor{},
+		StrictLocal: strictLocal,
+	})
+
+	result, err := runner.Run(context.Background(), "start a preview for themes_preview.html and tell me the verified url")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strictLocal.calls != 2 {
+		t.Fatalf("strict local calls = %d, want 2", strictLocal.calls)
+	}
+	if result.Decision.FinalState != StateBlocked {
+		t.Fatalf("decision = %#v", result.Decision)
+	}
+	if result.Observation.Outcome.Kind != OutcomeBlocked {
+		t.Fatalf("outcome = %#v", result.Observation.Outcome)
+	}
+	if !strings.Contains(strings.ToLower(result.Response), "verified preview") {
+		t.Fatalf("response = %q", result.Response)
+	}
+	var sawRetry bool
+	for _, record := range result.Trace {
+		if record.State == StateRetry {
+			sawRetry = true
+			break
+		}
+	}
+	if !sawRetry {
+		t.Fatalf("expected retry trace, got %#v", result.Trace)
+	}
+}
+
+func TestRunnerVisibleMalformedToolResidueRetriesThenBlocks(t *testing.T) {
+	strictLocal := &stubLocalExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Response: "<tool_call>\n{\"name\":\"preview_server_ensure\",\"args\":{\"path\":\"themes_preview.html\"}}\n</tool_call>",
+			Summary:  "malformed strict output",
+		},
+	}
+	runner := NewRunner(RunnerConfig{
+		Session:     NewSession(),
+		Trace:       NewRecorder(),
+		Local:       &stubLocalExecutor{},
+		StrictLocal: strictLocal,
+	})
+
+	result, err := runner.Run(context.Background(), "show me the preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strictLocal.calls != 2 {
+		t.Fatalf("strict local calls = %d, want 2", strictLocal.calls)
+	}
+	if result.Decision.FinalState != StateBlocked {
+		t.Fatalf("decision = %#v", result.Decision)
+	}
+	if result.Observation.Outcome.Kind != OutcomeBlocked {
+		t.Fatalf("outcome = %#v", result.Observation.Outcome)
+	}
+	if !strings.Contains(strings.ToLower(result.Response), "tool markup") {
+		t.Fatalf("response = %q", result.Response)
 	}
 }
 
@@ -541,6 +717,53 @@ func TestRunnerContinuationUsesPendingActionInsteadOfPlainAnswer(t *testing.T) {
 	}
 }
 
+func TestRunnerPendingActionContinuationCreatesThreadLedgerEntry(t *testing.T) {
+	local := &stubLocalExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Response: "Top repo issues are weak automation checks and duplicated scripts.",
+			Summary:  "repo review complete",
+			TopicKey: "workspace:repository",
+		},
+	}
+	session := NewSession()
+	_ = session.BeginTurn("how can you tell me if there are improvements to be made")
+	session.Apply(Classification{
+		Family:   FamilyAnswer,
+		TopicKey: "workspace:repository",
+	}, Observation{
+		Status:   ObservationComplete,
+		Response: "I can inspect the repo and give you a prioritized list.",
+		PendingAction: PendingAction{
+			SetAtTurn:       1,
+			Family:          FamilyInspect,
+			TopicKey:        "workspace:repository",
+			TaskText:        "review the whole repo for improvement opportunities",
+			WantsEvaluation: true,
+		},
+	})
+
+	_, err := NewRunner(RunnerConfig{
+		Session: session,
+		Trace:   NewRecorder(),
+		Local:   local,
+	}).Run(context.Background(), "sure")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	state := session.Snapshot()
+	if !state.HasActiveThread() {
+		t.Fatalf("expected active thread after pending-action continuation: %#v", state)
+	}
+	if got := state.ActiveThread().Kind; got != ThreadWorkspaceInspect {
+		t.Fatalf("thread kind = %q", got)
+	}
+	if got := state.ActiveThread().TaskText; got != "review the whole repo for improvement opportunities" {
+		t.Fatalf("task text = %q", got)
+	}
+}
+
 func TestRunnerPlanningFollowUpUsesRecentEvidenceInAnswerMode(t *testing.T) {
 	local := &stubLocalExecutor{
 		obs: Observation{
@@ -793,6 +1016,168 @@ func TestRunnerContinuationResumesInspectOfferFromInspectTurn(t *testing.T) {
 	}
 	if result.Response != "Tracked root artifacts look like the safest cleanup target." {
 		t.Fatalf("response = %q", result.Response)
+	}
+}
+
+func TestRunnerReplayKeepsExistingActivePreviewThread(t *testing.T) {
+	session := NewSession()
+	firstID := seedActivePreviewThread(session)
+	local := &stubLocalExecutor{}
+	strictLocal := &stubLocalExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Response: "Preview is still live at http://127.0.0.1:4173/themes_preview.html",
+			Summary:  "preview replayed",
+			Runtime: LocalRuntimeSnapshot{
+				Artifact: ArtifactSnapshot{
+					Handle:   "artifact-1",
+					Path:     "themes_preview.html",
+					MIMEType: "text/html",
+					Bytes:    2048,
+				},
+				Preview: PreviewSnapshot{
+					Status: "live",
+					Path:   "themes_preview.html",
+					Port:   4173,
+					URL:    "http://127.0.0.1:4173/themes_preview.html",
+				},
+			},
+		},
+	}
+
+	result, err := NewRunner(RunnerConfig{
+		Session:     session,
+		Trace:       NewRecorder(),
+		Local:       local,
+		StrictLocal: strictLocal,
+	}).Run(context.Background(), "show it again")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Step.Kind != StepStrictLocal {
+		t.Fatalf("step = %#v", result.Step)
+	}
+	if result.Classification.ThreadIntent != TurnIntentReplayThread {
+		t.Fatalf("thread intent = %q", result.Classification.ThreadIntent)
+	}
+	if got := session.Snapshot().ActiveThread().ID; got != firstID {
+		t.Fatalf("active thread id = %q, want %q", got, firstID)
+	}
+	found := false
+	for _, record := range result.Trace {
+		if record.ThreadID == firstID && record.ThreadIntent == TurnIntentReplayThread && record.Reason == "thread replayed" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected replay trace record, got %#v", result.Trace)
+	}
+}
+
+func TestRunnerCancelActivePreviewThreadMovesItToLastThread(t *testing.T) {
+	session := NewSession()
+	firstID := seedActivePreviewThread(session)
+	local := &stubLocalExecutor{}
+	strictLocal := &stubLocalExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Response: "Stopped tracking the preview thread.",
+			Summary:  "preview thread canceled",
+		},
+	}
+
+	result, err := NewRunner(RunnerConfig{
+		Session:     session,
+		Trace:       NewRecorder(),
+		Local:       local,
+		StrictLocal: strictLocal,
+	}).Run(context.Background(), "cancel the preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Step.Kind != StepStrictLocal {
+		t.Fatalf("step = %#v", result.Step)
+	}
+	if result.Classification.ThreadIntent != TurnIntentCancelThread {
+		t.Fatalf("thread intent = %q", result.Classification.ThreadIntent)
+	}
+
+	state := session.Snapshot()
+	if state.HasActiveThread() {
+		t.Fatalf("expected canceled thread to close active state: %#v", state)
+	}
+	if got := state.Threads.Last.ID; got != firstID {
+		t.Fatalf("last thread id = %q, want %q", got, firstID)
+	}
+	if got := state.Threads.Last.Status; got != ThreadCanceled {
+		t.Fatalf("last thread status = %q, want %q", got, ThreadCanceled)
+	}
+	found := false
+	for _, record := range result.Trace {
+		if record.ThreadID == firstID && record.ThreadIntent == TurnIntentCancelThread && record.Reason == "thread canceled" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected cancel trace record, got %#v", result.Trace)
+	}
+}
+
+func TestRunnerNewTaskSupersedesActivePreviewThread(t *testing.T) {
+	session := NewSession()
+	firstID := seedActivePreviewThread(session)
+	local := &stubLocalExecutor{}
+	worker := &stubWorkerExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Summary:  "latest API docs gathered",
+			TopicKey: "workspace:repository",
+		},
+	}
+
+	result, err := NewRunner(RunnerConfig{
+		Session: session,
+		Trace:   NewRecorder(),
+		Local:   local,
+		Workers: worker,
+	}).Run(context.Background(), "look up the latest API docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Classification.Family != FamilyResearch {
+		t.Fatalf("family = %q", result.Classification.Family)
+	}
+	if result.Step.Kind != StepWorker || result.Step.Worker != WorkerResearcher {
+		t.Fatalf("step = %#v", result.Step)
+	}
+
+	state := session.Snapshot()
+	if !state.HasActiveThread() {
+		t.Fatalf("expected new active thread: %#v", state)
+	}
+	if got := state.ActiveThread().Kind; got != ThreadExternalResearch {
+		t.Fatalf("active thread kind = %q", got)
+	}
+	if got := state.ActiveThread().SupersedesThreadID; got != firstID {
+		t.Fatalf("supersedes = %q, want %q", got, firstID)
+	}
+	if got := state.Threads.Last.Status; got != ThreadSuperseded {
+		t.Fatalf("last thread status = %q, want %q", got, ThreadSuperseded)
+	}
+	if got := state.Threads.Last.ID; got != firstID {
+		t.Fatalf("last thread id = %q, want %q", got, firstID)
+	}
+	found := false
+	for _, record := range result.Trace {
+		if record.ThreadIntent == TurnIntentSupersedeThread && record.Reason == "thread superseded" && record.ThreadID == state.ActiveThread().ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected supersede trace record, got %#v", result.Trace)
 	}
 }
 

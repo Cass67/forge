@@ -238,3 +238,104 @@ func TestSessionRecentPreviewAndArtifactExpireAfterOneTurn(t *testing.T) {
 		t.Fatalf("expected recent preview to expire after one turn: %#v", state)
 	}
 }
+
+func TestSessionApplyCreatesActivePreviewThreadAndKeepsItBeyondOneTurn(t *testing.T) {
+	session := NewSession()
+	_ = session.BeginTurn("show me three themes in a web preview")
+	session.Apply(Classification{
+		Family:                  FamilyAnswer,
+		PrefersVisibleExecution: true,
+		TaskText:                "show me three themes in a web preview",
+	}, Observation{
+		Status:   ObservationComplete,
+		Response: "Preview is live.",
+		Runtime: LocalRuntimeSnapshot{
+			Artifact: ArtifactSnapshot{
+				Handle:   "artifact-1",
+				Path:     "mockups/themes_preview.html",
+				MIMEType: "text/html",
+				Bytes:    128,
+			},
+			Preview: PreviewSnapshot{
+				Status: "live",
+				Path:   "mockups/themes_preview.html",
+				Port:   4173,
+				URL:    "http://127.0.0.1:4173/themes_preview.html",
+			},
+		},
+	})
+
+	state := session.Snapshot()
+	if !state.HasActiveThread() {
+		t.Fatalf("expected active thread: %#v", state)
+	}
+	thread := state.ActiveThread()
+	if thread.Kind != ThreadPreviewCollaboration {
+		t.Fatalf("thread kind = %q", thread.Kind)
+	}
+	if thread.Deliverable != DeliverablePreviewAvailableAndRenderable {
+		t.Fatalf("deliverable = %q", thread.Deliverable)
+	}
+	if thread.Status != ThreadAwaitingUserFeedback {
+		t.Fatalf("status = %q", thread.Status)
+	}
+	firstID := thread.ID
+	if firstID == "" {
+		t.Fatalf("missing thread id: %#v", thread)
+	}
+
+	_ = session.BeginTurn("thanks")
+	_ = session.BeginTurn("show it again")
+
+	state = session.Snapshot()
+	if !state.HasActiveThread() {
+		t.Fatalf("expected active thread to persist: %#v", state)
+	}
+	if got := state.ActiveThread().ID; got != firstID {
+		t.Fatalf("thread id = %q, want %q", got, firstID)
+	}
+}
+
+func TestSessionApplyCancelMovesActiveThreadToLastThread(t *testing.T) {
+	session := NewSession()
+	_ = session.BeginTurn("show me three themes in a web preview")
+	session.Apply(Classification{
+		Family:                  FamilyAnswer,
+		PrefersVisibleExecution: true,
+		TaskText:                "show me three themes in a web preview",
+	}, Observation{
+		Status:   ObservationComplete,
+		Response: "Preview is live.",
+		Runtime: LocalRuntimeSnapshot{
+			Preview: PreviewSnapshot{
+				Status: "live",
+				Path:   "mockups/themes_preview.html",
+				Port:   4173,
+				URL:    "http://127.0.0.1:4173/themes_preview.html",
+			},
+		},
+	})
+	firstID := session.Snapshot().ActiveThread().ID
+
+	_ = session.BeginTurn("cancel the preview")
+	session.Apply(Classification{
+		Family:                  FamilyAnswer,
+		PrefersVisibleExecution: true,
+		IsFollowUp:              true,
+		ThreadIntent:            TurnIntentCancelThread,
+	}, Observation{
+		Status:   ObservationComplete,
+		Response: "Stopped tracking the preview.",
+	})
+
+	state := session.Snapshot()
+	if state.HasActiveThread() {
+		t.Fatalf("expected no active thread after cancel: %#v", state)
+	}
+	if got := state.Threads.Last.ID; got != firstID {
+		t.Fatalf("last thread id = %q, want %q", got, firstID)
+	}
+	if got := state.Threads.Last.Status; got != ThreadCanceled {
+		t.Fatalf("last thread status = %q, want %q", got, ThreadCanceled)
+	}
+}

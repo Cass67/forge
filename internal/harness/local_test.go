@@ -421,11 +421,14 @@ func TestAgentExecutorRejectsMalformedVisibleCollaborationToolMarkup(t *testing.
 		Family:                  FamilyAnswer,
 		PrefersVisibleExecution: true,
 	}, SessionState{})
-	if err == nil {
-		t.Fatal("expected malformed visible collaboration tool markup to fail closed")
+	if err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
 	}
 	if obs.Status != ObservationBlocked {
 		t.Fatalf("status = %q, want %q", obs.Status, ObservationBlocked)
+	}
+	if obs.Outcome.Kind != OutcomeBlocked {
+		t.Fatalf("outcome = %#v", obs.Outcome)
 	}
 	if !strings.Contains(obs.Summary, "malformed tool markup") {
 		t.Fatalf("summary = %q, want malformed tool markup context", obs.Summary)
@@ -446,11 +449,14 @@ func TestAgentExecutorRejectsProsePrefixedMalformedVisibleCollaborationToolMarku
 		Family:                  FamilyAnswer,
 		PrefersVisibleExecution: true,
 	}, SessionState{})
-	if err == nil {
-		t.Fatal("expected prose-prefixed malformed visible collaboration tool markup to fail closed")
+	if err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
 	}
 	if obs.Status != ObservationBlocked {
 		t.Fatalf("status = %q, want %q", obs.Status, ObservationBlocked)
+	}
+	if obs.Outcome.Kind != OutcomeBlocked {
+		t.Fatalf("outcome = %#v", obs.Outcome)
 	}
 	if !strings.Contains(obs.Summary, "malformed tool markup") {
 		t.Fatalf("summary = %q, want malformed tool markup context", obs.Summary)

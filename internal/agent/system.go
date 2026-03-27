@@ -33,6 +33,7 @@ func BuildSystemPrompt(workDir string, registry *tools.Registry, skillsDesc stri
 	sb.WriteString("- Do not wait for confirmation before using non-destructive tools. Act first, then report results.\n")
 	sb.WriteString("- If you give a short progress update, immediately follow it with the relevant tool call in the same message.\n")
 	sb.WriteString("- Continue working after progress updates; do not pause waiting for confirmation unless you need missing information, explicit approval for a consequential action, or the task is complete.\n")
+	sb.WriteString("- The host owns visible progress updates. Do not invent step-by-step narration unless the user explicitly asks for it.\n")
 	sb.WriteString("- If something fails, read the error, diagnose, and fix. Don't repeat the same failing approach.\n")
 	sb.WriteString("- Ask the user for clarification only if the request is ambiguous or you are genuinely blocked.\n")
 	sb.WriteString("\n## Autonomy\n")
@@ -107,6 +108,7 @@ func BuildStrictLocalSystemPrompt(workDir string, registry *tools.Registry, load
 	sb.WriteString("- Every working turn must be exactly one valid <tool_call>...</tool_call> block and nothing else.\n")
 	sb.WriteString("- Final turn must be plain user-facing text only.\n")
 	sb.WriteString("- Never mix a tool call with status text, narration, or prose in the same response.\n")
+	sb.WriteString("- Do not narrate incremental progress in prose; the host will emit visible milestone updates from tool and lane state.\n")
 	sb.WriteString("- Wait for tool results before deciding what to do next.\n")
 	if registryHasTool(registry, "edit_file") && registryHasTool(registry, "read_file") {
 		sb.WriteString("- After edit_file changes a file, read_file that file before another edit_file on the same path unless you intentionally replace the whole file.\n")

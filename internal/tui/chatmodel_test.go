@@ -149,7 +149,7 @@ func TestChatModelHandlesAbortClearsLiveProgress(t *testing.T) {
 	if len(m.messages) != 0 {
 		t.Fatalf("expected abort to clear working rows, got %#v", m.messages)
 	}
-	if m.liveProgress != (LiveProgressState{}) {
+	if !m.liveProgress.IsZero() {
 		t.Fatalf("expected abort to clear live progress, got %#v", m.liveProgress)
 	}
 	if len(m.records) != 0 {
@@ -210,7 +210,7 @@ func TestChatModelShowsInlineWorkingMessageForRuntimeInfo(t *testing.T) {
 	}
 }
 
-func TestChatModelProgressUpdatesActiveSubAgentInPlace(t *testing.T) {
+func TestChatModelProgressAccumulatesActiveSubAgentMilestones(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 80
 	m.height = 24
@@ -235,12 +235,12 @@ func TestChatModelProgressUpdatesActiveSubAgentInPlace(t *testing.T) {
 	if msg.Header != "" {
 		t.Fatalf("header = %q, want empty", msg.Header)
 	}
-	if got := msg.Content; got != "reading app.go" {
-		t.Fatalf("content = %q, want last progress line", got)
+	if got := msg.Content; got != "reading README.md\nlooking for \"**/*.go\"\nreading main.go\nreading app.go" {
+		t.Fatalf("content = %q", got)
 	}
 }
 
-func TestChatModelProgressHandoffReplacesPreviousWorkingLine(t *testing.T) {
+func TestChatModelProgressHandoffAppendsPreviousWorkingLine(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 80
 	m.height = 24
@@ -255,7 +255,7 @@ func TestChatModelProgressHandoffReplacesPreviousWorkingLine(t *testing.T) {
 	if len(m.messages) != 1 {
 		t.Fatalf("messages = %#v", m.messages)
 	}
-	if got := m.messages[0]; got.Kind != MsgWorking || got.Content != "editing main.go" {
+	if got := m.messages[0]; got.Kind != MsgWorking || got.Content != "reading README.md\ndelegating to builder\nediting main.go" {
 		t.Fatalf("unexpected working handoff state: %#v", got)
 	}
 }
@@ -300,13 +300,13 @@ func TestLiveProgressChatModelKeepsProgressTransientUntilDone(t *testing.T) {
 	updated, _ = m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "reading app.go"})
 	m = updated.(ChatModel)
 
-	if len(m.messages) != 1 || m.messages[0].Kind != MsgWorking || m.messages[0].Content != "reading app.go" {
+	if len(m.messages) != 1 || m.messages[0].Kind != MsgWorking || m.messages[0].Content != "reading README.md\nreading app.go" {
 		t.Fatalf("messages = %#v", m.messages)
 	}
 	if len(m.records) != 0 {
 		t.Fatalf("records = %#v", m.records)
 	}
-	if m.liveProgress.Message != "reading app.go" {
+	if got := m.liveProgress.LatestMessage(); got != "reading app.go" {
 		t.Fatalf("live progress = %#v", m.liveProgress)
 	}
 
@@ -316,13 +316,13 @@ func TestLiveProgressChatModelKeepsProgressTransientUntilDone(t *testing.T) {
 	if len(m.messages) != 0 {
 		t.Fatalf("messages after done = %#v", m.messages)
 	}
-	if m.liveProgress != (LiveProgressState{}) {
+	if !m.liveProgress.IsZero() {
 		t.Fatalf("live progress after done = %#v", m.liveProgress)
 	}
 	if len(m.records) != 1 {
 		t.Fatalf("records after done = %#v", m.records)
 	}
-	if m.records[0].Kind != RecordSystem || len(m.records[0].Segments) != 1 || m.records[0].Segments[0].Text != "reading app.go" {
+	if m.records[0].Kind != RecordSystem || len(m.records[0].Segments) != 1 || m.records[0].Segments[0].Text != "reading README.md\nreading app.go" {
 		t.Fatalf("record after done = %#v", m.records[0])
 	}
 }
@@ -3626,7 +3626,7 @@ func TestChatModelRestoreSessionRebuildsTranscriptState(t *testing.T) {
 	m.AddMessage(ChatMessage{Kind: MsgStatus, Content: "Error: stale"})
 	updated, _ = m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "stale progress"})
 	m = updated.(ChatModel)
-	if m.liveProgress == (LiveProgressState{}) {
+	if m.liveProgress.IsZero() {
 		t.Fatal("expected stale progress before restore")
 	}
 
@@ -3635,7 +3635,7 @@ func TestChatModelRestoreSessionRebuildsTranscriptState(t *testing.T) {
 	updated, _ = m.submitInput()
 	m = updated.(ChatModel)
 
-	if m.liveProgress != (LiveProgressState{}) {
+	if !m.liveProgress.IsZero() {
 		t.Fatalf("expected restore to clear live progress, got %#v", m.liveProgress)
 	}
 	for _, msg := range m.messages {

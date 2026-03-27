@@ -2,11 +2,14 @@ package tui
 
 import "testing"
 
-func TestLiveProgressReplacesPreviousMessage(t *testing.T) {
+func TestLiveProgressAccumulatesDistinctMessages(t *testing.T) {
 	slot := LiveProgressState{}
 	slot = slot.Apply(ProgressUpdate{TurnID: 3, ReplaceKey: "active", Message: "reviewing the repo"})
 	slot = slot.Apply(ProgressUpdate{TurnID: 3, ReplaceKey: "active", Message: "checking tests"})
-	if slot.Message != "checking tests" {
+	if slot.LatestMessage() != "checking tests" {
+		t.Fatalf("slot = %#v", slot)
+	}
+	if got := slot.RenderMessage(); got != "reviewing the repo\nchecking tests" {
 		t.Fatalf("slot = %#v", slot)
 	}
 }
@@ -15,7 +18,7 @@ func TestLiveProgressFinalizeReturnsSystemNote(t *testing.T) {
 	slot := LiveProgressState{
 		TurnID:     7,
 		ReplaceKey: "active",
-		Message:    "checking tests",
+		Entries:    []string{"reviewing the repo", "checking tests"},
 	}
 
 	record, ok := slot.Finalize()
@@ -28,7 +31,7 @@ func TestLiveProgressFinalizeReturnsSystemNote(t *testing.T) {
 	if record.TurnID != 7 {
 		t.Fatalf("turn id = %d", record.TurnID)
 	}
-	if len(record.Segments) != 1 || record.Segments[0].Kind != SegmentText || record.Segments[0].Text != "checking tests" {
+	if len(record.Segments) != 1 || record.Segments[0].Kind != SegmentText || record.Segments[0].Text != "reviewing the repo\nchecking tests" {
 		t.Fatalf("record = %#v", record)
 	}
 	if !record.Final {
@@ -40,9 +43,9 @@ func TestLiveProgressResetClearsState(t *testing.T) {
 	slot := LiveProgressState{
 		TurnID:     7,
 		ReplaceKey: "active",
-		Message:    "checking tests",
+		Entries:    []string{"checking tests"},
 	}
-	if got := slot.Reset(); got != (LiveProgressState{}) {
+	if got := slot.Reset(); !got.IsZero() {
 		t.Fatalf("slot = %#v", got)
 	}
 }

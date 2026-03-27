@@ -676,6 +676,95 @@ func TestClassifyPendingActionContinuationDoesNotOverrideExplicitImplementation(
 	}
 }
 
+func TestClassifyActivePreviewThreadReplayUsesThreadLedger(t *testing.T) {
+	got := Classify(UserTurn{Text: "show it again"}, SessionState{
+		Turn: 4,
+		Threads: ThreadLedger{
+			Active: ThreadState{
+				ID:          "thread-1",
+				Kind:        ThreadPreviewCollaboration,
+				Status:      ThreadAwaitingUserFeedback,
+				Deliverable: DeliverablePreviewAvailableAndRenderable,
+				TaskText:    "show me three themes in a web preview",
+				Preview: PreviewSnapshot{
+					Status: "live",
+					Path:   "mockups/themes_preview.html",
+					Port:   4173,
+					URL:    "http://127.0.0.1:4173/themes_preview.html",
+				},
+			},
+		},
+	})
+	if got.Family != FamilyAnswer {
+		t.Fatalf("family = %q", got.Family)
+	}
+	if !got.PrefersVisibleExecution {
+		t.Fatalf("expected visible execution: %#v", got)
+	}
+	if !got.IsFollowUp {
+		t.Fatalf("expected follow-up classification: %#v", got)
+	}
+	if got.ThreadIntent != TurnIntentReplayThread {
+		t.Fatalf("thread intent = %q", got.ThreadIntent)
+	}
+}
+
+func TestClassifyActivePreviewThreadContinueUsesThreadLedger(t *testing.T) {
+	got := Classify(UserTurn{Text: "continue"}, SessionState{
+		Turn: 4,
+		Threads: ThreadLedger{
+			Active: ThreadState{
+				ID:          "thread-1",
+				Kind:        ThreadPreviewCollaboration,
+				Status:      ThreadAwaitingUserFeedback,
+				Deliverable: DeliverablePreviewAvailableAndRenderable,
+				TaskText:    "show me three themes in a web preview",
+			},
+		},
+	})
+	if got.Family != FamilyImplement {
+		t.Fatalf("family = %q", got.Family)
+	}
+	if !got.PrefersVisibleExecution {
+		t.Fatalf("expected visible execution: %#v", got)
+	}
+	if !got.IsFollowUp {
+		t.Fatalf("expected follow-up classification: %#v", got)
+	}
+	if got.ThreadIntent != TurnIntentContinueThread {
+		t.Fatalf("thread intent = %q", got.ThreadIntent)
+	}
+	if got.TaskText != "show me three themes in a web preview" {
+		t.Fatalf("task text = %q", got.TaskText)
+	}
+}
+
+func TestClassifyActiveThreadCancelUsesThreadLedger(t *testing.T) {
+	got := Classify(UserTurn{Text: "cancel the preview"}, SessionState{
+		Turn: 4,
+		Threads: ThreadLedger{
+			Active: ThreadState{
+				ID:          "thread-1",
+				Kind:        ThreadPreviewCollaboration,
+				Status:      ThreadAwaitingUserFeedback,
+				Deliverable: DeliverablePreviewAvailableAndRenderable,
+			},
+		},
+	})
+	if got.Family != FamilyAnswer {
+		t.Fatalf("family = %q", got.Family)
+	}
+	if !got.PrefersVisibleExecution {
+		t.Fatalf("expected visible execution: %#v", got)
+	}
+	if !got.IsFollowUp {
+		t.Fatalf("expected follow-up classification: %#v", got)
+	}
+	if got.ThreadIntent != TurnIntentCancelThread {
+		t.Fatalf("thread intent = %q", got.ThreadIntent)
+	}
+}
+
 func TestClassifyProcessFollowUpUsesRecentMetaContext(t *testing.T) {
 	got := Classify(UserTurn{Text: "ive lost mine, can i copy yours ?"}, SessionState{
 		Turn:         2,
