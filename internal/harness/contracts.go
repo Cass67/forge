@@ -346,6 +346,9 @@ func validateEditorResult(result EditorResult) error {
 	if err := validateStatus(result.Status); err != nil {
 		return err
 	}
+	if strings.TrimSpace(result.Status) == "complete" && len(result.Changes) == 0 {
+		return fmt.Errorf("editor complete results require at least one change")
+	}
 	for _, change := range result.Changes {
 		if strings.TrimSpace(change.Path) == "" || strings.TrimSpace(change.Summary) == "" {
 			return fmt.Errorf("editor changes require path and summary")

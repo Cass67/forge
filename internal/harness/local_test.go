@@ -323,3 +323,108 @@ func TestAgentExecutorPlanningFollowUpAnswerPromptRequestsGroundedPlan(t *testin
 		t.Fatalf("planning follow-up prompt missing grounded-plan guidance: %q", msg)
 	}
 }
+
+func TestAgentExecutorLeavesVisibleCollaborationAnswersOnDefaultTools(t *testing.T) {
+	defaultTools := tools.NewRegistry()
+	inspectTools := tools.NewRegistry()
+	agent := &stubScopedAgent{response: "I can sketch a few directions."}
+	exec := AgentExecutor{
+		Agent:        agent,
+		DefaultTools: defaultTools,
+		InspectTools: inspectTools,
+	}
+
+	obs, err := exec.Execute(context.Background(), UserTurn{Text: "mock up 3 ideas for this theme and help me decide"}, Classification{
+		Family:                  FamilyAnswer,
+		PrefersVisibleExecution: true,
+	}, SessionState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obs.Response != "I can sketch a few directions." {
+		t.Fatalf("response = %q", obs.Response)
+	}
+	if len(agent.toolSets) != 1 {
+		t.Fatalf("tool set swaps = %d, want 1", len(agent.toolSets))
+	}
+	if agent.toolSets[0] != defaultTools {
+		t.Fatal("expected visible collaboration turn to keep default tools")
+	}
+	if agent.resetCount != 0 {
+		t.Fatalf("reset count = %d, want 0", agent.resetCount)
+	}
+	if len(agent.runMessages) != 1 {
+		t.Fatalf("run messages = %#v", agent.runMessages)
+	}
+	msg := agent.runMessages[0]
+	if !strings.Contains(msg, "HARNESS MODE: visible-collaboration") {
+		t.Fatalf("visible collaboration prompt missing harness mode: %q", msg)
+	}
+	if !strings.Contains(msg, "do not claim a server, preview, file, URL, or port is available unless tool results from this turn confirm it") {
+		t.Fatalf("visible collaboration prompt missing verification guard: %q", msg)
+	}
+	if !strings.Contains(msg, "mock up 3 ideas for this theme and help me decide") {
+		t.Fatalf("visible collaboration prompt missing user request: %q", msg)
+	}
+}
+
+func TestAgentExecutorVisiblePreviewFollowUpPromptRequiresVerifiedServerClaims(t *testing.T) {
+	defaultTools := tools.NewRegistry()
+	inspectTools := tools.NewRegistry()
+	agent := &stubScopedAgent{response: "Server started."}
+	exec := AgentExecutor{
+		Agent:        agent,
+		DefaultTools: defaultTools,
+		InspectTools: inspectTools,
+	}
+
+	_, err := exec.Execute(context.Background(), UserTurn{Text: "you start the server as your supposed to be showing me the mockups there"}, Classification{
+		Family:                  FamilyAnswer,
+		PrefersVisibleExecution: true,
+		IsFollowUp:              true,
+	}, SessionState{
+		Turn:         2,
+		LastResponse: "Theme mockups are ready in a local preview.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.runMessages) != 1 {
+		t.Fatalf("run messages = %d", len(agent.runMessages))
+	}
+	msg := agent.runMessages[0]
+	if !strings.Contains(msg, "verify it with a local fetch or equivalent check before telling the user it is live") {
+		t.Fatalf("visible preview prompt missing verification requirement: %q", msg)
+	}
+	if !strings.Contains(msg, "RECENT CONTEXT:") {
+		t.Fatalf("visible preview prompt missing recent context: %q", msg)
+	}
+	if !strings.Contains(msg, "Theme mockups are ready in a local preview.") {
+		t.Fatalf("visible preview prompt missing prior response context: %q", msg)
+	}
+}
+
+func TestAgentExecutorRejectsMalformedVisibleCollaborationToolMarkup(t *testing.T) {
+	defaultTools := tools.NewRegistry()
+	inspectTools := tools.NewRegistry()
+	agent := &stubScopedAgent{response: "<tool_call>\n{\"args\":{\"command\":\"echo hi\"}}\n</tool_call>"}
+	exec := AgentExecutor{
+		Agent:        agent,
+		DefaultTools: defaultTools,
+		InspectTools: inspectTools,
+	}
+
+	obs, err := exec.Execute(context.Background(), UserTurn{Text: "start the preview server"}, Classification{
+		Family:                  FamilyAnswer,
+		PrefersVisibleExecution: true,
+	}, SessionState{})
+	if err == nil {
+		t.Fatal("expected malformed visible collaboration tool markup to fail closed")
+	}
+	if obs.Status != ObservationBlocked {
+		t.Fatalf("status = %q, want %q", obs.Status, ObservationBlocked)
+	}
+	if !strings.Contains(obs.Summary, "malformed tool markup") {
+		t.Fatalf("summary = %q, want malformed tool markup context", obs.Summary)
+	}
+}

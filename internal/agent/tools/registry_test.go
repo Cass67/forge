@@ -70,6 +70,36 @@ func TestRegistryDescribePromptHidesHiddenToolsByDefault(t *testing.T) {
 	}
 }
 
+func TestRegistryPromptExamplesUseConcreteToolCalls(t *testing.T) {
+	reg := NewRegistry()
+	reg.Register(Tool{
+		Name:        "read_file",
+		Description: "Read a file",
+		Parameters: []ParameterDef{
+			{Name: "path", Type: "string", Description: "file path", Required: true},
+		},
+	})
+
+	check := func(name, desc string) {
+		t.Helper()
+		if strings.Contains(desc, `"name": "tool_name"`) {
+			t.Fatalf("%s should not teach a placeholder tool name: %s", name, desc)
+		}
+		if strings.Contains(desc, `"param": "value"`) {
+			t.Fatalf("%s should not teach placeholder args: %s", name, desc)
+		}
+		if !strings.Contains(desc, `"read_file"`) {
+			t.Fatalf("%s should show a concrete registered tool example: %s", name, desc)
+		}
+		if !strings.Contains(desc, `"path"`) {
+			t.Fatalf("%s should show a real parameter name: %s", name, desc)
+		}
+	}
+
+	check("DescribeForPrompt", reg.DescribeForPrompt())
+	check("DescribeForSingleToolPrompt", reg.DescribeForSingleToolPrompt())
+}
+
 func TestRegistryRevealTools(t *testing.T) {
 	reg := NewRegistry()
 	reg.Register(Tool{Name: "tool_help", Description: "Reveal specialized tools"})

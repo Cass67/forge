@@ -237,6 +237,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	}()
 	turnStart := time.Now()
 	actionPreambleRetries := 0
+	mainMalformedToolRetries := 0
 	subAgentMixedProseRetries := 0
 	subAgentMultipleToolCallRetries := 0
 	dispatchDirectAnswerRetries := 0
@@ -338,6 +339,14 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 
 		// Parse tool calls
 		calls, visibleText := ParseToolCalls(response)
+		if !a.isSubAgent && !isAnswerTurn && len(calls) == 0 && startsWithToolCallMarkup(response) {
+			if turn+1 < a.maxTurns {
+				mainMalformedToolRetries++
+				replacePendingControls(mainMalformedToolMarkupNudgeMessage(mainMalformedToolRetries))
+				continue
+			}
+			return fmt.Errorf("main agent produced malformed tool markup")
+		}
 		if a.role == "scout" && containsRawToolMarkup(response) && len(calls) == 0 {
 			if turn+1 < a.maxTurns {
 				scoutMalformedToolRetries++
@@ -358,6 +367,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			}
 			return fmt.Errorf("%s produced malformed tool markup", role)
 		}
+		mainMalformedToolRetries = 0
 		subAgentMalformedToolRetries = 0
 		inspectMixedToolCallProse := isInspectTurn && len(calls) > 0 && strings.TrimSpace(visibleText) != ""
 		if inspectMixedToolCallProse {
@@ -1119,7 +1129,7 @@ func resolveScoutFallbackEvidence(currentTurn int, current *dispatchScoutEvidenc
 }
 
 func normalizeStrictTurnForExecution(response, role string, isSubAgent, isInspectTurn bool) (string, bool) {
-	strictTurn := isInspectTurn || (isSubAgent && isStrictWorkerRole(role))
+	strictTurn := isInspectTurn || strings.TrimSpace(role) == "strictlocal" || (isSubAgent && isStrictWorkerRole(role))
 	if !strictTurn {
 		return response, false
 	}
@@ -1215,6 +1225,16 @@ func containsRawToolMarkup(text string) bool {
 	}
 	for _, closer := range toolCallClosers {
 		if strings.Contains(text, closer) {
+			return true
+		}
+	}
+	return false
+}
+
+func startsWithToolCallMarkup(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	for _, opener := range toolCallOpeners {
+		if strings.HasPrefix(trimmed, opener) {
 			return true
 		}
 	}
@@ -1538,6 +1558,17 @@ func scoutMalformedToolMarkupNudgeMessage(attempt int) string {
 		return "Scout emitted malformed tool markup. Return exactly one valid <tool_call>...</tool_call> block and nothing else."
 	case 2:
 		return "Malformed scout tool call again. Emit one valid tool call only. No prose, no second tool call, no partial wrapper."
+	default:
+		return "Return one valid tool call block only. No prose."
+	}
+}
+
+func mainMalformedToolMarkupNudgeMessage(attempt int) string {
+	switch attempt {
+	case 1:
+		return "Malformed tool markup. Return exactly one valid <tool_call>...</tool_call> block and nothing else while you are still working."
+	case 2:
+		return "Malformed tool markup again. Emit one valid tool call block only. No prose, no partial wrapper."
 	default:
 		return "Return one valid tool call block only. No prose."
 	}

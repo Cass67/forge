@@ -64,11 +64,13 @@ func TestRenderMessageContentStylesCommandsAndPaths(t *testing.T) {
 	assertStyledSubstring(t, got, "./internal/tui", theme.AccentPrimary)
 }
 
-func TestRenderMessageContentLeavesInlineCodeOpaque(t *testing.T) {
+func TestRenderMessageContentStylesInlineCodeSemantically(t *testing.T) {
 	withTrueColorProfile(t)
 
 	theme := lookupThemeForTest(t, "default")
-	got := renderMessageContent("Use `go test ./...` if you want the exact command.", 60, theme)
+	got := renderMessageContent("Use `go test ./...` from `./internal/tui` and inspect `runner.sh`.", 80, theme)
 
-	assertSubstringNotColor(t, got, "go test ./...", theme.AccentSecondary)
+	assertStyledSubstring(t, got, "go test ./...", theme.AccentSecondary)
+	assertStyledSubstring(t, got, "./internal/tui", theme.AccentPrimary)
+	assertStyledSubstring(t, got, "runner.sh", theme.AccentPrimary)
 }

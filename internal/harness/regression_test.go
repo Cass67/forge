@@ -27,6 +27,7 @@ type regressionFixture struct {
 
 func TestRegressionFixturesRouteWithoutEscalation(t *testing.T) {
 	paths := []string{
+		filepath.Join("testdata", "debuglogs", "collaborative-routing.jsonl"),
 		filepath.Join("testdata", "debuglogs", "repo-inspect-stall.jsonl"),
 		filepath.Join("testdata", "debuglogs", "follow-up-misroute.jsonl"),
 		filepath.Join("testdata", "debuglogs", "meta-answer-guard.jsonl"),

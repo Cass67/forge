@@ -48,7 +48,7 @@ func (m ChatMessage) Render(width int, theme chatTheme) string {
 	if m.Kind == MsgStatus {
 		body := RenderSemanticPlain(strings.TrimSpace(m.Content), profileStatus, theme)
 		return lipgloss.NewStyle().
-			Background(theme.AppBG).
+			Foreground(theme.Text).
 			Width(width).
 			Render(body)
 	}
@@ -56,11 +56,10 @@ func (m ChatMessage) Render(width int, theme chatTheme) string {
 	if m.Kind == MsgWorking {
 		body := RenderSemanticPlain(strings.TrimSpace(m.Content), profileStatus, theme)
 		prefix := lipgloss.NewStyle().
-			Background(theme.AppBG).
 			Foreground(theme.TextDim).
 			Render("· ")
 		return lipgloss.NewStyle().
-			Background(theme.AppBG).
+			Foreground(theme.Text).
 			Width(width).
 			Render(prefix + body)
 	}
@@ -75,12 +74,10 @@ func (m ChatMessage) Render(width int, theme chatTheme) string {
 	if strings.TrimSpace(content) != "" {
 		body := renderMessageContent(content, max(10, width-2), theme)
 		blocks = append(blocks, lipgloss.NewStyle().
-			Background(theme.AppBG).
 			Width(width).
 			Render(indentRenderedBlock(body, "  ")))
 	}
 	return lipgloss.NewStyle().
-		Background(theme.AppBG).
 		Width(width).
 		Render(lipgloss.JoinVertical(lipgloss.Left, blocks...))
 }
@@ -89,21 +86,16 @@ func renderMessageHeader(header string, width int, theme chatTheme, accent lipgl
 	name, meta, found := strings.Cut(strings.TrimSpace(header), " • ")
 	if !found {
 		return lipgloss.NewStyle().
-			Background(theme.AppBG).
 			Foreground(accent).
 			Bold(true).
-			Width(width).
 			Render(header)
 	}
-	return lipgloss.NewStyle().
-		Background(theme.AppBG).
-		Width(width).
-		Render(lipgloss.JoinHorizontal(
-			lipgloss.Left,
-			lipgloss.NewStyle().Background(theme.AppBG).Foreground(accent).Bold(true).Render(strings.TrimSpace(name)),
-			lipgloss.NewStyle().Background(theme.AppBG).Foreground(theme.Border).Render(" • "),
-			lipgloss.NewStyle().Background(theme.AppBG).Foreground(theme.TextDim).Render(strings.TrimSpace(meta)),
-		))
+	return lipgloss.JoinHorizontal(
+		lipgloss.Left,
+		lipgloss.NewStyle().Foreground(accent).Bold(true).Render(strings.TrimSpace(name)),
+		lipgloss.NewStyle().Foreground(theme.Border).Render(" • "),
+		lipgloss.NewStyle().Foreground(theme.TextDim).Render(strings.TrimSpace(meta)),
+	)
 }
 
 func indentRenderedBlock(text, prefix string) string {

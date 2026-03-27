@@ -312,6 +312,43 @@ func TestRunChatTurnUsesKernelWhenProvided(t *testing.T) {
 	}
 }
 
+func TestBuildHarnessRunnerConfigIncludesStrictLocalExecutor(t *testing.T) {
+	workDir := t.TempDir()
+	cfg := &config.Config{}
+	approve := agent.YoloApproval()
+
+	reg := tools.NewRegistry()
+	registerTools(reg, workDir, cfg, approve)
+	baseReg := reg.Filter(nil)
+	inspectReg := buildInspectToolRegistry(baseReg)
+
+	renderer := agent.NewRenderer(io.Discard, 80, false)
+	a := agent.NewAgent(&kernelMockDriver{response: "ok"}, reg, approve, workDir, 4, renderer, nil, chatstate.New())
+	setup := &ChatSetup{
+		Config:  cfg,
+		WorkDir: workDir,
+		Driver:  &kernelMockDriver{response: "ok"},
+	}
+
+	runnerCfg := buildHarnessRunnerConfig(setup, a, baseReg, inspectReg, nil, "", approve)
+	if runnerCfg.StrictLocal == nil {
+		t.Fatal("expected strict local executor in kernel config")
+	}
+	exec, ok := runnerCfg.StrictLocal.(harness.StrictAgentExecutor)
+	if !ok {
+		t.Fatalf("strict local executor type = %T", runnerCfg.StrictLocal)
+	}
+	if exec.Agent != a {
+		t.Fatal("strict local executor should reuse the chat agent")
+	}
+	if exec.DefaultTools == nil {
+		t.Fatal("strict local executor should receive default tools")
+	}
+	if exec.WorkDir != workDir {
+		t.Fatalf("strict local work dir = %q, want %q", exec.WorkDir, workDir)
+	}
+}
+
 func TestRunChatTurnKernelPathAvoidsDelegationMarkers(t *testing.T) {
 	events := make(chan llm.Event, 16)
 	renderer := agent.NewEventRenderer(events)
@@ -428,6 +465,18 @@ func TestWorkerDriverForFallsBackToChatDriverWhenNoCompatModelExists(t *testing.
 	got := workerDriverFor(setup, harness.WorkerVerifier)
 	if got != setup.Driver {
 		t.Fatalf("worker driver = %#v, want chat driver", got)
+	}
+}
+
+func TestRegisterToolsIncludesPreviewLifecycleTools(t *testing.T) {
+	reg := tools.NewRegistry()
+	cfg := &config.Config{}
+	registerTools(reg, t.TempDir(), cfg, agent.YoloApproval())
+
+	for _, name := range []string{"artifact_write", "preview_server_ensure", "preview_server_status"} {
+		if _, ok := reg.Get(name); !ok {
+			t.Fatalf("missing %s in tool registry", name)
+		}
 	}
 }
 
