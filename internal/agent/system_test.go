@@ -106,6 +106,8 @@ func TestBuildWorkerSystemPromptUsesHostManagedSkillCatalog(t *testing.T) {
 func TestBuildStrictLocalSystemPromptUsesSingleToolContract(t *testing.T) {
 	reg := tools.NewRegistry()
 	reg.Register(tools.Tool{Name: "artifact_write", Description: "Write a tracked artifact"})
+	reg.Register(tools.Tool{Name: "edit_file", Description: "Edit a file"})
+	reg.Register(tools.Tool{Name: "read_file", Description: "Read a file"})
 	reg.Register(tools.Tool{Name: "preview_server_ensure", Description: "Ensure a localhost preview server"})
 
 	prompt := BuildStrictLocalSystemPrompt("/home/user/project", reg, nil)
@@ -133,6 +135,9 @@ func TestBuildStrictLocalSystemPromptUsesSingleToolContract(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "preview_server_ensure already verifies the returned localhost URL") {
 		t.Error("strict local prompt should treat preview_server_ensure as the verified preview path")
+	}
+	if !strings.Contains(prompt, "After edit_file changes a file, read_file that file before another edit_file on the same path") {
+		t.Error("strict local prompt should require refreshing file state before another same-file edit")
 	}
 }
 

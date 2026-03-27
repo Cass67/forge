@@ -3520,12 +3520,15 @@ func TestStrictLocalSalvagesNameLessEditFileToolTurnWithoutRetryTax(t *testing.T
 				if len(messages) == 0 {
 					return fmt.Errorf("missing second turn messages")
 				}
-				last := messages[len(messages)-1].Content
-				if strings.Contains(last, "Malformed tool markup") {
-					return fmt.Errorf("unexpected malformed tool nudge: %q", last)
+				joined := ""
+				for _, msg := range messages {
+					joined += msg.Content + "\n"
 				}
-				if !strings.Contains(last, "[edit_file]") {
-					return fmt.Errorf("expected edit_file tool result, got %q", last)
+				if strings.Contains(joined, "Malformed tool markup") {
+					return fmt.Errorf("unexpected malformed tool nudge: %q", joined)
+				}
+				if !strings.Contains(joined, "[edit_file]") {
+					return fmt.Errorf("expected edit_file tool result, got %q", joined)
 				}
 				return nil
 			},
@@ -3576,12 +3579,15 @@ func TestStrictLocalSalvagesLiteralNewlinesInEditFileToolTurnWithoutRetryTax(t *
 				if len(messages) == 0 {
 					return fmt.Errorf("missing second turn messages")
 				}
-				last := messages[len(messages)-1].Content
-				if strings.Contains(last, "Malformed tool markup") {
-					return fmt.Errorf("unexpected malformed tool nudge: %q", last)
+				joined := ""
+				for _, msg := range messages {
+					joined += msg.Content + "\n"
 				}
-				if !strings.Contains(last, "[edit_file]") {
-					return fmt.Errorf("expected edit_file tool result, got %q", last)
+				if strings.Contains(joined, "Malformed tool markup") {
+					return fmt.Errorf("unexpected malformed tool nudge: %q", joined)
+				}
+				if !strings.Contains(joined, "[edit_file]") {
+					return fmt.Errorf("expected edit_file tool result, got %q", joined)
 				}
 				return nil
 			},
@@ -3634,12 +3640,15 @@ func TestStrictLocalSalvagesNameLessEditFileToolTurnWithLiteralNewlinesAndMissin
 				if len(messages) == 0 {
 					return fmt.Errorf("missing second turn messages")
 				}
-				last := messages[len(messages)-1].Content
-				if strings.Contains(last, "Malformed tool markup") {
-					return fmt.Errorf("unexpected malformed tool nudge: %q", last)
+				joined := ""
+				for _, msg := range messages {
+					joined += msg.Content + "\n"
 				}
-				if !strings.Contains(last, "[edit_file]") {
-					return fmt.Errorf("expected edit_file tool result, got %q", last)
+				if strings.Contains(joined, "Malformed tool markup") {
+					return fmt.Errorf("unexpected malformed tool nudge: %q", joined)
+				}
+				if !strings.Contains(joined, "[edit_file]") {
+					return fmt.Errorf("expected edit_file tool result, got %q", joined)
 				}
 				return nil
 			},
@@ -3692,12 +3701,15 @@ func TestStrictLocalSalvagesNameLessEditFileToolTurnWithBareHTMLQuotesLiteralNew
 				if len(messages) == 0 {
 					return fmt.Errorf("missing second turn messages")
 				}
-				last := messages[len(messages)-1].Content
-				if strings.Contains(last, "Malformed tool markup") {
-					return fmt.Errorf("unexpected malformed tool nudge: %q", last)
+				joined := ""
+				for _, msg := range messages {
+					joined += msg.Content + "\n"
 				}
-				if !strings.Contains(last, "[edit_file]") {
-					return fmt.Errorf("expected edit_file tool result, got %q", last)
+				if strings.Contains(joined, "Malformed tool markup") {
+					return fmt.Errorf("unexpected malformed tool nudge: %q", joined)
+				}
+				if !strings.Contains(joined, "[edit_file]") {
+					return fmt.Errorf("expected edit_file tool result, got %q", joined)
 				}
 				return nil
 			},
@@ -3987,6 +3999,54 @@ func TestStrictLocalRepeatedPreviewArtifactRewriteVariantsFailClosed(t *testing.
 	err := agent.Run(context.Background(), "show me a revised eclipse mockup")
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "preview artifact") {
 		t.Fatalf("expected repeated preview artifact rewrite loop to fail closed, got %v", err)
+	}
+}
+
+func TestStrictLocalSuccessfulEditFileAddsRefreshNudgeBeforeAnotherSameFileEdit(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "themes_demo.html")
+	if err := os.WriteFile(target, []byte("alpha\nbeta\ngamma\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	driver := &inspectingDriver{
+		checks: []func([]llm.Message) error{
+			nil,
+			func(messages []llm.Message) error {
+				joined := ""
+				for _, msg := range messages {
+					joined += msg.Content + "\n"
+				}
+				lower := strings.ToLower(joined)
+				if !strings.Contains(lower, "read_file themes_demo.html before another edit_file") &&
+					!strings.Contains(lower, "before another edit_file on themes_demo.html") {
+					return fmt.Errorf("expected same-file edit refresh nudge, got %q", joined)
+				}
+				return nil
+			},
+		},
+		responses: []string{
+			"<tool_call>\n{\"name\":\"edit_file\",\"args\":{\"path\":\"themes_demo.html\",\"old_text\":\"beta\",\"new_text\":\"delta\"}}\n</tool_call>",
+			"<tool_call>\n{\"name\":\"read_file\",\"args\":{\"path\":\"themes_demo.html\"}}\n</tool_call>",
+			"Preview updated.",
+		},
+	}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.NewReadFile(dir))
+	reg.Register(tools.NewEditFile(dir, YoloApproval()))
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	agent := NewAgent(driver, reg, YoloApproval(), dir, 6, renderer, nil, nil)
+	agent.SetRole("strictlocal")
+	agent.SetSystem(BuildStrictLocalSystemPrompt(dir, reg, nil))
+
+	if err := agent.Run(context.Background(), "make the colors more visible"); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callIdx != 3 {
+		t.Fatalf("expected strict local run to continue after refresh nudge, got %d driver calls", driver.callIdx)
 	}
 }
 
