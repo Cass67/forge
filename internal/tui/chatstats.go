@@ -335,7 +335,7 @@ func renderStatusHeaderForHeight(theme chatTheme, data chatStatusData, width, he
 
 func buildWideHeaderLines(theme chatTheme, modelValue, workDirValue string, width int) []string {
 	const railWidth = 5
-	const sep = " │ "
+	const sep = "   "
 	metaWidth := max(12, width-railWidth-len(sep))
 	modelProminent := lipgloss.NewStyle().
 		Foreground(theme.HeaderFG).
