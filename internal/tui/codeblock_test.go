@@ -61,7 +61,7 @@ func TestRenderMessageContentStylesCommandsAndPaths(t *testing.T) {
 	got := renderMessageContent("Run go test ./... from ./internal/tui", 60, theme)
 
 	assertStyledSubstring(t, got, "go test ./...", theme.AccentSecondary)
-	assertStyledSubstring(t, got, "./internal/tui", theme.AccentPrimary)
+	assertStyledSubstring(t, got, "./internal/tui", theme.TextDim)
 }
 
 func TestRenderMessageContentStylesInlineCodeSemantically(t *testing.T) {
@@ -71,8 +71,8 @@ func TestRenderMessageContentStylesInlineCodeSemantically(t *testing.T) {
 	got := renderMessageContent("Use `go test ./...` from `./internal/tui` and inspect `runner.sh`.", 80, theme)
 
 	assertStyledSubstring(t, got, "go test ./...", theme.AccentSecondary)
-	assertStyledSubstring(t, got, "./internal/tui", theme.AccentPrimary)
-	assertStyledSubstring(t, got, "runner.sh", theme.AccentPrimary)
+	assertStyledSubstring(t, got, "./internal/tui", theme.TextDim)
+	assertStyledSubstring(t, got, "runner.sh", theme.TextDim)
 }
 
 func TestRenderMessageContentWrapsProseWithoutSplittingShortWords(t *testing.T) {
@@ -82,5 +82,18 @@ func TestRenderMessageContentWrapsProseWithoutSplittingShortWords(t *testing.T) 
 	got := strippedLine(renderMessageContent(content, 80, theme))
 	if strings.Contains(got, "instead o\nf continuing") {
 		t.Fatalf("expected word-safe wrap, got:\n%s", got)
+	}
+}
+
+func TestRenderMessageContentNormalizesSplitShortFlagInCodeBlock(t *testing.T) {
+	theme := lookupThemeForTest(t, "default")
+	content := "```bash\ngit remote -\nv\n```"
+
+	got := strippedLine(renderMessageContent(content, 80, theme))
+	if strings.Contains(got, "git remote -\nv") {
+		t.Fatalf("expected split short flag fragment to be normalized, got:\n%s", got)
+	}
+	if !strings.Contains(got, "git remote -v") {
+		t.Fatalf("expected normalized flag form, got:\n%s", got)
 	}
 }

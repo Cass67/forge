@@ -75,9 +75,6 @@ func (m ChatMessage) Render(width int, theme chatTheme) string {
 		blocks = append(blocks, renderMessageHeader(header, width, theme, headerColor))
 	}
 	if strings.TrimSpace(content) != "" {
-		if header != "" && (m.Kind == MsgAgent || m.Kind == MsgForge) {
-			blocks = append(blocks, renderMessageSeparator(width, theme))
-		}
 		body := renderMessageContent(content, max(10, width-2), theme)
 		blocks = append(blocks, lipgloss.NewStyle().
 			Width(width).
@@ -104,13 +101,6 @@ func renderMessageHeader(header string, width int, theme chatTheme, accent lipgl
 		lipgloss.NewStyle().Foreground(theme.Border).Background(theme.AppBG).Render(" • "),
 		lipgloss.NewStyle().Foreground(theme.TextDim).Background(theme.AppBG).Render(strings.TrimSpace(meta)),
 	)
-}
-
-func renderMessageSeparator(width int, theme chatTheme) string {
-	return lipgloss.NewStyle().
-		Foreground(theme.Border).
-		Background(theme.AppBG).
-		Render("  ·")
 }
 
 func indentRenderedBlock(text, prefix string) string {

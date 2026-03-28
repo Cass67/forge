@@ -699,7 +699,11 @@ func semanticStyle(kind semanticKind, profile semanticProfile, theme chatTheme, 
 
 	switch kind {
 	case semanticPath:
-		fg = theme.AccentPrimary
+		if profile == profileTrace {
+			fg = theme.AccentPrimary
+		} else {
+			fg = theme.TextDim
+		}
 	case semanticCommand:
 		fg = theme.AccentSecondary
 	case semanticEnv:
