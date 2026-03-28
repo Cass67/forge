@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/wordwrap"
 )
 
 type messageBlock struct {
@@ -27,14 +28,43 @@ func renderMessageContent(content string, width int, theme chatTheme) string {
 			rendered = append(rendered, renderCodeBlock(block.Lang, body, width, theme))
 			continue
 		}
-		body = RenderSemanticPlain(body, profileProse, theme)
-		rendered = append(rendered, lipgloss.NewStyle().
-			Foreground(theme.Text).
-			Background(theme.AppBG).
-			Width(width).
-			Render(body))
+		rendered = append(rendered, renderWrappedProseBlock(body, width, theme))
 	}
 	return strings.Join(rendered, "\n\n")
+}
+
+func renderWrappedProseBlock(body string, width int, theme chatTheme) string {
+	lines := wrapProseLines(body, width)
+	style := lipgloss.NewStyle().
+		Foreground(theme.Text).
+		Background(theme.AppBG)
+	rendered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		rendered = append(rendered, style.Width(width).Render(RenderSemanticPlain(line, profileProse, theme)))
+	}
+	return strings.Join(rendered, "\n")
+}
+
+func wrapProseLines(text string, width int) []string {
+	width = max(1, width)
+	text = strings.TrimRight(text, "\n")
+	if text == "" {
+		return []string{""}
+	}
+
+	out := make([]string, 0, 8)
+	for _, raw := range strings.Split(text, "\n") {
+		if raw == "" {
+			out = append(out, "")
+			continue
+		}
+		wrapped := wordwrap.String(raw, width)
+		out = append(out, strings.Split(wrapped, "\n")...)
+	}
+	if len(out) == 0 {
+		return []string{""}
+	}
+	return out
 }
 
 func parseMessageBlocks(content string) []messageBlock {

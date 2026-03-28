@@ -3408,6 +3408,32 @@ func TestChatModelViewPaintsTranscriptLinesWithAppBackground(t *testing.T) {
 	}
 }
 
+func TestChatModelViewPaintsMessageSeparatorsWithAppBackground(t *testing.T) {
+	withTrueColorProfile(t)
+
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 90, Height: 20})
+	m = updated.(ChatModel)
+	m.AddMessage(ChatMessage{Kind: MsgUser, Header: "You • 12:00:00", Content: "first message"})
+	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Forge • 12:00:01", Content: "second message"})
+
+	lines := strings.Split(m.chatVisible, "\n")
+	wantBG := ansiBackground(m.theme().AppBG)
+	foundSeparator := false
+	for _, line := range lines {
+		if strings.TrimSpace(strippedLine(line)) != "" {
+			continue
+		}
+		foundSeparator = true
+		if !strings.Contains(line, wantBG) {
+			t.Fatalf("separator line missing app background %q: %q", wantBG, line)
+		}
+	}
+	if !foundSeparator {
+		t.Fatalf("expected separator line between messages in chat content:\n%s", strippedLine(m.chatVisible))
+	}
+}
+
 func TestProgressSlotRendersAboveComposerWhileTranscriptShowsDetails(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})

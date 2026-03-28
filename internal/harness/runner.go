@@ -674,7 +674,10 @@ func inferPendingAction(turn UserTurn, class Classification, obs Observation) Pe
 	if pending := inferPendingReviewAction(turn, class); !pending.IsZero() {
 		return pending
 	}
-	return inferPendingInspectOffer(turn, class, obs)
+	if pending := inferPendingInspectOffer(turn, class, obs); !pending.IsZero() {
+		return pending
+	}
+	return inferPendingImplementationOffer(turn, class, obs)
 }
 
 func inferPendingReviewAction(turn UserTurn, class Classification) PendingAction {
@@ -759,15 +762,112 @@ func mentionsInspectOffer(lower string, tokens map[string]struct{}) bool {
 }
 
 func hasInspectOfferStem(token string) bool {
+	switch token {
+	case "check", "checks", "checked", "checking",
+		"review", "reviews", "reviewed", "reviewing",
+		"read", "reads", "reading":
+		return true
+	}
 	switch {
 	case strings.HasPrefix(token, "inspect"),
-		strings.HasPrefix(token, "check"),
-		strings.HasPrefix(token, "review"),
-		strings.HasPrefix(token, "examin"),
-		strings.HasPrefix(token, "read"):
+		strings.HasPrefix(token, "examin"):
 		return true
 	default:
 		return false
+	}
+}
+
+func inferPendingImplementationOffer(turn UserTurn, class Classification, obs Observation) PendingAction {
+	if obs.Status != ObservationComplete ||
+		(class.Family != FamilyAnswer && class.Family != FamilyInspect && class.Family != FamilyImplement) ||
+		class.NeedsPolicyGuard ||
+		class.NeedsTerseAnswer ||
+		class.WantsAction ||
+		class.WantsInterpretation {
+		return PendingAction{}
+	}
+
+	response := strings.TrimSpace(obs.Response)
+	if response == "" {
+		return PendingAction{}
+	}
+
+	lower := strings.ToLower(response)
+	tokens := tokenize(lower)
+	if !looksLikeAssistantOffer(lower) || !mentionsImplementationOffer(lower, tokens) {
+		return PendingAction{}
+	}
+
+	topicKey := resolvePendingImplementationOfferTopic(turn, class, response)
+	taskText := implementationTaskTextForTopic(topicKey)
+	if strings.TrimSpace(taskText) == "" {
+		taskText = firstNonEmpty(strings.TrimSpace(class.TaskText), strings.TrimSpace(turn.Text))
+	}
+	if strings.TrimSpace(taskText) == "" {
+		return PendingAction{}
+	}
+
+	return PendingAction{
+		Family:       FamilyImplement,
+		TopicKey:     topicKey,
+		TaskText:     taskText,
+		WantsAction:  true,
+		CanStayLocal: true,
+	}
+}
+
+func mentionsImplementationOffer(lower string, tokens map[string]struct{}) bool {
+	for token := range tokens {
+		if hasImplementationOfferStem(token) {
+			return true
+		}
+	}
+	return strings.Contains(lower, "write ") ||
+		strings.Contains(lower, "add ") ||
+		strings.Contains(lower, "create ") ||
+		strings.Contains(lower, "draft ")
+}
+
+func hasImplementationOfferStem(token string) bool {
+	switch token {
+	case "add", "adds", "added", "adding",
+		"create", "creates", "created", "creating",
+		"write", "writes", "wrote", "writing",
+		"draft", "drafts", "drafted", "drafting",
+		"implement", "implements", "implemented", "implementing",
+		"apply", "applies", "applied", "applying",
+		"update", "updates", "updated", "updating",
+		"patch", "patches", "patched", "patching":
+		return true
+	default:
+		return false
+	}
+}
+
+func resolvePendingImplementationOfferTopic(turn UserTurn, class Classification, response string) string {
+	responseLower := strings.ToLower(response)
+	responseTokens := tokenize(responseLower)
+	if topicKey := resolveTopicKey(response, inferRequestScope(responseLower, responseTokens)); topicKey != "" {
+		return topicKey
+	}
+	if topicKey := strings.TrimSpace(class.TopicKey); topicKey != "" {
+		return topicKey
+	}
+	turnLower := strings.ToLower(strings.TrimSpace(turn.Text))
+	turnTokens := tokenize(turnLower)
+	return resolveTopicKey(turn.Text, inferRequestScope(turnLower, turnTokens))
+}
+
+func implementationTaskTextForTopic(topicKey string) string {
+	switch {
+	case strings.HasPrefix(topicKey, "path:"):
+		return "create or update `" + strings.TrimSpace(strings.TrimPrefix(topicKey, "path:")) + "` with the requested content"
+	case topicKey == "workspace:repository":
+		return "apply the offered repository changes"
+	case topicKey == "workspace:directory":
+		return "apply the offered directory changes"
+	default:
+		return ""
 	}
 }
 
