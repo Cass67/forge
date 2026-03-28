@@ -136,7 +136,7 @@ func TestChatModelHandlesAbortClearsLiveProgress(t *testing.T) {
 
 	updated, _ := m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "reading README.md"})
 	m = updated.(ChatModel)
-	if len(m.messages) != 1 || m.messages[0].Kind != MsgStatus {
+	if len(m.messages) != 1 || m.messages[0].Kind != MsgWorking {
 		t.Fatalf("expected progress status row before abort, got %#v", m.messages)
 	}
 	if !strings.Contains(m.messages[0].Content, "reading README.md") {
@@ -208,7 +208,7 @@ func TestChatModelShowsInlineWorkingMessageForRuntimeInfo(t *testing.T) {
 		t.Fatal("expected working message")
 	}
 	last := m.messages[len(m.messages)-1]
-	if last.Kind != MsgStatus || !strings.Contains(last.Content, "Inspecting repository structure") {
+	if last.Kind != MsgWorking || !strings.Contains(last.Content, "Inspecting repository structure") {
 		t.Fatalf("unexpected last message: %#v", last)
 	}
 }
@@ -228,17 +228,14 @@ func TestChatModelProgressAccumulatesActiveSubAgentMilestones(t *testing.T) {
 		m = updated.(ChatModel)
 	}
 
-	if len(m.messages) != 4 {
-		t.Fatalf("expected one progress status per milestone, got %#v", m.messages)
+	if len(m.messages) != 1 {
+		t.Fatalf("expected in-place progress row, got %#v", m.messages)
 	}
-	expected := []string{"reading README.md", "looking for \"**/*.go\"", "reading main.go", "reading app.go"}
-	for i, want := range expected {
-		if m.messages[i].Kind != MsgStatus {
-			t.Fatalf("message %d kind = %#v, want MsgStatus", i, m.messages[i])
-		}
-		if !strings.Contains(m.messages[i].Content, want) {
-			t.Fatalf("message %d content = %q, want to contain %q", i, m.messages[i].Content, want)
-		}
+	if m.messages[0].Kind != MsgWorking {
+		t.Fatalf("message kind = %#v, want MsgWorking", m.messages[0])
+	}
+	if !strings.Contains(m.messages[0].Content, "reading app.go") {
+		t.Fatalf("message content = %q, want latest milestone", m.messages[0].Content)
 	}
 }
 
@@ -254,17 +251,11 @@ func TestChatModelProgressHandoffAppendsPreviousWorkingLine(t *testing.T) {
 	updated, _ = m.Update(llm.Event{Kind: llm.EventProgress, Agent: "builder", Text: "editing main.go"})
 	m = updated.(ChatModel)
 
-	if len(m.messages) != 3 {
+	if len(m.messages) != 1 {
 		t.Fatalf("messages = %#v", m.messages)
 	}
-	if m.messages[0].Kind != MsgStatus || !strings.Contains(m.messages[0].Content, "reading README.md") {
-		t.Fatalf("unexpected first handoff status: %#v", m.messages[0])
-	}
-	if m.messages[1].Kind != MsgStatus || !strings.Contains(m.messages[1].Content, "delegating to builder") {
-		t.Fatalf("unexpected second handoff status: %#v", m.messages[1])
-	}
-	if m.messages[2].Kind != MsgStatus || !strings.Contains(m.messages[2].Content, "editing main.go") {
-		t.Fatalf("unexpected third handoff status: %#v", m.messages[2])
+	if m.messages[0].Kind != MsgWorking || !strings.Contains(m.messages[0].Content, "editing main.go") {
+		t.Fatalf("unexpected handoff working status: %#v", m.messages[0])
 	}
 }
 
@@ -308,13 +299,13 @@ func TestLiveProgressChatModelKeepsProgressVisibleAfterDone(t *testing.T) {
 	updated, _ = m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "reading app.go"})
 	m = updated.(ChatModel)
 
-	if len(m.messages) != 2 || m.messages[0].Kind != MsgStatus || m.messages[1].Kind != MsgStatus {
+	if len(m.messages) != 1 || m.messages[0].Kind != MsgWorking {
 		t.Fatalf("messages = %#v", m.messages)
 	}
-	if !strings.Contains(m.messages[0].Content, "reading README.md") || !strings.Contains(m.messages[1].Content, "reading app.go") {
+	if !strings.Contains(m.messages[0].Content, "reading app.go") {
 		t.Fatalf("unexpected progress messages before done = %#v", m.messages)
 	}
-	if len(m.records) != 2 {
+	if len(m.records) != 0 {
 		t.Fatalf("records = %#v", m.records)
 	}
 	if got := m.liveProgress.LatestMessage(); got != "reading app.go" {
@@ -324,20 +315,20 @@ func TestLiveProgressChatModelKeepsProgressVisibleAfterDone(t *testing.T) {
 	updated, _ = m.Update(llm.Event{Kind: llm.EventDone})
 	m = updated.(ChatModel)
 
-	if len(m.messages) != 2 {
+	if len(m.messages) != 1 {
 		t.Fatalf("messages after done = %#v", m.messages)
 	}
-	if m.messages[0].Kind != MsgStatus || m.messages[1].Kind != MsgStatus {
-		t.Fatalf("expected persisted progress status rows after done, got %#v", m.messages)
+	if m.messages[0].Kind != MsgStatus {
+		t.Fatalf("expected persisted progress status row after done, got %#v", m.messages)
 	}
 	if !m.liveProgress.IsZero() {
 		t.Fatalf("live progress after done = %#v", m.liveProgress)
 	}
-	if len(m.records) != 3 {
+	if len(m.records) != 1 {
 		t.Fatalf("records after done = %#v", m.records)
 	}
-	if m.records[2].Kind != RecordSystem || len(m.records[2].Segments) != 1 || m.records[2].Segments[0].Text != "reading README.md\nreading app.go" {
-		t.Fatalf("finalized live-progress record after done = %#v", m.records[2])
+	if m.records[0].Kind != RecordSystem || len(m.records[0].Segments) != 1 || m.records[0].Segments[0].Text != "reading README.md\nreading app.go" {
+		t.Fatalf("finalized live-progress record after done = %#v", m.records[0])
 	}
 }
 
@@ -350,21 +341,21 @@ func TestChatModelDoneFinalizesAssistantRecordBeforeProgressNote(t *testing.T) {
 	updated, _ := m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "reading app.go"})
 	m = updated.(ChatModel)
 
-	if len(m.records) != 2 || m.records[0].Kind != RecordAssistant || m.records[0].Final || m.records[1].Kind != RecordSystem {
+	if len(m.records) != 1 || m.records[0].Kind != RecordAssistant || m.records[0].Final {
 		t.Fatalf("records state before done = %#v", m.records)
 	}
 
 	updated, _ = m.Update(llm.Event{Kind: llm.EventDone})
 	m = updated.(ChatModel)
 
-	if len(m.records) != 3 {
+	if len(m.records) != 2 {
 		t.Fatalf("records after done = %#v", m.records)
 	}
 	if m.records[0].Kind != RecordAssistant || !m.records[0].Final {
 		t.Fatalf("assistant record after done = %#v", m.records[0])
 	}
-	if m.records[2].Kind != RecordSystem {
-		t.Fatalf("finalized progress note after done = %#v", m.records[2])
+	if m.records[1].Kind != RecordSystem {
+		t.Fatalf("finalized progress note after done = %#v", m.records[1])
 	}
 }
 
@@ -380,7 +371,7 @@ func TestChatModelDelegatingRuntimeEventUsesWorkingLine(t *testing.T) {
 		t.Fatalf("messages = %#v", m.messages)
 	}
 	got := m.messages[0]
-	if got.Kind != MsgStatus {
+	if got.Kind != MsgWorking {
 		t.Fatalf("kind = %#v", got)
 	}
 	if !strings.Contains(got.Content, "delegating to scout") {
@@ -1442,7 +1433,7 @@ func TestChatModelToolCallShowsWorkingActivityWithoutDebug(t *testing.T) {
 	if len(m.toolsSections) != 0 {
 		t.Fatalf("expected no default trace buffer, got %#v", m.toolsSections)
 	}
-	if len(m.messages) == 0 || m.messages[len(m.messages)-1].Kind != MsgStatus {
+	if len(m.messages) == 0 || m.messages[len(m.messages)-1].Kind != MsgWorking {
 		t.Fatalf("expected progress status activity row, got %#v", m.messages)
 	}
 	if !strings.Contains(m.messages[len(m.messages)-1].Content, "read_file: inspect main.go") {
