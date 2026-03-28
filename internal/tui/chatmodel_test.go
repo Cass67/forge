@@ -225,8 +225,8 @@ func TestChatModelToolCallCheckpointsPreviousMilestone(t *testing.T) {
 	if len(m.messages) < 2 {
 		t.Fatalf("expected checkpoint + active working message, got %#v", m.messages)
 	}
-	if m.messages[0].Kind != MsgStatus || !strings.Contains(m.messages[0].Content, "Reading README.md") {
-		t.Fatalf("expected checkpoint status for first milestone, got %#v", m.messages[0])
+	if m.messages[0].Kind != MsgForge || !strings.Contains(m.messages[0].Content, "Reading README.md") {
+		t.Fatalf("expected checkpoint forge update for first milestone, got %#v", m.messages[0])
 	}
 	last := m.messages[len(m.messages)-1]
 	if last.Kind != MsgWorking || !strings.Contains(last.Content, "Reading AGENTS.md") {
@@ -318,6 +318,24 @@ func TestChatModelProgressIgnoresGenericHeartbeatWhenSpecificStepExists(t *testi
 	}
 }
 
+func TestChatModelProgressDoesNotMergeEquivalentMilestones(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "glob", Text: "**/*.py"})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{Kind: llm.EventProgress, Agent: "forge", Text: `Finding files that match "**/*.py"`})
+	m = updated.(ChatModel)
+
+	if len(m.messages) != 1 || m.messages[0].Kind != MsgWorking {
+		t.Fatalf("messages = %#v", m.messages)
+	}
+	if strings.Contains(strings.ToLower(m.messages[0].Content), ". now ") {
+		t.Fatalf("expected equivalent milestones to avoid narrative chaining, got %#v", m.messages[0])
+	}
+}
+
 func TestTranscriptRecordChatModelTracksDurableKindsAndAssistantSegments(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 80
@@ -377,8 +395,8 @@ func TestLiveProgressChatModelKeepsProgressVisibleAfterDone(t *testing.T) {
 	if len(m.messages) != 1 {
 		t.Fatalf("messages after done = %#v", m.messages)
 	}
-	if m.messages[0].Kind != MsgStatus {
-		t.Fatalf("expected persisted progress status row after done, got %#v", m.messages)
+	if m.messages[0].Kind != MsgForge {
+		t.Fatalf("expected persisted progress forge update after done, got %#v", m.messages)
 	}
 	if !m.liveProgress.IsZero() {
 		t.Fatalf("live progress after done = %#v", m.liveProgress)
@@ -3306,8 +3324,8 @@ func TestProgressSlotRendersAboveComposerWhileTranscriptShowsDetails(t *testing.
 	if !strings.Contains(strippedLine(view), "latest transcript line") {
 		t.Fatalf("expected transcript content to remain visible, got:\n%s", strippedLine(view))
 	}
-	if count := strings.Count(strippedLine(view), "reading app.go"); count < 1 {
-		t.Fatalf("expected detailed progress in transcript, found %d in:\n%s", count, strippedLine(view))
+	if count := strings.Count(strippedLine(view), "reading app.go"); count != 1 {
+		t.Fatalf("expected active progress to appear only once (live slot), found %d in:\n%s", count, strippedLine(view))
 	}
 	if !strings.Contains(strippedLine(view), "reading app.go") {
 		t.Fatalf("expected live progress slot to show actual message, got:\n%s", strippedLine(view))

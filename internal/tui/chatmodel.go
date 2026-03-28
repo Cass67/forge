@@ -463,8 +463,9 @@ func (m *ChatModel) archiveWorkingMessage() {
 		content = "progress update"
 	}
 	m.messages[idx] = ChatMessage{
-		Kind:    MsgStatus,
-		Content: fmt.Sprintf("progress • %s — %s", stamp, content),
+		Kind:    MsgForge,
+		Header:  "Forge • " + stamp,
+		Content: checkpointNarrative(content),
 	}
 	m.liveProgress = m.liveProgress.Reset()
 	m.resetRecentActivity()
@@ -734,6 +735,11 @@ func (m *ChatModel) refreshViewport() {
 		messageBlockIndex[i] = -1
 	}
 	for i, msg := range m.messages {
+		// Active working status is rendered in the dedicated live slot near the
+		// composer; hiding it here avoids duplicate "mirror" lines.
+		if msg.Kind == MsgWorking && i == m.recentActivityIndex {
+			continue
+		}
 		// Skip agent/forge boxes with no content — they render as blank space
 		// (created before first token arrives; if error occurs, they stay empty)
 		if (msg.Kind == MsgAgent || msg.Kind == MsgForge) && strings.TrimSpace(msg.Content) == "" {
@@ -4319,6 +4325,26 @@ func normalizeProgressMessage(content string) string {
 	return content
 }
 
+func checkpointNarrative(content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
+	}
+	lower := strings.ToLower(content)
+	switch {
+	case strings.HasPrefix(lower, "reading "):
+		return "Quick update: " + content
+	case strings.HasPrefix(lower, "scanning "):
+		return "Quick update: " + content
+	case strings.HasPrefix(lower, "searching "):
+		return "Quick update: " + content
+	case strings.HasPrefix(lower, "running "):
+		return "Quick update: " + content
+	default:
+		return content
+	}
+}
+
 func combineProgressNarrative(current, next string) string {
 	current = strings.TrimSpace(current)
 	next = strings.TrimSpace(next)
@@ -4327,6 +4353,9 @@ func combineProgressNarrative(current, next string) string {
 	}
 	if current == "" || current == next {
 		return next
+	}
+	if equivalentProgressLine(current, next) {
+		return preferEquivalentProgressLine(current, next)
 	}
 	if isGenericProgressLine(next) {
 		return current
@@ -4342,6 +4371,113 @@ func combineProgressNarrative(current, next string) string {
 		return next
 	}
 	return merged
+}
+
+func equivalentProgressLine(current, next string) bool {
+	currentSig := progressSignature(current)
+	nextSig := progressSignature(next)
+	if currentSig != "" && currentSig == nextSig {
+		return true
+	}
+	return false
+}
+
+func preferEquivalentProgressLine(current, next string) string {
+	current = strings.TrimSpace(current)
+	next = strings.TrimSpace(next)
+	if current == "" {
+		return next
+	}
+	if next == "" {
+		return current
+	}
+
+	currentPenalty := progressNoisePenalty(current)
+	nextPenalty := progressNoisePenalty(next)
+	if currentPenalty < nextPenalty {
+		return current
+	}
+	if nextPenalty < currentPenalty {
+		return next
+	}
+	if len(next) < len(current) {
+		return next
+	}
+	return current
+}
+
+func progressNoisePenalty(content string) int {
+	lower := strings.ToLower(content)
+	penalty := 0
+	if strings.Contains(lower, "[approval needed]") {
+		penalty += 3
+	}
+	if strings.Contains(lower, " for context") {
+		penalty++
+	}
+	if strings.Contains(lower, " that match ") {
+		penalty++
+	}
+	if strings.ContainsAny(content, "\"'") {
+		penalty++
+	}
+	return penalty
+}
+
+func progressSignature(content string) string {
+	normalized := normalizeProgressComparable(content)
+	if normalized == "" {
+		return ""
+	}
+	switch {
+	case strings.HasPrefix(normalized, "reading "):
+		target := strings.TrimSpace(strings.TrimPrefix(normalized, "reading "))
+		target = strings.TrimSuffix(target, " for context")
+		return "read:" + progressResourceToken(target)
+	case strings.HasPrefix(normalized, "finding files matching "):
+		pattern := strings.TrimSpace(strings.TrimPrefix(normalized, "finding files matching "))
+		return "glob:" + progressPatternToken(pattern)
+	case strings.HasPrefix(normalized, "finding files that match "):
+		pattern := strings.TrimSpace(strings.TrimPrefix(normalized, "finding files that match "))
+		return "glob:" + progressPatternToken(pattern)
+	case strings.HasPrefix(normalized, "searching for "):
+		pattern := strings.TrimSpace(strings.TrimPrefix(normalized, "searching for "))
+		return "search:" + progressPatternToken(pattern)
+	case strings.HasPrefix(normalized, "running "):
+		cmd := strings.TrimSpace(strings.TrimPrefix(normalized, "running "))
+		cmd = strings.TrimPrefix(cmd, "[approval needed] ")
+		return "run:" + strings.Join(strings.Fields(cmd), " ")
+	default:
+		return ""
+	}
+}
+
+func progressPatternToken(pattern string) string {
+	pattern = strings.TrimSpace(pattern)
+	pattern = strings.Trim(pattern, "\"'")
+	return pattern
+}
+
+func progressResourceToken(resource string) string {
+	resource = strings.TrimSpace(resource)
+	resource = strings.Trim(resource, "\"'")
+	resource = strings.TrimRight(resource, ".,:;")
+	if resource == "" {
+		return ""
+	}
+	if strings.Contains(resource, "/") {
+		resource = filepath.Base(resource)
+	}
+	return strings.ToLower(resource)
+}
+
+func normalizeProgressComparable(content string) string {
+	content = strings.ToLower(strings.TrimSpace(content))
+	content = strings.Join(strings.Fields(content), " ")
+	if content == "" {
+		return ""
+	}
+	return content
 }
 
 func (m ChatModel) progressEventLine(ev llm.Event) string {
