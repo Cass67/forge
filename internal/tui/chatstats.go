@@ -331,9 +331,7 @@ func renderStatusHeader(theme chatTheme, data chatStatusData, width int) string 
 		Padding(0, 1).
 		Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 
-	return lipgloss.NewStyle().
-		Background(theme.AppBG).
-		Render(card)
+	return fillHeaderSurface(card, width, theme)
 }
 
 func renderStatusHeaderForHeight(theme chatTheme, data chatStatusData, width, height int) string {
@@ -406,7 +404,21 @@ func renderCompactStatusHeader(theme chatTheme, data chatStatusData, width int) 
 		Background(theme.AppBG).
 		Padding(0, 1).
 		Render(line)
-	return lipgloss.NewStyle().Background(theme.AppBG).Render(card)
+	return fillHeaderSurface(card, width, theme)
+}
+
+func fillHeaderSurface(header string, width int, theme chatTheme) string {
+	width = max(1, width)
+	lines := strings.Split(header, "\n")
+	fill := lipgloss.NewStyle().Background(theme.AppBG)
+	for i, line := range lines {
+		printable := ansiPrintableWidth(line)
+		if printable < width {
+			line += fill.Render(strings.Repeat(" ", width-printable))
+		}
+		lines[i] = line
+	}
+	return strings.Join(lines, "\n")
 }
 
 func renderForgeWordmark(theme chatTheme) string {
