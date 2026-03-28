@@ -1030,6 +1030,83 @@ func TestClassifyActivePreviewThreadStatusQuestionUsesMetaIntent(t *testing.T) {
 	}
 }
 
+func TestClassifyActivePreviewThreadBranchWorkflowFollowUpUsesActionIntent(t *testing.T) {
+	got := Classify(UserTurn{Text: "i like obsidian term, lets make a branch and bring it to life"}, SessionState{
+		Turn: 5,
+		Threads: ThreadLedger{
+			Active: ThreadState{
+				ID:          "thread-1",
+				Kind:        ThreadPreviewCollaboration,
+				Status:      ThreadAwaitingUserFeedback,
+				Deliverable: DeliverablePreviewAvailableAndRenderable,
+				TopicKey:    "path:web/index.html",
+				TaskText:    "show me 3 mockups in preview",
+				Preview: PreviewSnapshot{
+					Status: "live",
+					Path:   "web/index.html",
+					Port:   4173,
+					URL:    "http://127.0.0.1:4173/index.html",
+				},
+			},
+		},
+	})
+	if got.Family != FamilyImplement {
+		t.Fatalf("classification = %#v", got)
+	}
+	if !got.WantsAction {
+		t.Fatalf("expected action follow-up: %#v", got)
+	}
+	if !got.IsFollowUp {
+		t.Fatalf("expected follow-up classification: %#v", got)
+	}
+	if !got.PrefersVisibleExecution {
+		t.Fatalf("expected visible execution preference: %#v", got)
+	}
+	if got.ThreadIntent != TurnIntentContinueThread {
+		t.Fatalf("thread intent = %q", got.ThreadIntent)
+	}
+	if got.Reason != "active thread branch workflow action" {
+		t.Fatalf("reason = %q", got.Reason)
+	}
+}
+
+func TestClassifyActivePreviewThreadBranchWorkflowWithPathHintUsesActionIntent(t *testing.T) {
+	got := Classify(UserTurn{Text: "i choose the first mockup, make a branch and bring it to life in /theme"}, SessionState{
+		Turn: 5,
+		Threads: ThreadLedger{
+			Active: ThreadState{
+				ID:          "thread-1",
+				Kind:        ThreadPreviewCollaboration,
+				Status:      ThreadAwaitingUserFeedback,
+				Deliverable: DeliverablePreviewAvailableAndRenderable,
+				TopicKey:    "path:web/index.html",
+				TaskText:    "show me 3 mockups in preview",
+				Preview: PreviewSnapshot{
+					Status: "live",
+					Path:   "web/index.html",
+					Port:   4173,
+					URL:    "http://127.0.0.1:4173/index.html",
+				},
+			},
+		},
+	})
+	if got.Family != FamilyImplement {
+		t.Fatalf("classification = %#v", got)
+	}
+	if !got.WantsAction {
+		t.Fatalf("expected action follow-up: %#v", got)
+	}
+	if !got.IsFollowUp {
+		t.Fatalf("expected follow-up classification: %#v", got)
+	}
+	if got.ThreadIntent != TurnIntentContinueThread {
+		t.Fatalf("thread intent = %q", got.ThreadIntent)
+	}
+	if got.Reason != "active thread branch workflow action" {
+		t.Fatalf("reason = %q", got.Reason)
+	}
+}
+
 func TestLooksLikeActivePreviewInspectQuestionDetectsChangeQuestion(t *testing.T) {
 	text := "actually leave that alone and tell me what changed"
 	lower := text

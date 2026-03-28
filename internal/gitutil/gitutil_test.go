@@ -135,3 +135,78 @@ func TestDiffStat(t *testing.T) {
 		t.Errorf("expected b.txt in diffstat, got: %s", stat)
 	}
 }
+
+func TestCurrentBranchAndCheckoutNewBranch(t *testing.T) {
+	dir := setupRepo(t)
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	if err := CommitAll(dir, "initial"); err != nil {
+		t.Fatalf("CommitAll: %v", err)
+	}
+
+	current, err := CurrentBranch(dir)
+	if err != nil {
+		t.Fatalf("CurrentBranch: %v", err)
+	}
+	if current != "master" && current != "main" {
+		t.Fatalf("unexpected initial branch %q", current)
+	}
+
+	if err := CheckoutNewBranch(dir, "forge/test-branch"); err != nil {
+		t.Fatalf("CheckoutNewBranch: %v", err)
+	}
+	current, err = CurrentBranch(dir)
+	if err != nil {
+		t.Fatalf("CurrentBranch: %v", err)
+	}
+	if current != "forge/test-branch" {
+		t.Fatalf("current branch = %q, want %q", current, "forge/test-branch")
+	}
+}
+
+func TestBranchExists(t *testing.T) {
+	dir := setupRepo(t)
+	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
+	if err := CommitAll(dir, "initial"); err != nil {
+		t.Fatalf("CommitAll: %v", err)
+	}
+
+	if err := CheckoutNewBranch(dir, "forge/exists-check"); err != nil {
+		t.Fatalf("CheckoutNewBranch: %v", err)
+	}
+
+	exists, err := BranchExists(dir, "forge/exists-check")
+	if err != nil {
+		t.Fatalf("BranchExists existing branch: %v", err)
+	}
+	if !exists {
+		t.Fatal("expected existing branch to be detected")
+	}
+
+	exists, err = BranchExists(dir, "forge/does-not-exist")
+	if err != nil {
+		t.Fatalf("BranchExists missing branch: %v", err)
+	}
+	if exists {
+		t.Fatal("expected missing branch to report false")
+	}
+}
+
+func TestIsRepository(t *testing.T) {
+	nonRepo := t.TempDir()
+	isRepo, err := IsRepository(nonRepo)
+	if err != nil {
+		t.Fatalf("IsRepository(nonRepo): %v", err)
+	}
+	if isRepo {
+		t.Fatal("expected non-repo directory to report false")
+	}
+
+	repo := setupRepo(t)
+	isRepo, err = IsRepository(repo)
+	if err != nil {
+		t.Fatalf("IsRepository(repo): %v", err)
+	}
+	if !isRepo {
+		t.Fatal("expected git repo to report true")
+	}
+}

@@ -93,18 +93,20 @@ func (e AgentExecutor) Execute(ctx context.Context, turn UserTurn, class Classif
 				DeliverableStatus: DeliverableMissing,
 				Reason:            err.Error(),
 			},
-			Err: err,
+			ToolCalls: observedToolCallsFromRunner(e.Agent),
+			Err:       err,
 		}, err
 	}
 
 	response := strings.TrimSpace(e.Agent.LastResponse())
 	return normalizeObservation(Step{Lane: LaneConversational, Kind: StepLocal}, resolvedClass, session, Observation{
-		Status:   ObservationComplete,
-		Lane:     LaneConversational,
-		Response: response,
-		Summary:  response,
-		TopicKey: resolvedClass.TopicKey,
-		Runtime:  captureLocalRuntimeSnapshot(e.PreviewRuntime, e.Agent),
+		Status:    ObservationComplete,
+		Lane:      LaneConversational,
+		Response:  response,
+		Summary:   response,
+		TopicKey:  resolvedClass.TopicKey,
+		Runtime:   captureLocalRuntimeSnapshot(e.PreviewRuntime, e.Agent),
+		ToolCalls: observedToolCallsFromRunner(e.Agent),
 	}), nil
 }
 
@@ -281,11 +283,18 @@ func buildVisibleCollaborationTurnPrompt(class Classification, userMessage strin
 		"- prefer bounded previews such as static HTML files when they satisfy the request; use a server only when it materially helps",
 		"- keep updates concise and ground claims in tool results from this turn or relevant recent context",
 	}
-	if shouldConstrainPreviewThreadToArtifacts(userMessage, class, session) {
-		lines = append(lines,
-			"- this is a preview-thread iteration turn: keep changes in tracked preview artifacts by default",
-			"- do not edit workspace source files yet; wait for an explicit user instruction to apply one chosen direction into app code",
-		)
+	if phase, ok := activePreviewThreadPhaseForTurn(userMessage, class, session); ok {
+		if phase == ThreadPhaseApply {
+			lines = append(lines,
+				"- preview thread phase is apply: implement the selected direction in workspace source files now",
+				"- keep user-visible progress updates concise while you apply changes",
+			)
+		} else {
+			lines = append(lines,
+				"- preview thread phase is ideate: keep changes in tracked preview artifacts only",
+				"- do not edit workspace source files until the user explicitly asks to apply one chosen direction",
+			)
+		}
 	}
 	if previewPath := concreteVisiblePreviewPath(class, userMessage); previewPath != "" {
 		lines = append(lines,
@@ -402,18 +411,44 @@ type toolCallHistory interface {
 	LastToolCalls() []agent.ToolCall
 }
 
+func observedToolCallsFromRunner(runner any) []ObservedToolCall {
+	history, ok := runner.(toolCallHistory)
+	if !ok {
+		return nil
+	}
+	return mapObservedToolCalls(history.LastToolCalls())
+}
+
+func mapObservedToolCalls(calls []agent.ToolCall) []ObservedToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	observed := make([]ObservedToolCall, 0, len(calls))
+	for _, call := range calls {
+		observedCall := ObservedToolCall{Name: strings.TrimSpace(call.Name)}
+		if len(call.Args) > 0 {
+			observedCall.Args = make(map[string]any, len(call.Args))
+			for key, value := range call.Args {
+				observedCall.Args[key] = value
+			}
+		}
+		observed = append(observed, observedCall)
+	}
+	return observed
+}
+
 func captureLocalRuntimeSnapshot(runtime *tools.PreviewRuntime, runner any) LocalRuntimeSnapshot {
 	if runtime == nil {
 		return LocalRuntimeSnapshot{}
 	}
-	history, ok := runner.(toolCallHistory)
-	if !ok {
+	calls := observedToolCallsFromRunner(runner)
+	if len(calls) == 0 {
 		return LocalRuntimeSnapshot{}
 	}
 
 	var wantsArtifact bool
 	var wantsPreview bool
-	for _, call := range history.LastToolCalls() {
+	for _, call := range calls {
 		switch strings.TrimSpace(call.Name) {
 		case "artifact_write", "artifact_read":
 			wantsArtifact = true

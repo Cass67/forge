@@ -14,14 +14,21 @@ import (
 type sequenceDriver struct {
 	mu        sync.Mutex
 	responses []string
+	prompts   []string
 }
 
 func (d *sequenceDriver) Name() string { return "sequence" }
 
-func (d *sequenceDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
+func (d *sequenceDriver) Stream(_ context.Context, messages []llm.Message, out chan<- llm.Token) error {
 	defer close(out)
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == llm.RoleUser {
+			d.prompts = append(d.prompts, messages[i].Content)
+			break
+		}
+	}
 	response := ""
 	if len(d.responses) > 0 {
 		response = d.responses[0]
@@ -29,6 +36,12 @@ func (d *sequenceDriver) Stream(_ context.Context, _ []llm.Message, out chan<- l
 	}
 	out <- llm.Token{Text: response}
 	return nil
+}
+
+func (d *sequenceDriver) promptsSnapshot() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.prompts...)
 }
 
 type inspectingDriver struct {
@@ -176,6 +189,42 @@ func TestManagerExecuteRetriesInvalidStructuredOutput(t *testing.T) {
 	}
 	if result.Findings[0].Summary != "Official docs describe the feature." {
 		t.Fatalf("artifact = %#v", result)
+	}
+}
+
+func TestManagerExecuteRetryPromptIncludesStringLiteralEscapeGuidance(t *testing.T) {
+	driver := &sequenceDriver{responses: []string{
+		"{\"status\":\"complete\",\"changes\":[{\"path\":\"internal/runtime/chat.go\",\"summary\":\"bad\tvalue\"}],\"verification_attempts\":[],\"remaining_issues\":[],\"suggested_next\":\"none\"}",
+		`{"status":"complete","changes":[{"path":"internal/runtime/chat.go","summary":"fixed escaping in output"}],"verification_attempts":[],"remaining_issues":[],"suggested_next":"none"}`,
+	}}
+	manager := NewManager(ManagerConfig{
+		WorkDir: ".",
+		DriverFor: func(WorkerKind) llm.Driver {
+			return driver
+		},
+	})
+
+	obs, err := manager.Execute(context.Background(), WorkerTask{
+		Kind:      WorkerEditor,
+		Objective: "fix strict json escaping issue",
+		TopicKey:  "workspace:repository",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obs.Status != ObservationComplete {
+		t.Fatalf("observation = %#v", obs)
+	}
+	prompts := driver.promptsSnapshot()
+	if len(prompts) < 2 {
+		t.Fatalf("expected retry prompt, prompts = %#v", prompts)
+	}
+	retryPrompt := prompts[1]
+	if !strings.Contains(retryPrompt, "\\t") || !strings.Contains(retryPrompt, "\\n") {
+		t.Fatalf("retry prompt missing string escape guidance: %q", retryPrompt)
+	}
+	if !strings.Contains(strings.ToLower(retryPrompt), "compact json object") {
+		t.Fatalf("retry prompt missing compact-json guidance: %q", retryPrompt)
 	}
 }
 

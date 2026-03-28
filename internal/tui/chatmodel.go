@@ -4304,7 +4304,7 @@ func normalizeRuntimeProgressMessage(content string) (string, bool) {
 	lower := strings.ToLower(raw)
 	if strings.HasPrefix(lower, "react runtime: executing turn ") {
 		turnText := strings.TrimSpace(strings.TrimPrefix(lower, "react runtime: executing turn "))
-		return fmt.Sprintf("I am starting analysis pass %s", turnText), true
+		return fmt.Sprintf("Starting analysis pass %s", turnText), true
 	}
 	if strings.Contains(lower, "cancelled") {
 		return "I stopped this run on request", true
@@ -4317,16 +4317,21 @@ func (m ChatModel) toolResultProgressLine(ev llm.Event) string {
 	if agent == "" || agent == "runtime" || agent == "delegate" {
 		return ""
 	}
-	summary := strings.TrimSpace(m.lastToolSummary[agent])
+	label := displayAgentLabel(agent)
+	summary := compactStatusText(m.lastToolSummary[agent])
+	switch summary {
+	case ".", "/":
+		summary = ""
+	}
 	if ev.IsError {
 		reason := compactStatusText(ev.Text)
 		if reason == "" {
 			reason = "tool error"
 		}
-		return fmt.Sprintf("%s failed: %s", agent, reason)
+		return fmt.Sprintf("%s hit an issue: %s", label, reason)
 	}
 	if summary != "" {
-		return fmt.Sprintf("%s complete: %s", agent, summary)
+		return fmt.Sprintf("%s wrapped up: %s", label, summary)
 	}
-	return fmt.Sprintf("%s complete", agent)
+	return fmt.Sprintf("%s wrapped up this step", label)
 }

@@ -1377,19 +1377,19 @@ func strictActionTurn(role string, isSubAgent, isInspectTurn bool) bool {
 
 func strictActionTurnStartProgress(turn int, hasPreviousToolCall bool) string {
 	if turn == 0 && !hasPreviousToolCall {
-		return "Planning the next step and waiting for model response"
+		return "Model is planning the first execution step"
 	}
-	return "Continuing with the next step and waiting for model response"
+	return "Model is planning the next execution step"
 }
 
 func strictActionTurnWaitingProgress(heartbeatCount int) string {
 	switch heartbeatCount {
 	case 1:
-		return "Still waiting for the model response"
+		return "Still waiting for model output on this step"
 	case 2:
-		return "Model is still working through this step"
+		return "Model is still reasoning through this step"
 	case 3:
-		return "No action needed yet, still waiting for the model response"
+		return "Longer than usual, still waiting on model output"
 	default:
 		return ""
 	}
@@ -1400,36 +1400,36 @@ func generalTurnWaitingProgress(turn, heartbeatCount int, hasEvidence bool, cont
 	if !hasEvidence {
 		switch heartbeatCount {
 		case 1:
-			return "I am mapping the repository before answering"
+			return "Surveying the repository before drafting recommendations"
 		case 2:
-			return "I am still reviewing the repo structure and key docs"
+			return "Reviewing the repository structure and key docs"
 		case 3:
-			return "I am continuing repo analysis before drafting recommendations"
+			return "Cross-checking findings before drafting recommendations"
 		default:
-			return fmt.Sprintf("I am still analyzing the repo (pass %d)", turn+1)
+			return fmt.Sprintf("Still analyzing repository details (pass %d)", turn+1)
 		}
 	}
 	if contextHint != "" {
 		switch heartbeatCount {
 		case 1:
-			return fmt.Sprintf("I am connecting what I found in %s", contextHint)
+			return fmt.Sprintf("Connecting findings from %s", contextHint)
 		case 2:
-			return fmt.Sprintf("I am cross-checking %s before replying", contextHint)
+			return fmt.Sprintf("Cross-checking %s for consistency", contextHint)
 		case 3:
-			return fmt.Sprintf("I am drafting improvements from %s", contextHint)
+			return fmt.Sprintf("Turning %s into concrete recommendations", contextHint)
 		default:
-			return fmt.Sprintf("I am refining the response from %s (pass %d)", contextHint, turn+1)
+			return fmt.Sprintf("Refining recommendations from %s (pass %d)", contextHint, turn+1)
 		}
 	}
 	switch heartbeatCount {
 	case 1:
-		return "I am synthesizing findings into concrete recommendations"
+		return "Synthesizing findings into concrete recommendations"
 	case 2:
-		return "I am cross-checking gathered evidence before responding"
+		return "Cross-checking gathered evidence before responding"
 	case 3:
-		return "I am drafting the response from the collected context"
+		return "Drafting the response from collected context"
 	default:
-		return fmt.Sprintf("I am refining the response from gathered evidence (pass %d)", turn+1)
+		return fmt.Sprintf("Refining the response from gathered evidence (pass %d)", turn+1)
 	}
 }
 
@@ -1470,11 +1470,16 @@ func contextHintObject(call ToolCall) string {
 	switch strings.TrimSpace(call.Name) {
 	case "read_file", "artifact_read", "write_file", "edit_file", "artifact_write", "list_dir":
 		if path, _ := call.Args["path"].(string); strings.TrimSpace(path) != "" {
-			base := filepath.Base(strings.TrimSpace(path))
+			trimmed := strings.TrimSpace(path)
+			cleaned := filepath.Clean(trimmed)
+			if cleaned == "." {
+				return ""
+			}
+			base := filepath.Base(cleaned)
 			if base != "" && base != "." {
 				return base
 			}
-			return strings.TrimSpace(path)
+			return cleaned
 		}
 	case "search":
 		if pattern, _ := call.Args["pattern"].(string); strings.TrimSpace(pattern) != "" {

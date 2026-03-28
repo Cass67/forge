@@ -35,6 +35,13 @@ func TestValidateWorkerResultRejectsTrailingJSON(t *testing.T) {
 	}
 }
 
+func TestValidateWorkerResultRejectsControlCharactersInJSONString(t *testing.T) {
+	_, err := ValidateWorkerResult(WorkerEditor, "{\"status\":\"complete\",\"changes\":[{\"path\":\"internal/runtime/chat.go\",\"summary\":\"bad\tvalue\"}],\"verification_attempts\":[],\"remaining_issues\":[],\"suggested_next\":\"none\"}")
+	if err == nil || !strings.Contains(err.Error(), "string literal") {
+		t.Fatalf("expected string-literal decode error, got %v", err)
+	}
+}
+
 func TestValidateWorkerResultRejectsInvalidReaderEvidenceKind(t *testing.T) {
 	_, err := ValidateWorkerResult(WorkerReader, `{"status":"complete","evidence":[{"kind":"url","summary":"read docs"}],"coverage":"repo","gaps":[],"suggested_next":""}`)
 	if err == nil || !strings.Contains(err.Error(), "reader evidence kind") {

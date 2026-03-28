@@ -570,7 +570,7 @@ func TestAgentExecutorVisiblePreviewFollowUpPromptRequiresVerifiedServerClaims(t
 	}
 }
 
-func TestAgentExecutorVisiblePreviewFollowUpPromptRequiresExplicitApplyBeforeCodeEdits(t *testing.T) {
+func TestVisiblePreviewIdeatePhasePromptRequiresArtifactOnlyGuidance(t *testing.T) {
 	defaultTools := tools.NewRegistry()
 	inspectTools := tools.NewRegistry()
 	agent := &stubScopedAgent{response: "Updated mockups are ready."}
@@ -591,6 +591,7 @@ func TestAgentExecutorVisiblePreviewFollowUpPromptRequiresExplicitApplyBeforeCod
 				ID:          "thread-1",
 				Kind:        ThreadPreviewCollaboration,
 				Status:      ThreadAwaitingUserFeedback,
+				Phase:       ThreadPhaseIdeate,
 				Deliverable: DeliverablePreviewAvailableAndRenderable,
 				TopicKey:    "path:theme-mockups.html",
 			},
@@ -603,11 +604,53 @@ func TestAgentExecutorVisiblePreviewFollowUpPromptRequiresExplicitApplyBeforeCod
 		t.Fatalf("run messages = %d", len(agent.runMessages))
 	}
 	msg := agent.runMessages[0]
-	if !strings.Contains(msg, "this is a preview-thread iteration turn: keep changes in tracked preview artifacts by default") {
+	if !strings.Contains(msg, "preview thread phase is ideate: keep changes in tracked preview artifacts only") {
 		t.Fatalf("visible preview prompt missing preview-thread artifact-only rule: %q", msg)
 	}
-	if !strings.Contains(msg, "do not edit workspace source files yet; wait for an explicit user instruction to apply one chosen direction into app code") {
+	if !strings.Contains(msg, "do not edit workspace source files until the user explicitly asks to apply one chosen direction") {
 		t.Fatalf("visible preview prompt missing explicit apply gate: %q", msg)
+	}
+}
+
+func TestVisiblePreviewApplyPhasePromptUsesSourceApplyGuidance(t *testing.T) {
+	defaultTools := tools.NewRegistry()
+	inspectTools := tools.NewRegistry()
+	agent := &stubScopedAgent{response: "Applied the selected direction."}
+	exec := AgentExecutor{
+		Agent:        agent,
+		DefaultTools: defaultTools,
+		InspectTools: inspectTools,
+	}
+
+	_, err := exec.Execute(context.Background(), UserTurn{Text: "go ahead and implement it"}, Classification{
+		Family:                  FamilyImplement,
+		PrefersVisibleExecution: true,
+		ThreadIntent:            TurnIntentContinueThread,
+		IsFollowUp:              true,
+	}, SessionState{
+		Threads: ThreadLedger{
+			Active: ThreadState{
+				ID:          "thread-1",
+				Kind:        ThreadPreviewCollaboration,
+				Status:      ThreadAwaitingUserFeedback,
+				Phase:       ThreadPhaseApply,
+				Deliverable: DeliverablePreviewAvailableAndRenderable,
+				TopicKey:    "path:theme-mockups.html",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.runMessages) != 1 {
+		t.Fatalf("run messages = %d", len(agent.runMessages))
+	}
+	msg := agent.runMessages[0]
+	if !strings.Contains(msg, "preview thread phase is apply: implement the selected direction in workspace source files now") {
+		t.Fatalf("visible preview prompt missing apply-phase guidance: %q", msg)
+	}
+	if strings.Contains(msg, "keep changes in tracked preview artifacts only") {
+		t.Fatalf("apply-phase prompt should not include ideate-only artifact guidance: %q", msg)
 	}
 }
 

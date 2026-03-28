@@ -103,6 +103,19 @@ type ChatConfig struct {
 	Agents         AgentsConfig `toml:"agents"`
 }
 
+type ApprovalRuleConfig struct {
+	Tool          string   `toml:"tool"`
+	CommandPrefix []string `toml:"command_prefix"`
+	Decision      string   `toml:"decision"`
+}
+
+type ApprovalConfig struct {
+	DefaultPolicy     string               `toml:"default_policy"`
+	SandboxPolicy     string               `toml:"sandbox_policy"`
+	KnownSafePrefixes []string             `toml:"known_safe_prefixes"`
+	Rules             []ApprovalRuleConfig `toml:"rules"`
+}
+
 type Config struct {
 	Models   Models         `toml:"models"`
 	Session  Session        `toml:"session"`
@@ -114,6 +127,7 @@ type Config struct {
 	Retry    Retry          `toml:"retry"`
 	Git      Git            `toml:"git"`
 	Chat     ChatConfig     `toml:"chat"`
+	Approval ApprovalConfig `toml:"approval"`
 }
 
 // defaultCopilotClientID is the bundled GitHub OAuth App client ID used for
@@ -308,6 +322,24 @@ func setDefaults(c *Config) {
 	c.Chat.CommandTimeout = 60
 	c.Chat.IgnoreDirs = []string{".git", "node_modules", "__pycache__", ".venv", "vendor"}
 	c.Chat.AutoSkills = "suggest"
+	c.Approval.DefaultPolicy = "on_request"
+	c.Approval.SandboxPolicy = "workspace_write"
+	c.Approval.KnownSafePrefixes = []string{
+		"git status",
+		"git diff",
+		"git log",
+		"ls",
+		"pwd",
+		"cat",
+		"head",
+		"tail",
+		"sed -n",
+		"rg",
+		"go test",
+		"go build",
+		"npm test",
+		"npm run lint",
+	}
 	c.Models.WriterParams.Temperature = -1
 	c.Models.AuditorParams.Temperature = -1
 }

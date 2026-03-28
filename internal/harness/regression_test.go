@@ -25,6 +25,27 @@ type regressionFixture struct {
 	WantTerseAnswer    bool          `json:"want_terse_answer"`
 }
 
+type previewBranchClaimRegressionFixture struct {
+	Name                string            `json:"name"`
+	Source              string            `json:"source"`
+	Kind                string            `json:"kind"`
+	Input               string            `json:"input"`
+	Session             SessionState      `json:"session"`
+	WantFamily          RequestFamily     `json:"want_family"`
+	WantAction          bool              `json:"want_action"`
+	WantFollowUp        bool              `json:"want_follow_up"`
+	WantTopicKey        string            `json:"want_topic_key"`
+	WantStep            StepKind          `json:"want_step"`
+	WantWorker          WorkerKind        `json:"want_worker"`
+	Step                Step              `json:"step"`
+	Classification      Classification    `json:"classification"`
+	Observation         Observation       `json:"observation"`
+	WantStatus          ObservationStatus `json:"want_status"`
+	WantOutcome         OutcomeKind       `json:"want_outcome"`
+	WantReasonContains  string            `json:"want_reason_contains"`
+	WantSummaryContains string            `json:"want_summary_contains"`
+}
+
 func TestRegressionFixturesRouteWithoutEscalation(t *testing.T) {
 	paths := []string{
 		filepath.Join("testdata", "debuglogs", "collaborative-routing.jsonl"),
@@ -68,6 +89,58 @@ func TestRegressionFixturesRouteWithoutEscalation(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestRegressionPreviewBranchClaimFixtures(t *testing.T) {
+	path := filepath.Join("testdata", "preview_branch_claim_regression.json")
+	fixtures := loadPreviewBranchClaimRegressionFixtures(t, path)
+	for _, fixture := range fixtures {
+		t.Run(fixture.Name, func(t *testing.T) {
+			switch fixture.Kind {
+			case "classification":
+				class := Classify(UserTurn{Text: fixture.Input}, fixture.Session)
+				if class.Family != fixture.WantFamily {
+					t.Fatalf("%s family = %q, want %q", fixture.Source, class.Family, fixture.WantFamily)
+				}
+				if class.WantsAction != fixture.WantAction {
+					t.Fatalf("%s wants_action = %v, want %v", fixture.Source, class.WantsAction, fixture.WantAction)
+				}
+				if class.IsFollowUp != fixture.WantFollowUp {
+					t.Fatalf("%s follow_up = %v, want %v", fixture.Source, class.IsFollowUp, fixture.WantFollowUp)
+				}
+				if class.TopicKey != fixture.WantTopicKey {
+					t.Fatalf("%s topic = %q, want %q", fixture.Source, class.TopicKey, fixture.WantTopicKey)
+				}
+				step := Plan(class, fixture.Session)
+				if step.Kind != fixture.WantStep {
+					t.Fatalf("%s step = %q, want %q", fixture.Source, step.Kind, fixture.WantStep)
+				}
+				if step.Worker != fixture.WantWorker {
+					t.Fatalf("%s worker = %q, want %q", fixture.Source, step.Worker, fixture.WantWorker)
+				}
+			case "normalize":
+				got := normalizeObservation(fixture.Step, fixture.Classification, fixture.Session, fixture.Observation)
+				if got.Status != fixture.WantStatus {
+					t.Fatalf("%s status = %q, want %q", fixture.Source, got.Status, fixture.WantStatus)
+				}
+				if got.Outcome.Kind != fixture.WantOutcome {
+					t.Fatalf("%s outcome = %q, want %q", fixture.Source, got.Outcome.Kind, fixture.WantOutcome)
+				}
+				if want := strings.TrimSpace(fixture.WantReasonContains); want != "" {
+					if !strings.Contains(strings.ToLower(got.Outcome.Reason), strings.ToLower(want)) {
+						t.Fatalf("%s outcome reason = %q, want substring %q", fixture.Source, got.Outcome.Reason, want)
+					}
+				}
+				if want := strings.TrimSpace(fixture.WantSummaryContains); want != "" {
+					if !strings.Contains(strings.ToLower(got.Summary), strings.ToLower(want)) {
+						t.Fatalf("%s summary = %q, want substring %q", fixture.Source, got.Summary, want)
+					}
+				}
+			default:
+				t.Fatalf("unknown fixture kind %q", fixture.Kind)
+			}
+		})
 	}
 }
 
@@ -169,4 +242,20 @@ func loadParaphrases(t *testing.T, path string) []string {
 		}
 	}
 	return out
+}
+
+func loadPreviewBranchClaimRegressionFixtures(t *testing.T, path string) []previewBranchClaimRegressionFixture {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var fixtures []previewBranchClaimRegressionFixture
+	if err := json.Unmarshal(data, &fixtures); err != nil {
+		t.Fatalf("decode %s: %v", path, err)
+	}
+	if len(fixtures) == 0 {
+		t.Fatalf("no fixtures loaded from %s", path)
+	}
+	return fixtures
 }

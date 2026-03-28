@@ -84,7 +84,7 @@ func (m *Manager) Execute(ctx context.Context, task WorkerTask) (Observation, er
 
 	skillRuntime := skills.NewRuntime(loadedSkills)
 	if err := applyWorkerSkillContext(worker, skillRuntime, task); err != nil {
-		return blockedWorkerObservation(task, err, skillRuntime.UseRecords())
+		return blockedWorkerObservation(task, err, skillRuntime.UseRecords(), nil)
 	}
 
 	var raw string
@@ -96,7 +96,7 @@ func (m *Manager) Execute(ctx context.Context, task WorkerTask) (Observation, er
 			prompt = workerRetryPrompt(task, validationErr)
 		}
 		if err := worker.Run(ctx, prompt); err != nil {
-			return blockedWorkerObservation(task, err, skillRuntime.UseRecords())
+			return blockedWorkerObservation(task, err, skillRuntime.UseRecords(), mapObservedToolCalls(cumulativeCalls))
 		}
 		raw = worker.LastResponse()
 		cumulativeCalls = append(cumulativeCalls, worker.LastToolCalls()...)
@@ -107,6 +107,7 @@ func (m *Manager) Execute(ctx context.Context, task WorkerTask) (Observation, er
 				Summary:   validated.Summary,
 				TopicKey:  task.TopicKey,
 				Artifact:  validated.Parsed,
+				ToolCalls: mapObservedToolCalls(cumulativeCalls),
 				SkillUses: skillRuntime.UseRecords(),
 			}, nil
 		}
@@ -114,7 +115,7 @@ func (m *Manager) Execute(ctx context.Context, task WorkerTask) (Observation, er
 	}
 
 	err := fmt.Errorf("%s produced invalid structured output after retries", task.Kind)
-	return blockedWorkerObservation(task, err, skillRuntime.UseRecords())
+	return blockedWorkerObservation(task, err, skillRuntime.UseRecords(), mapObservedToolCalls(cumulativeCalls))
 }
 
 func workerToolAllowlist(kind WorkerKind) []string {
@@ -177,6 +178,9 @@ func workerRetryPrompt(task WorkerTask, cause error) string {
 	fmt.Fprintf(&sb, "Your previous %s output was invalid for the runtime contract.\n", task.Kind)
 	if cause != nil {
 		fmt.Fprintf(&sb, "Validation error: %s\n", strings.TrimSpace(cause.Error()))
+		if needsJSONStringEscapeGuidance(cause) {
+			sb.WriteString("JSON strings must escape control characters. Replace raw tabs/newlines with escaped forms (\\\\t, \\\\n) and return one compact JSON object.\n")
+		}
 	}
 	sb.WriteString("Return to the strict worker state machine:\n")
 	sb.WriteString("- if you still need more information or work, emit exactly one tool call and nothing else\n")
@@ -192,6 +196,19 @@ func workerRetryPrompt(task WorkerTask, cause error) string {
 	}
 	sb.WriteString("Do not repeat the previous invalid format.\n")
 	return strings.TrimSpace(sb.String())
+}
+
+func needsJSONStringEscapeGuidance(cause error) bool {
+	if cause == nil {
+		return false
+	}
+	lower := strings.ToLower(strings.TrimSpace(cause.Error()))
+	if !strings.Contains(lower, "string literal") {
+		return false
+	}
+	return strings.Contains(lower, "\\t") ||
+		strings.Contains(lower, "\\n") ||
+		strings.Contains(lower, "control character")
 }
 
 func applyWorkerSkillContext(worker *agent.Agent, runtime *skills.Runtime, task WorkerTask) error {
@@ -227,12 +244,13 @@ func applyWorkerSkillContext(worker *agent.Agent, runtime *skills.Runtime, task 
 	return nil
 }
 
-func blockedWorkerObservation(task WorkerTask, err error, uses []skills.UseRecord) (Observation, error) {
+func blockedWorkerObservation(task WorkerTask, err error, uses []skills.UseRecord, calls []ObservedToolCall) (Observation, error) {
 	summary := firstNonEmpty(errorString(err), "worker failed closed")
 	obs := Observation{
 		Status:    ObservationBlocked,
 		Summary:   summary,
 		TopicKey:  task.TopicKey,
+		ToolCalls: calls,
 		SkillUses: uses,
 		Err:       err,
 	}
