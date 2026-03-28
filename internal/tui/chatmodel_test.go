@@ -136,8 +136,11 @@ func TestChatModelHandlesAbortClearsLiveProgress(t *testing.T) {
 
 	updated, _ := m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "reading README.md"})
 	m = updated.(ChatModel)
-	if len(m.messages) != 1 || m.messages[0].Kind != MsgWorking {
-		t.Fatalf("expected working row before abort, got %#v", m.messages)
+	if len(m.messages) != 1 || m.messages[0].Kind != MsgStatus {
+		t.Fatalf("expected progress status row before abort, got %#v", m.messages)
+	}
+	if !strings.Contains(m.messages[0].Content, "reading README.md") {
+		t.Fatalf("unexpected progress status row before abort: %#v", m.messages[0])
 	}
 
 	updated, _ = m.Update(llm.Event{Kind: llm.EventAbort})
@@ -146,14 +149,14 @@ func TestChatModelHandlesAbortClearsLiveProgress(t *testing.T) {
 	if m.busy {
 		t.Fatal("expected busy=false after abort")
 	}
-	if len(m.messages) != 0 {
-		t.Fatalf("expected abort to clear working rows, got %#v", m.messages)
+	if len(m.messages) != 1 {
+		t.Fatalf("expected abort to preserve progress history, got %#v", m.messages)
 	}
 	if !m.liveProgress.IsZero() {
 		t.Fatalf("expected abort to clear live progress, got %#v", m.liveProgress)
 	}
-	if len(m.records) != 0 {
-		t.Fatalf("expected abort not to persist progress, got %#v", m.records)
+	if len(m.records) != 1 || m.records[0].Kind != RecordSystem {
+		t.Fatalf("expected abort to keep prior persisted progress entry, got %#v", m.records)
 	}
 }
 
@@ -205,7 +208,7 @@ func TestChatModelShowsInlineWorkingMessageForRuntimeInfo(t *testing.T) {
 		t.Fatal("expected working message")
 	}
 	last := m.messages[len(m.messages)-1]
-	if last.Kind != MsgWorking || !strings.Contains(last.Content, "Inspecting repository structure") {
+	if last.Kind != MsgStatus || !strings.Contains(last.Content, "Inspecting repository structure") {
 		t.Fatalf("unexpected last message: %#v", last)
 	}
 }
@@ -225,18 +228,17 @@ func TestChatModelProgressAccumulatesActiveSubAgentMilestones(t *testing.T) {
 		m = updated.(ChatModel)
 	}
 
-	if len(m.messages) != 1 {
-		t.Fatalf("expected one working line, got %#v", m.messages)
+	if len(m.messages) != 4 {
+		t.Fatalf("expected one progress status per milestone, got %#v", m.messages)
 	}
-	msg := m.messages[0]
-	if msg.Kind != MsgWorking {
-		t.Fatalf("expected working message, got %#v", msg)
-	}
-	if msg.Header != "" {
-		t.Fatalf("header = %q, want empty", msg.Header)
-	}
-	if got := msg.Content; got != "reading README.md\nlooking for \"**/*.go\"\nreading main.go\nreading app.go" {
-		t.Fatalf("content = %q", got)
+	expected := []string{"reading README.md", "looking for \"**/*.go\"", "reading main.go", "reading app.go"}
+	for i, want := range expected {
+		if m.messages[i].Kind != MsgStatus {
+			t.Fatalf("message %d kind = %#v, want MsgStatus", i, m.messages[i])
+		}
+		if !strings.Contains(m.messages[i].Content, want) {
+			t.Fatalf("message %d content = %q, want to contain %q", i, m.messages[i].Content, want)
+		}
 	}
 }
 
@@ -252,11 +254,17 @@ func TestChatModelProgressHandoffAppendsPreviousWorkingLine(t *testing.T) {
 	updated, _ = m.Update(llm.Event{Kind: llm.EventProgress, Agent: "builder", Text: "editing main.go"})
 	m = updated.(ChatModel)
 
-	if len(m.messages) != 1 {
+	if len(m.messages) != 3 {
 		t.Fatalf("messages = %#v", m.messages)
 	}
-	if got := m.messages[0]; got.Kind != MsgWorking || got.Content != "reading README.md\ndelegating to builder\nediting main.go" {
-		t.Fatalf("unexpected working handoff state: %#v", got)
+	if m.messages[0].Kind != MsgStatus || !strings.Contains(m.messages[0].Content, "reading README.md") {
+		t.Fatalf("unexpected first handoff status: %#v", m.messages[0])
+	}
+	if m.messages[1].Kind != MsgStatus || !strings.Contains(m.messages[1].Content, "delegating to builder") {
+		t.Fatalf("unexpected second handoff status: %#v", m.messages[1])
+	}
+	if m.messages[2].Kind != MsgStatus || !strings.Contains(m.messages[2].Content, "editing main.go") {
+		t.Fatalf("unexpected third handoff status: %#v", m.messages[2])
 	}
 }
 
@@ -290,7 +298,7 @@ func TestTranscriptRecordChatModelTracksDurableKindsAndAssistantSegments(t *test
 	}
 }
 
-func TestLiveProgressChatModelKeepsProgressTransientUntilDone(t *testing.T) {
+func TestLiveProgressChatModelKeepsProgressVisibleAfterDone(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 80
 	m.height = 24
@@ -300,10 +308,13 @@ func TestLiveProgressChatModelKeepsProgressTransientUntilDone(t *testing.T) {
 	updated, _ = m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "reading app.go"})
 	m = updated.(ChatModel)
 
-	if len(m.messages) != 1 || m.messages[0].Kind != MsgWorking || m.messages[0].Content != "reading README.md\nreading app.go" {
+	if len(m.messages) != 2 || m.messages[0].Kind != MsgStatus || m.messages[1].Kind != MsgStatus {
 		t.Fatalf("messages = %#v", m.messages)
 	}
-	if len(m.records) != 0 {
+	if !strings.Contains(m.messages[0].Content, "reading README.md") || !strings.Contains(m.messages[1].Content, "reading app.go") {
+		t.Fatalf("unexpected progress messages before done = %#v", m.messages)
+	}
+	if len(m.records) != 2 {
 		t.Fatalf("records = %#v", m.records)
 	}
 	if got := m.liveProgress.LatestMessage(); got != "reading app.go" {
@@ -313,17 +324,20 @@ func TestLiveProgressChatModelKeepsProgressTransientUntilDone(t *testing.T) {
 	updated, _ = m.Update(llm.Event{Kind: llm.EventDone})
 	m = updated.(ChatModel)
 
-	if len(m.messages) != 0 {
+	if len(m.messages) != 2 {
 		t.Fatalf("messages after done = %#v", m.messages)
+	}
+	if m.messages[0].Kind != MsgStatus || m.messages[1].Kind != MsgStatus {
+		t.Fatalf("expected persisted progress status rows after done, got %#v", m.messages)
 	}
 	if !m.liveProgress.IsZero() {
 		t.Fatalf("live progress after done = %#v", m.liveProgress)
 	}
-	if len(m.records) != 1 {
+	if len(m.records) != 3 {
 		t.Fatalf("records after done = %#v", m.records)
 	}
-	if m.records[0].Kind != RecordSystem || len(m.records[0].Segments) != 1 || m.records[0].Segments[0].Text != "reading README.md\nreading app.go" {
-		t.Fatalf("record after done = %#v", m.records[0])
+	if m.records[2].Kind != RecordSystem || len(m.records[2].Segments) != 1 || m.records[2].Segments[0].Text != "reading README.md\nreading app.go" {
+		t.Fatalf("finalized live-progress record after done = %#v", m.records[2])
 	}
 }
 
@@ -336,21 +350,21 @@ func TestChatModelDoneFinalizesAssistantRecordBeforeProgressNote(t *testing.T) {
 	updated, _ := m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "reading app.go"})
 	m = updated.(ChatModel)
 
-	if len(m.records) != 1 || m.records[0].Kind != RecordAssistant || m.records[0].Final {
-		t.Fatalf("assistant state before done = %#v", m.records)
+	if len(m.records) != 2 || m.records[0].Kind != RecordAssistant || m.records[0].Final || m.records[1].Kind != RecordSystem {
+		t.Fatalf("records state before done = %#v", m.records)
 	}
 
 	updated, _ = m.Update(llm.Event{Kind: llm.EventDone})
 	m = updated.(ChatModel)
 
-	if len(m.records) != 2 {
+	if len(m.records) != 3 {
 		t.Fatalf("records after done = %#v", m.records)
 	}
 	if m.records[0].Kind != RecordAssistant || !m.records[0].Final {
 		t.Fatalf("assistant record after done = %#v", m.records[0])
 	}
-	if m.records[1].Kind != RecordSystem {
-		t.Fatalf("progress note after done = %#v", m.records[1])
+	if m.records[2].Kind != RecordSystem {
+		t.Fatalf("finalized progress note after done = %#v", m.records[2])
 	}
 }
 
@@ -366,10 +380,10 @@ func TestChatModelDelegatingRuntimeEventUsesWorkingLine(t *testing.T) {
 		t.Fatalf("messages = %#v", m.messages)
 	}
 	got := m.messages[0]
-	if got.Kind != MsgWorking {
+	if got.Kind != MsgStatus {
 		t.Fatalf("kind = %#v", got)
 	}
-	if got.Content != "delegating to scout" {
+	if !strings.Contains(got.Content, "delegating to scout") {
 		t.Fatalf("content = %q", got.Content)
 	}
 }
@@ -1428,8 +1442,8 @@ func TestChatModelToolCallShowsWorkingActivityWithoutDebug(t *testing.T) {
 	if len(m.toolsSections) != 0 {
 		t.Fatalf("expected no default trace buffer, got %#v", m.toolsSections)
 	}
-	if len(m.messages) == 0 || m.messages[len(m.messages)-1].Kind != MsgWorking {
-		t.Fatalf("expected working activity row, got %#v", m.messages)
+	if len(m.messages) == 0 || m.messages[len(m.messages)-1].Kind != MsgStatus {
+		t.Fatalf("expected progress status activity row, got %#v", m.messages)
 	}
 	if !strings.Contains(m.messages[len(m.messages)-1].Content, "read_file: inspect main.go") {
 		t.Fatalf("unexpected working activity: %#v", m.messages[len(m.messages)-1])
@@ -3229,7 +3243,7 @@ func TestChatModelViewPaintsTranscriptLinesWithAppBackground(t *testing.T) {
 	}
 }
 
-func TestProgressSlotRendersAboveComposerWithoutLeakingIntoTranscript(t *testing.T) {
+func TestProgressSlotRendersAboveComposerWhileTranscriptShowsDetails(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
 	m = updated.(ChatModel)
@@ -3243,7 +3257,10 @@ func TestProgressSlotRendersAboveComposerWithoutLeakingIntoTranscript(t *testing
 		t.Fatalf("expected transcript content to remain visible, got:\n%s", strippedLine(view))
 	}
 	if count := strings.Count(strippedLine(view), "reading app.go"); count != 1 {
-		t.Fatalf("expected one live progress slot, found %d in:\n%s", count, strippedLine(view))
+		t.Fatalf("expected detailed progress to appear once in transcript, found %d in:\n%s", count, strippedLine(view))
+	}
+	if !strings.Contains(strippedLine(view), "updates in conversation") {
+		t.Fatalf("expected concise live progress slot summary, got:\n%s", strippedLine(view))
 	}
 
 	lines := strings.Split(view, "\n")
@@ -3254,7 +3271,7 @@ func TestProgressSlotRendersAboveComposerWithoutLeakingIntoTranscript(t *testing
 		if strings.Contains(stripped, "Prompt") {
 			promptLine = i
 		}
-		if strings.Contains(stripped, "reading app.go") {
+		if strings.Contains(stripped, "updates in conversation") {
 			progressLine = i
 		}
 	}
@@ -3285,7 +3302,7 @@ func TestProgressSlotTruncatesLongMessageToSingleLine(t *testing.T) {
 		if strings.Contains(stripped, "Prompt") {
 			promptLine = i
 		}
-		if strings.Contains(stripped, "reading this path") {
+		if strings.Contains(stripped, "updates in conversation") {
 			progressLines = append(progressLines, i)
 		}
 	}
@@ -3310,7 +3327,7 @@ func TestProgressSlotShowsSpinnerWhileBusy(t *testing.T) {
 	m = updated.(ChatModel)
 
 	view := strippedLine(m.View())
-	if !strings.Contains(view, "| reading app.go") {
+	if !strings.Contains(view, "| updates in conversation") {
 		t.Fatalf("expected spinner-prefixed progress while busy, got:\n%s", view)
 	}
 }

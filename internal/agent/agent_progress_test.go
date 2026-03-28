@@ -74,3 +74,47 @@ func TestStrictActionEmitsUnpromptedProgressWhileWaitingForModel(t *testing.T) {
 		t.Fatalf("expected unprompted waiting heartbeat progress update, got %#v", progressLines)
 	}
 }
+
+func TestGeneralTurnEmitsUnpromptedProgressWhileWaitingForModel(t *testing.T) {
+	previousInterval := generalProgressHeartbeatInterval
+	generalProgressHeartbeatInterval = 10 * time.Millisecond
+	t.Cleanup(func() {
+		generalProgressHeartbeatInterval = previousInterval
+	})
+
+	driver := &delayedProgressDriver{
+		delay:    40 * time.Millisecond,
+		response: "Done.",
+	}
+	reg := tools.NewRegistry()
+	events := make(chan llm.Event, 256)
+	renderer := NewEventRenderer(events)
+
+	agent := NewAgent(driver, reg, YoloApproval(), t.TempDir(), 6, renderer, nil, nil)
+
+	if err := agent.Run(context.Background(), "summarize the request and continue"); err != nil {
+		t.Fatal(err)
+	}
+
+	var progressLines []string
+	for len(events) > 0 {
+		ev := <-events
+		if ev.Kind == llm.EventProgress {
+			progressLines = append(progressLines, strings.ToLower(strings.TrimSpace(ev.Text)))
+		}
+	}
+
+	if len(progressLines) == 0 {
+		t.Fatalf("expected general turn progress updates, got none")
+	}
+	var sawWaitingHeartbeat bool
+	for _, line := range progressLines {
+		if strings.Contains(line, "i am") {
+			sawWaitingHeartbeat = true
+			break
+		}
+	}
+	if !sawWaitingHeartbeat {
+		t.Fatalf("expected non-strict waiting heartbeat progress update, got %#v", progressLines)
+	}
+}
