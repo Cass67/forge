@@ -469,6 +469,24 @@ func compactStatusText(content string) string {
 	return truncate(content, 200)
 }
 
+func sanitizeAssistantTokenForDisplay(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	// Defense-in-depth: never render raw tool-call markup in the user-facing
+	// transcript pane.
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if strings.Contains(lower, "<tool_call>") ||
+		strings.Contains(lower, "</tool_call>") ||
+		strings.Contains(lower, "<function_calls>") ||
+		strings.Contains(lower, "</function_calls>") ||
+		strings.Contains(lower, "<tool_calls>") ||
+		strings.Contains(lower, "</tool_calls>") {
+		return ""
+	}
+	return text
+}
+
 func displayAgentLabel(label string) string {
 	label = strings.TrimSpace(label)
 	if label == "" || label == "agent" || label == "forge" {
@@ -1320,7 +1338,9 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 
 	switch ev.Kind {
 	case llm.EventToken:
-		m.AppendToLastAgentLabeled(ev.Text, ev.Agent)
+		if token := sanitizeAssistantTokenForDisplay(ev.Text); token != "" {
+			m.AppendToLastAgentLabeled(token, ev.Agent)
+		}
 	case llm.EventToolCall:
 		if ev.Agent == "runtime" {
 			m.AddWorkingMessage(ev.Text)
