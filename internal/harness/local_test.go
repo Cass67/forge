@@ -570,6 +570,47 @@ func TestAgentExecutorVisiblePreviewFollowUpPromptRequiresVerifiedServerClaims(t
 	}
 }
 
+func TestAgentExecutorVisiblePreviewFollowUpPromptRequiresExplicitApplyBeforeCodeEdits(t *testing.T) {
+	defaultTools := tools.NewRegistry()
+	inspectTools := tools.NewRegistry()
+	agent := &stubScopedAgent{response: "Updated mockups are ready."}
+	exec := AgentExecutor{
+		Agent:        agent,
+		DefaultTools: defaultTools,
+		InspectTools: inspectTools,
+	}
+
+	_, err := exec.Execute(context.Background(), UserTurn{Text: "thats nice but i need this for a tui"}, Classification{
+		Family:                  FamilyImplement,
+		PrefersVisibleExecution: true,
+		ThreadIntent:            TurnIntentContinueThread,
+		IsFollowUp:              true,
+	}, SessionState{
+		Threads: ThreadLedger{
+			Active: ThreadState{
+				ID:          "thread-1",
+				Kind:        ThreadPreviewCollaboration,
+				Status:      ThreadAwaitingUserFeedback,
+				Deliverable: DeliverablePreviewAvailableAndRenderable,
+				TopicKey:    "path:theme-mockups.html",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.runMessages) != 1 {
+		t.Fatalf("run messages = %d", len(agent.runMessages))
+	}
+	msg := agent.runMessages[0]
+	if !strings.Contains(msg, "this is a preview-thread iteration turn: keep changes in tracked preview artifacts by default") {
+		t.Fatalf("visible preview prompt missing preview-thread artifact-only rule: %q", msg)
+	}
+	if !strings.Contains(msg, "do not edit workspace source files yet; wait for an explicit user instruction to apply one chosen direction into app code") {
+		t.Fatalf("visible preview prompt missing explicit apply gate: %q", msg)
+	}
+}
+
 func TestAgentExecutorVisiblePreviewFollowUpPromptUsesPreviewThreadLedgerContext(t *testing.T) {
 	defaultTools := tools.NewRegistry()
 	inspectTools := tools.NewRegistry()
