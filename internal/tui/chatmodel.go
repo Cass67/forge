@@ -411,12 +411,21 @@ func (m *ChatModel) recordWorkingMessage(content string) {
 		ReplaceKey: "active",
 		Message:    content,
 	})
-	stamp := time.Now().Format("15:04:05")
-	m.AddMessage(ChatMessage{
-		Kind:    MsgStatus,
-		Content: fmt.Sprintf("progress • %s — %s", stamp, content),
+	if m.hasLiveWorkingMessage() {
+		idx := m.recentActivityIndex
+		if strings.TrimSpace(m.messages[idx].Content) == content {
+			return
+		}
+		m.messages[idx].Content = content
+		m.refreshViewport()
+		return
+	}
+	m.messages = append(m.messages, ChatMessage{
+		Kind:    MsgWorking,
+		Content: content,
 	})
-	m.resetRecentActivity()
+	m.recentActivityIndex = len(m.messages) - 1
+	m.refreshViewport()
 }
 
 func (m *ChatModel) clearWorkingMessage() {
@@ -1418,7 +1427,7 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 	case llm.EventAbort:
 		m.busy = false
 		m.activeSubAgent = ""
-		m.clearWorkingMessage()
+		m.finalizeLiveProgressRecord()
 		m.markLastAssistantRecordFinal()
 		m.status = "ready"
 		m.syncStatusData()
