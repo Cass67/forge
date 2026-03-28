@@ -12,9 +12,9 @@ type traceStyledLine struct {
 }
 
 func renderTraceOverlayPanel(theme chatTheme, content, debugLogPath string, width, height int) string {
-	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true)
-	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
-	textStyle := lipgloss.NewStyle().Foreground(theme.Text)
+	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Background(theme.AppBG).Bold(true)
+	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim).Background(theme.AppBG)
+	textStyle := lipgloss.NewStyle().Foreground(theme.Text).Background(theme.AppBG)
 
 	lines := []string{
 		titleStyle.Render("Debug trace"),
@@ -60,9 +60,9 @@ func renderTraceDockPanel(theme chatTheme, content, debugLogPath string, width, 
 	if width <= 0 || height <= 0 {
 		return ""
 	}
-	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true)
-	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
-	textStyle := lipgloss.NewStyle().Foreground(theme.Text)
+	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Background(theme.AppBG).Bold(true)
+	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim).Background(theme.AppBG)
+	textStyle := lipgloss.NewStyle().Foreground(theme.Text).Background(theme.AppBG)
 	contentWidth := max(1, width-6)
 	contentHeight := max(1, height-1)
 

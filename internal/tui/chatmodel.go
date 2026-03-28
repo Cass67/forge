@@ -765,6 +765,13 @@ func (m *ChatModel) refreshViewport() {
 
 func (m ChatModel) composer() ChatComposer {
 	composer := NewChatComposer()
+	minLines := 3
+	maxLines := 7
+	if m.height > 0 && m.height < 14 {
+		minLines = 2
+		maxLines = 5
+	}
+	composer.SetLineBudget(minLines, maxLines)
 	composer.SetText(m.inputBuf)
 	composer.SetCursor(m.inputPos)
 	return composer
