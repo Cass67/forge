@@ -276,3 +276,23 @@ func TestRenderStatusHeaderFallsBackAcrossWidths(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderStatusHeaderPaintsFullRowWidth(t *testing.T) {
+	withTrueColorProfile(t)
+
+	theme := lookupThemeForTest(t, "default")
+	rendered := renderStatusHeader(theme, chatStatusData{
+		Model:   "openai/gpt-5.4",
+		WorkDir: "/tmp/work",
+	}, 120)
+
+	wantBG := ansiBackground(theme.AppBG)
+	for idx, line := range strings.Split(rendered, "\n") {
+		if ansiPrintableWidth(line) != 120 {
+			t.Fatalf("line %d width = %d, want 120: %q", idx+1, ansiPrintableWidth(line), strippedLine(line))
+		}
+		if !strings.Contains(line, wantBG) {
+			t.Fatalf("line %d missing app background %q: %q", idx+1, wantBG, line)
+		}
+	}
+}
