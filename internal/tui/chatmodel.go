@@ -207,6 +207,7 @@ type ChatModel struct {
 	toolsWasShowing bool
 	lastToolResult  string
 	lastCodeBlock   string
+	lastToolSummary map[string]string
 
 	busy                   bool
 	viewportDirty          bool
@@ -326,6 +327,7 @@ func NewChatModel(cfg ChatLiveConfig) ChatModel {
 		agentsEnabled:          cfg.AgentsEnabled,
 		recentActivityIndex:    -1,
 		turnAnchorMessageIndex: -1,
+		lastToolSummary:        make(map[string]string),
 		modelsList:             uniqueStringsPreserveOrder(cfg.AvailableModels),
 		modelsFiltered:         uniqueStringsPreserveOrder(cfg.AvailableModels),
 		providersList:          append([]ProviderOption(nil), cfg.Providers...),
@@ -401,7 +403,7 @@ func (m *ChatModel) hasLiveWorkingMessage() bool {
 }
 
 func (m *ChatModel) recordWorkingMessage(content string) {
-	content = strings.TrimSpace(content)
+	content = normalizeProgressMessage(content)
 	if content == "" {
 		return
 	}
@@ -409,25 +411,12 @@ func (m *ChatModel) recordWorkingMessage(content string) {
 		ReplaceKey: "active",
 		Message:    content,
 	})
-	rendered := strings.TrimSpace(m.liveProgress.RenderMessage())
-	if rendered == "" {
-		return
-	}
-	if m.hasLiveWorkingMessage() {
-		if strings.TrimSpace(m.messages[m.recentActivityIndex].Content) == rendered {
-			return
-		}
-		m.messages[m.recentActivityIndex].Content = rendered
-		m.messages[m.recentActivityIndex].Header = ""
-		m.refreshViewport()
-		return
-	}
-	m.messages = append(m.messages, ChatMessage{
-		Kind:    MsgWorking,
-		Content: rendered,
+	stamp := time.Now().Format("15:04:05")
+	m.AddMessage(ChatMessage{
+		Kind:    MsgStatus,
+		Content: fmt.Sprintf("progress • %s — %s", stamp, content),
 	})
-	m.recentActivityIndex = len(m.messages) - 1
-	m.refreshViewport()
+	m.resetRecentActivity()
 }
 
 func (m *ChatModel) clearWorkingMessage() {
@@ -438,6 +427,27 @@ func (m *ChatModel) clearWorkingMessage() {
 	}
 	idx := m.recentActivityIndex
 	m.messages = append(m.messages[:idx], m.messages[idx+1:]...)
+	m.liveProgress = m.liveProgress.Reset()
+	m.resetRecentActivity()
+	m.refreshViewport()
+}
+
+func (m *ChatModel) archiveWorkingMessage() {
+	if !m.hasLiveWorkingMessage() {
+		m.liveProgress = m.liveProgress.Reset()
+		m.resetRecentActivity()
+		return
+	}
+	idx := m.recentActivityIndex
+	content := strings.TrimSpace(m.messages[idx].Content)
+	stamp := time.Now().Format("15:04:05")
+	if content == "" {
+		content = "progress update"
+	}
+	m.messages[idx] = ChatMessage{
+		Kind:    MsgStatus,
+		Content: fmt.Sprintf("progress • %s — %s", stamp, content),
+	}
 	m.liveProgress = m.liveProgress.Reset()
 	m.resetRecentActivity()
 	m.refreshViewport()
@@ -491,7 +501,7 @@ func (m *ChatModel) AppendToLastAgent(text string) {
 
 func (m *ChatModel) AppendToLastAgentLabeled(text, label string) {
 	if m.hasLiveWorkingMessage() {
-		m.clearWorkingMessage()
+		m.archiveWorkingMessage()
 	}
 	startedNew := false
 	if len(m.messages) == 0 || m.messages[len(m.messages)-1].Kind != MsgAgent || !hasAgentHeaderForLabel(m.messages[len(m.messages)-1], label) {
@@ -575,7 +585,7 @@ func (m *ChatModel) finalizeLiveProgressRecord() {
 		m.clearWorkingMessage()
 		return
 	}
-	m.clearWorkingMessage()
+	m.archiveWorkingMessage()
 	m.appendTranscriptRecord(record)
 }
 
@@ -706,9 +716,6 @@ func (m *ChatModel) refreshViewport() {
 		messageBlockIndex[i] = -1
 	}
 	for i, msg := range m.messages {
-		if msg.Kind == MsgWorking {
-			continue
-		}
 		// Skip agent/forge boxes with no content — they render as blank space
 		// (created before first token arrives; if error occurs, they stay empty)
 		if (msg.Kind == MsgAgent || msg.Kind == MsgForge) && strings.TrimSpace(msg.Content) == "" {
@@ -1313,6 +1320,9 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 			m.AddWorkingMessage(ev.Text)
 			return m, nil
 		}
+		if strings.TrimSpace(ev.Agent) != "" {
+			m.lastToolSummary[strings.TrimSpace(ev.Agent)] = strings.TrimSpace(ev.Text)
+		}
 		if !m.debugEnabled {
 			m.UpdateRecentActivity("", fmt.Sprintf("%s: %s", ev.Agent, ev.Text))
 			return m, nil
@@ -1329,6 +1339,11 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 			m.lastToolResult = ev.Content
 		} else if ev.Text != "" {
 			m.lastToolResult = ev.Text
+		}
+		if m.debugEnabled {
+			if line := m.toolResultProgressLine(ev); line != "" {
+				m.UpdateRecentActivity("", line)
+			}
 		}
 		if ev.Agent == "delegate" {
 			state := m.delegateResultState()
@@ -4241,6 +4256,9 @@ func (m ChatModel) renderLiveProgressSlot(theme chatTheme) string {
 	if message == "" {
 		return slotStyle.Render("")
 	}
+	if !m.liveProgress.IsZero() {
+		message = "updates in conversation"
+	}
 	prefix := "·"
 	if busy {
 		prefix = chatSpinnerGlyph(m.spinnerFrame)
@@ -4268,4 +4286,47 @@ func (m ChatModel) transientStatusMessage() (string, bool) {
 
 func normalizeStatusMessage(message string) string {
 	return strings.Join(strings.Fields(strings.TrimSpace(message)), " ")
+}
+
+func normalizeProgressMessage(content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
+	}
+	if normalized, ok := normalizeRuntimeProgressMessage(content); ok {
+		return normalized
+	}
+	return content
+}
+
+func normalizeRuntimeProgressMessage(content string) (string, bool) {
+	raw := strings.TrimSpace(content)
+	lower := strings.ToLower(raw)
+	if strings.HasPrefix(lower, "react runtime: executing turn ") {
+		turnText := strings.TrimSpace(strings.TrimPrefix(lower, "react runtime: executing turn "))
+		return fmt.Sprintf("I am starting analysis pass %s", turnText), true
+	}
+	if strings.Contains(lower, "cancelled") {
+		return "I stopped this run on request", true
+	}
+	return "", false
+}
+
+func (m ChatModel) toolResultProgressLine(ev llm.Event) string {
+	agent := strings.TrimSpace(ev.Agent)
+	if agent == "" || agent == "runtime" || agent == "delegate" {
+		return ""
+	}
+	summary := strings.TrimSpace(m.lastToolSummary[agent])
+	if ev.IsError {
+		reason := compactStatusText(ev.Text)
+		if reason == "" {
+			reason = "tool error"
+		}
+		return fmt.Sprintf("%s failed: %s", agent, reason)
+	}
+	if summary != "" {
+		return fmt.Sprintf("%s complete: %s", agent, summary)
+	}
+	return fmt.Sprintf("%s complete", agent)
 }

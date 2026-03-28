@@ -111,6 +111,7 @@ const targetHistoryTokens = 12000
 const maxCurrentToolResultChars = 12000
 
 var strictActionProgressHeartbeatInterval = 5 * time.Second
+var generalProgressHeartbeatInterval = 5 * time.Second
 
 func NewAgent(driver llm.Driver, toolReg *tools.Registry, approve tools.ApprovalFunc, workDir string, maxTurns int, renderer RenderTarget, loadedSkills []skills.Skill, state *chatstate.State) *Agent {
 	if state == nil {
@@ -295,6 +296,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	lastStrictPreviewArtifactTarget := ""
 	strictPreviewArtifactRepeats := 0
 	sawToolCallThisRun := false
+	lastGeneralContextHint := ""
 	dispatchCanStop := false
 	dispatchStopAfterTurn := false
 	currentDispatchTurn := 0
@@ -381,8 +383,12 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		heartbeatCount := 0
 		var heartbeat *time.Ticker
 		var heartbeatCh <-chan time.Time
-		if isStrictActionTurn && strictActionProgressHeartbeatInterval > 0 {
+		switch {
+		case isStrictActionTurn && strictActionProgressHeartbeatInterval > 0:
 			heartbeat = time.NewTicker(strictActionProgressHeartbeatInterval)
+			heartbeatCh = heartbeat.C
+		case !isStrictActionTurn && generalProgressHeartbeatInterval > 0:
+			heartbeat = time.NewTicker(generalProgressHeartbeatInterval)
 			heartbeatCh = heartbeat.C
 		}
 		for out != nil {
@@ -395,7 +401,11 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				sb.WriteString(tok.Text)
 			case <-heartbeatCh:
 				heartbeatCount++
-				if progress := strictActionTurnWaitingProgress(heartbeatCount); progress != "" {
+				progress := generalTurnWaitingProgress(turn, heartbeatCount, sawToolCallThisRun, lastGeneralContextHint)
+				if isStrictActionTurn {
+					progress = strictActionTurnWaitingProgress(heartbeatCount)
+				}
+				if progress != "" {
 					a.EmitProgress(progress)
 				}
 			}
@@ -618,6 +628,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		if scoutFirstTurnMultipleCalls {
 			calls = calls[:1]
 		}
+		lastGeneralContextHint = generalTurnContextHint(calls)
 		if isStrictActionTurn {
 			a.EmitProgress("Running tool steps")
 		}
@@ -1382,6 +1393,107 @@ func strictActionTurnWaitingProgress(heartbeatCount int) string {
 	default:
 		return ""
 	}
+}
+
+func generalTurnWaitingProgress(turn, heartbeatCount int, hasEvidence bool, contextHint string) string {
+	contextHint = strings.TrimSpace(contextHint)
+	if !hasEvidence {
+		switch heartbeatCount {
+		case 1:
+			return "I am mapping the repository before answering"
+		case 2:
+			return "I am still reviewing the repo structure and key docs"
+		case 3:
+			return "I am continuing repo analysis before drafting recommendations"
+		default:
+			return fmt.Sprintf("I am still analyzing the repo (pass %d)", turn+1)
+		}
+	}
+	if contextHint != "" {
+		switch heartbeatCount {
+		case 1:
+			return fmt.Sprintf("I am connecting what I found in %s", contextHint)
+		case 2:
+			return fmt.Sprintf("I am cross-checking %s before replying", contextHint)
+		case 3:
+			return fmt.Sprintf("I am drafting improvements from %s", contextHint)
+		default:
+			return fmt.Sprintf("I am refining the response from %s (pass %d)", contextHint, turn+1)
+		}
+	}
+	switch heartbeatCount {
+	case 1:
+		return "I am synthesizing findings into concrete recommendations"
+	case 2:
+		return "I am cross-checking gathered evidence before responding"
+	case 3:
+		return "I am drafting the response from the collected context"
+	default:
+		return fmt.Sprintf("I am refining the response from gathered evidence (pass %d)", turn+1)
+	}
+}
+
+func generalTurnContextHint(calls []ToolCall) string {
+	if len(calls) == 0 {
+		return ""
+	}
+	call := calls[0]
+	name := strings.TrimSpace(call.Name)
+	object := contextHintObject(call)
+	switch name {
+	case "read_file", "artifact_read":
+		if object != "" {
+			return object
+		}
+		return "the files I just read"
+	case "list_dir", "glob", "search":
+		if object != "" {
+			return object
+		}
+		return "the repository scan results"
+	case "git_status", "git_diff", "git_log":
+		return "the git state I just checked"
+	case "run_command":
+		if object != "" {
+			return object
+		}
+		return "the command output I just ran"
+	default:
+		if object != "" {
+			return object
+		}
+		return "the evidence I just gathered"
+	}
+}
+
+func contextHintObject(call ToolCall) string {
+	switch strings.TrimSpace(call.Name) {
+	case "read_file", "artifact_read", "write_file", "edit_file", "artifact_write", "list_dir":
+		if path, _ := call.Args["path"].(string); strings.TrimSpace(path) != "" {
+			base := filepath.Base(strings.TrimSpace(path))
+			if base != "" && base != "." {
+				return base
+			}
+			return strings.TrimSpace(path)
+		}
+	case "search":
+		if pattern, _ := call.Args["pattern"].(string); strings.TrimSpace(pattern) != "" {
+			return fmt.Sprintf("matches for %q", strings.TrimSpace(pattern))
+		}
+	case "glob":
+		if pattern, _ := call.Args["pattern"].(string); strings.TrimSpace(pattern) != "" {
+			return fmt.Sprintf("files matching %q", strings.TrimSpace(pattern))
+		}
+	case "run_command":
+		if command, _ := call.Args["command"].(string); strings.TrimSpace(command) != "" {
+			cmd := strings.TrimSpace(command)
+			if len(cmd) > 50 {
+				cmd = cmd[:50] + "..."
+			}
+			return cmd
+		}
+	}
+	return ""
 }
 
 func strictProgressSignature(calls []ToolCall, results []string) (string, bool) {
