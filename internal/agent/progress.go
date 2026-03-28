@@ -13,17 +13,17 @@ func progressLine(role, toolName, summary string) string {
 	switch toolName {
 	case "list_dir":
 		if summary == "" || summary == "." {
-			return "Quick scan of the workspace layout"
+			return "Getting the lay of the land in the workspace"
 		}
-		return fmt.Sprintf("Scanning %s", filepath.Base(summary))
+		return fmt.Sprintf("Scanning %s to map the structure", filepath.Base(summary))
 	case "read_file":
-		return fmt.Sprintf("Reading %s", filepath.Base(summary))
+		return readFileProgressLine(summary)
 	case "search":
 		return searchProgressLine(summary)
 	case "glob":
-		return fmt.Sprintf("Finding files matching %q", summary)
+		return fmt.Sprintf("Finding files that match %q", summary)
 	case "edit_file":
-		return fmt.Sprintf("Editing %s", filepath.Base(summary))
+		return fmt.Sprintf("Updating %s", filepath.Base(summary))
 	case "write_file":
 		return fmt.Sprintf("Writing %s", filepath.Base(summary))
 	case "artifact_write":
@@ -54,11 +54,11 @@ func progressLine(role, toolName, summary string) string {
 	case "scratchpad_read":
 		return "Loading saved notes"
 	case "git_status":
-		return "Checking git status"
+		return "Checking current working-tree changes"
 	case "git_diff":
-		return "Reviewing git diff"
+		return "Reviewing code changes in the diff"
 	case "git_log":
-		return "Reviewing recent commits"
+		return "Looking at recent commits for context"
 	case "git_commit":
 		return "Creating a commit"
 	case "think":
@@ -67,6 +67,23 @@ func progressLine(role, toolName, summary string) string {
 		return delegateProgressLine(summary)
 	default:
 		return ""
+	}
+}
+
+func readFileProgressLine(summary string) string {
+	base := filepath.Base(strings.TrimSpace(summary))
+	switch strings.ToLower(base) {
+	case "readme.md", "readme":
+		return "Reading README to understand the repository intent"
+	case "agents.md":
+		return "Reviewing project instructions before proceeding"
+	case ".gitignore":
+		return "Checking ignore rules and repo hygiene"
+	default:
+		if base == "" || base == "." {
+			return "Reading a file for context"
+		}
+		return fmt.Sprintf("Reading %s for context", base)
 	}
 }
 

@@ -3689,11 +3689,18 @@ func TestNormalizeRuntimeProgressMessageUsesNaturalPhrasing(t *testing.T) {
 	}
 }
 
-func TestToolResultProgressLineSkipsDotSummary(t *testing.T) {
+func TestToolResultProgressLineSuppressesNonErrors(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
-	m.lastToolSummary["forge"] = "."
 	got := m.toolResultProgressLine(llm.Event{Kind: llm.EventToolResult, Agent: "forge"})
-	if got != "Forge wrapped up this step" {
+	if got != "" {
+		t.Fatalf("progress line = %q", got)
+	}
+}
+
+func TestToolResultProgressLineKeepsErrors(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	got := m.toolResultProgressLine(llm.Event{Kind: llm.EventToolResult, Agent: "forge", IsError: true, Text: "permission denied"})
+	if got == "" || !strings.Contains(got, "hit an issue") {
 		t.Fatalf("progress line = %q", got)
 	}
 }
