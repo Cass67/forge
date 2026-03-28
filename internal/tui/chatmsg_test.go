@@ -171,6 +171,25 @@ func TestChatMessageHeaderUsesAppBackground(t *testing.T) {
 	}
 }
 
+func TestChatMessageForgeHeaderIncludesBodySeparator(t *testing.T) {
+	m := ChatMessage{
+		Kind:    MsgForge,
+		Header:  "Forge • 10:44:08",
+		Content: "thinking line",
+	}
+	got := strippedLine(m.Render(80, lookupThemeForTest(t, "default")))
+
+	if !strings.Contains(got, "Forge • 10:44:08") {
+		t.Fatalf("missing forge header: %q", got)
+	}
+	if !strings.Contains(got, "────────────────") {
+		t.Fatalf("expected visible separator between forge header and body: %q", got)
+	}
+	if !strings.Contains(got, "thinking line") {
+		t.Fatalf("missing forge body: %q", got)
+	}
+}
+
 func TestChatMessageRenderChangesAcrossThemes(t *testing.T) {
 	prevProfile := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
