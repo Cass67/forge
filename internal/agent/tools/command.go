@@ -4,8 +4,15 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
+)
+
+var (
+	pseudoGitStatusCommandPattern = regexp.MustCompile(`(^|(?:&&|\|\||;|\|)\s*)git_status(\s|$)`)
+	pseudoGitLogCommandPattern    = regexp.MustCompile(`(^|(?:&&|\|\||;|\|)\s*)git_log(?:\s+([0-9]+))?(\s|$)`)
+	pseudoGitDiffCommandPattern   = regexp.MustCompile(`(^|(?:&&|\|\||;|\|)\s*)git_diff(?:\s+([^\s;&|]+))?(\s|$)`)
 )
 
 func NewRunCommand(workDir string, timeoutSecs int, approve ApprovalFunc, forcePrompt ...ApprovalFunc) Tool {
@@ -18,6 +25,7 @@ func NewRunCommand(workDir string, timeoutSecs int, approve ApprovalFunc, forceP
 		AutoApprove: false,
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			command, _ := args["command"].(string)
+			command = normalizePseudoToolCommands(command)
 
 			approver := approve
 			if isDestructive(command) && len(forcePrompt) > 0 && forcePrompt[0] != nil {
@@ -62,6 +70,31 @@ func NewRunCommand(workDir string, timeoutSecs int, approve ApprovalFunc, forceP
 			return result + fmt.Sprintf("\nexit %d", exitCode), nil
 		},
 	}
+}
+
+func normalizePseudoToolCommands(command string) string {
+	command = pseudoGitStatusCommandPattern.ReplaceAllString(command, `${1}git status --porcelain${2}`)
+	command = pseudoGitLogCommandPattern.ReplaceAllStringFunc(command, func(match string) string {
+		parts := pseudoGitLogCommandPattern.FindStringSubmatch(match)
+		prefix := parts[1]
+		count := strings.TrimSpace(parts[2])
+		suffix := parts[3]
+		if count == "" {
+			count = "10"
+		}
+		return prefix + "git log --oneline -n " + count + suffix
+	})
+	command = pseudoGitDiffCommandPattern.ReplaceAllStringFunc(command, func(match string) string {
+		parts := pseudoGitDiffCommandPattern.FindStringSubmatch(match)
+		prefix := parts[1]
+		ref := strings.TrimSpace(parts[2])
+		suffix := parts[3]
+		if ref == "" {
+			return prefix + "git diff" + suffix
+		}
+		return prefix + "git diff " + ref + suffix
+	})
+	return command
 }
 
 func isDestructive(cmd string) bool {

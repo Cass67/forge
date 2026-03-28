@@ -82,3 +82,31 @@ func TestIsDestructiveCommand(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizePseudoToolCommandsMapsGitPseudoTools(t *testing.T) {
+	raw := "pwd && git_status && echo '---' && git_log 8 && echo '--' && git_diff HEAD~1"
+	got := normalizePseudoToolCommands(raw)
+
+	for _, want := range []string{
+		"git status --porcelain",
+		"git log --oneline -n 8",
+		"git diff HEAD~1",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("normalized command missing %q: %q", want, got)
+		}
+	}
+	for _, disallow := range []string{"git_status", "git_log", "git_diff "} {
+		if strings.Contains(got, disallow) {
+			t.Fatalf("normalized command still contains pseudo token %q: %q", disallow, got)
+		}
+	}
+}
+
+func TestNormalizePseudoToolCommandsAppliesDefaultGitLogCount(t *testing.T) {
+	raw := "git_log"
+	got := normalizePseudoToolCommands(raw)
+	if got != "git log --oneline -n 10" {
+		t.Fatalf("normalized git_log = %q", got)
+	}
+}

@@ -2359,7 +2359,7 @@ func (m ChatModel) helpLines() []string {
 			"",
 			"Layout and display:",
 			"  /theme             cycle chat themes",
-			"  /theme <name>      select default, low, light, or dusk",
+			"  /theme <name>      select default, codex, opencode, low, light, dusk, or eclipse",
 			"",
 			"Export and cleanup:",
 			"  /copy agent        copy transcript",

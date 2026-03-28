@@ -7,7 +7,7 @@ import (
 )
 
 func TestChatThemeLookupSupportsNamedThemes(t *testing.T) {
-	names := []string{"default", "low", "light", "dusk", "eclipse"}
+	names := []string{"default", "codex", "opencode", "low", "light", "dusk", "eclipse"}
 	for _, name := range names {
 		if _, ok := lookupChatTheme(name); !ok {
 			t.Fatalf("missing theme %q", name)
@@ -27,6 +27,10 @@ func TestChatThemeLookupSupportsLegacyAliases(t *testing.T) {
 	alias, ok = lookupChatTheme("lowcontrast")
 	if !ok || alias.ID != "low" {
 		t.Fatalf("lowcontrast alias = %#v, ok=%v", alias, ok)
+	}
+	alias, ok = lookupChatTheme("open-code")
+	if !ok || alias.ID != "opencode" {
+		t.Fatalf("open-code alias = %#v, ok=%v", alias, ok)
 	}
 }
 
