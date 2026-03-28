@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"forge/internal/agent"
@@ -57,6 +58,14 @@ func (e StrictAgentExecutor) Execute(ctx context.Context, turn UserTurn, class C
 		selectedTools = e.InspectTools
 		if e.DefaultTools != nil {
 			defer e.Agent.SetTools(e.DefaultTools)
+		}
+	} else if shouldConstrainPreviewThreadToArtifacts(turn.Text, resolvedClass, session) && selectedTools != nil {
+		filtered := selectedTools.Filter(previewArtifactOnlyToolNames())
+		if len(filtered.All()) > 0 {
+			selectedTools = filtered
+			if e.DefaultTools != nil {
+				defer e.Agent.SetTools(e.DefaultTools)
+			}
 		}
 	}
 	if selectedTools != nil {
@@ -196,4 +205,75 @@ func buildStrictLocalTurnPrompt(class Classification, userMessage string, sessio
 		return buildVisibleCollaborationTurnPrompt(class, userMessage, session)
 	}
 	return strings.TrimSpace(userMessage)
+}
+
+func shouldConstrainPreviewThreadToArtifacts(userMessage string, class Classification, session SessionState) bool {
+	if !class.PrefersVisibleExecution {
+		return false
+	}
+	if class.ThreadIntent != TurnIntentContinueThread && class.ThreadIntent != TurnIntentReplayThread {
+		return false
+	}
+	if !session.HasActiveThread() || session.ActiveThread().Kind != ThreadPreviewCollaboration {
+		return false
+	}
+	return !explicitSourceApplyRequest(userMessage)
+}
+
+func previewArtifactOnlyToolNames() []string {
+	return []string{
+		"artifact_write",
+		"artifact_read",
+		"preview_server_ensure",
+		"preview_server_status",
+		"read_file",
+		"search",
+		"glob",
+		"list_dir",
+		"tool_help",
+		"think",
+	}
+}
+
+func explicitSourceApplyRequest(input string) bool {
+	lower := strings.ToLower(strings.TrimSpace(input))
+	if lower == "" {
+		return false
+	}
+	for _, phrase := range []string{
+		"apply to the app",
+		"apply to app",
+		"apply to the code",
+		"apply this theme",
+		"implement in the app",
+		"implement this in the app",
+		"put it in the app",
+		"use this theme in the app",
+		"use this in the app",
+		"make this the default theme",
+		"update the code",
+		"patch the code",
+		"edit the code",
+	} {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	for _, token := range strings.Fields(lower) {
+		token = strings.Trim(token, "\"'`,.;:!?()[]{}")
+		if strings.Contains(token, "/") && strings.Contains(token, ".") {
+			cleaned := filepath.Clean(strings.TrimPrefix(token, "@"))
+			if strings.HasSuffix(cleaned, ".go") ||
+				strings.HasSuffix(cleaned, ".ts") ||
+				strings.HasSuffix(cleaned, ".tsx") ||
+				strings.HasSuffix(cleaned, ".js") ||
+				strings.HasSuffix(cleaned, ".jsx") ||
+				strings.HasSuffix(cleaned, ".py") ||
+				strings.HasPrefix(cleaned, "internal/") ||
+				strings.HasPrefix(cleaned, "cmd/") {
+				return true
+			}
+		}
+	}
+	return false
 }

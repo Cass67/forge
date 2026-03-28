@@ -110,6 +110,8 @@ type inspectDirectoryEvidenceState struct {
 const targetHistoryTokens = 12000
 const maxCurrentToolResultChars = 12000
 
+var strictActionProgressHeartbeatInterval = 5 * time.Second
+
 func NewAgent(driver llm.Driver, toolReg *tools.Registry, approve tools.ApprovalFunc, workDir string, maxTurns int, renderer RenderTarget, loadedSkills []skills.Skill, state *chatstate.State) *Agent {
 	if state == nil {
 		state = chatstate.New()
@@ -366,6 +368,9 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		messages = append(messages, a.history...)
 
 		// Stream response
+		if isStrictActionTurn {
+			a.EmitProgress(strictActionTurnStartProgress(turn, sawToolCallThisRun))
+		}
 		out := make(chan llm.Token, 64)
 		errCh := make(chan error, 1)
 		go func() {
@@ -373,8 +378,33 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		}()
 
 		var sb strings.Builder
-		for tok := range out {
-			sb.WriteString(tok.Text)
+		heartbeatCount := 0
+		var heartbeat *time.Ticker
+		var heartbeatCh <-chan time.Time
+		if isStrictActionTurn && strictActionProgressHeartbeatInterval > 0 {
+			heartbeat = time.NewTicker(strictActionProgressHeartbeatInterval)
+			heartbeatCh = heartbeat.C
+		}
+		for out != nil {
+			select {
+			case tok, ok := <-out:
+				if !ok {
+					out = nil
+					continue
+				}
+				sb.WriteString(tok.Text)
+			case <-heartbeatCh:
+				heartbeatCount++
+				if progress := strictActionTurnWaitingProgress(heartbeatCount); progress != "" {
+					a.EmitProgress(progress)
+				}
+			}
+		}
+		if heartbeat != nil {
+			heartbeat.Stop()
+		}
+		if isStrictActionTurn {
+			a.EmitProgress("Reviewing the model response")
 		}
 		if modeReporter, ok := a.driver.(llm.RequestModeReporter); ok {
 			if mode := strings.TrimSpace(modeReporter.LastRequestMode()); mode != "" {
@@ -553,6 +583,9 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				replacePendingControls(nudgeMessage(actionPreambleRetries))
 				continue
 			}
+			if isStrictActionTurn {
+				a.EmitProgress("Preparing the response")
+			}
 			clearPendingControls()
 			if strings.TrimSpace(visibleText) != "" {
 				a.renderer.AgentToken(visibleText)
@@ -584,6 +617,9 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		scoutFirstTurnMultipleCalls := a.role == "scout" && turn == 0 && scoutTaskRequiresEvidenceTools(userMessage) && len(calls) > 1
 		if scoutFirstTurnMultipleCalls {
 			calls = calls[:1]
+		}
+		if isStrictActionTurn {
+			a.EmitProgress("Running tool steps")
 		}
 
 		// Execute tool calls
@@ -795,6 +831,9 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			Role:    llm.RoleUser,
 			Content: compactToolResults(results),
 		})
+		if isStrictActionTurn {
+			a.EmitProgress("Reviewing tool results and planning the next step")
+		}
 		nextTurnControls := make([]string, 0, 3)
 		if isStrictActionTurn {
 			exactStrictMutationRepeat := false
@@ -1323,6 +1362,26 @@ func normalizeStrictTurnForExecution(response, role string, isSubAgent, isInspec
 
 func strictActionTurn(role string, isSubAgent, isInspectTurn bool) bool {
 	return isInspectTurn || strings.TrimSpace(role) == "strictlocal" || (isSubAgent && isStrictWorkerRole(role))
+}
+
+func strictActionTurnStartProgress(turn int, hasPreviousToolCall bool) string {
+	if turn == 0 && !hasPreviousToolCall {
+		return "Planning the next step and waiting for model response"
+	}
+	return "Continuing with the next step and waiting for model response"
+}
+
+func strictActionTurnWaitingProgress(heartbeatCount int) string {
+	switch heartbeatCount {
+	case 1:
+		return "Still waiting for the model response"
+	case 2:
+		return "Model is still working through this step"
+	case 3:
+		return "No action needed yet, still waiting for the model response"
+	default:
+		return ""
+	}
 }
 
 func strictProgressSignature(calls []ToolCall, results []string) (string, bool) {

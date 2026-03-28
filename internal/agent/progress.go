@@ -11,6 +11,11 @@ func progressLine(role, toolName, summary string) string {
 	_ = role
 	summary = strings.TrimSpace(summary)
 	switch toolName {
+	case "list_dir":
+		if summary == "" || summary == "." {
+			return "Listing workspace files"
+		}
+		return fmt.Sprintf("Listing %s", filepath.Base(summary))
 	case "read_file":
 		return fmt.Sprintf("Reading %s", filepath.Base(summary))
 	case "search":
@@ -40,6 +45,24 @@ func progressLine(role, toolName, summary string) string {
 		return fmt.Sprintf("Running %s", cmd)
 	case "tool_help":
 		return "Checking available tools"
+	case "web_fetch":
+		return fmt.Sprintf("Fetching %q", summary)
+	case "web_search":
+		return fmt.Sprintf("Searching the web for %q", summary)
+	case "scratchpad_write":
+		return "Saving notes for this step"
+	case "scratchpad_read":
+		return "Loading saved notes"
+	case "git_status":
+		return "Checking git status"
+	case "git_diff":
+		return "Reviewing git diff"
+	case "git_log":
+		return "Reviewing commit history"
+	case "git_commit":
+		return "Creating a commit"
+	case "think":
+		return "Thinking through the next step"
 	case "delegate":
 		return delegateProgressLine(summary)
 	default:
