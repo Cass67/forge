@@ -77,8 +77,6 @@ log/
 
 # Local docs and design scratch files
 /chat-ui-demo.html
-/docs/
-/docs/*
 
 # OS and editor workspace noise.
 .DS_Store
