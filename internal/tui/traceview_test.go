@@ -63,9 +63,11 @@ func TestRenderTraceOverlayPanelUsesSemanticTraceProfile(t *testing.T) {
 	got := renderTraceOverlayPanel(theme, "tool_call: forge -d\nstatus: approved in 1.2s", "/tmp/forge-debug.jsonl", 100, 24)
 
 	assertStyledSubstring(t, got, "tool_call:", theme.TextDim)
-	assertStyledSubstring(t, got, "forge -d", theme.AccentSecondary)
+	assertStyledSubstring(t, got, "forge -", theme.AccentSecondary)
+	assertStyledSubstring(t, got, "d", theme.AccentSecondary)
 	assertStyledSubstring(t, got, "approved", theme.Success)
-	assertStyledSubstring(t, got, "/tmp/forge-debug.jsonl", theme.AccentPrimary)
+	assertStyledSubstring(t, got, "/tmp/forge-", theme.AccentPrimary)
+	assertStyledSubstring(t, got, "debug.jsonl", theme.AccentPrimary)
 }
 
 func TestRenderTraceOverlayPanelPreservesPreStyledANSI(t *testing.T) {

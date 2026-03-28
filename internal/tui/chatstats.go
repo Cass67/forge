@@ -349,14 +349,15 @@ func buildWideHeaderLines(theme chatTheme, modelValue, workDirValue string, widt
 	metaWidth := max(12, width-railWidth-len(sep))
 	modelProminent := lipgloss.NewStyle().
 		Foreground(theme.HeaderFG).
+		Background(theme.AppBG).
 		Bold(true).
 		Render(truncateRightEllipsis(modelValue, metaWidth))
-	labelStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
-	valueStyle := lipgloss.NewStyle().Foreground(theme.Text)
-	railStyle := lipgloss.NewStyle().Foreground(theme.AccentSecondary).Bold(true)
+	labelStyle := lipgloss.NewStyle().Foreground(theme.TextDim).Background(theme.AppBG)
+	valueStyle := lipgloss.NewStyle().Foreground(theme.Text).Background(theme.AppBG)
+	railStyle := lipgloss.NewStyle().Background(theme.AppBG).Bold(true)
 
 	lines := []string{
-		padStyledWidth(railStyle.Render("FORGE")+sep+modelProminent, width),
+		padStyledWidth(railStyle.Render(renderForgeWordmark(theme))+sep+modelProminent, width),
 		padStyledWidth(strings.Repeat(" ", railWidth)+sep+labelStyle.Render("model  ")+valueStyle.Render(truncateRightEllipsis(modelValue, max(1, metaWidth-7))), width),
 		padStyledWidth(strings.Repeat(" ", railWidth)+sep+labelStyle.Render("dir    ")+valueStyle.Render(truncateLeftEllipsis(workDirValue, max(1, metaWidth-7))), width),
 	}
@@ -364,13 +365,13 @@ func buildWideHeaderLines(theme chatTheme, modelValue, workDirValue string, widt
 }
 
 func buildMediumHeaderLines(theme chatTheme, modelValue, workDirValue string, width int) []string {
-	labelStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
-	valueStyle := lipgloss.NewStyle().Foreground(theme.Text)
-	railStyle := lipgloss.NewStyle().Foreground(theme.AccentSecondary).Bold(true)
+	labelStyle := lipgloss.NewStyle().Foreground(theme.TextDim).Background(theme.AppBG)
+	valueStyle := lipgloss.NewStyle().Foreground(theme.Text).Background(theme.AppBG)
+	railStyle := lipgloss.NewStyle().Background(theme.AppBG).Bold(true)
 	prominentWidth := max(1, width-7)
 
 	lines := []string{
-		padStyledWidth(railStyle.Render("FORGE  ")+lipgloss.NewStyle().Foreground(theme.HeaderFG).Bold(true).Render(truncateRightEllipsis(modelValue, prominentWidth)), width),
+		padStyledWidth(railStyle.Render(renderForgeWordmark(theme)+"  ")+lipgloss.NewStyle().Foreground(theme.HeaderFG).Background(theme.AppBG).Bold(true).Render(truncateRightEllipsis(modelValue, prominentWidth)), width),
 		padStyledWidth(labelStyle.Render("model  ")+valueStyle.Render(truncateRightEllipsis(modelValue, max(1, width-7))), width),
 		padStyledWidth(labelStyle.Render("dir    ")+valueStyle.Render(truncateLeftEllipsis(workDirValue, max(1, width-7))), width),
 	}
@@ -378,11 +379,11 @@ func buildMediumHeaderLines(theme chatTheme, modelValue, workDirValue string, wi
 }
 
 func buildNarrowHeaderLines(theme chatTheme, modelValue, workDirValue string, width int) []string {
-	labelStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
-	valueStyle := lipgloss.NewStyle().Foreground(theme.Text)
+	labelStyle := lipgloss.NewStyle().Foreground(theme.TextDim).Background(theme.AppBG)
+	valueStyle := lipgloss.NewStyle().Foreground(theme.Text).Background(theme.AppBG)
 
 	lines := []string{
-		padStyledWidth(lipgloss.NewStyle().Foreground(theme.HeaderFG).Bold(true).Render(truncateRightEllipsis(modelValue, width)), width),
+		padStyledWidth(lipgloss.NewStyle().Foreground(theme.HeaderFG).Background(theme.AppBG).Bold(true).Render(truncateRightEllipsis(modelValue, width)), width),
 		padStyledWidth(labelStyle.Render("model  ")+valueStyle.Render(truncateRightEllipsis(modelValue, max(1, width-7))), width),
 		padStyledWidth(labelStyle.Render("dir    ")+valueStyle.Render(truncateLeftEllipsis(workDirValue, max(1, width-7))), width),
 	}
@@ -394,10 +395,10 @@ func renderCompactStatusHeader(theme chatTheme, data chatStatusData, width int) 
 		theme, _ = lookupChatTheme("default")
 	}
 	innerWidth := min(68, max(16, width-4))
-	wordmark := lipgloss.NewStyle().Foreground(theme.AccentSecondary).Bold(true).Render("FORGE")
-	model := lipgloss.NewStyle().Foreground(theme.HeaderFG).Bold(true).Render(truncateRightEllipsis(headerModelValue(data.Model), max(1, innerWidth/2)))
+	wordmark := renderForgeWordmark(theme)
+	model := lipgloss.NewStyle().Foreground(theme.HeaderFG).Background(theme.AppBG).Bold(true).Render(truncateRightEllipsis(headerModelValue(data.Model), max(1, innerWidth/2)))
 	dirWidth := max(1, innerWidth-ansiPrintableWidth(wordmark+"  "+model)-2)
-	dir := lipgloss.NewStyle().Foreground(theme.TextDim).Render(truncateLeftEllipsis(headerWorkDirValue(data.WorkDir), dirWidth))
+	dir := lipgloss.NewStyle().Foreground(theme.TextDim).Background(theme.AppBG).Render(truncateLeftEllipsis(headerWorkDirValue(data.WorkDir), dirWidth))
 	line := padStyledWidth(wordmark+"  "+model+"  "+dir, innerWidth)
 	card := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -406,6 +407,30 @@ func renderCompactStatusHeader(theme chatTheme, data chatStatusData, width int) 
 		Padding(0, 1).
 		Render(line)
 	return lipgloss.NewStyle().Background(theme.AppBG).Render(card)
+}
+
+func renderForgeWordmark(theme chatTheme) string {
+	letters := []struct {
+		ch    string
+		color lipgloss.Color
+	}{
+		{ch: "F", color: theme.AccentPrimary},
+		{ch: "O", color: theme.Success},
+		{ch: "R", color: theme.Warning},
+		{ch: "G", color: theme.Error},
+		{ch: "E", color: theme.AccentSecondary},
+	}
+	var b strings.Builder
+	for _, letter := range letters {
+		b.WriteString(
+			lipgloss.NewStyle().
+				Foreground(letter.color).
+				Background(theme.AppBG).
+				Bold(true).
+				Render(letter.ch),
+		)
+	}
+	return b.String()
 }
 
 func headerModelValue(model string) string {
