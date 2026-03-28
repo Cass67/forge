@@ -3362,6 +3362,34 @@ func TestAgentRunParsesCloseOnlyToolCallFragment(t *testing.T) {
 	}
 }
 
+func TestAgentRetriesCodeFencedToolCallLeakOnAnswerTurn(t *testing.T) {
+	dir := t.TempDir()
+	driver := &mockDriver{responses: []string{
+		"```xml\n<tool_call>\n{\"name\":\"list_dir\",\"args\":{\"path\":\".\",\"recursive\":false}}\n</tool_call>\n```",
+		"Repo looks healthy overall.",
+	}}
+
+	reg := tools.NewRegistry()
+	reg.Register(tools.NewListDir(dir, nil))
+
+	var output bytes.Buffer
+	renderer := NewRenderer(&output, 80, false)
+	agent := NewAgent(driver, reg, YoloApproval(), dir, 6, renderer, nil, nil)
+	if err := agent.Run(context.Background(), "let me know what you think of this repo"); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callIdx != 2 {
+		t.Fatalf("expected fenced tool markup leak to trigger retry, got %d driver calls", driver.callIdx)
+	}
+	got := output.String()
+	if strings.Contains(got, "<tool_call>") {
+		t.Fatalf("raw fenced tool markup leaked to renderer output: %q", got)
+	}
+	if !strings.Contains(got, "Repo looks healthy overall.") {
+		t.Fatalf("final answer missing after retry: %q", got)
+	}
+}
+
 func TestAgentSalvagesMalformedMainToolTurnWithoutRetryTax(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("preview theme notes\n"), 0o644); err != nil {

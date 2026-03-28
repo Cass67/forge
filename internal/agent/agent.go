@@ -433,7 +433,9 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 
 		// Parse tool calls
 		calls, visibleText := ParseToolCalls(response)
-		if !a.isSubAgent && !isAnswerTurn && len(calls) == 0 && containsRawToolMarkup(response) {
+		leakedToolMarkup := len(calls) == 0 && containsVisibleToolMarkupLeak(response, visibleText)
+		allowMarkup := userRequestedToolMarkupSyntax(userMessage)
+		if !a.isSubAgent && len(calls) == 0 && leakedToolMarkup && !allowMarkup {
 			if turn+1 < a.maxTurns {
 				mainMalformedToolRetries++
 				replacePendingControls(mainMalformedToolMarkupNudgeMessage(mainMalformedToolRetries))
@@ -441,7 +443,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			}
 			return fmt.Errorf("main agent produced malformed tool markup")
 		}
-		if a.role == "scout" && containsRawToolMarkup(response) && len(calls) == 0 {
+		if a.role == "scout" && leakedToolMarkup {
 			if turn+1 < a.maxTurns {
 				scoutMalformedToolRetries++
 				replacePendingControls(scoutMalformedToolMarkupNudgeMessage(scoutMalformedToolRetries))
@@ -449,7 +451,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			}
 			return fmt.Errorf("scout produced malformed tool markup")
 		}
-		if a.isSubAgent && strings.TrimSpace(a.role) != "scout" && containsRawToolMarkup(response) && len(calls) == 0 {
+		if a.isSubAgent && strings.TrimSpace(a.role) != "scout" && leakedToolMarkup {
 			if turn+1 < a.maxTurns {
 				subAgentMalformedToolRetries++
 				replacePendingControls(subAgentMalformedToolMarkupNudgeMessage(a.role, subAgentMalformedToolRetries))
@@ -1803,6 +1805,44 @@ func normalizeDelegateResult(role, result string) (string, bool) {
 		msg += "\n\nVisible text:\n" + strings.TrimSpace(visible)
 	}
 	return msg, true
+}
+
+func containsVisibleToolMarkupLeak(response, visibleText string) bool {
+	if containsRawToolMarkup(response) {
+		return true
+	}
+	return containsRawToolMarkupIncludingFences(visibleText)
+}
+
+func containsRawToolMarkupIncludingFences(text string) bool {
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	for _, opener := range toolCallOpeners {
+		if strings.Contains(text, opener) {
+			return true
+		}
+	}
+	for _, closer := range toolCallClosers {
+		if strings.Contains(text, closer) {
+			return true
+		}
+	}
+	return false
+}
+
+func userRequestedToolMarkupSyntax(userMessage string) bool {
+	lower := strings.ToLower(normalizePromptText(userMessage))
+	return containsAny(lower, []string{
+		"tool_call",
+		"tool call",
+		"function_calls",
+		"function call",
+		"xml tag",
+		"tool markup",
+		"show markup",
+		"raw markup",
+	})
 }
 
 func containsRawToolMarkup(text string) bool {

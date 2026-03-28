@@ -108,6 +108,22 @@ func TestChatModelHandlesTokenEvent(t *testing.T) {
 	}
 }
 
+func TestChatModelSuppressesRawToolMarkupToken(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{
+		Kind: llm.EventToken,
+		Text: "```xml\n<tool_call>\n{\"name\":\"read_file\",\"args\":{\"path\":\"README.md\"}}\n</tool_call>\n```",
+	})
+	m = updated.(ChatModel)
+
+	if len(m.messages) != 0 {
+		t.Fatalf("expected raw tool markup token to be suppressed, got %#v", m.messages)
+	}
+}
+
 func TestChatModelHandlesDoneEvent(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 80
