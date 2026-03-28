@@ -216,6 +216,8 @@ type ChatModel struct {
 	activeSubAgent         string
 	lastEscapeTime         time.Time
 	flash                  string
+	lastProgressCheckpoint string
+	lastProgressAt         time.Time
 	statsDuration          time.Duration
 	statsUsage             llm.Usage
 	sessionUsage           llm.Usage
@@ -1349,6 +1351,9 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		if strings.TrimSpace(ev.Agent) != "" {
 			m.lastToolSummary[strings.TrimSpace(ev.Agent)] = strings.TrimSpace(ev.Text)
 		}
+		if key, checkpoint := m.toolCallCheckpoint(ev); checkpoint != "" {
+			m.emitProgressCheckpoint(key, checkpoint)
+		}
 		if line := m.toolCallProgressLine(ev); line != "" {
 			m.UpdateRecentActivity("", line)
 		}
@@ -1367,6 +1372,9 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 			m.lastToolResult = ev.Content
 		} else if ev.Text != "" {
 			m.lastToolResult = ev.Text
+		}
+		if key, checkpoint := m.toolResultCheckpoint(ev); checkpoint != "" {
+			m.emitProgressCheckpoint(key, checkpoint)
 		}
 		if m.debugEnabled {
 			if line := m.toolResultProgressLine(ev); line != "" {
@@ -1425,6 +1433,7 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		m.activeSubAgent = ""
 		m.finalizeLiveProgressRecord()
 		m.markLastAssistantRecordFinal()
+		m.resetProgressCheckpointState()
 		m.status = "ready"
 		m.syncStatusData()
 		if len(m.toolsSections) > 0 {
@@ -1434,6 +1443,7 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		m.busy = false
 		m.finalizeLiveProgressRecord()
 		m.markLastAssistantRecordFinal()
+		m.resetProgressCheckpointState()
 		m.status = "error"
 		m.syncStatusData()
 		errMsg := eventErrorMessage(ev)
@@ -1448,6 +1458,7 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		m.activeSubAgent = ""
 		m.finalizeLiveProgressRecord()
 		m.markLastAssistantRecordFinal()
+		m.resetProgressCheckpointState()
 		m.status = "ready"
 		m.syncStatusData()
 	case llm.EventStats:
@@ -1889,6 +1900,7 @@ func (m ChatModel) trySubmitText(input string) (ChatModel, tea.Cmd, bool) {
 	})
 	m.anchorLatestTurnToBottom()
 	m.refreshViewport()
+	m.resetProgressCheckpointState()
 
 	m.busy = true
 	m.status = "running"
@@ -2052,6 +2064,7 @@ func (m ChatModel) submitSkillInput(s skills.Skill, turnLabel, msg string) (tea.
 	m.inputBuf = ""
 	m.inputPos = 0
 	m.flash = fmt.Sprintf("skill: %s", s.Name)
+	m.resetProgressCheckpointState()
 	m.busy = true
 	m.status = "running"
 	m.syncStatusData()
@@ -4324,6 +4337,190 @@ func normalizeProgressMessage(content string) string {
 		return normalized
 	}
 	return content
+}
+
+func (m *ChatModel) resetProgressCheckpointState() {
+	m.lastProgressCheckpoint = ""
+	m.lastProgressAt = time.Time{}
+}
+
+func (m ChatModel) shouldEmitProgressCheckpoint(key string) bool {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return false
+	}
+	if key != m.lastProgressCheckpoint {
+		return true
+	}
+	// Suppress duplicate checkpoints for the same command/step signature while
+	// allowing the same checkpoint to appear again in later turns.
+	if m.lastProgressAt.IsZero() {
+		return false
+	}
+	return time.Since(m.lastProgressAt) > 5*time.Minute
+}
+
+func (m *ChatModel) emitProgressCheckpoint(key, content string) {
+	key = strings.TrimSpace(key)
+	content = strings.TrimSpace(content)
+	if key == "" || content == "" {
+		return
+	}
+	if !m.shouldEmitProgressCheckpoint(key) {
+		return
+	}
+	m.AddMessage(ChatMessage{
+		Kind:    MsgStatus,
+		Content: content,
+	})
+	m.lastProgressCheckpoint = key
+	m.lastProgressAt = time.Now()
+}
+
+func (m ChatModel) toolCallCheckpoint(ev llm.Event) (string, string) {
+	agent := strings.TrimSpace(ev.Agent)
+	summary := strings.TrimSpace(ev.Text)
+	switch agent {
+	case "read_file", "artifact_read":
+		target := strings.Trim(strings.TrimSpace(summary), "\"'")
+		if target == "" {
+			return "", ""
+		}
+		label := target
+		if !strings.HasPrefix(strings.ToLower(target), "docs/") {
+			label = filepath.Base(target)
+		}
+		if strings.TrimSpace(label) == "" || label == "." {
+			return "", ""
+		}
+		key := "explore:read:" + normalizeProgressComparable(label)
+		return key, "• Explored\n  └ Read " + label
+	case "list_dir":
+		target := strings.Trim(strings.TrimSpace(summary), "\"'")
+		if target == "" || target == "." {
+			target = "workspace root"
+		}
+		key := "explore:list:" + normalizeProgressComparable(target)
+		return key, "• Explored\n  └ Listed " + target
+	case "glob":
+		pattern := strings.Trim(strings.TrimSpace(summary), "\"'")
+		if pattern == "" {
+			return "", ""
+		}
+		key := "explore:glob:" + normalizeProgressComparable(pattern)
+		return key, fmt.Sprintf("• Explored\n  └ Matched files for %q", pattern)
+	case "search":
+		pattern := strings.Trim(strings.TrimSpace(summary), "\"'")
+		if pattern == "" {
+			return "", ""
+		}
+		key := "explore:search:" + normalizeProgressComparable(pattern)
+		return key, fmt.Sprintf("• Explored\n  └ Searched for %q", pattern)
+	default:
+		return "", ""
+	}
+}
+
+func (m ChatModel) toolResultCheckpoint(ev llm.Event) (string, string) {
+	agent := strings.TrimSpace(ev.Agent)
+	if agent == "" || agent == "runtime" || agent == "delegate" {
+		return "", ""
+	}
+	command := checkpointCommandLabel(agent, strings.TrimSpace(m.lastToolSummary[agent]))
+	if command == "" {
+		return "", ""
+	}
+	output := strings.TrimSpace(ev.Text)
+	if output == "" {
+		output = strings.TrimSpace(ev.Content)
+	}
+	lines := checkpointOutputLines(output, ev.IsError)
+	checkpoint := formatCheckpointRunMessage(command, lines)
+	key := "run:" + normalizeProgressComparable(command)
+	if len(lines) > 0 {
+		key += "|" + normalizeProgressComparable(lines[0])
+	}
+	return key, checkpoint
+}
+
+func checkpointCommandLabel(agent, summary string) string {
+	agent = strings.TrimSpace(agent)
+	summary = strings.TrimSpace(summary)
+	switch agent {
+	case "run_command":
+		if summary == "" {
+			return "command"
+		}
+		return summary
+	case "git_status":
+		return "git status --porcelain"
+	case "git_log":
+		if summary == "" {
+			return "git log --oneline"
+		}
+		return "git log --oneline " + summary
+	case "git_diff":
+		if summary == "" {
+			return "git diff HEAD"
+		}
+		return "git diff " + summary
+	default:
+		return ""
+	}
+}
+
+func checkpointOutputLines(output string, isError bool) []string {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		if isError {
+			return []string{"tool reported an error"}
+		}
+		return nil
+	}
+	raw := strings.Split(output, "\n")
+	lines := make([]string, 0, len(raw))
+	for _, line := range raw {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		lines = append(lines, truncate(line, 140))
+	}
+	if len(lines) == 0 {
+		if isError {
+			return []string{"tool reported an error"}
+		}
+		return nil
+	}
+	if len(lines) > 1 && strings.EqualFold(lines[len(lines)-1], "exit 0") {
+		lines = lines[:len(lines)-1]
+	}
+	const maxLines = 4
+	if len(lines) > maxLines {
+		remaining := len(lines) - maxLines
+		lines = append(lines[:maxLines], fmt.Sprintf("… +%d lines", remaining))
+	}
+	return lines
+}
+
+func formatCheckpointRunMessage(command string, lines []string) string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		command = "command"
+	}
+	if len(lines) == 0 {
+		return "• Ran " + command
+	}
+	var b strings.Builder
+	b.WriteString("• Ran ")
+	b.WriteString(command)
+	b.WriteString("\n  └ ")
+	b.WriteString(lines[0])
+	for _, line := range lines[1:] {
+		b.WriteString("\n    ")
+		b.WriteString(line)
+	}
+	return b.String()
 }
 
 func combineProgressNarrative(current, next string) string {
