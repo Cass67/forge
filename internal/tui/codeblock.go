@@ -30,6 +30,7 @@ func renderMessageContent(content string, width int, theme chatTheme) string {
 		body = RenderSemanticPlain(body, profileProse, theme)
 		rendered = append(rendered, lipgloss.NewStyle().
 			Foreground(theme.Text).
+			Background(theme.AppBG).
 			Width(width).
 			Render(body))
 	}
@@ -95,6 +96,7 @@ func renderCodeBlockBody(lang, body string, width int, theme chatTheme) string {
 	for _, line := range lines {
 		style := lipgloss.NewStyle().
 			Foreground(theme.Text).
+			Background(theme.AppBG).
 			Width(width)
 		if strings.EqualFold(lang, "diff") || strings.EqualFold(lang, "patch") {
 			switch {

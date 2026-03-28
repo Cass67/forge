@@ -112,7 +112,7 @@ func TestChatMessageRenderWorkingHighlightsHighSignalTokens(t *testing.T) {
 	assertStyledSubstring(t, got, "./internal/tui", theme.AccentPrimary)
 }
 
-func TestChatMessageRenderAvoidsRedundantInlineBackgroundPainting(t *testing.T) {
+func TestChatMessageRenderUsesAppBackgroundForStableTranscriptSurface(t *testing.T) {
 	withTrueColorProfile(t)
 
 	theme := lookupThemeForTest(t, "default")
@@ -130,14 +130,14 @@ func TestChatMessageRenderAvoidsRedundantInlineBackgroundPainting(t *testing.T) 
 	for _, line := range lines {
 		if strings.Contains(line, "You") {
 			sawHeader = true
-			if strings.Contains(line, wantBG) {
-				t.Fatalf("header line should not paint redundant app background %q: %q", wantBG, line)
+			if !strings.Contains(line, wantBG) {
+				t.Fatalf("header line should include app background %q: %q", wantBG, line)
 			}
 		}
 		if strings.Contains(line, "hello world") {
 			sawBody = true
-			if strings.Contains(line, wantBG) {
-				t.Fatalf("body line should not paint redundant app background %q: %q", wantBG, line)
+			if !strings.Contains(line, wantBG) {
+				t.Fatalf("body line should include app background %q: %q", wantBG, line)
 			}
 		}
 	}
@@ -146,17 +146,17 @@ func TestChatMessageRenderAvoidsRedundantInlineBackgroundPainting(t *testing.T) 
 	}
 }
 
-func TestChatMessageStatusRenderAvoidsRedundantBackgroundPainting(t *testing.T) {
+func TestChatMessageStatusRenderUsesAppBackground(t *testing.T) {
 	withTrueColorProfile(t)
 
 	theme := lookupThemeForTest(t, "default")
 	got := (ChatMessage{Kind: MsgStatus, Content: "Agent complete"}).Render(60, theme)
-	if strings.Contains(got, ansiBackgroundFragment(theme.AppBG)) {
-		t.Fatalf("status render should not paint app background directly: %q", got)
+	if !strings.Contains(got, ansiBackgroundFragment(theme.AppBG)) {
+		t.Fatalf("status render should include app background: %q", got)
 	}
 }
 
-func TestChatMessageHeaderAvoidsRedundantBackgroundPainting(t *testing.T) {
+func TestChatMessageHeaderUsesAppBackground(t *testing.T) {
 	withTrueColorProfile(t)
 
 	theme := lookupThemeForTest(t, "default")
@@ -165,8 +165,8 @@ func TestChatMessageHeaderAvoidsRedundantBackgroundPainting(t *testing.T) {
 	lines := strings.Split(got, "\n")
 	wantBG := ansiBackgroundFragment(theme.AppBG)
 	for _, line := range lines {
-		if strings.Contains(line, "Forge") && strings.Contains(line, "10:44:08") && strings.Contains(line, wantBG) {
-			t.Fatalf("message header should not carry app background fragments: %q", line)
+		if strings.Contains(line, "Forge") && strings.Contains(line, "10:44:08") && !strings.Contains(line, wantBG) {
+			t.Fatalf("message header should include app background: %q", line)
 		}
 	}
 }

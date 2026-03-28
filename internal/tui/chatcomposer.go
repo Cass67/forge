@@ -9,7 +9,7 @@ import (
 
 const (
 	chatComposerMinBodyLines = 2
-	chatComposerMaxBodyLines = 4
+	chatComposerMaxBodyLines = 6
 )
 
 type ComposerAction struct {
