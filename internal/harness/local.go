@@ -281,6 +281,12 @@ func buildVisibleCollaborationTurnPrompt(class Classification, userMessage strin
 		"- prefer bounded previews such as static HTML files when they satisfy the request; use a server only when it materially helps",
 		"- keep updates concise and ground claims in tool results from this turn or relevant recent context",
 	}
+	if shouldConstrainPreviewThreadToArtifacts(userMessage, class, session) {
+		lines = append(lines,
+			"- this is a preview-thread iteration turn: keep changes in tracked preview artifacts by default",
+			"- do not edit workspace source files yet; wait for an explicit user instruction to apply one chosen direction into app code",
+		)
+	}
 	if previewPath := concreteVisiblePreviewPath(class, userMessage); previewPath != "" {
 		lines = append(lines,
 			"- if the user names a concrete preview path, call preview_server_ensure on that exact path before listing directories or searching",

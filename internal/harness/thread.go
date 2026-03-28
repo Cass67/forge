@@ -55,6 +55,19 @@ func classifyActiveThreadTurn(text string, session SessionState) (Classification
 		return class, true
 	}
 
+	if looksLikeActivePreviewStatusQuestion(text, lower, ordered, tokens) {
+		return Classification{
+			Family:           FamilyAnswer,
+			CanStayLocal:     true,
+			IsFollowUp:       true,
+			NeedsTerseAnswer: true,
+			TopicKey:         strings.TrimSpace(active.TopicKey),
+			TaskText:         strings.TrimSpace(text),
+			ThreadIntent:     TurnIntentMetaQuestion,
+			Reason:           "active thread status question",
+		}, true
+	}
+
 	if looksLikeActivePreviewReplay(lower, tokens, ordered) {
 		return Classification{
 			Family:                  FamilyAnswer,
@@ -307,6 +320,48 @@ func looksLikeActivePreviewContinuation(text, lower string, ordered []string, to
 		return true
 	}
 	return containsAny(tokens, debugTokens) && !looksQuestionLike(text)
+}
+
+func looksLikeActivePreviewStatusQuestion(text, lower string, ordered []string, tokens map[string]struct{}) bool {
+	if len(ordered) == 0 || len(ordered) > 16 || !looksQuestionLike(text) {
+		return false
+	}
+	if containsAny(tokens, previewTokens) {
+		return false
+	}
+	for _, phrase := range []string{
+		"did you already update the code",
+		"did you update the code",
+		"have you already updated the code",
+		"have you updated the code",
+		"is the code updated",
+	} {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	if strings.Contains(lower, "did you") &&
+		(strings.Contains(lower, "update") || strings.Contains(lower, "updated")) &&
+		strings.Contains(lower, "code") {
+		return true
+	}
+	if strings.Contains(lower, "have you") &&
+		(strings.Contains(lower, "update") || strings.Contains(lower, "updated")) &&
+		strings.Contains(lower, "code") {
+		return true
+	}
+	if hasToken(tokens, "code") &&
+		(hasToken(tokens, "update") || hasToken(tokens, "updated")) &&
+		((hasToken(tokens, "did") && hasToken(tokens, "you")) ||
+			(hasToken(tokens, "have") && hasToken(tokens, "you"))) {
+		return true
+	}
+	if hasToken(tokens, "code") &&
+		(hasToken(tokens, "update") || hasToken(tokens, "updated")) &&
+		(strings.Contains(lower, "did y") || strings.Contains(lower, "have y")) {
+		return true
+	}
+	return false
 }
 
 func applyThreadLedger(state *SessionState, class Classification, obs Observation) {

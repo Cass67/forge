@@ -240,3 +240,106 @@ func TestStrictAgentExecutorUsesInjectedSkillContext(t *testing.T) {
 		t.Fatalf("progress lines = %#v", agent.progressLines)
 	}
 }
+
+func TestStrictAgentExecutorPreviewFollowUpConstrainsToolsToArtifactFlow(t *testing.T) {
+	defaultTools := tools.NewRegistry()
+	defaultTools.Register(tools.Tool{Name: "artifact_write", Description: "write artifact"})
+	defaultTools.Register(tools.Tool{Name: "artifact_read", Description: "read artifact"})
+	defaultTools.Register(tools.Tool{Name: "preview_server_ensure", Description: "ensure preview"})
+	defaultTools.Register(tools.Tool{Name: "preview_server_status", Description: "preview status"})
+	defaultTools.Register(tools.Tool{Name: "list_dir", Description: "list"})
+	defaultTools.Register(tools.Tool{Name: "read_file", Description: "read"})
+	defaultTools.Register(tools.Tool{Name: "search", Description: "search"})
+	defaultTools.Register(tools.Tool{Name: "edit_file", Description: "edit"})
+	defaultTools.Register(tools.Tool{Name: "write_file", Description: "write"})
+	defaultTools.Register(tools.Tool{Name: "run_command", Description: "run"})
+
+	agent := &strictScopedAgent{response: "Updated mockups are ready in preview."}
+	exec := StrictAgentExecutor{
+		Agent:        agent,
+		DefaultTools: defaultTools,
+		WorkDir:      t.TempDir(),
+	}
+
+	_, err := exec.Execute(context.Background(), UserTurn{Text: "thats nice but i need this for a tui"}, Classification{
+		Family:                  FamilyImplement,
+		PrefersVisibleExecution: true,
+		ThreadIntent:            TurnIntentContinueThread,
+	}, SessionState{
+		Threads: ThreadLedger{
+			Active: ThreadState{
+				ID:     "thread-1",
+				Kind:   ThreadPreviewCollaboration,
+				Status: ThreadAwaitingUserFeedback,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.toolSets) == 0 {
+		t.Fatalf("tool sets = %#v", agent.toolSets)
+	}
+	selected := agent.toolSets[0]
+	if _, ok := selected.Get("artifact_write"); !ok {
+		t.Fatalf("expected artifact_write in constrained toolset")
+	}
+	if _, ok := selected.Get("preview_server_ensure"); !ok {
+		t.Fatalf("expected preview_server_ensure in constrained toolset")
+	}
+	if _, ok := selected.Get("edit_file"); ok {
+		t.Fatalf("unexpected edit_file in constrained toolset")
+	}
+	if _, ok := selected.Get("write_file"); ok {
+		t.Fatalf("unexpected write_file in constrained toolset")
+	}
+	if _, ok := selected.Get("run_command"); ok {
+		t.Fatalf("unexpected run_command in constrained toolset")
+	}
+}
+
+func TestStrictAgentExecutorPreviewFollowUpExplicitApplyKeepsCodeEditTools(t *testing.T) {
+	defaultTools := tools.NewRegistry()
+	defaultTools.Register(tools.Tool{Name: "artifact_write", Description: "write artifact"})
+	defaultTools.Register(tools.Tool{Name: "preview_server_ensure", Description: "ensure preview"})
+	defaultTools.Register(tools.Tool{Name: "edit_file", Description: "edit"})
+	defaultTools.Register(tools.Tool{Name: "write_file", Description: "write"})
+	defaultTools.Register(tools.Tool{Name: "run_command", Description: "run"})
+
+	agent := &strictScopedAgent{response: "Applied theme updates in app code."}
+	exec := StrictAgentExecutor{
+		Agent:        agent,
+		DefaultTools: defaultTools,
+		WorkDir:      t.TempDir(),
+	}
+
+	_, err := exec.Execute(context.Background(), UserTurn{Text: "apply this theme to internal/tui/chattheme.go"}, Classification{
+		Family:                  FamilyImplement,
+		PrefersVisibleExecution: true,
+		ThreadIntent:            TurnIntentContinueThread,
+	}, SessionState{
+		Threads: ThreadLedger{
+			Active: ThreadState{
+				ID:     "thread-1",
+				Kind:   ThreadPreviewCollaboration,
+				Status: ThreadAwaitingUserFeedback,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.toolSets) == 0 {
+		t.Fatalf("tool sets = %#v", agent.toolSets)
+	}
+	selected := agent.toolSets[0]
+	if _, ok := selected.Get("edit_file"); !ok {
+		t.Fatalf("expected edit_file in explicit apply toolset")
+	}
+	if _, ok := selected.Get("write_file"); !ok {
+		t.Fatalf("expected write_file in explicit apply toolset")
+	}
+	if _, ok := selected.Get("run_command"); !ok {
+		t.Fatalf("expected run_command in explicit apply toolset")
+	}
+}

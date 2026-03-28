@@ -80,6 +80,9 @@ func resolveExpectedDeliverable(class Classification, session SessionState, lane
 	if class.ThreadIntent == TurnIntentCancelThread {
 		return DeliverableAnswerOnly
 	}
+	if class.ThreadIntent == TurnIntentMetaQuestion {
+		return DeliverableAnswerOnly
+	}
 	if session.HasActiveThread() &&
 		session.ActiveThread().Deliverable != "" &&
 		(class.ThreadIntent == TurnIntentContinueThread ||

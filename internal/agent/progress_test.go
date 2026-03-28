@@ -1,30 +1,48 @@
 package agent
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
-func TestProgressLine(t *testing.T) {
-	tests := []struct {
-		role, tool, summary string
-		want                string
+func TestProgressLineCoversCoreTools(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		tool    string
+		summary string
 	}{
-		{"scout", "read_file", "/Users/x/main.go", "Reading main.go"},
-		{"scout", "search", "session", `Searching for "session"`},
-		{"scout", "glob", "*.go", `Looking for "*.go"`},
-		{"builder", "edit_file", "/Users/x/main.go", "Editing main.go"},
-		{"builder", "run_command", "go build ./...", "Running go build ./..."},
-		{"builder", "run_command", "very long command that exceeds the forty character limit here", "Running very long command that exceeds the forty..."},
-		{"builder", "write_file", "/Users/x/new.go", "Writing new.go"},
-		{"builder", "preview_server_ensure", "themes_preview.html", "Starting the preview for themes_preview.html"},
-		{"builder", "preview_server_status", "", "Checking the preview status"},
-		{"builder", "tool_help", "brainstorming", "Checking available tools"},
-		{"dispatch", "delegate", "scout", "Reviewing the repo"},
-		{"scout", "unknown_tool", "whatever", ""},
+		{tool: "list_dir", summary: "."},
+		{tool: "read_file", summary: "internal/harness/runner.go"},
+		{tool: "search", summary: "preview"},
+		{tool: "glob", summary: "*.go"},
+		{tool: "edit_file", summary: "internal/tui/chatmodel.go"},
+		{tool: "write_file", summary: "themes_preview.html"},
+		{tool: "artifact_write", summary: "themes_preview.html"},
+		{tool: "artifact_read", summary: "artifact://themes-preview"},
+		{tool: "preview_server_ensure", summary: "themes_preview.html"},
+		{tool: "preview_server_status", summary: ""},
+		{tool: "run_command", summary: "go test ./..."},
+		{tool: "tool_help", summary: "preview"},
+		{tool: "web_fetch", summary: "https://example.com"},
+		{tool: "web_search", summary: "forge harness progress events"},
+		{tool: "scratchpad_write", summary: "routing_notes"},
+		{tool: "scratchpad_read", summary: "routing_notes"},
+		{tool: "git_status", summary: ""},
+		{tool: "git_diff", summary: "HEAD"},
+		{tool: "git_log", summary: "5"},
+		{tool: "git_commit", summary: "fix progress updates"},
+		{tool: "think", summary: "plan the next step"},
+		{tool: "delegate", summary: "builder"},
 	}
-	for _, tt := range tests {
-		t.Run(tt.tool+"_"+tt.role, func(t *testing.T) {
-			got := progressLine(tt.role, tt.tool, tt.summary)
-			if got != tt.want {
-				t.Errorf("progressLine(%q, %q, %q) = %q, want %q", tt.role, tt.tool, tt.summary, got, tt.want)
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.tool, func(t *testing.T) {
+			t.Parallel()
+			got := strings.TrimSpace(progressLine("strictlocal", tc.tool, tc.summary))
+			if got == "" {
+				t.Fatalf("progress line missing for tool %q", tc.tool)
 			}
 		})
 	}

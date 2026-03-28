@@ -993,6 +993,43 @@ func TestClassifyActivePreviewThreadChangeQuestionSupersedesThread(t *testing.T)
 	}
 }
 
+func TestClassifyActivePreviewThreadStatusQuestionUsesMetaIntent(t *testing.T) {
+	got := Classify(UserTurn{Text: "did yuo already update the code?"}, SessionState{
+		Turn: 5,
+		Threads: ThreadLedger{
+			Active: ThreadState{
+				ID:          "thread-1",
+				Kind:        ThreadPreviewCollaboration,
+				Status:      ThreadAwaitingUserFeedback,
+				Deliverable: DeliverablePreviewAvailableAndRenderable,
+				TopicKey:    "path:web/index.html",
+				TaskText:    "change web/index.html so the page says Hello from Forge and show me the preview when it's ready",
+				Preview: PreviewSnapshot{
+					Status: "live",
+					Path:   "web/index.html",
+					Port:   4173,
+					URL:    "http://127.0.0.1:4173/index.html",
+				},
+			},
+		},
+	})
+	if got.Family != FamilyAnswer {
+		t.Fatalf("classification = %#v", got)
+	}
+	if !got.IsFollowUp {
+		t.Fatalf("expected follow-up classification: %#v", got)
+	}
+	if !got.NeedsTerseAnswer {
+		t.Fatalf("expected terse status answer: %#v", got)
+	}
+	if got.ThreadIntent != TurnIntentMetaQuestion {
+		t.Fatalf("thread intent = %q", got.ThreadIntent)
+	}
+	if got.PrefersVisibleExecution {
+		t.Fatalf("unexpected visible execution preference: %#v", got)
+	}
+}
+
 func TestLooksLikeActivePreviewInspectQuestionDetectsChangeQuestion(t *testing.T) {
 	text := "actually leave that alone and tell me what changed"
 	lower := text
