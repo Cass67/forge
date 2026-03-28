@@ -17,6 +17,7 @@ import (
 	"forge/internal/config"
 	"forge/internal/harness"
 	"forge/internal/llm"
+	reactruntime "forge/internal/react"
 	"forge/internal/skills"
 	"forge/internal/tui"
 )
@@ -215,8 +216,8 @@ func TestHandleChatSlashCommandExpandIsUnknown(t *testing.T) {
 
 func TestUseHarnessKernelRuntimeReadsEnv(t *testing.T) {
 	t.Setenv("FORGE_CHAT_RUNTIME", "")
-	if !useHarnessKernelRuntime() {
-		t.Fatal("kernel runtime should be enabled by default")
+	if useHarnessKernelRuntime() {
+		t.Fatal("kernel runtime should be disabled by default (react mode)")
 	}
 
 	t.Setenv("FORGE_CHAT_RUNTIME", "legacy")
@@ -227,6 +228,43 @@ func TestUseHarnessKernelRuntimeReadsEnv(t *testing.T) {
 	t.Setenv("FORGE_CHAT_RUNTIME", "kernel")
 	if !useHarnessKernelRuntime() {
 		t.Fatal("kernel runtime should be enabled when env requests it")
+	}
+
+	t.Setenv("FORGE_CHAT_RUNTIME", "react")
+	if useHarnessKernelRuntime() {
+		t.Fatal("kernel runtime should be disabled when env requests react mode")
+	}
+
+	t.Setenv("FORGE_CHAT_RUNTIME", "invalid")
+	if useHarnessKernelRuntime() {
+		t.Fatal("kernel runtime should remain disabled for unknown mode values")
+	}
+}
+
+func TestResolveChatRuntimeModeReadsEnv(t *testing.T) {
+	t.Setenv("FORGE_CHAT_RUNTIME", "")
+	if got := resolveChatRuntimeMode(); got != chatRuntimeReact {
+		t.Fatalf("mode = %q, want %q", got, chatRuntimeReact)
+	}
+
+	t.Setenv("FORGE_CHAT_RUNTIME", "legacy")
+	if got := resolveChatRuntimeMode(); got != chatRuntimeLegacy {
+		t.Fatalf("mode = %q, want %q", got, chatRuntimeLegacy)
+	}
+
+	t.Setenv("FORGE_CHAT_RUNTIME", "react")
+	if got := resolveChatRuntimeMode(); got != chatRuntimeReact {
+		t.Fatalf("mode = %q, want %q", got, chatRuntimeReact)
+	}
+
+	t.Setenv("FORGE_CHAT_RUNTIME", " ReAcT ")
+	if got := resolveChatRuntimeMode(); got != chatRuntimeReact {
+		t.Fatalf("mode = %q, want %q", got, chatRuntimeReact)
+	}
+
+	t.Setenv("FORGE_CHAT_RUNTIME", "unexpected")
+	if got := resolveChatRuntimeMode(); got != chatRuntimeReact {
+		t.Fatalf("mode = %q, want %q", got, chatRuntimeReact)
 	}
 }
 
@@ -301,7 +339,7 @@ func TestRunChatTurnUsesKernelWhenProvided(t *testing.T) {
 		Local:   stubHarnessLocalExecutor{response: "kernel path"},
 	})
 
-	if err := runChatTurn(context.Background(), nil, kernel, "describe this directory"); err != nil {
+	if err := runChatTurn(context.Background(), nil, kernel, nil, "describe this directory"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -311,6 +349,48 @@ func TestRunChatTurnUsesKernelWhenProvided(t *testing.T) {
 	}
 	if trace[1].Family != harness.FamilyInspect {
 		t.Fatalf("unexpected classification trace: %#v", trace)
+	}
+}
+
+func TestRunChatTurnUsesReactRunnerWhenProvided(t *testing.T) {
+	reactRunner := &stubChatTurnRunner{}
+	if err := runChatTurn(context.Background(), nil, nil, reactRunner, "describe this directory"); err != nil {
+		t.Fatal(err)
+	}
+	if reactRunner.calls != 1 {
+		t.Fatalf("react runner calls = %d, want 1", reactRunner.calls)
+	}
+	if reactRunner.input != "describe this directory" {
+		t.Fatalf("react runner input = %q", reactRunner.input)
+	}
+}
+
+func TestRunChatTurnIgnoresTypedNilReactRunner(t *testing.T) {
+	var typedNilRunner *reactruntime.Runner
+	renderer := agent.NewRenderer(io.Discard, 80, false)
+	a := agent.NewAgent(&kernelMockDriver{response: "ok"}, tools.NewRegistry(), agent.YoloApproval(), t.TempDir(), 4, renderer, nil, chatstate.New())
+
+	if err := runChatTurn(context.Background(), a, nil, typedNilRunner, "describe this directory"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(a.LastResponse()); got != "ok" {
+		t.Fatalf("response = %q, want ok", got)
+	}
+}
+
+func TestRunChatTurnPrefersKernelOverReactRunner(t *testing.T) {
+	kernel := harness.NewRunner(harness.RunnerConfig{
+		Session: harness.NewSession(),
+		Trace:   harness.NewRecorder(),
+		Local:   stubHarnessLocalExecutor{response: "kernel path"},
+	})
+	reactRunner := &stubChatTurnRunner{}
+
+	if err := runChatTurn(context.Background(), nil, kernel, reactRunner, "describe this directory"); err != nil {
+		t.Fatal(err)
+	}
+	if reactRunner.calls != 0 {
+		t.Fatalf("react runner calls = %d, want 0", reactRunner.calls)
 	}
 }
 
@@ -351,6 +431,30 @@ func TestBuildHarnessRunnerConfigIncludesStrictLocalExecutor(t *testing.T) {
 	}
 }
 
+func TestBuildHarnessRunnerConfigIncludesWorkspacePolicy(t *testing.T) {
+	workDir := t.TempDir()
+	cfg := &config.Config{}
+	approve := agent.YoloApproval()
+
+	reg := tools.NewRegistry()
+	registerTools(reg, workDir, cfg, approve)
+	baseReg := reg.Filter(nil)
+	inspectReg := buildInspectToolRegistry(baseReg)
+
+	renderer := agent.NewRenderer(io.Discard, 80, false)
+	a := agent.NewAgent(&kernelMockDriver{response: "ok"}, reg, approve, workDir, 4, renderer, nil, chatstate.New())
+	setup := &ChatSetup{
+		Config:  cfg,
+		WorkDir: workDir,
+		Driver:  &kernelMockDriver{response: "ok"},
+	}
+
+	runnerCfg := buildHarnessRunnerConfig(setup, a, baseReg, inspectReg, nil, nil, "", approve)
+	if runnerCfg.WorkspacePolicy == nil {
+		t.Fatal("expected workspace policy in harness runner config")
+	}
+}
+
 func TestRunChatTurnKernelPathAvoidsDelegationMarkers(t *testing.T) {
 	events := make(chan llm.Event, 16)
 	renderer := agent.NewEventRenderer(events)
@@ -373,7 +477,7 @@ func TestRunChatTurnKernelPathAvoidsDelegationMarkers(t *testing.T) {
 		},
 	})
 
-	if err := runChatTurn(context.Background(), a, kernel, "describe this directory"); err != nil {
+	if err := runChatTurn(context.Background(), a, kernel, nil, "describe this directory"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -417,7 +521,7 @@ func TestRunChatTurnCompletesComplexVisiblePreviewTurn(t *testing.T) {
 	defer cancel()
 
 	input := "i dont like the current theme, i need you to mock up 3 new ones, dark in nature, really modern and cool looking, create a web server and show me them on the screen"
-	if err := runChatTurn(ctx, a, kernel, input); err != nil {
+	if err := runChatTurn(ctx, a, kernel, nil, input); err != nil {
 		t.Fatalf("runChatTurn failed after %d driver calls with unexpected=%#v: %v", driver.calls, driver.unexpected, err)
 	}
 	if got := a.LastResponse(); !strings.Contains(got, "http://127.0.0.1:") || !strings.Contains(got, "themes_preview.html") {
@@ -455,7 +559,7 @@ func TestRunChatTurnEmitsForgeResponseForWorkerResults(t *testing.T) {
 		},
 	})
 
-	if err := runChatTurn(context.Background(), a, kernel, "look up the latest API docs"); err != nil {
+	if err := runChatTurn(context.Background(), a, kernel, nil, "look up the latest API docs"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -502,7 +606,7 @@ func TestRunChatTurnKernelVisibleTurnAvoidsStrictSkillLoop(t *testing.T) {
 	}
 	kernel := harness.NewRunner(buildHarnessRunnerConfig(setup, a, baseReg, inspectReg, previewRuntime, loadedSkills, skills.NormalizeAutoMode(cfg.Chat.AutoSkills), approve))
 
-	if err := runChatTurn(context.Background(), a, kernel, "design a new preview theme and show it on the screen"); err != nil {
+	if err := runChatTurn(context.Background(), a, kernel, nil, "design a new preview theme and show it on the screen"); err != nil {
 		t.Fatal(err)
 	}
 	if driver.callIdx != 2 {
@@ -548,7 +652,7 @@ func TestRunChatTurnKernelVisibleTurnEmitsProgressBeforeFinalAnswer(t *testing.T
 	}
 	kernel := harness.NewRunner(buildHarnessRunnerConfig(setup, a, baseReg, inspectReg, previewRuntime, loadedSkills, skills.NormalizeAutoMode(cfg.Chat.AutoSkills), approve))
 
-	if err := runChatTurn(context.Background(), a, kernel, "start a preview for themes_preview.html and tell me the verified url"); err != nil {
+	if err := runChatTurn(context.Background(), a, kernel, nil, "start a preview for themes_preview.html and tell me the verified url"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -614,6 +718,31 @@ func TestRegisterToolsIncludesPreviewLifecycleTools(t *testing.T) {
 	}
 }
 
+func TestRegisterReactDelegationToolsAddsSpawnAndWait(t *testing.T) {
+	reg := tools.NewRegistry()
+	cfg := &config.Config{}
+	workDir := t.TempDir()
+	approve := agent.YoloApproval()
+	registerTools(reg, workDir, cfg, approve)
+	baseReg := reg.Filter(nil)
+
+	renderer := agent.NewRenderer(io.Discard, 80, false)
+	a := agent.NewAgent(&kernelMockDriver{response: "ok"}, reg, approve, workDir, 4, renderer, nil, chatstate.New())
+	setup := &ChatSetup{
+		Config:     cfg,
+		WorkDir:    workDir,
+		MakeDriver: func(name string) llm.Driver { return &kernelMockDriver{response: "ok"} },
+	}
+
+	registerReactDelegationTools(reg, a, setup, baseReg)
+	if _, ok := reg.Get("spawn_agent"); !ok {
+		t.Fatal("spawn_agent tool not registered")
+	}
+	if _, ok := reg.Get("wait_agent"); !ok {
+		t.Fatal("wait_agent tool not registered")
+	}
+}
+
 type stubHarnessLocalExecutor struct {
 	response string
 }
@@ -634,6 +763,18 @@ type stubHarnessWorkerExecutor struct {
 
 func (s stubHarnessWorkerExecutor) Execute(_ context.Context, _ harness.WorkerTask) (harness.Observation, error) {
 	return s.obs, s.err
+}
+
+type stubChatTurnRunner struct {
+	calls int
+	input string
+	err   error
+}
+
+func (s *stubChatTurnRunner) Run(_ context.Context, input string) error {
+	s.calls++
+	s.input = input
+	return s.err
 }
 
 type kernelMockDriver struct {

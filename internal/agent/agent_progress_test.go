@@ -107,14 +107,26 @@ func TestGeneralTurnEmitsUnpromptedProgressWhileWaitingForModel(t *testing.T) {
 	if len(progressLines) == 0 {
 		t.Fatalf("expected general turn progress updates, got none")
 	}
-	var sawWaitingHeartbeat bool
+	var sawNaturalHeartbeat bool
 	for _, line := range progressLines {
-		if strings.Contains(line, "i am") {
-			sawWaitingHeartbeat = true
-			break
+		if strings.Contains(line, "i am ") {
+			t.Fatalf("expected non-robotic phrasing, got %#v", progressLines)
+		}
+		if strings.Contains(line, "review") || strings.Contains(line, "synthes") || strings.Contains(line, "analy") {
+			sawNaturalHeartbeat = true
 		}
 	}
-	if !sawWaitingHeartbeat {
+	if !sawNaturalHeartbeat {
 		t.Fatalf("expected non-strict waiting heartbeat progress update, got %#v", progressLines)
+	}
+}
+
+func TestGeneralTurnContextHintListDirDotFallsBack(t *testing.T) {
+	hint := generalTurnContextHint([]ToolCall{{
+		Name: "list_dir",
+		Args: map[string]any{"path": "."},
+	}})
+	if hint != "the repository scan results" {
+		t.Fatalf("hint = %q", hint)
 	}
 }

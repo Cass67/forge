@@ -49,11 +49,8 @@ func EnableChatDebug(setup *ChatSetup, path string) (string, error) {
 		return "", err
 	}
 	rec := &chatDebugRecorder{log: log}
-	runtimeMode := "legacy"
-	if useHarnessKernelRuntime() {
-		runtimeMode = "kernel"
-	}
-	visibleAgents := setup.Config != nil && setup.Config.Chat.Agents.Enabled && runtimeMode == "legacy"
+	runtimeMode := string(resolveChatRuntimeMode())
+	visibleAgents := setup.Config != nil && setup.Config.Chat.Agents.Enabled && runtimeMode == string(chatRuntimeLegacy)
 	rec.log.Info("chat.debug.enabled", map[string]any{
 		"path":           resolved,
 		"model":          setup.ChatModel,

@@ -63,6 +63,31 @@ func (c *Config) Validate() []ValidationIssue {
 			add("chat.auto_skills", fmt.Sprintf("must be one of off, suggest, auto, got %q", c.Chat.AutoSkills))
 		}
 	}
+	if c.Approval.DefaultPolicy != "" {
+		switch strings.ToLower(strings.TrimSpace(c.Approval.DefaultPolicy)) {
+		case "never", "on_failure", "on_request", "unless_trusted":
+		default:
+			add("approval.default_policy", fmt.Sprintf("must be one of never, on_failure, on_request, unless_trusted, got %q", c.Approval.DefaultPolicy))
+		}
+	}
+	if c.Approval.SandboxPolicy != "" {
+		switch strings.ToLower(strings.TrimSpace(c.Approval.SandboxPolicy)) {
+		case "read_only", "workspace_write", "danger_full_access":
+		default:
+			add("approval.sandbox_policy", fmt.Sprintf("must be one of read_only, workspace_write, danger_full_access, got %q", c.Approval.SandboxPolicy))
+		}
+	}
+	for i, rule := range c.Approval.Rules {
+		if strings.TrimSpace(rule.Decision) == "" {
+			add(fmt.Sprintf("approval.rules[%d].decision", i), "must not be empty")
+		} else {
+			switch strings.ToLower(strings.TrimSpace(rule.Decision)) {
+			case "allow", "prompt", "forbidden":
+			default:
+				add(fmt.Sprintf("approval.rules[%d].decision", i), fmt.Sprintf("must be one of allow, prompt, forbidden, got %q", rule.Decision))
+			}
+		}
+	}
 	for i, pass := range c.Pipeline {
 		if strings.TrimSpace(pass.Name) == "" {
 			add(fmt.Sprintf("pipeline[%d].name", i), "must not be empty")

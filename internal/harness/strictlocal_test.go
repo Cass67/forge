@@ -241,7 +241,7 @@ func TestStrictAgentExecutorUsesInjectedSkillContext(t *testing.T) {
 	}
 }
 
-func TestStrictAgentExecutorPreviewFollowUpConstrainsToolsToArtifactFlow(t *testing.T) {
+func TestStrictLocalPreviewIdeatePhaseConstrainsToolsToArtifactFlow(t *testing.T) {
 	defaultTools := tools.NewRegistry()
 	defaultTools.Register(tools.Tool{Name: "artifact_write", Description: "write artifact"})
 	defaultTools.Register(tools.Tool{Name: "artifact_read", Description: "read artifact"})
@@ -271,6 +271,7 @@ func TestStrictAgentExecutorPreviewFollowUpConstrainsToolsToArtifactFlow(t *test
 				ID:     "thread-1",
 				Kind:   ThreadPreviewCollaboration,
 				Status: ThreadAwaitingUserFeedback,
+				Phase:  ThreadPhaseIdeate,
 			},
 		},
 	})
@@ -323,6 +324,7 @@ func TestStrictAgentExecutorPreviewFollowUpExplicitApplyKeepsCodeEditTools(t *te
 				ID:     "thread-1",
 				Kind:   ThreadPreviewCollaboration,
 				Status: ThreadAwaitingUserFeedback,
+				Phase:  ThreadPhaseIdeate,
 			},
 		},
 	})
@@ -341,5 +343,52 @@ func TestStrictAgentExecutorPreviewFollowUpExplicitApplyKeepsCodeEditTools(t *te
 	}
 	if _, ok := selected.Get("run_command"); !ok {
 		t.Fatalf("expected run_command in explicit apply toolset")
+	}
+}
+
+func TestStrictLocalPreviewApplyPhaseKeepsCodeEditTools(t *testing.T) {
+	defaultTools := tools.NewRegistry()
+	defaultTools.Register(tools.Tool{Name: "artifact_write", Description: "write artifact"})
+	defaultTools.Register(tools.Tool{Name: "preview_server_ensure", Description: "ensure preview"})
+	defaultTools.Register(tools.Tool{Name: "edit_file", Description: "edit"})
+	defaultTools.Register(tools.Tool{Name: "write_file", Description: "write"})
+	defaultTools.Register(tools.Tool{Name: "run_command", Description: "run"})
+
+	agent := &strictScopedAgent{response: "Applied theme updates in app code."}
+	exec := StrictAgentExecutor{
+		Agent:        agent,
+		DefaultTools: defaultTools,
+		WorkDir:      t.TempDir(),
+	}
+
+	_, err := exec.Execute(context.Background(), UserTurn{Text: "go ahead and implement it"}, Classification{
+		Family:                  FamilyImplement,
+		PrefersVisibleExecution: true,
+		ThreadIntent:            TurnIntentContinueThread,
+	}, SessionState{
+		Threads: ThreadLedger{
+			Active: ThreadState{
+				ID:     "thread-1",
+				Kind:   ThreadPreviewCollaboration,
+				Status: ThreadAwaitingUserFeedback,
+				Phase:  ThreadPhaseApply,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.toolSets) == 0 {
+		t.Fatalf("tool sets = %#v", agent.toolSets)
+	}
+	selected := agent.toolSets[0]
+	if _, ok := selected.Get("edit_file"); !ok {
+		t.Fatalf("expected edit_file in apply-phase toolset")
+	}
+	if _, ok := selected.Get("write_file"); !ok {
+		t.Fatalf("expected write_file in apply-phase toolset")
+	}
+	if _, ok := selected.Get("run_command"); !ok {
+		t.Fatalf("expected run_command in apply-phase toolset")
 	}
 }

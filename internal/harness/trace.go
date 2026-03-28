@@ -79,8 +79,20 @@ func FormatDebugSummary(record TraceRecord) string {
 	if record.ThreadStatus != "" {
 		parts = append(parts, fmt.Sprintf("thread_status=%s", record.ThreadStatus))
 	}
+	if record.ThreadPhase != "" {
+		parts = append(parts, fmt.Sprintf("thread_phase=%s", record.ThreadPhase))
+	}
 	if record.ThreadIntent != "" {
 		parts = append(parts, fmt.Sprintf("thread_intent=%s", record.ThreadIntent))
+	}
+	if strings.TrimSpace(record.ClaimGuardStatus) != "" {
+		parts = append(parts, fmt.Sprintf("claim_guard=%s", strings.TrimSpace(record.ClaimGuardStatus)))
+	}
+	if strings.TrimSpace(record.WorkspacePolicyAction) != "" {
+		parts = append(parts, fmt.Sprintf("workspace_policy=%s", strings.TrimSpace(record.WorkspacePolicyAction)))
+	}
+	if record.ToolCallCount > 0 {
+		parts = append(parts, fmt.Sprintf("tool_calls=%d", record.ToolCallCount))
 	}
 	if record.OutcomeKind != "" {
 		parts = append(parts, fmt.Sprintf("outcome=%s", record.OutcomeKind))

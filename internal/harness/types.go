@@ -97,6 +97,14 @@ const (
 	ThreadSuperseded           ThreadStatus = "superseded"
 )
 
+type ThreadPhase string
+
+const (
+	ThreadPhaseNone   ThreadPhase = ""
+	ThreadPhaseIdeate ThreadPhase = "ideate"
+	ThreadPhaseApply  ThreadPhase = "apply"
+)
+
 type DeliverableKind string
 
 const (
@@ -216,6 +224,11 @@ type WorkerTask struct {
 	Deadline                          time.Time
 }
 
+type ObservedToolCall struct {
+	Name string
+	Args map[string]any
+}
+
 type Observation struct {
 	Status        ObservationStatus
 	Lane          ExecutionLane
@@ -224,6 +237,7 @@ type Observation struct {
 	TopicKey      string
 	Artifact      any
 	Runtime       LocalRuntimeSnapshot
+	ToolCalls     []ObservedToolCall
 	PendingAction PendingAction
 	Outcome       ActionOutcome
 	Progress      []ProgressMilestone
@@ -298,7 +312,9 @@ type ThreadState struct {
 	ID                 string
 	Kind               ThreadKind
 	Status             ThreadStatus
+	Phase              ThreadPhase
 	Deliverable        DeliverableKind
+	SelectedDirection  string
 	Family             RequestFamily
 	TopicKey           string
 	Goal               string
@@ -311,7 +327,7 @@ type ThreadState struct {
 }
 
 func (t ThreadState) IsZero() bool {
-	return t.ID == "" && t.Kind == "" && t.Status == "" && t.Deliverable == "" && t.TopicKey == "" &&
+	return t.ID == "" && t.Kind == "" && t.Status == "" && t.Phase == "" && t.Deliverable == "" && t.SelectedDirection == "" && t.TopicKey == "" &&
 		t.Goal == "" && t.TaskText == "" && t.CreatedTurn == 0 && t.UpdatedTurn == 0 &&
 		t.SupersedesThreadID == "" && t.Artifact.IsZero() && t.Preview.IsZero()
 }
@@ -414,20 +430,24 @@ func (s SessionState) ActiveThread() ThreadState {
 }
 
 type TraceRecord struct {
-	Timestamp         time.Time
-	State             RuntimeState
-	Family            RequestFamily
-	Lane              ExecutionLane
-	Step              StepKind
-	Worker            WorkerKind
-	Reason            string
-	DebugSummary      string
-	TopicKey          string
-	ThreadID          string
-	ThreadKind        ThreadKind
-	ThreadStatus      ThreadStatus
-	ThreadIntent      TurnIntent
-	OutcomeKind       OutcomeKind
-	DeliverableKind   DeliverableKind
-	DeliverableStatus DeliverableStatus
+	Timestamp             time.Time
+	State                 RuntimeState
+	Family                RequestFamily
+	Lane                  ExecutionLane
+	Step                  StepKind
+	Worker                WorkerKind
+	Reason                string
+	DebugSummary          string
+	TopicKey              string
+	ThreadID              string
+	ThreadKind            ThreadKind
+	ThreadStatus          ThreadStatus
+	ThreadPhase           ThreadPhase
+	ThreadIntent          TurnIntent
+	ClaimGuardStatus      string
+	WorkspacePolicyAction string
+	ToolCallCount         int
+	OutcomeKind           OutcomeKind
+	DeliverableKind       DeliverableKind
+	DeliverableStatus     DeliverableStatus
 }

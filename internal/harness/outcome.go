@@ -47,6 +47,20 @@ func normalizeObservation(step Step, class Classification, session SessionState,
 		obs.Outcome = outcome
 		return obs
 	}
+	if outcome, ok := ungroundedSideEffectOutcome(step, class, obs); ok {
+		obs.Status = ObservationBlocked
+		obs.Response = ""
+		obs.Summary = outcome.Reason
+		obs.Outcome = outcome
+		return obs
+	}
+	if outcome, ok := selectedDirectionMismatchOutcome(step, class, session, obs); ok {
+		obs.Status = ObservationBlocked
+		obs.Response = ""
+		obs.Summary = outcome.Reason
+		obs.Outcome = outcome
+		return obs
+	}
 
 	status, reason := evaluateDeliverableStatus(step, class, session, obs)
 	obs.Outcome.DeliverableStatus = status
@@ -166,6 +180,213 @@ func contractViolationOutcome(step Step, class Classification, response string, 
 		}, true
 	}
 	return ActionOutcome{}, false
+}
+
+func ungroundedSideEffectOutcome(step Step, _ Classification, obs Observation) (ActionOutcome, bool) {
+	claimText := observedClaimText(obs)
+	if claimText == "" {
+		return ActionOutcome{}, false
+	}
+	if claimsBranchSideEffect(claimText) && !hasBranchWorkflowEvidence(obs.ToolCalls) {
+		return claimEvidenceViolationOutcome(step, obs.Outcome.DeliverableKind, "response claimed branch creation or switching without supporting tool evidence"), true
+	}
+	if claimsCommitSideEffect(claimText) && !hasCommitEvidence(obs.ToolCalls) {
+		return claimEvidenceViolationOutcome(step, obs.Outcome.DeliverableKind, "response claimed a commit without git_commit evidence"), true
+	}
+	if claimsPreviewLiveSideEffect(claimText) && !previewVerified(obs.Runtime.Preview) {
+		return claimEvidenceViolationOutcome(step, obs.Outcome.DeliverableKind, "response claimed a live preview without verified preview runtime evidence"), true
+	}
+	return ActionOutcome{}, false
+}
+
+func observedClaimText(obs Observation) string {
+	text := strings.TrimSpace(obs.Response)
+	if summary := strings.TrimSpace(obs.Summary); summary != "" {
+		if text == "" {
+			text = summary
+		} else {
+			text += "\n" + summary
+		}
+	}
+	return strings.ToLower(strings.TrimSpace(text))
+}
+
+func claimEvidenceViolationOutcome(step Step, deliverable DeliverableKind, reason string) ActionOutcome {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "response included an ungrounded side-effect claim"
+	}
+	return ActionOutcome{
+		Lane:              step.Lane,
+		Kind:              outcomeKindForContractViolation(step.Lane),
+		DeliverableKind:   deliverable,
+		DeliverableStatus: DeliverableMissing,
+		Reason:            reason,
+	}
+}
+
+func claimsBranchSideEffect(lower string) bool {
+	if lower == "" {
+		return false
+	}
+	for _, phrase := range []string{
+		"branch created",
+		"created branch",
+		"created a branch",
+		"created and switched",
+		"switched to branch",
+		"switched to a branch",
+		"switched branches",
+		"checked out branch",
+		"checked out to",
+	} {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasBranchWorkflowEvidence(calls []ObservedToolCall) bool {
+	for _, call := range calls {
+		if strings.TrimSpace(call.Name) != "run_command" {
+			continue
+		}
+		cmd := toolCallCommand(call.Args)
+		if cmd == "" {
+			continue
+		}
+		if isGitBranchWorkflowCommand(strings.ToLower(cmd)) {
+			return true
+		}
+	}
+	return false
+}
+
+func claimsCommitSideEffect(lower string) bool {
+	if lower == "" {
+		return false
+	}
+	for _, phrase := range []string{
+		"commit created",
+		"created commit",
+		"created a commit",
+		"changes committed",
+		"committed the changes",
+		"i committed",
+		"we committed",
+	} {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasCommitEvidence(calls []ObservedToolCall) bool {
+	for _, call := range calls {
+		if strings.TrimSpace(call.Name) == "git_commit" {
+			return true
+		}
+	}
+	return false
+}
+
+func claimsPreviewLiveSideEffect(lower string) bool {
+	if lower == "" {
+		return false
+	}
+	if strings.Contains(lower, "preview is live") ||
+		strings.Contains(lower, "preview is running") ||
+		strings.Contains(lower, "preview available at") ||
+		strings.Contains(lower, "verified preview") {
+		return true
+	}
+	if strings.Contains(lower, "http://127.0.0.1") &&
+		(strings.Contains(lower, "preview") || strings.Contains(lower, "localhost")) &&
+		(strings.Contains(lower, "live") || strings.Contains(lower, "running") || strings.Contains(lower, "available")) {
+		return true
+	}
+	return false
+}
+
+func toolCallCommand(args map[string]any) string {
+	if len(args) == 0 {
+		return ""
+	}
+	for _, key := range []string{"command", "cmd"} {
+		if value, ok := args[key]; ok {
+			if cmd, ok := value.(string); ok {
+				return strings.TrimSpace(cmd)
+			}
+		}
+	}
+	return ""
+}
+
+func isGitBranchWorkflowCommand(lower string) bool {
+	if !strings.Contains(lower, "git") {
+		return false
+	}
+	for _, marker := range []string{
+		"git checkout",
+		"git switch",
+		"git branch",
+		"git worktree add",
+		"checkout -b",
+		"switch -c",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func selectedDirectionMismatchOutcome(step Step, class Classification, session SessionState, obs Observation) (ActionOutcome, bool) {
+	if step.Lane != LaneStrictAction {
+		return ActionOutcome{}, false
+	}
+	if !session.HasActiveThread() {
+		return ActionOutcome{}, false
+	}
+	active := session.ActiveThread()
+	if active.Kind != ThreadPreviewCollaboration || active.Phase != ThreadPhaseApply {
+		return ActionOutcome{}, false
+	}
+	selected := strings.ToLower(strings.TrimSpace(active.SelectedDirection))
+	if selected == "" {
+		return ActionOutcome{}, false
+	}
+	switch class.ThreadIntent {
+	case TurnIntentReplayThread, TurnIntentMetaQuestion, TurnIntentCancelThread:
+		return ActionOutcome{}, false
+	}
+	if selectedDirectionMentioned(selected, obs) {
+		return ActionOutcome{}, false
+	}
+	reason := fmt.Sprintf("selected direction mismatch: expected %q in apply result", active.SelectedDirection)
+	return claimEvidenceViolationOutcome(step, obs.Outcome.DeliverableKind, reason), true
+}
+
+func selectedDirectionMentioned(selected string, obs Observation) bool {
+	selected = strings.TrimSpace(strings.ToLower(selected))
+	if selected == "" {
+		return true
+	}
+	if strings.Contains(strings.ToLower(firstNonEmpty(obs.Response, obs.Summary)), selected) {
+		return true
+	}
+	switch artifact := obs.Artifact.(type) {
+	case EditorResult:
+		for _, change := range artifact.Changes {
+			if strings.Contains(strings.ToLower(change.Path), selected) ||
+				strings.Contains(strings.ToLower(change.Summary), selected) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func requiresConcreteResponse(step Step, class Classification) bool {

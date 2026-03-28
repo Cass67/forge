@@ -1,6 +1,7 @@
 package gitutil
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -37,6 +38,54 @@ func Log(dir string, maxCount int) (string, error) {
 // DiffStat returns a diffstat for the last commit.
 func DiffStat(dir string) (string, error) {
 	return output(dir, "git", "diff", "--stat", "HEAD~1..HEAD")
+}
+
+// CurrentBranch returns the currently checked out branch name.
+func CurrentBranch(dir string) (string, error) {
+	branch, err := output(dir, "git", "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(branch), nil
+}
+
+// IsRepository reports whether dir is inside a git work tree.
+func IsRepository(dir string) (bool, error) {
+	out, err := output(dir, "git", "rev-parse", "--is-inside-work-tree")
+	if err != nil {
+		if isNotRepositoryError(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return strings.EqualFold(strings.TrimSpace(out), "true"), nil
+}
+
+// BranchExists reports whether the named local branch exists.
+func BranchExists(dir, name string) (bool, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false, fmt.Errorf("branch name is required")
+	}
+	cmd := exec.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/"+name)
+	cmd.Dir = dir
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// CheckoutNewBranch creates and switches to a new branch.
+func CheckoutNewBranch(dir, name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("branch name is required")
+	}
+	return run(dir, "git", "checkout", "-b", name)
 }
 
 // GeneratePRTemplate creates a PR template markdown file from the git history.
@@ -84,4 +133,13 @@ func output(dir string, name string, args ...string) (string, error) {
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	return string(out), err
+}
+
+func isNotRepositoryError(err error) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(string(exitErr.Stderr)))
+	return strings.Contains(msg, "not a git repository")
 }

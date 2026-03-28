@@ -38,6 +38,45 @@ func (s *stubWorkerExecutor) Execute(_ context.Context, task WorkerTask) (Observ
 	return s.obs, s.err
 }
 
+type stubWorkspacePolicy struct {
+	milestone ProgressMilestone
+	err       error
+	calls     int
+	lastTurn  UserTurn
+	lastClass Classification
+}
+
+func (s *stubWorkspacePolicy) EnsureExecutionContext(_ context.Context, turn UserTurn, class Classification, _ SessionState) (ProgressMilestone, error) {
+	s.calls++
+	s.lastTurn = turn
+	s.lastClass = class
+	return s.milestone, s.err
+}
+
+type policySequencedLocalExecutor struct {
+	policy     *stubWorkspacePolicy
+	response   string
+	summary    string
+	runtime    LocalRuntimeSnapshot
+	toolCalls  []ObservedToolCall
+	calls      int
+	violations int
+}
+
+func (s *policySequencedLocalExecutor) Execute(_ context.Context, _ UserTurn, _ Classification, _ SessionState) (Observation, error) {
+	s.calls++
+	if s.policy != nil && s.policy.calls == 0 {
+		s.violations++
+	}
+	return Observation{
+		Status:    ObservationComplete,
+		Response:  s.response,
+		Summary:   s.summary,
+		Runtime:   s.runtime,
+		ToolCalls: append([]ObservedToolCall(nil), s.toolCalls...),
+	}, nil
+}
+
 func seedActivePreviewThread(session *Session) string {
 	_ = session.BeginTurn("show me three themes in a web preview")
 	session.Apply(Classification{
@@ -391,6 +430,214 @@ func TestRunnerVisibleMalformedToolResidueRetriesThenBlocks(t *testing.T) {
 		t.Fatalf("outcome = %#v", result.Observation.Outcome)
 	}
 	if !strings.Contains(strings.ToLower(result.Response), "tool markup") {
+		t.Fatalf("response = %q", result.Response)
+	}
+}
+
+func TestRunnerProtectedBranchPolicyRunsBeforeLocalActionExecution(t *testing.T) {
+	policy := &stubWorkspacePolicy{
+		milestone: ProgressMilestone{
+			Kind:    ProgressMilestoneTool,
+			Message: "Switched to branch forge/implement-auth-fix-1",
+		},
+	}
+	local := &policySequencedLocalExecutor{
+		policy:   policy,
+		response: "Applied the auth fix.",
+		summary:  "auth fix complete",
+	}
+	runner := NewRunner(RunnerConfig{
+		Session:         NewSession(),
+		Trace:           NewRecorder(),
+		Local:           local,
+		WorkspacePolicy: policy,
+	})
+
+	result, err := runner.Run(context.Background(), "implement the auth handler fix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.calls != 1 {
+		t.Fatalf("workspace policy calls = %d, want 1", policy.calls)
+	}
+	if local.calls != 1 {
+		t.Fatalf("local calls = %d, want 1", local.calls)
+	}
+	if local.violations != 0 {
+		t.Fatalf("local executor ran before policy: violations = %d", local.violations)
+	}
+	if result.Observation.Status != ObservationComplete {
+		t.Fatalf("observation = %#v", result.Observation)
+	}
+}
+
+func TestRunnerProtectedBranchPolicyRunsForPreviewBranchApplyFollowUp(t *testing.T) {
+	policy := &stubWorkspacePolicy{
+		milestone: ProgressMilestone{
+			Kind:    ProgressMilestoneTool,
+			Message: "Switched to branch forge/obsidian-theme-2",
+		},
+	}
+	session := NewSession()
+	seedActivePreviewThread(session)
+	strictLocal := &policySequencedLocalExecutor{
+		policy:   policy,
+		response: "Created branch and applied the selected direction.",
+		summary:  "preview apply complete",
+		toolCalls: []ObservedToolCall{
+			{
+				Name: "run_command",
+				Args: map[string]any{"command": "git checkout -b forge/obsidian-theme-2"},
+			},
+		},
+		runtime: LocalRuntimeSnapshot{
+			Preview: PreviewSnapshot{
+				Status: "live",
+				Path:   "themes_preview.html",
+				Port:   4173,
+				URL:    "http://127.0.0.1:4173/themes_preview.html",
+			},
+		},
+	}
+	runner := NewRunner(RunnerConfig{
+		Session:         session,
+		Trace:           NewRecorder(),
+		Local:           &stubLocalExecutor{},
+		StrictLocal:     strictLocal,
+		WorkspacePolicy: policy,
+	})
+
+	result, err := runner.Run(context.Background(), "make a branch for this theme and bring it to life")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.calls != 1 {
+		t.Fatalf("workspace policy calls = %d, want 1", policy.calls)
+	}
+	if strictLocal.calls != 1 {
+		t.Fatalf("strict local calls = %d, want 1", strictLocal.calls)
+	}
+	if strictLocal.violations != 0 {
+		t.Fatalf("strict local executor ran before policy: violations = %d", strictLocal.violations)
+	}
+	if result.Step.Kind != StepStrictLocal {
+		t.Fatalf("step = %#v", result.Step)
+	}
+}
+
+func TestRunnerClaimEvidenceBlocksUngroundedBranchClaim(t *testing.T) {
+	local := &stubLocalExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Response: "Branch created: forge/obsidian-theme",
+			Summary:  "Branch created: forge/obsidian-theme",
+		},
+	}
+
+	result, err := NewRunner(RunnerConfig{
+		Session: NewSession(),
+		Trace:   NewRecorder(),
+		Local:   local,
+	}).Run(context.Background(), "did you create a branch for the theme?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Decision.FinalState != StateBlocked {
+		t.Fatalf("decision = %#v", result.Decision)
+	}
+	if result.Observation.Status != ObservationBlocked {
+		t.Fatalf("observation = %#v", result.Observation)
+	}
+	if !strings.Contains(strings.ToLower(result.Response), "branch") {
+		t.Fatalf("response = %q", result.Response)
+	}
+}
+
+func TestRunnerClaimEvidenceAllowsGroundedBranchClaim(t *testing.T) {
+	local := &stubLocalExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Response: "Created and switched to branch forge/obsidian-theme",
+			Summary:  "Created and switched to branch forge/obsidian-theme",
+			ToolCalls: []ObservedToolCall{
+				{
+					Name: "run_command",
+					Args: map[string]any{"command": "git checkout -b forge/obsidian-theme"},
+				},
+			},
+		},
+	}
+
+	result, err := NewRunner(RunnerConfig{
+		Session: NewSession(),
+		Trace:   NewRecorder(),
+		Local:   local,
+	}).Run(context.Background(), "did you create a branch for the theme?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Decision.FinalState != StateComplete {
+		t.Fatalf("decision = %#v", result.Decision)
+	}
+	if result.Observation.Status != ObservationComplete {
+		t.Fatalf("observation = %#v", result.Observation)
+	}
+}
+
+func TestRunnerSelectedDirectionMismatchBlocksApplyTurn(t *testing.T) {
+	strictLocal := &stubLocalExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Response: "Applied the nexus theme in app code.",
+			Summary:  "Applied the nexus theme in app code.",
+			Runtime: LocalRuntimeSnapshot{
+				Preview: PreviewSnapshot{
+					Status: "live",
+					Path:   "themes_preview.html",
+					Port:   4173,
+					URL:    "http://127.0.0.1:4173/themes_preview.html",
+				},
+			},
+		},
+	}
+	session := NewSession()
+	_ = session.BeginTurn("show me three themes in a web preview")
+	session.Apply(Classification{
+		Family:                  FamilyAnswer,
+		PrefersVisibleExecution: true,
+		TaskText:                "show me three themes in a web preview",
+	}, Observation{
+		Status:   ObservationComplete,
+		Response: "Preview is live.",
+		Runtime: LocalRuntimeSnapshot{
+			Preview: PreviewSnapshot{
+				Status: "live",
+				Path:   "themes_preview.html",
+				Port:   4173,
+				URL:    "http://127.0.0.1:4173/themes_preview.html",
+			},
+		},
+	})
+	snapshot := session.Snapshot()
+	active := snapshot.ActiveThread()
+	active.Phase = ThreadPhaseApply
+	active.SelectedDirection = "obsidian"
+	snapshot.Threads.Active = active
+	session.state = snapshot
+
+	result, err := NewRunner(RunnerConfig{
+		Session:     session,
+		Trace:       NewRecorder(),
+		Local:       &stubLocalExecutor{},
+		StrictLocal: strictLocal,
+	}).Run(context.Background(), "implement the selected direction in the app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Decision.FinalState != StateBlocked {
+		t.Fatalf("decision = %#v", result.Decision)
+	}
+	if !strings.Contains(strings.ToLower(result.Response), "selected direction mismatch") {
 		t.Fatalf("response = %q", result.Response)
 	}
 }

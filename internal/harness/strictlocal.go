@@ -98,6 +98,7 @@ func (e StrictAgentExecutor) Execute(ctx context.Context, turn UserTurn, class C
 				DeliverableStatus: DeliverableMissing,
 				Reason:            err.Error(),
 			},
+			ToolCalls: observedToolCallsFromRunner(e.Agent),
 			SkillUses: skillRuntime.UseRecords(),
 			Err:       err,
 		}, err
@@ -111,6 +112,7 @@ func (e StrictAgentExecutor) Execute(ctx context.Context, turn UserTurn, class C
 		Summary:   response,
 		TopicKey:  resolvedClass.TopicKey,
 		Runtime:   captureLocalRuntimeSnapshot(e.PreviewRuntime, e.Agent),
+		ToolCalls: observedToolCallsFromRunner(e.Agent),
 		SkillUses: skillRuntime.UseRecords(),
 	}), nil
 }
@@ -162,7 +164,7 @@ func strictLocalProgressMessage(class Classification, uses []skills.UseRecord) s
 	case FamilyResearch:
 		return "Gathering current references"
 	default:
-		return "Working through the request"
+		return "Working through this request step by step"
 	}
 }
 
@@ -208,16 +210,29 @@ func buildStrictLocalTurnPrompt(class Classification, userMessage string, sessio
 }
 
 func shouldConstrainPreviewThreadToArtifacts(userMessage string, class Classification, session SessionState) bool {
+	phase, ok := activePreviewThreadPhaseForTurn(userMessage, class, session)
+	return ok && phase != ThreadPhaseApply
+}
+
+func activePreviewThreadPhaseForTurn(userMessage string, class Classification, session SessionState) (ThreadPhase, bool) {
 	if !class.PrefersVisibleExecution {
-		return false
+		return ThreadPhaseNone, false
 	}
 	if class.ThreadIntent != TurnIntentContinueThread && class.ThreadIntent != TurnIntentReplayThread {
-		return false
+		return ThreadPhaseNone, false
 	}
 	if !session.HasActiveThread() || session.ActiveThread().Kind != ThreadPreviewCollaboration {
-		return false
+		return ThreadPhaseNone, false
 	}
-	return !explicitSourceApplyRequest(userMessage)
+	taskText := firstNonEmpty(strings.TrimSpace(class.TaskText), strings.TrimSpace(userMessage))
+	if explicitSourceApplyRequest(taskText) {
+		return ThreadPhaseApply, true
+	}
+	phase := session.ActiveThread().Phase
+	if phase == ThreadPhaseNone {
+		phase = ThreadPhaseIdeate
+	}
+	return phase, true
 }
 
 func previewArtifactOnlyToolNames() []string {

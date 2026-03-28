@@ -68,6 +68,9 @@ var (
 	previewActionTokens = tokenSet(
 		"start", "launch", "open", "serve", "show", "restart", "see", "view",
 	)
+	branchWorkflowTokens = tokenSet(
+		"branch", "checkout", "switch", "feature", "worktree",
+	)
 	previewReplayActionTokens = tokenSet(
 		"show", "open", "view", "see", "refresh", "reload", "restart", "reopen", "reshow",
 	)
@@ -580,6 +583,30 @@ func wantsConcretePathPreviewEdit(text, lower string, tokens map[string]struct{}
 	return hasToken(tokens, "make") && !strings.Contains(lower, "make sure")
 }
 
+func wantsBranchWorkflowAction(lower string, tokens map[string]struct{}) bool {
+	if strings.TrimSpace(lower) == "" {
+		return false
+	}
+	if !containsAny(tokens, branchWorkflowTokens) {
+		return false
+	}
+	if strings.Contains(lower, "make a branch") ||
+		strings.Contains(lower, "create a branch") ||
+		strings.Contains(lower, "checkout -b") ||
+		strings.Contains(lower, "switch to a branch") ||
+		strings.Contains(lower, "switch to a feature branch") {
+		return true
+	}
+	if hasToken(tokens, "branch") &&
+		(hasToken(tokens, "make") ||
+			hasToken(tokens, "create") ||
+			hasToken(tokens, "switch") ||
+			hasToken(tokens, "checkout")) {
+		return true
+	}
+	return false
+}
+
 func containsImplementationSignal(ordered []string, tokens map[string]struct{}) bool {
 	if containsImplementationVerb(ordered) {
 		return true
@@ -1012,6 +1039,9 @@ func looksLikeRuntimeThreadRevision(lower string, tokens map[string]struct{}, or
 		return true
 	}
 	if strings.Contains(lower, "no neon") || strings.Contains(lower, "no purple") {
+		return true
+	}
+	if wantsBranchWorkflowAction(lower, tokens) {
 		return true
 	}
 	return false

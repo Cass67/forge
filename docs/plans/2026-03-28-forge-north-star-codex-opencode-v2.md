@@ -222,6 +222,38 @@ These are valuable and should be preserved:
 
 ## Migration Plan (Phased)
 
+## Implementation Status (2026-03-28)
+
+- Phase 0: complete
+  - baseline report added at `docs/reports/2026-03-28-react-runtime-baseline.md`
+  - transcript/stress fixtures remain runnable in CI (`100+` prompt corpus, `50`-turn flow)
+- Phase A: complete
+  - `FORGE_CHAT_RUNTIME=react` runtime path added (`internal/react/*`, `internal/runtime/chat.go`)
+- Phase B: complete (staged sandboxing)
+  - config-backed approval/rules/sandbox gate added (`internal/react/approval*.go`, `internal/react/sandbox.go`, config `[approval]`)
+  - protected-branch auto-transition enforced for mutating actions in react mode
+- Phase C: complete
+  - model-driven delegation tools added: `spawn_agent`, `wait_agent`
+  - async agent pool wired to existing sub-agent runtime (`internal/react/agent_pool.go`, `internal/react/tools/*`, runtime wiring)
+- Phase D: complete (session compaction scaffold)
+  - session compaction and progress heartbeat integrated in react runner (`internal/react/compact.go`, `loop.go`, `session.go`)
+- Phase E: complete for runtime default switch
+  - default chat runtime switched to react; `FORGE_CHAT_RUNTIME=kernel` remains fallback
+  - destructive legacy cleanup is intentionally deferred for soak and rollback safety
+
+### Phase 0: Baseline And Golden Fixtures
+
+Capture current behavior before migration so we can prove improvements:
+
+- collect baseline latency/failure metrics from real debug logs
+- pin golden transcript + debug-log fixtures for preview/apply and branch flows
+- record current failure classes (misroute, retry loops, silent waits, claim mismatches)
+
+**Exit criteria:**
+- baseline report checked in
+- golden fixtures runnable in CI/local
+- migration phases can be compared against an explicit baseline
+
 ### Phase A: Dual Runtime Flag
 
 Introduce `FORGE_CHAT_RUNTIME=react` environment variable. When set, route through new ReAct loop instead of current harness kernel.
@@ -262,6 +294,7 @@ Build approval/sandbox system alongside ReAct loop.
 - Protected-branch behavior preserved
 - Claim-evidence guard still works
 - Safety is equivalent or stronger than current kernel
+- Initial sandboxing is staged: least-privilege execution + approval/rules first, OS sandbox parity tracked as follow-on hardening work
 
 ### Phase C: Delegation Tool
 
@@ -294,12 +327,12 @@ Add auto-compaction when token budget exceeded mid-turn.
 
 - Make ReAct mode default
 - Keep kernel mode as fallback behind `FORGE_CHAT_RUNTIME=kernel`
-- Remove deprecated code after 2-week soak period:
+- Remove deprecated code after 2-week soak period, only after required safeguards are migrated into React path and verified:
   - `internal/harness/classifier.go`
   - `internal/harness/workers.go` (worker allowlists)
   - `internal/harness/contracts.go` (structured output)
-  - `internal/harness/policy.go` (state machine decisions)
-  - `internal/harness/outcome.go` (normalization)
+  - selected state-machine-only paths in `internal/harness/policy.go`
+  - selected legacy-normalization-only paths in `internal/harness/outcome.go`
 
 **Exit criteria:**
 - Default Forge behavior is fluid, stable
@@ -326,7 +359,7 @@ These stay regardless of loop style:
 We are done when:
 
 1. **No phrase patches:** Repeated real-user prompts no longer require per-phrase router patches.
-2. **Fast first progress:** Median time-to-first-meaningful-progress update is < 2 seconds.
+2. **Fast first progress:** Median time-to-first-host-progress update is < 2 seconds (host heartbeat/progress events, not model-token timing).
 3. **Multi-turn works:** Preview/apply flows complete without state drift across turns.
 4. **Errors are visible:** Failure paths produce explicit, actionable messages — no silent loops.
 5. **Tool success rate > 95%:** Tasks don't fail for formatting, allowlist, or classification reasons.

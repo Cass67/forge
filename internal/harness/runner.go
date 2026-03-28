@@ -9,23 +9,26 @@ import (
 )
 
 type Runner struct {
-	session        *Session
-	trace          *Recorder
-	local          LocalExecutor
-	strictLocal    LocalExecutor
-	workers        WorkerExecutor
-	workerSkills   []skills.Skill
-	workerAutoMode string
+	session         *Session
+	trace           *Recorder
+	local           LocalExecutor
+	strictLocal     LocalExecutor
+	workers         WorkerExecutor
+	workspacePolicy WorkspacePolicy
+	policyAction    string
+	workerSkills    []skills.Skill
+	workerAutoMode  string
 }
 
 type RunnerConfig struct {
-	Session        *Session
-	Trace          *Recorder
-	Local          LocalExecutor
-	StrictLocal    LocalExecutor
-	Workers        WorkerExecutor
-	WorkerSkills   []skills.Skill
-	WorkerAutoMode string
+	Session         *Session
+	Trace           *Recorder
+	Local           LocalExecutor
+	StrictLocal     LocalExecutor
+	Workers         WorkerExecutor
+	WorkspacePolicy WorkspacePolicy
+	WorkerSkills    []skills.Skill
+	WorkerAutoMode  string
 }
 
 func NewRunner(cfg RunnerConfig) *Runner {
@@ -38,18 +41,20 @@ func NewRunner(cfg RunnerConfig) *Runner {
 		trace = NewRecorder()
 	}
 	return &Runner{
-		session:        session,
-		trace:          trace,
-		local:          cfg.Local,
-		strictLocal:    cfg.StrictLocal,
-		workers:        cfg.Workers,
-		workerSkills:   append([]skills.Skill(nil), cfg.WorkerSkills...),
-		workerAutoMode: cfg.WorkerAutoMode,
+		session:         session,
+		trace:           trace,
+		local:           cfg.Local,
+		strictLocal:     cfg.StrictLocal,
+		workers:         cfg.Workers,
+		workspacePolicy: cfg.WorkspacePolicy,
+		workerSkills:    append([]skills.Skill(nil), cfg.WorkerSkills...),
+		workerAutoMode:  cfg.WorkerAutoMode,
 	}
 }
 
 func (r *Runner) Run(ctx context.Context, input string) (TurnResult, error) {
 	r.trace.Reset()
+	r.policyAction = ""
 
 	turn := r.session.BeginTurn(input)
 	snapshot := r.session.Snapshot()
@@ -57,41 +62,76 @@ func (r *Runner) Run(ctx context.Context, input string) (TurnResult, error) {
 
 	class := Classify(turn, snapshot)
 	r.trace.Record(TraceRecord{
-		State:        StateClassify,
-		Family:       class.Family,
-		Reason:       class.Reason,
-		TopicKey:     class.TopicKey,
-		ThreadID:     snapshot.ActiveThread().ID,
-		ThreadKind:   snapshot.ActiveThread().Kind,
-		ThreadStatus: snapshot.ActiveThread().Status,
-		ThreadIntent: class.ThreadIntent,
+		State:                 StateClassify,
+		Family:                class.Family,
+		Reason:                class.Reason,
+		TopicKey:              class.TopicKey,
+		ThreadID:              snapshot.ActiveThread().ID,
+		ThreadKind:            snapshot.ActiveThread().Kind,
+		ThreadStatus:          snapshot.ActiveThread().Status,
+		ThreadPhase:           snapshot.ActiveThread().Phase,
+		ThreadIntent:          class.ThreadIntent,
+		WorkspacePolicyAction: r.policyAction,
 	})
+
+	policyMilestone, policyErr := r.ensureWorkspacePolicy(ctx, turn, class, snapshot)
+	if policyErr != nil {
+		r.trace.Record(TraceRecord{
+			State:                 StateBlocked,
+			Family:                class.Family,
+			Reason:                "workspace policy failed: " + strings.TrimSpace(policyErr.Error()),
+			TopicKey:              class.TopicKey,
+			ThreadPhase:           snapshot.ActiveThread().Phase,
+			WorkspacePolicyAction: r.policyAction,
+		})
+		return r.blockedResultForPolicyFailure(class, snapshot, policyErr), nil
+	}
+	r.policyAction = strings.TrimSpace(policyMilestone.Message)
+	if strings.TrimSpace(policyMilestone.Message) != "" {
+		r.trace.Record(TraceRecord{
+			State:                 StatePlanStep,
+			Family:                class.Family,
+			Reason:                "workspace policy: " + strings.TrimSpace(policyMilestone.Message),
+			TopicKey:              class.TopicKey,
+			ThreadPhase:           snapshot.ActiveThread().Phase,
+			WorkspacePolicyAction: r.policyAction,
+		})
+	}
 
 	planned := Plan(class, snapshot)
 	r.trace.Record(TraceRecord{
-		State:    StatePlanStep,
-		Family:   class.Family,
-		Lane:     planned.Lane,
-		Step:     planned.Kind,
-		Worker:   planned.Worker,
-		Reason:   planned.Reason,
-		TopicKey: class.TopicKey,
+		State:                 StatePlanStep,
+		Family:                class.Family,
+		Lane:                  planned.Lane,
+		Step:                  planned.Kind,
+		Worker:                planned.Worker,
+		Reason:                planned.Reason,
+		TopicKey:              class.TopicKey,
+		ThreadPhase:           snapshot.ActiveThread().Phase,
+		WorkspacePolicyAction: r.policyAction,
 	})
 
 	step, obs, err := r.executeStep(ctx, turn, class, snapshot, planned)
 	obs = enrichObservation(turn, class, snapshot, obs)
+	if strings.TrimSpace(policyMilestone.Message) != "" {
+		obs.Progress = append([]ProgressMilestone{policyMilestone}, obs.Progress...)
+	}
 	decision := Decide(class, obs)
 	r.trace.Record(TraceRecord{
-		State:             StateDecide,
-		Family:            class.Family,
-		Lane:              step.Lane,
-		Step:              step.Kind,
-		Worker:            step.Worker,
-		Reason:            decision.Reason,
-		TopicKey:          class.TopicKey,
-		OutcomeKind:       obs.Outcome.Kind,
-		DeliverableKind:   obs.Outcome.DeliverableKind,
-		DeliverableStatus: obs.Outcome.DeliverableStatus,
+		State:                 StateDecide,
+		Family:                class.Family,
+		Lane:                  step.Lane,
+		Step:                  step.Kind,
+		Worker:                step.Worker,
+		Reason:                decision.Reason,
+		TopicKey:              class.TopicKey,
+		ThreadPhase:           activeThreadPhase(snapshot),
+		ClaimGuardStatus:      claimGuardStatus(obs),
+		WorkspacePolicyAction: r.policyAction,
+		ToolCallCount:         len(obs.ToolCalls),
+		OutcomeKind:           obs.Outcome.Kind,
+		DeliverableKind:       obs.Outcome.DeliverableKind,
+		DeliverableStatus:     obs.Outcome.DeliverableStatus,
 	})
 
 	obs.Response = buildForgeResponse(step, obs)
@@ -102,46 +142,58 @@ func (r *Runner) Run(ctx context.Context, input string) (TurnResult, error) {
 			r.trace.Record(threadRecord)
 		}
 		r.trace.Record(TraceRecord{
-			State:    StateRespond,
-			Family:   class.Family,
-			Lane:     step.Lane,
-			Step:     StepRespond,
-			Reason:   "emit final forge response",
-			TopicKey: class.TopicKey,
+			State:                 StateRespond,
+			Family:                class.Family,
+			Lane:                  step.Lane,
+			Step:                  StepRespond,
+			Reason:                "emit final forge response",
+			TopicKey:              class.TopicKey,
+			ThreadPhase:           activeThreadPhase(r.session.Snapshot()),
+			WorkspacePolicyAction: r.policyAction,
 		})
 		r.trace.Record(TraceRecord{
-			State:             decision.FinalState,
-			Family:            class.Family,
-			Lane:              step.Lane,
-			Step:              StepRespond,
-			Reason:            decision.Reason,
-			TopicKey:          class.TopicKey,
-			OutcomeKind:       decision.Outcome,
-			DeliverableKind:   obs.Outcome.DeliverableKind,
-			DeliverableStatus: obs.Outcome.DeliverableStatus,
+			State:                 decision.FinalState,
+			Family:                class.Family,
+			Lane:                  step.Lane,
+			Step:                  StepRespond,
+			Reason:                decision.Reason,
+			TopicKey:              class.TopicKey,
+			ThreadPhase:           activeThreadPhase(r.session.Snapshot()),
+			ClaimGuardStatus:      claimGuardStatus(obs),
+			WorkspacePolicyAction: r.policyAction,
+			ToolCallCount:         len(obs.ToolCalls),
+			OutcomeKind:           decision.Outcome,
+			DeliverableKind:       obs.Outcome.DeliverableKind,
+			DeliverableStatus:     obs.Outcome.DeliverableStatus,
 		})
 	} else {
 		if strings.TrimSpace(obs.Response) != "" {
 			r.trace.Record(TraceRecord{
-				State:    StateRespond,
-				Family:   class.Family,
-				Lane:     step.Lane,
-				Step:     StepRespond,
-				Reason:   "emit blocked forge response",
-				TopicKey: class.TopicKey,
+				State:                 StateRespond,
+				Family:                class.Family,
+				Lane:                  step.Lane,
+				Step:                  StepRespond,
+				Reason:                "emit blocked forge response",
+				TopicKey:              class.TopicKey,
+				ThreadPhase:           activeThreadPhase(snapshot),
+				WorkspacePolicyAction: r.policyAction,
 			})
 		}
 		r.trace.Record(TraceRecord{
-			State:             decision.FinalState,
-			Family:            class.Family,
-			Lane:              step.Lane,
-			Step:              step.Kind,
-			Worker:            step.Worker,
-			Reason:            decision.Reason,
-			TopicKey:          class.TopicKey,
-			OutcomeKind:       decision.Outcome,
-			DeliverableKind:   obs.Outcome.DeliverableKind,
-			DeliverableStatus: obs.Outcome.DeliverableStatus,
+			State:                 decision.FinalState,
+			Family:                class.Family,
+			Lane:                  step.Lane,
+			Step:                  step.Kind,
+			Worker:                step.Worker,
+			Reason:                decision.Reason,
+			TopicKey:              class.TopicKey,
+			ThreadPhase:           activeThreadPhase(snapshot),
+			ClaimGuardStatus:      claimGuardStatus(obs),
+			WorkspacePolicyAction: r.policyAction,
+			ToolCallCount:         len(obs.ToolCalls),
+			OutcomeKind:           decision.Outcome,
+			DeliverableKind:       obs.Outcome.DeliverableKind,
+			DeliverableStatus:     obs.Outcome.DeliverableStatus,
 		})
 	}
 
@@ -153,6 +205,63 @@ func (r *Runner) Run(ctx context.Context, input string) (TurnResult, error) {
 		Decision:       decision,
 		Trace:          r.trace.Records(),
 	}, err
+}
+
+func (r *Runner) ensureWorkspacePolicy(ctx context.Context, turn UserTurn, class Classification, session SessionState) (ProgressMilestone, error) {
+	if !requiresWorkspacePolicy(class) || r.workspacePolicy == nil {
+		return ProgressMilestone{}, nil
+	}
+	return r.workspacePolicy.EnsureExecutionContext(ctx, turn, class, session)
+}
+
+func (r *Runner) blockedResultForPolicyFailure(class Classification, session SessionState, err error) TurnResult {
+	reason := firstNonEmpty(errorString(err), "workspace policy blocked execution")
+	step := Step{
+		Lane:    LaneStrictAction,
+		Kind:    StepBlocked,
+		Worker:  WorkerNone,
+		Reason:  reason,
+		Summary: reason,
+	}
+	obs := normalizeObservation(step, class, session, Observation{
+		Status:   ObservationBlocked,
+		Lane:     step.Lane,
+		Summary:  reason,
+		TopicKey: class.TopicKey,
+		Outcome: ActionOutcome{
+			Lane:              step.Lane,
+			Kind:              OutcomeBlocked,
+			DeliverableKind:   resolveExpectedDeliverable(class, session, step.Lane),
+			DeliverableStatus: DeliverableMissing,
+			Reason:            reason,
+		},
+		Err: err,
+	})
+	decision := Decide(class, obs)
+	obs.Response = buildForgeResponse(step, obs)
+	r.trace.Record(TraceRecord{
+		State:                 decision.FinalState,
+		Family:                class.Family,
+		Lane:                  step.Lane,
+		Step:                  step.Kind,
+		Reason:                decision.Reason,
+		TopicKey:              class.TopicKey,
+		ThreadPhase:           activeThreadPhase(session),
+		ClaimGuardStatus:      claimGuardStatus(obs),
+		WorkspacePolicyAction: r.policyAction,
+		ToolCallCount:         len(obs.ToolCalls),
+		OutcomeKind:           decision.Outcome,
+		DeliverableKind:       obs.Outcome.DeliverableKind,
+		DeliverableStatus:     obs.Outcome.DeliverableStatus,
+	})
+	return TurnResult{
+		Response:       obs.Response,
+		Classification: class,
+		Step:           step,
+		Observation:    obs,
+		Decision:       decision,
+		Trace:          r.trace.Records(),
+	}
 }
 
 func (r *Runner) Trace() []TraceRecord {
@@ -172,25 +281,29 @@ func (r *Runner) executeStep(ctx context.Context, turn UserTurn, class Classific
 func (r *Runner) executeWorker(ctx context.Context, turn UserTurn, class Classification, session SessionState, step Step) (Step, Observation, error) {
 	if r.workers == nil {
 		r.trace.Record(TraceRecord{
-			State:    StateBlocked,
-			Family:   class.Family,
-			Lane:     step.Lane,
-			Step:     step.Kind,
-			Worker:   step.Worker,
-			Reason:   "worker executor unavailable; recovering locally",
-			TopicKey: class.TopicKey,
+			State:                 StateBlocked,
+			Family:                class.Family,
+			Lane:                  step.Lane,
+			Step:                  step.Kind,
+			Worker:                step.Worker,
+			Reason:                "worker executor unavailable; recovering locally",
+			TopicKey:              class.TopicKey,
+			ThreadPhase:           activeThreadPhase(session),
+			WorkspacePolicyAction: r.policyAction,
 		})
 		return r.executeLocal(ctx, turn, class, localRecoveryStep())
 	}
 
 	r.trace.Record(TraceRecord{
-		State:    StateAct,
-		Family:   class.Family,
-		Lane:     step.Lane,
-		Step:     step.Kind,
-		Worker:   step.Worker,
-		Reason:   step.Summary,
-		TopicKey: class.TopicKey,
+		State:                 StateAct,
+		Family:                class.Family,
+		Lane:                  step.Lane,
+		Step:                  step.Kind,
+		Worker:                step.Worker,
+		Reason:                step.Summary,
+		TopicKey:              class.TopicKey,
+		ThreadPhase:           activeThreadPhase(session),
+		WorkspacePolicyAction: r.policyAction,
 	})
 	deadline, _ := ctx.Deadline()
 	obs, err := r.workers.Execute(ctx, WorkerTask{
@@ -210,16 +323,20 @@ func (r *Runner) executeWorker(ctx context.Context, turn UserTurn, class Classif
 	})
 	obs = normalizeObservation(step, class, session, obs)
 	r.trace.Record(TraceRecord{
-		State:             StateObserve,
-		Family:            class.Family,
-		Lane:              step.Lane,
-		Step:              step.Kind,
-		Worker:            step.Worker,
-		Reason:            firstNonEmpty(obs.Outcome.Reason, obs.Summary, "worker execution complete"),
-		TopicKey:          class.TopicKey,
-		OutcomeKind:       obs.Outcome.Kind,
-		DeliverableKind:   obs.Outcome.DeliverableKind,
-		DeliverableStatus: obs.Outcome.DeliverableStatus,
+		State:                 StateObserve,
+		Family:                class.Family,
+		Lane:                  step.Lane,
+		Step:                  step.Kind,
+		Worker:                step.Worker,
+		Reason:                firstNonEmpty(obs.Outcome.Reason, obs.Summary, "worker execution complete"),
+		TopicKey:              class.TopicKey,
+		ThreadPhase:           activeThreadPhase(session),
+		ClaimGuardStatus:      claimGuardStatus(obs),
+		WorkspacePolicyAction: r.policyAction,
+		ToolCallCount:         len(obs.ToolCalls),
+		OutcomeKind:           obs.Outcome.Kind,
+		DeliverableKind:       obs.Outcome.DeliverableKind,
+		DeliverableStatus:     obs.Outcome.DeliverableStatus,
 	})
 	if err == nil && obs.Status != ObservationBlocked {
 		return step, obs, nil
@@ -227,24 +344,28 @@ func (r *Runner) executeWorker(ctx context.Context, turn UserTurn, class Classif
 
 	reason := firstNonEmpty(obs.Outcome.Reason, obs.Summary, errorString(err), "worker failed closed; recovering locally")
 	r.trace.Record(TraceRecord{
-		State:    StateBlocked,
-		Family:   class.Family,
-		Lane:     step.Lane,
-		Step:     step.Kind,
-		Worker:   step.Worker,
-		Reason:   reason,
-		TopicKey: class.TopicKey,
+		State:                 StateBlocked,
+		Family:                class.Family,
+		Lane:                  step.Lane,
+		Step:                  step.Kind,
+		Worker:                step.Worker,
+		Reason:                reason,
+		TopicKey:              class.TopicKey,
+		ThreadPhase:           activeThreadPhase(session),
+		WorkspacePolicyAction: r.policyAction,
 	})
 
 	fallback := localRecoveryStep()
 	r.trace.Record(TraceRecord{
-		State:    StatePlanStep,
-		Family:   class.Family,
-		Lane:     fallback.Lane,
-		Step:     fallback.Kind,
-		Worker:   fallback.Worker,
-		Reason:   fallback.Reason,
-		TopicKey: class.TopicKey,
+		State:                 StatePlanStep,
+		Family:                class.Family,
+		Lane:                  fallback.Lane,
+		Step:                  fallback.Kind,
+		Worker:                fallback.Worker,
+		Reason:                fallback.Reason,
+		TopicKey:              class.TopicKey,
+		ThreadPhase:           activeThreadPhase(session),
+		WorkspacePolicyAction: r.policyAction,
 	})
 	return r.executeLocal(ctx, turn, class, fallback)
 }
@@ -256,23 +377,27 @@ func (r *Runner) executeLocal(ctx context.Context, turn UserTurn, class Classifi
 func (r *Runner) executeStrictLocal(ctx context.Context, turn UserTurn, class Classification, step Step) (Step, Observation, error) {
 	if r.strictLocal == nil {
 		r.trace.Record(TraceRecord{
-			State:    StateBlocked,
-			Family:   class.Family,
-			Lane:     step.Lane,
-			Step:     step.Kind,
-			Worker:   step.Worker,
-			Reason:   "strict local executor unavailable; recovering locally",
-			TopicKey: class.TopicKey,
+			State:                 StateBlocked,
+			Family:                class.Family,
+			Lane:                  step.Lane,
+			Step:                  step.Kind,
+			Worker:                step.Worker,
+			Reason:                "strict local executor unavailable; recovering locally",
+			TopicKey:              class.TopicKey,
+			ThreadPhase:           activeThreadPhase(r.session.Snapshot()),
+			WorkspacePolicyAction: r.policyAction,
 		})
 		fallback := localRecoveryStep()
 		r.trace.Record(TraceRecord{
-			State:    StatePlanStep,
-			Family:   class.Family,
-			Lane:     fallback.Lane,
-			Step:     fallback.Kind,
-			Worker:   fallback.Worker,
-			Reason:   fallback.Reason,
-			TopicKey: class.TopicKey,
+			State:                 StatePlanStep,
+			Family:                class.Family,
+			Lane:                  fallback.Lane,
+			Step:                  fallback.Kind,
+			Worker:                fallback.Worker,
+			Reason:                fallback.Reason,
+			TopicKey:              class.TopicKey,
+			ThreadPhase:           activeThreadPhase(r.session.Snapshot()),
+			WorkspacePolicyAction: r.policyAction,
 		})
 		return r.executeLocal(ctx, turn, class, fallback)
 	}
@@ -382,28 +507,34 @@ func (r *Runner) executeLocalExecutor(ctx context.Context, turn UserTurn, class 
 	attempts := 0
 	for {
 		r.trace.Record(TraceRecord{
-			State:    StateAct,
-			Family:   class.Family,
-			Lane:     step.Lane,
-			Step:     step.Kind,
-			Worker:   step.Worker,
-			Reason:   step.Summary,
-			TopicKey: class.TopicKey,
+			State:                 StateAct,
+			Family:                class.Family,
+			Lane:                  step.Lane,
+			Step:                  step.Kind,
+			Worker:                step.Worker,
+			Reason:                step.Summary,
+			TopicKey:              class.TopicKey,
+			ThreadPhase:           activeThreadPhase(session),
+			WorkspacePolicyAction: r.policyAction,
 		})
 
 		obs, err := exec.Execute(ctx, turn, class, r.session.Snapshot())
 		obs = normalizeObservation(step, class, session, obs)
 		r.trace.Record(TraceRecord{
-			State:             StateObserve,
-			Family:            class.Family,
-			Lane:              step.Lane,
-			Step:              step.Kind,
-			Worker:            step.Worker,
-			Reason:            firstNonEmpty(obs.Outcome.Reason, obs.Summary, "local execution complete"),
-			TopicKey:          class.TopicKey,
-			OutcomeKind:       obs.Outcome.Kind,
-			DeliverableKind:   obs.Outcome.DeliverableKind,
-			DeliverableStatus: obs.Outcome.DeliverableStatus,
+			State:                 StateObserve,
+			Family:                class.Family,
+			Lane:                  step.Lane,
+			Step:                  step.Kind,
+			Worker:                step.Worker,
+			Reason:                firstNonEmpty(obs.Outcome.Reason, obs.Summary, "local execution complete"),
+			TopicKey:              class.TopicKey,
+			ThreadPhase:           activeThreadPhase(session),
+			ClaimGuardStatus:      claimGuardStatus(obs),
+			WorkspacePolicyAction: r.policyAction,
+			ToolCallCount:         len(obs.ToolCalls),
+			OutcomeKind:           obs.Outcome.Kind,
+			DeliverableKind:       obs.Outcome.DeliverableKind,
+			DeliverableStatus:     obs.Outcome.DeliverableStatus,
 		})
 		if err != nil {
 			return step, obs, err
@@ -411,16 +542,20 @@ func (r *Runner) executeLocalExecutor(ctx context.Context, turn UserTurn, class 
 		if obs.Outcome.Kind == OutcomeRetry && step.Lane == LaneStrictAction && attempts < maxStrictActionRetries {
 			attempts++
 			r.trace.Record(TraceRecord{
-				State:             StateRetry,
-				Family:            class.Family,
-				Lane:              step.Lane,
-				Step:              step.Kind,
-				Worker:            step.Worker,
-				Reason:            obs.Outcome.Reason,
-				TopicKey:          class.TopicKey,
-				OutcomeKind:       obs.Outcome.Kind,
-				DeliverableKind:   obs.Outcome.DeliverableKind,
-				DeliverableStatus: obs.Outcome.DeliverableStatus,
+				State:                 StateRetry,
+				Family:                class.Family,
+				Lane:                  step.Lane,
+				Step:                  step.Kind,
+				Worker:                step.Worker,
+				Reason:                obs.Outcome.Reason,
+				TopicKey:              class.TopicKey,
+				ThreadPhase:           activeThreadPhase(session),
+				ClaimGuardStatus:      claimGuardStatus(obs),
+				WorkspacePolicyAction: r.policyAction,
+				ToolCallCount:         len(obs.ToolCalls),
+				OutcomeKind:           obs.Outcome.Kind,
+				DeliverableKind:       obs.Outcome.DeliverableKind,
+				DeliverableStatus:     obs.Outcome.DeliverableStatus,
 			})
 			continue
 		}
@@ -502,6 +637,30 @@ func errorString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+func activeThreadPhase(state SessionState) ThreadPhase {
+	if !state.HasActiveThread() {
+		return ThreadPhaseNone
+	}
+	phase := state.ActiveThread().Phase
+	if phase == ThreadPhaseNone && state.ActiveThread().Kind == ThreadPreviewCollaboration {
+		return ThreadPhaseIdeate
+	}
+	return phase
+}
+
+func claimGuardStatus(obs Observation) string {
+	reason := strings.ToLower(firstNonEmpty(obs.Outcome.Reason, obs.Summary))
+	if strings.Contains(reason, "without supporting tool evidence") ||
+		strings.Contains(reason, "without git_commit evidence") ||
+		strings.Contains(reason, "without verified preview runtime evidence") {
+		return "blocked"
+	}
+	if len(obs.ToolCalls) > 0 {
+		return "evidence_present"
+	}
+	return "not_applicable"
 }
 
 func enrichObservation(turn UserTurn, class Classification, _ SessionState, obs Observation) Observation {

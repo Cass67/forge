@@ -327,6 +327,12 @@ func previewThreadRevisionStressFixtures() []stressFixture {
 		"try 3 different ones, no neon",
 		"give me 3 other dark options, no neon",
 		"keep it dark but no neon",
+		"make a branch for this theme",
+		"i like obsidian term, lets make a branch and bring it to life",
+		"lets make a branch and bring that to life",
+		"i choose the first mockup, make a branch and bring it to life in /theme",
+		"branch this and implement obsidian",
+		"switch to a feature branch then wire /theme",
 		"show the obsidian version on the web page",
 		"put that on the web page",
 		"show me the updated graphics on the web page",
@@ -336,6 +342,14 @@ func previewThreadRevisionStressFixtures() []stressFixture {
 		"make the git diff and numerals pop more",
 		"fix the highlighting on script name and file numbers",
 		"add more color to status, git diff, and code boxes",
+	}
+	branchTopicPrompts := map[string]string{
+		"make a branch for this theme":                "",
+		"i like obsidian term, lets make a branch and bring it to life": "",
+		"lets make a branch and bring that to life":   "",
+		"i choose the first mockup, make a branch and bring it to life in /theme": "path:/theme",
+		"branch this and implement obsidian":          "",
+		"switch to a feature branch then wire /theme": "path:/theme",
 	}
 	actionPrefixes := []string{
 		"",
@@ -358,13 +372,18 @@ func previewThreadRevisionStressFixtures() []stressFixture {
 	for _, prefix := range actionPrefixes {
 		for _, prompt := range actionPrompts {
 			idx++
+			normalized := strings.TrimSpace(prefix + prompt)
+			wantTopicKey := ""
+			if topic, ok := branchTopicPrompts[prompt]; ok {
+				wantTopicKey = topic
+			}
 			fixtures = append(fixtures, stressFixture{
 				Name:            fmt.Sprintf("preview-thread-action/%03d", idx),
 				Category:        "preview-thread-action",
-				Input:           strings.TrimSpace(prefix + prompt),
+				Input:           normalized,
 				Session:         session,
 				WantFamily:      FamilyImplement,
-				WantTopicKey:    "",
+				WantTopicKey:    wantTopicKey,
 				WantEvaluation:  false,
 				WantAction:      true,
 				WantFollowUp:    true,
