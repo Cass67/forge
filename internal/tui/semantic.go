@@ -655,7 +655,12 @@ func lineHasStructuredLabel(line []semanticSpan) bool {
 
 func renderSemanticSpan(span semanticSpan, profile semanticProfile, theme chatTheme, structured bool) string {
 	switch span.Kind {
-	case semanticPlain, semanticANSI:
+	case semanticPlain:
+		return lipgloss.NewStyle().
+			Foreground(theme.Text).
+			Background(theme.AppBG).
+			Render(span.Text)
+	case semanticANSI:
 		return span.Text
 	case semanticInlineCode:
 		return renderInlineCodeSpan(span.Text, profile, theme)
@@ -674,12 +679,16 @@ func renderInlineCodeSpan(text string, profile semanticProfile, theme chatTheme)
 	}
 
 	inner := text[1 : len(text)-1]
-	delimiter := lipgloss.NewStyle().Foreground(theme.TextDim).Render("`")
+	delimiter := lipgloss.NewStyle().
+		Foreground(theme.TextDim).
+		Background(theme.AppBG).
+		Render("`")
 	if inner == "" {
 		return delimiter + delimiter
 	}
 	innerRendered := lipgloss.NewStyle().
 		Foreground(theme.Text).
+		Background(theme.AppBG).
 		Render(RenderSemantic(tokenizePlainSegment(inner), profile, theme))
 	return delimiter + innerRendered + delimiter
 }
@@ -701,23 +710,14 @@ func semanticStyle(kind semanticKind, profile semanticProfile, theme chatTheme, 
 		}
 		fg = theme.Success
 	case semanticStatusGood:
-		if profile == profileProse && !structured {
-			return lipgloss.Style{}, false
-		}
 		fg = theme.Success
-		bold = profile != profileProse
+		bold = true
 	case semanticStatusBad:
-		if profile == profileProse && !structured {
-			return lipgloss.Style{}, false
-		}
 		fg = theme.Error
-		bold = profile != profileProse
+		bold = true
 	case semanticStatusWarn:
-		if profile == profileProse && !structured {
-			return lipgloss.Style{}, false
-		}
 		fg = theme.Warning
-		bold = profile != profileProse
+		bold = true
 	case semanticLabel:
 		fg = theme.TextDim
 	default:
@@ -728,7 +728,10 @@ func semanticStyle(kind semanticKind, profile semanticProfile, theme chatTheme, 
 		bold = true
 	}
 
-	return lipgloss.NewStyle().Foreground(fg).Bold(bold), true
+	return lipgloss.NewStyle().
+		Foreground(fg).
+		Background(theme.AppBG).
+		Bold(bold), true
 }
 
 func appendSpan(spans []semanticSpan, kind semanticKind, text string) []semanticSpan {

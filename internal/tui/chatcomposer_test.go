@@ -164,10 +164,10 @@ func TestChatComposerVisibleLineBudget(t *testing.T) {
 		t.Fatalf("wrapped composer height = %d, want 5", got)
 	}
 
-	c.SetText("11111111112222222222333333333344444444445555555555")
+	c.SetText("1111111111222222222233333333334444444444555555555566666666667777777777")
 	rendered := strings.Join(c.visibleLines(12), "\n")
-	if got := len(c.visibleLines(12)); got != 5 {
-		t.Fatalf("scrolled composer height = %d, want 5", got)
+	if got := len(c.visibleLines(12)); got != 7 {
+		t.Fatalf("scrolled composer height = %d, want 7", got)
 	}
 	if strings.Contains(rendered, "1111111111") {
 		t.Fatalf("expected scrolled composer to drop earliest content, got %q", rendered)

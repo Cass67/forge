@@ -49,6 +49,7 @@ func (m ChatMessage) Render(width int, theme chatTheme) string {
 		body := RenderSemanticPlain(strings.TrimSpace(m.Content), profileStatus, theme)
 		return lipgloss.NewStyle().
 			Foreground(theme.Text).
+			Background(theme.AppBG).
 			Width(width).
 			Render(body)
 	}
@@ -57,9 +58,11 @@ func (m ChatMessage) Render(width int, theme chatTheme) string {
 		body := RenderSemanticPlain(strings.TrimSpace(m.Content), profileStatus, theme)
 		prefix := lipgloss.NewStyle().
 			Foreground(theme.TextDim).
+			Background(theme.AppBG).
 			Render("· ")
 		return lipgloss.NewStyle().
 			Foreground(theme.Text).
+			Background(theme.AppBG).
 			Width(width).
 			Render(prefix + body)
 	}
@@ -78,6 +81,7 @@ func (m ChatMessage) Render(width int, theme chatTheme) string {
 			Render(indentRenderedBlock(body, "  ")))
 	}
 	return lipgloss.NewStyle().
+		Background(theme.AppBG).
 		Width(width).
 		Render(lipgloss.JoinVertical(lipgloss.Left, blocks...))
 }
@@ -87,14 +91,15 @@ func renderMessageHeader(header string, width int, theme chatTheme, accent lipgl
 	if !found {
 		return lipgloss.NewStyle().
 			Foreground(accent).
+			Background(theme.AppBG).
 			Bold(true).
 			Render(header)
 	}
 	return lipgloss.JoinHorizontal(
 		lipgloss.Left,
-		lipgloss.NewStyle().Foreground(accent).Bold(true).Render(strings.TrimSpace(name)),
-		lipgloss.NewStyle().Foreground(theme.Border).Render(" • "),
-		lipgloss.NewStyle().Foreground(theme.TextDim).Render(strings.TrimSpace(meta)),
+		lipgloss.NewStyle().Foreground(accent).Background(theme.AppBG).Bold(true).Render(strings.TrimSpace(name)),
+		lipgloss.NewStyle().Foreground(theme.Border).Background(theme.AppBG).Render(" • "),
+		lipgloss.NewStyle().Foreground(theme.TextDim).Background(theme.AppBG).Render(strings.TrimSpace(meta)),
 	)
 }
 
