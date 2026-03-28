@@ -305,3 +305,26 @@ func TestRenderStatusHeaderPaintsFullRowWidth(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderStatusHeaderFlatAcrossAllThemes(t *testing.T) {
+	withTrueColorProfile(t)
+
+	for _, theme := range orderedChatThemes() {
+		rendered := renderStatusHeader(theme, chatStatusData{
+			Model:   "openai/gpt-5.4",
+			WorkDir: "/tmp/work",
+		}, 96)
+		plain := strippedLine(rendered)
+		if strings.ContainsAny(plain, "╭╮╰╯│") {
+			t.Fatalf("theme %q rendered boxed/separator glyphs in header:\n%s", theme.ID, plain)
+		}
+		if strings.Contains(rendered, ansiBackground(theme.HeaderBG)) && theme.HeaderBG != theme.AppBG {
+			t.Fatalf("theme %q leaked HeaderBG into header surface", theme.ID)
+		}
+		for idx, line := range strings.Split(rendered, "\n") {
+			if strings.HasSuffix(line, " ") {
+				t.Fatalf("theme %q line %d has plain trailing spaces: %q", theme.ID, idx+1, line)
+			}
+		}
+	}
+}
