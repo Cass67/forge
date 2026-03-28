@@ -56,13 +56,13 @@ func TestTokenizePlainTreatsInlineCodeURLsAndANSIAsOpaque(t *testing.T) {
 	assertSpanKind(t, spans, "\x1b[0m", semanticANSI)
 }
 
-func TestRenderSemanticProseLeavesUnstructuredStatusWordPlain(t *testing.T) {
+func TestRenderSemanticProseStylesStandaloneStatusWord(t *testing.T) {
 	withTrueColorProfile(t)
 
 	theme := lookupThemeForTest(t, "default")
 	rendered := RenderSemanticPlain("approved", profileProse, theme)
 
-	assertSubstringNotColor(t, rendered, "approved", theme.Success)
+	assertStyledSubstring(t, rendered, "approved", theme.Success)
 }
 
 func TestRenderSemanticProseStylesStructuredStatusAndNumbers(t *testing.T) {

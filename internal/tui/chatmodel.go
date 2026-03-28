@@ -796,6 +796,15 @@ func (m ChatModel) debugDockHeight() int {
 	return chatDebugDockHeight
 }
 
+func (m ChatModel) composerGapHeight() int {
+	// Keep small terminals dense so transcript context stays visible, but add
+	// breathing room on standard/large screens between transcript and composer.
+	if m.height >= 18 {
+		return 2
+	}
+	return chatComposerGapHeight
+}
+
 func (m ChatModel) headerHeight() int {
 	if m.width <= 0 {
 		return 1
@@ -813,7 +822,7 @@ func (m *ChatModel) resizeChatViewport() {
 		return
 	}
 	m.chatViewport.Width = m.chatContentWidth()
-	bodyH := max(3, m.height-m.headerHeight()-chatPaneBorderHeight-chatComposerGapHeight-m.inputHeight()-chatStatusHeight-m.debugDockHeight())
+	bodyH := max(3, m.height-m.headerHeight()-chatPaneBorderHeight-m.composerGapHeight()-m.inputHeight()-chatStatusHeight-m.debugDockHeight())
 	if m.chatViewport.Height == bodyH {
 		return
 	}
@@ -853,7 +862,7 @@ func (m ChatModel) mouseContext() chatLayoutMouseContext {
 		chatY:  headerH,
 		chatW:  chatPaneWidth,
 		chatH:  chatH,
-		inputY: headerH + chatH + m.debugDockHeight() + chatComposerGapHeight,
+		inputY: headerH + chatH + m.debugDockHeight() + m.composerGapHeight(),
 	}
 	if m.toolsVisible {
 		ctx.toolsX = chatPaneWidth
@@ -4251,6 +4260,9 @@ func (m ChatModel) View() string {
 	if debugDock != "" {
 		parts = append(parts, debugDock)
 	}
+	if gap := m.renderComposerGap(theme); gap != "" {
+		parts = append(parts, gap)
+	}
 	parts = append(parts, liveRegion, inputBox)
 	base := lipgloss.NewStyle().
 		Background(theme.AppBG).
@@ -4305,6 +4317,25 @@ func (m ChatModel) renderLiveProgressSlot(theme chatTheme) string {
 		slotStyle = slotStyle.Foreground(theme.AccentPrimary).Bold(true)
 	}
 	return slotStyle.Render(fitCell(prefix+" "+message, max(1, m.width)))
+}
+
+func (m ChatModel) renderComposerGap(theme chatTheme) string {
+	gapLines := max(0, m.composerGapHeight()-1)
+	if gapLines == 0 {
+		return ""
+	}
+	line := lipgloss.NewStyle().
+		Background(theme.AppBG).
+		Width(m.width).
+		Render("")
+	if gapLines == 1 {
+		return line
+	}
+	lines := make([]string, 0, gapLines)
+	for i := 0; i < gapLines; i++ {
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m ChatModel) renderTraceDock(theme chatTheme) string {
