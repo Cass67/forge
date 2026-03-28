@@ -8,8 +8,8 @@ import (
 )
 
 const (
-	chatComposerMinBodyLines = 2
-	chatComposerMaxBodyLines = 6
+	chatComposerMinBodyLines = 3
+	chatComposerMaxBodyLines = 7
 )
 
 type ComposerAction struct {
@@ -19,12 +19,17 @@ type ComposerAction struct {
 }
 
 type ChatComposer struct {
-	text   string
-	cursor int
+	text         string
+	cursor       int
+	minBodyLines int
+	maxBodyLines int
 }
 
 func NewChatComposer() ChatComposer {
-	return ChatComposer{}
+	return ChatComposer{
+		minBodyLines: chatComposerMinBodyLines,
+		maxBodyLines: chatComposerMaxBodyLines,
+	}
 }
 
 func (c ChatComposer) Text() string {
@@ -42,6 +47,13 @@ func (c *ChatComposer) SetText(text string) {
 
 func (c *ChatComposer) SetCursor(cursor int) {
 	c.cursor = clamp(cursor, 0, len([]rune(c.text)))
+}
+
+func (c *ChatComposer) SetLineBudget(minBodyLines, maxBodyLines int) {
+	minBodyLines = max(1, minBodyLines)
+	maxBodyLines = max(minBodyLines, maxBodyLines)
+	c.minBodyLines = minBodyLines
+	c.maxBodyLines = maxBodyLines
 }
 
 func (c *ChatComposer) InsertString(text string) {
@@ -198,16 +210,19 @@ func (c *ChatComposer) HandleKey(msg tea.KeyMsg, busy bool) ComposerAction {
 }
 
 func (c ChatComposer) visibleBodyLines(width int) []string {
+	minBodyLines := max(1, c.minBodyLines)
+	maxBodyLines := max(minBodyLines, c.maxBodyLines)
+
 	if c.text == "" {
 		lines := []string{"Type a message or /help"}
-		for len(lines) < chatComposerMinBodyLines {
+		for len(lines) < minBodyLines {
 			lines = append(lines, "")
 		}
 		return lines
 	}
 
 	wrapped := composerWrappedLines(c.text, width)
-	visibleCount := clamp(len(wrapped), chatComposerMinBodyLines, chatComposerMaxBodyLines)
+	visibleCount := clamp(len(wrapped), minBodyLines, maxBodyLines)
 	cursorLine := composerCursorLine(c.text, c.cursor, width)
 	start := 0
 	if len(wrapped) > visibleCount {

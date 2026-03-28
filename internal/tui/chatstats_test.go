@@ -220,6 +220,17 @@ func TestRenderStatusHeaderUsesSplitRailCardAtWideWidths(t *testing.T) {
 	}
 }
 
+func TestRenderForgeWordmarkUsesTrafficLightColors(t *testing.T) {
+	withTrueColorProfile(t)
+
+	theme := lookupThemeForTest(t, "default")
+	wordmark := renderForgeWordmark(theme)
+
+	assertStyledSubstring(t, wordmark, "O", theme.Success)
+	assertStyledSubstring(t, wordmark, "R", theme.Warning)
+	assertStyledSubstring(t, wordmark, "G", theme.Error)
+}
+
 func TestRenderStatusHeaderFallsBackAcrossWidths(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {

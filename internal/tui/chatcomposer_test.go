@@ -155,8 +155,8 @@ func TestChatComposerRenderUsesBoxedShell(t *testing.T) {
 func TestChatComposerVisibleLineBudget(t *testing.T) {
 	c := NewChatComposer()
 	c.InsertString("short")
-	if got := len(c.visibleLines(12)); got != 3 {
-		t.Fatalf("short composer height = %d, want 3", got)
+	if got := len(c.visibleLines(12)); got != 4 {
+		t.Fatalf("short composer height = %d, want 4", got)
 	}
 
 	c.SetText("1111111111222222222233333333334444444444")
@@ -164,10 +164,10 @@ func TestChatComposerVisibleLineBudget(t *testing.T) {
 		t.Fatalf("wrapped composer height = %d, want 5", got)
 	}
 
-	c.SetText("1111111111222222222233333333334444444444555555555566666666667777777777")
+	c.SetText("11111111112222222222333333333344444444445555555555666666666677777777778888888888")
 	rendered := strings.Join(c.visibleLines(12), "\n")
-	if got := len(c.visibleLines(12)); got != 7 {
-		t.Fatalf("scrolled composer height = %d, want 7", got)
+	if got := len(c.visibleLines(12)); got != 8 {
+		t.Fatalf("scrolled composer height = %d, want 8", got)
 	}
 	if strings.Contains(rendered, "1111111111") {
 		t.Fatalf("expected scrolled composer to drop earliest content, got %q", rendered)
