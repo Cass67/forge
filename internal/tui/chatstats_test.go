@@ -294,5 +294,8 @@ func TestRenderStatusHeaderPaintsFullRowWidth(t *testing.T) {
 		if !strings.Contains(line, wantBG) {
 			t.Fatalf("line %d missing app background %q: %q", idx+1, wantBG, line)
 		}
+		if strings.HasSuffix(line, " ") {
+			t.Fatalf("line %d ends with plain spaces instead of styled fill: %q", idx+1, line)
+		}
 	}
 }

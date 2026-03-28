@@ -412,6 +412,9 @@ func fillHeaderSurface(header string, width int, theme chatTheme) string {
 	lines := strings.Split(header, "\n")
 	fill := lipgloss.NewStyle().Background(theme.AppBG)
 	for i, line := range lines {
+		// Replace any plain trailing spaces (which can render as terminal-default
+		// background) with explicit AppBG fill.
+		line = strings.TrimRight(line, " ")
 		printable := ansiPrintableWidth(line)
 		if printable < width {
 			line += fill.Render(strings.Repeat(" ", width-printable))
