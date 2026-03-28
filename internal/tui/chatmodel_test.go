@@ -3408,6 +3408,22 @@ func TestChatModelViewPaintsTranscriptLinesWithAppBackground(t *testing.T) {
 	}
 }
 
+func TestChatModelViewHasNoPlainTrailingSpacesOnSurfaceRows(t *testing.T) {
+	withTrueColorProfile(t)
+
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 90, Height: 18})
+	m = updated.(ChatModel)
+	m.AddMessage(ChatMessage{Kind: MsgUser, Header: "You • 12:00:00", Content: "check the repo and tell me how it looks"})
+
+	view := m.View()
+	for idx, line := range strings.Split(view, "\n") {
+		if strings.HasSuffix(line, " ") {
+			t.Fatalf("line %d ends with plain spaces: %q", idx+1, line)
+		}
+	}
+}
+
 func TestChatModelViewPaintsMessageSeparatorsWithAppBackground(t *testing.T) {
 	withTrueColorProfile(t)
 

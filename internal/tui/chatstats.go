@@ -408,20 +408,7 @@ func renderCompactStatusHeader(theme chatTheme, data chatStatusData, width int) 
 }
 
 func fillHeaderSurface(header string, width int, theme chatTheme) string {
-	width = max(1, width)
-	lines := strings.Split(header, "\n")
-	fill := lipgloss.NewStyle().Background(theme.AppBG)
-	for i, line := range lines {
-		// Replace any plain trailing spaces (which can render as terminal-default
-		// background) with explicit AppBG fill.
-		line = strings.TrimRight(line, " ")
-		printable := ansiPrintableWidth(line)
-		if printable < width {
-			line += fill.Render(strings.Repeat(" ", width-printable))
-		}
-		lines[i] = line
-	}
-	return strings.Join(lines, "\n")
+	return fillSurfaceRows(header, width, theme.AppBG)
 }
 
 func renderForgeWordmark(theme chatTheme) string {
