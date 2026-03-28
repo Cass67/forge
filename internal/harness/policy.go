@@ -11,7 +11,8 @@ func AdmitWorker(class Classification, _ SessionState) (WorkerKind, string, bool
 		workspaceInspect &&
 		!class.WantsEvaluation &&
 		!class.WantsInterpretation &&
-		!class.WantsAction {
+		!class.WantsAction &&
+		!inspectTaskNeedsImplementationGrounding(class) {
 		return WorkerReader, "workspace inspection benefits from a bounded reader worker", true
 	}
 	if class.Family == FamilyImplement &&

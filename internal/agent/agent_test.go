@@ -905,6 +905,7 @@ func TestHarnessInspectTurnFirstWorkingTurnSalvagesSingleToolCallWithoutRetryTax
 	driver := &inspectingDriver{
 		responses: []string{
 			"<tool_call>\n{\"name\": \"glob\", \"args\": {\"pattern\": \"**/*.py\", \"path\": \".\"}}\n</tool_call>\n<tool_call>\n{\"name\": \"git_status\", \"args\": {}}\n</tool_call>",
+			"<tool_call>\n{\"name\": \"read_file\", \"args\": {\"path\": \"alpha.py\"}}\n</tool_call>",
 			"Focused Python review complete.",
 		},
 		checks: []func([]llm.Message) error{
@@ -943,6 +944,15 @@ func TestHarnessInspectTurnFirstWorkingTurnSalvagesSingleToolCallWithoutRetryTax
 			return "?? alpha.py", nil
 		},
 	})
+	reg.Register(tools.Tool{
+		Name:        "read_file",
+		Description: "Read file",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			path, _ := args["path"].(string)
+			executed = append(executed, "read_file:"+path)
+			return path, nil
+		},
+	})
 
 	var output bytes.Buffer
 	renderer := NewRenderer(&output, 80, false)
@@ -951,12 +961,14 @@ func TestHarnessInspectTurnFirstWorkingTurnSalvagesSingleToolCallWithoutRetryTax
 	err := a.Run(context.Background(), strings.TrimSpace(`HARNESS MODE: inspect
 INSPECT SCOPE: focused-files
 This is a read-only inspection turn.
+EVIDENCE_MIN_READS: 1
+TOPIC: python-review
 USER REQUEST:
 check the py files`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(executed, ","); got != "glob" {
+	if got := strings.Join(executed, ","); got != "glob,read_file:alpha.py" {
 		t.Fatalf("expected only first inspect tool call to execute, got %q", got)
 	}
 }
@@ -966,6 +978,7 @@ func TestHarnessInspectTurnSalvagesLaterToolCallsWithoutRetryTax(t *testing.T) {
 		responses: []string{
 			"<tool_call>\n{\"name\": \"glob\", \"args\": {\"pattern\": \"**/*.py\", \"path\": \".\"}}\n</tool_call>",
 			"<tool_call>\n{\"name\": \"read_file\", \"args\": {\"path\": \"alpha.py\"}}\n</tool_call>\n<tool_call>\n{\"name\": \"read_file\", \"args\": {\"path\": \"beta.py\"}}\n</tool_call>\nI inspected enough to answer now.",
+			"<tool_call>\n{\"name\": \"read_file\", \"args\": {\"path\": \"beta.py\"}}\n</tool_call>",
 			"Alpha and beta look like ad hoc scripts with no shared project structure.",
 		},
 		checks: []func([]llm.Message) error{
@@ -1022,7 +1035,7 @@ check the py files`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(executed, ","); got != "glob,read_file:alpha.py" {
+	if got := strings.Join(executed, ","); got != "glob,read_file:alpha.py,read_file:beta.py" {
 		t.Fatalf("expected inspect turn to serialize tool calls, got %q", got)
 	}
 	if got := output.String(); strings.Contains(got, "I inspected enough to answer now.") {
@@ -1034,9 +1047,9 @@ func TestHarnessInspectTurnClearsResolvedInspectNudges(t *testing.T) {
 	dir := t.TempDir()
 	driver := &inspectingDriver{
 		responses: []string{
-			"I should inspect the repo before answering.",
+			"I should inspect the directory before answering.",
 			"<tool_call>\n{\"name\": \"list_dir\", \"args\": {\"path\": \".\", \"recursive\": false}}\n</tool_call>",
-			"Repo root inspected.",
+			"Directory root inspected.",
 		},
 		checks: []func([]llm.Message) error{
 			nil,
@@ -1071,7 +1084,7 @@ func TestHarnessInspectTurnClearsResolvedInspectNudges(t *testing.T) {
 		Name:        "list_dir",
 		Description: "List dir",
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
-			return "README.md\ninternal/", nil
+			return "README.md", nil
 		},
 	})
 
@@ -1080,14 +1093,14 @@ func TestHarnessInspectTurnClearsResolvedInspectNudges(t *testing.T) {
 	a := NewAgent(driver, reg, YoloApproval(), dir, 10, renderer, nil, nil)
 
 	err := a.Run(context.Background(), strings.TrimSpace(`HARNESS MODE: inspect
-INSPECT SCOPE: repository
+INSPECT SCOPE: directory
 This is a read-only inspection turn.
 USER REQUEST:
-check the repo`))
+check the directory`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := output.String(); !strings.Contains(got, "Repo root inspected.") {
+	if got := output.String(); !strings.Contains(got, "Directory root inspected.") {
 		t.Fatalf("final inspect answer missing: %q", got)
 	}
 }

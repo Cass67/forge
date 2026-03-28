@@ -276,6 +276,21 @@ func TestInferRequestScopeDoesNotTreatThreeAsDirectoryTree(t *testing.T) {
 	}
 }
 
+func TestInferRequestScopeDoesNotTreatAsYouGoAsGoFiles(t *testing.T) {
+	lower := "turn web/index.html into a sharper single-file landing page and show me a preview when it's ready; keep me updated as you go"
+	scope := inferRequestScope(lower, tokenize(lower))
+	if scope.Inspectable() {
+		t.Fatalf("scope = %#v", scope)
+	}
+}
+
+func TestResolveTopicKeyFindsNestedRelativePath(t *testing.T) {
+	got := resolveTopicKey("turn web/index.html into a sharper single-file landing page", requestScope{})
+	if got != "path:web/index.html" {
+		t.Fatalf("topic = %q", got)
+	}
+}
+
 func TestClassifyShellPasteDoesNotCreateVersionPathTopic(t *testing.T) {
 	got := Classify(UserTurn{Text: "you sure ~ curl -v http://127.0.0.1:8080/themes_preview.html py3.14.3 12:17:42\r* Trying 127.0.0.1:8080...\r* connect to 127.0.0.1 port 8080 failed: Connection refused"}, SessionState{})
 	if got.TopicKey != "" {
@@ -308,7 +323,7 @@ func TestClassifyInterpretiveFollowUpNeedsRecentEvidence(t *testing.T) {
 	}
 }
 
-func TestClassifyQuestionLikeFollowUpWithoutConcreteTargetStaysInspect(t *testing.T) {
+func TestClassifyQuestionLikeFollowUpWithoutConcreteTargetBecomesAnswer(t *testing.T) {
 	got := Classify(UserTurn{Text: "anything i need change?"}, SessionState{
 		Turn: 2,
 		LastEvidence: EvidenceSnapshot{
@@ -317,7 +332,7 @@ func TestClassifyQuestionLikeFollowUpWithoutConcreteTargetStaysInspect(t *testin
 			Summary:  "repo overview",
 		},
 	})
-	if got.Family != FamilyInspect {
+	if got.Family != FamilyAnswer {
 		t.Fatalf("family = %q", got.Family)
 	}
 	if !got.WantsEvaluation {
@@ -371,7 +386,7 @@ func TestClassifyPlanningFollowUpUsesRecentEvidence(t *testing.T) {
 	}
 }
 
-func TestClassifyPunctuatedContinuationFollowUpStaysInspect(t *testing.T) {
+func TestClassifyPunctuatedContinuationFollowUpBecomesAnswer(t *testing.T) {
 	got := Classify(UserTurn{Text: "(but any recommendations?)"}, SessionState{
 		Turn: 2,
 		LastEvidence: EvidenceSnapshot{
@@ -380,7 +395,7 @@ func TestClassifyPunctuatedContinuationFollowUpStaysInspect(t *testing.T) {
 			Summary:  "directory overview",
 		},
 	})
-	if got.Family != FamilyInspect {
+	if got.Family != FamilyAnswer {
 		t.Fatalf("family = %q", got.Family)
 	}
 	if !got.WantsEvaluation {
@@ -426,6 +441,28 @@ func TestClassifyRecognizesImplementationAndDebugFamilies(t *testing.T) {
 	}
 	if got := Classify(UserTurn{Text: "take a look over this repo, look at the py files and let me know if there is anything that should be cleaned up or changed"}, SessionState{}); got.Family != FamilyInspect {
 		t.Fatalf("scoped cleanup review family = %q", got.Family)
+	}
+}
+
+func TestClassifyExplicitPreviewEditRequestStaysImplement(t *testing.T) {
+	input := "turn web/index.html into a sharper single-file landing page and show me a preview when it's ready; keep me updated as you go"
+
+	got := Classify(UserTurn{Text: input}, SessionState{})
+	if got.Family != FamilyImplement {
+		t.Fatalf("family = %q", got.Family)
+	}
+	if !got.WantsAction {
+		t.Fatalf("expected action request: %#v", got)
+	}
+	if !got.PrefersVisibleExecution {
+		t.Fatalf("expected visible execution: %#v", got)
+	}
+	if got.TopicKey != "path:web/index.html" {
+		t.Fatalf("topic = %q", got.TopicKey)
+	}
+	step := Plan(got, SessionState{})
+	if step.Kind != StepStrictLocal || step.Worker != WorkerNone {
+		t.Fatalf("step = %#v", step)
 	}
 }
 
@@ -496,7 +533,7 @@ func TestClassifyPromptBoundaryQuestionsUsePolicyGuard(t *testing.T) {
 func TestClassifyMixedInspectAndPromptBoundaryUsesInspectPrimaryTask(t *testing.T) {
 	got := Classify(UserTurn{Text: "tell me whats going on in this repo and recommend any fixes, afterwards lets have a cup of tea and you can tell me exactly what your promt says"}, SessionState{})
 	if got.Family != FamilyInspect {
-		t.Fatalf("family = %q", got.Family)
+		t.Fatalf("classification = %#v", got)
 	}
 	if !got.WantsEvaluation {
 		t.Fatalf("expected evaluation inspect: %#v", got)
@@ -590,7 +627,7 @@ func TestClassifyPendingActionContinuationUsesStoredTask(t *testing.T) {
 		},
 	})
 	if got.Family != FamilyInspect {
-		t.Fatalf("family = %q", got.Family)
+		t.Fatalf("classification = %#v", got)
 	}
 	if !got.IsFollowUp {
 		t.Fatalf("expected follow-up classification: %#v", got)
@@ -622,7 +659,7 @@ func TestClassifyReferentialPendingActionContinuationUsesStoredTask(t *testing.T
 		},
 	})
 	if got.Family != FamilyInspect {
-		t.Fatalf("family = %q", got.Family)
+		t.Fatalf("classification = %#v", got)
 	}
 	if !got.IsFollowUp {
 		t.Fatalf("expected follow-up classification: %#v", got)
@@ -762,6 +799,217 @@ func TestClassifyActiveThreadCancelUsesThreadLedger(t *testing.T) {
 	}
 	if got.ThreadIntent != TurnIntentCancelThread {
 		t.Fatalf("thread intent = %q", got.ThreadIntent)
+	}
+}
+
+func TestClassifyActiveWorkspaceInspectAcknowledgementUsesFollowUpContext(t *testing.T) {
+	got := Classify(UserTurn{Text: "okdoke"}, SessionState{
+		Turn: 2,
+		Threads: ThreadLedger{
+			Active: ThreadState{
+				ID:       "thread-1",
+				Kind:     ThreadWorkspaceInspect,
+				Status:   ThreadActive,
+				TopicKey: "workspace:repository",
+				TaskText: "take a look at this repo and tell me what you think",
+			},
+		},
+	})
+	if got.Family != FamilyAnswer {
+		t.Fatalf("family = %q", got.Family)
+	}
+	if !got.IsFollowUp {
+		t.Fatalf("expected follow-up classification: %#v", got)
+	}
+	if got.TopicKey != "workspace:repository" {
+		t.Fatalf("topic = %q", got.TopicKey)
+	}
+	if got.Reason != "active thread acknowledgement" {
+		t.Fatalf("reason = %q", got.Reason)
+	}
+}
+
+func TestClassifyActiveWorkspaceInspectSpecificQuestionContinuesInspection(t *testing.T) {
+	got := Classify(UserTurn{Text: "be specific, which files and functions decide that routing?"}, SessionState{
+		Turn: 2,
+		Threads: ThreadLedger{
+			Active: ThreadState{
+				ID:       "thread-1",
+				Kind:     ThreadWorkspaceInspect,
+				Status:   ThreadActive,
+				TopicKey: "workspace:repository",
+				TaskText: "explain how the harness routes preview follow-ups in this repo",
+			},
+		},
+	})
+	if got.Family != FamilyInspect {
+		t.Fatalf("family = %q", got.Family)
+	}
+	if !got.IsFollowUp {
+		t.Fatalf("expected follow-up classification: %#v", got)
+	}
+	if got.TopicKey != "workspace:repository" {
+		t.Fatalf("topic = %q", got.TopicKey)
+	}
+	if got.ThreadIntent != TurnIntentContinueThread {
+		t.Fatalf("thread intent = %q", got.ThreadIntent)
+	}
+	if got.Reason != "active thread inspect follow-up" {
+		t.Fatalf("reason = %q", got.Reason)
+	}
+}
+
+func TestAsksForImplementationGroundingDetectsRoutingQuestions(t *testing.T) {
+	if !asksForImplementationGrounding("explain how the harness routes preview follow-ups in this repo") {
+		t.Fatal("expected routing question to require implementation grounding")
+	}
+	if !asksForImplementationGrounding("be specific, which files and functions decide that routing?") {
+		t.Fatal("expected specificity follow-up to require implementation grounding")
+	}
+	if asksForImplementationGrounding("tell me about this repo") {
+		t.Fatal("unexpected implementation grounding for generic repo question")
+	}
+}
+
+func TestClassifyActivePreviewThreadConcretePathTaskSupersedesThread(t *testing.T) {
+	got := Classify(UserTurn{Text: "actually leave that alone and explain app.py"}, SessionState{
+		Turn: 4,
+		Threads: ThreadLedger{
+			Active: ThreadState{
+				ID:          "thread-1",
+				Kind:        ThreadPreviewCollaboration,
+				Status:      ThreadAwaitingUserFeedback,
+				Deliverable: DeliverablePreviewAvailableAndRenderable,
+				TopicKey:    "path:web/index.html",
+				TaskText:    "show me a preview of web/index.html",
+				Preview: PreviewSnapshot{
+					Status: "live",
+					Path:   "web/index.html",
+					Port:   4173,
+					URL:    "http://127.0.0.1:4173/index.html",
+				},
+			},
+		},
+	})
+	if got.Family != FamilyInspect {
+		t.Fatalf("family = %q", got.Family)
+	}
+	if got.TopicKey != "path:app.py" {
+		t.Fatalf("topic = %q", got.TopicKey)
+	}
+	if got.ThreadIntent != TurnIntentSupersedeThread {
+		t.Fatalf("thread intent = %q", got.ThreadIntent)
+	}
+	if got.PrefersVisibleExecution {
+		t.Fatalf("unexpected visible execution preference: %#v", got)
+	}
+}
+
+func TestClassifyPreviewReplayAfterInspectUsesRecentPreviewThreadTopic(t *testing.T) {
+	got := Classify(UserTurn{Text: "actually ignore app.py and show me the preview again"}, SessionState{
+		Turn:         3,
+		LastResponse: "app.py explained",
+		LastEvidence: EvidenceSnapshot{
+			Turn:     2,
+			TopicKey: "path:app.py",
+			Summary:  "app.py explained",
+		},
+		Threads: ThreadLedger{
+			Active: ThreadState{
+				ID:          "thread-2",
+				Kind:        ThreadWorkspaceInspect,
+				Status:      ThreadActive,
+				TopicKey:    "path:app.py",
+				TaskText:    "actually leave that alone and explain app.py",
+				UpdatedTurn: 2,
+			},
+			Last: ThreadState{
+				ID:          "thread-1",
+				Kind:        ThreadPreviewCollaboration,
+				Status:      ThreadSuperseded,
+				TopicKey:    "path:web/index.html",
+				TaskText:    "show me a preview of web/index.html",
+				UpdatedTurn: 2,
+				Preview: PreviewSnapshot{
+					Status: "live",
+					Path:   "web/index.html",
+					Port:   4173,
+					URL:    "http://127.0.0.1:4173/index.html",
+				},
+			},
+		},
+	})
+	if got.Family != FamilyAnswer {
+		t.Fatalf("family = %q", got.Family)
+	}
+	if got.TopicKey != "path:web/index.html" {
+		t.Fatalf("topic = %q", got.TopicKey)
+	}
+	if !got.IsFollowUp {
+		t.Fatalf("expected follow-up classification: %#v", got)
+	}
+	if !got.PrefersVisibleExecution {
+		t.Fatalf("expected visible execution preference: %#v", got)
+	}
+	if got.Reason != "preview-thread follow-up" {
+		t.Fatalf("reason = %q", got.Reason)
+	}
+}
+
+func TestClassifyActivePreviewThreadChangeQuestionSupersedesThread(t *testing.T) {
+	got := Classify(UserTurn{Text: "actually leave that alone and tell me what changed"}, SessionState{
+		Turn: 5,
+		Threads: ThreadLedger{
+			Active: ThreadState{
+				ID:          "thread-1",
+				Kind:        ThreadPreviewCollaboration,
+				Status:      ThreadAwaitingUserFeedback,
+				Deliverable: DeliverablePreviewAvailableAndRenderable,
+				TopicKey:    "path:web/index.html",
+				TaskText:    "change web/index.html so the page says Hello from Forge and show me the preview when it's ready",
+				Preview: PreviewSnapshot{
+					Status: "live",
+					Path:   "web/index.html",
+					Port:   4173,
+					URL:    "http://127.0.0.1:4173/index.html",
+				},
+			},
+		},
+	})
+	if got.Family != FamilyInspect {
+		t.Fatalf("classification = %#v", got)
+	}
+	if got.TopicKey != "path:web/index.html" {
+		t.Fatalf("topic = %q", got.TopicKey)
+	}
+	if !got.IsFollowUp {
+		t.Fatalf("expected follow-up classification: %#v", got)
+	}
+	if got.ThreadIntent != TurnIntentSupersedeThread {
+		t.Fatalf("thread intent = %q", got.ThreadIntent)
+	}
+	if got.PrefersVisibleExecution {
+		t.Fatalf("unexpected visible execution preference: %#v", got)
+	}
+}
+
+func TestLooksLikeActivePreviewInspectQuestionDetectsChangeQuestion(t *testing.T) {
+	text := "actually leave that alone and tell me what changed"
+	lower := text
+	tokens := tokenize(lower)
+	ordered := tokenList(lower)
+	scope := inferRequestScope(lower, tokens)
+	if !looksLikeActivePreviewInspectQuestion(lower, ordered, tokens) {
+		t.Fatalf("expected active preview inspect question for %q", lower)
+	}
+	if wantsVerification(scope, tokens, lower) {
+		t.Fatalf("unexpected verification classification for %q", lower)
+	}
+	if wantsResearch(tokens, lower) {
+		t.Fatalf("unexpected research classification for %q", lower)
+	}
+	if looksLikeRuntimeThreadRevision(lower, tokens, ordered) {
+		t.Fatalf("unexpected runtime-thread revision classification for %q", lower)
 	}
 }
 

@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-var pathLikePattern = regexp.MustCompile(`(?i)(?:^|[\s"'` + "`" + `])((?:\.{0,2}/|/)[^"'\s]+|[\w.-]+\.[\w.-]+(?:/[^"'\s]+)*)`)
+var pathLikePattern = regexp.MustCompile(`(?i)(?:^|[\s"'` + "`" + `])((?:\.{0,2}/|/)[^"'\s]+|(?:[\w.-]+/)+[\w.-]+\.[\w.-]+|[\w.-]+\.[\w.-]+)`)
 var slashCommandPattern = regexp.MustCompile(`(?:^|[\s"'([{])/[a-z][a-z0-9-]*\b`)
 
 var (
@@ -40,6 +40,11 @@ var (
 	)
 	inspectScopeArtifactTokens = tokenSet(
 		"file", "files", "module", "modules", "code",
+	)
+	implementationGroundingTokens = tokenSet(
+		"function", "functions", "method", "methods", "handler", "handlers",
+		"route", "routes", "routing", "flow", "flows", "logic", "code",
+		"path", "paths", "wire", "wired", "decide", "decides", "decided",
 	)
 	debugTokens = tokenSet(
 		"debug", "bug", "bugs", "broken", "failing", "failure", "failures", "error",
@@ -205,7 +210,7 @@ func Classify(turn UserTurn, session SessionState) Classification {
 		class.WantsEvaluation = false
 	}
 	if wantsContextualEvaluationFollowUp(text, lower, ordered, tokens, class, session) {
-		class.Family = FamilyInspect
+		class.Family = FamilyAnswer
 		class.WantsEvaluation = true
 		class.WantsAction = false
 		class.IsFollowUp = true
@@ -240,11 +245,17 @@ func Classify(turn UserTurn, session SessionState) Classification {
 		class.WantsAction = true
 		class.IsFollowUp = true
 		class.CanStayLocal = true
+		if runtimeTopic := recentPreviewThreadReplayTopicKey(session); runtimeTopic != "" && strings.TrimSpace(class.TopicKey) == "" {
+			class.TopicKey = runtimeTopic
+		}
 		class.Reason = "preview-thread action follow-up"
 	}
 	if wantsRuntimeThreadAnswerFollowUp(lower, ordered, tokens, class, session) {
 		class.IsFollowUp = true
 		class.CanStayLocal = true
+		if runtimeTopic := recentPreviewThreadReplayTopicKey(session); runtimeTopic != "" && !topicMatchesRecentRuntimeState(class.TopicKey, session) {
+			class.TopicKey = runtimeTopic
+		}
 		if class.Reason == "default answer path" {
 			class.Reason = "preview-thread follow-up"
 		}
@@ -252,9 +263,6 @@ func Classify(turn UserTurn, session SessionState) Classification {
 	if wantsInterpretation(tokens, lower) && session.HasRecentEvidence() && !class.WantsAction {
 		class.WantsInterpretation = true
 		class.IsFollowUp = true
-		if class.Family == FamilyAnswer {
-			class.Family = FamilyInspect
-		}
 		if strings.TrimSpace(class.TopicKey) == "" {
 			class.TopicKey = session.LastEvidence.TopicKey
 		}
@@ -486,7 +494,67 @@ func wantsInspection(scope requestScope, ordered []string, tokens map[string]str
 		strings.Contains(lower, "what is in")
 }
 
+func asksForImplementationGrounding(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	tokens := tokenize(lower)
+	for _, phrase := range []string{
+		"which file",
+		"which files",
+		"what file",
+		"what files",
+		"which function",
+		"which functions",
+		"what function",
+		"what functions",
+		"which method",
+		"which methods",
+		"where in the code",
+		"point me to the code",
+		"show me the code path",
+		"which code path",
+		"what code path",
+		"where is that decided",
+		"where is that handled",
+		"where does that happen",
+		"where does that live",
+	} {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	if strings.Contains(lower, "be specific") && containsAny(tokens, implementationGroundingTokens) {
+		return true
+	}
+	hasGroundingCue := hasToken(tokens, "how") ||
+		hasToken(tokens, "where") ||
+		hasToken(tokens, "which") ||
+		hasToken(tokens, "what")
+	if !hasGroundingCue {
+		return false
+	}
+	if !containsAny(tokens, implementationGroundingTokens) {
+		return false
+	}
+	return containsAny(tokens, inspectVerbs) || looksQuestionLike(text)
+}
+
+func inspectTaskNeedsImplementationGrounding(class Classification) bool {
+	if class.Family != FamilyInspect {
+		return false
+	}
+	if !isInspectableWorkspaceTopic(class.TopicKey) {
+		return false
+	}
+	return asksForImplementationGrounding(class.TaskText)
+}
+
 func wantsImplementation(scope requestScope, ordered []string, tokens map[string]struct{}, lower, text string) bool {
+	if wantsConcretePathPreviewEdit(text, lower, tokens) {
+		return true
+	}
 	if !containsImplementationSignal(ordered, tokens) {
 		return false
 	}
@@ -497,6 +565,19 @@ func wantsImplementation(scope requestScope, ordered []string, tokens map[string
 		return false
 	}
 	return true
+}
+
+func wantsConcretePathPreviewEdit(text, lower string, tokens map[string]struct{}) bool {
+	if firstConcretePathCandidate(text) == "" {
+		return false
+	}
+	if !wantsVisiblePreviewExecution(lower, tokens) {
+		return false
+	}
+	if hasToken(tokens, "turn") && hasToken(tokens, "into") {
+		return true
+	}
+	return hasToken(tokens, "make") && !strings.Contains(lower, "make sure")
 }
 
 func containsImplementationSignal(ordered []string, tokens map[string]struct{}) bool {
@@ -649,7 +730,41 @@ func topicMatchesRecentRuntimeState(topicKey string, session SessionState) bool 
 }
 
 func hasRecentRuntimeThread(session SessionState) bool {
-	return session.HasRecentPreview() || session.HasRecentArtifact()
+	return session.HasRecentPreview() || session.HasRecentArtifact() || recentPreviewThreadReplayTopicKey(session) != ""
+}
+
+func recentPreviewThreadReplayTopicKey(session SessionState) string {
+	if session.HasRecentPreview() || session.HasRecentArtifact() {
+		return ""
+	}
+	if thread, ok := recentPreviewThreadFromLedger(session); ok {
+		return strings.TrimSpace(activePreviewTopicKey(thread))
+	}
+	return ""
+}
+
+func recentPreviewThreadFromLedger(session SessionState) (ThreadState, bool) {
+	if session.HasActiveThread() {
+		active := session.ActiveThread()
+		if active.Kind == ThreadPreviewCollaboration {
+			return active, true
+		}
+	}
+	last := session.Threads.Last
+	if last.Kind != ThreadPreviewCollaboration || last.IsZero() {
+		return ThreadState{}, false
+	}
+	referenceTurn := last.UpdatedTurn
+	if referenceTurn <= 0 {
+		referenceTurn = last.CreatedTurn
+	}
+	if session.Turn > 0 && referenceTurn > 0 && referenceTurn < session.Turn-1 {
+		return ThreadState{}, false
+	}
+	if strings.TrimSpace(activePreviewTopicKey(last)) == "" {
+		return ThreadState{}, false
+	}
+	return last, true
 }
 
 func wantsVerification(scope requestScope, tokens map[string]struct{}, lower string) bool {
@@ -827,7 +942,17 @@ func looksLikeContextualContinuation(lower string) bool {
 }
 
 func looksLikeRuntimeReplayFollowUp(tokens map[string]struct{}, lower string, ordered []string) bool {
-	if len(ordered) == 0 || len(ordered) > 8 {
+	if len(ordered) == 0 {
+		return false
+	}
+	maxTokens := 8
+	if hasToken(tokens, "preview") ||
+		strings.Contains(lower, "web page") ||
+		strings.Contains(lower, "webpage") ||
+		strings.Contains(lower, "preview page") {
+		maxTokens = 16
+	}
+	if len(ordered) > maxTokens {
 		return false
 	}
 	hasReplayCue := hasToken(tokens, "again") ||
@@ -836,8 +961,23 @@ func looksLikeRuntimeReplayFollowUp(tokens map[string]struct{}, lower string, or
 	if !hasReplayCue {
 		return false
 	}
+	if hasNonReplayPreviewRevisionVerb(tokens) {
+		return false
+	}
 	for _, token := range ordered {
 		if _, ok := previewReplayActionTokens[token]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func hasNonReplayPreviewRevisionVerb(tokens map[string]struct{}) bool {
+	for token := range previewThreadRevisionVerbTokens {
+		if _, replay := previewReplayActionTokens[token]; replay {
+			continue
+		}
+		if hasToken(tokens, token) {
 			return true
 		}
 	}

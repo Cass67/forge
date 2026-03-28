@@ -92,6 +92,9 @@ func largePromptStressCorpus() []stressFixture {
 	fixtures = append(fixtures, visibleCollaborationStressFixtures()...)
 	fixtures = append(fixtures, previewFollowUpStressFixtures()...)
 	fixtures = append(fixtures, previewThreadRevisionStressFixtures()...)
+	fixtures = append(fixtures, previewThreadInspectFollowUpStressFixtures()...)
+	fixtures = append(fixtures, inspectThreadSpecificityFollowUpStressFixtures()...)
+	fixtures = append(fixtures, pathPreviewEditStressFixtures()...)
 	fixtures = append(fixtures, planningFollowUpStressFixtures()...)
 	fixtures = append(fixtures, actionFollowUpStressFixtures()...)
 	fixtures = append(fixtures, collaborativeIdeationStressFixtures()...)
@@ -388,6 +391,129 @@ func previewThreadRevisionStressFixtures() []stressFixture {
 			WantPolicyGuard: false,
 			WantTerseAnswer: false,
 			WantStep:        StepStrictLocal,
+			WantWorker:      WorkerNone,
+		})
+	}
+
+	return fixtures
+}
+
+func pathPreviewEditStressFixtures() []stressFixture {
+	inputs := []string{
+		"turn web/index.html into a sharper single-file landing page and show me a preview when it's ready; keep me updated as you go",
+		"make web/index.html feel more polished and show me a preview when it's ready",
+	}
+	fixtures := make([]stressFixture, 0, len(inputs))
+	for idx, input := range inputs {
+		fixtures = append(fixtures, stressFixture{
+			Name:            fmt.Sprintf("path-preview-edit/%03d", idx+1),
+			Category:        "path-preview-edit",
+			Input:           input,
+			WantFamily:      FamilyImplement,
+			WantTopicKey:    "path:web/index.html",
+			WantEvaluation:  false,
+			WantAction:      true,
+			WantFollowUp:    false,
+			WantPolicyGuard: false,
+			WantTerseAnswer: false,
+			WantStep:        StepStrictLocal,
+			WantWorker:      WorkerNone,
+		})
+	}
+	return fixtures
+}
+
+func previewThreadInspectFollowUpStressFixtures() []stressFixture {
+	session := SessionState{
+		Turn: 2,
+		Threads: ThreadLedger{
+			Active: ThreadState{
+				ID:          "thread-1",
+				Kind:        ThreadPreviewCollaboration,
+				Status:      ThreadAwaitingUserFeedback,
+				Deliverable: DeliverablePreviewAvailableAndRenderable,
+				TopicKey:    "path:web/index.html",
+				TaskText:    "change web/index.html so the page says Hello from Forge and show me the preview when it's ready",
+				Preview: PreviewSnapshot{
+					Status: "live",
+					Path:   "web/index.html",
+					Port:   4173,
+					URL:    "http://127.0.0.1:4173/index.html",
+				},
+			},
+		},
+	}
+
+	inputs := []string{
+		"actually leave that alone and tell me what changed",
+		"what changed",
+		"what did you change",
+		"show me the diff",
+		"explain the changes you made",
+	}
+
+	fixtures := make([]stressFixture, 0, len(inputs))
+	for idx, input := range inputs {
+		fixtures = append(fixtures, stressFixture{
+			Name:            fmt.Sprintf("preview-thread-inspect/%03d", idx+1),
+			Category:        "preview-thread-inspect",
+			Input:           input,
+			Session:         session,
+			WantFamily:      FamilyInspect,
+			WantTopicKey:    "path:web/index.html",
+			WantEvaluation:  false,
+			WantAction:      false,
+			WantFollowUp:    true,
+			WantPolicyGuard: false,
+			WantTerseAnswer: false,
+			WantStep:        StepLocal,
+			WantWorker:      WorkerNone,
+		})
+	}
+
+	return fixtures
+}
+
+func inspectThreadSpecificityFollowUpStressFixtures() []stressFixture {
+	session := SessionState{
+		Turn: 2,
+		Threads: ThreadLedger{
+			Active: ThreadState{
+				ID:          "thread-1",
+				Kind:        ThreadWorkspaceInspect,
+				Status:      ThreadActive,
+				TopicKey:    "workspace:repository",
+				TaskText:    "explain how the harness routes preview follow-ups in this repo",
+				UpdatedTurn: 1,
+			},
+		},
+		LastEvidence: EvidenceSnapshot{
+			Turn:     1,
+			TopicKey: "workspace:repository",
+			Summary:  "Preview follow-ups are handled in the harness.",
+		},
+	}
+
+	inputs := []string{
+		"be specific, which files and functions decide that routing?",
+		"point me to the code path that does that",
+	}
+
+	fixtures := make([]stressFixture, 0, len(inputs))
+	for idx, input := range inputs {
+		fixtures = append(fixtures, stressFixture{
+			Name:            fmt.Sprintf("inspect-thread-specificity/%03d", idx+1),
+			Category:        "inspect-thread-specificity",
+			Input:           input,
+			Session:         session,
+			WantFamily:      FamilyInspect,
+			WantTopicKey:    "workspace:repository",
+			WantEvaluation:  false,
+			WantAction:      false,
+			WantFollowUp:    true,
+			WantPolicyGuard: false,
+			WantTerseAnswer: false,
+			WantStep:        StepLocal,
 			WantWorker:      WorkerNone,
 		})
 	}
