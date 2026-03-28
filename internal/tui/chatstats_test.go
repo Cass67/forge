@@ -220,15 +220,15 @@ func TestRenderStatusHeaderUsesSplitRailCardAtWideWidths(t *testing.T) {
 	}
 }
 
-func TestRenderForgeWordmarkUsesTrafficLightColors(t *testing.T) {
+func TestRenderForgeWordmarkUsesSingleAccentColor(t *testing.T) {
 	withTrueColorProfile(t)
 
 	theme := lookupThemeForTest(t, "default")
 	wordmark := renderForgeWordmark(theme)
 
-	assertStyledSubstring(t, wordmark, "O", theme.Success)
-	assertStyledSubstring(t, wordmark, "R", theme.Warning)
-	assertStyledSubstring(t, wordmark, "G", theme.Error)
+	for _, letter := range []string{"F", "O", "R", "G", "E"} {
+		assertStyledSubstring(t, wordmark, letter, theme.AccentPrimary)
+	}
 }
 
 func TestRenderStatusHeaderFallsBackAcrossWidths(t *testing.T) {
