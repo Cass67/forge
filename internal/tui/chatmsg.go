@@ -107,12 +107,10 @@ func renderMessageHeader(header string, width int, theme chatTheme, accent lipgl
 }
 
 func renderMessageSeparator(width int, theme chatTheme) string {
-	ruleWidth := min(24, max(6, width/5))
 	return lipgloss.NewStyle().
 		Foreground(theme.Border).
 		Background(theme.AppBG).
-		Width(width).
-		Render("  " + strings.Repeat("─", ruleWidth))
+		Render("  ·")
 }
 
 func indentRenderedBlock(text, prefix string) string {
