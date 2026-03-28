@@ -182,17 +182,55 @@ func TestChatModelHandlesToolCallEvent(t *testing.T) {
 	m.width = 80
 	m.height = 24
 
-	ev := llm.Event{Kind: llm.EventToolCall, Text: "read_file", Content: `{"path":"main.go"}`}
+	ev := llm.Event{Kind: llm.EventToolCall, Agent: "read_file", Text: "main.go"}
 	updated, _ := m.Update(ev)
 	m = updated.(ChatModel)
 
 	if m.renderedToolsBuf() == "" {
 		t.Fatal("expected tools buffer to have content")
 	}
+	if len(m.messages) == 0 || m.messages[len(m.messages)-1].Kind != MsgWorking {
+		t.Fatalf("expected inline working message for tool call: %#v", m.messages)
+	}
+	if !strings.Contains(m.messages[len(m.messages)-1].Content, "Reading main.go") {
+		t.Fatalf("unexpected inline working message for tool call: %#v", m.messages[len(m.messages)-1])
+	}
+}
+
+func TestChatModelToolCallEventWithoutAgentSkipsWorkingActivity(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp", DebugEnabled: true})
+	m.width = 80
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventToolCall, Text: "read_file"})
+	m = updated.(ChatModel)
+
 	for _, msg := range m.messages {
 		if msg.Kind == MsgWorking {
-			t.Fatalf("unexpected inline working message for tool call: %#v", msg)
+			t.Fatalf("unexpected inline working message without tool agent: %#v", msg)
 		}
+	}
+}
+
+func TestChatModelToolCallCheckpointsPreviousMilestone(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "read_file", Text: "README.md"})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "read_file", Text: "AGENTS.md"})
+	m = updated.(ChatModel)
+
+	if len(m.messages) < 2 {
+		t.Fatalf("expected checkpoint + active working message, got %#v", m.messages)
+	}
+	if m.messages[0].Kind != MsgStatus || !strings.Contains(m.messages[0].Content, "Reading README.md") {
+		t.Fatalf("expected checkpoint status for first milestone, got %#v", m.messages[0])
+	}
+	last := m.messages[len(m.messages)-1]
+	if last.Kind != MsgWorking || !strings.Contains(last.Content, "Reading AGENTS.md") {
+		t.Fatalf("expected active working milestone, got %#v", last)
 	}
 }
 
@@ -1457,7 +1495,7 @@ func TestChatModelToolCallShowsWorkingActivityWithoutDebug(t *testing.T) {
 	if len(m.messages) == 0 || m.messages[len(m.messages)-1].Kind != MsgWorking {
 		t.Fatalf("expected progress status activity row, got %#v", m.messages)
 	}
-	if !strings.Contains(m.messages[len(m.messages)-1].Content, "read_file: inspect main.go") {
+	if !strings.Contains(m.messages[len(m.messages)-1].Content, "Reading inspect main.go") {
 		t.Fatalf("unexpected working activity: %#v", m.messages[len(m.messages)-1])
 	}
 }

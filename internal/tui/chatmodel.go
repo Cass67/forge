@@ -1341,8 +1341,11 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		if strings.TrimSpace(ev.Agent) != "" {
 			m.lastToolSummary[strings.TrimSpace(ev.Agent)] = strings.TrimSpace(ev.Text)
 		}
+		if line := m.toolCallProgressLine(ev); line != "" {
+			m.checkpointWorkingProgressBefore(line)
+			m.UpdateRecentActivity("", line)
+		}
 		if !m.debugEnabled {
-			m.UpdateRecentActivity("", fmt.Sprintf("%s: %s", ev.Agent, ev.Text))
 			return m, nil
 		}
 		sec := m.currentToolsSection("")
@@ -1458,7 +1461,9 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		}
 		return m, m.beginProviderDiagnosticsFetch(false)
 	case llm.EventProgress:
-		m.UpdateRecentActivity(ev.Agent, ev.Text)
+		if line := m.progressEventLine(ev); line != "" {
+			m.UpdateRecentActivity(ev.Agent, line)
+		}
 	}
 	// Auto-scroll tools pane when content is added.
 	if ev.Kind == llm.EventToolCall || ev.Kind == llm.EventToolResult || ev.Kind == llm.EventStats {
@@ -4339,12 +4344,55 @@ func combineProgressNarrative(current, next string) string {
 	return merged
 }
 
+func (m ChatModel) progressEventLine(ev llm.Event) string {
+	line := normalizeProgressMessage(ev.Text)
+	if line == "" {
+		return ""
+	}
+	if !isGenericProgressLine(line) {
+		return line
+	}
+	if !m.hasLiveWorkingMessage() {
+		return line
+	}
+	current := strings.TrimSpace(m.messages[m.recentActivityIndex].Content)
+	if current == "" {
+		return line
+	}
+	if !isGenericProgressLine(current) {
+		return ""
+	}
+	if strings.EqualFold(current, line) {
+		return ""
+	}
+	return ""
+}
+
+func (m *ChatModel) checkpointWorkingProgressBefore(next string) {
+	next = strings.TrimSpace(next)
+	if next == "" || isGenericProgressLine(next) {
+		return
+	}
+	if !m.hasLiveWorkingMessage() {
+		return
+	}
+	current := strings.TrimSpace(m.messages[m.recentActivityIndex].Content)
+	if current == "" || strings.EqualFold(current, next) || isGenericProgressLine(current) {
+		return
+	}
+	m.archiveWorkingMessage()
+}
+
 func isGenericProgressLine(content string) bool {
 	lower := strings.ToLower(strings.TrimSpace(content))
 	switch {
+	case strings.Contains(lower, "getting the lay of the land"):
+		return true
 	case strings.HasPrefix(lower, "starting analysis pass"):
 		return true
 	case strings.Contains(lower, "surveying the repository"):
+		return true
+	case strings.Contains(lower, "reviewing the repository structure"):
 		return true
 	case strings.Contains(lower, "connecting findings"):
 		return true
@@ -4352,11 +4400,35 @@ func isGenericProgressLine(content string) bool {
 		return true
 	case strings.Contains(lower, "cross-checking the repository scan results"):
 		return true
+	case strings.Contains(lower, "cross-checking") && strings.Contains(lower, "for consistency"):
+		return true
 	case strings.Contains(lower, "synthesizing findings"):
+		return true
+	case strings.Contains(lower, "turning ") && strings.Contains(lower, " into concrete recommendations"):
 		return true
 	case strings.Contains(lower, "drafting the response"):
 		return true
 	case strings.Contains(lower, "refining the response"):
+		return true
+	case strings.Contains(lower, "still working on your request"):
+		return true
+	case strings.Contains(lower, "continuing to process your request"):
+		return true
+	case strings.Contains(lower, "no action needed yet"):
+		return true
+	case strings.Contains(lower, "still analyzing repository details"):
+		return true
+	case strings.Contains(lower, "model is planning the first execution step"):
+		return true
+	case strings.Contains(lower, "model is planning the next execution step"):
+		return true
+	case strings.Contains(lower, "still waiting for model output on this step"):
+		return true
+	case strings.Contains(lower, "model is still reasoning through this step"):
+		return true
+	case strings.Contains(lower, "longer than usual, still waiting on model output"):
+		return true
+	case strings.Contains(lower, "reviewing the model response"):
 		return true
 	default:
 		return false
@@ -4416,4 +4488,50 @@ func (m ChatModel) toolResultProgressLine(ev llm.Event) string {
 	// Non-error tool completions are usually noise in the main pane because
 	// corresponding tool-call progress already appeared.
 	return ""
+}
+
+func (m ChatModel) toolCallProgressLine(ev llm.Event) string {
+	agent := strings.TrimSpace(ev.Agent)
+	if agent == "" {
+		return ""
+	}
+	summary := compactStatusText(ev.Text)
+	switch agent {
+	case "read_file", "artifact_read":
+		if summary == "" {
+			return "Reading a file for context"
+		}
+		return fmt.Sprintf("Reading %s", summary)
+	case "list_dir":
+		if summary == "" || summary == "." {
+			return "Scanning the workspace layout"
+		}
+		return fmt.Sprintf("Scanning %s", summary)
+	case "search":
+		if summary == "" {
+			return "Searching the repository"
+		}
+		return fmt.Sprintf("Searching for %s", summary)
+	case "glob":
+		if summary == "" {
+			return "Finding relevant files"
+		}
+		return fmt.Sprintf("Finding files matching %s", summary)
+	case "git_status":
+		return "Checking current git status"
+	case "git_log":
+		return "Reviewing recent commits"
+	case "git_diff":
+		return "Reviewing current diff"
+	case "run_command":
+		if summary == "" {
+			return "Running a command"
+		}
+		return fmt.Sprintf("Running %s", summary)
+	default:
+		if summary == "" {
+			return ""
+		}
+		return fmt.Sprintf("%s: %s", agent, summary)
+	}
 }
