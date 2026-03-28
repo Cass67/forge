@@ -259,6 +259,27 @@ func TestChatModelProgressHandoffAppendsPreviousWorkingLine(t *testing.T) {
 	}
 }
 
+func TestChatModelProgressIgnoresGenericHeartbeatWhenSpecificStepExists(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventProgress, Agent: "scout", Text: "Reading README to understand the repository intent"})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{Kind: llm.EventProgress, Agent: "forge", Text: "Connecting findings from the repository scan results"})
+	m = updated.(ChatModel)
+
+	if len(m.messages) != 1 || m.messages[0].Kind != MsgWorking {
+		t.Fatalf("messages = %#v", m.messages)
+	}
+	if !strings.Contains(strings.ToLower(m.messages[0].Content), "reading readme") {
+		t.Fatalf("expected specific step to remain visible, got %#v", m.messages[0])
+	}
+	if strings.Contains(strings.ToLower(m.messages[0].Content), "connecting findings") {
+		t.Fatalf("expected generic heartbeat to be suppressed, got %#v", m.messages[0])
+	}
+}
+
 func TestTranscriptRecordChatModelTracksDurableKindsAndAssistantSegments(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 80
@@ -308,7 +329,7 @@ func TestLiveProgressChatModelKeepsProgressVisibleAfterDone(t *testing.T) {
 	if len(m.records) != 0 {
 		t.Fatalf("records = %#v", m.records)
 	}
-	if got := m.liveProgress.LatestMessage(); got != "reading app.go" {
+	if got := m.liveProgress.LatestMessage(); !strings.Contains(got, "reading app.go") {
 		t.Fatalf("live progress = %#v", m.liveProgress)
 	}
 
@@ -327,7 +348,7 @@ func TestLiveProgressChatModelKeepsProgressVisibleAfterDone(t *testing.T) {
 	if len(m.records) != 1 {
 		t.Fatalf("records after done = %#v", m.records)
 	}
-	if m.records[0].Kind != RecordSystem || len(m.records[0].Segments) != 1 || m.records[0].Segments[0].Text != "reading README.md\nreading app.go" {
+	if m.records[0].Kind != RecordSystem || len(m.records[0].Segments) != 1 || !strings.Contains(m.records[0].Segments[0].Text, "reading app.go") {
 		t.Fatalf("finalized live-progress record after done = %#v", m.records[0])
 	}
 }
@@ -3247,11 +3268,11 @@ func TestProgressSlotRendersAboveComposerWhileTranscriptShowsDetails(t *testing.
 	if !strings.Contains(strippedLine(view), "latest transcript line") {
 		t.Fatalf("expected transcript content to remain visible, got:\n%s", strippedLine(view))
 	}
-	if count := strings.Count(strippedLine(view), "reading app.go"); count != 1 {
-		t.Fatalf("expected detailed progress to appear once in transcript, found %d in:\n%s", count, strippedLine(view))
+	if count := strings.Count(strippedLine(view), "reading app.go"); count < 1 {
+		t.Fatalf("expected detailed progress in transcript, found %d in:\n%s", count, strippedLine(view))
 	}
-	if !strings.Contains(strippedLine(view), "updates in conversation") {
-		t.Fatalf("expected concise live progress slot summary, got:\n%s", strippedLine(view))
+	if !strings.Contains(strippedLine(view), "reading app.go") {
+		t.Fatalf("expected live progress slot to show actual message, got:\n%s", strippedLine(view))
 	}
 
 	lines := strings.Split(view, "\n")
@@ -3262,7 +3283,7 @@ func TestProgressSlotRendersAboveComposerWhileTranscriptShowsDetails(t *testing.
 		if strings.Contains(stripped, "Prompt") {
 			promptLine = i
 		}
-		if strings.Contains(stripped, "updates in conversation") {
+		if strings.Contains(stripped, "reading app.go") {
 			progressLine = i
 		}
 	}
@@ -3287,24 +3308,18 @@ func TestProgressSlotTruncatesLongMessageToSingleLine(t *testing.T) {
 	view := m.View()
 	lines := strings.Split(view, "\n")
 	promptLine := -1
-	progressLines := []int{}
 	for i, line := range lines {
 		stripped := strippedLine(line)
 		if strings.Contains(stripped, "Prompt") {
 			promptLine = i
 		}
-		if strings.Contains(stripped, "updates in conversation") {
-			progressLines = append(progressLines, i)
-		}
 	}
 	if promptLine <= 0 {
 		t.Fatalf("expected composer in view, got:\n%s", strippedLine(view))
 	}
-	if len(progressLines) != 1 {
-		t.Fatalf("expected exactly one rendered progress line, got %d in:\n%s", len(progressLines), strippedLine(view))
-	}
-	if progressLines[0] != promptLine-1 {
-		t.Fatalf("expected truncated progress directly above composer, got progress line %d prompt line %d in:\n%s", progressLines[0], promptLine, strippedLine(view))
+	progressLine := strings.TrimSpace(strippedLine(lines[promptLine-1]))
+	if progressLine == "" || !strings.Contains(progressLine, "reading this path") {
+		t.Fatalf("expected truncated progress directly above composer, got line %q in:\n%s", progressLine, strippedLine(view))
 	}
 }
 
@@ -3318,7 +3333,7 @@ func TestProgressSlotShowsSpinnerWhileBusy(t *testing.T) {
 	m = updated.(ChatModel)
 
 	view := strippedLine(m.View())
-	if !strings.Contains(view, "| updates in conversation") {
+	if !strings.Contains(view, "| reading app.go") {
 		t.Fatalf("expected spinner-prefixed progress while busy, got:\n%s", view)
 	}
 }

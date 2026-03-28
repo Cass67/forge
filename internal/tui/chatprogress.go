@@ -30,6 +30,12 @@ func (s LiveProgressState) Apply(update ProgressUpdate) LiveProgressState {
 	if next.ReplaceKey == "" {
 		next.ReplaceKey = s.ReplaceKey
 	}
+	if next.ReplaceKey != "" && next.ReplaceKey == s.ReplaceKey && len(next.Entries) > 0 {
+		if next.Entries[len(next.Entries)-1] != message {
+			next.Entries[len(next.Entries)-1] = message
+		}
+		return next
+	}
 	if len(next.Entries) == 0 || next.Entries[len(next.Entries)-1] != message {
 		next.Entries = append(next.Entries, message)
 	}

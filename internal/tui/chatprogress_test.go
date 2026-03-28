@@ -2,14 +2,14 @@ package tui
 
 import "testing"
 
-func TestLiveProgressAccumulatesDistinctMessages(t *testing.T) {
+func TestLiveProgressReplacesLatestMessageWithinActiveTrack(t *testing.T) {
 	slot := LiveProgressState{}
 	slot = slot.Apply(ProgressUpdate{TurnID: 3, ReplaceKey: "active", Message: "reviewing the repo"})
 	slot = slot.Apply(ProgressUpdate{TurnID: 3, ReplaceKey: "active", Message: "checking tests"})
 	if slot.LatestMessage() != "checking tests" {
 		t.Fatalf("slot = %#v", slot)
 	}
-	if got := slot.RenderMessage(); got != "reviewing the repo\nchecking tests" {
+	if got := slot.RenderMessage(); got != "checking tests" {
 		t.Fatalf("slot = %#v", slot)
 	}
 }
