@@ -2,6 +2,7 @@ package harness
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -30,7 +31,28 @@ func classifyActiveThreadTurn(text string, session SessionState) (Classification
 	}
 
 	if active.Kind != ThreadPreviewCollaboration {
+		if !session.HasPendingAction() && activeThreadSupportsAcknowledgementFollowUp(active.Kind) && looksLikeActiveThreadAcknowledgement(text, lower, ordered, tokens) {
+			return Classification{
+				Family:       FamilyAnswer,
+				CanStayLocal: true,
+				IsFollowUp:   true,
+				TopicKey:     strings.TrimSpace(active.TopicKey),
+				TaskText:     strings.TrimSpace(text),
+				Reason:       "active thread acknowledgement",
+			}, true
+		}
+		if class, ok := classifyActiveWorkspaceInspectFollowUp(text, lower, ordered, tokens, scope, active); ok {
+			return class, true
+		}
 		return Classification{}, false
+	}
+
+	if class, ok := classifyActivePreviewSupersedingTask(text, lower, ordered, tokens, scope, active); ok {
+		return class, true
+	}
+
+	if class, ok := classifyActivePreviewInspectFollowUp(text, lower, ordered, tokens, scope, active); ok {
+		return class, true
 	}
 
 	if looksLikeActivePreviewReplay(lower, tokens, ordered) {
@@ -71,6 +93,116 @@ func classifyActiveThreadTurn(text string, session SessionState) (Classification
 	return Classification{}, false
 }
 
+func classifyActivePreviewSupersedingTask(text, lower string, ordered []string, tokens map[string]struct{}, scope requestScope, active ThreadState) (Classification, bool) {
+	candidate := firstConcretePathCandidate(text)
+	if candidate == "" {
+		return Classification{}, false
+	}
+
+	topicKey := "path:" + filepath.Clean(candidate)
+	if topicKey == activePreviewTopicKey(active) {
+		return Classification{}, false
+	}
+
+	class := Classification{
+		Family:       FamilyInspect,
+		CanStayLocal: true,
+		TopicKey:     topicKey,
+		TaskText:     strings.TrimSpace(text),
+		ThreadIntent: TurnIntentSupersedeThread,
+		Reason:       "active thread supersede task",
+	}
+	if wantsImplementation(scope, ordered, tokens, lower, text) {
+		class.Family = FamilyImplement
+		class.WantsAction = true
+	} else if containsAny(tokens, debugTokens) {
+		class.Family = FamilyDebug
+		class.WantsAction = true
+	} else if wantsVerification(scope, tokens, lower) {
+		class.Family = FamilyVerify
+		class.WantsAction = true
+	} else if wantsResearch(tokens, lower) {
+		class.Family = FamilyResearch
+		class.NeedsExternalSources = true
+		class.CanStayLocal = false
+	}
+	class.WantsEvaluation = wantsEvaluation(tokens, lower)
+	class.PrefersVisibleExecution = prefersVisibleExecution(lower, tokens)
+	return class, true
+}
+
+func classifyActiveWorkspaceInspectFollowUp(text, lower string, ordered []string, tokens map[string]struct{}, scope requestScope, active ThreadState) (Classification, bool) {
+	if active.Kind != ThreadWorkspaceInspect {
+		return Classification{}, false
+	}
+	if strings.TrimSpace(active.TopicKey) == "" || firstConcretePathCandidate(text) != "" {
+		return Classification{}, false
+	}
+	if !asksForImplementationGrounding(text) {
+		return Classification{}, false
+	}
+	if containsAny(tokens, debugTokens) || wantsVerification(scope, tokens, lower) || wantsResearch(tokens, lower) || wantsImplementation(scope, ordered, tokens, lower, text) {
+		return Classification{}, false
+	}
+	return Classification{
+		Family:       FamilyInspect,
+		CanStayLocal: true,
+		IsFollowUp:   true,
+		TopicKey:     strings.TrimSpace(active.TopicKey),
+		TaskText:     strings.TrimSpace(text),
+		ThreadIntent: TurnIntentContinueThread,
+		Reason:       "active thread inspect follow-up",
+	}, true
+}
+
+func classifyActivePreviewInspectFollowUp(text, lower string, ordered []string, tokens map[string]struct{}, scope requestScope, active ThreadState) (Classification, bool) {
+	topicKey := strings.TrimSpace(activePreviewTopicKey(active))
+	if topicKey == "" {
+		return Classification{}, false
+	}
+	if !looksLikeActivePreviewInspectQuestion(lower, ordered, tokens) {
+		return Classification{}, false
+	}
+	if !strings.Contains(lower, "diff") &&
+		looksLikeRuntimeThreadRevision(lower, tokens, ordered) {
+		return Classification{}, false
+	}
+	if containsAny(tokens, debugTokens) || wantsVerification(scope, tokens, lower) || wantsResearch(tokens, lower) {
+		return Classification{}, false
+	}
+	return Classification{
+		Family:       FamilyInspect,
+		CanStayLocal: true,
+		IsFollowUp:   true,
+		TopicKey:     topicKey,
+		TaskText:     strings.TrimSpace(text),
+		ThreadIntent: TurnIntentSupersedeThread,
+		Reason:       "active thread supersede inspect follow-up",
+	}, true
+}
+
+func activePreviewTopicKey(active ThreadState) string {
+	if topic := strings.TrimSpace(active.TopicKey); topic != "" {
+		return topic
+	}
+	if path := strings.TrimSpace(active.Preview.Path); path != "" {
+		return "path:" + filepath.Clean(path)
+	}
+	if path := strings.TrimSpace(active.Artifact.Path); path != "" {
+		return "path:" + filepath.Clean(path)
+	}
+	return ""
+}
+
+func activeThreadSupportsAcknowledgementFollowUp(kind ThreadKind) bool {
+	switch kind {
+	case ThreadWorkspaceInspect, ThreadWorkspaceChange, ThreadVerification, ThreadExternalResearch:
+		return true
+	default:
+		return false
+	}
+}
+
 func looksLikeThreadCancellation(lower string, tokens map[string]struct{}, ordered []string) bool {
 	if len(ordered) == 0 || len(ordered) > 8 {
 		return false
@@ -81,11 +213,87 @@ func looksLikeThreadCancellation(lower string, tokens map[string]struct{}, order
 	return hasToken(tokens, "cancel") || hasToken(tokens, "stop")
 }
 
+func looksLikeActiveThreadAcknowledgement(text, lower string, ordered []string, tokens map[string]struct{}) bool {
+	if strings.Contains(text, "?") || len(ordered) == 0 || len(ordered) > 3 {
+		return false
+	}
+	if containsAny(tokens, continuationNegativeTokens) {
+		return false
+	}
+	if onlyContinuationScaffolding(ordered) {
+		return true
+	}
+	if len(ordered) == 1 {
+		return looksLikeAcknowledgementToken(ordered[0])
+	}
+	return looksLikeAcknowledgementPhrase(ordered)
+}
+
+func looksLikeAcknowledgementToken(token string) bool {
+	if _, ok := continuationConfirmTokens[token]; ok {
+		return true
+	}
+	switch token {
+	case "okdoke", "okeydokey", "okie", "okies", "gotcha", "roger", "understood", "noted":
+		return true
+	default:
+		return strings.HasPrefix(token, "ok") && len(token) <= 10
+	}
+}
+
+func looksLikeAcknowledgementPhrase(ordered []string) bool {
+	switch strings.Join(ordered, " ") {
+	case "sounds good", "all good", "got it", "makes sense", "fair enough":
+		return true
+	default:
+		return false
+	}
+}
+
 func looksLikeActivePreviewReplay(lower string, tokens map[string]struct{}, ordered []string) bool {
 	if strings.Contains(lower, "where can i see") {
 		return true
 	}
 	return looksLikeRuntimeReplayFollowUp(tokens, lower, ordered) || looksLikeRuntimeThreadQuestion(lower, tokens, ordered)
+}
+
+func looksLikeActivePreviewInspectQuestion(lower string, ordered []string, tokens map[string]struct{}) bool {
+	if len(ordered) == 0 || len(ordered) > 18 {
+		return false
+	}
+	for _, phrase := range []string{
+		"what changed",
+		"tell me what changed",
+		"what did you change",
+		"show me the diff",
+		"show the diff",
+		"whats the diff",
+		"what's the diff",
+		"explain the change",
+		"explain the changes",
+		"walk me through the changes",
+	} {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	if strings.Contains(lower, "diff") &&
+		(strings.Contains(lower, "what ") ||
+			strings.Contains(lower, "tell me") ||
+			strings.Contains(lower, "explain") ||
+			strings.Contains(lower, "show me") ||
+			strings.Contains(lower, "walk me through")) {
+		return true
+	}
+	if !strings.Contains(lower, "change") {
+		return false
+	}
+	return containsAny(tokens, inspectVerbs) ||
+		strings.Contains(lower, "what did you") ||
+		strings.Contains(lower, "what exactly") ||
+		strings.Contains(lower, "what ") ||
+		strings.Contains(lower, "tell me") ||
+		strings.Contains(lower, "walk me through")
 }
 
 func looksLikeActivePreviewContinuation(text, lower string, ordered []string, tokens map[string]struct{}, scope requestScope) bool {

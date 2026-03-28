@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -58,14 +60,25 @@ type dispatchScoutEvidence struct {
 }
 
 type scoutRepoReviewEvidenceState struct {
-	active      bool
-	workDir     string
-	topEntries  map[string]string
-	sawTopLevel bool
-	sawOverview bool
-	sawManifest bool
-	sawSource   bool
-	sawHealth   bool
+	active                 bool
+	workDir                string
+	requestText            string
+	requestTokens          map[string]struct{}
+	topEntries             map[string]string
+	sourceHints            []string
+	sourceHintSet          map[string]struct{}
+	readFilePaths          map[string]struct{}
+	readSourcePaths        map[string]struct{}
+	relevantReadPaths      map[string]struct{}
+	sawTopLevel            bool
+	sawOverview            bool
+	sawManifest            bool
+	sawSource              bool
+	sawSourceFileRead      bool
+	sawHealth              bool
+	requireSourceRead      bool
+	implementationGrounded bool
+	minRelevantSourceReads int
 }
 
 type scoutSingleFileEvidenceState struct {
@@ -84,6 +97,14 @@ type scoutFocusedFilesEvidenceState struct {
 	candidateOrder []string
 	candidateSet   map[string]struct{}
 	readPaths      map[string]struct{}
+}
+
+type inspectDirectoryEvidenceState struct {
+	active                  bool
+	workDir                 string
+	sawRootListing          bool
+	rootListingHasSubdir    bool
+	sawRepresentativeDetail bool
 }
 
 const targetHistoryTokens = 12000
@@ -280,9 +301,16 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 	autoChainedArchitect := false
 	var currentScoutEvidence *dispatchScoutEvidence
 	scoutSingleFileState := newScoutSingleFileEvidenceState(userMessage)
+	inspectSingleFileState := newInspectSingleFileEvidenceState(userMessage)
 	scoutFocusedFilesState := newScoutFocusedFilesEvidenceState(userMessage)
 	scoutRepoReviewState := newScoutRepoReviewEvidenceState(a.workDir, userMessage)
 	isInspectTurn := !a.isSubAgent && isHarnessInspectTurn(userMessage)
+	inspectScope := ""
+	if isInspectTurn {
+		inspectScope = inspectTurnScope(userMessage)
+	}
+	inspectDirectoryState := newInspectDirectoryEvidenceState(a.workDir, userMessage)
+	inspectRepositoryState := newInspectRepositoryEvidenceState(a.workDir, userMessage)
 	isAnswerTurn := !a.isSubAgent && isHarnessAnswerTurn(userMessage)
 	isStrictActionTurn := strictActionTurn(a.role, a.isSubAgent, isInspectTurn)
 	pendingControlMsgIdxs := make([]int, 0, 4)
@@ -435,10 +463,51 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			if isInspectTurn && !sawToolCallThisRun {
 				if turn+1 < a.maxTurns {
 					inspectNoToolRetries++
-					replacePendingControls(inspectEvidenceNudgeMessage(inspectNoToolRetries))
+					if strings.EqualFold(inspectScope, "single-file") && inspectSingleFileState.NeedsMoreEvidence() {
+						replacePendingControls(inspectSingleFileState.NudgeMessage())
+					} else {
+						replacePendingControls(inspectEvidenceNudgeMessage(inspectNoToolRetries))
+					}
 					continue
 				}
 				return fmt.Errorf("inspect turn produced no evidence-gathering tool call before answering")
+			}
+			if isInspectTurn && strings.EqualFold(inspectScope, "single-file") && inspectSingleFileState.NeedsMoreEvidence() {
+				if turn+1 < a.maxTurns {
+					replacePendingControls(inspectSingleFileState.NudgeMessage())
+					continue
+				}
+				return fmt.Errorf("inspect turn stopped before reading the target file")
+			}
+			if isInspectTurn && strings.EqualFold(inspectScope, "directory") && !inspectDirectoryState.EnoughEvidence() {
+				if turn+1 < a.maxTurns {
+					replacePendingControls(inspectDirectoryState.NudgeMessage())
+					continue
+				}
+				return fmt.Errorf("inspect turn stopped before gathering enough directory evidence")
+			}
+			if isInspectTurn && strings.EqualFold(inspectScope, "focused-files") && scoutFocusedFilesState.NeedsMoreEvidence() {
+				if turn+1 < a.maxTurns {
+					replacePendingControls(scoutFocusedFilesState.NudgeMessage())
+					continue
+				}
+				return fmt.Errorf("inspect turn stopped before gathering enough focused-file evidence")
+			}
+			if isInspectTurn && strings.EqualFold(inspectScope, "repository") && !inspectRepositoryState.QuickTourEnoughEvidence() {
+				if turn+1 < a.maxTurns {
+					replacePendingControls(inspectRepositoryState.QuickTourNudgeMessage())
+					continue
+				}
+				return fmt.Errorf("inspect turn stopped before gathering enough repository evidence")
+			}
+			if isInspectTurn && strings.EqualFold(inspectScope, "repository") {
+				if nudge := inspectRepositoryState.ResponseValidationNudge(response); nudge != "" {
+					if turn+1 < a.maxTurns {
+						replacePendingControls(nudge)
+						continue
+					}
+					return fmt.Errorf("inspect turn answered with invalid file references")
+				}
 			}
 			if a.role == "scout" && scoutSingleFileState.NeedsMoreEvidence() {
 				if turn+1 < a.maxTurns {
@@ -519,6 +588,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 
 		// Execute tool calls
 		var results []string
+		var strictTurnToolResults []string
 		strictSuccessfulEditTarget := ""
 		callQueue := append([]ToolCall(nil), calls...)
 		for idx := 0; idx < len(callQueue); idx++ {
@@ -526,6 +596,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			if a.isSubAgent && subAgentFiltersRuntimeArtifacts(a.role) && !subAgentAllowsRuntimeArtifactInspection(a.role, userMessage) && toolTargetsRuntimeArtifact(call) {
 				msg := fmt.Sprintf("[%s] error: %s may not inspect runtime-generated conversation artifacts unless the task explicitly asks for them", call.Name, a.role)
 				results = append(results, msg)
+				strictTurnToolResults = append(strictTurnToolResults, strings.TrimPrefix(msg, "["+call.Name+"] "))
 				a.renderer.Error(strings.TrimPrefix(msg, "["+call.Name+"] "))
 				continue
 			}
@@ -550,6 +621,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				if !dispatchScratchpadWriteAllowed(content, a.dispatchResults, a.dispatchArtifacts, a.dispatchScratch) {
 					msg := "[scratchpad_write] error: dispatch may only persist raw delegate or scratchpad content without rewriting it"
 					results = append(results, msg)
+					strictTurnToolResults = append(strictTurnToolResults, strings.TrimPrefix(msg, "[scratchpad_write] "))
 					a.renderer.Error(strings.TrimPrefix(msg, "[scratchpad_write] "))
 					continue
 				}
@@ -558,6 +630,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 			if !ok {
 				result := fmt.Sprintf("error: unknown tool %q", call.Name)
 				a.renderer.Error(result)
+				strictTurnToolResults = append(strictTurnToolResults, result)
 				results = append(results, fmt.Sprintf("[%s] %s", call.Name, result))
 				continue
 			}
@@ -574,8 +647,11 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				result = sanitizeRuntimeArtifactToolResult(call.Name, result)
 			}
 			scoutSingleFileState.Observe(call, result)
+			inspectSingleFileState.Observe(call, result)
 			scoutFocusedFilesState.Observe(call, result)
 			scoutRepoReviewState.Observe(call, result)
+			inspectDirectoryState.Observe(call, result)
+			inspectRepositoryState.Observe(call, result)
 			if call.Name == "delegate" && err == nil {
 				role, _ := call.Args["role"].(string)
 				if normalized, malformed := normalizeDelegateResult(role, result); malformed {
@@ -698,6 +774,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 				}
 			}
 
+			strictTurnToolResults = append(strictTurnToolResults, result)
 			results = append(results, fmt.Sprintf("[%s] %s", call.Name, result))
 		}
 
@@ -721,7 +798,7 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		nextTurnControls := make([]string, 0, 3)
 		if isStrictActionTurn {
 			exactStrictMutationRepeat := false
-			if signature, ok := strictProgressSignature(calls); ok {
+			if signature, ok := strictProgressSignature(calls, strictTurnToolResults); ok {
 				if signature == lastStrictProgressSignature {
 					strictNoProgressRepeats++
 					exactStrictMutationRepeat = true
@@ -776,6 +853,30 @@ func (a *Agent) Run(ctx context.Context, userMessage string) error {
 		}
 		if inspectMultipleToolCalls && turn+1 < a.maxTurns {
 			nextTurnControls = append(nextTurnControls, inspectSingleToolCallNudgeMessage())
+		}
+		if isInspectTurn && strings.EqualFold(inspectScope, "single-file") && inspectSingleFileState.NeedsMoreEvidence() && turn+1 < a.maxTurns {
+			nextTurnControls = append(nextTurnControls, inspectSingleFileState.NudgeMessage())
+		}
+		if isInspectTurn && strings.EqualFold(inspectScope, "single-file") && !inspectSingleFileState.NeedsMoreEvidence() && turn+1 < a.maxTurns {
+			nextTurnControls = append(nextTurnControls, inspectEnoughEvidenceNudgeMessage("single-file"))
+		}
+		if isInspectTurn && strings.EqualFold(inspectScope, "directory") && !inspectDirectoryState.EnoughEvidence() && turn+1 < a.maxTurns {
+			nextTurnControls = append(nextTurnControls, inspectDirectoryState.NudgeMessage())
+		}
+		if isInspectTurn && inspectDirectoryState.EnoughEvidence() && turn+1 < a.maxTurns {
+			nextTurnControls = append(nextTurnControls, inspectEnoughEvidenceNudgeMessage("directory"))
+		}
+		if isInspectTurn && strings.EqualFold(inspectScope, "focused-files") && scoutFocusedFilesState.NeedsMoreEvidence() && turn+1 < a.maxTurns {
+			nextTurnControls = append(nextTurnControls, scoutFocusedFilesState.NudgeMessage())
+		}
+		if isInspectTurn && strings.EqualFold(inspectScope, "focused-files") && !scoutFocusedFilesState.NeedsMoreEvidence() && turn+1 < a.maxTurns {
+			nextTurnControls = append(nextTurnControls, inspectEnoughEvidenceNudgeMessage("focused-files"))
+		}
+		if isInspectTurn && strings.EqualFold(inspectScope, "repository") && !inspectRepositoryState.QuickTourEnoughEvidence() && turn+1 < a.maxTurns {
+			nextTurnControls = append(nextTurnControls, inspectRepositoryState.QuickTourNudgeMessage())
+		}
+		if isInspectTurn && inspectRepositoryState.QuickTourEnoughEvidence() && turn+1 < a.maxTurns {
+			nextTurnControls = append(nextTurnControls, inspectRepositoryState.EnoughEvidenceNudgeMessage())
 		}
 		if scoutFirstTurnMultipleCalls && turn+1 < a.maxTurns {
 			nextTurnControls = append(nextTurnControls, scoutFirstTurnToolCallNudgeMessage())
@@ -1224,7 +1325,7 @@ func strictActionTurn(role string, isSubAgent, isInspectTurn bool) bool {
 	return isInspectTurn || strings.TrimSpace(role) == "strictlocal" || (isSubAgent && isStrictWorkerRole(role))
 }
 
-func strictProgressSignature(calls []ToolCall) (string, bool) {
+func strictProgressSignature(calls []ToolCall, results []string) (string, bool) {
 	if len(calls) != 1 {
 		return "", false
 	}
@@ -1236,8 +1337,14 @@ func strictProgressSignature(calls []ToolCall) (string, bool) {
 		return strictCallSignature(call, "path", "content"), true
 	case "edit_file":
 		return strictCallSignature(call, "path", "old_text", "new_text"), true
+	case "preview_server_ensure":
+		return strictCallResultSignature(call, firstStrictProgressResult(results), "handle", "path", "port"), true
 	default:
-		return "", false
+		result := firstStrictProgressResult(results)
+		if result == "" {
+			return "", false
+		}
+		return strictCallResultSignature(call, result), true
 	}
 }
 
@@ -1248,6 +1355,87 @@ func strictCallSignature(call ToolCall, argNames ...string) string {
 		parts = append(parts, name+"="+stringifyStrictCallArg(call.Args[name]))
 	}
 	return strings.Join(parts, "|")
+}
+
+func strictCallResultSignature(call ToolCall, result string, argNames ...string) string {
+	result = normalizeStrictToolResult(call.Name, result)
+	if len(argNames) > 0 {
+		return strictCallSignature(call, argNames...) + "|result=" + result
+	}
+	return strings.TrimSpace(call.Name) + "|args=" + strictCallArgsSignature(call.Args) + "|result=" + result
+}
+
+func firstStrictProgressResult(results []string) string {
+	if len(results) == 0 {
+		return ""
+	}
+	return results[0]
+}
+
+func strictCallArgsSignature(args map[string]any) string {
+	if len(args) == 0 {
+		return "{}"
+	}
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		return fmt.Sprintf("%v", args)
+	}
+	return string(encoded)
+}
+
+func normalizeStrictToolResult(toolName, result string) string {
+	result = strings.TrimSpace(result)
+	if result == "" {
+		return ""
+	}
+	switch strings.TrimSpace(toolName) {
+	case "preview_server_ensure", "preview_server_status":
+		return normalizeStrictJSONResult(result, "reused")
+	default:
+		return normalizeStrictJSONResult(result)
+	}
+}
+
+func normalizeStrictJSONResult(result string, dropKeys ...string) string {
+	result = strings.TrimSpace(result)
+	if result == "" {
+		return ""
+	}
+	var decoded any
+	if err := json.Unmarshal([]byte(result), &decoded); err != nil {
+		return result
+	}
+	encoded, err := json.Marshal(dropStrictJSONKeys(decoded, dropKeys))
+	if err != nil {
+		return result
+	}
+	return string(encoded)
+}
+
+func dropStrictJSONKeys(value any, dropKeys []string) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		trimmedKeys := make(map[string]struct{}, len(dropKeys))
+		for _, key := range dropKeys {
+			trimmedKeys[strings.TrimSpace(key)] = struct{}{}
+		}
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			if _, drop := trimmedKeys[strings.TrimSpace(key)]; drop {
+				continue
+			}
+			out[key] = dropStrictJSONKeys(item, dropKeys)
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, dropStrictJSONKeys(item, dropKeys))
+		}
+		return out
+	default:
+		return value
+	}
 }
 
 func stringifyStrictCallArg(value any) string {
@@ -1284,8 +1472,14 @@ func strictNoProgressNudgeMessage(call ToolCall) string {
 		return "No progress: you just wrote the same file again. Do not repeat the same write. Either make a different edit, inspect the current file state, or give the final answer if the work is complete."
 	case "edit_file":
 		return "No progress: you just attempted the same edit again. Do not repeat the same edit. Either inspect the updated file state, make a different change, or give the final answer if the work is complete."
+	case "preview_server_ensure":
+		return "No progress: preview_server_ensure already returned the same preview state again. Do not keep ensuring the same target. Either make a different change, inspect a different state, or give the final answer if the preview is already ready."
+	case "preview_server_status":
+		return "No progress: preview_server_status returned the same result again. Do not keep polling unchanged status. Either make a different change, inspect a different target, or give the final answer if the preview is already ready."
+	case "list_dir", "read_file", "glob", "search", "run_command":
+		return fmt.Sprintf("No progress: %s returned the same result again. Do not repeat the same inspection. Inspect a different target or give the final answer if you already have enough evidence.", strings.TrimSpace(call.Name))
 	default:
-		return "No progress: do not repeat the same mutation again."
+		return fmt.Sprintf("No progress: %s returned the same result again. Do not repeat the same step without new information.", strictProgressTarget(call))
 	}
 }
 
@@ -1436,6 +1630,7 @@ func normalizeDelegateResult(role, result string) (string, bool) {
 }
 
 func containsRawToolMarkup(text string) bool {
+	text = stripMarkdownCodeSpansAndFences(text)
 	for _, opener := range toolCallOpeners {
 		if strings.Contains(text, opener) {
 			return true
@@ -1447,6 +1642,47 @@ func containsRawToolMarkup(text string) bool {
 		}
 	}
 	return false
+}
+
+func stripMarkdownCodeSpansAndFences(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	var out strings.Builder
+	inFence := false
+	for _, line := range lines {
+		trimmed := strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(trimmed, "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		out.WriteString(stripInlineCodeSpans(line))
+		out.WriteByte('\n')
+	}
+	return out.String()
+}
+
+func stripInlineCodeSpans(text string) string {
+	if text == "" {
+		return text
+	}
+	var out strings.Builder
+	inCode := false
+	for i := 0; i < len(text); i++ {
+		if text[i] == '`' {
+			inCode = !inCode
+			continue
+		}
+		if inCode {
+			continue
+		}
+		out.WriteByte(text[i])
+	}
+	return out.String()
 }
 
 func startsWithToolCallMarkup(text string) bool {
@@ -1755,6 +1991,21 @@ func inspectSingleToolCallNudgeMessage() string {
 	return "Inspect turns must emit exactly one tool call per working turn."
 }
 
+func inspectEnoughEvidenceNudgeMessage(scope string) string {
+	switch strings.ToLower(strings.TrimSpace(scope)) {
+	case "single-file":
+		return "Enough evidence is already available for this file walkthrough. Stop gathering more tools and answer now using the file you already read."
+	case "directory":
+		return "Enough evidence is already available for this directory walkthrough. Stop gathering more tools and answer now with the top-level layout plus the representative detail you already inspected."
+	case "focused-files":
+		return "Enough evidence is already available for this focused file walkthrough. Stop gathering more tools and answer now using the representative matching files you already sampled. Make clear that your summary is based on sampled files rather than exhaustive coverage."
+	case "repository":
+		return "Enough evidence is already available for a quick repo tour. Stop gathering more tools and answer now using the root layout, the repository purpose you already read, and the representative implementation file or package you already inspected."
+	default:
+		return "Enough evidence is already available. Stop gathering more tools and answer now."
+	}
+}
+
 func scoutNudgeMessage() string {
 	return "Scout must not mix visible prose with tool calls. Use tool calls only while gathering evidence, and never ask for pasted outputs."
 }
@@ -1907,6 +2158,16 @@ func newScoutSingleFileEvidenceState(task string) scoutSingleFileEvidenceState {
 	}
 }
 
+func newInspectSingleFileEvidenceState(task string) scoutSingleFileEvidenceState {
+	if !strings.EqualFold(inspectTurnScope(task), "single-file") {
+		return scoutSingleFileEvidenceState{}
+	}
+	return scoutSingleFileEvidenceState{
+		active: true,
+		target: extractSingleFileTaskTarget(task),
+	}
+}
+
 func (s *scoutSingleFileEvidenceState) Observe(call ToolCall, result string) {
 	if !s.active {
 		return
@@ -1919,21 +2180,13 @@ func (s *scoutSingleFileEvidenceState) Observe(call ToolCall, result string) {
 			s.matched = normalizeFileReference(path)
 		}
 	case "glob", "list_dir", "search":
-		s.observeCandidateLines(result)
+		s.observeCandidateLines(call, result)
 	}
 }
 
-func (s *scoutSingleFileEvidenceState) observeCandidateLines(result string) {
+func (s *scoutSingleFileEvidenceState) observeCandidateLines(call ToolCall, result string) {
 	for _, rawLine := range strings.Split(result, "\n") {
-		line := strings.TrimSpace(rawLine)
-		if line == "" || strings.HasPrefix(line, "...") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
-			continue
-		}
-		candidate := normalizeFileReference(fields[0])
+		candidate := observedCandidatePath(call, rawLine)
 		if candidate == "" {
 			continue
 		}
@@ -1970,6 +2223,349 @@ func (s scoutSingleFileEvidenceState) NudgeMessage() string {
 	return "Single-file evidence is still incomplete. Read the target file before answering."
 }
 
+func newInspectDirectoryEvidenceState(workDir, task string) inspectDirectoryEvidenceState {
+	return inspectDirectoryEvidenceState{
+		active:  strings.EqualFold(inspectTurnScope(task), "directory"),
+		workDir: workDir,
+	}
+}
+
+func newInspectRepositoryEvidenceState(workDir, task string) scoutRepoReviewEvidenceState {
+	if !strings.EqualFold(inspectTurnScope(task), "repository") {
+		return scoutRepoReviewEvidenceState{}
+	}
+	request, ok := extractHarnessUserRequest(task)
+	if !ok {
+		request = task
+	}
+	request = strings.TrimSpace(request)
+	implementationGrounded := inspectTaskNeedsImplementationGrounding(request)
+	return scoutRepoReviewEvidenceState{
+		active:                 true,
+		workDir:                workDir,
+		requestText:            request,
+		requestTokens:          requestPathAlignmentTokens(request),
+		topEntries:             make(map[string]string),
+		sourceHintSet:          make(map[string]struct{}),
+		readFilePaths:          make(map[string]struct{}),
+		readSourcePaths:        make(map[string]struct{}),
+		relevantReadPaths:      make(map[string]struct{}),
+		requireSourceRead:      true,
+		implementationGrounded: implementationGrounded,
+		minRelevantSourceReads: implementationGroundedSourceReadTarget(request, implementationGrounded),
+	}
+}
+
+func (s *inspectDirectoryEvidenceState) Observe(call ToolCall, result string) {
+	if !s.active {
+		return
+	}
+
+	switch call.Name {
+	case "list_dir":
+		path, _ := call.Args["path"].(string)
+		if strings.TrimSpace(path) == "" {
+			path = "."
+		}
+		if isRootRepoPath(s.workDir, path) {
+			s.sawRootListing = true
+			if inspectListingShowsSubdirectory(result) {
+				s.rootListingHasSubdir = true
+			}
+			return
+		}
+		s.sawRepresentativeDetail = true
+	case "read_file", "search", "glob":
+		if strings.TrimSpace(result) != "" {
+			s.sawRepresentativeDetail = true
+		}
+	}
+}
+
+func (s inspectDirectoryEvidenceState) EnoughEvidence() bool {
+	if !s.active || !s.sawRootListing {
+		return false
+	}
+	if !s.rootListingHasSubdir {
+		return true
+	}
+	return s.sawRepresentativeDetail
+}
+
+func (s inspectDirectoryEvidenceState) NudgeMessage() string {
+	if !s.sawRootListing {
+		return "Directory walkthrough evidence is still incomplete. List the target directory first before answering."
+	}
+	if s.rootListingHasSubdir && !s.sawRepresentativeDetail {
+		return "Directory walkthrough evidence is still incomplete. You already have the top-level layout. Inspect one representative child file or subdirectory before answering."
+	}
+	return "Directory walkthrough evidence is still incomplete. Inspect one representative child file or subdirectory before answering."
+}
+
+func inspectListingShowsSubdirectory(result string) bool {
+	for _, rawLine := range strings.Split(result, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "...") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if strings.HasSuffix(fields[0], "/") {
+			return true
+		}
+	}
+	return false
+}
+
+func (s scoutRepoReviewEvidenceState) QuickTourEnoughEvidence() bool {
+	if !s.active {
+		return false
+	}
+	if s.implementationGrounded {
+		return s.relevantSourceReadCount() >= s.requiredRelevantSourceReads()
+	}
+	if !s.sawTopLevel {
+		return false
+	}
+	return (s.sawOverview || s.sawManifest) && s.quickTourHasRequiredSourceEvidence()
+}
+
+func (s scoutRepoReviewEvidenceState) quickTourHasRequiredSourceEvidence() bool {
+	if s.requireSourceRead {
+		return s.sawSourceFileRead
+	}
+	return s.sawSource
+}
+
+func (s scoutRepoReviewEvidenceState) QuickTourNudgeMessage() string {
+	if s.implementationGrounded {
+		target := s.sourceInspectionTarget()
+		area := s.alignedSourceArea()
+		remaining := s.requiredRelevantSourceReads() - s.relevantSourceReadCount()
+		if remaining < 1 {
+			remaining = 1
+		}
+		if target != "" {
+			if remaining == 1 {
+				return "Implementation evidence is still incomplete. Read the relevant code path " + target + " before answering. Stay in the code that handles this request; do not detour to README or a generic repo tour."
+			}
+			return fmt.Sprintf("Implementation evidence is still incomplete. Read %d more relevant code path(s), starting with %s, before answering. Stay in the code that handles this request; do not detour to README or a generic repo tour.", remaining, target)
+		}
+		if area != "" {
+			if remaining == 1 {
+				return "Implementation evidence is still incomplete. Stay in the relevant code area " + area + ". Use list_dir or search there to locate the next code path before answering."
+			}
+			return fmt.Sprintf("Implementation evidence is still incomplete. Stay in the relevant code area %s. Use list_dir or search there to locate %d more relevant code path(s) before answering.", area, remaining)
+		}
+		if !s.sawTopLevel {
+			return "Implementation evidence is still incomplete. Search or list the relevant source area first, then read the code that answers the question before answering."
+		}
+		return "Implementation evidence is still incomplete. Search or list the relevant source area, then read the code that answers the question before answering."
+	}
+	if !s.sawTopLevel {
+		return "Repo-tour evidence is still incomplete. List the repo root first before answering."
+	}
+	overviewTarget := ""
+	if !s.sawOverview && !s.sawManifest {
+		if overview := s.firstTopEntry(repoReviewOverviewCandidates...); overview != "" {
+			overviewTarget = overview
+		} else if manifest := s.firstTopEntry(repoReviewManifestCandidates...); manifest != "" {
+			overviewTarget = manifest
+		}
+	}
+	sourceTarget := s.sourceInspectionTarget()
+	if s.requireSourceRead && s.sawSource && !s.sawSourceFileRead {
+		if overviewTarget != "" && sourceTarget != "" {
+			return "Repo-tour evidence is still incomplete. Read " + overviewTarget + " and one representative implementation file such as " + sourceTarget + " before answering."
+		}
+		if sourceTarget != "" {
+			return "Repo-tour evidence is still incomplete. You already have the repo shape. Read one representative implementation file such as " + sourceTarget + " before answering."
+		}
+		if overviewTarget != "" {
+			return "Repo-tour evidence is still incomplete. Read " + overviewTarget + " and one representative implementation file before answering."
+		}
+		return "Repo-tour evidence is still incomplete. Read one representative implementation file before answering."
+	}
+	targets := make([]string, 0, 2)
+	if overviewTarget != "" {
+		targets = append(targets, overviewTarget)
+	}
+	if !s.quickTourHasRequiredSourceEvidence() && sourceTarget != "" {
+		targets = append(targets, sourceTarget)
+	}
+	if len(targets) == 0 {
+		if s.requireSourceRead {
+			return "Repo-tour evidence is still incomplete. Inspect a repo overview or manifest and read one representative implementation file before answering."
+		}
+		return "Repo-tour evidence is still incomplete. Inspect a repo overview or manifest and one representative source area before answering."
+	}
+	if s.requireSourceRead {
+		return "Repo-tour evidence is still incomplete. Inspect the next concrete targets before answering: " + strings.Join(targets, ", ") + ". Use read_file or list_dir on them, then answer once you have the repo purpose and one representative implementation file."
+	}
+	return "Repo-tour evidence is still incomplete. Inspect the next concrete targets before answering: " + strings.Join(targets, ", ") + ". Use read_file or list_dir on them, then answer once you have the repo purpose and one representative source area."
+}
+
+func (s scoutRepoReviewEvidenceState) sourceInspectionTarget() string {
+	if s.implementationGrounded {
+		if best := s.bestSourceHint(true, true); best != "" {
+			return best
+		}
+		return ""
+	}
+	if best := s.bestSourceHint(true, false); best != "" {
+		return best
+	}
+	if best := s.bestSourceHint(false, false); best != "" {
+		return best
+	}
+	return s.firstTopEntry(repoReviewSourceCandidates...)
+}
+
+func (s scoutRepoReviewEvidenceState) bestSourceHint(preferUnread, requireAligned bool) string {
+	best := ""
+	bestScore := -1
+	bestRead := true
+	for _, hint := range s.sourceHints {
+		hint = strings.TrimSpace(hint)
+		if hint == "" {
+			continue
+		}
+		score := s.requestPathAlignmentScore(hint)
+		if requireAligned && score <= 0 {
+			continue
+		}
+		_, alreadyRead := s.readSourcePaths[hint]
+		if preferUnread && alreadyRead {
+			continue
+		}
+		if best == "" || sourceHintPreferred(hint, score, alreadyRead, best, bestScore, bestRead) {
+			best = hint
+			bestScore = score
+			bestRead = alreadyRead
+		}
+	}
+	return best
+}
+
+func (s scoutRepoReviewEvidenceState) alignedSourceArea() string {
+	best := ""
+	bestScore := -1
+	bestDepth := 1 << 30
+	seen := make(map[string]struct{})
+	for _, hint := range s.sourceHints {
+		hint = strings.TrimSpace(hint)
+		if hint == "" {
+			continue
+		}
+		score := s.requestPathAlignmentScore(hint)
+		if score <= 0 {
+			continue
+		}
+		dir := filepath.ToSlash(filepath.Dir(hint))
+		if dir == "." || dir == "" {
+			continue
+		}
+		if _, ok := seen[dir]; ok {
+			continue
+		}
+		seen[dir] = struct{}{}
+		depth := strings.Count(dir, "/")
+		if best == "" || score > bestScore || (score == bestScore && depth < bestDepth) || (score == bestScore && depth == bestDepth && dir < best) {
+			best = dir
+			bestScore = score
+			bestDepth = depth
+		}
+	}
+	if best != "" {
+		return best
+	}
+	return ""
+}
+
+func (s scoutRepoReviewEvidenceState) ResponseValidationNudge(response string) string {
+	if !s.implementationGrounded {
+		return ""
+	}
+	refs := extractAnswerFileReferenceTokens(response)
+	if len(refs) == 0 {
+		return ""
+	}
+	var missing []string
+	var unread []string
+	for _, ref := range refs {
+		rel := normalizeRepoReviewPath(s.workDir, ref)
+		if rel == "" || rel == "." {
+			continue
+		}
+		full := filepath.Join(s.workDir, filepath.FromSlash(rel))
+		if _, err := os.Stat(full); err != nil {
+			if os.IsNotExist(err) {
+				missing = append(missing, rel)
+			}
+			continue
+		}
+		if _, ok := s.readFilePaths[rel]; !ok {
+			unread = append(unread, rel)
+		}
+	}
+	if len(missing) > 0 {
+		return "Implementation answer needs correction. Do not cite file paths that do not exist in this repo: " + strings.Join(missing, ", ") + ". Read existing files or answer only from the files you already inspected."
+	}
+	if len(unread) > 0 {
+		return "Implementation answer needs correction. Do not cite file paths you have not inspected yet: " + strings.Join(unread, ", ") + ". Read them first or answer only from the files you already inspected."
+	}
+	return ""
+}
+
+func extractAnswerFileReferenceTokens(text string) []string {
+	seen := make(map[string]struct{})
+	var refs []string
+	for _, raw := range strings.Fields(normalizePromptText(text)) {
+		token := normalizeAnswerFileReference(raw)
+		if token == "" {
+			continue
+		}
+		if _, ok := seen[token]; ok {
+			continue
+		}
+		seen[token] = struct{}{}
+		refs = append(refs, token)
+	}
+	return refs
+}
+
+func normalizeAnswerFileReference(token string) string {
+	token = strings.TrimSpace(token)
+	token = strings.Trim(token, "\"'`()[]{}.,;!?")
+	token = strings.TrimPrefix(token, "@")
+	token = filepath.ToSlash(token)
+	token = strings.TrimPrefix(token, "./")
+	if idx := strings.Index(token, ":"); idx > 0 {
+		token = token[:idx]
+	}
+	return normalizeFileReference(token)
+}
+
+func (s scoutRepoReviewEvidenceState) EnoughEvidenceNudgeMessage() string {
+	if s.implementationGrounded {
+		return "Enough evidence is already available for this implementation-grounded explanation. Stop gathering more tools and answer now using only the relevant code files you already read. Mention only files or functions that are supported by those inspected files."
+	}
+	return "Enough evidence is already available for a quick repo tour. Stop gathering more tools and answer now using the root layout, the repository purpose you already read, and the representative implementation file or package you already inspected."
+}
+
+func inspectTurnScope(task string) string {
+	for _, rawLine := range strings.Split(task, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if !strings.HasPrefix(line, "INSPECT SCOPE:") {
+			continue
+		}
+		return strings.TrimSpace(strings.TrimPrefix(line, "INSPECT SCOPE:"))
+	}
+	return ""
+}
+
 func newScoutFocusedFilesEvidenceState(task string) scoutFocusedFilesEvidenceState {
 	profile := classifyTaskProfile(task)
 	if profile.Scope != taskScopeFocusedFiles {
@@ -1998,30 +2594,18 @@ func (s *scoutFocusedFilesEvidenceState) Observe(call ToolCall, result string) {
 	case "glob":
 		pattern, _ := call.Args["pattern"].(string)
 		before := len(s.candidateOrder)
-		s.observeCandidateLines(result)
+		s.observeCandidateLines(call, result)
 		if s.patternCouldMatch(pattern) || len(s.candidateOrder) > before {
 			s.usedGlob = true
 		}
 	case "search", "list_dir":
-		s.observeCandidateLines(result)
+		s.observeCandidateLines(call, result)
 	}
 }
 
-func (s *scoutFocusedFilesEvidenceState) observeCandidateLines(result string) {
+func (s *scoutFocusedFilesEvidenceState) observeCandidateLines(call ToolCall, result string) {
 	for _, rawLine := range strings.Split(result, "\n") {
-		line := strings.TrimSpace(rawLine)
-		if line == "" || strings.HasPrefix(line, "...") {
-			continue
-		}
-		candidate := line
-		if idx := strings.Index(candidate, ":"); idx > 0 {
-			candidate = candidate[:idx]
-		}
-		fields := strings.Fields(candidate)
-		if len(fields) == 0 {
-			continue
-		}
-		s.recordCandidate(fields[0])
+		s.recordCandidate(observedCandidatePath(call, rawLine))
 	}
 }
 
@@ -2112,33 +2696,65 @@ func (s scoutFocusedFilesEvidenceState) NudgeMessage() string {
 	if remaining < 1 {
 		remaining = 1
 	}
-	nextTargets := make([]string, 0, 3)
+	targetLimit := remaining
+	if targetLimit > 3 {
+		targetLimit = 3
+	}
+	nextTargets := s.prioritizedUnreadCandidates(targetLimit)
+	if len(nextTargets) > 0 {
+		return fmt.Sprintf("Focused-file evidence is still incomplete. Stay within the declared scope. Stop broadening discovery and use read_file on %d more representative matching file(s) before answering; prefer implementation files over tests when available: %s.", remaining, strings.Join(nextTargets, ", "))
+	}
+	if s.targetGlob != "" {
+		return "Focused-file evidence is still incomplete. Stay within the declared scope. Stop broadening discovery. Use TARGET_GLOB to locate representative matching files and read them before answering: " + s.targetGlob + "."
+	}
+	if s.targetLang != "" {
+		return "Focused-file evidence is still incomplete. Stay within the declared scope. Stop broadening discovery and read more representative " + s.targetLang + " files before answering."
+	}
+	return "Focused-file evidence is still incomplete. Stop broadening discovery and read more representative matching files before answering."
+}
+
+func (s scoutFocusedFilesEvidenceState) prioritizedUnreadCandidates(limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	preferred := make([]string, 0, limit)
+	secondary := make([]string, 0, limit)
 	for _, candidate := range s.candidateOrder {
 		if _, ok := s.readPaths[candidate]; ok {
 			continue
 		}
-		nextTargets = append(nextTargets, candidate)
-		if len(nextTargets) == 3 {
-			break
+		if looksLikeTestCandidate(candidate) {
+			secondary = append(secondary, candidate)
+			continue
 		}
+		preferred = append(preferred, candidate)
 	}
-	if len(nextTargets) > 0 {
-		return fmt.Sprintf("Focused-file evidence is still incomplete. Stay within the declared scope and read %d more matching file(s) before answering: %s.", remaining, strings.Join(nextTargets, ", "))
+	ordered := append(preferred, secondary...)
+	if len(ordered) > limit {
+		ordered = ordered[:limit]
 	}
-	if s.targetGlob != "" {
-		return "Focused-file evidence is still incomplete. Stay within the declared scope. Use TARGET_GLOB to locate representative matching files and read them before answering: " + s.targetGlob + "."
+	return ordered
+}
+
+func looksLikeTestCandidate(path string) bool {
+	base := strings.ToLower(filepath.Base(filepath.ToSlash(strings.TrimSpace(path))))
+	if base == "" {
+		return false
 	}
-	if s.targetLang != "" {
-		return "Focused-file evidence is still incomplete. Stay within the declared scope and read more " + s.targetLang + " files before answering."
+	if strings.HasSuffix(base, "_test.go") {
+		return true
 	}
-	return "Focused-file evidence is still incomplete. Read more matching files before answering."
+	return strings.Contains(base, ".test.") || strings.Contains(base, ".spec.")
 }
 
 func newScoutRepoReviewEvidenceState(workDir, task string) scoutRepoReviewEvidenceState {
 	return scoutRepoReviewEvidenceState{
-		active:     scoutTaskIsRepoReview(task),
-		workDir:    workDir,
-		topEntries: make(map[string]string),
+		active:          scoutTaskIsRepoReview(task),
+		workDir:         workDir,
+		topEntries:      make(map[string]string),
+		sourceHintSet:   make(map[string]struct{}),
+		readFilePaths:   make(map[string]struct{}),
+		readSourcePaths: make(map[string]struct{}),
 	}
 }
 
@@ -2151,6 +2767,7 @@ func (s *scoutRepoReviewEvidenceState) Observe(call ToolCall, result string) {
 	case "read_file":
 		if path, _ := call.Args["path"].(string); path != "" {
 			s.observePath(path)
+			s.observeSourceFileRead(path)
 		}
 	case "list_dir":
 		path, _ := call.Args["path"].(string)
@@ -2158,6 +2775,7 @@ func (s *scoutRepoReviewEvidenceState) Observe(call ToolCall, result string) {
 			path = "."
 		}
 		s.observePath(path)
+		s.observeListedPaths(call, result)
 		if isRootRepoPath(s.workDir, path) {
 			s.sawTopLevel = true
 			s.observeTopEntries(result)
@@ -2177,6 +2795,32 @@ func (s *scoutRepoReviewEvidenceState) Observe(call ToolCall, result string) {
 	}
 }
 
+func (s *scoutRepoReviewEvidenceState) observeSourceFileRead(path string) {
+	rel := normalizeRepoReviewPath(s.workDir, path)
+	if rel == "" {
+		return
+	}
+	if s.readFilePaths == nil {
+		s.readFilePaths = make(map[string]struct{})
+	}
+	s.readFilePaths[rel] = struct{}{}
+	lower := strings.ToLower(rel)
+	base := strings.ToLower(filepath.Base(lower))
+	if isRepoSourcePath(lower, base) {
+		s.sawSourceFileRead = true
+		if s.readSourcePaths == nil {
+			s.readSourcePaths = make(map[string]struct{})
+		}
+		s.readSourcePaths[rel] = struct{}{}
+		if s.implementationGrounded && s.isRelevantImplementationSourcePath(rel) {
+			if s.relevantReadPaths == nil {
+				s.relevantReadPaths = make(map[string]struct{})
+			}
+			s.relevantReadPaths[rel] = struct{}{}
+		}
+	}
+}
+
 func (s *scoutRepoReviewEvidenceState) observeTopEntries(result string) {
 	for _, rawLine := range strings.Split(result, "\n") {
 		line := strings.TrimSpace(rawLine)
@@ -2188,6 +2832,12 @@ func (s *scoutRepoReviewEvidenceState) observeTopEntries(result string) {
 			continue
 		}
 		s.recordTopEntry(entry)
+	}
+}
+
+func (s *scoutRepoReviewEvidenceState) observeListedPaths(call ToolCall, result string) {
+	for _, rawLine := range strings.Split(result, "\n") {
+		s.observePath(observedCandidatePath(call, rawLine))
 	}
 }
 
@@ -2216,6 +2866,7 @@ func (s *scoutRepoReviewEvidenceState) observePath(path string) {
 	s.recordTopEntry(rel)
 	lower := strings.ToLower(rel)
 	base := strings.ToLower(filepath.Base(lower))
+	s.recordSourceHint(rel)
 
 	switch {
 	case isRepoOverviewPath(lower, base):
@@ -2236,6 +2887,215 @@ func (s *scoutRepoReviewEvidenceState) observePath(path string) {
 	}
 	if isRepoHealthPath(lower, base) {
 		s.sawHealth = true
+	}
+}
+
+func (s *scoutRepoReviewEvidenceState) recordSourceHint(path string) {
+	rel := normalizeRepoReviewPath(s.workDir, path)
+	if rel == "" {
+		return
+	}
+	rel = canonicalRepoReviewSourceHint(rel)
+	if rel == "" || strings.HasSuffix(rel, "/") {
+		return
+	}
+	lower := strings.ToLower(rel)
+	base := strings.ToLower(filepath.Base(lower))
+	if !isRepoSourcePath(lower, base) {
+		return
+	}
+	if !strings.Contains(rel, "/") && base != "main.go" {
+		return
+	}
+	if s.sourceHintSet == nil {
+		s.sourceHintSet = make(map[string]struct{})
+	}
+	if _, exists := s.sourceHintSet[rel]; exists {
+		return
+	}
+	s.sourceHintSet[rel] = struct{}{}
+	s.sourceHints = append(s.sourceHints, rel)
+}
+
+func (s scoutRepoReviewEvidenceState) requiredRelevantSourceReads() int {
+	if s.minRelevantSourceReads > 0 {
+		return s.minRelevantSourceReads
+	}
+	if s.implementationGrounded {
+		return 1
+	}
+	return 0
+}
+
+func (s scoutRepoReviewEvidenceState) relevantSourceReadCount() int {
+	if !s.implementationGrounded {
+		if len(s.readSourcePaths) == 0 {
+			return 0
+		}
+		return len(s.readSourcePaths)
+	}
+	if s.hasAlignedSourceHints() {
+		return len(s.relevantReadPaths)
+	}
+	return len(s.readSourcePaths)
+}
+
+func (s scoutRepoReviewEvidenceState) hasAlignedSourceHints() bool {
+	for _, hint := range s.sourceHints {
+		if s.requestPathAlignmentScore(hint) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (s scoutRepoReviewEvidenceState) isRelevantImplementationSourcePath(path string) bool {
+	if s.requestPathAlignmentScore(path) > 0 {
+		return true
+	}
+	return !s.hasAlignedSourceHints()
+}
+
+func (s scoutRepoReviewEvidenceState) requestPathAlignmentScore(path string) int {
+	if len(s.requestTokens) == 0 {
+		return 0
+	}
+	score := 0
+	for _, token := range pathAlignmentSegments(path) {
+		if _, ok := s.requestTokens[token]; ok {
+			score++
+		}
+	}
+	return score
+}
+
+func requestPathAlignmentTokens(text string) map[string]struct{} {
+	tokens := make(map[string]struct{})
+	for _, raw := range pathAlignmentSegments(text) {
+		if len(raw) < 4 {
+			continue
+		}
+		switch raw {
+		case "this", "that", "with", "from", "into", "repo", "repository", "follow", "again":
+			continue
+		}
+		tokens[raw] = struct{}{}
+	}
+	return tokens
+}
+
+func pathAlignmentSegments(text string) []string {
+	fields := strings.FieldsFunc(strings.ToLower(normalizePromptText(text)), func(r rune) bool {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return false
+		case r >= '0' && r <= '9':
+			return false
+		default:
+			return true
+		}
+	})
+	if len(fields) == 0 {
+		return nil
+	}
+	return fields
+}
+
+func implementationGroundedSourceReadTarget(request string, enabled bool) int {
+	if !enabled {
+		return 0
+	}
+	lower := strings.ToLower(normalizePromptText(request))
+	if containsAny(lower, []string{
+		"which files",
+		"which file",
+		"files and functions",
+		"function",
+		"functions",
+		"routing",
+		"routes",
+		"route",
+		"flow",
+		"flows",
+		"code path",
+		"code paths",
+	}) {
+		return 2
+	}
+	return 1
+}
+
+func inspectTaskNeedsImplementationGrounding(task string) bool {
+	lower := strings.ToLower(normalizePromptText(strings.TrimSpace(task)))
+	if lower == "" {
+		return false
+	}
+	if !containsAny(lower, []string{
+		"function",
+		"functions",
+		"method",
+		"methods",
+		"handler",
+		"handlers",
+		"route",
+		"routes",
+		"routing",
+		"flow",
+		"flows",
+		"logic",
+		"code path",
+		"path",
+		"paths",
+		"follow-up",
+		"follow up",
+		"followups",
+		"followup",
+		"decide",
+		"decides",
+	}) {
+		return false
+	}
+	return containsAny(lower, []string{
+		"explain",
+		"specific",
+		"which",
+		"how",
+		"where",
+		"point me",
+		"show me",
+		"walk",
+	})
+}
+
+func sourceHintPreferred(candidate string, candidateScore int, candidateRead bool, best string, bestScore int, bestRead bool) bool {
+	if candidateRead != bestRead {
+		return !candidateRead
+	}
+	if candidateScore != bestScore {
+		return candidateScore > bestScore
+	}
+	candidateTest := strings.HasSuffix(strings.ToLower(candidate), "_test.go")
+	bestTest := strings.HasSuffix(strings.ToLower(best), "_test.go")
+	if candidateTest != bestTest {
+		return !candidateTest
+	}
+	if len(candidate) != len(best) {
+		return len(candidate) < len(best)
+	}
+	return candidate < best
+}
+
+func canonicalRepoReviewSourceHint(path string) string {
+	path = normalizeFileReference(path)
+	if path == "" {
+		return ""
+	}
+	lower := strings.ToLower(path)
+	switch {
+	case strings.HasSuffix(lower, "_test.go"):
+		return strings.TrimSuffix(path, "_test.go") + ".go"
+	default:
+		return path
 	}
 }
 
@@ -2285,7 +3145,7 @@ func (s scoutRepoReviewEvidenceState) NudgeMessage() string {
 		targets = append(targets, s.firstTopEntry(repoReviewManifestCandidates...))
 	}
 	if s.hasTopEntry(repoReviewSourceCandidates...) && !s.sawSource {
-		targets = append(targets, s.firstTopEntry(repoReviewSourceCandidates...))
+		targets = append(targets, s.sourceInspectionTarget())
 	}
 	if s.hasTopEntry(repoReviewHealthCandidates...) && !s.sawHealth {
 		targets = append(targets, s.firstTopEntry(repoReviewHealthCandidates...))
@@ -2414,6 +3274,51 @@ func normalizeFileReference(token string) string {
 	return filepath.Clean(token)
 }
 
+func observedCandidatePath(call ToolCall, rawLine string) string {
+	line := strings.TrimSpace(rawLine)
+	if line == "" || strings.HasPrefix(line, "...") {
+		return ""
+	}
+	candidate := line
+	if idx := strings.Index(candidate, ":"); idx > 0 {
+		candidate = candidate[:idx]
+	}
+	fields := strings.Fields(candidate)
+	if len(fields) == 0 {
+		return ""
+	}
+	candidate = normalizeFileReference(fields[0])
+	if candidate == "" {
+		return ""
+	}
+	if strings.TrimSpace(call.Name) != "list_dir" || strings.Contains(candidate, "/") || strings.Contains(candidate, "\\") {
+		return candidate
+	}
+	base, _ := call.Args["path"].(string)
+	base = normalizeListingBasePath(base)
+	if base == "" || base == "." {
+		return candidate
+	}
+	joined := normalizeFileReference(filepath.ToSlash(filepath.Join(base, candidate)))
+	if joined == "" {
+		return candidate
+	}
+	return joined
+}
+
+func normalizeListingBasePath(token string) string {
+	token = strings.TrimSpace(token)
+	token = strings.Trim(token, "\"'`()[]{}.,;!?")
+	token = strings.TrimPrefix(token, "@")
+	token = filepath.ToSlash(token)
+	token = strings.TrimPrefix(token, "./")
+	token = strings.TrimSuffix(token, "/")
+	if token == "" || strings.Contains(token, "://") || strings.ContainsAny(token, "*?") {
+		return ""
+	}
+	return filepath.Clean(token)
+}
+
 var repoReviewOverviewCandidates = []string{
 	"README.md",
 	"README",
@@ -2442,6 +3347,14 @@ var repoReviewSourceCandidates = []string{
 	"src/",
 	"app/",
 	"lib/",
+	"service/",
+	"services/",
+	"server/",
+	"api/",
+	"backend/",
+	"frontend/",
+	"client/",
+	"web/",
 	"main.go",
 }
 
@@ -2525,14 +3438,30 @@ func isRepoSourcePath(lower, base string) bool {
 		base == "pkg",
 		base == "src",
 		base == "app",
-		base == "lib":
+		base == "lib",
+		base == "service",
+		base == "services",
+		base == "server",
+		base == "api",
+		base == "backend",
+		base == "frontend",
+		base == "client",
+		base == "web":
 		return true
 	case strings.HasPrefix(lower, "cmd/"),
 		strings.HasPrefix(lower, "internal/"),
 		strings.HasPrefix(lower, "pkg/"),
 		strings.HasPrefix(lower, "src/"),
 		strings.HasPrefix(lower, "app/"),
-		strings.HasPrefix(lower, "lib/"):
+		strings.HasPrefix(lower, "lib/"),
+		strings.HasPrefix(lower, "service/"),
+		strings.HasPrefix(lower, "services/"),
+		strings.HasPrefix(lower, "server/"),
+		strings.HasPrefix(lower, "api/"),
+		strings.HasPrefix(lower, "backend/"),
+		strings.HasPrefix(lower, "frontend/"),
+		strings.HasPrefix(lower, "client/"),
+		strings.HasPrefix(lower, "web/"):
 		return true
 	default:
 		return false

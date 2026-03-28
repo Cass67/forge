@@ -814,6 +814,84 @@ func TestRunnerPlanningFollowUpUsesRecentEvidenceInAnswerMode(t *testing.T) {
 	}
 }
 
+func TestRunnerActiveWorkspaceInspectSpecificFollowUpContinuesLocally(t *testing.T) {
+	session := NewSession()
+	_ = session.BeginTurn("explain how the harness routes preview follow-ups in this repo")
+	session.Apply(Classification{
+		Family:   FamilyInspect,
+		TopicKey: "workspace:repository",
+		TaskText: "explain how the harness routes preview follow-ups in this repo",
+	}, Observation{
+		Status:   ObservationComplete,
+		Response: "Preview follow-ups are handled in the harness.",
+		Summary:  "high-level routing explanation",
+		TopicKey: "workspace:repository",
+	})
+	firstID := session.Snapshot().ActiveThread().ID
+
+	local := &stubLocalExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Response: "classifyActiveThreadTurn in internal/harness/thread.go and Plan in internal/harness/planner.go decide the routing.",
+			Summary:  "grounded routing follow-up",
+			TopicKey: "workspace:repository",
+		},
+	}
+	worker := &stubWorkerExecutor{}
+
+	result, err := NewRunner(RunnerConfig{
+		Session: session,
+		Trace:   NewRecorder(),
+		Local:   local,
+		Workers: worker,
+	}).Run(context.Background(), "be specific, which files and functions decide that routing?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Classification.Family != FamilyInspect {
+		t.Fatalf("family = %q", result.Classification.Family)
+	}
+	if !result.Classification.IsFollowUp {
+		t.Fatalf("expected follow-up classification: %#v", result.Classification)
+	}
+	if result.Classification.ThreadIntent != TurnIntentContinueThread {
+		t.Fatalf("thread intent = %q", result.Classification.ThreadIntent)
+	}
+	if result.Step.Kind != StepLocal || result.Step.Worker != WorkerNone {
+		t.Fatalf("step = %#v", result.Step)
+	}
+	if worker.calls != 0 {
+		t.Fatalf("unexpected worker calls = %d", worker.calls)
+	}
+	if local.calls != 1 {
+		t.Fatalf("local calls = %d", local.calls)
+	}
+	if local.lastClas.TopicKey != "workspace:repository" {
+		t.Fatalf("local topic = %q", local.lastClas.TopicKey)
+	}
+
+	state := session.Snapshot()
+	if !state.HasActiveThread() {
+		t.Fatalf("expected active thread: %#v", state)
+	}
+	if got := state.ActiveThread().ID; got != firstID {
+		t.Fatalf("active thread id = %q, want %q", got, firstID)
+	}
+	if got := state.ActiveThread().Kind; got != ThreadWorkspaceInspect {
+		t.Fatalf("active thread kind = %q", got)
+	}
+	found := false
+	for _, record := range result.Trace {
+		if record.ThreadID == firstID && record.ThreadIntent == TurnIntentContinueThread && record.Reason == "thread continued" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected thread-continued trace record, got %#v", result.Trace)
+	}
+}
+
 func TestRunnerAnswerOfferCreatesPendingActionForNextTurn(t *testing.T) {
 	local := &stubLocalExecutor{
 		obs: Observation{
@@ -1178,6 +1256,198 @@ func TestRunnerNewTaskSupersedesActivePreviewThread(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected supersede trace record, got %#v", result.Trace)
+	}
+}
+
+func TestRunnerConcretePathInspectSupersedesActivePreviewThread(t *testing.T) {
+	session := NewSession()
+	firstID := seedActivePreviewThread(session)
+	local := &stubLocalExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Response: "app.py defines greet(name) and prints Hello, world! when run directly.",
+			Summary:  "app.py explained",
+			TopicKey: "path:app.py",
+		},
+	}
+
+	result, err := NewRunner(RunnerConfig{
+		Session: session,
+		Trace:   NewRecorder(),
+		Local:   local,
+	}).Run(context.Background(), "actually leave that alone and explain app.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Classification.Family != FamilyInspect {
+		t.Fatalf("family = %q", result.Classification.Family)
+	}
+	if result.Classification.ThreadIntent != TurnIntentSupersedeThread {
+		t.Fatalf("thread intent = %q", result.Classification.ThreadIntent)
+	}
+	if result.Step.Kind != StepLocal {
+		t.Fatalf("step = %#v", result.Step)
+	}
+
+	state := session.Snapshot()
+	if !state.HasActiveThread() {
+		t.Fatalf("expected new active thread: %#v", state)
+	}
+	if got := state.ActiveThread().Kind; got != ThreadWorkspaceInspect {
+		t.Fatalf("active thread kind = %q", got)
+	}
+	if got := state.ActiveThread().TopicKey; got != "path:app.py" {
+		t.Fatalf("active thread topic = %q", got)
+	}
+	if got := state.ActiveThread().SupersedesThreadID; got != firstID {
+		t.Fatalf("supersedes = %q, want %q", got, firstID)
+	}
+	if got := state.Threads.Last.Status; got != ThreadSuperseded {
+		t.Fatalf("last thread status = %q, want %q", got, ThreadSuperseded)
+	}
+	found := false
+	for _, record := range result.Trace {
+		if record.ThreadIntent == TurnIntentSupersedeThread && record.Reason == "thread superseded" && record.ThreadID == state.ActiveThread().ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected supersede trace record, got %#v", result.Trace)
+	}
+}
+
+func TestRunnerPreviewReplayAfterInspectReusesPreviewThreadTopic(t *testing.T) {
+	session := NewSession()
+	firstID := seedActivePreviewThread(session)
+	_ = session.BeginTurn("actually leave that alone and explain app.py")
+	session.Apply(Classification{
+		Family:       FamilyInspect,
+		TopicKey:     "path:app.py",
+		TaskText:     "actually leave that alone and explain app.py",
+		ThreadIntent: TurnIntentSupersedeThread,
+	}, Observation{
+		Status:   ObservationComplete,
+		Response: "app.py explained",
+		Summary:  "app.py explained",
+		TopicKey: "path:app.py",
+	})
+
+	local := &stubLocalExecutor{}
+	strictLocal := &stubLocalExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Response: "Preview is live again at http://127.0.0.1:4173/themes_preview.html.",
+			Summary:  "preview replayed after inspect",
+			TopicKey: "path:themes_preview.html",
+			Runtime: LocalRuntimeSnapshot{
+				Preview: PreviewSnapshot{
+					Status: "live",
+					Path:   "themes_preview.html",
+					Port:   4173,
+					URL:    "http://127.0.0.1:4173/themes_preview.html",
+				},
+			},
+		},
+	}
+
+	result, err := NewRunner(RunnerConfig{
+		Session:     session,
+		Trace:       NewRecorder(),
+		Local:       local,
+		StrictLocal: strictLocal,
+	}).Run(context.Background(), "actually ignore app.py and show me the preview again")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strictLocal.calls != 1 {
+		t.Fatalf("strict local calls = %d", strictLocal.calls)
+	}
+	if local.calls != 0 {
+		t.Fatalf("unexpected local calls = %d", local.calls)
+	}
+	if strictLocal.lastClas.TopicKey != "path:themes_preview.html" {
+		t.Fatalf("classification topic = %q", strictLocal.lastClas.TopicKey)
+	}
+	if result.Step.Kind != StepStrictLocal {
+		t.Fatalf("step = %#v", result.Step)
+	}
+
+	state := session.Snapshot()
+	if !state.HasActiveThread() {
+		t.Fatalf("expected active preview thread: %#v", state)
+	}
+	if got := state.ActiveThread().Kind; got != ThreadPreviewCollaboration {
+		t.Fatalf("active thread kind = %q", got)
+	}
+	if got := state.ActiveThread().TopicKey; got != "path:themes_preview.html" {
+		t.Fatalf("active thread topic = %q", got)
+	}
+	if got := state.ActiveThread().SupersedesThreadID; got == "" || got == firstID {
+		t.Fatalf("expected replay after inspect to supersede the inspect thread, got %q", got)
+	}
+}
+
+func TestRunnerPreviewChangeQuestionSupersedesThreadAndUsesLocalInspect(t *testing.T) {
+	session := NewSession()
+	firstID := seedActivePreviewThread(session)
+
+	local := &stubLocalExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Response: "The page was rewritten and the heading now says Hello from Forge.",
+			Summary:  "change explanation delivered",
+			TopicKey: "path:themes_preview.html",
+		},
+	}
+	strictLocal := &stubLocalExecutor{}
+
+	result, err := NewRunner(RunnerConfig{
+		Session:     session,
+		Trace:       NewRecorder(),
+		Local:       local,
+		StrictLocal: strictLocal,
+	}).Run(context.Background(), "actually leave that alone and tell me what changed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if local.calls != 1 {
+		t.Fatalf("local calls = %d", local.calls)
+	}
+	if strictLocal.calls != 0 {
+		t.Fatalf("unexpected strict local calls = %d", strictLocal.calls)
+	}
+	if local.lastClas.Family != FamilyInspect {
+		t.Fatalf("classification family = %q", local.lastClas.Family)
+	}
+	if local.lastClas.TopicKey != "path:themes_preview.html" {
+		t.Fatalf("classification topic = %q", local.lastClas.TopicKey)
+	}
+	if local.lastClas.ThreadIntent != TurnIntentSupersedeThread {
+		t.Fatalf("thread intent = %q", local.lastClas.ThreadIntent)
+	}
+	if result.Step.Kind != StepLocal {
+		t.Fatalf("step = %#v", result.Step)
+	}
+
+	state := session.Snapshot()
+	if !state.HasActiveThread() {
+		t.Fatalf("expected active thread: %#v", state)
+	}
+	if got := state.ActiveThread().Kind; got != ThreadWorkspaceInspect {
+		t.Fatalf("active thread kind = %q", got)
+	}
+	if got := state.ActiveThread().TopicKey; got != "path:themes_preview.html" {
+		t.Fatalf("active thread topic = %q", got)
+	}
+	if got := state.ActiveThread().SupersedesThreadID; got != firstID {
+		t.Fatalf("supersedes = %q, want %q", got, firstID)
+	}
+	if got := state.Threads.Last.Kind; got != ThreadPreviewCollaboration {
+		t.Fatalf("last thread kind = %q", got)
+	}
+	if got := state.Threads.Last.Status; got != ThreadSuperseded {
+		t.Fatalf("last thread status = %q", got)
 	}
 }
 

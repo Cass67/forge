@@ -84,8 +84,7 @@ func resolveExpectedDeliverable(class Classification, session SessionState, lane
 		session.ActiveThread().Deliverable != "" &&
 		(class.ThreadIntent == TurnIntentContinueThread ||
 			class.ThreadIntent == TurnIntentReplayThread ||
-			class.ThreadIntent == TurnIntentRepairThread ||
-			class.ThreadIntent == TurnIntentSupersedeThread) {
+			class.ThreadIntent == TurnIntentRepairThread) {
 		return session.ActiveThread().Deliverable
 	}
 	if lane == LaneStrictAction && previewDeliverableRequested(class, session) {
@@ -107,10 +106,15 @@ func previewDeliverableRequested(class Classification, session SessionState) boo
 	if class.ThreadIntent == TurnIntentReplayThread {
 		return true
 	}
-	if session.HasActiveThread() && session.ActiveThread().Kind == ThreadPreviewCollaboration {
+	if class.ThreadIntent != TurnIntentSupersedeThread &&
+		session.HasActiveThread() &&
+		session.ActiveThread().Kind == ThreadPreviewCollaboration {
 		return true
 	}
-	if session.HasRecentPreview() && class.PrefersVisibleExecution && class.IsFollowUp {
+	if class.ThreadIntent != TurnIntentSupersedeThread &&
+		session.HasRecentPreview() &&
+		class.PrefersVisibleExecution &&
+		class.IsFollowUp {
 		return true
 	}
 	if !class.PrefersVisibleExecution {

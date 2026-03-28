@@ -216,6 +216,69 @@ func TestAgentExecutorFocusedInspectPromptRequestsSerialSampledEvidence(t *testi
 	}
 }
 
+func TestAgentExecutorSingleFileInspectPromptTargetsNamedPath(t *testing.T) {
+	defaultTools := tools.NewRegistry()
+	inspectTools := tools.NewRegistry()
+	agent := &stubScopedAgent{response: "app.py prints a greeting"}
+	exec := AgentExecutor{
+		Agent:        agent,
+		DefaultTools: defaultTools,
+		InspectTools: inspectTools,
+	}
+
+	_, err := exec.Execute(context.Background(), UserTurn{Text: "actually leave that alone and explain app.py"}, Classification{
+		Family:   FamilyInspect,
+		TopicKey: "path:app.py",
+	}, SessionState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.runMessages) != 1 {
+		t.Fatalf("run messages = %d", len(agent.runMessages))
+	}
+	msg := agent.runMessages[0]
+	if !strings.Contains(msg, "INSPECT SCOPE: single-file") {
+		t.Fatalf("inspect prompt missing single-file scope: %q", msg)
+	}
+	if !strings.Contains(msg, "start with read_file on the named path") {
+		t.Fatalf("inspect prompt missing named-path guidance: %q", msg)
+	}
+	if !strings.Contains(msg, "do not detour into sibling files or directories") {
+		t.Fatalf("inspect prompt missing no-detour guidance: %q", msg)
+	}
+}
+
+func TestAgentExecutorSingleFileInspectPromptIncludesResolvedTopicPath(t *testing.T) {
+	defaultTools := tools.NewRegistry()
+	inspectTools := tools.NewRegistry()
+	agent := &stubScopedAgent{response: "web/index.html was updated"}
+	exec := AgentExecutor{
+		Agent:        agent,
+		DefaultTools: defaultTools,
+		InspectTools: inspectTools,
+	}
+
+	_, err := exec.Execute(context.Background(), UserTurn{Text: "actually leave that alone and tell me what changed"}, Classification{
+		Family:       FamilyInspect,
+		TopicKey:     "path:web/index.html",
+		IsFollowUp:   true,
+		ThreadIntent: TurnIntentSupersedeThread,
+	}, SessionState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.runMessages) != 1 {
+		t.Fatalf("run messages = %d", len(agent.runMessages))
+	}
+	msg := agent.runMessages[0]
+	if !strings.Contains(msg, "TARGET FILE: web/index.html") {
+		t.Fatalf("inspect prompt missing resolved target path: %q", msg)
+	}
+	if !strings.Contains(msg, "read_file on web/index.html before reading any other file") {
+		t.Fatalf("inspect prompt missing explicit target-first guidance: %q", msg)
+	}
+}
+
 func TestAgentExecutorEvaluativeWorkspaceInspectPromptRequestsActionableFindings(t *testing.T) {
 	defaultTools := tools.NewRegistry()
 	inspectTools := tools.NewRegistry()
@@ -284,6 +347,39 @@ func TestAgentExecutorFollowUpAnswerPromptIncludesRecentContext(t *testing.T) {
 	}
 }
 
+func TestAgentExecutorAcknowledgementFollowUpPromptAvoidsParroting(t *testing.T) {
+	defaultTools := tools.NewRegistry()
+	inspectTools := tools.NewRegistry()
+	agent := &stubScopedAgent{response: "Which area should I go deeper on: harness, TUI, tools, or providers?"}
+	exec := AgentExecutor{
+		Agent:        agent,
+		DefaultTools: defaultTools,
+		InspectTools: inspectTools,
+	}
+
+	_, err := exec.Execute(context.Background(), UserTurn{Text: "okdoke"}, Classification{
+		Family:     FamilyAnswer,
+		IsFollowUp: true,
+		TopicKey:   "workspace:repository",
+	}, SessionState{
+		Turn:         2,
+		LastResponse: "The repo feels ready for wider use. Let me know which area you'd like a deeper dive on (harness, TUI, tools, providers, etc.).",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.runMessages) != 1 {
+		t.Fatalf("run messages = %d", len(agent.runMessages))
+	}
+	msg := agent.runMessages[0]
+	if !strings.Contains(msg, "RECENT CONTEXT:") {
+		t.Fatalf("ack follow-up prompt missing recent context: %q", msg)
+	}
+	if !strings.Contains(msg, "do not simply mirror") {
+		t.Fatalf("ack follow-up prompt missing anti-parroting guidance: %q", msg)
+	}
+}
+
 func TestAgentExecutorPlanningFollowUpAnswerPromptRequestsGroundedPlan(t *testing.T) {
 	defaultTools := tools.NewRegistry()
 	inspectTools := tools.NewRegistry()
@@ -321,6 +417,73 @@ func TestAgentExecutorPlanningFollowUpAnswerPromptRequestsGroundedPlan(t *testin
 	}
 	if !strings.Contains(msg, "ground the answer in the recent evidence above") {
 		t.Fatalf("planning follow-up prompt missing grounded-plan guidance: %q", msg)
+	}
+}
+
+func TestAgentExecutorEvaluationFollowUpAnswerPromptCarriesDeeperContextAndNoGuessingRules(t *testing.T) {
+	defaultTools := tools.NewRegistry()
+	inspectTools := tools.NewRegistry()
+	agent := &stubScopedAgent{response: "Top next change is replacing the hardcoded version constant."}
+	exec := AgentExecutor{
+		Agent:        agent,
+		DefaultTools: defaultTools,
+		InspectTools: inspectTools,
+	}
+
+	longSummary := strings.Repeat("repo-summary ", 40) + "Replace the hardcoded version constant before shipping."
+	_, err := exec.Execute(context.Background(), UserTurn{Text: "anything i need change?"}, Classification{
+		Family:          FamilyAnswer,
+		IsFollowUp:      true,
+		WantsEvaluation: true,
+		TopicKey:        "workspace:repository",
+	}, SessionState{
+		Turn:         2,
+		LastResponse: longSummary,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.runMessages) != 1 {
+		t.Fatalf("run messages = %d", len(agent.runMessages))
+	}
+	msg := agent.runMessages[0]
+	if !strings.Contains(msg, "Replace the hardcoded version constant before shipping.") {
+		t.Fatalf("evaluation follow-up prompt clipped away the actionable recent finding: %q", msg)
+	}
+	if !strings.Contains(msg, "do not introduce new factual claims unless they are supported by the recent context above") {
+		t.Fatalf("evaluation follow-up prompt missing anti-hallucination guidance: %q", msg)
+	}
+	if !strings.Contains(msg, "reuse the concrete findings already in the recent context") {
+		t.Fatalf("evaluation follow-up prompt missing reuse guidance: %q", msg)
+	}
+}
+
+func TestAgentExecutorRepositoryInspectPromptRequestsImplementationGroundingForRoutingQuestion(t *testing.T) {
+	defaultTools := tools.NewRegistry()
+	inspectTools := tools.NewRegistry()
+	agent := &stubScopedAgent{response: "Preview follow-up routing lives in internal/harness/thread.go."}
+	exec := AgentExecutor{
+		Agent:        agent,
+		DefaultTools: defaultTools,
+		InspectTools: inspectTools,
+	}
+
+	_, err := exec.Execute(context.Background(), UserTurn{Text: "explain how the harness routes preview follow-ups in this repo"}, Classification{
+		Family:   FamilyInspect,
+		TopicKey: "workspace:repository",
+	}, SessionState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.runMessages) != 1 {
+		t.Fatalf("run messages = %d", len(agent.runMessages))
+	}
+	msg := agent.runMessages[0]
+	if !strings.Contains(msg, "search for the relevant code and read the file(s) that answer the question") {
+		t.Fatalf("inspect prompt missing implementation-grounding guidance: %q", msg)
+	}
+	if !strings.Contains(msg, "do not stop at README, go.mod, or top-level listings") {
+		t.Fatalf("inspect prompt missing anti-shallow-routing guidance: %q", msg)
 	}
 }
 
@@ -404,6 +567,99 @@ func TestAgentExecutorVisiblePreviewFollowUpPromptRequiresVerifiedServerClaims(t
 	}
 	if !strings.Contains(msg, "preview_server_ensure already verifies the returned localhost URL") {
 		t.Fatalf("visible preview prompt missing host-owned verification guidance: %q", msg)
+	}
+}
+
+func TestAgentExecutorVisiblePreviewFollowUpPromptUsesPreviewThreadLedgerContext(t *testing.T) {
+	defaultTools := tools.NewRegistry()
+	inspectTools := tools.NewRegistry()
+	agent := &stubScopedAgent{response: "Preview is live again."}
+	exec := AgentExecutor{
+		Agent:        agent,
+		DefaultTools: defaultTools,
+		InspectTools: inspectTools,
+	}
+
+	_, err := exec.Execute(context.Background(), UserTurn{Text: "actually ignore app.py and show me the preview again"}, Classification{
+		Family:                  FamilyAnswer,
+		PrefersVisibleExecution: true,
+		IsFollowUp:              true,
+		TopicKey:                "path:web/index.html",
+	}, SessionState{
+		Turn:         3,
+		LastResponse: "app.py explained",
+		LastEvidence: EvidenceSnapshot{
+			Turn:     2,
+			TopicKey: "path:app.py",
+			Summary:  "app.py explained",
+		},
+		Threads: ThreadLedger{
+			Active: ThreadState{
+				ID:          "thread-2",
+				Kind:        ThreadWorkspaceInspect,
+				Status:      ThreadActive,
+				TopicKey:    "path:app.py",
+				TaskText:    "actually leave that alone and explain app.py",
+				UpdatedTurn: 2,
+			},
+			Last: ThreadState{
+				ID:          "thread-1",
+				Kind:        ThreadPreviewCollaboration,
+				Status:      ThreadSuperseded,
+				TopicKey:    "path:web/index.html",
+				TaskText:    "show me a preview of web/index.html",
+				UpdatedTurn: 2,
+				Preview: PreviewSnapshot{
+					Status: "live",
+					Path:   "web/index.html",
+					Port:   4173,
+					URL:    "http://127.0.0.1:4173/index.html",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.runMessages) != 1 {
+		t.Fatalf("run messages = %d", len(agent.runMessages))
+	}
+	msg := agent.runMessages[0]
+	if !strings.Contains(msg, "recent preview url: http://127.0.0.1:4173/index.html") {
+		t.Fatalf("visible collaboration prompt missing preview-thread url context: %q", msg)
+	}
+	if !strings.Contains(msg, "reuse the tracked preview or artifact when it still fits the request") {
+		t.Fatalf("visible collaboration prompt missing preview reuse guidance: %q", msg)
+	}
+}
+
+func TestAgentExecutorVisiblePreviewPathPromptTargetsNamedPathBeforeDiscovery(t *testing.T) {
+	defaultTools := tools.NewRegistry()
+	inspectTools := tools.NewRegistry()
+	agent := &stubScopedAgent{response: "Preview is live."}
+	exec := AgentExecutor{
+		Agent:        agent,
+		DefaultTools: defaultTools,
+		InspectTools: inspectTools,
+	}
+
+	_, err := exec.Execute(context.Background(), UserTurn{Text: "show me a preview of web/index.html and keep me updated as you go"}, Classification{
+		Family:                  FamilyAnswer,
+		PrefersVisibleExecution: true,
+		TopicKey:                "path:web/index.html",
+	}, SessionState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.runMessages) != 1 {
+		t.Fatalf("run messages = %d", len(agent.runMessages))
+	}
+	msg := agent.runMessages[0]
+	if !strings.Contains(msg, "if the user names a concrete preview path, call preview_server_ensure on that exact path before listing directories or searching") {
+		t.Fatalf("visible collaboration prompt missing concrete preview path guidance: %q", msg)
+	}
+	if !strings.Contains(msg, "only fall back to list_dir, glob, or search if preview_server_ensure fails or the path is ambiguous") {
+		t.Fatalf("visible collaboration prompt missing preview fallback guidance: %q", msg)
 	}
 }
 
