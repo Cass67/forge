@@ -12,10 +12,11 @@ import (
 // EventRenderer sends render calls as llm.Event values to a channel.
 // Used by the live chat TUI instead of printing to stdout.
 type EventRenderer struct {
-	events     chan<- llm.Event
-	approvalCh chan tools.Action
-	responseCh chan bool
-	label      string // displayed in TUI header (e.g. "dispatch", "agent")
+	events             chan<- llm.Event
+	approvalCh         chan tools.Action
+	responseCh         chan bool
+	label              string // displayed in TUI header (e.g. "dispatch", "agent")
+	lastToolProgressAt time.Time
 }
 
 func NewEventRenderer(events chan<- llm.Event) *EventRenderer {
@@ -43,8 +44,21 @@ func (r *EventRenderer) AgentText(text string) {
 func (r *EventRenderer) ToolCall(name, summary string) {
 	r.events <- llm.Event{Kind: llm.EventToolCall, Agent: name, Text: summary}
 	if progress := progressLine(r.label, name, summary); progress != "" {
+		now := time.Now()
+		if r.shouldThrottleToolProgress(now) {
+			return
+		}
 		r.events <- llm.Event{Kind: llm.EventProgress, Agent: r.label, Text: progress}
+		r.lastToolProgressAt = now
 	}
+}
+
+func (r *EventRenderer) shouldThrottleToolProgress(now time.Time) bool {
+	if r.lastToolProgressAt.IsZero() {
+		return false
+	}
+	// Keep progress chatty but avoid trace-like bursts of per-tool lines.
+	return now.Sub(r.lastToolProgressAt) < 750*time.Millisecond
 }
 
 func (r *EventRenderer) ToolResult(name, output, diff string, isError bool) {
@@ -140,7 +154,12 @@ func (r *SubAgentRenderer) AgentText(text string) {
 func (r *SubAgentRenderer) ToolCall(name, summary string) {
 	r.parent.events <- llm.Event{Kind: llm.EventToolCall, Agent: name, Text: summary, SubAgent: r.role}
 	if progress := progressLine(r.role, name, summary); progress != "" {
+		now := time.Now()
+		if r.parent.shouldThrottleToolProgress(now) {
+			return
+		}
 		r.parent.events <- llm.Event{Kind: llm.EventProgress, Agent: r.role, Text: progress, SubAgent: r.role}
+		r.parent.lastToolProgressAt = now
 	}
 }
 
