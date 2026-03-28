@@ -216,6 +216,9 @@ func TestRenderStatusHeaderUsesSplitRailCardAtWideWidths(t *testing.T) {
 	if strings.ContainsAny(header, "╭╮╰╯") {
 		t.Fatalf("header should be flat (no box border), got:\n%s", header)
 	}
+	if strings.Contains(header, "│") {
+		t.Fatalf("header should not include a vertical separator glyph, got:\n%s", header)
+	}
 	for _, line := range headerLines {
 		if ansiPrintableWidth(line) > 80 {
 			t.Fatalf("wide header line exceeds width: %d for %q", ansiPrintableWidth(line), line)
