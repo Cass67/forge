@@ -296,6 +296,163 @@ func TestSessionApplyCreatesActivePreviewThreadAndKeepsItBeyondOneTurn(t *testin
 	}
 }
 
+func TestSessionPreviewThreadStartsInIdeatePhase(t *testing.T) {
+	session := NewSession()
+	_ = session.BeginTurn("show me three themes in a web preview")
+	session.Apply(Classification{
+		Family:                  FamilyAnswer,
+		PrefersVisibleExecution: true,
+		TaskText:                "show me three themes in a web preview",
+	}, Observation{
+		Status:   ObservationComplete,
+		Response: "Preview is live.",
+		Runtime: LocalRuntimeSnapshot{
+			Preview: PreviewSnapshot{
+				Status: "live",
+				Path:   "mockups/themes_preview.html",
+				Port:   4173,
+				URL:    "http://127.0.0.1:4173/themes_preview.html",
+			},
+		},
+	})
+
+	state := session.Snapshot()
+	if !state.HasActiveThread() {
+		t.Fatalf("expected active thread: %#v", state)
+	}
+	if got := state.ActiveThread().Phase; got != ThreadPhaseIdeate {
+		t.Fatalf("thread phase = %q, want %q", got, ThreadPhaseIdeate)
+	}
+}
+
+func TestSessionPreviewPhaseTransitionsToApplyOnExplicitApplyRequest(t *testing.T) {
+	session := NewSession()
+	_ = session.BeginTurn("show me three themes in a web preview")
+	session.Apply(Classification{
+		Family:                  FamilyAnswer,
+		PrefersVisibleExecution: true,
+		TaskText:                "show me three themes in a web preview",
+	}, Observation{
+		Status:   ObservationComplete,
+		Response: "Preview is live.",
+		Runtime: LocalRuntimeSnapshot{
+			Preview: PreviewSnapshot{
+				Status: "live",
+				Path:   "mockups/themes_preview.html",
+				Port:   4173,
+				URL:    "http://127.0.0.1:4173/themes_preview.html",
+			},
+		},
+	})
+
+	_ = session.BeginTurn("apply this theme in the app")
+	session.Apply(Classification{
+		Family:                  FamilyImplement,
+		PrefersVisibleExecution: true,
+		IsFollowUp:              true,
+		ThreadIntent:            TurnIntentContinueThread,
+		TaskText:                "apply this theme in the app",
+	}, Observation{
+		Status:   ObservationComplete,
+		Response: "Applied the selected theme in app code.",
+		Runtime: LocalRuntimeSnapshot{
+			Preview: PreviewSnapshot{
+				Status: "live",
+				Path:   "mockups/themes_preview.html",
+				Port:   4173,
+				URL:    "http://127.0.0.1:4173/themes_preview.html",
+			},
+		},
+	})
+
+	state := session.Snapshot()
+	if !state.HasActiveThread() {
+		t.Fatalf("expected active thread: %#v", state)
+	}
+	if got := state.ActiveThread().Phase; got != ThreadPhaseApply {
+		t.Fatalf("thread phase = %q, want %q", got, ThreadPhaseApply)
+	}
+}
+
+func TestSessionPreviewReplayAndMetaTurnsDoNotMutatePhase(t *testing.T) {
+	session := NewSession()
+	_ = session.BeginTurn("show me three themes in a web preview")
+	session.Apply(Classification{
+		Family:                  FamilyAnswer,
+		PrefersVisibleExecution: true,
+		TaskText:                "show me three themes in a web preview",
+	}, Observation{
+		Status:   ObservationComplete,
+		Response: "Preview is live.",
+		Runtime: LocalRuntimeSnapshot{
+			Preview: PreviewSnapshot{
+				Status: "live",
+				Path:   "mockups/themes_preview.html",
+				Port:   4173,
+				URL:    "http://127.0.0.1:4173/themes_preview.html",
+			},
+		},
+	})
+
+	_ = session.BeginTurn("apply this theme in the app")
+	session.Apply(Classification{
+		Family:                  FamilyImplement,
+		PrefersVisibleExecution: true,
+		IsFollowUp:              true,
+		ThreadIntent:            TurnIntentContinueThread,
+		TaskText:                "apply this theme in the app",
+	}, Observation{
+		Status:   ObservationComplete,
+		Response: "Applied the selected theme in app code.",
+		Runtime: LocalRuntimeSnapshot{
+			Preview: PreviewSnapshot{
+				Status: "live",
+				Path:   "mockups/themes_preview.html",
+				Port:   4173,
+				URL:    "http://127.0.0.1:4173/themes_preview.html",
+			},
+		},
+	})
+
+	_ = session.BeginTurn("did you already update the code?")
+	session.Apply(Classification{
+		Family:                  FamilyAnswer,
+		PrefersVisibleExecution: true,
+		IsFollowUp:              true,
+		ThreadIntent:            TurnIntentMetaQuestion,
+		TaskText:                "did you already update the code?",
+	}, Observation{
+		Status:   ObservationComplete,
+		Response: "Yes, I already updated the code.",
+	})
+	if got := session.Snapshot().ActiveThread().Phase; got != ThreadPhaseApply {
+		t.Fatalf("phase after meta question = %q, want %q", got, ThreadPhaseApply)
+	}
+
+	_ = session.BeginTurn("show me the preview again")
+	session.Apply(Classification{
+		Family:                  FamilyAnswer,
+		PrefersVisibleExecution: true,
+		IsFollowUp:              true,
+		ThreadIntent:            TurnIntentReplayThread,
+		TaskText:                "show me the preview again",
+	}, Observation{
+		Status:   ObservationComplete,
+		Response: "Preview is still live.",
+		Runtime: LocalRuntimeSnapshot{
+			Preview: PreviewSnapshot{
+				Status: "live",
+				Path:   "mockups/themes_preview.html",
+				Port:   4173,
+				URL:    "http://127.0.0.1:4173/themes_preview.html",
+			},
+		},
+	})
+	if got := session.Snapshot().ActiveThread().Phase; got != ThreadPhaseApply {
+		t.Fatalf("phase after replay turn = %q, want %q", got, ThreadPhaseApply)
+	}
+}
+
 func TestSessionApplyCancelMovesActiveThreadToLastThread(t *testing.T) {
 	session := NewSession()
 	_ = session.BeginTurn("show me three themes in a web preview")

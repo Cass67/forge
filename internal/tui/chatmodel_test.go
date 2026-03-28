@@ -3678,3 +3678,22 @@ func TestChatModelRestoreSessionRebuildsTranscriptState(t *testing.T) {
 		t.Fatalf("expected next record id after restore to continue rebuilt transcript, got %q", got)
 	}
 }
+
+func TestNormalizeRuntimeProgressMessageUsesNaturalPhrasing(t *testing.T) {
+	got, ok := normalizeRuntimeProgressMessage("react runtime: executing turn 3")
+	if !ok {
+		t.Fatal("expected react runtime progress message to normalize")
+	}
+	if got != "Starting analysis pass 3" {
+		t.Fatalf("normalized progress = %q", got)
+	}
+}
+
+func TestToolResultProgressLineSkipsDotSummary(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.lastToolSummary["forge"] = "."
+	got := m.toolResultProgressLine(llm.Event{Kind: llm.EventToolResult, Agent: "forge"})
+	if got != "Forge wrapped up this step" {
+		t.Fatalf("progress line = %q", got)
+	}
+}

@@ -5,13 +5,17 @@ import (
 	"testing"
 )
 
-func TestRecorderBuildsDebugSummary(t *testing.T) {
+func TestTraceRecorderBuildsDebugSummary(t *testing.T) {
 	recorder := NewRecorder()
 	recorder.Record(TraceRecord{
-		State:  StateClassify,
-		Family: FamilyInspect,
-		Step:   StepLocal,
-		Reason: "inspection language",
+		State:                 StateClassify,
+		Family:                FamilyInspect,
+		Step:                  StepLocal,
+		ThreadPhase:           ThreadPhaseIdeate,
+		ClaimGuardStatus:      "evidence_present",
+		WorkspacePolicyAction: "Switched to branch forge/inspect-1",
+		ToolCallCount:         2,
+		Reason:                "inspection language",
 	})
 
 	records := recorder.Records()
@@ -22,7 +26,16 @@ func TestRecorderBuildsDebugSummary(t *testing.T) {
 	if got.Timestamp.IsZero() {
 		t.Fatal("expected timestamp to be populated")
 	}
-	for _, want := range []string{"state=classify", "family=inspect", "step=local", "reason=inspection language"} {
+	for _, want := range []string{
+		"state=classify",
+		"family=inspect",
+		"step=local",
+		"thread_phase=ideate",
+		"claim_guard=evidence_present",
+		"workspace_policy=Switched to branch forge/inspect-1",
+		"tool_calls=2",
+		"reason=inspection language",
+	} {
 		if !strings.Contains(got.DebugSummary, want) {
 			t.Fatalf("debug summary %q missing %q", got.DebugSummary, want)
 		}

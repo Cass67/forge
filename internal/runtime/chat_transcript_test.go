@@ -449,6 +449,7 @@ func runChatTranscript(t *testing.T, setup *ChatSetup, steps []transcriptStep) [
 	if len(steps) > 50 {
 		t.Fatalf("transcript has %d steps; max supported is 50", len(steps))
 	}
+	t.Setenv("FORGE_CHAT_RUNTIME", "kernel")
 
 	oldRunChatLiveUI := runChatLiveUI
 	defer func() {
@@ -532,7 +533,7 @@ func runKernelTranscript(t *testing.T, setup *ChatSetup, steps []transcriptStep)
 			timeout = 5 * time.Second
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		err := runChatTurn(ctx, a, kernel, step.Input)
+		err := runChatTurn(ctx, a, kernel, nil, step.Input)
 		cancel()
 		if err != nil {
 			t.Fatalf("step %d (%q): %v", i+1, step.Input, err)

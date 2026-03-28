@@ -47,6 +47,20 @@ func classifyActiveThreadTurn(text string, session SessionState) (Classification
 		return Classification{}, false
 	}
 
+	if wantsBranchWorkflowAction(lower, tokens) {
+		return Classification{
+			Family:                  FamilyImplement,
+			WantsAction:             true,
+			PrefersVisibleExecution: true,
+			CanStayLocal:            true,
+			IsFollowUp:              true,
+			TopicKey:                strings.TrimSpace(active.TopicKey),
+			TaskText:                strings.TrimSpace(text),
+			ThreadIntent:            TurnIntentContinueThread,
+			Reason:                  "active thread branch workflow action",
+		}, true
+	}
+
 	if class, ok := classifyActivePreviewSupersedingTask(text, lower, ordered, tokens, scope, active); ok {
 		return class, true
 	}
@@ -401,6 +415,7 @@ func applyThreadLedger(state *SessionState, class Classification, obs Observatio
 	thread := ThreadState{
 		ID:                 nextThreadID(state),
 		Kind:               kind,
+		Phase:              resolveInitialThreadPhase(kind),
 		Deliverable:        deliverable,
 		SupersedesThreadID: supersedes,
 	}
@@ -443,12 +458,26 @@ func resolveThreadKind(class Classification, deliverable DeliverableKind) Thread
 	}
 }
 
+func resolveInitialThreadPhase(kind ThreadKind) ThreadPhase {
+	if kind == ThreadPreviewCollaboration {
+		return ThreadPhaseIdeate
+	}
+	return ThreadPhaseNone
+}
+
 func updateThreadState(thread *ThreadState, class Classification, obs Observation, turn int) {
 	if thread == nil {
 		return
 	}
 	if thread.Kind == "" {
 		thread.Kind = resolveThreadKind(class, thread.Deliverable)
+	}
+	if thread.Kind == ThreadPreviewCollaboration && thread.Phase == ThreadPhaseNone {
+		thread.Phase = ThreadPhaseIdeate
+	}
+	if thread.Kind != ThreadPreviewCollaboration {
+		thread.Phase = ThreadPhaseNone
+		thread.SelectedDirection = ""
 	}
 	if thread.Deliverable == "" {
 		thread.Deliverable = resolveExpectedDeliverable(class, SessionState{}, inferredLane(class))
@@ -471,6 +500,14 @@ func updateThreadState(thread *ThreadState, class Classification, obs Observatio
 	if !obs.Runtime.Preview.IsZero() {
 		thread.Preview = finalizePreviewSnapshot(obs.Runtime.Preview, turn)
 	}
+	if thread.Kind == ThreadPreviewCollaboration {
+		if selected := inferSelectedDirection(strings.TrimSpace(class.TaskText)); selected != "" {
+			thread.SelectedDirection = selected
+		}
+	}
+	if shouldTransitionPreviewThreadToApply(*thread, class) {
+		thread.Phase = ThreadPhaseApply
+	}
 	switch obs.Outcome.Kind {
 	case OutcomeAwaitingFeedback:
 		thread.Status = ThreadAwaitingUserFeedback
@@ -478,6 +515,85 @@ func updateThreadState(thread *ThreadState, class Classification, obs Observatio
 		thread.Status = ThreadBlocked
 	default:
 		thread.Status = ThreadActive
+	}
+}
+
+func shouldTransitionPreviewThreadToApply(thread ThreadState, class Classification) bool {
+	if thread.Kind != ThreadPreviewCollaboration {
+		return false
+	}
+	if thread.Phase == ThreadPhaseApply {
+		return false
+	}
+	switch class.ThreadIntent {
+	case TurnIntentReplayThread, TurnIntentMetaQuestion, TurnIntentCancelThread:
+		return false
+	}
+	return explicitSourceApplyRequest(strings.TrimSpace(class.TaskText))
+}
+
+func inferSelectedDirection(taskText string) string {
+	ordered := tokenList(strings.ToLower(strings.TrimSpace(taskText)))
+	if len(ordered) == 0 {
+		return ""
+	}
+	cues := [][]string{
+		{"i", "like"},
+		{"go", "with"},
+		{"pick"},
+		{"choose"},
+		{"use"},
+	}
+	for _, cue := range cues {
+		idx := tokenSequenceIndex(ordered, cue)
+		if idx < 0 {
+			continue
+		}
+		start := idx + len(cue)
+		if candidate := selectedDirectionCandidate(ordered, start); candidate != "" {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func tokenSequenceIndex(ordered []string, sequence []string) int {
+	if len(sequence) == 0 || len(ordered) < len(sequence) {
+		return -1
+	}
+outer:
+	for i := 0; i <= len(ordered)-len(sequence); i++ {
+		for j, token := range sequence {
+			if ordered[i+j] != token {
+				continue outer
+			}
+		}
+		return i
+	}
+	return -1
+}
+
+func selectedDirectionCandidate(ordered []string, start int) string {
+	if start < 0 || start >= len(ordered) {
+		return ""
+	}
+	for i := start; i < len(ordered) && i < start+4; i++ {
+		token := strings.TrimSpace(ordered[i])
+		if token == "" || isDirectionStopword(token) {
+			continue
+		}
+		return token
+	}
+	return ""
+}
+
+func isDirectionStopword(token string) bool {
+	switch token {
+	case "the", "this", "that", "it", "theme", "themes", "direction", "design", "option", "options",
+		"one", "two", "three", "please", "now", "and", "with", "to", "for", "app", "code":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -523,6 +639,7 @@ func threadTraceRecord(before, after SessionState, class Classification) (TraceR
 				ThreadID:     after.Threads.Last.ID,
 				ThreadKind:   after.Threads.Last.Kind,
 				ThreadStatus: after.Threads.Last.Status,
+				ThreadPhase:  after.Threads.Last.Phase,
 				ThreadIntent: class.ThreadIntent,
 			}, true
 		}
@@ -538,6 +655,7 @@ func threadTraceRecord(before, after SessionState, class Classification) (TraceR
 				ThreadID:     thread.ID,
 				ThreadKind:   thread.Kind,
 				ThreadStatus: thread.Status,
+				ThreadPhase:  thread.Phase,
 				ThreadIntent: class.ThreadIntent,
 			}, true
 		}
@@ -553,6 +671,7 @@ func threadTraceRecord(before, after SessionState, class Classification) (TraceR
 				ThreadID:     thread.ID,
 				ThreadKind:   thread.Kind,
 				ThreadStatus: thread.Status,
+				ThreadPhase:  thread.Phase,
 				ThreadIntent: class.ThreadIntent,
 			}, true
 		}
@@ -570,6 +689,7 @@ func threadTraceRecord(before, after SessionState, class Classification) (TraceR
 			ThreadID:     afterThread.ID,
 			ThreadKind:   afterThread.Kind,
 			ThreadStatus: afterThread.Status,
+			ThreadPhase:  afterThread.Phase,
 			ThreadIntent: class.ThreadIntent,
 		}, true
 	}
@@ -583,6 +703,7 @@ func threadTraceRecord(before, after SessionState, class Classification) (TraceR
 			ThreadID:     afterThread.ID,
 			ThreadKind:   afterThread.Kind,
 			ThreadStatus: afterThread.Status,
+			ThreadPhase:  afterThread.Phase,
 			ThreadIntent: TurnIntentSupersedeThread,
 		}, true
 	}

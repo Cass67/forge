@@ -367,11 +367,41 @@ func TestEnableChatDebugLogsActiveRuntimeMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	fields, _ := entry["fields"].(map[string]any)
-	if got := fields["runtime_mode"]; got != "kernel" {
-		t.Fatalf("runtime_mode = %#v, want kernel", got)
+	if got := fields["runtime_mode"]; got != "react" {
+		t.Fatalf("runtime_mode = %#v, want react", got)
 	}
 	if got := fields["agents_enabled"]; got != false {
-		t.Fatalf("agents_enabled = %#v, want false because visible agents are disabled in kernel mode", got)
+		t.Fatalf("agents_enabled = %#v, want false because visible agents are disabled in react mode", got)
+	}
+}
+
+func TestEnableChatDebugLogsReactRuntimeMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chat-debug.jsonl")
+	cfg := &config.Config{}
+	cfg.Chat.Agents.Enabled = true
+	setup := &ChatSetup{
+		ChatModel: "openai/gpt-5",
+		WorkDir:   t.TempDir(),
+		Driver:    &debugMockDriver{response: "ok"},
+		Config:    cfg,
+	}
+
+	t.Setenv("FORGE_CHAT_RUNTIME", "react")
+	if _, err := EnableChatDebug(setup, path); err != nil {
+		t.Fatal(err)
+	}
+
+	lines := readDebugLines(t, path)
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
+		t.Fatal(err)
+	}
+	fields, _ := entry["fields"].(map[string]any)
+	if got := fields["runtime_mode"]; got != "react" {
+		t.Fatalf("runtime_mode = %#v, want react", got)
+	}
+	if got := fields["agents_enabled"]; got != false {
+		t.Fatalf("agents_enabled = %#v, want false because visible agents are disabled in react mode during phase A", got)
 	}
 }
 

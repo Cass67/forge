@@ -157,6 +157,53 @@ func TestChatConfigDefaults(t *testing.T) {
 	if cfg.Chat.AutoSkills != "suggest" {
 		t.Errorf("AutoSkills = %q, want %q", cfg.Chat.AutoSkills, "suggest")
 	}
+	if cfg.Approval.DefaultPolicy != "on_request" {
+		t.Errorf("Approval.DefaultPolicy = %q, want %q", cfg.Approval.DefaultPolicy, "on_request")
+	}
+	if cfg.Approval.SandboxPolicy != "workspace_write" {
+		t.Errorf("Approval.SandboxPolicy = %q, want %q", cfg.Approval.SandboxPolicy, "workspace_write")
+	}
+	if len(cfg.Approval.KnownSafePrefixes) == 0 {
+		t.Error("Approval.KnownSafePrefixes should have defaults")
+	}
+}
+
+func TestLoadApprovalConfigSection(t *testing.T) {
+	toml := `
+[approval]
+default_policy = "unless_trusted"
+sandbox_policy = "read_only"
+known_safe_prefixes = ["git status", "go test"]
+
+[[approval.rules]]
+tool = "run_command"
+command_prefix = ["git", "push"]
+decision = "forbidden"
+`
+	path := writeTemp(t, toml)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Approval.DefaultPolicy != "unless_trusted" {
+		t.Fatalf("DefaultPolicy = %q", cfg.Approval.DefaultPolicy)
+	}
+	if cfg.Approval.SandboxPolicy != "read_only" {
+		t.Fatalf("SandboxPolicy = %q", cfg.Approval.SandboxPolicy)
+	}
+	if len(cfg.Approval.Rules) != 1 {
+		t.Fatalf("rules = %d, want 1", len(cfg.Approval.Rules))
+	}
+	rule := cfg.Approval.Rules[0]
+	if rule.Tool != "run_command" {
+		t.Fatalf("rule.Tool = %q", rule.Tool)
+	}
+	if got := strings.Join(rule.CommandPrefix, " "); got != "git push" {
+		t.Fatalf("rule.CommandPrefix = %q", got)
+	}
+	if rule.Decision != "forbidden" {
+		t.Fatalf("rule.Decision = %q", rule.Decision)
+	}
 }
 
 func TestChatModel(t *testing.T) {

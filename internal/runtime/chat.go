@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -21,6 +22,8 @@ import (
 	"forge/internal/harness"
 	"forge/internal/llm"
 	"forge/internal/modelcatalog"
+	reactruntime "forge/internal/react"
+	reacttools "forge/internal/react/tools"
 	"forge/internal/skills"
 	"forge/internal/tui"
 )
@@ -31,6 +34,14 @@ var (
 	saveLastChatModel = config.SaveChatLastModel
 	defaultConfigPath = config.DefaultPath
 	runChatLiveUI     = tui.RunChatLive
+)
+
+type chatRuntimeMode string
+
+const (
+	chatRuntimeKernel chatRuntimeMode = "kernel"
+	chatRuntimeLegacy chatRuntimeMode = "legacy"
+	chatRuntimeReact  chatRuntimeMode = "react"
 )
 
 type ChatSetup struct {
@@ -200,12 +211,19 @@ func RunChatLive(setup *ChatSetup) {
 		}()
 	}
 	evRenderer := agent.NewEventRenderer(renderCh)
+	runtimeMode := resolveChatRuntimeMode()
+	useKernel := runtimeMode == chatRuntimeKernel
 
 	var approve tools.ApprovalFunc
 	if setup.Yolo {
 		approve = agent.YoloApproval()
 	} else {
 		approve = evRenderer.LiveApproval()
+	}
+	if runtimeMode == chatRuntimeReact {
+		approve = reactruntime.NewApprovalGate(setup.WorkDir, reactruntime.LoadApprovalConfig(setup.Config), approve, func(text string) {
+			evRenderer.Info(text)
+		}).Approve
 	}
 
 	reg := tools.NewRegistry()
@@ -220,14 +238,26 @@ func RunChatLive(setup *ChatSetup) {
 	state := chatstate.New()
 
 	a := agent.NewAgent(setup.Driver, reg, approve, setup.WorkDir, setup.Config.Chat.MaxTurns, evRenderer, loadedSkills, state)
-	useKernel := useHarnessKernelRuntime()
 	var kernel *harness.Runner
+	var reactRunner *reactruntime.Runner
 
 	if useKernel {
 		kernel = harness.NewRunner(buildHarnessRunnerConfig(setup, a, baseReg, inspectReg, previewRuntime, loadedSkills, workerAutoMode, approve))
 	}
 
-	if setup.Config.Chat.Agents.Enabled && !useKernel {
+	if runtimeMode == chatRuntimeReact {
+		reactRunner = reactruntime.NewRunner(reactruntime.Config{
+			Agent:           a,
+			Session:         reactruntime.NewSession(),
+			MaxSessionTurns: 20,
+			Progress: func(text string) {
+				evRenderer.Info(text)
+			},
+		})
+		registerReactDelegationTools(reg, a, setup, baseReg)
+	}
+
+	if setup.Config.Chat.Agents.Enabled && runtimeMode == chatRuntimeLegacy {
 		configureMultiAgent(a, baseReg, setup)
 		evRenderer.SetLabel("dispatch")
 	}
@@ -256,7 +286,7 @@ func RunChatLive(setup *ChatSetup) {
 				setup.debugRec.logInput("user", msg)
 			}
 			go func(runMsg string) {
-				err := runChatTurn(ctx, a, kernel, runMsg)
+				err := runChatTurn(ctx, a, kernel, reactRunner, runMsg)
 				if setup != nil && setup.debugRec != nil && kernel != nil {
 					setup.debugRec.logTrace(kernel.Trace())
 				}
@@ -331,7 +361,7 @@ func RunChatLive(setup *ChatSetup) {
 		DebugEnabled:    debugEnabled,
 		AvailableModels: setup.Available,
 		Providers:       append([]tui.ProviderOption(nil), setup.Providers...),
-		AgentsEnabled:   !useKernel && setup.Config.Chat.Agents.Enabled,
+		AgentsEnabled:   runtimeMode == chatRuntimeLegacy && setup.Config.Chat.Agents.Enabled,
 		FetchLiveCopilotQuota: func(ctx context.Context) (*copilot.UserQuota, error) {
 			if provider := bootstrap.ParseModelRef(setup.ChatModel).Provider; provider != "copilot" {
 				return nil, nil
@@ -463,10 +493,20 @@ func RunChatConsole(setup *ChatSetup) {
 	} else {
 		approve = agent.InteractiveApproval(os.Stdin, os.Stdout)
 	}
+	runtimeMode := resolveChatRuntimeMode()
+	if runtimeMode == chatRuntimeReact {
+		approve = reactruntime.NewApprovalGate(setup.WorkDir, reactruntime.LoadApprovalConfig(setup.Config), approve, func(text string) {
+			fmt.Fprintln(os.Stdout, text)
+		}).Approve
+	}
 
 	reg := tools.NewRegistry()
 	interactiveApprove := agent.InteractiveApproval(os.Stdin, os.Stdout)
-	previewRuntime := registerTools(reg, setup.WorkDir, setup.Config, approve, interactiveApprove)
+	forcePromptApprove := interactiveApprove
+	if runtimeMode == chatRuntimeReact {
+		forcePromptApprove = approve
+	}
+	previewRuntime := registerTools(reg, setup.WorkDir, setup.Config, approve, forcePromptApprove)
 	if previewRuntime != nil {
 		defer previewRuntime.Close()
 	}
@@ -478,14 +518,27 @@ func RunChatConsole(setup *ChatSetup) {
 	renderer := agent.NewRenderer(os.Stdout, 80, true)
 	state := chatstate.New()
 	a := agent.NewAgent(setup.Driver, reg, approve, setup.WorkDir, setup.Config.Chat.MaxTurns, renderer, loadedSkills, state)
-	useKernel := useHarnessKernelRuntime()
+	useKernel := runtimeMode == chatRuntimeKernel
 	var kernel *harness.Runner
+	var reactRunner *reactruntime.Runner
 
 	if useKernel {
 		kernel = harness.NewRunner(buildHarnessRunnerConfig(setup, a, baseReg, inspectReg, previewRuntime, loadedSkills, workerAutoMode, approve))
 	}
 
-	if setup.Config.Chat.Agents.Enabled && !useKernel {
+	if runtimeMode == chatRuntimeReact {
+		reactRunner = reactruntime.NewRunner(reactruntime.Config{
+			Agent:           a,
+			Session:         reactruntime.NewSession(),
+			MaxSessionTurns: 20,
+			Progress: func(text string) {
+				renderer.Info(text)
+			},
+		})
+		registerReactDelegationTools(reg, a, setup, baseReg)
+	}
+
+	if setup.Config.Chat.Agents.Enabled && runtimeMode == chatRuntimeLegacy {
 		configureMultiAgent(a, reg, setup)
 	}
 
@@ -530,7 +583,7 @@ func RunChatConsole(setup *ChatSetup) {
 				continue
 			}
 		}
-		err := runChatTurn(ctx, a, kernel, input)
+		err := runChatTurn(ctx, a, kernel, reactRunner, input)
 		if setup != nil && setup.debugRec != nil && kernel != nil {
 			setup.debugRec.logTrace(kernel.Trace())
 		}
@@ -542,11 +595,44 @@ func RunChatConsole(setup *ChatSetup) {
 }
 
 func useHarnessKernelRuntime() bool {
+	return resolveChatRuntimeMode() == chatRuntimeKernel
+}
+
+func registerReactDelegationTools(reg *tools.Registry, a *agent.Agent, setup *ChatSetup, baseReg *tools.Registry) {
+	if reg == nil || a == nil || setup == nil || baseReg == nil {
+		return
+	}
+	pool := reactruntime.NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+		roleModels := map[string]string{}
+		if setup.Config != nil {
+			roleModels = setup.Config.AgentRoleModels()
+		}
+		return a.SpawnSubAgent(ctx, reactruntime.MapSpawnRole(role), task, agent.MultiAgentConfig{
+			Enabled:    true,
+			RoleModels: roleModels,
+			MakeDriver: setup.MakeDriver,
+			BaseTools:  baseReg.Filter(nil),
+		})
+	})
+	reg.Register(reacttools.NewSpawnAgent(pool))
+	reg.Register(reacttools.NewWaitAgent(pool))
+}
+
+func resolveChatRuntimeMode() chatRuntimeMode {
 	mode := strings.TrimSpace(os.Getenv("FORGE_CHAT_RUNTIME"))
 	if mode == "" {
-		return true
+		return chatRuntimeReact
 	}
-	return !strings.EqualFold(mode, "legacy")
+	switch strings.ToLower(mode) {
+	case string(chatRuntimeKernel):
+		return chatRuntimeKernel
+	case string(chatRuntimeLegacy):
+		return chatRuntimeLegacy
+	case string(chatRuntimeReact):
+		return chatRuntimeReact
+	default:
+		return chatRuntimeReact
+	}
 }
 
 func buildHarnessRunnerConfig(setup *ChatSetup, a *agent.Agent, baseReg, inspectReg *tools.Registry, previewRuntime *tools.PreviewRuntime, loadedSkills []skills.Skill, workerAutoMode string, approve tools.ApprovalFunc) harness.RunnerConfig {
@@ -578,9 +664,10 @@ func buildHarnessRunnerConfig(setup *ChatSetup, a *agent.Agent, baseReg, inspect
 			LoadedSkills:   loadedSkills,
 			AutoSkillsMode: workerAutoMode,
 		},
-		Workers:        workers,
-		WorkerSkills:   loadedSkills,
-		WorkerAutoMode: workerAutoMode,
+		Workers:         workers,
+		WorkspacePolicy: newWorkspacePolicy(workDir),
+		WorkerSkills:    loadedSkills,
+		WorkerAutoMode:  workerAutoMode,
 	}
 }
 
@@ -614,8 +701,21 @@ func compatibilityWorkerModel(cfg *config.Config, kind harness.WorkerKind) strin
 	}
 }
 
-func runChatTurn(ctx context.Context, a *agent.Agent, kernel *harness.Runner, input string) error {
+type chatTurnRunner interface {
+	Run(context.Context, string) error
+}
+
+func runChatTurn(ctx context.Context, a *agent.Agent, kernel *harness.Runner, reactRunner chatTurnRunner, input string) error {
 	if kernel == nil {
+		if hasTurnRunner(reactRunner) {
+			if a != nil {
+				a.ResetTurnState()
+			}
+			return reactRunner.Run(ctx, input)
+		}
+		if a == nil {
+			return fmt.Errorf("chat agent is nil")
+		}
 		return a.Run(ctx, input)
 	}
 	if a != nil {
@@ -628,6 +728,19 @@ func runChatTurn(ctx context.Context, a *agent.Agent, kernel *harness.Runner, in
 		}
 	}
 	return err
+}
+
+func hasTurnRunner(r chatTurnRunner) bool {
+	if r == nil {
+		return false
+	}
+	value := reflect.ValueOf(r)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return !value.IsNil()
+	default:
+		return true
+	}
 }
 
 func handleChatSlashCommand(input string, renderer *agent.Renderer, a *agent.Agent, setup *ChatSetup) bool {
