@@ -4285,35 +4285,84 @@ func (m ChatModel) View() string {
 		Height(m.height).
 		Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
 	if m.helpVisible {
-		return m.renderHelpOverlay()
+		return fillSurfaceRows(m.renderHelpOverlay(), m.width, theme.AppBG)
 	}
 	if m.statsVisible {
-		return m.renderStatsOverlay()
+		return fillSurfaceRows(m.renderStatsOverlay(), m.width, theme.AppBG)
 	}
 	if m.traceVisible && m.debugEnabled {
 		if overlay := m.renderTraceOverlay(); overlay != "" {
-			return overlay
+			return fillSurfaceRows(overlay, m.width, theme.AppBG)
 		}
 	}
 	if m.searchVisible {
-		return m.renderSearchOverlay()
+		return fillSurfaceRows(m.renderSearchOverlay(), m.width, theme.AppBG)
 	}
 	if m.filesVisible {
-		return m.renderFilesOverlay()
+		return fillSurfaceRows(m.renderFilesOverlay(), m.width, theme.AppBG)
 	}
 	if m.agentModelsVisible {
-		return m.renderAgentModelsOverlay()
+		return fillSurfaceRows(m.renderAgentModelsOverlay(), m.width, theme.AppBG)
 	}
 	if m.modelsVisible {
-		return m.renderModelsOverlay()
+		return fillSurfaceRows(m.renderModelsOverlay(), m.width, theme.AppBG)
 	}
 	if m.providersVisible {
-		return m.renderProvidersOverlay()
+		return fillSurfaceRows(m.renderProvidersOverlay(), m.width, theme.AppBG)
 	}
 	if m.sessionsVisible {
-		return m.renderSessionsOverlay()
+		return fillSurfaceRows(m.renderSessionsOverlay(), m.width, theme.AppBG)
 	}
-	return base
+	return fillSurfaceRows(base, m.width, theme.AppBG)
+}
+
+func fillSurfaceRows(view string, width int, bg lipgloss.Color) string {
+	width = max(1, width)
+	lines := strings.Split(view, "\n")
+	fill := lipgloss.NewStyle().Background(bg)
+	for i, line := range lines {
+		line = paintPlainSpacesWithBG(line, bg)
+		printable := ansiPrintableWidth(line)
+		if printable < width {
+			line += fill.Render(strings.Repeat(" ", width-printable))
+		}
+		lines[i] = line
+	}
+	return strings.Join(lines, "\n")
+}
+
+func paintPlainSpacesWithBG(line string, bg lipgloss.Color) string {
+	if line == "" || !strings.Contains(line, " ") {
+		return line
+	}
+	fill := lipgloss.NewStyle().Background(bg)
+	var out strings.Builder
+	out.Grow(len(line) + 16)
+	for i := 0; i < len(line); {
+		if line[i] == '\x1b' {
+			if esc, n := consumeANSIEscape(line[i:]); n > 0 {
+				out.WriteString(esc)
+				i += n
+				continue
+			}
+		}
+		if line[i] != ' ' {
+			out.WriteByte(line[i])
+			i++
+			continue
+		}
+		start := i
+		for i < len(line) && line[i] == ' ' {
+			i++
+		}
+		runLen := i - start
+		if runLen >= 2 {
+			out.WriteString(fill.Render(strings.Repeat(" ", runLen)))
+			continue
+		}
+		out.WriteByte(' ')
+	}
+	return out.String()
 }
 
 func (m ChatModel) renderLiveProgressSlot(theme chatTheme) string {
