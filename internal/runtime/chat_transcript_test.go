@@ -696,6 +696,9 @@ func (d *scriptedTranscriptDriver) inspectResponse(root string, messages []llm.M
 		if evaluative && !hasTranscriptToolEvidence(messages, "ruff-pre-commit") {
 			return transcriptToolCall("read_file", `{"path":".pre-commit-config.yaml","start_line":1,"end_line":80}`)
 		}
+		if !hasTranscriptToolEvidence(messages, "FORGE_FIXTURE_SERVICE") {
+			return transcriptToolCall("read_file", `{"path":"service/main.py","start_line":1,"end_line":80}`)
+		}
 	}
 
 	lowerReq := strings.ToLower(request)
@@ -716,6 +719,10 @@ func (d *scriptedTranscriptDriver) answerResponse(root string) string {
 	switch {
 	case strings.Contains(request, "brainstorming"):
 		return "No. I use that when planning or design work is needed."
+	case strings.Contains(request, "anything i need change?") && strings.Contains(root, "RECENT CONTEXT:") && strings.Contains(root, "service/main.py"):
+		return "Top next change is adding focused tests around service/main.py and tightening the pre-commit checks so the service path is verified automatically."
+	case strings.Contains(request, "what do you think") && strings.Contains(root, "RECENT CONTEXT:") && (strings.Contains(root, "service entrypoint") || strings.Contains(root, "Python service fixture")):
+		return "Top improvement areas are stronger pre-commit hygiene and better test coverage around the service entrypoint."
 	case strings.Contains(request, "plan") && strings.Contains(root, "RECENT CONTEXT:") && strings.Contains(root, "service entrypoint"):
 		return "Start with focused tests around service/main.py, then tighten the pre-commit checks so the service path is verified automatically."
 	default:

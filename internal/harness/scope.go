@@ -129,10 +129,10 @@ func inferTargetGlobFromText(task string) string {
 }
 
 func inferLanguageScopeHint(task string) (languageScopeHint, bool) {
-	tokens := tokenize(task)
+	ordered := tokenList(task)
 	for _, hint := range languageScopeHints {
 		for _, alias := range hint.Aliases {
-			if hasScopedAliasPhrase(task, alias) || hasLooseScopedAliasTokens(tokens, alias) {
+			if hasScopedAliasPhrase(task, alias) || hasLooseScopedAliasTokens(ordered, alias) {
 				return hint, true
 			}
 		}
@@ -140,26 +140,38 @@ func inferLanguageScopeHint(task string) (languageScopeHint, bool) {
 	return languageScopeHint{}, false
 }
 
-func hasLooseScopedAliasTokens(tokens map[string]struct{}, alias string) bool {
-	if len(tokens) == 0 {
+func hasLooseScopedAliasTokens(ordered []string, alias string) bool {
+	if len(ordered) == 0 {
 		return false
 	}
-	if _, ok := tokens[alias]; !ok {
-		return false
-	}
-	if hasToken(tokens, "file") || hasToken(tokens, "files") ||
-		hasToken(tokens, "script") || hasToken(tokens, "scripts") ||
-		hasToken(tokens, "source") || hasToken(tokens, "sources") ||
-		hasToken(tokens, "module") || hasToken(tokens, "modules") ||
-		hasToken(tokens, "code") {
-		return true
-	}
-	for token := range tokens {
-		if withinEditDistanceOne(token, "extension") || withinEditDistanceOne(token, "extensions") {
-			return true
+	for idx, token := range ordered {
+		if token != alias {
+			continue
+		}
+		start := idx - 2
+		if start < 0 {
+			start = 0
+		}
+		end := idx + 2
+		if end >= len(ordered) {
+			end = len(ordered) - 1
+		}
+		for i := start; i <= end; i++ {
+			if hasScopedContextToken(ordered[i]) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+func hasScopedContextToken(token string) bool {
+	switch token {
+	case "file", "files", "script", "scripts", "source", "sources", "module", "modules", "code":
+		return true
+	default:
+		return withinEditDistanceOne(token, "extension") || withinEditDistanceOne(token, "extensions")
+	}
 }
 
 func hasScopedAliasPhrase(task, alias string) bool {

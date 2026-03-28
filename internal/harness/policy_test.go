@@ -36,6 +36,18 @@ func TestAdmitWorkerUsesReaderForPlainInspectTurns(t *testing.T) {
 	}
 }
 
+func TestAdmitWorkerKeepsImplementationGroundedWorkspaceInspectTurnsLocal(t *testing.T) {
+	worker, reason, ok := AdmitWorker(Classification{
+		Family:       FamilyInspect,
+		CanStayLocal: true,
+		TopicKey:     "workspace:repository",
+		TaskText:     "explain how the harness routes preview follow-ups in this repo",
+	}, SessionState{})
+	if ok {
+		t.Fatalf("unexpected worker admission: %q (%s)", worker, reason)
+	}
+}
+
 func TestAdmitWorkerKeepsEvaluativeWorkspaceInspectTurnsLocal(t *testing.T) {
 	worker, reason, ok := AdmitWorker(Classification{
 		Family:          FamilyInspect,

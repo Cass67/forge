@@ -176,6 +176,22 @@ func buildInspectTurnPrompt(class Classification, userMessage string, session Se
 			"- make it clear when the answer is based on sampled files rather than exhaustive coverage",
 		)
 	}
+	if scope == "single-file" {
+		targetPath := strings.TrimSpace(strings.TrimPrefix(class.TopicKey, "path:"))
+		lines = append(lines,
+			"- start with read_file on the named path when it exists",
+			"- once you have read the named file, answer directly unless the user explicitly asks for surrounding context",
+			"- do not detour into sibling files or directories unless the named file clearly requires that context",
+		)
+		if targetPath != "" {
+			lines = append(lines,
+				"- read_file on "+targetPath+" before reading any other file",
+				"",
+				"TARGET: "+targetPath,
+				"TARGET FILE: "+targetPath,
+			)
+		}
+	}
 	if class.WantsEvaluation {
 		lines = append(lines,
 			"- lead with the highest-value improvements or findings instead of a neutral walkthrough",
@@ -187,6 +203,12 @@ func buildInspectTurnPrompt(class Classification, userMessage string, session Se
 				"- inspect at least one representative implementation file when one is present; do not stop at README or directory listings alone",
 			)
 		}
+	}
+	if (scope == "repository" || scope == "directory") && asksForImplementationGrounding(userMessage) {
+		lines = append(lines,
+			"- the user is asking about concrete implementation behavior, so search for the relevant code and read the file(s) that answer the question",
+			"- do not stop at README, go.mod, or top-level listings when the request asks how routing, flow, or specific files/functions work",
+		)
 	}
 	if class.IsFollowUp && session.HasRecentEvidence() && strings.TrimSpace(session.LastEvidence.TopicKey) != "" {
 		lines = append(lines,
@@ -225,7 +247,15 @@ func buildAnswerTurnPrompt(class Classification, userMessage string, session Ses
 		lines = append(lines,
 			"- ground the answer in the recent evidence above when it is relevant",
 			"- do not restart with a generic checklist or ask to inspect again unless the recent evidence is clearly insufficient",
+			"- do not introduce new factual claims unless they are supported by the recent context above or by fresh tool results from this turn",
+			"- if the follow-up asks for advice about the prior inspection, reuse the concrete findings already in the recent context before looking for new ones",
 		)
+		if looksLikeActiveThreadAcknowledgement(userMessage, strings.ToLower(userMessage), tokenList(strings.ToLower(userMessage)), tokenize(strings.ToLower(userMessage))) {
+			lines = append(lines,
+				"- if the user's message is just a short acknowledgement, do not simply mirror it back",
+				"- either continue the most relevant recent thread or ask one focused clarifying question when the next step is ambiguous",
+			)
+		}
 		lines = append(lines,
 			"",
 			"RECENT CONTEXT:",
@@ -251,6 +281,13 @@ func buildVisibleCollaborationTurnPrompt(class Classification, userMessage strin
 		"- prefer bounded previews such as static HTML files when they satisfy the request; use a server only when it materially helps",
 		"- keep updates concise and ground claims in tool results from this turn or relevant recent context",
 	}
+	if previewPath := concreteVisiblePreviewPath(class, userMessage); previewPath != "" {
+		lines = append(lines,
+			"- if the user names a concrete preview path, call preview_server_ensure on that exact path before listing directories or searching",
+			"- only fall back to list_dir, glob, or search if preview_server_ensure fails or the path is ambiguous",
+			"- concrete preview path for this turn: "+previewPath,
+		)
+	}
 	if context := recentVisibleCollaborationContext(session); context != "" {
 		lines = append(lines,
 			"",
@@ -262,8 +299,29 @@ func buildVisibleCollaborationTurnPrompt(class Classification, userMessage strin
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
+func concreteVisiblePreviewPath(class Classification, userMessage string) string {
+	if class.Family != FamilyAnswer {
+		return ""
+	}
+	topicKey := strings.TrimSpace(class.TopicKey)
+	if !strings.HasPrefix(topicKey, "path:") {
+		return ""
+	}
+	lower := strings.ToLower(strings.TrimSpace(userMessage))
+	if !wantsVisiblePreviewExecution(lower, tokenize(lower)) {
+		return ""
+	}
+	path := strings.TrimSpace(strings.TrimPrefix(topicKey, "path:"))
+	if path == "" {
+		return ""
+	}
+	return path
+}
+
 func inspectPromptScope(class Classification) string {
 	switch {
+	case strings.HasPrefix(class.TopicKey, "path:"):
+		return "single-file"
 	case strings.HasPrefix(class.TopicKey, "files:"):
 		return "focused-files"
 	case strings.HasPrefix(class.TopicKey, "workspace:repository"):
@@ -279,11 +337,15 @@ func recentAnswerContext(class Classification, session SessionState) string {
 	if !class.IsFollowUp {
 		return ""
 	}
-	if session.HasRecentMeta() && strings.TrimSpace(session.LastResponse) != "" {
-		return "- prior assistant answer: " + clipPromptContext(session.LastResponse, 240)
+	limit := 240
+	if class.WantsEvaluation || class.WantsInterpretation {
+		limit = 900
+	}
+	if strings.TrimSpace(session.LastResponse) != "" {
+		return "- prior assistant answer: " + clipPromptContext(session.LastResponse, limit)
 	}
 	if session.HasRecentEvidence() && strings.TrimSpace(session.LastEvidence.Summary) != "" {
-		return "- recent evidence: " + clipPromptContext(session.LastEvidence.Summary, 240)
+		return "- recent evidence: " + clipPromptContext(session.LastEvidence.Summary, limit)
 	}
 	return ""
 }
@@ -296,12 +358,24 @@ func recentVisibleCollaborationContext(session SessionState) string {
 	if session.HasRecentEvidence() && strings.TrimSpace(session.LastEvidence.Summary) != "" {
 		lines = append(lines, "- recent evidence: "+clipPromptContext(session.LastEvidence.Summary, 240))
 	}
-	if session.HasRecentArtifact() {
-		lines = append(lines, "- recent artifact handle: "+clipPromptContext(session.LastArtifact.Handle, 120))
-		lines = append(lines, "- recent artifact path: "+clipPromptContext(session.LastArtifact.Path, 240))
+	artifact := session.LastArtifact
+	if artifact.IsZero() {
+		if thread, ok := recentPreviewThreadFromLedger(session); ok && !thread.Artifact.IsZero() {
+			artifact = thread.Artifact
+		}
 	}
-	if session.HasRecentPreview() {
-		lines = append(lines, "- recent preview url: "+clipPromptContext(session.LastPreview.URL, 240))
+	if !artifact.IsZero() {
+		lines = append(lines, "- recent artifact handle: "+clipPromptContext(artifact.Handle, 120))
+		lines = append(lines, "- recent artifact path: "+clipPromptContext(artifact.Path, 240))
+	}
+	preview := session.LastPreview
+	if preview.IsZero() {
+		if thread, ok := recentPreviewThreadFromLedger(session); ok && !thread.Preview.IsZero() {
+			preview = thread.Preview
+		}
+	}
+	if !preview.IsZero() {
+		lines = append(lines, "- recent preview url: "+clipPromptContext(preview.URL, 240))
 		lines = append(lines, "- reuse the tracked preview or artifact when it still fits the request instead of rediscovering it from scratch")
 	}
 	return strings.Join(lines, "\n")
