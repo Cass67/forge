@@ -238,12 +238,90 @@ func TestChatModelToolCallCheckpointsPreviousMilestone(t *testing.T) {
 	updated, _ = m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "read_file", Text: "AGENTS.md"})
 	m = updated.(ChatModel)
 
-	if len(m.messages) != 1 {
-		t.Fatalf("expected only active working milestone, got %#v", m.messages)
+	var sawWorking, sawReadmeCheckpoint bool
+	for _, msg := range m.messages {
+		if msg.Kind == MsgWorking && strings.Contains(msg.Content, "Reading AGENTS.md") {
+			sawWorking = true
+		}
+		if msg.Kind == MsgStatus && strings.Contains(msg.Content, "Read README.md") {
+			sawReadmeCheckpoint = true
+		}
 	}
-	last := m.messages[len(m.messages)-1]
-	if last.Kind != MsgWorking || !strings.Contains(last.Content, "Reading AGENTS.md") {
-		t.Fatalf("expected active working milestone, got %#v", last)
+	if !sawWorking || !sawReadmeCheckpoint {
+		t.Fatalf("expected AGENTS working milestone plus README checkpoint, got %#v", m.messages)
+	}
+}
+
+func TestChatModelToolCallEmitsExploredCheckpoint(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "read_file", Text: "README.md"})
+	m = updated.(ChatModel)
+
+	var sawCheckpoint bool
+	for _, msg := range m.messages {
+		if msg.Kind == MsgStatus && strings.Contains(msg.Content, "• Explored") && strings.Contains(msg.Content, "Read README.md") {
+			sawCheckpoint = true
+			break
+		}
+	}
+	if !sawCheckpoint {
+		t.Fatalf("expected explored checkpoint in transcript, got %#v", m.messages)
+	}
+}
+
+func TestChatModelToolCallCheckpointDedupesRepeatedSteps(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "read_file", Text: "README.md"})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "read_file", Text: "README.md"})
+	m = updated.(ChatModel)
+
+	var count int
+	for _, msg := range m.messages {
+		if msg.Kind == MsgStatus && strings.Contains(msg.Content, "Read README.md") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected deduped checkpoint count = 1, got %d in %#v", count, m.messages)
+	}
+}
+
+func TestChatModelToolResultEmitsRanCheckpointWithSnippet(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "run_command", Text: "git status --short"})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{
+		Kind:    llm.EventToolResult,
+		Agent:   "run_command",
+		Text:    " M internal/tui/chatmodel.go\n?? scratch.txt\nexit 0",
+		IsError: false,
+	})
+	m = updated.(ChatModel)
+
+	var sawCheckpoint bool
+	for _, msg := range m.messages {
+		if msg.Kind != MsgStatus {
+			continue
+		}
+		if strings.Contains(msg.Content, "• Ran git status --short") &&
+			strings.Contains(msg.Content, "└ M internal/tui/chatmodel.go") &&
+			strings.Contains(msg.Content, "scratch.txt") {
+			sawCheckpoint = true
+			break
+		}
+	}
+	if !sawCheckpoint {
+		t.Fatalf("expected ran checkpoint with output snippet, got %#v", m.messages)
 	}
 }
 
@@ -341,11 +419,20 @@ func TestChatModelProgressDoesNotMergeEquivalentMilestones(t *testing.T) {
 	updated, _ = m.Update(llm.Event{Kind: llm.EventProgress, Agent: "forge", Text: `Finding files that match "**/*.py"`})
 	m = updated.(ChatModel)
 
-	if len(m.messages) != 1 || m.messages[0].Kind != MsgWorking {
-		t.Fatalf("messages = %#v", m.messages)
+	var working ChatMessage
+	var foundWorking bool
+	for _, msg := range m.messages {
+		if msg.Kind == MsgWorking {
+			working = msg
+			foundWorking = true
+			break
+		}
 	}
-	if strings.Contains(strings.ToLower(m.messages[0].Content), ". now ") {
-		t.Fatalf("expected equivalent milestones to avoid narrative chaining, got %#v", m.messages[0])
+	if !foundWorking {
+		t.Fatalf("expected active working milestone, got %#v", m.messages)
+	}
+	if strings.Contains(strings.ToLower(working.Content), ". now ") {
+		t.Fatalf("expected equivalent milestones to avoid narrative chaining, got %#v", working)
 	}
 }
 
