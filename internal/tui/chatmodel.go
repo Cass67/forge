@@ -451,25 +451,7 @@ func (m *ChatModel) clearWorkingMessage() {
 }
 
 func (m *ChatModel) archiveWorkingMessage() {
-	if !m.hasLiveWorkingMessage() {
-		m.liveProgress = m.liveProgress.Reset()
-		m.resetRecentActivity()
-		return
-	}
-	idx := m.recentActivityIndex
-	content := strings.TrimSpace(m.messages[idx].Content)
-	stamp := time.Now().Format("15:04:05")
-	if content == "" {
-		content = "progress update"
-	}
-	m.messages[idx] = ChatMessage{
-		Kind:    MsgForge,
-		Header:  "Forge • " + stamp,
-		Content: checkpointNarrative(content),
-	}
-	m.liveProgress = m.liveProgress.Reset()
-	m.resetRecentActivity()
-	m.refreshViewport()
+	m.clearWorkingMessage()
 }
 
 func (m *ChatModel) resetRecentActivity() {
@@ -604,7 +586,7 @@ func (m *ChatModel) finalizeLiveProgressRecord() {
 		m.clearWorkingMessage()
 		return
 	}
-	m.archiveWorkingMessage()
+	m.clearWorkingMessage()
 	m.appendTranscriptRecord(record)
 }
 
@@ -1348,7 +1330,6 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 			m.lastToolSummary[strings.TrimSpace(ev.Agent)] = strings.TrimSpace(ev.Text)
 		}
 		if line := m.toolCallProgressLine(ev); line != "" {
-			m.checkpointWorkingProgressBefore(line)
 			m.UpdateRecentActivity("", line)
 		}
 		if !m.debugEnabled {
@@ -4325,26 +4306,6 @@ func normalizeProgressMessage(content string) string {
 	return content
 }
 
-func checkpointNarrative(content string) string {
-	content = strings.TrimSpace(content)
-	if content == "" {
-		return ""
-	}
-	lower := strings.ToLower(content)
-	switch {
-	case strings.HasPrefix(lower, "reading "):
-		return "Quick update: " + content
-	case strings.HasPrefix(lower, "scanning "):
-		return "Quick update: " + content
-	case strings.HasPrefix(lower, "searching "):
-		return "Quick update: " + content
-	case strings.HasPrefix(lower, "running "):
-		return "Quick update: " + content
-	default:
-		return content
-	}
-}
-
 func combineProgressNarrative(current, next string) string {
 	current = strings.TrimSpace(current)
 	next = strings.TrimSpace(next)
@@ -4366,11 +4327,7 @@ func combineProgressNarrative(current, next string) string {
 	if strings.EqualFold(current, next) {
 		return current
 	}
-	merged := fmt.Sprintf("%s. Now %s", trimSentenceTerminator(current), lowerSentenceFirst(next))
-	if len(merged) > 220 {
-		return next
-	}
-	return merged
+	return next
 }
 
 func equivalentProgressLine(current, next string) bool {
@@ -4504,21 +4461,6 @@ func (m ChatModel) progressEventLine(ev llm.Event) string {
 	return ""
 }
 
-func (m *ChatModel) checkpointWorkingProgressBefore(next string) {
-	next = strings.TrimSpace(next)
-	if next == "" || isGenericProgressLine(next) {
-		return
-	}
-	if !m.hasLiveWorkingMessage() {
-		return
-	}
-	current := strings.TrimSpace(m.messages[m.recentActivityIndex].Content)
-	if current == "" || strings.EqualFold(current, next) || isGenericProgressLine(current) {
-		return
-	}
-	m.archiveWorkingMessage()
-}
-
 func isGenericProgressLine(content string) bool {
 	lower := strings.ToLower(strings.TrimSpace(content))
 	switch {
@@ -4569,30 +4511,6 @@ func isGenericProgressLine(content string) bool {
 	default:
 		return false
 	}
-}
-
-func trimSentenceTerminator(content string) string {
-	content = strings.TrimSpace(content)
-	content = strings.TrimSuffix(content, ".")
-	content = strings.TrimSuffix(content, "!")
-	content = strings.TrimSuffix(content, "?")
-	return strings.TrimSpace(content)
-}
-
-func lowerSentenceFirst(content string) string {
-	content = strings.TrimSpace(content)
-	if content == "" {
-		return content
-	}
-	runes := []rune(content)
-	if len(runes) == 0 {
-		return content
-	}
-	first := runes[0]
-	if first >= 'A' && first <= 'Z' {
-		runes[0] = first + ('a' - 'A')
-	}
-	return string(runes)
 }
 
 func normalizeRuntimeProgressMessage(content string) (string, bool) {

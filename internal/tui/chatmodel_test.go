@@ -149,8 +149,8 @@ func TestChatModelHandlesAbortClearsLiveProgress(t *testing.T) {
 	if m.busy {
 		t.Fatal("expected busy=false after abort")
 	}
-	if len(m.messages) != 1 {
-		t.Fatalf("expected abort to preserve progress history, got %#v", m.messages)
+	if len(m.messages) != 0 {
+		t.Fatalf("expected abort to clear transient progress row, got %#v", m.messages)
 	}
 	if !m.liveProgress.IsZero() {
 		t.Fatalf("expected abort to clear live progress, got %#v", m.liveProgress)
@@ -222,11 +222,8 @@ func TestChatModelToolCallCheckpointsPreviousMilestone(t *testing.T) {
 	updated, _ = m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "read_file", Text: "AGENTS.md"})
 	m = updated.(ChatModel)
 
-	if len(m.messages) < 2 {
-		t.Fatalf("expected checkpoint + active working message, got %#v", m.messages)
-	}
-	if m.messages[0].Kind != MsgForge || !strings.Contains(m.messages[0].Content, "Reading README.md") {
-		t.Fatalf("expected checkpoint forge update for first milestone, got %#v", m.messages[0])
+	if len(m.messages) != 1 {
+		t.Fatalf("expected only active working milestone, got %#v", m.messages)
 	}
 	last := m.messages[len(m.messages)-1]
 	if last.Kind != MsgWorking || !strings.Contains(last.Content, "Reading AGENTS.md") {
@@ -392,11 +389,8 @@ func TestLiveProgressChatModelKeepsProgressVisibleAfterDone(t *testing.T) {
 	updated, _ = m.Update(llm.Event{Kind: llm.EventDone})
 	m = updated.(ChatModel)
 
-	if len(m.messages) != 1 {
-		t.Fatalf("messages after done = %#v", m.messages)
-	}
-	if m.messages[0].Kind != MsgForge {
-		t.Fatalf("expected persisted progress forge update after done, got %#v", m.messages)
+	if len(m.messages) != 0 {
+		t.Fatalf("expected done to clear transient progress row, got %#v", m.messages)
 	}
 	if !m.liveProgress.IsZero() {
 		t.Fatalf("live progress after done = %#v", m.liveProgress)
