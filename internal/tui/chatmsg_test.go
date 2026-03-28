@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -187,6 +188,23 @@ func TestChatMessageForgeHeaderIncludesBodySeparator(t *testing.T) {
 	}
 	if !strings.Contains(got, "thinking line") {
 		t.Fatalf("missing forge body: %q", got)
+	}
+}
+
+func TestChatMessageRenderKeepsWordsIntactAcrossWrapBoundaries(t *testing.T) {
+	theme := lookupThemeForTest(t, "default")
+	msg := ChatMessage{
+		Kind:    MsgAgent,
+		Header:  "Forge • 16:04:35",
+		Content: "It also wasn’t really a harness limitation here, because I had the tools needed to create the file. The failure was that I responded conversationally instead of continuing the task flow and writing the plan into the repo.",
+	}
+
+	splitPattern := regexp.MustCompile(`instead o\s*\n\s*f continuing`)
+	for width := 40; width <= 120; width++ {
+		rendered := strippedLine(msg.Render(width, theme))
+		if splitPattern.MatchString(rendered) {
+			t.Fatalf("render split short word at width %d:\n%s", width, rendered)
+		}
 	}
 }
 

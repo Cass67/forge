@@ -751,7 +751,14 @@ func (m *ChatModel) refreshViewport() {
 		rendered := msg.Render(contentWidth, theme)
 		blocks = append(blocks, rendered)
 	}
-	content := strings.Join(blocks, "\n\n")
+	content := ""
+	if len(blocks) > 0 {
+		separator := lipgloss.NewStyle().
+			Background(theme.AppBG).
+			Width(contentWidth).
+			Render("")
+		content = strings.Join(blocks, "\n"+separator+"\n")
+	}
 	visible := content
 	m.chatContent = content
 	m.chatVisible = visible

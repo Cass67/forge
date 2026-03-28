@@ -1171,6 +1171,46 @@ func TestRunnerAnswerOfferCreatesPendingActionForNextTurn(t *testing.T) {
 	}
 }
 
+func TestRunnerAnswerOfferCreatesPendingImplementationActionFromConcreteTarget(t *testing.T) {
+	local := &stubLocalExecutor{
+		obs: Observation{
+			Status: ObservationComplete,
+			Response: "Not yet.\n\n" +
+				"I described the plan, but I haven't written the markdown file into the repo yet.\n\n" +
+				"If you want, I can add something like:\n\n" +
+				"- `docs/plans/repo-improvement-plan.md`\n\n" +
+				"with the checklist version of that plan.",
+			Summary: "offered writing repo plan file",
+		},
+	}
+	session := NewSession()
+	_, err := NewRunner(RunnerConfig{
+		Session: session,
+		Trace:   NewRecorder(),
+		Local:   local,
+	}).Run(context.Background(), "did you do it?")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	state := session.Snapshot()
+	if !state.HasPendingAction() {
+		t.Fatalf("expected pending action: %#v", state)
+	}
+	if state.PendingAction.Family != FamilyImplement {
+		t.Fatalf("pending family = %q", state.PendingAction.Family)
+	}
+	if !state.PendingAction.WantsAction {
+		t.Fatalf("expected pending action to require execution: %#v", state.PendingAction)
+	}
+	if state.PendingAction.TopicKey != "path:docs/plans/repo-improvement-plan.md" {
+		t.Fatalf("pending topic = %q", state.PendingAction.TopicKey)
+	}
+	if !strings.Contains(state.PendingAction.TaskText, "docs/plans/repo-improvement-plan.md") {
+		t.Fatalf("pending task missing concrete target: %#v", state.PendingAction)
+	}
+}
+
 func TestRunnerAnswerOfferCreatesInspectPendingActionFromConcreteTarget(t *testing.T) {
 	local := &stubLocalExecutor{
 		obs: Observation{
@@ -1289,6 +1329,60 @@ func TestRunnerContinuationResumesConcreteInspectOffer(t *testing.T) {
 		t.Fatalf("task text = %q", secondLocal.lastClas.TaskText)
 	}
 	if result.Response != "Yes — I checked `.pre-commit-config.yaml`." {
+		t.Fatalf("response = %q", result.Response)
+	}
+}
+
+func TestRunnerContinuationResumesConcreteImplementationOffer(t *testing.T) {
+	firstLocal := &stubLocalExecutor{
+		obs: Observation{
+			Status: ObservationComplete,
+			Response: "Not yet.\n\n" +
+				"If you want, I can add something like:\n\n" +
+				"- `docs/plans/repo-improvement-plan.md`\n\n" +
+				"with the checklist version of that plan.",
+			Summary: "offered writing repo plan file",
+		},
+	}
+	session := NewSession()
+	_, err := NewRunner(RunnerConfig{
+		Session: session,
+		Trace:   NewRecorder(),
+		Local:   firstLocal,
+	}).Run(context.Background(), "did you do it?")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	secondLocal := &stubLocalExecutor{
+		obs: Observation{
+			Status:   ObservationComplete,
+			Response: "Created docs/plans/repo-improvement-plan.md with the checklist.",
+			Summary:  "wrote repo plan file",
+			TopicKey: "path:docs/plans/repo-improvement-plan.md",
+		},
+	}
+	result, err := NewRunner(RunnerConfig{
+		Session: session,
+		Trace:   NewRecorder(),
+		Local:   secondLocal,
+	}).Run(context.Background(), "yah")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Classification.Family != FamilyImplement {
+		t.Fatalf("family = %q", result.Classification.Family)
+	}
+	if !result.Classification.IsFollowUp {
+		t.Fatalf("expected follow-up classification: %#v", result.Classification)
+	}
+	if result.Classification.TopicKey != "path:docs/plans/repo-improvement-plan.md" {
+		t.Fatalf("topic = %q", result.Classification.TopicKey)
+	}
+	if !strings.Contains(secondLocal.lastClas.TaskText, "docs/plans/repo-improvement-plan.md") {
+		t.Fatalf("task text = %q", secondLocal.lastClas.TaskText)
+	}
+	if result.Response != "Created docs/plans/repo-improvement-plan.md with the checklist." {
 		t.Fatalf("response = %q", result.Response)
 	}
 }

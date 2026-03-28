@@ -74,3 +74,13 @@ func TestRenderMessageContentStylesInlineCodeSemantically(t *testing.T) {
 	assertStyledSubstring(t, got, "./internal/tui", theme.AccentPrimary)
 	assertStyledSubstring(t, got, "runner.sh", theme.AccentPrimary)
 }
+
+func TestRenderMessageContentWrapsProseWithoutSplittingShortWords(t *testing.T) {
+	theme := lookupThemeForTest(t, "default")
+	content := "It also wasn’t really a harness limitation here, because I had the tools needed to create the file. The failure was that I responded conversationally instead of continuing the task flow and writing the plan into the repo."
+
+	got := strippedLine(renderMessageContent(content, 80, theme))
+	if strings.Contains(got, "instead o\nf continuing") {
+		t.Fatalf("expected word-safe wrap, got:\n%s", got)
+	}
+}

@@ -410,24 +410,14 @@ func renderCompactStatusHeader(theme chatTheme, data chatStatusData, width int) 
 }
 
 func renderForgeWordmark(theme chatTheme) string {
-	letters := []struct {
-		ch    string
-		color lipgloss.Color
-	}{
-		{ch: "F", color: theme.AccentPrimary},
-		{ch: "O", color: theme.Success},
-		{ch: "R", color: theme.Warning},
-		{ch: "G", color: theme.Error},
-		{ch: "E", color: theme.AccentSecondary},
-	}
 	var b strings.Builder
-	for _, letter := range letters {
+	for _, ch := range "FORGE" {
 		b.WriteString(
 			lipgloss.NewStyle().
-				Foreground(letter.color).
+				Foreground(theme.AccentPrimary).
 				Background(theme.AppBG).
 				Bold(true).
-				Render(letter.ch),
+				Render(string(ch)),
 		)
 	}
 	return b.String()
