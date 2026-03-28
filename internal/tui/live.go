@@ -208,7 +208,7 @@ func (m liveModel) View() string {
 	}
 
 	header := lipgloss.NewStyle().
-		Background(lipgloss.Color("#161b22")).
+		Background(lipgloss.Color("#000000")).
 		Foreground(lipgloss.Color("#b1bac4")).
 		Width(m.width).
 		Render(m.statusLine())

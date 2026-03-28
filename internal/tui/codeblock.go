@@ -121,7 +121,7 @@ func renderCodeBlock(lang, body string, width int, theme chatTheme) string {
 }
 
 func renderCodeBlockBody(lang, body string, width int, theme chatTheme) string {
-	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	lines := normalizeCodeBlockBodyLines(body)
 	rendered := make([]string, 0, len(lines))
 	for _, line := range lines {
 		style := lipgloss.NewStyle().
@@ -141,6 +141,37 @@ func renderCodeBlockBody(lang, body string, width int, theme chatTheme) string {
 		rendered = append(rendered, style.Render(line))
 	}
 	return strings.Join(rendered, "\n")
+}
+
+func normalizeCodeBlockBodyLines(body string) []string {
+	trimmed := strings.TrimRight(body, "\n")
+	if trimmed == "" {
+		return []string{""}
+	}
+	raw := strings.Split(trimmed, "\n")
+	lines := make([]string, 0, len(raw))
+	for _, line := range raw {
+		fragment := strings.TrimSpace(line)
+		if len(lines) > 0 && strings.HasSuffix(lines[len(lines)-1], "-") && isLikelyShortFlagFragment(fragment) {
+			lines[len(lines)-1] += fragment
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+func isLikelyShortFlagFragment(fragment string) bool {
+	if len(fragment) == 0 || len(fragment) > 3 {
+		return false
+	}
+	for _, r := range fragment {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func codeBlockBorder(lang string, theme chatTheme) lipgloss.Color {

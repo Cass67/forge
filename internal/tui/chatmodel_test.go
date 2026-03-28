@@ -3136,6 +3136,41 @@ func TestChatModelCopyCommands(t *testing.T) {
 	}
 }
 
+func TestChatModelCopyCommandsStripANSIEscapes(t *testing.T) {
+	var copied []string
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+	m.copyFn = func(s string) error {
+		copied = append(copied, s)
+		return nil
+	}
+
+	m.chatContent = "agent \x1b[31mwarning\x1b[0m and \x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\"
+	setToolsContent(&m, "tools \x1b[32mok\x1b[0m")
+	m.lastCodeBlock = "echo \x1b[36mhello\x1b[0m"
+	m.lastToolResult = "result \x1b[33mwarn\x1b[0m"
+
+	for _, input := range []string{"/copy agent", "/copy tools", "/copy code", "/copy result"} {
+		m.inputBuf = input
+		m.inputPos = len(input)
+		updated, _ := m.submitInput()
+		m = updated.(ChatModel)
+	}
+
+	if len(copied) != 4 {
+		t.Fatalf("copied = %#v", copied)
+	}
+	for idx, item := range copied {
+		if strings.Contains(item, "\x1b[") || strings.Contains(item, "\x1b]") {
+			t.Fatalf("copy %d still contains ANSI escape sequences: %q", idx, item)
+		}
+	}
+	if !strings.Contains(copied[0], "warning") || !strings.Contains(copied[0], "link") {
+		t.Fatalf("agent copy missing expected plain text: %q", copied[0])
+	}
+}
+
 func TestChatModelTabCompletesSlashCommand(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 100

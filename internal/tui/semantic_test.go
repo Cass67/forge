@@ -83,8 +83,30 @@ func TestRenderSemanticProseStylesInlineCodeContents(t *testing.T) {
 	rendered := RenderSemanticPlain("Use `go test ./...` from `./internal/tui` and inspect `verify_cpe_transfer_and_ack.sh`.", profileProse, theme)
 
 	assertStyledSubstring(t, rendered, "go test ./...", theme.AccentSecondary)
-	assertStyledSubstring(t, rendered, "./internal/tui", theme.AccentPrimary)
-	assertStyledSubstring(t, rendered, "verify_cpe_transfer_and_ack.sh", theme.AccentPrimary)
+	assertStyledSubstring(t, rendered, "./internal/tui", theme.TextDim)
+	assertStyledSubstring(t, rendered, "verify_cpe_transfer_and_ack.sh", theme.TextDim)
+}
+
+func TestRenderSemanticProseKeepsBarePathsOnDimTextNotAccentBlue(t *testing.T) {
+	withTrueColorProfile(t)
+
+	theme := lookupThemeForTest(t, "default")
+	rendered := RenderSemanticPlain("Path cleanup should include ./internal/tui and docs/spec.md", profileProse, theme)
+
+	assertStyledSubstring(t, rendered, "./internal/tui", theme.TextDim)
+	assertStyledSubstring(t, rendered, "docs/spec.md", theme.TextDim)
+	assertSubstringNotColor(t, rendered, "./internal/tui", theme.AccentPrimary)
+	assertSubstringNotColor(t, rendered, "docs/spec.md", theme.AccentPrimary)
+}
+
+func TestRenderSemanticStatusKeepsBarePathsOnDimTextNotAccentBlue(t *testing.T) {
+	withTrueColorProfile(t)
+
+	theme := lookupThemeForTest(t, "default")
+	rendered := RenderSemanticPlain("log: /tmp/forge-debug.log", profileStatus, theme)
+
+	assertStyledSubstring(t, rendered, "/tmp/forge-debug.log", theme.TextDim)
+	assertSubstringNotColor(t, rendered, "/tmp/forge-debug.log", theme.AccentPrimary)
 }
 
 func TestRenderSemanticPreservesPrintableWidth(t *testing.T) {
@@ -209,6 +231,12 @@ func applySGRForeground(current, raw string) string {
 		case "38":
 			if i+4 < len(parts) && parts[i+1] == "2" {
 				current = fmt.Sprintf("#%02x%02x%02x", atoi(parts[i+2]), atoi(parts[i+3]), atoi(parts[i+4]))
+				i += 4
+			}
+		case "48":
+			// Skip truecolor background components so values like 0;0;0
+			// are not misread as a foreground reset.
+			if i+4 < len(parts) && parts[i+1] == "2" {
 				i += 4
 			}
 		}
