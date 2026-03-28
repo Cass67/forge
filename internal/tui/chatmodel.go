@@ -407,19 +407,28 @@ func (m *ChatModel) recordWorkingMessage(content string) {
 	if content == "" {
 		return
 	}
+	if m.hasLiveWorkingMessage() {
+		idx := m.recentActivityIndex
+		current := strings.TrimSpace(m.messages[idx].Content)
+		next := combineProgressNarrative(current, content)
+		if next == "" {
+			return
+		}
+		if current == next {
+			return
+		}
+		m.messages[idx].Content = next
+		m.liveProgress = m.liveProgress.Apply(ProgressUpdate{
+			ReplaceKey: "active",
+			Message:    next,
+		})
+		m.refreshViewport()
+		return
+	}
 	m.liveProgress = m.liveProgress.Apply(ProgressUpdate{
 		ReplaceKey: "active",
 		Message:    content,
 	})
-	if m.hasLiveWorkingMessage() {
-		idx := m.recentActivityIndex
-		if strings.TrimSpace(m.messages[idx].Content) == content {
-			return
-		}
-		m.messages[idx].Content = content
-		m.refreshViewport()
-		return
-	}
 	m.messages = append(m.messages, ChatMessage{
 		Kind:    MsgWorking,
 		Content: content,
@@ -4265,9 +4274,6 @@ func (m ChatModel) renderLiveProgressSlot(theme chatTheme) string {
 	if message == "" {
 		return slotStyle.Render("")
 	}
-	if !m.liveProgress.IsZero() {
-		message = "updates in conversation"
-	}
 	prefix := "·"
 	if busy {
 		prefix = chatSpinnerGlyph(m.spinnerFrame)
@@ -4306,6 +4312,79 @@ func normalizeProgressMessage(content string) string {
 		return normalized
 	}
 	return content
+}
+
+func combineProgressNarrative(current, next string) string {
+	current = strings.TrimSpace(current)
+	next = strings.TrimSpace(next)
+	if next == "" {
+		return current
+	}
+	if current == "" || current == next {
+		return next
+	}
+	if isGenericProgressLine(next) {
+		return current
+	}
+	if isGenericProgressLine(current) {
+		return next
+	}
+	if strings.EqualFold(current, next) {
+		return current
+	}
+	merged := fmt.Sprintf("%s. Now %s", trimSentenceTerminator(current), lowerSentenceFirst(next))
+	if len(merged) > 220 {
+		return next
+	}
+	return merged
+}
+
+func isGenericProgressLine(content string) bool {
+	lower := strings.ToLower(strings.TrimSpace(content))
+	switch {
+	case strings.HasPrefix(lower, "starting analysis pass"):
+		return true
+	case strings.Contains(lower, "surveying the repository"):
+		return true
+	case strings.Contains(lower, "connecting findings"):
+		return true
+	case strings.Contains(lower, "cross-checking gathered evidence"):
+		return true
+	case strings.Contains(lower, "cross-checking the repository scan results"):
+		return true
+	case strings.Contains(lower, "synthesizing findings"):
+		return true
+	case strings.Contains(lower, "drafting the response"):
+		return true
+	case strings.Contains(lower, "refining the response"):
+		return true
+	default:
+		return false
+	}
+}
+
+func trimSentenceTerminator(content string) string {
+	content = strings.TrimSpace(content)
+	content = strings.TrimSuffix(content, ".")
+	content = strings.TrimSuffix(content, "!")
+	content = strings.TrimSuffix(content, "?")
+	return strings.TrimSpace(content)
+}
+
+func lowerSentenceFirst(content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return content
+	}
+	runes := []rune(content)
+	if len(runes) == 0 {
+		return content
+	}
+	first := runes[0]
+	if first >= 'A' && first <= 'Z' {
+		runes[0] = first + ('a' - 'A')
+	}
+	return string(runes)
 }
 
 func normalizeRuntimeProgressMessage(content string) (string, bool) {
