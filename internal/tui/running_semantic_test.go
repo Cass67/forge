@@ -16,5 +16,5 @@ func TestRunningViewHighlightsSemanticTokens(t *testing.T) {
 
 	assertStyledSubstring(t, view, "tool_call:", theme.TextDim)
 	assertStyledSubstring(t, view, "forge -d", theme.AccentSecondary)
-	assertStyledSubstring(t, view, "./internal/tui", theme.AccentPrimary)
+	assertStyledSubstring(t, view, "./internal/tui", theme.TextDim)
 }

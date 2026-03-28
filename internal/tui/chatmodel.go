@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -90,6 +91,9 @@ func providerAuthHyperlink(label, target string) string {
 }
 
 var (
+	ansiCSIPattern = regexp.MustCompile(`\x1b\[[0-9:;<=>?]*[ -/]*[@-~]`)
+	ansiOSCPattern = regexp.MustCompile(`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)`)
+
 	startChatGPTDeviceAuth = func(ctx context.Context) (*chatgptauth.DeviceFlow, error) {
 		return chatgptauth.StartDeviceAuth(ctx)
 	}
@@ -487,6 +491,17 @@ func sanitizeAssistantTokenForDisplay(text string) string {
 		return ""
 	}
 	return text
+}
+
+func plainCopyText(text string) string {
+	if text == "" {
+		return ""
+	}
+	plain := ansiOSCPattern.ReplaceAllString(text, "")
+	plain = ansiCSIPattern.ReplaceAllString(plain, "")
+	plain = strings.ReplaceAll(plain, "\r\n", "\n")
+	plain = strings.ReplaceAll(plain, "\r", "\n")
+	return plain
 }
 
 func displayAgentLabel(label string) string {
@@ -2295,13 +2310,13 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		query := strings.TrimSpace(strings.TrimPrefix(input, "/find "))
 		m.openSearchOverlay(query)
 	case input == "/copy agent":
-		if err := m.copyFn(m.chatContent); err != nil {
+		if err := m.copyFn(plainCopyText(m.chatContent)); err != nil {
 			m.flash = fmt.Sprintf("copy failed: %v", err)
 		} else {
 			m.flash = "agent copied"
 		}
 	case input == "/copy tools":
-		if err := m.copyFn(m.renderedToolsBuf()); err != nil {
+		if err := m.copyFn(plainCopyText(m.renderedToolsBuf())); err != nil {
 			m.flash = fmt.Sprintf("copy failed: %v", err)
 		} else {
 			m.flash = "tools copied"
@@ -2309,7 +2324,7 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 	case input == "/copy code":
 		if strings.TrimSpace(m.lastCodeBlock) == "" {
 			m.flash = "copy failed: no code block yet"
-		} else if err := m.copyFn(m.lastCodeBlock); err != nil {
+		} else if err := m.copyFn(plainCopyText(m.lastCodeBlock)); err != nil {
 			m.flash = fmt.Sprintf("copy failed: %v", err)
 		} else {
 			m.flash = "code copied"
@@ -2317,7 +2332,7 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 	case input == "/copy result":
 		if strings.TrimSpace(m.lastToolResult) == "" {
 			m.flash = "copy failed: no tool result yet"
-		} else if err := m.copyFn(m.lastToolResult); err != nil {
+		} else if err := m.copyFn(plainCopyText(m.lastToolResult)); err != nil {
 			m.flash = fmt.Sprintf("copy failed: %v", err)
 		} else {
 			m.flash = "result copied"

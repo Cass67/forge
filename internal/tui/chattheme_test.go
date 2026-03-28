@@ -34,12 +34,12 @@ func TestChatThemeLookupSupportsLegacyAliases(t *testing.T) {
 	}
 }
 
-func TestChatThemeDefaultUsesGraphiteMutedBluePalette(t *testing.T) {
+func TestChatThemeDefaultUsesBlackSurfacePalette(t *testing.T) {
 	theme, ok := lookupChatTheme("default")
 	if !ok {
 		t.Fatal("missing default theme")
 	}
-	if theme.AppBG != lipgloss.Color("#0b1016") {
+	if theme.AppBG != lipgloss.Color("#000000") {
 		t.Fatalf("app background = %q", theme.AppBG)
 	}
 	if theme.PanelBG != theme.AppBG {

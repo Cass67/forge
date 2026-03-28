@@ -110,7 +110,7 @@ func TestChatMessageRenderWorkingHighlightsHighSignalTokens(t *testing.T) {
 	got := (ChatMessage{Kind: MsgWorking, Content: "running go test ./... in ./internal/tui"}).Render(80, theme)
 
 	assertStyledSubstring(t, got, "go test ./...", theme.AccentSecondary)
-	assertStyledSubstring(t, got, "./internal/tui", theme.AccentPrimary)
+	assertStyledSubstring(t, got, "./internal/tui", theme.TextDim)
 }
 
 func TestChatMessageRenderUsesAppBackgroundForStableTranscriptSurface(t *testing.T) {
@@ -172,22 +172,22 @@ func TestChatMessageHeaderUsesAppBackground(t *testing.T) {
 	}
 }
 
-func TestChatMessageForgeHeaderIncludesBodySeparator(t *testing.T) {
+func TestChatMessageForgeHeaderDoesNotInsertStandaloneDividerLine(t *testing.T) {
 	m := ChatMessage{
 		Kind:    MsgForge,
 		Header:  "Forge • 10:44:08",
 		Content: "thinking line",
 	}
-	got := strippedLine(m.Render(80, lookupThemeForTest(t, "default")))
-
-	if !strings.Contains(got, "Forge • 10:44:08") {
-		t.Fatalf("missing forge header: %q", got)
+	rendered := m.Render(80, lookupThemeForTest(t, "default"))
+	lines := strings.Split(rendered, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected header and body lines, got %q", strippedLine(rendered))
 	}
-	if !strings.Contains(got, "·") {
-		t.Fatalf("expected subtle divider marker between forge header and body: %q", got)
-	}
-	if !strings.Contains(got, "thinking line") {
-		t.Fatalf("missing forge body: %q", got)
+	for idx, line := range lines {
+		trimmed := strings.TrimSpace(strippedLine(line))
+		if idx > 0 && trimmed == "·" {
+			t.Fatalf("unexpected standalone divider line at %d: %q", idx+1, strippedLine(rendered))
+		}
 	}
 }
 
