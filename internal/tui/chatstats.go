@@ -323,15 +323,7 @@ func renderStatusHeader(theme chatTheme, data chatStatusData, width int) string 
 	default:
 		lines = buildNarrowHeaderLines(theme, modelValue, workDirValue, innerWidth)
 	}
-
-	card := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.Border).
-		Background(theme.AppBG).
-		Padding(0, 1).
-		Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
-
-	return fillHeaderSurface(card, width, theme)
+	return fillHeaderSurface(strings.Join(lines, "\n"), width, theme)
 }
 
 func renderStatusHeaderForHeight(theme chatTheme, data chatStatusData, width, height int) string {
@@ -398,13 +390,7 @@ func renderCompactStatusHeader(theme chatTheme, data chatStatusData, width int) 
 	dirWidth := max(1, innerWidth-ansiPrintableWidth(wordmark+"  "+model)-2)
 	dir := lipgloss.NewStyle().Foreground(theme.TextDim).Background(theme.AppBG).Render(truncateLeftEllipsis(headerWorkDirValue(data.WorkDir), dirWidth))
 	line := padStyledWidth(wordmark+"  "+model+"  "+dir, innerWidth)
-	card := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.Border).
-		Background(theme.AppBG).
-		Padding(0, 1).
-		Render(line)
-	return fillHeaderSurface(card, width, theme)
+	return fillHeaderSurface(line, width, theme)
 }
 
 func fillHeaderSurface(header string, width int, theme chatTheme) string {

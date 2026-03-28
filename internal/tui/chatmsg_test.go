@@ -183,11 +183,8 @@ func TestChatMessageForgeHeaderIncludesBodySeparator(t *testing.T) {
 	if !strings.Contains(got, "Forge • 10:44:08") {
 		t.Fatalf("missing forge header: %q", got)
 	}
-	if !strings.Contains(got, "────") {
-		t.Fatalf("expected visible separator between forge header and body: %q", got)
-	}
-	if strings.Count(got, "─") > 30 {
-		t.Fatalf("expected subtle separator, got heavy full-width rule: %q", got)
+	if !strings.Contains(got, "·") {
+		t.Fatalf("expected subtle divider marker between forge header and body: %q", got)
 	}
 	if !strings.Contains(got, "thinking line") {
 		t.Fatalf("missing forge body: %q", got)
