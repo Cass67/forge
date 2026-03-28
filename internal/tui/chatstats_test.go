@@ -200,11 +200,11 @@ func TestRenderStatusHeaderUsesSplitRailCardAtWideWidths(t *testing.T) {
 	}, 80)
 
 	lines := strings.Split(rendered, "\n")
-	if len(lines) < 5 {
-		t.Fatalf("header lines = %d, want at least 5: %q", len(lines), rendered)
+	if len(lines) < 3 {
+		t.Fatalf("header lines = %d, want at least 3: %q", len(lines), rendered)
 	}
-	headerLines := make([]string, 0, 5)
-	for _, line := range lines[:5] {
+	headerLines := make([]string, 0, 3)
+	for _, line := range lines[:3] {
 		headerLines = append(headerLines, strippedLine(line))
 	}
 	header := strings.Join(headerLines, "\n")
@@ -212,6 +212,9 @@ func TestRenderStatusHeaderUsesSplitRailCardAtWideWidths(t *testing.T) {
 		if !strings.Contains(header, want) {
 			t.Fatalf("wide header missing %q in:\n%s", want, header)
 		}
+	}
+	if strings.ContainsAny(header, "╭╮╰╯") {
+		t.Fatalf("header should be flat (no box border), got:\n%s", header)
 	}
 	for _, line := range headerLines {
 		if ansiPrintableWidth(line) > 80 {
