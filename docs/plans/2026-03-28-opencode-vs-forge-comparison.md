@@ -1,19 +1,24 @@
-# OpenCode vs Forge: Architectural Comparison
+# OpenCode, Codex, and Forge: Architectural Comparison
 
-**Date:** 2026-03-28
-**Purpose:** Understand why OpenCode performs well and Forge struggles, to inform Forge's next redesign.
+**Date:** 2026-03-28  
+**Purpose:** Understand why OpenCode and Codex perform well and Forge struggles, to inform Forge's next redesign.  
+**Sources:** All Codex analysis is from verified source code fetched via GitHub API. OpenCode analysis from source code on GitHub. Forge from local codebase.
 
 ---
 
 ## Summary
 
-OpenCode is a radically simpler architecture. It has no harness kernel, no classifier/planner/policy pipeline, no hidden workers, no state machine, and no structured worker output validation. It gives the LLM all tools, lets it decide what to do, and uses a permission system for safety. Forge has a 7-stage state machine, 4 worker types with strict tool allowlists, deterministic classification, structured output contracts, and outcome normalization. Forge's complexity is the primary source of its reliability problems.
+Both OpenCode (TypeScript) and Codex (Rust) use a **simple ReAct loop**: call the LLM, execute tool calls, feed results back, repeat until the model stops calling tools. Neither has a classifier, planner, policy engine, or hidden workers with tool allowlists. Safety comes from **sandboxing + approvals**, not from restricting what the LLM can see or do.
+
+Forge (Go) has a **7-stage state machine**, **4 worker types with hardcoded tool allowlists**, **deterministic token-based classification**, **structured JSON output contracts with retry logic**, and **outcome normalization**. This complexity is the primary source of its reliability problems.
+
+**The pattern across all successful coding agents is the same: trust the LLM, sandbox the execution.**
 
 ---
 
 ## Architecture Comparison
 
-### OpenCode: Flat Agent Loop
+### OpenCode: Flat Agent Loop (TypeScript)
 
 ```
 User Input
@@ -24,15 +29,29 @@ User Input
   → If no tool calls → done, return response
 ```
 
-**Key files:**
-- `packages/opencode/src/session/prompt.ts` - Main loop (~700 lines)
-- `packages/opencode/src/agent/agent.ts` - Agent definitions (~300 lines)
-- `packages/opencode/src/tool/tool.ts` - Tool interface (~100 lines)
-- `packages/opencode/src/tool/registry.ts` - Tool registry (~200 lines)
+**Core harness: ~1,850 lines total.**
 
-**Total core harness: ~1300 lines**
+### Codex: ReAct Loop with Sandboxed Execution (Rust)
 
-### Forge: Harness Kernel State Machine
+```
+User Input
+  → Build system prompt (instructions + skills + plugins + connectors + environment)
+  → Submission loop (event dispatch: while let Ok(sub) = rx_sub.recv())
+    → UserInput → spawn_task → run_turn
+      → run_turn inner loop:
+        → Stream LLM response
+        → Parse tool calls from response items
+        → Execute via ToolOrchestrator (sandbox + approval + hooks)
+        → Feed results back to LLM
+        → If model needs follow-up → continue loop
+        → If model done → break, emit TurnComplete
+      → Auto-compact context if token limit reached mid-turn
+  → TurnComplete event
+```
+
+**Core harness: ~291KB in codex.rs alone** (but most is configuration, hook routing, and session management — the actual loop is a simple `while let` + inner `loop {}`).
+
+### Forge: Harness Kernel State Machine (Go)
 
 ```
 User Input
@@ -46,400 +65,297 @@ User Input
   → If Retry/Replan → loop back to appropriate stage
 ```
 
-**Key files:**
-- `internal/harness/runner.go` - Orchestrator (~600 lines)
-- `internal/harness/classifier.go` - Token-based classification (~1200 lines)
-- `internal/harness/planner.go` - Step selection (~100 lines)
-- `internal/harness/policy.go` - Decision logic (~100 lines)
-- `internal/harness/workers.go` - Worker execution (~250 lines)
-- `internal/harness/contracts.go` - Structured output validation (~400 lines)
-- `internal/harness/local.go` - Local executor (~450 lines)
-- `internal/harness/strictlocal.go` - Strict local executor (~250 lines)
-- `internal/harness/session.go` - Session state (~150 lines)
-- `internal/harness/types.go` - Type definitions (~300 lines)
-- `internal/harness/outcome.go` - Outcome normalization (~250 lines)
-- `internal/harness/thread.go` - Thread ledger (~600 lines)
-- `internal/harness/scope.go` - Scope analysis (~250 lines)
-- `internal/harness/trace.go` - Tracing (~100 lines)
-- `internal/agent/agent.go` - Agent loop (~1500 lines)
-- `internal/agent/system.go` - System prompt builder (~2500 lines)
-- `internal/agent/roles.go` - Role definitions (~300 lines)
-- `internal/agent/subagent.go` - Sub-agent spawning (~400 lines)
-
-**Total core harness: ~9500 lines**
-
-**Forge's harness is ~7x more code for fundamentally less reliable behavior.**
+**Core harness: ~16,100 lines across ~18 files.**
 
 ---
 
-## Key Differences
+## Detailed Comparison Tables
 
-### 1. No Classifier
+### Agent Loop
 
-**OpenCode:** No classification step. The LLM decides what to do based on the user's message and available tools.
+| Aspect | OpenCode | Codex | Forge |
+|--------|----------|-------|-------|
+| **Loop type** | Simple while loop | Event dispatch + inner ReAct loop | 7-stage state machine |
+| **Entry point** | `session/prompt.ts` | `submission_loop()` in `codex.rs` | `runner.Run()` in `harness/runner.go` |
+| **Turn model** | One turn = one model call sequence | One turn = spawn_task → run_turn → inner loop | One turn = intake→classify→plan→act→observe→decide→respond |
+| **Continuation** | Tool calls → loop | `needs_follow_up` → continue | `OutcomeRetry` / `OutcomeReplan` → re-enter state machine |
+| **Termination** | No tool calls → done | `!needs_follow_up` → break | `StateComplete` / `StateBlocked` |
+| **Error handling** | Fail fast | Retry with backoff + transport fallback | Nested retry loops (worker 3× + agent 30× + kernel retries) |
 
-**Forge:** `classifier.go` (1200 lines) performs deterministic token matching:
-- Splits user input into tokens
-- Matches against hardcoded token sets: `answerTokens`, `inspectTokens`, `implementTokens`, `debugTokens`, `researchTokens`
-- Maps to families: `FamilyAnswer`, `FamilyInspect`, `FamilyImplement`, `FamilyVerify`, `FamilyResearch`
-- Determines `WantsAction`, `CanStayLocal`, `PrefersVisibleExecution`
-- Routes through thread ledger for active thread detection
+### Classification / Intent Routing
 
-**Why this hurts Forge:**
-- Token matching is brittle — "make a branch" can misroute to `FamilyAnswer` instead of `FamilyImplement`
-- Adds latency before any LLM call
-- Maintenance burden: new patterns require code changes, not prompt updates
-- The LLM already knows how to classify intent — Forge does it poorly beforehand
+| Aspect | OpenCode | Codex | Forge |
+|--------|----------|-------|-------|
+| **Has classifier** | No | No | Yes (1200 lines, token matching) |
+| **How intent is determined** | LLM decides via tool selection | LLM decides via tool selection | Deterministic token matching before LLM call |
+| **Classification families** | N/A | N/A | `FamilyAnswer/Inspect/Implement/Verify/Research` |
+| **Can misroute** | N/A | N/A | Yes — "make a branch" → `FamilyAnswer` instead of `FamilyImplement` |
 
-### 2. No Planner / Policy Engine
+### Tool Access
 
-**OpenCode:** No planning step. The LLM has all tools available and decides what to use.
+| Aspect | OpenCode | Codex | Forge |
+|--------|----------|-------|-------|
+| **Tool selection** | All tools available | All tools available (filtered by feature flags, not agent role) | Hardcoded allowlists per worker type |
+| **Tool filtering** | Permission system (configurable) | Feature flags + model capabilities + session source | Hardcoded switch statement per worker |
+| **Can worker edit files** | N/A (no workers) | Yes (all agents have apply_patch + shell) | WorkerEditor: yes, WorkerReader: no |
+| **Can worker run commands** | N/A | Yes (all agents have shell/exec_command) | WorkerEditor: yes, WorkerVerifier: yes, WorkerReader: no |
+| **Can worker git commit** | N/A | Yes (via shell) | No worker has `git_commit` |
+| **Can worker access web** | N/A | Yes (web_search tool) | Only WorkerResearcher has `web_search`/`web_fetch` |
+| **Can worker use previews** | N/A | N/A | No worker has preview tools |
+| **User-configurable tools** | Yes (permission config) | Yes (feature flags + .rules files + exec policy) | No (hardcoded in Go) |
 
-**Forge:** `planner.go` + `policy.go` select an execution step:
-- `StepLocal` — agent runs with full tools
-- `StepStrictLocal` — agent runs with constrained tools (preview mode)
-- `StepWorker` — hidden worker runs with subset of tools
-- `StepVisibleCollaboration` — visible collaborative agent
-- `AdmitWorker()` decides if a worker should be dispatched based on session state
-- Workers have hardcoded tool allowlists in `workers.go`
+### Safety / Execution Model
 
-**Why this hurts Forge:**
-- Tool allowlists prevent workers from completing their objectives (e.g., WorkerEditor can't `git_commit`)
-- The planning decision is made before the LLM has even seen the task
-- Workers are dispatched for tasks the primary agent could handle directly
-- Adds a full round-trip (plan → dispatch worker → validate → return) for simple tasks
+| Aspect | OpenCode | Codex | Forge |
+|--------|----------|-------|-------|
+| **Safety approach** | Permission system | Sandboxing + approvals + Guardian | Tool restriction + structured output validation |
+| **Filesystem sandbox** | None | Landlock (Linux), Seatbelt (macOS), Restricted tokens (Windows) | None |
+| **Network sandbox** | None | Yes (domain allow/deny, network proxy) | None |
+| **Approval policy** | Configurable per tool/action | `Never/OnFailure/OnRequest/UnlessTrusted/Granular` | None |
+| **Auto-reviewer** | None | Guardian (LLM-based, risk-score < 80 → approve) | None |
+| **Execution policy** | None | `.rules` files (Allow/Prompt/Forbidden per command prefix) | None |
+| **Hook system** | None | Pre/post tool hooks, session start hooks, user prompt hooks | None |
+| **Sandbox retry** | N/A | First attempt under sandbox → on denial, ask approval → retry without sandbox | N/A |
 
-### 3. No Structured Worker Output Contract
+### Sub-Agent / Delegation Model
 
-**OpenCode:** Sub-agents return their final text response. The parent agent reads it as context.
+| Aspect | OpenCode | Codex | Forge |
+|--------|----------|-------|-------|
+| **Sub-agent dispatch** | LLM-driven via `task` tool | LLM-driven via `spawn_agent` tool | Host-driven via harness classification |
+| **Sub-agent creation** | New session with own tools | `Codex::spawn()` — full new session with own state | Worker dispatch with restricted tools |
+| **Sub-agent tools** | Own permission scope | Full tools (gated by features/flags, not restricted by parent) | Subset of parent tools (hardcoded allowlist) |
+| **Sub-agent result format** | Plain text (no validation) | Plain text (no structured JSON contract) | Strict JSON (validated, retried 3× on failure) |
+| **Sub-agent isolation** | Separate session | Separate `Codex` instance with own channels | Worker runs in same process, shares agent state |
+| **Parallel sub-agents** | Yes (via `task` tool) | Yes (`spawn_agent` + `wait_agent`, CSV batch spawn) | No (workers sequential) |
+| **Depth limiting** | N/A | `agent_max_depth` enforced, features disabled at limit | N/A |
+| **Sub-agent naming** | `@general`, `@explore` | Auto-assigned from pool (`agent_names.txt`), hierarchical paths | `WorkerReader/Editor/Verifier/Researcher` |
 
-**Forge:** Workers must return strict JSON:
-```json
-{
-  "status": "complete|blocked",
-  "message": "user-visible summary",
-  "artifact_kind": "evidence|implementation|diagnosis|plan",
-  "artifact": "detailed payload",
-  "next_role": "",
-  "next_task": ""
-}
-```
+### Context Management
 
-Validated by `contracts.go` using `decodeStrictJSON()`. Malformed JSON → retry up to 3 times → blocked.
+| Aspect | OpenCode | Codex | Forge |
+|--------|----------|-------|-------|
+| **History management** | Simple message array | `SessionState` with mutex-protected history | Dual state (agent history + kernel session state) |
+| **Compaction** | Basic truncation | Auto-compact (inline local + remote server-side), pre-sampling + mid-turn | History budget truncation |
+| **Compaction trigger** | Token limit | `auto_compact_token_limit` + model switch + mid-turn overflow | Max tokens per turn |
+| **Cross-turn context** | History preserved | History preserved + `CompactedItem` replaces old messages | Agent ↔ kernel state desync (separate state systems) |
 
-**Why this hurts Forge:**
-- LLMs frequently produce slightly malformed JSON (extra whitespace, markdown in artifact, missing optional fields)
-- Each validation failure costs a full API round-trip
-- After 3 failures, the worker is permanently blocked
-- The primary agent then retries the same worker, creating nested retry loops
-- OpenCode avoids this entirely by not requiring structured output from sub-agents
+### Error Handling
 
-### 4. No State Machine
-
-**OpenCode:** Simple loop. If the model calls a tool → execute → continue. If the model stops → done.
-
-**Forge:** 7-stage state machine with transitions:
-```
-Intake → Classify → Plan → Act → Observe → Decide → Respond
-                                        ↑        │
-                                        └─ Retry ┘
-                                        ↑        │
-                                        └─ Replan─┘
-```
-
-Each stage has its own validation, error handling, and retry logic. The Decide stage can route to:
-- `StateComplete` — done
-- `StateBlocked` — permanent failure
-- `StateRetry` — try the same step again
-- `StateReplan` — go back to planning
-- `StateAwaitingFeedback` — stop and wait for user
-
-**Why this hurts Forge:**
-- Retry loops can compound: worker fails → kernel retries → worker fails again → agent retries → 90+ API calls
-- No circuit breaker to stop failing patterns
-- Each state transition is a potential failure point
-- Debugging requires tracing through 7 stages instead of 1 loop
-
-### 5. No Hidden Workers
-
-**OpenCode:** Three agent modes:
-- `build` — primary agent, full access
-- `plan` — primary agent, read-only + plan file writes
-- `general` — sub-agent, dispatched via `task` tool for parallel research
-- `explore` — sub-agent, read-only codebase exploration
-
-Sub-agents are dispatched by the LLM itself via the `task` tool, not by a host-side classifier.
-
-**Forge:** Four worker types:
-- `WorkerReader` — research, read-only tools
-- `WorkerEditor` — implementation, edit tools
-- `WorkerVerifier` — verification, read + run commands
-- `WorkerResearcher` — external research, web tools
-
-Workers are dispatched by the harness kernel based on classification, not by the LLM.
-
-**Why this hurts Forge:**
-- The LLM is better at deciding when delegation is useful than a token matcher
-- Workers run with restricted tools and can't complete their objectives
-- Worker results require strict validation that frequently fails
-- Workers add latency (dispatch → validate → return) for tasks the primary agent could handle
-
-### 6. Permission System vs Tool Allowlists
-
-**OpenCode:** Permission system applies to all agents uniformly:
-```typescript
-const defaults = Permission.fromConfig({
-  "*": "allow",
-  doom_loop: "ask",
-  external_directory: { "*": "ask" },
-  question: "deny",
-  read: { "*": "allow", "*.env": "ask" },
-})
-
-// Plan mode restricts via permission overrides:
-plan: {
-  permission: Permission.merge(defaults, Permission.fromConfig({
-    edit: { "*": "deny" },
-  })),
-}
-```
-
-Permission rules are declarative, composable, and overridable per agent and per session.
-
-**Forge:** Hardcoded tool allowlists per worker:
-```go
-func workerToolAllowlist(kind WorkerKind) []string {
-    switch kind {
-    case WorkerReader:
-        return []string{"read_file", "glob", "search", ...}
-    case WorkerEditor:
-        return []string{"read_file", "write_file", "edit_file", ...}
-    // ...
-    }
-}
-```
-
-**Why OpenCode's approach is better:**
-- Single mechanism for all agents (no special worker path)
-- Users can override permissions in config
-- Composable: merge defaults + agent-specific + session-specific
-- No code changes needed to adjust tool access
-
-### 7. Sub-Agent Model
-
-**OpenCode:** Sub-agents are dispatched by the LLM via the `task` tool:
-```typescript
-// The LLM calls:
-task({ subagent_type: "explore", description: "find auth files", prompt: "..." })
-
-// TaskTool creates a new session, runs the sub-agent, returns text result
-```
-
-Sub-agents get their own session, model, and tools. Results come back as plain text in a `<task_result>` wrapper. The parent agent decides what to do with the result.
-
-**Forge:** Sub-agents are dispatched by the harness kernel:
-```go
-// The harness decides to dispatch a worker:
-step := Plan(class, session)
-if step.Kind == StepWorker {
-    obs := manager.Execute(ctx, WorkerTask{Kind: WorkerEditor, ...})
-    // Must return strict JSON validated by contracts.go
-}
-```
-
-**Why OpenCode's approach is better:**
-- The LLM decides when delegation is useful (not a token matcher)
-- Sub-agent results are plain text (no strict JSON validation)
-- Sub-agents get full tool access within their permission scope
-- No intermediate validation layer that can fail
-- Simpler error path: sub-agent fails → text error message → parent handles it
+| Aspect | OpenCode | Codex | Forge |
+|--------|----------|-------|-------|
+| **Retry logic** | None (fail fast) | Retry with exponential backoff on stream disconnect, transport fallback (WS→HTTPS) | Nested retries: worker 3×, agent 30×, kernel Decide retries |
+| **Circuit breaker** | None | None (but non-retryable errors break immediately) | None (can create 90+ attempt loops) |
+| **Retryable errors** | N/A | Stream disconnections | JSON validation failures, tool errors |
+| **Non-retryable errors** | All | `ContextWindowExceeded`, `UsageLimitReached`, `TurnAborted` | None (everything retries) |
+| **Error sent to LLM** | Yes (tool error → model sees it) | Yes (`FunctionCallError::RespondToModel`) | Sometimes (validation failures hidden from model) |
+| **Fail-closed** | N/A | Guardian: any parse error → high-risk denial | Workers: after 3 retries → blocked, agent retries |
 
 ---
 
-## What OpenCode Gets Right
+## What Codex Has That Neither OpenCode Nor Forge Has
 
-### 1. Trust the Model
+| Feature | Codex | OpenCode | Forge |
+|---------|-------|----------|-------|
+| **Filesystem sandboxing** | Landlock/Seatbelt/Restricted Tokens | None | None |
+| **Network sandboxing** | Domain allow/deny + proxy | None | None |
+| **Guardian auto-reviewer** | LLM-based risk assessment (risk_score < 80 → approve) | None | None |
+| **Execution policy rules** | `.rules` files with Allow/Prompt/Forbidden | None | None |
+| **Pre/post tool hooks** | Hook system (FailedContinue/FailedAbort) | None | None |
+| **Parallel sub-agents** | `spawn_agent` + `wait_agent` + CSV batch | `task` tool | No (sequential workers) |
+| **Agent depth limiting** | `agent_max_depth` with feature disabling | None | None |
+| **Agent registry** | `AgentRegistry` with nicknames, metadata, tracking | None | None |
+| **Remote compaction** | Server-side context compression | None | None |
+| **Dynamic tools (MCP)** | Full MCP support with namespaced tools | None | None |
+| **Code mode / JS REPL** | Sandboxed code execution environments | None | None |
+| **Image generation** | Conditional tool | None | None |
+| **File watching** | Background file watcher events | None | None |
+| **Rollout recording** | Full session recording for replay/debugging | None | None |
+| **Session persistence** | DB-backed session state | None | None |
+| **Transport fallback** | WebSocket → HTTPS on failure | None | None |
+| **Tool search** | Dynamic tool discovery at runtime | None | None |
+| **Permission requests** | LLM can request additional filesystem/network permissions | None | None |
 
-OpenCode's entire architecture trusts the LLM to:
-- Classify user intent
-- Choose appropriate tools
-- Decide when to delegate
-- Format its own output
+## What Forge Has That Neither OpenCode Nor Codex Has
 
-Forge distrusts the model at every stage:
-- Classifies intent with token matching (doesn't trust LLM)
-- Restricts tools via allowlists (doesn't trust LLM)
-- Validates output with strict JSON schema (doesn't trust LLM)
-- Retries on validation failure (doesn't trust LLM)
-
-**Result:** OpenCode's trust is well-placed. Modern LLMs are very good at tool selection and intent classification when given clear system prompts. Forge's deterministic layers add latency and failure points without improving reliability.
-
-### 2. Minimal Indirection
-
-OpenCode: User → Agent → Tools → Response
-
-Forge: User → Intake → Classify → Plan → Act → Observe → Decide → Response
-
-Each layer of indirection in Forge is a potential failure point. OpenCode removes all of them.
-
-### 3. Plain Text Results
-
-OpenCode sub-agents return plain text. No JSON schema, no validation, no retry logic. The parent LLM reads the text and decides what to do.
-
-Forge workers must return strict JSON. Validation failures cascade into retry loops that waste API calls and time.
-
-### 4. Declarative Configuration
-
-OpenCode agents are defined declaratively:
-```typescript
-agents: {
-  build: { name: "build", permission: ..., mode: "primary" },
-  plan: { name: "plan", permission: ..., mode: "primary" },
-  general: { name: "general", permission: ..., mode: "subagent" },
-}
-```
-
-Users can add custom agents, change permissions, and override models — all from config. No code changes needed.
-
-Forge agents are defined in Go code. Adding a new agent type requires modifying multiple files.
-
-### 5. One Tool Interface
-
-OpenCode has one `Tool.define()` interface. Every tool implements the same contract:
-```typescript
-Tool.define("id", {
-  description: "...",
-  parameters: z.object({...}),
-  execute: async (args, ctx) => ({ output, metadata, title }),
-})
-```
-
-Forge has different tool interfaces for:
-- Primary agent tools (full registry)
-- Worker tools (allowlist-filtered)
-- Sub-agent tools (role-specific allowlists)
-- Visible collaboration tools (subset)
-
-### 6. LLM-Driven Delegation
-
-OpenCode sub-agents are dispatched by the LLM via the `task` tool. The LLM decides:
-- When to delegate
-- Which agent to use
-- What prompt to send
-- How to interpret results
-
-Forge dispatches workers based on token matching in the classifier. The host decides:
-- When to delegate (based on classification)
-- Which worker to use (based on step planning)
-- What task to give (based on planner output)
-- Whether results are valid (based on JSON schema)
-
-**The LLM is better at all four decisions.**
+| Feature | Forge | OpenCode | Codex |
+|---------|-------|----------|-------|
+| **Deterministic classifier** | Token-matching classifier (1200 lines) | None | None |
+| **Harness state machine** | 7-stage pipeline | None | None |
+| **Hidden workers** | 4 worker types with tool allowlists | None | None |
+| **Structured output contracts** | Strict JSON validation with retry | None | None |
+| **Thread phase model** | ideate/apply phases | None | None |
+| **Outcome normalization** | Observation → Decision routing | None | None |
+| **Claim-evidence guard** | Validates side-effect claims against tool evidence | None | None |
+| **Worker tool allowlists** | Hardcoded per worker type | None | None |
 
 ---
 
-## What Forge Could Learn
+## Why Codex and OpenCode Work Better Than Forge
 
-### Immediate Wins (Phase 1)
+### Principle 1: Trust the Model for Intent
 
-1. **Remove structured worker output validation** — let workers return plain text
-2. **Remove deterministic classification** — let the LLM decide what to do
-3. **Expand worker tool access** — give workers the same tools as the primary agent
-4. **Add circuit breakers** — stop retrying after 3 consecutive failures
-5. **Reduce prompt complexity** — OpenCode's explore prompt is 15 lines, Forge's worker prompts are 200+
+Both Codex and OpenCode let the LLM decide what tools to call. The model is better at understanding "make a branch" means "run git checkout -b" than a token matcher that looks for the word "branch" in the input.
 
-### Medium-Term (Phase 2)
+Forge's classifier intercepts before the LLM call and can misroute. When it does, the wrong worker type gets dispatched, the wrong tools are available, and the task fails.
 
-6. **Permission system** — replace tool allowlists with declarative permission rules
-7. **LLM-driven delegation** — let the LLM decide when to use sub-agents via a `task` tool
-8. **Declarative agent config** — define agents in config, not code
-9. **Remove state machine** — replace with simple loop
-10. **Unified tool interface** — one tool contract for all execution modes
+### Principle 2: Sandbox Execution, Not Tool Access
 
-### Long-Term (Phase 3)
+Codex's safety model is "give the agent full access, but run dangerous operations in a sandbox and ask for approval." This means:
+- The agent can always complete its task
+- Safety is enforced at execution time, not tool-registration time
+- The agent gets useful error messages from the sandbox ("permission denied") that help it adapt
 
-11. **Client/server architecture** — decouple TUI from agent runtime
-12. **Plugin system** — allow external tools and agents
-13. **Session persistence** — store and resume agent sessions
-14. **Streaming-first** — stream everything, buffer nothing
+Forge's safety model is "restrict which tools the agent can see." This means:
+- The agent can't complete tasks that require tools outside its allowlist
+- The agent can't even try the right approach
+- No useful error feedback ("tool not found" vs "permission denied")
+
+### Principle 3: Plain Text Results
+
+Codex sub-agents return their final response as plain text. The parent LLM reads it and decides what to do. No JSON schema validation, no retry loops, no blocked observations.
+
+Forge workers must return strict JSON. Validation failures cascade into 3 retries per worker, then the agent retries the worker, creating 90+ attempt loops for formatting issues.
+
+### Principle 4: LLM-Driven Delegation
+
+In Codex, the LLM itself decides when to delegate via `spawn_agent`. It writes the task description, selects the role, and interprets the result. The LLM is the orchestrator.
+
+In Forge, the harness decides when to delegate based on token matching. The harness selects the worker type, constructs the task, and validates the result. The host is the orchestrator, and it's worse at it than the LLM.
+
+### Principle 5: Parallelism Where Possible
+
+Codex supports parallel sub-agents (`spawn_agent` doesn't block) and CSV batch spawning. Multiple agents can work simultaneously.
+
+Forge workers are sequential. The harness dispatches one worker at a time, waits for results, then decides what to do next.
+
+### Principle 6: Error Recovery with Context
+
+Codex sends tool errors back to the LLM as context (`FunctionCallError::RespondToModel`). The model sees what went wrong and adapts. Sandbox denials include helpful error messages.
+
+Forge hides validation failures from the model. The worker gets a vague "Your previous output was invalid" retry prompt. The model can't adapt because it doesn't know what went wrong.
+
+---
+
+## Codex's Guardian: A Key Innovation
+
+The Guardian is Codex's most interesting architectural feature for Forge to study. It's an **automated approval reviewer** — a separate LLM session that evaluates tool calls:
+
+1. Agent wants to execute a command
+2. If approval policy is `OnRequest`, the Guardian reviews instead of prompting the user
+3. Guardian builds a compact transcript (recent messages + planned action)
+4. Guardian LLM (prefers `gpt-5.4`) produces a risk assessment: `{risk_level, risk_score, rationale, evidence}`
+5. If `risk_score < 80` → auto-approve. Otherwise → deny with "do not attempt workarounds" message
+6. Guardian **always fails closed**: timeout, parse error, or any failure → high-risk denial
+
+The Guardian is locked down:
+- `approval_policy = Never` (can't execute commands itself)
+- `sandbox_policy = ReadOnly` (can't write files)
+- No sub-agent features (can't spawn agents)
+- 90-second timeout
+- Cached trunk session for prompt-cache efficiency
+
+**This is the right way to add safety without restricting capability.** Forge could implement something similar instead of restricting worker tool access.
 
 ---
 
 ## Lines of Code Comparison
 
-| Component | OpenCode | Forge | Ratio |
+| Component | OpenCode | Codex | Forge |
 |-----------|----------|-------|-------|
-| Core harness | ~1,300 | ~9,500 | 1:7 |
-| Agent definitions | ~300 | ~800 | 1:3 |
-| System prompts | ~50 | ~2,500 | 1:50 |
-| Tool registry | ~200 | ~500 | 1:3 |
-| Classification | 0 | ~1,200 | 0:∞ |
-| Worker validation | 0 | ~400 | 0:∞ |
-| State machine | 0 | ~600 | 0:∞ |
-| Thread management | 0 | ~600 | 0:∞ |
-| **Total** | **~1,850** | **~16,100** | **1:9** |
+| Core orchestrator | ~700 | 291KB (`codex.rs`)* | ~600 (`runner.go`) |
+| Agent definitions | ~300 | 8KB (`codex_thread.rs`) | ~800 (`agent.go` + `roles.go`) |
+| System prompts | ~50 | Dynamic (built from config) | ~2,500 (`system.go`) |
+| Tool registry | ~200 | ~200KB (`client.rs` + `tools/`)* | ~500 |
+| Classification | 0 | 0 | ~1,200 (`classifier.go`) |
+| Worker execution | 0 | 0 | ~250 (`workers.go`) |
+| Worker validation | 0 | 0 | ~400 (`contracts.go`) |
+| State machine | 0 | 0 | ~600 (policy + types) |
+| Thread management | 0 | 0 | ~600 (`thread.go`) |
+| Sub-agent system | ~300 | 29KB (`codex_delegate.rs`) | ~700 (`subagent.go` + `delegate.go`) |
+| Sandbox/approval | 0 | ~100KB (`exec.rs` + `exec_policy.rs` + `sandboxing/`)* | 0 |
+| Guardian reviewer | 0 | ~20KB (`guardian/`) | 0 |
+| Skills system | 0 | ~30KB (`skills/`) | 0 |
+| MCP tools | 0 | ~40KB (`mcp/`) | 0 |
+| **Total** | **~1,850** | **~800KB*** | **~16,100** |
 
-Forge's harness is **9x more code** for less reliable behavior.
-
----
-
-## Why Simplicity Wins
-
-OpenCode's architecture follows a principle that Forge should adopt:
-
-> **Let the LLM do what LLMs are good at. Let the host do what hosts are good at.**
-
-**LLMs are good at:**
-- Understanding user intent
-- Choosing appropriate tools
-- Formatting responses
-- Deciding when to delegate
-- Interpreting ambiguous requests
-
-**Hosts are good at:**
-- Executing tool calls safely
-- Enforcing permissions
-- Managing state persistence
-- Handling cancellation
-- Tracing and observability
-
-Forge has the host doing LLM things (classifying intent, planning steps, validating output format) and the LLM doing host things (formatting JSON, following strict output schemas). This inversion is the root cause of Forge's reliability problems.
+*Codex's `codex.rs` is a monolithic file containing session management, prompt building, hook routing, turn lifecycle, compaction, streaming, tool orchestration, and sub-agent management. It's large but structurally simple — an event dispatch loop with an inner ReAct loop.
 
 ---
 
-## Recommendations
+## Lessons for Forge's Redesign
 
-### For the v2 plan specifically:
+### Must Adopt (High Confidence)
 
-The v2 plan (`docs/plans/2026-03-28-kernel-architecture-fixes-v2.md`) is correct in keeping strict JSON contracts and improving retry diagnostics. It's a good incremental fix.
+1. **Remove the classifier** — Let the LLM classify intent via tool selection. Token matching is brittle and adds latency.
 
-### For the next redesign:
+2. **Remove worker tool allowlists** — Give all agents access to all tools. Use a permission/approval system for safety instead.
 
-The lessons from OpenCode suggest a more fundamental simplification:
+3. **Remove structured worker output contracts** — Sub-agents should return plain text. The parent LLM reads and interprets.
 
-1. **Remove the harness kernel entirely** — replace with a simple agent loop
-2. **Remove deterministic classification** — let the LLM classify intent
-3. **Remove worker types** — replace with permission-scoped sub-agents
-4. **Remove structured output validation** — sub-agents return plain text
-5. **Remove the state machine** — replace with a loop
-6. **Add a permission system** — declarative, composable, overridable
-7. **Add LLM-driven delegation** — `task` tool like OpenCode's
+4. **Replace state machine with ReAct loop** — Simple `while (tool_calls) { execute; feed_back; }` loop. No 7-stage pipeline.
 
-This would reduce Forge's harness from ~16,000 lines to ~2,000 lines while improving reliability.
+5. **Add sandboxing** — Use OS-level sandboxing (landlock/seatbelt) to restrict file/network access during execution, not tool access during registration.
 
-The v2 plan's claim-evidence guard and protected-branch policy are good host-side safety mechanisms that should be preserved in any redesign. They're examples of the host doing what hosts are good at.
+### Should Consider (Medium Confidence)
+
+6. **Add approval policies** — Configurable `Never/OnFailure/OnRequest` for command execution. Like Codex's `AskForApproval`.
+
+7. **Add execution policy rules** — `.rules` files for command-level Allow/Prompt/Forbidden. User-configurable without code changes.
+
+8. **Add LLM-driven delegation** — `spawn_agent` tool where the LLM decides when and how to delegate.
+
+9. **Add parallel sub-agents** — Don't block on worker completion. Let multiple agents run simultaneously.
+
+10. **Add a Guardian reviewer** — Auto-approve low-risk commands, deny high-risk ones. Fails closed.
+
+### Nice to Have (Lower Priority)
+
+11. **Add pre/post tool hooks** — Extensible hook system for custom safety/validation logic.
+
+12. **Add MCP tool support** — Dynamic tools from external servers.
+
+13. **Add skills system** — Load instruction documents from `.md` files instead of hardcoded prompts.
+
+14. **Add context compaction** — Auto-compact when token limit reached mid-turn.
+
+15. **Add session persistence** — DB-backed session state for resume.
+
+16. **Add transport fallback** — WebSocket → HTTPS fallback on connection failures.
 
 ---
 
 ## References
 
-- OpenCode agent definitions: `packages/opencode/src/agent/agent.ts`
-- OpenCode tool interface: `packages/opencode/src/tool/tool.ts`
-- OpenCode tool registry: `packages/opencode/src/tool/registry.ts`
-- OpenCode task tool: `packages/opencode/src/tool/task.ts`
-- OpenCode session loop: `packages/opencode/src/session/prompt.ts`
-- Forge harness runner: `internal/harness/runner.go`
-- Forge classifier: `internal/harness/classifier.go`
-- Forge worker contracts: `internal/harness/contracts.go`
-- Forge agent loop: `internal/agent/agent.go`
-- Forge system prompts: `internal/agent/system.go`
+### Codex (OpenAI)
+- `codex-rs/core/src/codex.rs` — Main orchestrator (291KB), contains `Codex`, `Session`, `TurnContext`, `submission_loop()`, `run_turn()`, `run_sampling_request()`
+- `codex-rs/core/src/codex_thread.rs` — Thread/stream wrapper (8KB)
+- `codex-rs/core/src/codex_delegate.rs` — Sub-agent spawning (29KB), `run_codex_thread_interactive()`, `run_codex_thread_one_shot()`
+- `codex-rs/core/src/client.rs` — LLM client (70KB), streaming, tool call parsing
+- `codex-rs/core/src/tools/` — Tool router, registry, orchestrator, parallel execution
+- `codex-rs/core/src/tools/spec.rs` — Tool definitions and `ToolsConfig`
+- `codex-rs/core/src/exec.rs` — Command execution (40KB)
+- `codex-rs/core/src/exec_policy.rs` — Execution policy rules (31KB)
+- `codex-rs/core/src/sandboxing/` — OS-level sandbox implementations
+- `codex-rs/core/src/guardian/` — Auto-reviewer (prompt, review session, approval request)
+- `codex-rs/core/src/agent/` — Agent control, registry, roles
+- `codex-rs/core/src/skills/` — Skill loading and injection
+- `codex-rs/core/src/mcp/` — MCP tool support
+- `codex-rs/core/src/compact.rs` — Context compaction (16KB)
+
+### OpenCode (Anomaly)
+- `packages/opencode/src/agent/agent.ts` — Agent definitions (~300 lines)
+- `packages/opencode/src/tool/tool.ts` — Tool interface (~100 lines)
+- `packages/opencode/src/tool/registry.ts` — Tool registry
+- `packages/opencode/src/tool/task.ts` — Sub-agent task tool
+- `packages/opencode/src/session/prompt.ts` — Main session loop
+
+### Forge (Local)
+- `internal/harness/runner.go` — Harness kernel orchestrator
+- `internal/harness/classifier.go` — Token-based classification
+- `internal/harness/workers.go` — Worker execution
+- `internal/harness/contracts.go` — Structured output validation
+- `internal/harness/policy.go` — Decision logic
+- `internal/agent/agent.go` — Agent loop
+- `internal/agent/system.go` — System prompt builder
+- `ARCHITECTURE_ISSUES.md` — Dual-architecture analysis
+- `KERNEL_ISSUES.md` — Kernel-specific issues
