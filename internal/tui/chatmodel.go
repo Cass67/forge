@@ -4318,11 +4318,6 @@ func (m ChatModel) toolResultProgressLine(ev llm.Event) string {
 		return ""
 	}
 	label := displayAgentLabel(agent)
-	summary := compactStatusText(m.lastToolSummary[agent])
-	switch summary {
-	case ".", "/":
-		summary = ""
-	}
 	if ev.IsError {
 		reason := compactStatusText(ev.Text)
 		if reason == "" {
@@ -4330,8 +4325,7 @@ func (m ChatModel) toolResultProgressLine(ev llm.Event) string {
 		}
 		return fmt.Sprintf("%s hit an issue: %s", label, reason)
 	}
-	if summary != "" {
-		return fmt.Sprintf("%s wrapped up: %s", label, summary)
-	}
-	return fmt.Sprintf("%s wrapped up this step", label)
+	// Non-error tool completions are usually noise in the main pane because
+	// corresponding tool-call progress already appeared.
+	return ""
 }
