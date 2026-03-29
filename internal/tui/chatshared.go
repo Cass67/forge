@@ -29,15 +29,11 @@ type ChatLiveConfig struct {
 	DebugEnabled          bool
 	AvailableModels       []string
 	Providers             []ProviderOption
-	AgentsEnabled         bool
 	RefreshModels         func() []string
 	ProbeModels           func(currentModel string, available []string) []string
 	RefreshProviders      func() []ProviderOption
 	ContextFiles          []string
 	SwitchModel           func(name string) (newModel string, err error)
-	ToggleAgents          func(enabled bool) error
-	GetAgentModels        func() map[string]string
-	SaveAgentModels       func(models map[string]string) error
 	ClearHistory          func()
 	ApprovalCh            <-chan tools.Action
 	ResponseCh            chan<- bool
@@ -291,7 +287,7 @@ func setProviderToken(t *auth.Tokens, id, value string) {
 		t.MistralAPIKey = value
 	case "xai":
 		t.XAIAPIKey = value
-	case "zai":
+	case "zai", "zai-coding-plan":
 		t.ZAIAPIKey = value
 	case "nvidia":
 		t.NVIDIAAPIKey = value

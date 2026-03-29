@@ -80,28 +80,14 @@ type PipelinePass struct {
 	Rounds        int    `toml:"rounds"`         // 0 = use default
 }
 
-type AgentModels struct {
-	Dispatch  string `toml:"dispatch"`
-	Scout     string `toml:"scout"`
-	Builder   string `toml:"builder"`
-	Doctor    string `toml:"doctor"`
-	Architect string `toml:"architect"`
-}
-
-type AgentsConfig struct {
-	Enabled bool        `toml:"enabled"`
-	Models  AgentModels `toml:"models"`
-}
-
 type ChatConfig struct {
-	Model          string       `toml:"model"`
-	LastModel      string       `toml:"last_model"`
-	MaxTurns       int          `toml:"max_turns"`
-	CommandTimeout int          `toml:"command_timeout"`
-	Yolo           bool         `toml:"yolo"`
-	IgnoreDirs     []string     `toml:"ignore_dirs"`
-	AutoSkills     string       `toml:"auto_skills"`
-	Agents         AgentsConfig `toml:"agents"`
+	Model          string   `toml:"model"`
+	LastModel      string   `toml:"last_model"`
+	MaxTurns       int      `toml:"max_turns"`
+	CommandTimeout int      `toml:"command_timeout"`
+	Yolo           bool     `toml:"yolo"`
+	IgnoreDirs     []string `toml:"ignore_dirs"`
+	AutoSkills     string   `toml:"auto_skills"`
 }
 
 type ApprovalRuleConfig struct {
@@ -160,58 +146,6 @@ func Save(path string, cfg *Config) error {
 		return err
 	}
 	return f.Close()
-}
-
-// SaveAgentModels updates only the [chat.agents.models] section in the config file.
-func SaveAgentModels(path string, models AgentModels) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-
-	lines := []string{}
-	if len(data) > 0 {
-		lines = strings.Split(string(data), "\n")
-	}
-
-	filtered := make([]string, 0, len(lines))
-	inSection := false
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
-			if trimmed == "[chat.agents.models]" {
-				inSection = true
-				continue
-			}
-			inSection = false
-		}
-		if inSection {
-			continue
-		}
-		filtered = append(filtered, line)
-	}
-
-	for len(filtered) > 0 && strings.TrimSpace(filtered[len(filtered)-1]) == "" {
-		filtered = filtered[:len(filtered)-1]
-	}
-
-	section := renderAgentModelsSection(models)
-	if section != "" {
-		if len(filtered) > 0 {
-			filtered = append(filtered, "")
-		}
-		filtered = append(filtered, strings.Split(section, "\n")...)
-	}
-
-	content := strings.Join(filtered, "\n")
-	if content != "" && !strings.HasSuffix(content, "\n") {
-		content += "\n"
-	}
-	return os.WriteFile(path, []byte(content), 0o600)
 }
 
 // SaveChatLastModel updates only the [chat] last_model key in the config file.
@@ -276,31 +210,6 @@ func SaveChatLastModel(path, model string) error {
 		content += "\n"
 	}
 	return os.WriteFile(path, []byte(content), 0o600)
-}
-
-func renderAgentModelsSection(models AgentModels) string {
-	type pair struct {
-		key string
-		val string
-	}
-	pairs := []pair{
-		{key: "dispatch", val: models.Dispatch},
-		{key: "scout", val: models.Scout},
-		{key: "builder", val: models.Builder},
-		{key: "doctor", val: models.Doctor},
-		{key: "architect", val: models.Architect},
-	}
-	lines := []string{"[chat.agents.models]"}
-	for _, pair := range pairs {
-		if strings.TrimSpace(pair.val) == "" {
-			continue
-		}
-		lines = append(lines, pair.key+` = "`+pair.val+`"`)
-	}
-	if len(lines) == 1 {
-		return ""
-	}
-	return strings.Join(lines, "\n")
 }
 
 func DefaultPath() string {
@@ -515,27 +424,6 @@ func (c *Config) CopilotClientID() string {
 		return c.Copilot.ClientID
 	}
 	return defaultCopilotClientID
-}
-
-// AgentRoleModels returns a map of role name to model name for multi-agent mode.
-func (c *Config) AgentRoleModels() map[string]string {
-	m := make(map[string]string)
-	if v := c.Chat.Agents.Models.Dispatch; v != "" {
-		m["dispatch"] = v
-	}
-	if v := c.Chat.Agents.Models.Scout; v != "" {
-		m["scout"] = v
-	}
-	if v := c.Chat.Agents.Models.Builder; v != "" {
-		m["builder"] = v
-	}
-	if v := c.Chat.Agents.Models.Doctor; v != "" {
-		m["doctor"] = v
-	}
-	if v := c.Chat.Agents.Models.Architect; v != "" {
-		m["architect"] = v
-	}
-	return m
 }
 
 func ValidRounds(n int) bool {

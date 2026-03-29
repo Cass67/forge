@@ -13,9 +13,9 @@ import (
 func NewWaitAgent(pool *react.AgentPool) agenttools.Tool {
 	return agenttools.Tool{
 		Name:        "wait_agent",
-		Description: "Wait for a spawned sub-agent to complete and return its result.",
+		Description: "Wait for a spawned child agent to complete and return its result.",
 		Parameters: []agenttools.ParameterDef{
-			{Name: "id", Type: "string", Description: "Sub-agent id from spawn_agent", Required: true},
+			{Name: "id", Type: "string", Description: "Child agent id from spawn_agent", Required: true},
 			{Name: "timeout_seconds", Type: "int", Description: "How long to wait before timing out (default 30)", Required: false},
 		},
 		AutoApprove: true,

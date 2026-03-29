@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"forge/internal/agent"
-	"forge/internal/harness"
 	"forge/internal/llm"
 	"forge/internal/logger"
 )
@@ -111,46 +110,6 @@ func (r *chatDebugRecorder) logEvent(ev llm.Event) {
 			"output_tokens": ev.Usage.OutputTokens,
 		},
 	})
-}
-
-func (r *chatDebugRecorder) logTrace(records []harness.TraceRecord) {
-	if r == nil || r.log == nil {
-		return
-	}
-	for _, record := range records {
-		fields := map[string]any{
-			"state":         record.State,
-			"family":        record.Family,
-			"lane":          record.Lane,
-			"step":          record.Step,
-			"worker":        record.Worker,
-			"reason":        record.Reason,
-			"topic_key":     record.TopicKey,
-			"debug_summary": record.DebugSummary,
-		}
-		if strings.TrimSpace(record.ThreadID) != "" {
-			fields["thread_id"] = record.ThreadID
-		}
-		if record.ThreadKind != "" {
-			fields["thread_kind"] = record.ThreadKind
-		}
-		if record.ThreadStatus != "" {
-			fields["thread_status"] = record.ThreadStatus
-		}
-		if record.ThreadIntent != "" {
-			fields["thread_intent"] = record.ThreadIntent
-		}
-		if record.OutcomeKind != "" {
-			fields["outcome_kind"] = record.OutcomeKind
-		}
-		if record.DeliverableKind != "" {
-			fields["deliverable_kind"] = record.DeliverableKind
-		}
-		if record.DeliverableStatus != "" {
-			fields["deliverable_status"] = record.DeliverableStatus
-		}
-		r.log.Debug("harness.trace", fields)
-	}
 }
 
 func (r *chatDebugRecorder) wrapDriver(inner llm.Driver) llm.Driver {

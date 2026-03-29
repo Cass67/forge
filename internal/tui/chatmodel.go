@@ -261,13 +261,6 @@ type ChatModel struct {
 	modelsQuery    string
 	modelsQueryPos int
 
-	agentsEnabled          bool
-	agentModelsVisible     bool
-	agentModelsCursor      int
-	agentModelsRoles       []string
-	agentModelsMap         map[string]string
-	agentModelsPickingRole string
-
 	providersVisible     bool
 	providersCursor      int
 	providersList        []ProviderOption
@@ -330,7 +323,6 @@ func NewChatModel(cfg ChatLiveConfig) ChatModel {
 		state:                  state,
 		toolsVisible:           false,
 		paneFocus:              focusChat,
-		agentsEnabled:          cfg.AgentsEnabled,
 		recentActivityIndex:    -1,
 		turnAnchorMessageIndex: -1,
 		lastToolSummary:        make(map[string]string),
@@ -338,25 +330,11 @@ func NewChatModel(cfg ChatLiveConfig) ChatModel {
 		modelsFiltered:         uniqueStringsPreserveOrder(cfg.AvailableModels),
 		providersList:          append([]ProviderOption(nil), cfg.Providers...),
 		contextFiles:           append([]string(nil), cfg.ContextFiles...),
-		agentModelsRoles:       []string{"dispatch", "scout", "builder", "doctor", "architect"},
-		agentModelsMap:         copyStringMap(cfg.GetAgentModels),
 	}
 	m.modelsList = m.uniqueModelOptions(m.modelsList)
 	m.modelsFiltered = append([]string(nil), m.modelsList...)
 	m.syncStatusData()
 	return m
-}
-
-func copyStringMap(fn func() map[string]string) map[string]string {
-	if fn == nil {
-		return make(map[string]string)
-	}
-	src := fn()
-	dst := make(map[string]string, len(src))
-	for k, v := range src {
-		dst[k] = v
-	}
-	return dst
 }
 
 func (m ChatModel) Init() tea.Cmd {
@@ -969,12 +947,6 @@ func (m ChatModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.filesVisible {
 		return m.handleFilesMouse(msg)
 	}
-	if m.agentModelsVisible {
-		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
-			m.agentModelsVisible = false
-		}
-		return m, nil
-	}
 	if m.modelsVisible {
 		return m.handleModelsMouse(msg)
 	}
@@ -1090,19 +1062,6 @@ func (m ChatModel) modelsOverlayLayout() (x0, y0, boxW, boxH, listY, contentHeig
 	listY = y0 + 5
 	if m.modelsCursor >= contentHeight {
 		start = m.modelsCursor - contentHeight + 1
-	}
-	return
-}
-
-func (m ChatModel) agentModelsOverlayLayout() (x0, y0, boxW, boxH, listY, contentHeight, start int) {
-	boxW = min(72, max(42, m.width-6))
-	boxH = min(18, max(12, m.height-4))
-	contentHeight = max(1, boxH-6)
-	x0 = max(0, (m.width-boxW)/2)
-	y0 = max(0, (m.height-boxH)/2)
-	listY = y0 + 3
-	if m.agentModelsCursor >= contentHeight {
-		start = m.agentModelsCursor - contentHeight + 1
 	}
 	return
 }
@@ -1712,9 +1671,6 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.filesVisible {
 		return m.handleFilePickerKey(msg)
 	}
-	if m.agentModelsVisible {
-		return m.handleAgentModelsKey(msg)
-	}
 	if m.modelsVisible {
 		return m.handleModelsKey(msg)
 	}
@@ -1759,14 +1715,6 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEscape:
 		if m.busy && m.inputCh != nil {
 			ch := m.inputCh
-			if m.activeSubAgent != "" && time.Since(m.lastEscapeTime) > 2*time.Second {
-				m.lastEscapeTime = time.Now()
-				m.flash = fmt.Sprintf("cancelling %s... (Esc again to cancel turn)", m.activeSubAgent)
-				return m, func() tea.Msg {
-					ch <- "__cancel_subagent__"
-					return nil
-				}
-			}
 			m.lastEscapeTime = time.Now()
 			m.flash = "canceling..."
 			return m, func() tea.Msg {
@@ -3051,50 +2999,10 @@ func preferExplicitModelOption(candidate, current string) bool {
 	return false
 }
 
-func (m ChatModel) handleAgentModelsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyEscape:
-		m.agentModelsVisible = false
-	case tea.KeyUp:
-		if m.agentModelsCursor > 0 {
-			m.agentModelsCursor--
-		}
-	case tea.KeyDown:
-		if m.agentModelsCursor < len(m.agentModelsRoles)-1 {
-			m.agentModelsCursor++
-		}
-	case tea.KeyEnter:
-		m.ensureModelListLoaded()
-		m.modelsQuery = ""
-		m.modelsQueryPos = 0
-		m.updateModelFilter()
-		m.agentModelsVisible = false
-		m.modelsVisible = true
-		m.agentModelsPickingRole = m.agentModelsRoles[m.agentModelsCursor]
-	case tea.KeyRunes:
-		if string(msg.Runes) == "s" {
-			if m.config.SaveAgentModels == nil {
-				m.flash = "save failed: no config writer"
-				return m, nil
-			}
-			if err := m.config.SaveAgentModels(m.agentModelsMap); err != nil {
-				m.flash = "save failed: " + err.Error()
-			} else {
-				m.flash = "agent models saved to config"
-			}
-		}
-	}
-	return m, nil
-}
-
 func (m ChatModel) handleModelsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEscape:
 		m.modelsVisible = false
-		if m.agentModelsPickingRole != "" {
-			m.agentModelsVisible = true
-			m.agentModelsPickingRole = ""
-		}
 	case tea.KeyUp:
 		if m.modelsCursor > 0 {
 			m.modelsCursor--
@@ -3177,18 +3085,6 @@ func (m *ChatModel) pickModel(idx int) tea.Cmd {
 		return nil
 	}
 	picked := m.modelsFiltered[idx]
-	if m.agentModelsPickingRole != "" {
-		if picked == m.model {
-			delete(m.agentModelsMap, m.agentModelsPickingRole)
-		} else {
-			m.agentModelsMap[m.agentModelsPickingRole] = picked
-		}
-		m.flash = fmt.Sprintf("%s model: %s", m.agentModelsPickingRole, picked)
-		m.modelsVisible = false
-		m.agentModelsVisible = true
-		m.agentModelsPickingRole = ""
-		return nil
-	}
 	if m.config.SwitchModel != nil {
 		newModel, err := m.config.SwitchModel(picked)
 		if err != nil {
@@ -4026,52 +3922,6 @@ func (m ChatModel) renderModelsOverlay() string {
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
 
-func (m ChatModel) renderAgentModelsOverlay() string {
-	theme := m.theme()
-	_, _, boxW, boxH, _, contentHeight, start := m.agentModelsOverlayLayout()
-
-	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true)
-	selectedStyle := lipgloss.NewStyle().Foreground(theme.HeaderFG).Background(theme.AccentPrimary).Bold(true)
-	textStyle := lipgloss.NewStyle().Foreground(theme.Text)
-	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
-
-	lines := make([]string, 0, min(len(m.agentModelsRoles), contentHeight))
-	for i := 0; i < contentHeight && start+i < len(m.agentModelsRoles); i++ {
-		idx := start + i
-		role := m.agentModelsRoles[idx]
-		model := m.agentModelsMap[role]
-		label := ""
-		if model == "" {
-			model = m.model
-			label = "  (default)"
-		}
-		line := fmt.Sprintf("%-12s %s%s", role, model, label)
-		if idx == m.agentModelsCursor {
-			lines = append(lines, selectedStyle.Render(line))
-		} else {
-			lines = append(lines, textStyle.Render(line))
-		}
-	}
-	footer := dimStyle.Render("↑/↓ select • Enter pick model • s save • Esc close")
-	inner := lipgloss.JoinVertical(
-		lipgloss.Left,
-		titleStyle.Render("Agent Models"),
-		"",
-		lipgloss.NewStyle().Width(boxW-6).Height(contentHeight).Render(strings.Join(lines, "\n")),
-		"",
-		footer,
-	)
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.BorderFocus).
-		Background(theme.HeaderBG).
-		Padding(1, 2).
-		Width(boxW - 6).
-		Height(boxH - 4).
-		Render(inner)
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
-}
-
 func (m ChatModel) renderProvidersOverlay() string {
 	theme := m.theme()
 	boxW := min(96, max(64, m.width-6))
@@ -4315,9 +4165,6 @@ func (m ChatModel) View() string {
 	}
 	if m.filesVisible {
 		return fillSurfaceRows(m.renderFilesOverlay(), m.width, theme.AppBG)
-	}
-	if m.agentModelsVisible {
-		return fillSurfaceRows(m.renderAgentModelsOverlay(), m.width, theme.AppBG)
 	}
 	if m.modelsVisible {
 		return fillSurfaceRows(m.renderModelsOverlay(), m.width, theme.AppBG)

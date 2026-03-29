@@ -147,14 +147,9 @@ func (p *AgentPool) snapshot(job *agentJob) AgentResult {
 }
 
 func MapSpawnRole(role string) string {
-	switch strings.ToLower(strings.TrimSpace(role)) {
-	case "", "default":
-		return "default"
-	case "worker":
-		return "worker"
-	case "explorer":
-		return "explorer"
-	default:
+	role = strings.TrimSpace(role)
+	if role == "" {
 		return "default"
 	}
+	return role
 }

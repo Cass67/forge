@@ -290,59 +290,6 @@ func TestRoundsValidation(t *testing.T) {
 	}
 }
 
-func TestSaveAgentModelsPreservesExistingConfig(t *testing.T) {
-	path := writeTemp(t, "[models]\nwriter = \"openai/gpt-5\"\n\n[chat]\nmodel = \"openai/gpt-5\"\n")
-
-	err := config.SaveAgentModels(path, config.AgentModels{
-		Scout:   "anthropic/claude-sonnet-4-6",
-		Builder: "groq/llama",
-	})
-	if err != nil {
-		t.Fatalf("SaveAgentModels: %v", err)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	content := string(data)
-	if !strings.Contains(content, "[models]") || !strings.Contains(content, "writer = \"openai/gpt-5\"") {
-		t.Fatalf("expected existing config to be preserved, got:\n%s", content)
-	}
-	if !strings.Contains(content, "[chat.agents.models]") {
-		t.Fatalf("expected agent models section, got:\n%s", content)
-	}
-	if !strings.Contains(content, "scout = \"anthropic/claude-sonnet-4-6\"") || !strings.Contains(content, "builder = \"groq/llama\"") {
-		t.Fatalf("expected saved agent models, got:\n%s", content)
-	}
-}
-
-func TestSaveAgentModelsReplacesExistingSection(t *testing.T) {
-	path := writeTemp(t, "[chat.agents.models]\nscout = \"old\"\ndoctor = \"stale\"\n\n[session]\nrounds_per_pass = 3\n")
-
-	err := config.SaveAgentModels(path, config.AgentModels{
-		Architect: "new-architect",
-	})
-	if err != nil {
-		t.Fatalf("SaveAgentModels: %v", err)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	content := string(data)
-	if strings.Contains(content, "scout = \"old\"") || strings.Contains(content, "doctor = \"stale\"") {
-		t.Fatalf("expected previous agent models to be replaced, got:\n%s", content)
-	}
-	if !strings.Contains(content, "architect = \"new-architect\"") {
-		t.Fatalf("expected new architect model, got:\n%s", content)
-	}
-	if !strings.Contains(content, "[session]") || !strings.Contains(content, "rounds_per_pass = 3") {
-		t.Fatalf("expected unrelated config to remain, got:\n%s", content)
-	}
-}
-
 func TestSaveChatLastModelPreservesExistingChatSection(t *testing.T) {
 	path := writeTemp(t, "[models]\nwriter = \"claude-sonnet-4-6\"\n\n[chat]\nmodel = \"chatgpt/gpt-5.4\"\nauto_skills = \"auto\"\n\n[chat.agents]\nenabled = true\n")
 
