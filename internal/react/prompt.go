@@ -40,7 +40,7 @@ func BuildMessages(systemPrompt string, snapshot SessionSnapshot) []llm.Message 
 		messages = append(messages, llm.Message{Role: msg.Role, Content: content})
 	}
 
-	return messages
+	return truncateToolResults(messages, toolResultMaxLines)
 }
 
 func compactionContext(snapshot SessionSnapshot) string {

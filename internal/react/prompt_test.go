@@ -1,6 +1,7 @@
 package react
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -51,5 +52,43 @@ func TestSessionMessagesIncludeCompactionSummaryContext(t *testing.T) {
 	}
 	if messages[3].Role != llm.RoleAssistant || messages[3].Content != "answer 2" {
 		t.Fatalf("remaining assistant message = %#v", messages[3])
+	}
+}
+
+func TestBuildMessages_LargeToolResultTruncated(t *testing.T) {
+	lines := make([]string, 100)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("output line %d", i+1)
+	}
+	bigResult := strings.Join(lines, "\n")
+
+	snap := SessionSnapshot{
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "run something"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "c1", Name: "run_command", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "c1", Content: bigResult},
+		},
+	}
+	msgs := BuildMessages("sys", snap)
+
+	var toolMsg *llm.Message
+	for i := range msgs {
+		if msgs[i].Role == llm.RoleTool {
+			toolMsg = &msgs[i]
+			break
+		}
+	}
+	if toolMsg == nil {
+		t.Fatal("no tool message in output")
+	}
+	if strings.Contains(toolMsg.Content, "output line 50") {
+		t.Error("middle lines should be truncated from LLM context")
+	}
+	if !strings.Contains(toolMsg.Content, "truncated") {
+		t.Error("truncation marker should be present")
+	}
+	// Original snapshot must be untouched
+	if !strings.Contains(snap.History[2].Content, "output line 50") {
+		t.Error("original snapshot history must not be mutated")
 	}
 }
