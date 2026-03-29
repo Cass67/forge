@@ -328,6 +328,39 @@ func (d *nativeInnerDriver) StreamWithTools(_ context.Context, _ []llm.Message, 
 	return nil
 }
 
+// midStreamFailDriver emits tokens and then returns a retryable error.
+type midStreamFailDriver struct {
+	called int
+	tokens []string
+}
+
+func (d *midStreamFailDriver) Name() string { return "mid-stream-fail" }
+func (d *midStreamFailDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	defer close(out)
+	d.called++
+	for _, t := range d.tokens {
+		out <- llm.Token{Text: t}
+	}
+	return fmt.Errorf("mid-stream network error")
+}
+
+// midStreamFailNativeDriver emits a text token then returns a retryable error.
+type midStreamFailNativeDriver struct {
+	called int
+}
+
+func (d *midStreamFailNativeDriver) Name() string { return "mid-stream-fail-native" }
+func (d *midStreamFailNativeDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	close(out)
+	return nil
+}
+func (d *midStreamFailNativeDriver) StreamWithTools(_ context.Context, _ []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
+	defer close(out)
+	d.called++
+	out <- llm.Token{Text: "partial response"}
+	return fmt.Errorf("mid-stream network error")
+}
+
 func TestRetryDriverForwardsNativeToolCaller(t *testing.T) {
 	inner := &nativeInnerDriver{}
 	retry := llm.NewRetryDriver(inner, 1, 0, 0, 0)
@@ -350,5 +383,55 @@ func TestRetryDriverForwardsNativeToolCaller(t *testing.T) {
 	}
 	if inner.callCount != 1 {
 		t.Fatalf("inner callCount = %d, want 1", inner.callCount)
+	}
+}
+
+func TestRetryDoesNotRetryAfterMidStreamFailure(t *testing.T) {
+	inner := &midStreamFailDriver{tokens: []string{"hello", " world"}}
+	rd := llm.NewRetryDriver(inner, 3, time.Millisecond, time.Millisecond, 0)
+
+	out := make(chan llm.Token, 64)
+	err := rd.Stream(context.Background(), nil, out)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "mid-stream network error") {
+		t.Errorf("unexpected error: %v", err)
+	}
+	// Must NOT retry after tokens were forwarded — caller state would be corrupted.
+	if inner.called != 1 {
+		t.Errorf("expected 1 call (no retry after tokens emitted), got %d", inner.called)
+	}
+	// Partial tokens should have been forwarded live.
+	tokens := collect(out)
+	if len(tokens) != 2 {
+		t.Errorf("expected 2 forwarded tokens, got %d: %v", len(tokens), tokens)
+	}
+}
+
+func TestRetryStreamWithToolsDoesNotRetryAfterTokensEmitted(t *testing.T) {
+	inner := &midStreamFailNativeDriver{}
+	rd := llm.NewRetryDriver(inner, 3, time.Millisecond, time.Millisecond, 0)
+
+	caller, ok := any(rd).(llm.NativeToolCaller)
+	if !ok {
+		t.Fatal("RetryDriver should implement NativeToolCaller")
+	}
+	out := make(chan llm.Token, 64)
+	err := caller.StreamWithTools(context.Background(), nil, nil, out)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "mid-stream network error") {
+		t.Errorf("unexpected error: %v", err)
+	}
+	// Must NOT retry after tokens were forwarded.
+	if inner.called != 1 {
+		t.Errorf("expected 1 call (no retry after tokens emitted), got %d", inner.called)
+	}
+	// Partial token should have been forwarded live.
+	tokens := collect(out)
+	if len(tokens) != 1 || tokens[0].Text != "partial response" {
+		t.Errorf("expected partial token to be forwarded, got: %v", tokens)
 	}
 }
