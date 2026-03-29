@@ -48,6 +48,38 @@ func TestBuildSystemPrompt(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPromptOmitsProjectScanSummary(t *testing.T) {
+	dir := t.TempDir()
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{Name: "read_file", Description: "Read a file"})
+
+	prompt := BuildSystemPrompt(dir, reg, "")
+
+	if strings.Contains(prompt, "Files: ~") {
+		t.Fatalf("visible prompt should not include file-count project summary: %q", prompt)
+	}
+	if strings.Contains(prompt, "Languages: ") {
+		t.Fatalf("visible prompt should not include detected-language project summary: %q", prompt)
+	}
+}
+
+func TestBuildSystemPromptOmitsVisibleSkillCatalog(t *testing.T) {
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{Name: "read_file", Description: "Read a file"})
+
+	prompt := BuildSystemPrompt("/home/user/project", reg, skills.Describe([]skills.Skill{{
+		Name:        "brainstorming",
+		Description: "plan before implementation",
+	}}))
+
+	if strings.Contains(prompt, "Available skills (activate with /") {
+		t.Fatalf("visible prompt should not advertise full skill catalog: %q", prompt)
+	}
+	if strings.Contains(prompt, "/brainstorming") {
+		t.Fatalf("visible prompt should not advertise specific skill activators: %q", prompt)
+	}
+}
+
 func TestBuildWorkerSystemPromptUsesStrictSingleToolContract(t *testing.T) {
 	reg := tools.NewRegistry()
 	reg.Register(tools.Tool{Name: "read_file", Description: "Read a file"})
