@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/packages/param"
 	"github.com/openai/openai-go/responses"
 	"github.com/openai/openai-go/shared"
 )
@@ -452,8 +454,20 @@ func isAppendOnlyMessageHistory(prev, current []llm.Message) bool {
 		return false
 	}
 	for i := range prev {
-		if prev[i].Role != current[i].Role || prev[i].Content != current[i].Content {
+		p, c := prev[i], current[i]
+		if p.Role != c.Role || p.Content != c.Content {
 			return false
+		}
+		if p.ToolCallID != c.ToolCallID {
+			return false
+		}
+		if len(p.ToolCalls) != len(c.ToolCalls) {
+			return false
+		}
+		for j := range p.ToolCalls {
+			if p.ToolCalls[j] != c.ToolCalls[j] {
+				return false
+			}
 		}
 	}
 	return true
@@ -595,8 +609,30 @@ func toOpenAIMessages(msgs []llm.Message) []openai.ChatCompletionMessageParamUni
 			out = append(out, openai.SystemMessage(m.Content))
 		case llm.RoleUser:
 			out = append(out, openai.UserMessage(m.Content))
+		case llm.RoleTool:
+			out = append(out, openai.ToolMessage(m.Content, m.ToolCallID))
 		case llm.RoleAssistant:
-			out = append(out, openai.AssistantMessage(m.Content))
+			if len(m.ToolCalls) > 0 {
+				calls := make([]openai.ChatCompletionMessageToolCallParam, 0, len(m.ToolCalls))
+				for _, tc := range m.ToolCalls {
+					calls = append(calls, openai.ChatCompletionMessageToolCallParam{
+						ID: tc.ID,
+						Function: openai.ChatCompletionMessageToolCallFunctionParam{
+							Name:      tc.Name,
+							Arguments: tc.ArgsJSON,
+						},
+					})
+				}
+				assistantMsg := openai.ChatCompletionAssistantMessageParam{
+					Content: openai.ChatCompletionAssistantMessageParamContentUnion{
+						OfString: param.NewOpt(m.Content),
+					},
+					ToolCalls: calls,
+				}
+				out = append(out, openai.ChatCompletionMessageParamUnion{OfAssistant: &assistantMsg})
+			} else {
+				out = append(out, openai.AssistantMessage(m.Content))
+			}
 		}
 	}
 	return out
@@ -604,6 +640,250 @@ func toOpenAIMessages(msgs []llm.Message) []openai.ChatCompletionMessageParamUni
 
 func (d *OpenAIDriver) shouldFallbackAfterEmptyStream() bool {
 	return providerUsesLegacyMaxTokensField(d.providerLabel)
+}
+
+// toolDefsToOpenAI converts llm.ToolDef slice to OpenAI chat completion tool params.
+func toolDefsToOpenAI(defs []llm.ToolDef) []openai.ChatCompletionToolParam {
+	tools := make([]openai.ChatCompletionToolParam, 0, len(defs))
+	for _, d := range defs {
+		properties := make(map[string]any, len(d.Parameters))
+		required := make([]string, 0)
+		for _, p := range d.Parameters {
+			prop := map[string]any{"type": p.Type}
+			if p.Description != "" {
+				prop["description"] = p.Description
+			}
+			properties[p.Name] = prop
+			if p.Required {
+				required = append(required, p.Name)
+			}
+		}
+		schema := map[string]any{
+			"type":       "object",
+			"properties": properties,
+		}
+		if len(required) > 0 {
+			schema["required"] = required
+		}
+		tools = append(tools, openai.ChatCompletionToolParam{
+			Function: shared.FunctionDefinitionParam{
+				Name:        d.Name,
+				Description: param.NewOpt(d.Description),
+				Parameters:  shared.FunctionParameters(schema),
+			},
+		})
+	}
+	return tools
+}
+
+// driverAppendMissingJSONClosers appends missing closing braces/brackets to raw JSON.
+// Inlined from internal/agent/parse.go to avoid circular imports.
+func driverAppendMissingJSONClosers(raw string) (string, bool) {
+	var stack []byte
+	inString := false
+	escaped := false
+	for i := 0; i < len(raw); i++ {
+		ch := raw[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch ch {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			inString = true
+		case '{':
+			stack = append(stack, '}')
+		case '[':
+			stack = append(stack, ']')
+		case '}', ']':
+			if len(stack) == 0 || stack[len(stack)-1] != ch {
+				return raw, false
+			}
+			stack = stack[:len(stack)-1]
+		}
+	}
+	if inString || len(stack) == 0 {
+		return raw, false
+	}
+	var out strings.Builder
+	out.WriteString(raw)
+	for i := len(stack) - 1; i >= 0; i-- {
+		out.WriteByte(stack[i])
+	}
+	return out.String(), true
+}
+
+// driverEscapeBareJSONStringControls escapes unescaped control chars inside JSON strings.
+// Inlined from internal/agent/parse.go to avoid circular imports.
+func driverEscapeBareJSONStringControls(raw string) (string, bool) {
+	var out strings.Builder
+	out.Grow(len(raw))
+	inString := false
+	escaped := false
+	changed := false
+	for i := 0; i < len(raw); i++ {
+		ch := raw[i]
+		if inString {
+			if escaped {
+				out.WriteByte(ch)
+				escaped = false
+				continue
+			}
+			switch ch {
+			case '\\':
+				out.WriteByte(ch)
+				escaped = true
+			case '"':
+				out.WriteByte(ch)
+				inString = false
+			case '\n':
+				out.WriteString(`\n`)
+				changed = true
+			case '\r':
+				out.WriteString(`\r`)
+				changed = true
+			case '\t':
+				out.WriteString(`\t`)
+				changed = true
+			default:
+				out.WriteByte(ch)
+			}
+			continue
+		}
+		out.WriteByte(ch)
+		if ch == '"' {
+			inString = true
+		}
+	}
+	return out.String(), changed
+}
+
+// repairToolCallArgsJSON normalizes potentially malformed JSON from streaming deltas.
+// Returns "{}" for empty input, empty string if repair fails.
+func repairToolCallArgsJSON(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "{}"
+	}
+	if json.Valid([]byte(raw)) {
+		return raw
+	}
+	if fixed, changed := driverAppendMissingJSONClosers(raw); changed && json.Valid([]byte(fixed)) {
+		return fixed
+	}
+	if fixed, changed := driverEscapeBareJSONStringControls(raw); changed && json.Valid([]byte(fixed)) {
+		return fixed
+	}
+	return ""
+}
+
+// StreamWithTools implements llm.NativeToolCaller. It passes tool definitions via
+// the chat completions `tools` parameter and emits NativeToolCall tokens after
+// accumulating all streaming deltas.
+func (d *OpenAIDriver) StreamWithTools(ctx context.Context, messages []llm.Message, tools []llm.ToolDef, out chan<- llm.Token) error {
+	defer close(out)
+	if d.useResponsesAPI() {
+		return d.streamResponses(ctx, messages, out)
+	}
+
+	params := d.chatCompletionParams(messages)
+	if len(tools) > 0 {
+		params.Tools = toolDefsToOpenAI(tools)
+	}
+
+	type accumulator struct {
+		id   strings.Builder
+		name strings.Builder
+		args strings.Builder
+	}
+	accs := map[int]*accumulator{}
+
+	var outputChars int
+	stream := d.client.Chat.Completions.NewStreaming(ctx, params)
+	for stream.Next() {
+		chunk := stream.Current()
+		if chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0 {
+			usage := llm.Usage{
+				InputTokens:  int(chunk.Usage.PromptTokens),
+				OutputTokens: int(chunk.Usage.CompletionTokens),
+			}
+			d.mu.Lock()
+			d.lastUsage = usage
+			d.mu.Unlock()
+		}
+		for _, choice := range chunk.Choices {
+			if text := choice.Delta.Content; text != "" {
+				outputChars += len(text)
+				select {
+				case out <- llm.Token{Text: text}:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+			for _, tc := range choice.Delta.ToolCalls {
+				idx := int(tc.Index)
+				if _, ok := accs[idx]; !ok {
+					accs[idx] = &accumulator{}
+				}
+				a := accs[idx]
+				if tc.ID != "" {
+					a.id.WriteString(tc.ID)
+				}
+				if tc.Function.Name != "" {
+					a.name.WriteString(tc.Function.Name)
+				}
+				if tc.Function.Arguments != "" {
+					a.args.WriteString(tc.Function.Arguments)
+				}
+			}
+		}
+	}
+	if err := stream.Err(); err != nil {
+		if d.shouldFallbackToNonStreaming(err) {
+			return d.chatCompletionsFallback(ctx, messages, out)
+		}
+		return d.wrapStreamError("chat.completions.tools", err)
+	}
+
+	for i := 0; i < len(accs); i++ {
+		a, ok := accs[i]
+		if !ok {
+			continue
+		}
+		name := strings.TrimSpace(a.name.String())
+		if name == "" {
+			continue
+		}
+		id := strings.TrimSpace(a.id.String())
+		if id == "" {
+			id = fmt.Sprintf("call_%d", i)
+		}
+		argsJSON := repairToolCallArgsJSON(a.args.String())
+		if argsJSON == "" {
+			argsJSON = "{}"
+		}
+		select {
+		case out <- llm.Token{ToolCall: &llm.NativeToolCall{ID: id, Name: name, ArgsJSON: argsJSON}}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	d.mu.Lock()
+	if d.lastUsage.OutputTokens == 0 && outputChars > 0 {
+		d.lastUsage.OutputTokens = (outputChars + 3) / 4
+	}
+	d.mu.Unlock()
+	return nil
 }
 
 func toResponseInput(msgs []llm.Message) []responses.ResponseInputItemUnionParam {
