@@ -291,6 +291,8 @@ func setProviderToken(t *auth.Tokens, id, value string) {
 		t.MistralAPIKey = value
 	case "xai":
 		t.XAIAPIKey = value
+	case "zai":
+		t.ZAIAPIKey = value
 	case "nvidia":
 		t.NVIDIAAPIKey = value
 	case "openrouter":
