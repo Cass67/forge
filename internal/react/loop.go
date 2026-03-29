@@ -130,6 +130,7 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 	start := time.Now()
 	defer r.emitStats(start)
 
+	invalidResponses := 0
 	for step := 0; step < r.maxSessionTurns; step++ {
 		streamed, err := r.streamResponse(ctx)
 		if err != nil {
@@ -140,9 +141,27 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 		calls, visibleText := agent.ParseToolCalls(response)
 		trimmedVisible := strings.TrimSpace(visibleText)
 		if len(calls) == 0 {
-			if retry := invalidWorkingResponseNudge(response); retry != "" && step+1 < r.maxSessionTurns {
-				r.session.AppendToolResults(retry)
-				continue
+			if retry := invalidWorkingResponseNudge(response); retry != "" {
+				invalidResponses++
+				if invalidResponses >= maxInvalidWorkingResponses() {
+					err := fmt.Errorf("react runtime: too many invalid working responses (%d)", invalidResponses)
+					r.session.CompleteTurn(turn, "", nil, err)
+					return err
+				}
+				if step+1 < r.maxSessionTurns {
+					r.session.AppendRuntimeNote(retry)
+					continue
+				}
+			}
+			if trimmedVisible == "" && strings.TrimSpace(response) == "" {
+				err := fmt.Errorf("react runtime: empty final response")
+				r.session.CompleteTurn(turn, "", nil, err)
+				return err
+			}
+			if retry := invalidWorkingResponseNudge(response); retry != "" {
+				err := fmt.Errorf("react runtime: invalid final response: %s", strings.TrimSpace(retry))
+				r.session.CompleteTurn(turn, "", nil, err)
+				return err
 			}
 			final := strings.TrimSpace(response)
 			if trimmedVisible != "" {
@@ -156,6 +175,7 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 			return nil
 		}
 
+		invalidResponses = 0
 		results, err := r.executeToolCalls(ctx, calls)
 		r.session.AppendToolResults(compactToolResults(results))
 		r.session.CompleteTurn(turn, "", calls, err)
@@ -402,4 +422,8 @@ func maxSessionTurns(value int) int {
 		return 20
 	}
 	return value
+}
+
+func maxInvalidWorkingResponses() int {
+	return 3
 }
