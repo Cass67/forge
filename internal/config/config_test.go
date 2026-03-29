@@ -249,6 +249,25 @@ func TestBraveKeyFromConfig(t *testing.T) {
 	}
 }
 
+func TestZAIKey(t *testing.T) {
+	setTempHome(t)
+	t.Setenv("ZAI_API_KEY", "test-zai-key")
+	cfg := &config.Config{}
+	got := cfg.ZAIKey()
+	if got != "test-zai-key" {
+		t.Fatalf("ZAIKey() = %q, want %q", got, "test-zai-key")
+	}
+}
+
+func TestZAIKeyFromConfig(t *testing.T) {
+	setTempHome(t)
+	cfg := &config.Config{}
+	cfg.Keys.ZAI = "from-config"
+	if got := cfg.ZAIKey(); got != "from-config" {
+		t.Fatalf("ZAIKey() = %q, want %q", got, "from-config")
+	}
+}
+
 func TestRoundsValidation(t *testing.T) {
 	for _, n := range []int{0, -1, 11} {
 		if config.ValidRounds(n) {
