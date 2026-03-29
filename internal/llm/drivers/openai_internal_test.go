@@ -681,6 +681,84 @@ func TestCustomCompatProviderResponsesParamsNoStoreNoStateless(t *testing.T) {
 	}
 }
 
+func TestToOpenAIMessagesHandlesRoleTool(t *testing.T) {
+	msgs := []llm.Message{
+		{Role: llm.RoleUser, Content: "check the repo"},
+		{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{
+			{ID: "c1", Name: "git_status", ArgsJSON: `{}`},
+		}},
+		{Role: llm.RoleTool, ToolCallID: "c1", Content: "M internal/foo.go"},
+	}
+	out := toOpenAIMessages(msgs)
+	if len(out) != 3 {
+		t.Fatalf("want 3 messages, got %d", len(out))
+	}
+	for i, m := range out {
+		b, err := json.Marshal(m)
+		if err != nil {
+			t.Fatalf("message[%d] failed to marshal: %v", i, err)
+		}
+		if len(b) == 0 {
+			t.Fatalf("message[%d] marshaled to empty", i)
+		}
+	}
+}
+
+func TestToolDefsToOpenAIShape(t *testing.T) {
+	defs := []llm.ToolDef{
+		{
+			Name:        "read_file",
+			Description: "Read a file",
+			Parameters: []llm.ToolParam{
+				{Name: "path", Type: "string", Description: "file path", Required: true},
+				{Name: "start_line", Type: "integer", Description: "start line", Required: false},
+			},
+		},
+	}
+	tools := toolDefsToOpenAI(defs)
+	if len(tools) != 1 {
+		t.Fatalf("want 1 tool, got %d", len(tools))
+	}
+	b, err := json.Marshal(tools[0])
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	s := string(b)
+	if !strings.Contains(s, "read_file") {
+		t.Fatalf("marshaled tool missing name: %s", s)
+	}
+	if !strings.Contains(s, "path") {
+		t.Fatalf("marshaled tool missing path param: %s", s)
+	}
+}
+
+func TestRepairToolCallArgsJSON(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		wantJSON bool
+	}{
+		{"valid JSON", `{"command":"ls"}`, true},
+		{"missing closer", `{"command":"ls"`, true},
+		{"empty", ``, true},
+		{"garbage", `not json at all`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := repairToolCallArgsJSON(tt.input)
+			if tt.wantJSON {
+				if !json.Valid([]byte(got)) {
+					t.Fatalf("expected valid JSON, got %q", got)
+				}
+			} else {
+				if got != "" {
+					t.Fatalf("expected empty string for unrepaired garbage, got %q", got)
+				}
+			}
+		})
+	}
+}
+
 func assertErr(msg string) error { return simpleErr(msg) }
 
 type simpleErr string
