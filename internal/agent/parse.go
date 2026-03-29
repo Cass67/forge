@@ -18,6 +18,71 @@ type ToolCall struct {
 var toolCallOpeners = []string{"<tool_call>", "<function_calls>", "<tool_calls>"}
 var toolCallClosers = []string{"</tool_call>", "</function_calls>", "</tool_calls>"}
 
+func containsAny(text string, needles []string) bool {
+	for _, needle := range needles {
+		if strings.Contains(text, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsRawToolMarkup(text string) bool {
+	text = stripMarkdownCodeSpansAndFences(text)
+	for _, opener := range toolCallOpeners {
+		if strings.Contains(text, opener) {
+			return true
+		}
+	}
+	for _, closer := range toolCallClosers {
+		if strings.Contains(text, closer) {
+			return true
+		}
+	}
+	return false
+}
+
+func stripMarkdownCodeSpansAndFences(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	var out strings.Builder
+	inFence := false
+	for _, line := range lines {
+		trimmed := strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(trimmed, "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		out.WriteString(stripInlineCodeSpans(line))
+		out.WriteByte('\n')
+	}
+	return out.String()
+}
+
+func stripInlineCodeSpans(text string) string {
+	if text == "" {
+		return text
+	}
+	var out strings.Builder
+	inCode := false
+	for i := 0; i < len(text); i++ {
+		if text[i] == '`' {
+			inCode = !inCode
+			continue
+		}
+		if inCode {
+			continue
+		}
+		out.WriteByte(text[i])
+	}
+	return out.String()
+}
+
 type inlineToolCallParse struct {
 	calls   []ToolCall
 	visible string
