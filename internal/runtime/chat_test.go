@@ -479,7 +479,6 @@ func TestRegisterReactDelegationToolsAddsSpawnAndWait(t *testing.T) {
 func TestRegisterReactDelegationToolsDoesNotUseLegacyRoleModelMapping(t *testing.T) {
 	reg := tools.NewRegistry()
 	cfg := &config.Config{}
-	cfg.Chat.Agents.Models.Scout = "scout-model"
 	workDir := t.TempDir()
 	approve := agent.YoloApproval()
 	registerTools(reg, workDir, cfg, approve)

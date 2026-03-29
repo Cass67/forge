@@ -13,10 +13,10 @@ import (
 func NewSpawnAgent(pool *react.AgentPool) agenttools.Tool {
 	return agenttools.Tool{
 		Name:        "spawn_agent",
-		Description: "Spawn a sub-agent for a bounded task. Roles: default, explorer, worker.",
+		Description: "Spawn a bounded child agent task. Role is optional advisory context.",
 		Parameters: []agenttools.ParameterDef{
-			{Name: "task_description", Type: "string", Description: "Task to delegate to the sub-agent", Required: true},
-			{Name: "role", Type: "string", Description: "Sub-agent role: default, explorer, worker", Required: false},
+			{Name: "task_description", Type: "string", Description: "Task to delegate to the child agent", Required: true},
+			{Name: "role", Type: "string", Description: "Optional role hint for the child agent", Required: false},
 		},
 		AutoApprove: true,
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
