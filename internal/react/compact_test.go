@@ -42,7 +42,7 @@ func TestCompactSessionHistoryTrimsOldTurns(t *testing.T) {
 func TestCompactSessionHistorySummarizesToolsAndErrors(t *testing.T) {
 	session := NewSession()
 	turn := session.RecordInput("inspect repo")
-	session.AppendToolResults("[list_dir] README.md\ninternal")
+	session.AppendUserMessage("[list_dir] README.md\ninternal")
 	session.AppendAssistantMessage("repo overview")
 	session.CompleteTurn(turn, "repo overview", []agent.ToolCall{{Name: "list_dir"}}, fmt.Errorf("tool timeout"))
 
@@ -70,7 +70,7 @@ func TestCompactSessionHistorySummarizesToolsAndErrors(t *testing.T) {
 }
 
 func TestRunnerRunEmitsCompactionProgress(t *testing.T) {
-	driver := &scriptedDriver{responses: []string{"done 1", "done 2", "done 3"}}
+	driver := &nativeScriptedDriver{responses: []string{"done 1", "done 2", "done 3"}}
 	var progress []string
 	r := NewRunner(Config{
 		Driver:          driver,

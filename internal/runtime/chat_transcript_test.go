@@ -50,6 +50,10 @@ func (d *noCallTranscriptDriver) Stream(_ context.Context, _ []llm.Message, out 
 	return nil
 }
 
+func (d *noCallTranscriptDriver) StreamWithTools(ctx context.Context, msgs []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
+	return d.Stream(ctx, msgs, out)
+}
+
 func TestChatTranscriptPromptBoundaryResponseIsVisible(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Chat.MaxTurns = 8
@@ -611,6 +615,62 @@ func (d *scriptedTranscriptDriver) Stream(_ context.Context, messages []llm.Mess
 	return nil
 }
 
+func (d *scriptedTranscriptDriver) StreamWithTools(_ context.Context, msgs []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
+	defer close(out)
+	d.calls++
+
+	request := latestTranscriptRequest(msgs)
+	if request == "" {
+		d.unexpected = append(d.unexpected, "missing transcript request")
+		out <- llm.Token{Text: "unexpected driver input: missing transcript request"}
+		return nil
+	}
+	lowerReq := strings.ToLower(request)
+
+	var response string
+	switch {
+	case isTranscriptPreviewRequest(lowerReq):
+		response = d.previewResponse(lowerReq, msgs)
+	case strings.Contains(lowerReq, "write me a script to clean this up"):
+		response = d.cleanupScriptResponse(msgs)
+	case isTranscriptRepoRequest(lowerReq):
+		response = d.repoResponse(lowerReq, msgs)
+	default:
+		d.unexpected = append(d.unexpected, "unexpected request: "+clipTestText(request, 120))
+		out <- llm.Token{Text: "unexpected driver input: unexpected request"}
+		return nil
+	}
+
+	if name, args, ok := parseTranscriptToolCall(response); ok {
+		callID := fmt.Sprintf("call_%d_%s", d.calls, name)
+		out <- llm.Token{ToolCall: &llm.NativeToolCall{ID: callID, Name: name, ArgsJSON: args}}
+		return nil
+	}
+	out <- llm.Token{Text: response}
+	return nil
+}
+
+// parseTranscriptToolCall parses the legacy XML tool call format used by the
+// scripted driver response helpers and returns the tool name and JSON args.
+func parseTranscriptToolCall(s string) (name, args string, ok bool) {
+	s = strings.TrimSpace(s)
+	const open = "<tool_call>"
+	const close = "</tool_call>"
+	if !strings.HasPrefix(s, open) || !strings.HasSuffix(s, close) {
+		return "", "", false
+	}
+	inner := strings.TrimSpace(s[len(open) : len(s)-len(close)])
+	// inner is JSON like {"name":"list_dir","args":{...}}
+	var parsed struct {
+		Name string          `json:"name"`
+		Args json.RawMessage `json:"args"`
+	}
+	if err := json.Unmarshal([]byte(inner), &parsed); err != nil {
+		return "", "", false
+	}
+	return parsed.Name, string(parsed.Args), true
+}
+
 func (d *scriptedTranscriptDriver) repoResponse(request string, messages []llm.Message) string {
 	evaluative := strings.Contains(request, "what do you think") ||
 		strings.Contains(request, "improve") ||
@@ -773,14 +833,18 @@ func hasTranscriptToolEvidence(messages []llm.Message, needle string) bool {
 		return false
 	}
 	for _, msg := range messages {
-		if msg.Role != llm.RoleUser {
-			continue
-		}
-		if !isTranscriptToolMessage(msg.Content) {
-			continue
-		}
-		if strings.Contains(msg.Content, needle) {
-			return true
+		switch msg.Role {
+		case llm.RoleUser:
+			if !isTranscriptToolMessage(msg.Content) {
+				continue
+			}
+			if strings.Contains(msg.Content, needle) {
+				return true
+			}
+		case llm.RoleTool:
+			if strings.Contains(msg.Content, needle) {
+				return true
+			}
 		}
 	}
 	return false
@@ -788,11 +852,13 @@ func hasTranscriptToolEvidence(messages []llm.Message, needle string) bool {
 
 func latestTranscriptToolResults(messages []llm.Message) string {
 	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role != llm.RoleUser {
-			continue
-		}
-		if isTranscriptToolMessage(messages[i].Content) {
+		switch messages[i].Role {
+		case llm.RoleTool:
 			return messages[i].Content
+		case llm.RoleUser:
+			if isTranscriptToolMessage(messages[i].Content) {
+				return messages[i].Content
+			}
 		}
 	}
 	return ""
@@ -813,13 +879,30 @@ func currentTranscriptToolResults(messages []llm.Message) string {
 	if rootIdx < 0 {
 		return ""
 	}
+
+	// Build a map of tool call ID -> tool name from assistant messages.
+	toolNameByID := make(map[string]string)
+	for i := rootIdx + 1; i < len(messages); i++ {
+		if messages[i].Role == llm.RoleAssistant {
+			for _, tc := range messages[i].ToolCalls {
+				toolNameByID[tc.ID] = tc.Name
+			}
+		}
+	}
+
 	blocks := make([]string, 0, 4)
 	for i := rootIdx + 1; i < len(messages); i++ {
-		if messages[i].Role != llm.RoleUser {
-			continue
-		}
-		if isTranscriptToolMessage(messages[i].Content) {
-			blocks = append(blocks, messages[i].Content)
+		switch messages[i].Role {
+		case llm.RoleTool:
+			name := toolNameByID[messages[i].ToolCallID]
+			if name == "" {
+				name = "unknown"
+			}
+			blocks = append(blocks, "["+name+"] "+messages[i].Content)
+		case llm.RoleUser:
+			if isTranscriptToolMessage(messages[i].Content) {
+				blocks = append(blocks, messages[i].Content)
+			}
 		}
 	}
 	return strings.Join(blocks, "\n")
