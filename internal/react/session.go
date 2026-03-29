@@ -107,29 +107,6 @@ func (s *Session) AppendUserMessage(text string) {
 	s.history = append(s.history, llm.Message{Role: llm.RoleUser, Content: strings.TrimSpace(text)})
 }
 
-func (s *Session) AppendRuntimeNote(text string) {
-	if s == nil || strings.TrimSpace(text) == "" {
-		return
-	}
-	trimmed := strings.TrimSpace(text)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if n := len(s.history); n > 0 {
-		last := s.history[n-1]
-		if last.Role == llm.RoleUser && strings.TrimSpace(last.Content) == trimmed {
-			return
-		}
-	}
-	s.history = append(s.history, llm.Message{Role: llm.RoleUser, Content: trimmed})
-}
-
-func (s *Session) AppendToolResults(results string) {
-	if s == nil || strings.TrimSpace(results) == "" {
-		return
-	}
-	s.AppendUserMessage(results)
-}
-
 // AppendAssistantWithToolCalls records an assistant message that contains native
 // tool calls (may have empty text content). Used by the native tool calling path.
 func (s *Session) AppendAssistantWithToolCalls(calls []llm.NativeToolCall) {
