@@ -37,15 +37,15 @@ type Runtime struct {
 }
 
 type CompatProvider struct {
-	Name        string
-	Label       string
-	BaseURL     string
-	KeyFn       func() string
-	IsModel     func(string) bool
-	Models      []string
-	WireAPI     string
+	Name         string
+	Label        string
+	BaseURL      string
+	KeyFn        func() string
+	IsModel      func(string) bool
+	Models       []string
+	WireAPI      string
 	ModelInfoURL string
-	HTTPHeaders map[string]string
+	HTTPHeaders  map[string]string
 }
 
 type ProviderBackend struct {
@@ -522,6 +522,27 @@ func BuildCompatProviders(cfg *config.Config, tokens *auth.Tokens) []CompatProvi
 			Models:  []string{"grok-3", "grok-3-mini", "grok-3-fast", "grok-2"},
 		},
 		{
+			Name:    "zai",
+			BaseURL: "https://api.z.ai/api/paas/v4",
+			KeyFn:   cfg.ZAIKey,
+			IsModel: func(m string) bool { return strings.HasPrefix(m, "glm-") },
+			Models: []string{
+				"glm-5.1",
+				"glm-5",
+				"glm-5-turbo",
+				"glm-4.7",
+				"glm-4.7-flash",
+				"glm-4.7-flashx",
+				"glm-4.6",
+				"glm-4.5",
+				"glm-4.5-air",
+				"glm-4.5-x",
+				"glm-4.5-airx",
+				"glm-4.5-flash",
+				"glm-4-32b-0414-128k",
+			},
+		},
+		{
 			Name:    "mistral",
 			BaseURL: "https://api.mistral.ai/v1",
 			KeyFn:   cfg.MistralKey,
@@ -644,11 +665,11 @@ func BuildCompatProviders(cfg *config.Config, tokens *auth.Tokens) []CompatProvi
 				}
 				return os.Getenv(strings.ToUpper(defID) + "_API_KEY")
 			},
-			IsModel:     func(string) bool { return false },
-			Models:      def.Models,
-			WireAPI:     def.WireAPI,
+			IsModel:      func(string) bool { return false },
+			Models:       def.Models,
+			WireAPI:      def.WireAPI,
 			ModelInfoURL: def.ModelInfoURL,
-			HTTPHeaders: def.HTTPHeaders,
+			HTTPHeaders:  def.HTTPHeaders,
 		})
 	}
 
