@@ -35,6 +35,7 @@ type Keys struct {
 	Groq       string `toml:"groq"`
 	Mistral    string `toml:"mistral"`
 	XAI        string `toml:"xai"`
+	ZAI        string `toml:"zai"`
 	NVIDIA     string `toml:"nvidia"`
 	OpenRouter string `toml:"openrouter"`
 	Together   string `toml:"together"`
@@ -397,6 +398,17 @@ func (c *Config) XAIKey() string {
 	}
 	tokens, _ := auth.Load()
 	return strings.TrimSpace(tokens.XAIAPIKey)
+}
+
+func (c *Config) ZAIKey() string {
+	if v := strings.TrimSpace(os.Getenv("ZAI_API_KEY")); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(c.Keys.ZAI); v != "" {
+		return v
+	}
+	tokens, _ := auth.Load()
+	return strings.TrimSpace(tokens.ZAIAPIKey) // TODO: add ZAIAPIKey to auth store (Task 2)
 }
 
 func (c *Config) NVIDIAKey() string {
