@@ -130,6 +130,68 @@ func (d *RetryDriver) Stream(ctx context.Context, messages []Message, out chan<-
 	return fmt.Errorf("all %d attempts failed: %w", d.maxAttempts, lastErr)
 }
 
+// StreamWithTools implements NativeToolCaller by forwarding to the inner driver
+// if it also implements NativeToolCaller. Applies the same retry logic as Stream.
+func (d *RetryDriver) StreamWithTools(ctx context.Context, messages []Message, tools []ToolDef, out chan<- Token) error {
+	caller, ok := d.inner.(NativeToolCaller)
+	if !ok {
+		close(out)
+		return fmt.Errorf("inner driver %q does not support native tool calling", d.inner.Name())
+	}
+	defer close(out)
+
+	if err := waitForRateLimitCooldown(ctx, d.Name()); err != nil {
+		return err
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < d.maxAttempts; attempt++ {
+		if attempt > 0 {
+			wait := d.backoff(attempt)
+			if err := retrySleep(ctx, wait); err != nil {
+				return err
+			}
+		}
+
+		callCtx := ctx
+		if d.timeout > 0 {
+			var cancel context.CancelFunc
+			callCtx, cancel = context.WithTimeout(ctx, d.timeout)
+			defer cancel()
+		}
+
+		internal := make(chan Token, 64)
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- caller.StreamWithTools(callCtx, messages, tools, internal)
+		}()
+
+		var tokens []Token
+		for tok := range internal {
+			tokens = append(tokens, tok)
+		}
+
+		lastErr = <-errCh
+		if lastErr == nil {
+			for _, tok := range tokens {
+				select {
+				case out <- tok:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+			return nil
+		}
+		if isRateLimited(lastErr) {
+			rememberRateLimit(d.Name())
+		}
+		if !isRetryable(lastErr) {
+			return lastErr
+		}
+	}
+	return fmt.Errorf("all %d attempts failed: %w", d.maxAttempts, lastErr)
+}
+
 func (d *RetryDriver) backoff(attempt int) time.Duration {
 	base := float64(d.initialWait) * math.Pow(2, float64(attempt-1))
 	if base > float64(d.maxWait) {
