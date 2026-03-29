@@ -81,14 +81,23 @@ func TestBuildMessages_LargeToolResultTruncated(t *testing.T) {
 	if toolMsg == nil {
 		t.Fatal("no tool message in output")
 	}
+	// Middle lines must be absent from LLM context
 	if strings.Contains(toolMsg.Content, "output line 50") {
 		t.Error("middle lines should be truncated from LLM context")
 	}
-	if !strings.Contains(toolMsg.Content, "truncated") {
+	// Head and tail must be preserved
+	if !strings.Contains(toolMsg.Content, "output line 1") {
+		t.Error("head lines should be present in LLM context")
+	}
+	if !strings.Contains(toolMsg.Content, "output line 100") {
+		t.Error("tail lines should be present in LLM context")
+	}
+	// Truncation marker must appear
+	if !strings.Contains(toolMsg.Content, "lines truncated)") {
 		t.Error("truncation marker should be present")
 	}
-	// Original snapshot must be untouched
+	// Original snapshot must not be mutated — truncateToolResults must copy
 	if !strings.Contains(snap.History[2].Content, "output line 50") {
-		t.Error("original snapshot history must not be mutated")
+		t.Error("original snapshot history must not be mutated by BuildMessages")
 	}
 }
