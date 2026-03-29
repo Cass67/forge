@@ -81,7 +81,8 @@ func TestMapSpawnRole(t *testing.T) {
 		{in: "explorer", want: "explorer"},
 		{in: "worker", want: "worker"},
 		{in: "  explorer  ", want: "explorer"},
-		{in: "unknown", want: "default"},
+		{in: "unknown", want: "unknown"},
+		{in: "qa-review", want: "qa-review"},
 		{in: "", want: "default"},
 	}
 	for _, tc := range tests {

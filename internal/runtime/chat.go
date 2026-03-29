@@ -262,11 +262,6 @@ func RunChatLive(setup *ChatSetup) {
 					setup.debugRec.logInput("control", input)
 				}
 				evRenderer.ResponseChan() <- false
-			case "__cancel_subagent__":
-				if setup != nil && setup.debugRec != nil {
-					setup.debugRec.logInput("control", input)
-				}
-				evRenderer.Info("no active sub-agent")
 			case "__cancel_turn__":
 				if setup != nil && setup.debugRec != nil {
 					setup.debugRec.logInput("control", input)
@@ -317,7 +312,6 @@ func RunChatLive(setup *ChatSetup) {
 		DebugEnabled:    debugEnabled,
 		AvailableModels: setup.Available,
 		Providers:       append([]tui.ProviderOption(nil), setup.Providers...),
-		AgentsEnabled:   false,
 		FetchLiveCopilotQuota: func(ctx context.Context) (*copilot.UserQuota, error) {
 			if provider := bootstrap.ParseModelRef(setup.ChatModel).Provider; provider != "copilot" {
 				return nil, nil
@@ -523,7 +517,7 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 		childRunner := reactruntime.NewRunner(reactruntime.Config{
 			Driver:   driver,
 			Tools:    childTools,
-			Renderer: agent.NewHiddenWorkerRenderer(nil),
+			Renderer: agent.NewSilentRenderer(nil),
 			SystemPrompt: func() string {
 				return agent.BuildSystemPrompt(setup.WorkDir, childTools, "") + "\n\n" + reactDelegationSystemSuffix(role)
 			},
@@ -544,8 +538,8 @@ func reactDelegationSystemSuffix(role string) string {
 	sb.WriteString("You are forge's spawned agent for a bounded delegated task.\n")
 	sb.WriteString("- Complete the delegated task autonomously and return a plain-text result to the parent agent.\n")
 	sb.WriteString("- Stay within the delegated scope.\n")
-	sb.WriteString("- Do not mention internal runtime machinery, worker contracts, or role names in your answer unless directly relevant.\n")
-	switch reactruntime.MapSpawnRole(role) {
+	sb.WriteString("- Do not mention internal runtime machinery or role hints in your answer unless directly relevant.\n")
+	switch strings.ToLower(strings.TrimSpace(reactruntime.MapSpawnRole(role))) {
 	case "explorer":
 		sb.WriteString("- Bias toward inspection, tracing, and evidence gathering.\n")
 	case "worker":
