@@ -11,17 +11,13 @@ import (
 )
 
 func BuildSystemPrompt(workDir string, registry *tools.Registry, skillsDesc string) string {
+	_ = skillsDesc
 	if registry == nil {
 		registry = tools.NewRegistry()
 	}
 	var sb strings.Builder
 	sb.WriteString("You are forge, a coding agent. You work in the user's project directory.\n\n")
 	sb.WriteString(fmt.Sprintf("Working directory: %s\n", workDir))
-
-	info := detectProject(workDir)
-	if info != "" {
-		sb.WriteString(info + "\n")
-	}
 
 	sb.WriteString("\n")
 	sb.WriteString(registry.DescribeForPrompt())
@@ -42,11 +38,6 @@ func BuildSystemPrompt(workDir string, registry *tools.Registry, skillsDesc stri
 	sb.WriteString("- If you need information, call a tool to get it. If you need to change a file, call the tool.\n")
 	sb.WriteString("- Only respond with plain text (no tool calls) when you have a complete final answer.\n")
 	sb.WriteString("- Before asking the user, exhaust self-help: read files, search, grep, check git log, run commands.\n")
-
-	if skillsDesc != "" {
-		sb.WriteString("\n")
-		sb.WriteString(skillsDesc)
-	}
 
 	return sb.String()
 }

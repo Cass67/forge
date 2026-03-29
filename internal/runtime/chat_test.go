@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -734,12 +735,75 @@ func TestRegisterReactDelegationToolsAddsSpawnAndWait(t *testing.T) {
 		MakeDriver: func(name string) llm.Driver { return &kernelMockDriver{response: "ok"} },
 	}
 
-	registerReactDelegationTools(reg, a, setup, baseReg)
+	registerReactDelegationTools(reg, a, setup, baseReg, approve)
 	if _, ok := reg.Get("spawn_agent"); !ok {
 		t.Fatal("spawn_agent tool not registered")
 	}
 	if _, ok := reg.Get("wait_agent"); !ok {
 		t.Fatal("wait_agent tool not registered")
+	}
+}
+
+func TestRegisterReactDelegationToolsDoesNotUseLegacyRoleModelMapping(t *testing.T) {
+	reg := tools.NewRegistry()
+	cfg := &config.Config{}
+	cfg.Chat.Agents.Models.Scout = "scout-model"
+	workDir := t.TempDir()
+	approve := agent.YoloApproval()
+	registerTools(reg, workDir, cfg, approve)
+	baseReg := reg.Filter(nil)
+
+	renderer := agent.NewRenderer(io.Discard, 80, false)
+	a := agent.NewAgent(&kernelMockDriver{response: "parent"}, reg, approve, workDir, 4, renderer, nil, chatstate.New())
+
+	var makeDriverCalls []string
+	setup := &ChatSetup{
+		Config:  cfg,
+		WorkDir: workDir,
+		Driver:  &kernelMockDriver{response: "spawned result"},
+		MakeDriver: func(name string) llm.Driver {
+			makeDriverCalls = append(makeDriverCalls, name)
+			return &kernelMockDriver{response: "spawned result"}
+		},
+	}
+
+	registerReactDelegationTools(reg, a, setup, baseReg, approve)
+
+	spawnTool, ok := reg.Get("spawn_agent")
+	if !ok {
+		t.Fatal("spawn_agent tool not registered")
+	}
+	waitTool, ok := reg.Get("wait_agent")
+	if !ok {
+		t.Fatal("wait_agent tool not registered")
+	}
+
+	rawSpawn, err := spawnTool.Execute(context.Background(), map[string]any{
+		"task_description": "inspect repo",
+		"role":             "explorer",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var spawnPayload map[string]any
+	if err := json.Unmarshal([]byte(rawSpawn), &spawnPayload); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := spawnPayload["id"].(string)
+	if id == "" {
+		t.Fatal("spawn id missing")
+	}
+
+	if _, err := waitTool.Execute(context.Background(), map[string]any{
+		"id":              id,
+		"timeout_seconds": 1.0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(makeDriverCalls) != 0 {
+		t.Fatalf("react delegation should not consult legacy role-model mapping, got makeDriver calls %v", makeDriverCalls)
 	}
 }
 
