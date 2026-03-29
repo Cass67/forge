@@ -101,6 +101,25 @@ func (r *Runner) ClearHistory() {
 	r.session.Clear()
 }
 
+func (r *Runner) AppendUserMessage(text string) {
+	if r == nil || r.session == nil {
+		return
+	}
+	r.session.AppendUserMessage(text)
+}
+
+func (r *Runner) EmitResponse(text string) {
+	if r == nil || strings.TrimSpace(text) == "" {
+		return
+	}
+	if r.session != nil {
+		r.session.AppendAssistantMessage(text)
+	}
+	if r.renderer != nil {
+		r.renderer.AgentText(strings.TrimSpace(text))
+	}
+}
+
 func (r *Runner) runLoop(ctx context.Context, turn int) error {
 	start := time.Now()
 	defer r.emitStats(start)

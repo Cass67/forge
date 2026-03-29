@@ -404,11 +404,14 @@ func (c *Config) ZAIKey() string {
 	if v := strings.TrimSpace(os.Getenv("ZAI_API_KEY")); v != "" {
 		return v
 	}
+	if v := strings.TrimSpace(os.Getenv("ZHIPU_API_KEY")); v != "" {
+		return v
+	}
 	if v := strings.TrimSpace(c.Keys.ZAI); v != "" {
 		return v
 	}
 	tokens, _ := auth.Load()
-	return strings.TrimSpace(tokens.ZAIAPIKey) // TODO: add ZAIAPIKey to auth store (Task 2)
+	return strings.TrimSpace(tokens.ZAIAPIKey)
 }
 
 func (c *Config) NVIDIAKey() string {
@@ -501,7 +504,7 @@ func (c *Config) ChatModel() string {
 	if c.Chat.Model != "" {
 		return c.Chat.Model
 	}
-	return c.Models.Writer
+	return ""
 }
 
 func (c *Config) CopilotClientID() string {
