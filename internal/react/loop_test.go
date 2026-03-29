@@ -3,6 +3,7 @@ package react
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -275,6 +276,46 @@ func TestRunnerLoopRetriesSlashSkillOutput(t *testing.T) {
 	}
 	if snap.Turns[0].FinalResponse != "final answer" {
 		t.Fatalf("final response = %q", snap.Turns[0].FinalResponse)
+	}
+}
+
+func TestRunnerLoopRetriesMalformedToolMarkup(t *testing.T) {
+	driver := &scriptedDriver{responses: []string{
+		"<tool_call>git_status</tool_call><tool_call>git_log</think>",
+		"final answer",
+	}}
+	renderer := &recordingRenderer{}
+	session := NewSession()
+	r := NewRunner(Config{
+		Driver:       driver,
+		Tools:        agenttools.NewRegistry(),
+		Renderer:     renderer,
+		SystemPrompt: func() string { return "system prompt" },
+		Session:      session,
+	})
+
+	if err := r.Run(context.Background(), "inspect repo"); err != nil {
+		t.Fatal(err)
+	}
+
+	snap := session.Snapshot()
+	if got := snap.Turns[0].FinalResponse; got != "final answer" {
+		t.Fatalf("final response = %q", got)
+	}
+	if len(snap.History) < 2 {
+		t.Fatalf("history = %#v", snap.History)
+	}
+	foundRetry := false
+	for _, msg := range snap.History {
+		if msg.Role == llm.RoleUser && strings.Contains(msg.Content, "malformed tool markup") {
+			foundRetry = true
+		}
+		if msg.Role == llm.RoleAssistant && strings.Contains(msg.Content, "<tool_call>") {
+			t.Fatalf("malformed raw tool markup should not be stored as assistant output: %#v", snap.History)
+		}
+	}
+	if !foundRetry {
+		t.Fatalf("expected retry note in history, got %#v", snap.History)
 	}
 }
 
