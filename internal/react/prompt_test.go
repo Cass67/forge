@@ -40,8 +40,11 @@ func TestSessionMessagesIncludeCompactionSummaryContext(t *testing.T) {
 	if !strings.Contains(messages[1].Content, "Earlier conversation summary") {
 		t.Fatalf("summary message = %q", messages[1].Content)
 	}
-	if !strings.Contains(messages[1].Content, "prompt 1") {
+	if !strings.Contains(messages[1].Content, "user: prompt 1") {
 		t.Fatalf("summary message missing compacted turn detail: %q", messages[1].Content)
+	}
+	if !strings.Contains(messages[1].Content, "outcome: answer 1") {
+		t.Fatalf("summary message missing semantic outcome detail: %q", messages[1].Content)
 	}
 	if messages[2].Role != llm.RoleUser || messages[2].Content != "prompt 2" {
 		t.Fatalf("remaining user message = %#v", messages[2])
