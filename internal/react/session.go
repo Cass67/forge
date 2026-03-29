@@ -1,6 +1,7 @@
 package react
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 
@@ -162,7 +163,8 @@ func (s *Session) compact(keep int) bool {
 		return false
 	}
 	dropCount := len(s.recentInputs) - keep
-	dropped := append([]string(nil), s.recentInputs[:dropCount]...)
+	droppedRecentInputs := append([]string(nil), s.recentInputs[:dropCount]...)
+	droppedTurns := append([]TurnRecord(nil), s.turns[:min(dropCount, len(s.turns))]...)
 	s.recentInputs = append([]string(nil), s.recentInputs[dropCount:]...)
 	if len(s.turns) > dropCount {
 		s.turns = append([]TurnRecord(nil), s.turns[dropCount:]...)
@@ -182,16 +184,48 @@ func (s *Session) compact(keep int) bool {
 		}
 		s.history = append([]llm.Message(nil), s.history[cut:]...)
 	}
-	s.compactedTurns += len(dropped)
-	parts := make([]string, 0, len(dropped))
-	for _, item := range dropped {
-		item = strings.TrimSpace(item)
-		if item != "" {
-			parts = append(parts, item)
-		}
-	}
+	s.compactedTurns += len(droppedRecentInputs)
+	parts := summarizeCompactedTurns(droppedTurns)
 	if len(parts) > 0 {
 		s.compactionSummary = strings.TrimSpace(s.compactionSummary + " " + strings.Join(parts, " | "))
 	}
 	return true
+}
+
+func summarizeCompactedTurns(turns []TurnRecord) []string {
+	parts := make([]string, 0, len(turns))
+	for _, turn := range turns {
+		if summary := summarizeTurn(turn); summary != "" {
+			parts = append(parts, summary)
+		}
+	}
+	return parts
+}
+
+func summarizeTurn(turn TurnRecord) string {
+	fields := make([]string, 0, 4)
+	if input := strings.TrimSpace(turn.Input); input != "" {
+		fields = append(fields, "user: "+input)
+	}
+	if len(turn.ToolCalls) > 0 {
+		names := make([]string, 0, len(turn.ToolCalls))
+		for _, call := range turn.ToolCalls {
+			if name := strings.TrimSpace(call.Name); name != "" {
+				names = append(names, name)
+			}
+		}
+		if len(names) > 0 {
+			fields = append(fields, "tools: "+strings.Join(names, ", "))
+		}
+	}
+	if outcome := strings.TrimSpace(turn.FinalResponse); outcome != "" {
+		fields = append(fields, "outcome: "+outcome)
+	}
+	if errText := strings.TrimSpace(turn.Error); errText != "" {
+		fields = append(fields, "error: "+errText)
+	}
+	if len(fields) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("turn %d [%s]", turn.Number, strings.Join(fields, " ; "))
 }
