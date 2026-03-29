@@ -276,7 +276,7 @@ func invalidWorkingResponseNudge(response string) string {
 		return "Runtime note: your previous response was empty. Call a tool if you still need to inspect or act; otherwise provide the final answer."
 	case strings.HasPrefix(trimmed, "/"):
 		return "Runtime note: do not emit /skill invocations or slash commands. Either call a tool or provide the final answer."
-	case strings.Contains(trimmed, "<tool_call") && !strings.Contains(trimmed, "</tool_call>"):
+	case containsAnyToolMarkup(trimmed):
 		return "Runtime note: malformed tool markup. Return exactly valid <tool_call>...</tool_call> blocks or a final answer."
 	default:
 		return ""
@@ -362,6 +362,15 @@ func toolCallOpeners() []string {
 
 func toolCallClosers() []string {
 	return []string{"</tool_call>", "</function_calls>", "</tool_calls>"}
+}
+
+func containsAnyToolMarkup(text string) bool {
+	for _, tag := range append(toolCallOpeners(), toolCallClosers()...) {
+		if strings.Contains(text, tag) {
+			return true
+		}
+	}
+	return false
 }
 
 func reactToolSummary(call agent.ToolCall) string {
