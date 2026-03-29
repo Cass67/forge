@@ -12,19 +12,45 @@ const (
 	RoleSystem    Role = "system"
 	RoleUser      Role = "user"
 	RoleAssistant Role = "assistant"
+	RoleTool      Role = "tool"
 )
+
+// ToolParam describes one parameter of a tool for native tool calling.
+type ToolParam struct {
+	Name        string
+	Type        string // "string", "integer", "boolean"
+	Description string
+	Required    bool
+}
+
+// ToolDef describes a tool for native structured tool calling via the provider API.
+type ToolDef struct {
+	Name        string
+	Description string
+	Parameters  []ToolParam
+}
+
+// NativeToolCall is a completed tool call returned via the provider's native tool-calling API.
+type NativeToolCall struct {
+	ID       string
+	Name     string
+	ArgsJSON string
+}
 
 // Message is a single turn sent to an LLM.
 type Message struct {
-	Role    Role
-	Content string
+	Role       Role
+	Content    string
+	ToolCalls  []NativeToolCall // non-nil when Role==RoleAssistant and model made native tool calls
+	ToolCallID string           // non-empty when Role==RoleTool (result message)
 }
 
 // Token is a single streamed chunk from an LLM response.
 type Token struct {
-	Text string
-	Done bool
-	Err  error
+	Text     string
+	Done     bool
+	Err      error
+	ToolCall *NativeToolCall // non-nil when provider returns a native tool call via StreamWithTools
 }
 
 // Driver is the interface every LLM provider must implement.
@@ -59,6 +85,13 @@ type ConversationResetter interface {
 // the context/state path used for the most recent request.
 type RequestModeReporter interface {
 	LastRequestMode() string
+}
+
+// NativeToolCaller is optionally implemented by drivers that support provider-native
+// structured tool calling. When implemented, the react runner uses this path instead
+// of prompt-level XML tool calling.
+type NativeToolCaller interface {
+	StreamWithTools(ctx context.Context, messages []Message, tools []ToolDef, out chan<- Token) error
 }
 
 type EventKind string
