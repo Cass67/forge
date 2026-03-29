@@ -357,8 +357,7 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 }
 
 // executeNativeToolCalls executes a batch of native tool calls and appends results
-// to the session. On unknown tool or execution error, appends an error result and
-// continues processing remaining calls (same behaviour as the XML path).
+// to the session. On unknown tool or execution error the call is recorded as a failed result and the loop aborts.
 func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []llm.NativeToolCall) error {
 	for _, call := range calls {
 		tool, ok := r.tools.Get(call.Name)
@@ -368,13 +367,21 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 				r.renderer.Error(fmt.Sprintf("unknown tool %q", call.Name))
 			}
 			r.session.AppendNativeToolResult(call.ID, errMsg)
-			r.session.CompleteTurn(turn, "", nil, fmt.Errorf("%s", errMsg))
-			return fmt.Errorf("%s", errMsg)
+			// CompleteTurn is called here (not in runLoop's caller) because runLoop
+			// does not call CompleteTurn after executeNativeToolCalls returns an error.
+			r.session.CompleteTurn(turn, "", nil, errors.New(errMsg))
+			return errors.New(errMsg)
 		}
 
 		var args map[string]any
 		if err := json.Unmarshal([]byte(call.ArgsJSON), &args); err != nil {
-			args = map[string]any{}
+			parseErr := fmt.Sprintf("error: malformed tool call arguments for %q: %v", call.Name, err)
+			if r.renderer != nil {
+				r.renderer.Error(parseErr)
+			}
+			r.session.AppendNativeToolResult(call.ID, parseErr)
+			r.session.CompleteTurn(turn, "", nil, errors.New(parseErr))
+			return errors.New(parseErr)
 		}
 
 		if r.renderer != nil {
@@ -392,6 +399,8 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 				r.renderer.ToolResult(call.Name, errResult, diff, true)
 			}
 			r.session.AppendNativeToolResult(call.ID, errResult)
+			// CompleteTurn is called here (not in runLoop's caller) because runLoop
+			// does not call CompleteTurn after executeNativeToolCalls returns an error.
 			r.session.CompleteTurn(turn, "", nil, err)
 			return err
 		}

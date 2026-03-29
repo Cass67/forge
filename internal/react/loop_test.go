@@ -714,6 +714,56 @@ func TestRunnerFallsBackToXMLWhenNoNativeToolCaller(t *testing.T) {
 	}
 }
 
+// malformedArgsDriver returns a tool call with invalid JSON args on the first call.
+type malformedArgsDriver struct{ callCount int }
+
+func (d *malformedArgsDriver) Name() string { return "malformed-args-driver" }
+
+func (d *malformedArgsDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	close(out)
+	return errors.New("Stream should not be called on a NativeToolCaller driver")
+}
+
+func (d *malformedArgsDriver) StreamWithTools(_ context.Context, _ []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
+	defer close(out)
+	d.callCount++
+	out <- llm.Token{ToolCall: &llm.NativeToolCall{ID: "c1", Name: "git_status", ArgsJSON: `{bad json`}}
+	return nil
+}
+
+func TestRunnerNativePathHandlesMalformedArgsJSON(t *testing.T) {
+	driver := &malformedArgsDriver{}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "git_status",
+		Description: "git status",
+		AutoApprove: true,
+		Execute:     func(_ context.Context, _ map[string]any) (string, error) { return "ok", nil },
+	})
+	session := NewSession()
+	r := NewRunner(Config{
+		Driver:  driver,
+		Tools:   reg,
+		Session: session,
+	})
+
+	err := r.Run(context.Background(), "check")
+	if err == nil {
+		t.Fatal("expected error for malformed args JSON")
+	}
+	if !strings.Contains(err.Error(), "malformed tool call arguments") {
+		t.Fatalf("error = %v, want mention of malformed tool call arguments", err)
+	}
+
+	snap := session.Snapshot()
+	if len(snap.Turns) != 1 {
+		t.Fatalf("turns = %d, want 1", len(snap.Turns))
+	}
+	if snap.Turns[0].Error == "" {
+		t.Fatal("expected recorded turn error for malformed args")
+	}
+}
+
 func TestRunnerClearHistoryResetsSessionState(t *testing.T) {
 	r := NewRunner(Config{
 		Driver:       &scriptedDriver{responses: []string{"done"}},
