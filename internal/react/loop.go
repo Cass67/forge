@@ -31,6 +31,22 @@ type Runner struct {
 	session         *Session
 	progress        func(string)
 	maxSessionTurns int
+	gitWorkflow     gitWorkflowState
+}
+
+type gitCommitBlocker int
+
+const (
+	commitBlockerNone gitCommitBlocker = iota
+	commitBlockerRestage
+	commitBlockerEdit
+)
+
+type gitWorkflowState struct {
+	mergeActive    bool
+	unmergedFiles  bool
+	commitBlocker  gitCommitBlocker
+	blockerSummary string
 }
 
 func NewRunner(cfg Config) *Runner {
@@ -100,6 +116,7 @@ func (r *Runner) ClearHistory() {
 	if r == nil || r.session == nil {
 		return
 	}
+	r.gitWorkflow = gitWorkflowState{}
 	r.session.Clear()
 }
 
@@ -234,6 +251,14 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 			return errors.New(parseErr)
 		}
 
+		if blocked := r.blockedToolResult(call.Name, args); blocked != "" {
+			if r.renderer != nil {
+				r.renderer.ToolResult(call.Name, blocked, "", true)
+			}
+			r.session.AppendNativeToolResult(call.ID, blocked)
+			continue
+		}
+
 		if r.renderer != nil {
 			r.renderer.ToolCall(call.Name, reactToolSummary(agent.ToolCall{Args: args}))
 		}
@@ -249,6 +274,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 				r.renderer.ToolResult(call.Name, errResult, diff, true)
 			}
 			r.session.AppendNativeToolResult(call.ID, errResult)
+			r.updateGitWorkflow(call.Name, args, errResult)
 			r.session.CompleteTurn(turn, "", nil, err)
 			return err
 		}
@@ -258,6 +284,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 			r.renderer.ToolResult(call.Name, display, diff, false)
 		}
 		r.session.AppendNativeToolResult(call.ID, result)
+		r.updateGitWorkflow(call.Name, args, result)
 	}
 	return nil
 }
@@ -309,4 +336,177 @@ func maxSessionTurns(value int) int {
 		return 20
 	}
 	return value
+}
+
+func (r *Runner) blockedToolResult(toolName string, args map[string]any) string {
+	if !isCommitToolCall(toolName, args) {
+		return ""
+	}
+	switch {
+	case r.gitWorkflow.unmergedFiles:
+		return "blocked: unmerged git conflicts remain. Resolve conflicted files and stage them before retrying commit."
+	case r.gitWorkflow.commitBlocker == commitBlockerRestage:
+		if toolName == "run_command" && strings.Contains(strings.ToLower(stringArg(args, "command")), "git add") {
+			return ""
+		}
+		return "blocked: the previous commit attempt modified files via hooks. Re-stage those files before retrying commit."
+	case r.gitWorkflow.commitBlocker == commitBlockerEdit:
+		return "blocked: the previous commit attempt already failed and nothing has changed since then. Fix the reported hook issues before retrying commit."
+	default:
+		return ""
+	}
+}
+
+func (r *Runner) updateGitWorkflow(toolName string, args map[string]any, result string) {
+	switch toolName {
+	case "run_command":
+		r.updateGitWorkflowForCommand(strings.ToLower(strings.TrimSpace(stringArg(args, "command"))), result)
+	case "git_commit":
+		r.updateGitWorkflowForCommitResult(result)
+	case "edit_file", "write_file":
+		r.gitWorkflow.commitBlocker = commitBlockerNone
+		r.gitWorkflow.blockerSummary = ""
+	}
+	r.syncRuntimeNote()
+}
+
+func (r *Runner) updateGitWorkflowForCommand(command, result string) {
+	switch {
+	case command == "":
+		return
+	case isGitConflictCheckCommand(command):
+		if hasUnmergedFiles(result) {
+			r.gitWorkflow.mergeActive = true
+			r.gitWorkflow.unmergedFiles = true
+			return
+		}
+		r.gitWorkflow.unmergedFiles = false
+		if r.gitWorkflow.commitBlocker == commitBlockerNone {
+			r.gitWorkflow.blockerSummary = ""
+		}
+	case isGitMergeLike(command) && hasMergeConflict(result):
+		r.gitWorkflow.mergeActive = true
+		r.gitWorkflow.unmergedFiles = true
+		r.gitWorkflow.commitBlocker = commitBlockerNone
+		r.gitWorkflow.blockerSummary = ""
+	case isGitCommitLike(command):
+		r.updateGitWorkflowForCommitResult(result)
+	case strings.Contains(command, "git add"):
+		if r.gitWorkflow.commitBlocker == commitBlockerRestage {
+			r.gitWorkflow.commitBlocker = commitBlockerNone
+			r.gitWorkflow.blockerSummary = ""
+		}
+	}
+}
+
+func (r *Runner) updateGitWorkflowForCommitResult(result string) {
+	lower := strings.ToLower(result)
+	switch {
+	case isSuccessfulGitCommit(result):
+		r.gitWorkflow = gitWorkflowState{}
+	case strings.Contains(lower, "files were modified by this hook"):
+		r.gitWorkflow.mergeActive = true
+		r.gitWorkflow.commitBlocker = commitBlockerRestage
+		r.gitWorkflow.blockerSummary = "pre-commit modified files; re-stage them before retrying commit"
+	case strings.Contains(lower, "hook id:") || strings.Contains(lower, "line too long") || strings.Contains(lower, "error committing:"):
+		r.gitWorkflow.mergeActive = true
+		r.gitWorkflow.commitBlocker = commitBlockerEdit
+		r.gitWorkflow.blockerSummary = summarizeCommitFailure(result)
+	}
+}
+
+func (r *Runner) syncRuntimeNote() {
+	if r == nil || r.session == nil {
+		return
+	}
+	r.session.SetRuntimeNote(r.gitWorkflow.runtimeNote())
+}
+
+func (s gitWorkflowState) runtimeNote() string {
+	if s.unmergedFiles {
+		return "Git merge workflow active. Resolve unmerged files before retrying commit. Check `git diff --name-only --diff-filter=U`, resolve each conflicted file, stage the resolutions, and only retry commit once unmerged files are gone."
+	}
+	if s.commitBlocker != commitBlockerNone {
+		summary := strings.TrimSpace(s.blockerSummary)
+		if summary == "" {
+			summary = "commit blockers remain"
+		}
+		return "Git merge workflow active. " + summary + ". Do not retry the same commit until you have made the required fix."
+	}
+	if s.mergeActive {
+		return "Git merge workflow active. Keep resolving and validating the merge until commit succeeds."
+	}
+	return ""
+}
+
+func isCommitToolCall(toolName string, args map[string]any) bool {
+	if toolName == "git_commit" {
+		return true
+	}
+	if toolName != "run_command" {
+		return false
+	}
+	return isGitCommitLike(strings.ToLower(strings.TrimSpace(stringArg(args, "command"))))
+}
+
+func stringArg(args map[string]any, key string) string {
+	value, _ := args[key].(string)
+	return value
+}
+
+func isGitCommitLike(command string) bool {
+	return strings.Contains(command, "git commit")
+}
+
+func isGitMergeLike(command string) bool {
+	return strings.HasPrefix(command, "git merge ") || strings.Contains(command, " git merge ")
+}
+
+func isGitConflictCheckCommand(command string) bool {
+	return strings.Contains(command, "git diff --name-only --diff-filter=u") || strings.Contains(command, "git status --porcelain")
+}
+
+func hasMergeConflict(result string) bool {
+	lower := strings.ToLower(result)
+	return strings.Contains(lower, "automatic merge failed") || strings.Contains(lower, "conflict (")
+}
+
+func hasUnmergedFiles(result string) bool {
+	trimmed := strings.TrimSpace(result)
+	if trimmed == "" || trimmed == "exit 0" {
+		return false
+	}
+	lines := strings.Split(trimmed, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "exit ") {
+			continue
+		}
+		if strings.HasPrefix(line, "UU ") || strings.HasPrefix(line, "AA ") || strings.HasPrefix(line, "DD ") {
+			return true
+		}
+		return true
+	}
+	return false
+}
+
+func isSuccessfulGitCommit(result string) bool {
+	lower := strings.ToLower(result)
+	return !strings.Contains(lower, "error committing:") &&
+		!strings.Contains(lower, "exit 1") &&
+		(strings.Contains(lower, "files changed") || strings.Contains(lower, "nothing to commit") || strings.Contains(lower, "create mode"))
+}
+
+func summarizeCommitFailure(result string) string {
+	lower := strings.ToLower(result)
+	switch {
+	case strings.Contains(lower, "yamllint"):
+		return "commit blocked by yamllint/pre-commit failures"
+	case strings.Contains(lower, "prettier"):
+		return "commit blocked by prettier/pre-commit failures"
+	case strings.Contains(lower, "hook id:"):
+		return "commit blocked by pre-commit hook failures"
+	default:
+		return "commit blockers remain"
+	}
 }

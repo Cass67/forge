@@ -188,8 +188,16 @@ func (d *chatDebugDriver) StreamWithTools(ctx context.Context, messages []llm.Me
 	}()
 
 	var response strings.Builder
+	toolCalls := make([]map[string]string, 0)
 	for tok := range internal {
 		response.WriteString(tok.Text)
+		if tok.ToolCall != nil {
+			toolCalls = append(toolCalls, map[string]string{
+				"id":        tok.ToolCall.ID,
+				"name":      tok.ToolCall.Name,
+				"args_json": tok.ToolCall.ArgsJSON,
+			})
+		}
 		out <- tok
 	}
 	err := <-errCh
@@ -197,6 +205,9 @@ func (d *chatDebugDriver) StreamWithTools(ctx context.Context, messages []llm.Me
 		fields := map[string]any{
 			"driver":   d.inner.Name(),
 			"response": response.String(),
+		}
+		if len(toolCalls) > 0 {
+			fields["tool_calls"] = toolCalls
 		}
 		if err != nil {
 			fields["error"] = err.Error()

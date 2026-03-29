@@ -29,6 +29,7 @@ type SessionSnapshot struct {
 	Turns             []TurnRecord
 	CompactedTurns    int
 	CompactionSummary string
+	RuntimeNote       string
 }
 
 type Session struct {
@@ -40,6 +41,7 @@ type Session struct {
 	turns             []TurnRecord
 	compactedTurns    int
 	compactionSummary string
+	runtimeNote       string
 }
 
 func NewSession() *Session {
@@ -154,6 +156,7 @@ func (s *Session) Snapshot() SessionSnapshot {
 		Turns:             append([]TurnRecord(nil), s.turns...),
 		CompactedTurns:    s.compactedTurns,
 		CompactionSummary: s.compactionSummary,
+		RuntimeNote:       s.runtimeNote,
 	}
 }
 
@@ -170,6 +173,16 @@ func (s *Session) Clear() {
 	s.turns = nil
 	s.compactedTurns = 0
 	s.compactionSummary = ""
+	s.runtimeNote = ""
+}
+
+func (s *Session) SetRuntimeNote(text string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.runtimeNote = strings.TrimSpace(text)
 }
 
 func (s *Session) compact(keep int) bool {
