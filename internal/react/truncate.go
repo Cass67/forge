@@ -8,14 +8,16 @@ import (
 )
 
 const (
-	toolResultMaxLines  = 40
-	toolResultHeadLines = 20
-	toolResultTailLines = 10
+	// toolResultMaxLines is the line budget passed to truncateToolResults in BuildMessages.
+	// Results at or below this threshold are sent to the LLM unmodified.
+	toolResultMaxLines = 40
 )
 
 // truncateToolResults returns a copy of messages where any RoleTool message
 // whose content exceeds maxLines lines is replaced with a head+tail summary.
-// The original slice and its messages are never mutated.
+// The returned slice is a new allocation. String fields (Content, ToolCallID)
+// on modified messages are replaced with new values. Reference fields
+// (ToolCalls) are shallow-copied.
 func truncateToolResults(messages []llm.Message, maxLines int) []llm.Message {
 	out := make([]llm.Message, len(messages))
 	copy(out, messages)
@@ -27,8 +29,9 @@ func truncateToolResults(messages []llm.Message, maxLines int) []llm.Message {
 		if len(lines) <= maxLines {
 			continue
 		}
-		head := toolResultHeadLines
-		tail := toolResultTailLines
+		// Allocate 2/3 of the budget to head, 1/3 to tail.
+		head := maxLines * 2 / 3
+		tail := maxLines - head
 		if head+tail >= len(lines) {
 			continue
 		}
