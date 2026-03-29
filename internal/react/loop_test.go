@@ -319,6 +319,117 @@ func TestRunnerLoopRetriesMalformedToolMarkup(t *testing.T) {
 	}
 }
 
+func TestRunnerLoopDoesNotDuplicateMalformedRetryNote(t *testing.T) {
+	driver := &scriptedDriver{responses: []string{
+		"<tool_call>git_status</tool_call><tool_call>git_log</think>",
+		"<tool_call>run_command{\"command\":\"git status\"}",
+		"final answer",
+	}}
+	session := NewSession()
+	r := NewRunner(Config{
+		Driver:       driver,
+		Tools:        agenttools.NewRegistry(),
+		Renderer:     silentRenderer{},
+		SystemPrompt: func() string { return "system prompt" },
+		Session:      session,
+	})
+
+	if err := r.Run(context.Background(), "inspect repo"); err != nil {
+		t.Fatal(err)
+	}
+
+	snap := session.Snapshot()
+	if got := snap.Turns[0].FinalResponse; got != "final answer" {
+		t.Fatalf("final response = %q", got)
+	}
+	retryNotes := 0
+	for _, msg := range snap.History {
+		if msg.Role == llm.RoleUser && strings.Contains(msg.Content, "malformed tool markup") {
+			retryNotes++
+		}
+	}
+	if retryNotes != 1 {
+		t.Fatalf("retry note count = %d, want 1; history=%#v", retryNotes, snap.History)
+	}
+}
+
+func TestRunnerLoopFailsFastAfterRepeatedMalformedToolMarkup(t *testing.T) {
+	driver := &scriptedDriver{responses: []string{
+		"<tool_call>git_status</tool_call><tool_call>git_log</think>",
+		"<tool_call>run_command{\"command\":\"git branch -a\"}",
+		"<tool_call>run_command({\"command\":\"git status\"})",
+		"final answer should not be reached",
+	}}
+	session := NewSession()
+	r := NewRunner(Config{
+		Driver:       driver,
+		Tools:        agenttools.NewRegistry(),
+		Renderer:     silentRenderer{},
+		SystemPrompt: func() string { return "system prompt" },
+		Session:      session,
+	})
+
+	err := r.Run(context.Background(), "inspect repo")
+	if err == nil {
+		t.Fatal("expected repeated malformed tool markup to fail")
+	}
+	if !strings.Contains(err.Error(), "too many invalid working responses") {
+		t.Fatalf("error = %v", err)
+	}
+	if driver.callCount != 3 {
+		t.Fatalf("driver call count = %d, want 3", driver.callCount)
+	}
+	snap := session.Snapshot()
+	if got := snap.Turns[0].FinalResponse; got != "" {
+		t.Fatalf("final response = %q, want empty", got)
+	}
+	if got := snap.Turns[0].Error; !strings.Contains(got, "too many invalid working responses") {
+		t.Fatalf("turn error = %q", got)
+	}
+	retryNotes := 0
+	for _, msg := range snap.History {
+		if msg.Role == llm.RoleUser && strings.Contains(msg.Content, "malformed tool markup") {
+			retryNotes++
+		}
+	}
+	if retryNotes != 1 {
+		t.Fatalf("retry note count = %d, want 1; history=%#v", retryNotes, snap.History)
+	}
+}
+
+func TestRunnerLoopFailsFastAfterRepeatedSlashResponses(t *testing.T) {
+	driver := &scriptedDriver{responses: []string{
+		"/using-superpowers inspect",
+		"/using-superpowers search",
+		"/using-superpowers summarize",
+	}}
+	session := NewSession()
+	r := NewRunner(Config{
+		Driver:       driver,
+		Tools:        agenttools.NewRegistry(),
+		Renderer:     silentRenderer{},
+		SystemPrompt: func() string { return "system prompt" },
+		Session:      session,
+	})
+
+	err := r.Run(context.Background(), "inspect repo")
+	if err == nil {
+		t.Fatal("expected repeated slash responses to fail")
+	}
+	if !strings.Contains(err.Error(), "too many invalid working responses") {
+		t.Fatalf("error = %v", err)
+	}
+	retryNotes := 0
+	for _, msg := range session.Snapshot().History {
+		if msg.Role == llm.RoleUser && strings.Contains(msg.Content, "slash commands") {
+			retryNotes++
+		}
+	}
+	if retryNotes != 1 {
+		t.Fatalf("retry note count = %d, want 1", retryNotes)
+	}
+}
+
 func TestRunnerLoopExecutesToolCallBeforeStreamCompletes(t *testing.T) {
 	driver := &blockingToolCallDriver{
 		ready:   make(chan struct{}),
