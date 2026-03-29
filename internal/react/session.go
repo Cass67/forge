@@ -114,20 +114,7 @@ func (s *Session) AppendToolResults(results string) {
 }
 
 func (s *Session) Messages(systemPrompt string) []llm.Message {
-	if s == nil {
-		if strings.TrimSpace(systemPrompt) == "" {
-			return nil
-		}
-		return []llm.Message{{Role: llm.RoleSystem, Content: strings.TrimSpace(systemPrompt)}}
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	messages := make([]llm.Message, 0, len(s.history)+1)
-	if strings.TrimSpace(systemPrompt) != "" {
-		messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: strings.TrimSpace(systemPrompt)})
-	}
-	messages = append(messages, s.history...)
-	return messages
+	return BuildMessages(systemPrompt, s.Snapshot())
 }
 
 func (s *Session) Snapshot() SessionSnapshot {

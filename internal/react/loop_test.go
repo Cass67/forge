@@ -3,6 +3,7 @@ package react
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -125,6 +126,22 @@ func (d *scriptedDriver) Stream(_ context.Context, _ []llm.Message, out chan<- l
 	return nil
 }
 
+type chunkedDriver struct {
+	chunks    []string
+	callCount int
+}
+
+func (d *chunkedDriver) Name() string { return "chunked" }
+
+func (d *chunkedDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	defer close(out)
+	d.callCount++
+	for _, chunk := range d.chunks {
+		out <- llm.Token{Text: chunk}
+	}
+	return nil
+}
+
 type silentRenderer struct{}
 
 func (silentRenderer) AgentToken(string)                       {}
@@ -134,6 +151,68 @@ func (silentRenderer) ToolResult(string, string, string, bool) {}
 func (silentRenderer) Stats(time.Duration, llm.Usage)          {}
 func (silentRenderer) Error(string)                            {}
 func (silentRenderer) Info(string)                             {}
+
+type recordingRenderer struct {
+	mu         sync.Mutex
+	tokenTexts []string
+	fullTexts  []string
+}
+
+func (r *recordingRenderer) AgentToken(text string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tokenTexts = append(r.tokenTexts, text)
+}
+
+func (r *recordingRenderer) AgentText(text string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.fullTexts = append(r.fullTexts, text)
+}
+
+func (r *recordingRenderer) ToolCall(string, string)                 {}
+func (r *recordingRenderer) ToolResult(string, string, string, bool) {}
+func (r *recordingRenderer) Stats(time.Duration, llm.Usage)          {}
+func (r *recordingRenderer) Error(string)                            {}
+func (r *recordingRenderer) Info(string)                             {}
+
+type blockingToolCallDriver struct {
+	mu        sync.Mutex
+	callCount int
+	ready     chan struct{}
+	release   chan struct{}
+}
+
+func (d *blockingToolCallDriver) Name() string { return "blocking-tool-call" }
+
+func (d *blockingToolCallDriver) Stream(ctx context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	d.mu.Lock()
+	d.callCount++
+	call := d.callCount
+	d.mu.Unlock()
+
+	defer close(out)
+	switch call {
+	case 1:
+		out <- llm.Token{Text: "<tool_call>\n"}
+		out <- llm.Token{Text: "{\"name\":\"list_dir\",\"args\":{\"path\":\".\"}}\n"}
+		out <- llm.Token{Text: "</tool_call>"}
+		close(d.ready)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-d.release:
+			return nil
+		case <-time.After(2 * time.Second):
+			return errors.New("first stream was not interrupted")
+		}
+	case 2:
+		out <- llm.Token{Text: "repo overview"}
+		return nil
+	default:
+		return errors.New("unexpected extra stream call")
+	}
+}
 
 func TestRunnerLoopExecutesToolCallAndFinishes(t *testing.T) {
 	driver := &scriptedDriver{responses: []string{
@@ -196,6 +275,96 @@ func TestRunnerLoopRetriesSlashSkillOutput(t *testing.T) {
 	}
 	if snap.Turns[0].FinalResponse != "final answer" {
 		t.Fatalf("final response = %q", snap.Turns[0].FinalResponse)
+	}
+}
+
+func TestRunnerLoopExecutesToolCallBeforeStreamCompletes(t *testing.T) {
+	driver := &blockingToolCallDriver{
+		ready:   make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	toolExecuted := make(chan struct{}, 1)
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "list_dir",
+		Description: "List files",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			select {
+			case toolExecuted <- struct{}{}:
+			default:
+			}
+			return "README.md\ninternal", nil
+		},
+	})
+	session := NewSession()
+	r := NewRunner(Config{
+		Driver:       driver,
+		Tools:        reg,
+		Renderer:     silentRenderer{},
+		SystemPrompt: func() string { return "system prompt" },
+		Session:      session,
+	})
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- r.Run(context.Background(), "inspect repo")
+	}()
+
+	select {
+	case <-driver.ready:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("timed out waiting for streamed tool call")
+	}
+
+	select {
+	case <-toolExecuted:
+	case <-time.After(200 * time.Millisecond):
+		close(driver.release)
+		t.Fatal("expected tool call to execute before the first stream completed")
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runner did not finish")
+	}
+
+	if got := r.LastResponse(); got != "repo overview" {
+		t.Fatalf("last response = %q", got)
+	}
+}
+
+func TestRunnerStreamsPlainTextTokensIncrementally(t *testing.T) {
+	driver := &chunkedDriver{chunks: []string{"repo ", "overview"}}
+	renderer := &recordingRenderer{}
+	session := NewSession()
+	r := NewRunner(Config{
+		Driver:       driver,
+		Renderer:     renderer,
+		SystemPrompt: func() string { return "system prompt" },
+		Session:      session,
+	})
+
+	if err := r.Run(context.Background(), "inspect repo"); err != nil {
+		t.Fatal(err)
+	}
+
+	renderer.mu.Lock()
+	defer renderer.mu.Unlock()
+	if len(renderer.tokenTexts) == 0 {
+		t.Fatal("expected incremental token rendering")
+	}
+	if got := renderer.tokenTexts[0]; got != "repo " {
+		t.Fatalf("first streamed token = %q", got)
+	}
+	if len(renderer.fullTexts) != 0 {
+		t.Fatalf("expected no duplicate full-text render, got %#v", renderer.fullTexts)
+	}
+	if got := r.LastResponse(); got != "repo overview" {
+		t.Fatalf("last response = %q", got)
 	}
 }
 

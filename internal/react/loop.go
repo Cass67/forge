@@ -2,6 +2,7 @@ package react
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -29,6 +30,11 @@ type Runner struct {
 	session         *Session
 	progress        func(string)
 	maxSessionTurns int
+}
+
+type streamedResponse struct {
+	text            string
+	streamedVisible bool
 }
 
 func NewRunner(cfg Config) *Runner {
@@ -125,11 +131,12 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 	defer r.emitStats(start)
 
 	for step := 0; step < r.maxSessionTurns; step++ {
-		response, err := r.streamResponse(ctx)
+		streamed, err := r.streamResponse(ctx)
 		if err != nil {
 			r.session.CompleteTurn(turn, "", nil, err)
 			return err
 		}
+		response := streamed.text
 		calls, visibleText := agent.ParseToolCalls(response)
 		trimmedVisible := strings.TrimSpace(visibleText)
 		if len(calls) == 0 {
@@ -143,7 +150,7 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 			}
 			r.session.AppendAssistantMessage(final)
 			r.session.CompleteTurn(turn, final, nil, nil)
-			if r.renderer != nil && final != "" {
+			if r.renderer != nil && final != "" && !streamed.streamedVisible {
 				r.renderer.AgentText(final)
 			}
 			return nil
@@ -162,27 +169,49 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 	return err
 }
 
-func (r *Runner) streamResponse(ctx context.Context) (string, error) {
+func (r *Runner) streamResponse(ctx context.Context) (streamedResponse, error) {
 	messages := r.session.Messages(r.currentSystemPrompt())
 	out := make(chan llm.Token, 64)
+	streamCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- r.driver.Stream(ctx, messages, out)
+		errCh <- r.driver.Stream(streamCtx, messages, out)
 	}()
 
-	var sb strings.Builder
+	var raw strings.Builder
+	visibleEmitted := 0
+	streamedVisible := false
+	earlyToolResponse := ""
 	for tok := range out {
-		sb.WriteString(tok.Text)
+		raw.WriteString(tok.Text)
+		current := raw.String()
+		if earlyToolResponse == "" && completeToolOnlyResponse(current) {
+			earlyToolResponse = current
+			cancel()
+			continue
+		}
+		safeVisible := safeVisiblePrefix(current)
+		if safeLen := len(safeVisible); r.renderer != nil && safeLen > visibleEmitted {
+			r.renderer.AgentToken(safeVisible[visibleEmitted:safeLen])
+			visibleEmitted = safeLen
+			streamedVisible = true
+		}
 	}
 	if err := <-errCh; err != nil {
-		return "", err
+		if earlyToolResponse == "" || !errors.Is(err, context.Canceled) {
+			return streamedResponse{}, err
+		}
 	}
 	if reporter, ok := r.driver.(llm.RequestModeReporter); ok {
 		if mode := strings.TrimSpace(reporter.LastRequestMode()); mode != "" && r.renderer != nil {
 			r.renderer.Info("context: " + mode)
 		}
 	}
-	return sb.String(), nil
+	if earlyToolResponse != "" {
+		return streamedResponse{text: earlyToolResponse, streamedVisible: streamedVisible}, nil
+	}
+	return streamedResponse{text: raw.String(), streamedVisible: streamedVisible}, nil
 }
 
 func (r *Runner) executeToolCalls(ctx context.Context, calls []agent.ToolCall) ([]string, error) {
@@ -256,6 +285,83 @@ func invalidWorkingResponseNudge(response string) string {
 
 func compactToolResults(results []string) string {
 	return strings.TrimSpace(strings.Join(results, "\n"))
+}
+
+func completeToolOnlyResponse(text string) bool {
+	if !hasCompleteToolCallBlock(text) {
+		return false
+	}
+	calls, visible := agent.ParseToolCalls(text)
+	return len(calls) > 0 && strings.TrimSpace(visible) == ""
+}
+
+func hasCompleteToolCallBlock(text string) bool {
+	for i, opener := range toolCallOpeners() {
+		openIdx := strings.Index(text, opener)
+		if openIdx < 0 {
+			continue
+		}
+		closeIdx := strings.Index(text[openIdx+len(opener):], toolCallClosers()[i])
+		if closeIdx >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func safeVisiblePrefix(text string) string {
+	cutoff := len(text)
+	if idx := earliestMarkupIndex(text); idx >= 0 && idx < cutoff {
+		cutoff = idx
+	}
+	if idx := trailingMarkupPrefixIndex(text); idx >= 0 && idx < cutoff {
+		cutoff = idx
+	}
+	return text[:cutoff]
+}
+
+func earliestMarkupIndex(text string) int {
+	best := -1
+	for _, tag := range append(toolCallOpeners(), toolCallClosers()...) {
+		if idx := strings.Index(text, tag); idx >= 0 && (best == -1 || idx < best) {
+			best = idx
+		}
+	}
+	return best
+}
+
+func trailingMarkupPrefixIndex(text string) int {
+	maxLen := 0
+	tags := append(toolCallOpeners(), toolCallClosers()...)
+	for _, tag := range tags {
+		if len(tag) > maxLen {
+			maxLen = len(tag)
+		}
+	}
+	start := len(text) - maxLen + 1
+	if start < 0 {
+		start = 0
+	}
+	for i := start; i < len(text); i++ {
+		suffix := text[i:]
+		if !strings.HasPrefix(suffix, "<") {
+			continue
+		}
+		for _, tag := range tags {
+			if suffix != tag && strings.HasPrefix(tag, suffix) {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func toolCallOpeners() []string {
+	return []string{"<tool_call>", "<function_calls>", "<tool_calls>"}
+}
+
+func toolCallClosers() []string {
+	return []string{"</tool_call>", "</function_calls>", "</tool_calls>"}
 }
 
 func reactToolSummary(call agent.ToolCall) string {
