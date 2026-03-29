@@ -4,20 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"forge/internal/agent"
-	"forge/internal/agent/tools"
-	"forge/internal/chatstate"
 	"forge/internal/config"
-	"forge/internal/harness"
 	"forge/internal/llm"
-	"forge/internal/skills"
 	"forge/internal/tui"
 )
 
@@ -288,7 +282,7 @@ func TestChatTranscriptPreviewConversationStaysUsefulAcrossTurns(t *testing.T) {
 		Driver:    driver,
 	}
 
-	runKernelTranscript(t, setup, []transcriptStep{
+	runChatTranscript(t, setup, []transcriptStep{
 		{
 			Input:           "start a preview for themes_preview.html and tell me the verified url",
 			WantContains:    []string{"verified", "http://127.0.0.1:", "themes_preview.html"},
@@ -324,7 +318,7 @@ func TestChatTranscriptPreviewDesignConversationStaysOnVisiblePath(t *testing.T)
 		Driver:    driver,
 	}
 
-	runKernelTranscript(t, setup, []transcriptStep{
+	runChatTranscript(t, setup, []transcriptStep{
 		{
 			Input:           "i dont like the current theme, i need you to mock up 3 new ones, dark in nature, really modern and cool looking, create a web server and show me them on the screen",
 			WantContains:    []string{"3 new dark themes", "http://127.0.0.1:", "themes_preview.html"},
@@ -437,7 +431,7 @@ func TestChatTranscriptPreviewHarnessSurvivesFiftyTurns(t *testing.T) {
 		t.Fatalf("steps = %d, want 50", len(steps))
 	}
 
-	runKernelTranscript(t, setup, steps)
+	runChatTranscript(t, setup, steps)
 
 	if len(driver.unexpected) > 0 {
 		t.Fatalf("unexpected driver paths: %#v", driver.unexpected)
@@ -449,7 +443,8 @@ func runChatTranscript(t *testing.T, setup *ChatSetup, steps []transcriptStep) [
 	if len(steps) > 50 {
 		t.Fatalf("transcript has %d steps; max supported is 50", len(steps))
 	}
-	t.Setenv("FORGE_CHAT_RUNTIME", "kernel")
+	t.Setenv("FORGE_CHAT_RUNTIME", "react")
+	setup.Yolo = true
 
 	oldRunChatLiveUI := runChatLiveUI
 	defer func() {
@@ -487,62 +482,6 @@ func runChatTranscript(t *testing.T, setup *ChatSetup, steps []transcriptStep) [
 
 	if uiErr != nil {
 		t.Fatal(uiErr)
-	}
-
-	for i, step := range steps {
-		got := collected[i].Response
-		for _, want := range step.WantContains {
-			if !strings.Contains(got, want) {
-				t.Fatalf("step %d response missing %q: %q", i+1, want, got)
-			}
-		}
-		for _, forbidden := range step.WantNotContains {
-			if strings.Contains(got, forbidden) {
-				t.Fatalf("step %d response unexpectedly contains %q: %q", i+1, forbidden, got)
-			}
-		}
-	}
-
-	return collected
-}
-
-func runKernelTranscript(t *testing.T, setup *ChatSetup, steps []transcriptStep) []transcriptTurn {
-	t.Helper()
-	if len(steps) > 50 {
-		t.Fatalf("transcript has %d steps; max supported is 50", len(steps))
-	}
-
-	approve := agent.YoloApproval()
-	reg := tools.NewRegistry()
-	previewRuntime := registerTools(reg, setup.WorkDir, setup.Config, approve)
-	if previewRuntime != nil {
-		defer previewRuntime.Close()
-	}
-	baseReg := reg.Filter(nil)
-	inspectReg := buildInspectToolRegistry(baseReg)
-	loadedSkills := skills.Load(setup.WorkDir)
-	workerAutoMode := skills.NormalizeAutoMode(setup.Config.Chat.AutoSkills)
-	renderer := agent.NewRenderer(io.Discard, 80, false)
-	a := agent.NewAgent(setup.Driver, reg, approve, setup.WorkDir, setup.Config.Chat.MaxTurns, renderer, loadedSkills, chatstate.New())
-	kernel := harness.NewRunner(buildHarnessRunnerConfig(setup, a, baseReg, inspectReg, previewRuntime, loadedSkills, workerAutoMode, approve))
-
-	collected := make([]transcriptTurn, 0, len(steps))
-	for i, step := range steps {
-		timeout := step.Timeout
-		if timeout <= 0 {
-			timeout = 5 * time.Second
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		err := runChatTurn(ctx, a, kernel, nil, step.Input)
-		cancel()
-		if err != nil {
-			t.Fatalf("step %d (%q): %v", i+1, step.Input, err)
-		}
-		turn := transcriptTurn{Response: a.LastResponse()}
-		if err := appendTranscriptLog(t, i+1, step.Input, turn); err != nil {
-			t.Fatalf("step %d (%q): write transcript log: %v", i+1, step.Input, err)
-		}
-		collected = append(collected, turn)
 	}
 
 	for i, step := range steps {
@@ -650,89 +589,72 @@ func (d *scriptedTranscriptDriver) Stream(_ context.Context, messages []llm.Mess
 	defer close(out)
 	d.calls++
 
-	root := latestTranscriptRoot(messages)
-	if root == "" {
-		d.unexpected = append(d.unexpected, "missing transcript root prompt")
-		out <- llm.Token{Text: "unexpected driver input: missing transcript root prompt"}
+	request := latestTranscriptRequest(messages)
+	if request == "" {
+		d.unexpected = append(d.unexpected, "missing transcript request")
+		out <- llm.Token{Text: "unexpected driver input: missing transcript request"}
 		return nil
 	}
+	lowerReq := strings.ToLower(request)
 
 	switch {
-	case strings.HasPrefix(root, "HARNESS MODE: inspect"):
-		out <- llm.Token{Text: d.inspectResponse(root, messages)}
-	case strings.HasPrefix(root, "HARNESS MODE: answer"):
-		out <- llm.Token{Text: d.answerResponse(root)}
-	case strings.HasPrefix(root, "HARNESS MODE: visible-collaboration"):
-		out <- llm.Token{Text: d.visibleCollaborationResponse(root, messages)}
-	case strings.HasPrefix(root, "OBJECTIVE:"):
-		out <- llm.Token{Text: d.workerResponse(root, messages)}
+	case isTranscriptPreviewRequest(lowerReq):
+		out <- llm.Token{Text: d.previewResponse(lowerReq, messages)}
+	case strings.Contains(lowerReq, "write me a script to clean this up"):
+		out <- llm.Token{Text: d.cleanupScriptResponse(messages)}
+	case isTranscriptRepoRequest(lowerReq):
+		out <- llm.Token{Text: d.repoResponse(lowerReq, messages)}
 	default:
-		d.unexpected = append(d.unexpected, "unexpected root prompt: "+clipTestText(root, 120))
-		out <- llm.Token{Text: "unexpected driver input: unexpected root prompt"}
+		d.unexpected = append(d.unexpected, "unexpected request: "+clipTestText(request, 120))
+		out <- llm.Token{Text: "unexpected driver input: unexpected request"}
 	}
 	return nil
 }
 
-func (d *scriptedTranscriptDriver) inspectResponse(root string, messages []llm.Message) string {
-	scope := extractTranscriptField(root, "INSPECT SCOPE:")
-	request := extractTranscriptUserRequest(root)
-	evaluative := strings.Contains(root, "lead with the highest-value improvements")
+func (d *scriptedTranscriptDriver) repoResponse(request string, messages []llm.Message) string {
+	evaluative := strings.Contains(request, "what do you think") ||
+		strings.Contains(request, "improve") ||
+		strings.Contains(request, "improvment") ||
+		strings.Contains(request, "change") ||
+		strings.Contains(request, "review") ||
+		strings.Contains(request, "take a look") ||
+		strings.Contains(request, "tell me what you think") ||
+		strings.Contains(request, "suggest") ||
+		strings.Contains(request, "recommend") ||
+		strings.Contains(request, "problem") ||
+		strings.Contains(request, "problm") ||
+		strings.Contains(request, "could be made") ||
+		strings.Contains(request, "happeingin") ||
+		strings.Contains(request, "plan")
 
-	switch scope {
-	case "focused-files":
-		if !hasTranscriptToolEvidence(messages, "service/main.py") {
-			return transcriptToolCall("glob", `{"pattern":"**/*.py","path":"."}`)
-		}
-		if !hasTranscriptToolEvidence(messages, "FORGE_FIXTURE_SERVICE") {
-			return transcriptToolCall("read_file", `{"path":"service/main.py","start_line":1,"end_line":80}`)
-		}
-		return "The Python files are small and readable, but service/main.py still needs focused tests and argument handling."
-	default:
-		if !hasTranscriptToolEvidence(messages, "README.md") {
-			return transcriptToolCall("list_dir", `{"path":".","recursive":false}`)
-		}
-		if !hasTranscriptToolEvidence(messages, "FORGE_FIXTURE_README") {
-			return transcriptToolCall("read_file", `{"path":"README.md","start_line":1,"end_line":80}`)
-		}
-		if evaluative && !hasTranscriptToolEvidence(messages, "ruff-pre-commit") {
-			return transcriptToolCall("read_file", `{"path":".pre-commit-config.yaml","start_line":1,"end_line":80}`)
-		}
-		if !hasTranscriptToolEvidence(messages, "FORGE_FIXTURE_SERVICE") {
-			return transcriptToolCall("read_file", `{"path":"service/main.py","start_line":1,"end_line":80}`)
-		}
+	if !hasTranscriptToolEvidence(messages, "README.md") {
+		return transcriptToolCall("list_dir", `{"path":".","recursive":false}`)
+	}
+	if !hasTranscriptToolEvidence(messages, "FORGE_FIXTURE_README") {
+		return transcriptToolCall("read_file", `{"path":"README.md","start_line":1,"end_line":80}`)
+	}
+	if evaluative && !hasTranscriptToolEvidence(messages, "ruff-pre-commit") {
+		return transcriptToolCall("read_file", `{"path":".pre-commit-config.yaml","start_line":1,"end_line":80}`)
+	}
+	if (evaluative || strings.Contains(request, "directory")) && !hasTranscriptToolEvidence(messages, "FORGE_FIXTURE_SERVICE") {
+		return transcriptToolCall("read_file", `{"path":"service/main.py","start_line":1,"end_line":80}`)
 	}
 
-	lowerReq := strings.ToLower(request)
 	switch {
-	case strings.Contains(lowerReq, "anything i need change"):
+	case strings.Contains(request, "make a plan for improvements"):
+		return "Start with focused tests around service/main.py, then tighten the pre-commit checks so the service path is verified automatically."
+	case strings.Contains(request, "anything i need change"):
 		return "Top next change is adding focused tests around service/main.py and tightening the pre-commit checks so the service path is verified automatically."
-	case strings.Contains(lowerReq, "what do you think"):
+	case strings.Contains(request, "what do you think"):
 		return "Top improvement areas are stronger pre-commit hygiene and better test coverage around the service entrypoint."
 	case evaluative:
 		return "Top improvement areas are stronger pre-commit hygiene and better test coverage around the service entrypoint. The repo already has lint hooks, but service/main.py still needs clearer verification."
 	default:
-		return "This directory is a small Python service fixture with a README at the root, pre-commit config beside it, and the code under service/."
+		return "Top-level listing shows a README, and README describes the repo as a small Python service fixture with code under service/."
 	}
 }
 
-func (d *scriptedTranscriptDriver) answerResponse(root string) string {
-	request := strings.ToLower(extractTranscriptUserRequest(root))
-	switch {
-	case strings.Contains(request, "brainstorming"):
-		return "No. I use that when planning or design work is needed."
-	case strings.Contains(request, "anything i need change?") && strings.Contains(root, "RECENT CONTEXT:") && strings.Contains(root, "service/main.py"):
-		return "Top next change is adding focused tests around service/main.py and tightening the pre-commit checks so the service path is verified automatically."
-	case strings.Contains(request, "what do you think") && strings.Contains(root, "RECENT CONTEXT:") && (strings.Contains(root, "service entrypoint") || strings.Contains(root, "Python service fixture")):
-		return "Top improvement areas are stronger pre-commit hygiene and better test coverage around the service entrypoint."
-	case strings.Contains(request, "plan") && strings.Contains(root, "RECENT CONTEXT:") && strings.Contains(root, "service entrypoint"):
-		return "Start with focused tests around service/main.py, then tighten the pre-commit checks so the service path is verified automatically."
-	default:
-		return "Direct answer."
-	}
-}
-
-func (d *scriptedTranscriptDriver) visibleCollaborationResponse(root string, messages []llm.Message) string {
-	request := strings.ToLower(extractTranscriptUserRequest(root))
+func (d *scriptedTranscriptDriver) previewResponse(request string, messages []llm.Message) string {
 	currentToolResults := currentTranscriptToolResults(messages)
 	latestToolResults := latestTranscriptToolResults(messages)
 	url := extractPreviewURLFromToolResults(latestToolResults)
@@ -818,44 +740,29 @@ func (d *scriptedTranscriptDriver) visibleCollaborationResponse(root string, mes
 			return "Updated themes_preview.html and the preview is live at " + url
 		}
 	default:
-		d.unexpected = append(d.unexpected, "unexpected visible collaboration prompt: "+clipTestText(root, 120))
+		d.unexpected = append(d.unexpected, "unexpected preview request: "+clipTestText(request, 120))
 		return "unexpected visible collaboration prompt: " + clipTestText(request, 160)
 	}
 }
 
-func (d *scriptedTranscriptDriver) workerResponse(root string, messages []llm.Message) string {
-	if strings.Contains(root, "Implement the requested change in the workspace") {
-		return `{"status":"complete","changes":[{"path":"tools/cleanup_workspace.sh","summary":"Added tools/cleanup_workspace.sh to clean generated artifacts in one place."}],"verification_attempts":[{"command":"bash -n tools/cleanup_workspace.sh","outcome":"pass"}],"remaining_issues":[],"suggested_next":"run the script in dry-run mode first"}`
+func (d *scriptedTranscriptDriver) cleanupScriptResponse(messages []llm.Message) string {
+	currentToolResults := currentTranscriptToolResults(messages)
+	if !strings.Contains(currentToolResults, "[write_file]") {
+		return transcriptToolCall("write_file", `{"path":"tools/cleanup_workspace.sh","content":"#!/usr/bin/env bash\nset -euo pipefail\n\nrm -rf .pytest_cache __pycache__\nfind . -type d \\( -name __pycache__ -o -name .mypy_cache \\) -prune -exec rm -rf {} +\nfind . -type f \\( -name '*.pyc' -o -name '*.pyo' \\) -delete\n"}`)
 	}
-	if strings.Contains(root, "Gather concrete workspace evidence before you conclude") {
-		if !hasTranscriptToolEvidence(messages, "README.md") {
-			return transcriptToolCall("list_dir", `{"path":".","recursive":false}`)
-		}
-		if !hasTranscriptToolEvidence(messages, "FORGE_FIXTURE_README") {
-			return transcriptToolCall("read_file", `{"path":"README.md","start_line":1,"end_line":80}`)
-		}
-		if strings.Contains(root, "grounded non-README file") && !hasTranscriptToolEvidence(messages, "ruff-pre-commit") {
-			return transcriptToolCall("read_file", `{"path":".pre-commit-config.yaml","start_line":1,"end_line":80}`)
-		}
-		if strings.Contains(root, "grounded non-README file") {
-			return `{"status":"complete","evidence":[{"kind":"command","summary":"Top-level listing shows a README, pre-commit config, and service code."},{"kind":"file","path":"README.md","summary":"README describes the repo as a small Python service fixture."},{"kind":"file","path":".pre-commit-config.yaml","summary":"The pre-commit config enables Ruff, which is useful, but service verification still needs stronger tests."}],"coverage":"repo root, README, and pre-commit config","gaps":[],"suggested_next":"inspect service/main.py if deeper implementation details are needed"}`
-		}
-		return `{"status":"complete","evidence":[{"kind":"command","summary":"Top-level listing shows a README, pre-commit config, and service code."},{"kind":"file","path":"README.md","summary":"README describes the repo as a small Python service fixture."}],"coverage":"repo root plus README","gaps":[],"suggested_next":"inspect service/main.py for implementation details"}`
-	}
-
-	d.unexpected = append(d.unexpected, "unexpected worker prompt: "+clipTestText(root, 120))
-	return "unexpected worker prompt"
+	return "Added tools/cleanup_workspace.sh to clean generated artifacts in one place."
 }
 
-func latestTranscriptRoot(messages []llm.Message) string {
+func latestTranscriptRequest(messages []llm.Message) string {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role != llm.RoleUser {
 			continue
 		}
 		content := strings.TrimSpace(messages[i].Content)
-		if strings.HasPrefix(content, "HARNESS MODE:") || strings.HasPrefix(content, "OBJECTIVE:") {
-			return content
+		if !isTranscriptRequestMessage(content) {
+			continue
 		}
+		return content
 	}
 	return ""
 }
@@ -869,7 +776,7 @@ func hasTranscriptToolEvidence(messages []llm.Message, needle string) bool {
 		if msg.Role != llm.RoleUser {
 			continue
 		}
-		if !strings.Contains(msg.Content, "Tool results:") {
+		if !isTranscriptToolMessage(msg.Content) {
 			continue
 		}
 		if strings.Contains(msg.Content, needle) {
@@ -884,7 +791,7 @@ func latestTranscriptToolResults(messages []llm.Message) string {
 		if messages[i].Role != llm.RoleUser {
 			continue
 		}
-		if strings.Contains(messages[i].Content, "Tool results:") {
+		if isTranscriptToolMessage(messages[i].Content) {
 			return messages[i].Content
 		}
 	}
@@ -898,7 +805,7 @@ func currentTranscriptToolResults(messages []llm.Message) string {
 			continue
 		}
 		content := strings.TrimSpace(messages[i].Content)
-		if strings.HasPrefix(content, "HARNESS MODE:") || strings.HasPrefix(content, "OBJECTIVE:") {
+		if isTranscriptRequestMessage(content) {
 			rootIdx = i
 			break
 		}
@@ -911,11 +818,52 @@ func currentTranscriptToolResults(messages []llm.Message) string {
 		if messages[i].Role != llm.RoleUser {
 			continue
 		}
-		if strings.Contains(messages[i].Content, "Tool results:") {
+		if isTranscriptToolMessage(messages[i].Content) {
 			blocks = append(blocks, messages[i].Content)
 		}
 	}
 	return strings.Join(blocks, "\n")
+}
+
+func isTranscriptRepoRequest(request string) bool {
+	return strings.Contains(request, "repo") ||
+		strings.Contains(request, "repository") ||
+		strings.Contains(request, "directory") ||
+		strings.Contains(request, "codebase") ||
+		strings.Contains(request, "project") ||
+		strings.Contains(request, "anything i need change") ||
+		strings.Contains(request, "what do you think") ||
+		strings.Contains(request, "make a plan for improvements")
+}
+
+func isTranscriptPreviewRequest(request string) bool {
+	return strings.Contains(request, "preview") ||
+		strings.Contains(request, "theme") ||
+		strings.Contains(request, "web page") ||
+		strings.Contains(request, "webpage") ||
+		strings.Contains(request, "still up") ||
+		strings.Contains(request, "pick 3 others") ||
+		strings.Contains(request, "pick three others") ||
+		strings.Contains(request, "no neon") ||
+		strings.Contains(request, "obsidian") ||
+		strings.Contains(request, "fix that and show me again") ||
+		strings.Contains(request, "put that on the web page") ||
+		strings.Contains(request, "show it on the web page again") ||
+		strings.Contains(request, "more colors on git diff") ||
+		strings.Contains(request, "show me them on the screen") ||
+		strings.Contains(request, "themes_preview.html")
+}
+
+func isTranscriptRequestMessage(content string) bool {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return false
+	}
+	return !isTranscriptToolMessage(content) && !strings.HasPrefix(content, "Runtime note:")
+}
+
+func isTranscriptToolMessage(content string) bool {
+	return strings.HasPrefix(strings.TrimSpace(content), "[")
 }
 
 func extractPreviewURLFromToolResults(toolResults string) string {
@@ -930,25 +878,6 @@ func extractPreviewURLFromToolResults(toolResults string) string {
 		return "http://127.0.0.1:0/themes_preview.html"
 	}
 	return toolResults[start : start+end]
-}
-
-func extractTranscriptField(root, prefix string) string {
-	for _, line := range strings.Split(root, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, prefix) {
-			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
-		}
-	}
-	return ""
-}
-
-func extractTranscriptUserRequest(root string) string {
-	marker := "USER REQUEST:"
-	idx := strings.Index(root, marker)
-	if idx < 0 {
-		return ""
-	}
-	return strings.TrimSpace(root[idx+len(marker):])
 }
 
 func transcriptToolCall(name, args string) string {

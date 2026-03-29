@@ -19,7 +19,6 @@ import (
 	"forge/internal/codexusage"
 	"forge/internal/config"
 	"forge/internal/copilot"
-	"forge/internal/harness"
 	"forge/internal/llm"
 	"forge/internal/modelcatalog"
 	reactruntime "forge/internal/react"
@@ -39,9 +38,7 @@ var (
 type chatRuntimeMode string
 
 const (
-	chatRuntimeKernel chatRuntimeMode = "kernel"
-	chatRuntimeLegacy chatRuntimeMode = "legacy"
-	chatRuntimeReact  chatRuntimeMode = "react"
+	chatRuntimeReact chatRuntimeMode = "react"
 )
 
 type ChatSetup struct {
@@ -212,7 +209,6 @@ func RunChatLive(setup *ChatSetup) {
 	}
 	evRenderer := agent.NewEventRenderer(renderCh)
 	runtimeMode := resolveChatRuntimeMode()
-	useKernel := runtimeMode == chatRuntimeKernel
 
 	var approve tools.ApprovalFunc
 	if setup.Yolo {
@@ -232,34 +228,25 @@ func RunChatLive(setup *ChatSetup) {
 		defer previewRuntime.Close()
 	}
 	baseReg := reg.Filter(nil)
-	inspectReg := buildInspectToolRegistry(baseReg)
 	loadedSkills := skills.Load(setup.WorkDir)
-	workerAutoMode := skills.NormalizeAutoMode(setup.Config.Chat.AutoSkills)
 	state := chatstate.New()
 
 	a := agent.NewAgent(setup.Driver, reg, approve, setup.WorkDir, setup.Config.Chat.MaxTurns, evRenderer, loadedSkills, state)
-	var kernel *harness.Runner
 	var reactRunner *reactruntime.Runner
-
-	if useKernel {
-		kernel = harness.NewRunner(buildHarnessRunnerConfig(setup, a, baseReg, inspectReg, previewRuntime, loadedSkills, workerAutoMode, approve))
-	}
 
 	if runtimeMode == chatRuntimeReact {
 		reactRunner = reactruntime.NewRunner(reactruntime.Config{
-			Agent:           a,
+			Driver:          setup.Driver,
+			Tools:           reg,
+			Renderer:        evRenderer,
+			SystemPrompt:    func() string { return agent.BuildSystemPrompt(setup.WorkDir, reg, "") },
 			Session:         reactruntime.NewSession(),
 			MaxSessionTurns: 20,
 			Progress: func(text string) {
 				evRenderer.Info(text)
 			},
 		})
-		registerReactDelegationTools(reg, a, setup, baseReg, approve)
-	}
-
-	if setup.Config.Chat.Agents.Enabled && runtimeMode == chatRuntimeLegacy {
-		configureMultiAgent(a, baseReg, setup)
-		evRenderer.SetLabel("dispatch")
+		registerReactDelegationTools(reg, setup, baseReg, approve)
 	}
 
 	inputCh := make(chan string, 1)
@@ -286,10 +273,7 @@ func RunChatLive(setup *ChatSetup) {
 				setup.debugRec.logInput("user", msg)
 			}
 			go func(runMsg string) {
-				err := runChatTurn(ctx, a, kernel, reactRunner, runMsg)
-				if setup != nil && setup.debugRec != nil && kernel != nil {
-					setup.debugRec.logTrace(kernel.Trace())
-				}
+				err := runChatTurn(ctx, a, reactRunner, runMsg)
 				inputCh <- runOutcome(err)
 			}(msg)
 		}
@@ -361,7 +345,7 @@ func RunChatLive(setup *ChatSetup) {
 		DebugEnabled:    debugEnabled,
 		AvailableModels: setup.Available,
 		Providers:       append([]tui.ProviderOption(nil), setup.Providers...),
-		AgentsEnabled:   runtimeMode == chatRuntimeLegacy && setup.Config.Chat.Agents.Enabled,
+		AgentsEnabled:   false,
 		FetchLiveCopilotQuota: func(ctx context.Context) (*copilot.UserQuota, error) {
 			if provider := bootstrap.ParseModelRef(setup.ChatModel).Provider; provider != "copilot" {
 				return nil, nil
@@ -433,11 +417,17 @@ func RunChatLive(setup *ChatSetup) {
 			setup.ChatModel = name
 			setup.Driver = d
 			a.SetDriver(setup.Driver)
+			if reactRunner != nil {
+				reactRunner.SetDriver(setup.Driver)
+			}
 			persistChatLastModel(setup.Config, name)
 			return name, nil
 		},
 		ClearHistory: func() {
 			a.ClearHistory()
+			if reactRunner != nil {
+				reactRunner.ClearHistory()
+			}
 		},
 		ApprovalCh:      evRenderer.ApprovalChan(),
 		ResponseCh:      evRenderer.ResponseChan(),
@@ -446,31 +436,6 @@ func RunChatLive(setup *ChatSetup) {
 		CopilotClientID: setup.Config.CopilotClientID(),
 	}
 	runChatLiveUI(eventsCh, liveCfg, inputCh, doneCh)
-}
-
-func configureMultiAgent(a *agent.Agent, baseReg *tools.Registry, setup *ChatSetup) {
-	reg := baseReg.Filter(nil)
-	mac := agent.MultiAgentConfig{
-		Enabled:    true,
-		RoleModels: setup.Config.AgentRoleModels(),
-		MakeDriver: setup.MakeDriver,
-		BaseTools:  reg,
-	}
-
-	// Register scratchpad tools on the base registry.
-	reg.Register(tools.NewScratchpadWrite(setup.WorkDir))
-	reg.Register(tools.NewScratchpadRead(setup.WorkDir))
-
-	// Register the delegate tool (calls back into the agent).
-	reg.Register(tools.NewDelegate(func(ctx context.Context, role, task string) (string, error) {
-		return a.SpawnSubAgent(ctx, role, task, mac)
-	}))
-
-	// Switch the primary agent to dispatch role.
-	dispatchRole := agent.Roles["dispatch"]
-	a.SetSystem(agent.BuildSystemPrompt(setup.WorkDir, reg.Filter(dispatchRole.AllowTools), "") + "\n\n" + dispatchRole.System)
-	a.SetTools(reg.Filter(dispatchRole.AllowTools))
-	a.SetRole("dispatch")
 }
 
 func providerOptionsFromBootstrap(backends []bootstrap.ProviderBackend) []tui.ProviderOption {
@@ -511,35 +476,26 @@ func RunChatConsole(setup *ChatSetup) {
 		defer previewRuntime.Close()
 	}
 	baseReg := reg.Filter(nil)
-	inspectReg := buildInspectToolRegistry(baseReg)
 	loadedSkills := skills.Load(setup.WorkDir)
-	workerAutoMode := skills.NormalizeAutoMode(setup.Config.Chat.AutoSkills)
 
 	renderer := agent.NewRenderer(os.Stdout, 80, true)
 	state := chatstate.New()
 	a := agent.NewAgent(setup.Driver, reg, approve, setup.WorkDir, setup.Config.Chat.MaxTurns, renderer, loadedSkills, state)
-	useKernel := runtimeMode == chatRuntimeKernel
-	var kernel *harness.Runner
 	var reactRunner *reactruntime.Runner
-
-	if useKernel {
-		kernel = harness.NewRunner(buildHarnessRunnerConfig(setup, a, baseReg, inspectReg, previewRuntime, loadedSkills, workerAutoMode, approve))
-	}
 
 	if runtimeMode == chatRuntimeReact {
 		reactRunner = reactruntime.NewRunner(reactruntime.Config{
-			Agent:           a,
+			Driver:          setup.Driver,
+			Tools:           reg,
+			Renderer:        renderer,
+			SystemPrompt:    func() string { return agent.BuildSystemPrompt(setup.WorkDir, reg, "") },
 			Session:         reactruntime.NewSession(),
 			MaxSessionTurns: 20,
 			Progress: func(text string) {
 				renderer.Info(text)
 			},
 		})
-		registerReactDelegationTools(reg, a, setup, baseReg, approve)
-	}
-
-	if setup.Config.Chat.Agents.Enabled && runtimeMode == chatRuntimeLegacy {
-		configureMultiAgent(a, reg, setup)
+		registerReactDelegationTools(reg, setup, baseReg, approve)
 	}
 
 	fmt.Printf("forge (%s) — %s\n", setup.ChatModel, setup.WorkDir)
@@ -578,15 +534,12 @@ func RunChatConsole(setup *ChatSetup) {
 			break
 		}
 		if strings.HasPrefix(input, "/") {
-			handled := handleChatSlashCommand(input, renderer, a, setup)
+			handled := handleChatSlashCommand(input, renderer, a, reactRunner, setup)
 			if handled {
 				continue
 			}
 		}
-		err := runChatTurn(ctx, a, kernel, reactRunner, input)
-		if setup != nil && setup.debugRec != nil && kernel != nil {
-			setup.debugRec.logTrace(kernel.Trace())
-		}
+		err := runChatTurn(ctx, a, reactRunner, input)
 		if err != nil {
 			renderer.Error(err.Error())
 		}
@@ -594,12 +547,8 @@ func RunChatConsole(setup *ChatSetup) {
 	fmt.Println()
 }
 
-func useHarnessKernelRuntime() bool {
-	return resolveChatRuntimeMode() == chatRuntimeKernel
-}
-
-func registerReactDelegationTools(reg *tools.Registry, a *agent.Agent, setup *ChatSetup, baseReg *tools.Registry, approve tools.ApprovalFunc) {
-	if reg == nil || a == nil || setup == nil || baseReg == nil {
+func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg *tools.Registry, approve tools.ApprovalFunc) {
+	if reg == nil || setup == nil || baseReg == nil {
 		return
 	}
 	pool := reactruntime.NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
@@ -612,13 +561,20 @@ func registerReactDelegationTools(reg *tools.Registry, a *agent.Agent, setup *Ch
 		}
 		role = reactruntime.MapSpawnRole(role)
 		childTools := baseReg.Filter(nil)
-		child := agent.NewAgent(driver, childTools, approve, setup.WorkDir, setup.Config.Chat.MaxTurns, agent.NewHiddenWorkerRenderer(nil), a.Skills(), chatstate.New())
-		child.SetSubAgentMode(true)
-		child.SetSystem(agent.BuildSystemPrompt(setup.WorkDir, childTools, "") + "\n\n" + reactDelegationSystemSuffix(role))
-		if err := child.Run(ctx, task); err != nil {
+		childRunner := reactruntime.NewRunner(reactruntime.Config{
+			Driver:   driver,
+			Tools:    childTools,
+			Renderer: agent.NewHiddenWorkerRenderer(nil),
+			SystemPrompt: func() string {
+				return agent.BuildSystemPrompt(setup.WorkDir, childTools, "") + "\n\n" + reactDelegationSystemSuffix(role)
+			},
+			Session:         reactruntime.NewSession(),
+			MaxSessionTurns: setup.Config.Chat.MaxTurns,
+		})
+		if err := childRunner.Run(ctx, task); err != nil {
 			return "", err
 		}
-		return child.LastResponse(), nil
+		return childRunner.LastResponse(), nil
 	})
 	reg.Register(reacttools.NewSpawnAgent(pool))
 	reg.Register(reacttools.NewWaitAgent(pool))
@@ -642,115 +598,30 @@ func reactDelegationSystemSuffix(role string) string {
 }
 
 func resolveChatRuntimeMode() chatRuntimeMode {
-	mode := strings.TrimSpace(os.Getenv("FORGE_CHAT_RUNTIME"))
-	if mode == "" {
-		return chatRuntimeReact
-	}
-	switch strings.ToLower(mode) {
-	case string(chatRuntimeKernel):
-		return chatRuntimeKernel
-	case string(chatRuntimeLegacy):
-		return chatRuntimeLegacy
-	case string(chatRuntimeReact):
-		return chatRuntimeReact
-	default:
-		return chatRuntimeReact
-	}
-}
-
-func buildHarnessRunnerConfig(setup *ChatSetup, a *agent.Agent, baseReg, inspectReg *tools.Registry, previewRuntime *tools.PreviewRuntime, loadedSkills []skills.Skill, workerAutoMode string, approve tools.ApprovalFunc) harness.RunnerConfig {
-	workDir := ""
-	if setup != nil {
-		workDir = setup.WorkDir
-	}
-	workers := harness.NewManager(harness.ManagerConfig{
-		WorkDir:   workDir,
-		BaseTools: baseReg,
-		Approve:   approve,
-		DriverFor: func(kind harness.WorkerKind) llm.Driver { return workerDriverFor(setup, kind) },
-	})
-	return harness.RunnerConfig{
-		Session: harness.NewSession(),
-		Trace:   harness.NewRecorder(),
-		Local: harness.AgentExecutor{
-			Agent:          a,
-			DefaultTools:   baseReg,
-			InspectTools:   inspectReg,
-			PreviewRuntime: previewRuntime,
-		},
-		StrictLocal: harness.StrictAgentExecutor{
-			Agent:          a,
-			DefaultTools:   baseReg,
-			InspectTools:   inspectReg,
-			PreviewRuntime: previewRuntime,
-			WorkDir:        workDir,
-			LoadedSkills:   loadedSkills,
-			AutoSkillsMode: workerAutoMode,
-		},
-		Workers:         workers,
-		WorkspacePolicy: newWorkspacePolicy(workDir),
-		WorkerSkills:    loadedSkills,
-		WorkerAutoMode:  workerAutoMode,
-	}
-}
-
-func workerDriverFor(setup *ChatSetup, kind harness.WorkerKind) llm.Driver {
-	if setup == nil {
-		return nil
-	}
-	if setup.MakeDriver != nil {
-		if model := compatibilityWorkerModel(setup.Config, kind); model != "" {
-			if driver := setup.MakeDriver(model); driver != nil {
-				return driver
-			}
-		}
-	}
-	return setup.Driver
-}
-
-func compatibilityWorkerModel(cfg *config.Config, kind harness.WorkerKind) string {
-	if cfg == nil {
-		return ""
-	}
-	switch kind {
-	case harness.WorkerReader, harness.WorkerResearcher:
-		return strings.TrimSpace(cfg.Chat.Agents.Models.Scout)
-	case harness.WorkerEditor:
-		return strings.TrimSpace(cfg.Chat.Agents.Models.Builder)
-	case harness.WorkerVerifier:
-		return strings.TrimSpace(cfg.Chat.Agents.Models.Doctor)
-	default:
-		return ""
-	}
+	return chatRuntimeReact
 }
 
 type chatTurnRunner interface {
 	Run(context.Context, string) error
 }
 
-func runChatTurn(ctx context.Context, a *agent.Agent, kernel *harness.Runner, reactRunner chatTurnRunner, input string) error {
-	if kernel == nil {
-		if hasTurnRunner(reactRunner) {
-			if a != nil {
-				a.ResetTurnState()
-			}
-			return reactRunner.Run(ctx, input)
+const promptBoundaryRefusal = "I can't provide hidden system/developer prompts or internal instructions, including paraphrased or hypothetical versions. I can summarize my role and high-level guardrails if useful."
+
+func runChatTurn(ctx context.Context, a *agent.Agent, reactRunner chatTurnRunner, input string) error {
+	if isPromptBoundaryQuestion(input) {
+		if a != nil {
+			a.ResetTurnState()
+			a.EmitSyntheticResponse(promptBoundaryRefusal)
 		}
-		if a == nil {
-			return fmt.Errorf("chat agent is nil")
-		}
-		return a.Run(ctx, input)
+		return nil
+	}
+	if !hasTurnRunner(reactRunner) {
+		return fmt.Errorf("chat react runner is nil")
 	}
 	if a != nil {
 		a.ResetTurnState()
 	}
-	result, err := kernel.Run(ctx, input)
-	if err == nil && a != nil && strings.TrimSpace(result.Response) != "" {
-		if result.Step.Kind == harness.StepWorker || strings.TrimSpace(a.LastResponse()) == "" {
-			a.EmitSyntheticResponse(result.Response)
-		}
-	}
-	return err
+	return reactRunner.Run(ctx, input)
 }
 
 func hasTurnRunner(r chatTurnRunner) bool {
@@ -766,7 +637,23 @@ func hasTurnRunner(r chatTurnRunner) bool {
 	}
 }
 
-func handleChatSlashCommand(input string, renderer *agent.Renderer, a *agent.Agent, setup *ChatSetup) bool {
+func isPromptBoundaryQuestion(input string) bool {
+	lower := strings.ToLower(strings.TrimSpace(input))
+	if lower == "" {
+		return false
+	}
+	return strings.Contains(lower, "system prompt") ||
+		strings.Contains(lower, "developer prompt") ||
+		strings.Contains(lower, "hidden prompt") ||
+		strings.Contains(lower, "internal instruction")
+}
+
+type chatSessionControl interface {
+	SetDriver(llm.Driver)
+	ClearHistory()
+}
+
+func handleChatSlashCommand(input string, renderer *agent.Renderer, a *agent.Agent, session chatSessionControl, setup *ChatSetup) bool {
 	switch {
 	case input == "/help":
 		PrintChatHelp()
@@ -783,6 +670,9 @@ func handleChatSlashCommand(input string, renderer *agent.Renderer, a *agent.Age
 		setup.ChatModel = picked
 		setup.Driver = d
 		a.SetDriver(setup.Driver)
+		if session != nil {
+			session.SetDriver(setup.Driver)
+		}
 		renderer.Info(fmt.Sprintf("switched to %s", setup.ChatModel))
 	case strings.HasPrefix(input, "/model "):
 		arg := strings.TrimSpace(strings.TrimPrefix(input, "/model "))
@@ -802,6 +692,9 @@ func handleChatSlashCommand(input string, renderer *agent.Renderer, a *agent.Age
 		setup.ChatModel = newModel
 		setup.Driver = d
 		a.SetDriver(setup.Driver)
+		if session != nil {
+			session.SetDriver(setup.Driver)
+		}
 		renderer.Info(fmt.Sprintf("switched to %s", setup.ChatModel))
 	case input == "/models":
 		fmt.Println()
@@ -815,6 +708,9 @@ func handleChatSlashCommand(input string, renderer *agent.Renderer, a *agent.Age
 		fmt.Println()
 	case input == "/clear":
 		a.ClearHistory()
+		if session != nil {
+			session.ClearHistory()
+		}
 		renderer.Info("conversation history cleared")
 	case input == "/skills":
 		loaded := a.Skills()

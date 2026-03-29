@@ -21,6 +21,9 @@ func TestCompactSessionHistoryTrimsOldTurns(t *testing.T) {
 	if snap.CompactedTurns != 3 {
 		t.Fatalf("CompactedTurns = %d, want 3", snap.CompactedTurns)
 	}
+	if len(snap.Turns) != 3 {
+		t.Fatalf("Turns = %d, want 3", len(snap.Turns))
+	}
 	if len(snap.RecentInputs) != 3 {
 		t.Fatalf("RecentInputs = %d, want 3", len(snap.RecentInputs))
 	}
@@ -30,10 +33,10 @@ func TestCompactSessionHistoryTrimsOldTurns(t *testing.T) {
 }
 
 func TestRunnerRunEmitsCompactionProgress(t *testing.T) {
-	stub := &stubTurnRunner{}
+	driver := &scriptedDriver{responses: []string{"done 1", "done 2", "done 3"}}
 	var progress []string
 	r := NewRunner(Config{
-		Agent:           stub,
+		Driver:          driver,
 		Session:         NewSession(),
 		Progress:        func(text string) { progress = append(progress, text) },
 		MaxSessionTurns: 2,

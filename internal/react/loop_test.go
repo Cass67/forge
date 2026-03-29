@@ -2,27 +2,20 @@ package react
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
+
+	agenttools "forge/internal/agent/tools"
+	"forge/internal/llm"
 )
 
-type stubTurnRunner struct {
-	calls int
-	input string
-	err   error
-}
-
-func (s *stubTurnRunner) Run(_ context.Context, input string) error {
-	s.calls++
-	s.input = input
-	return s.err
-}
-
-func TestRunnerRunInvokesAgentAndProgress(t *testing.T) {
-	stub := &stubTurnRunner{}
+func TestRunnerRunInvokesDriverAndProgress(t *testing.T) {
+	driver := &scriptedDriver{responses: []string{"repo overview"}}
 	session := NewSession()
 	var progress string
 	r := NewRunner(Config{
-		Agent:   stub,
+		Driver:  driver,
 		Session: session,
 		Progress: func(text string) {
 			progress = text
@@ -32,11 +25,8 @@ func TestRunnerRunInvokesAgentAndProgress(t *testing.T) {
 	if err := r.Run(context.Background(), "  inspect this file  "); err != nil {
 		t.Fatal(err)
 	}
-	if stub.calls != 1 {
-		t.Fatalf("calls = %d, want 1", stub.calls)
-	}
-	if stub.input != "inspect this file" {
-		t.Fatalf("input = %q", stub.input)
+	if driver.callCount != 1 {
+		t.Fatalf("calls = %d, want 1", driver.callCount)
 	}
 	if progress == "" {
 		t.Fatal("expected progress callback")
@@ -47,20 +37,213 @@ func TestRunnerRunInvokesAgentAndProgress(t *testing.T) {
 	}
 }
 
-func TestRunnerRunReturnsErrorWhenAgentMissing(t *testing.T) {
+func TestRunnerRunReturnsErrorWhenDriverMissing(t *testing.T) {
 	r := NewRunner(Config{})
 	if err := r.Run(context.Background(), "inspect"); err == nil {
-		t.Fatal("expected error when agent is nil")
+		t.Fatal("expected error when driver is nil")
 	}
 }
 
 func TestRunnerRunSkipsEmptyInput(t *testing.T) {
-	stub := &stubTurnRunner{}
-	r := NewRunner(Config{Agent: stub})
+	driver := &scriptedDriver{responses: []string{"ignored"}}
+	r := NewRunner(Config{Driver: driver})
 	if err := r.Run(context.Background(), "   "); err != nil {
 		t.Fatal(err)
 	}
-	if stub.calls != 0 {
-		t.Fatalf("calls = %d, want 0", stub.calls)
+	if driver.callCount != 0 {
+		t.Fatalf("calls = %d, want 0", driver.callCount)
+	}
+}
+
+func TestRunnerRunRecordsCompletedTurnDetails(t *testing.T) {
+	driver := &scriptedDriver{responses: []string{"repo overview"}}
+	session := NewSession()
+	r := NewRunner(Config{Driver: driver, Session: session})
+
+	if err := r.Run(context.Background(), "inspect repo"); err != nil {
+		t.Fatal(err)
+	}
+
+	snap := session.Snapshot()
+	if len(snap.Turns) != 1 {
+		t.Fatalf("turns = %d, want 1", len(snap.Turns))
+	}
+	if snap.Turns[0].Input != "inspect repo" {
+		t.Fatalf("turn input = %q", snap.Turns[0].Input)
+	}
+	if snap.Turns[0].FinalResponse != "repo overview" {
+		t.Fatalf("turn final response = %q", snap.Turns[0].FinalResponse)
+	}
+	if len(snap.Turns[0].ToolCalls) != 0 {
+		t.Fatalf("tool calls = %d, want 0", len(snap.Turns[0].ToolCalls))
+	}
+}
+
+type errorDriver struct {
+	err error
+}
+
+func (d *errorDriver) Name() string { return "error-driver" }
+
+func (d *errorDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	close(out)
+	return d.err
+}
+
+func TestRunnerRunRecordsTurnError(t *testing.T) {
+	driver := &errorDriver{err: context.DeadlineExceeded}
+	session := NewSession()
+	r := NewRunner(Config{Driver: driver, Session: session})
+
+	if err := r.Run(context.Background(), "inspect repo"); err == nil {
+		t.Fatal("expected runner error")
+	}
+
+	snap := session.Snapshot()
+	if len(snap.Turns) != 1 {
+		t.Fatalf("turns = %d, want 1", len(snap.Turns))
+	}
+	if snap.Turns[0].Error == "" {
+		t.Fatal("expected recorded turn error")
+	}
+}
+
+type scriptedDriver struct {
+	responses []string
+	callCount int
+}
+
+func (d *scriptedDriver) Name() string { return "scripted" }
+
+func (d *scriptedDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	defer close(out)
+	if d.callCount >= len(d.responses) {
+		return errors.New("no scripted response")
+	}
+	out <- llm.Token{Text: d.responses[d.callCount]}
+	d.callCount++
+	return nil
+}
+
+type silentRenderer struct{}
+
+func (silentRenderer) AgentToken(string)                       {}
+func (silentRenderer) AgentText(string)                        {}
+func (silentRenderer) ToolCall(string, string)                 {}
+func (silentRenderer) ToolResult(string, string, string, bool) {}
+func (silentRenderer) Stats(time.Duration, llm.Usage)          {}
+func (silentRenderer) Error(string)                            {}
+func (silentRenderer) Info(string)                             {}
+
+func TestRunnerLoopExecutesToolCallAndFinishes(t *testing.T) {
+	driver := &scriptedDriver{responses: []string{
+		"<tool_call>\n{\"name\":\"list_dir\",\"args\":{\"path\":\".\"}}\n</tool_call>",
+		"repo overview",
+	}}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "list_dir",
+		Description: "List files",
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			return "README.md\ninternal", nil
+		},
+	})
+	session := NewSession()
+	r := NewRunner(Config{
+		Driver:       driver,
+		Tools:        reg,
+		Renderer:     silentRenderer{},
+		SystemPrompt: func() string { return "system prompt" },
+		Session:      session,
+	})
+
+	if err := r.Run(context.Background(), "inspect repo"); err != nil {
+		t.Fatal(err)
+	}
+	snap := session.Snapshot()
+	if len(snap.History) < 3 {
+		t.Fatalf("history length = %d, want at least 3", len(snap.History))
+	}
+	if snap.Turns[0].FinalResponse != "repo overview" {
+		t.Fatalf("final response = %q", snap.Turns[0].FinalResponse)
+	}
+	if len(snap.Turns[0].ToolCalls) != 1 || snap.Turns[0].ToolCalls[0].Name != "list_dir" {
+		t.Fatalf("tool calls = %#v", snap.Turns[0].ToolCalls)
+	}
+}
+
+func TestRunnerLoopRetriesSlashSkillOutput(t *testing.T) {
+	driver := &scriptedDriver{responses: []string{
+		"/using-superpowersI’ll inspect first",
+		"final answer",
+	}}
+	reg := agenttools.NewRegistry()
+	session := NewSession()
+	r := NewRunner(Config{
+		Driver:       driver,
+		Tools:        reg,
+		Renderer:     silentRenderer{},
+		SystemPrompt: func() string { return "system prompt" },
+		Session:      session,
+	})
+
+	if err := r.Run(context.Background(), "inspect repo"); err != nil {
+		t.Fatal(err)
+	}
+	snap := session.Snapshot()
+	if len(snap.History) < 2 {
+		t.Fatalf("history length = %d, want at least 2", len(snap.History))
+	}
+	if snap.Turns[0].FinalResponse != "final answer" {
+		t.Fatalf("final response = %q", snap.Turns[0].FinalResponse)
+	}
+}
+
+func TestRunnerSetDriverSwitchesSubsequentTurns(t *testing.T) {
+	first := &scriptedDriver{responses: []string{"first answer"}}
+	second := &scriptedDriver{responses: []string{"second answer"}}
+	r := NewRunner(Config{
+		Driver:       first,
+		Renderer:     silentRenderer{},
+		SystemPrompt: func() string { return "system prompt" },
+		Session:      NewSession(),
+	})
+
+	if err := r.Run(context.Background(), "first"); err != nil {
+		t.Fatal(err)
+	}
+	r.SetDriver(second)
+	if err := r.Run(context.Background(), "second"); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.LastResponse(); got != "second answer" {
+		t.Fatalf("last response = %q", got)
+	}
+	if first.callCount != 1 || second.callCount != 1 {
+		t.Fatalf("driver calls = (%d, %d), want (1, 1)", first.callCount, second.callCount)
+	}
+}
+
+func TestRunnerClearHistoryResetsSessionState(t *testing.T) {
+	r := NewRunner(Config{
+		Driver:       &scriptedDriver{responses: []string{"done"}},
+		Renderer:     silentRenderer{},
+		SystemPrompt: func() string { return "system prompt" },
+		Session:      NewSession(),
+	})
+
+	if err := r.Run(context.Background(), "inspect repo"); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.LastResponse(); got != "done" {
+		t.Fatalf("last response = %q", got)
+	}
+
+	r.ClearHistory()
+	if got := r.LastResponse(); got != "" {
+		t.Fatalf("last response after clear = %q", got)
+	}
+	if snap := r.session.Snapshot(); snap.Turn != 0 || len(snap.History) != 0 || len(snap.Turns) != 0 {
+		t.Fatalf("snapshot after clear = %#v", snap)
 	}
 }

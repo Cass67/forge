@@ -90,7 +90,9 @@ func TestEnableChatDebugWrapsDriverAndLogsRequestResponse(t *testing.T) {
 	}
 }
 
-func TestEnableChatDebugNormalizesHiddenWorkerResponses(t *testing.T) {
+const debugReactSystemPrompt = "You are forge, a coding agent.\n- Only respond with plain text (no tool calls) when you have a complete final answer."
+
+func TestEnableChatDebugNormalizesReactMalformedToolResponses(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "chat-debug.jsonl")
 	inner := &debugMockDriver{
 		response: "<tool_call>{\"name\":\"list_dir\",\"args\":{\"path\":\".\",\"recursive\":false}}></tool_call><tool_call>{\"name\":\"read_file\",\"args\":{\"path\":\"README.md\"}}{\"status\":\"complete\"}",
@@ -105,8 +107,8 @@ func TestEnableChatDebugNormalizesHiddenWorkerResponses(t *testing.T) {
 	}
 
 	msgs := []llm.Message{
-		{Role: llm.RoleSystem, Content: "You are forge's hidden worker runtime."},
-		{Role: llm.RoleUser, Content: "OBJECTIVE: inspect"},
+		{Role: llm.RoleSystem, Content: debugReactSystemPrompt},
+		{Role: llm.RoleUser, Content: "inspect the repository"},
 	}
 	out := make(chan llm.Token, 4)
 	errCh := make(chan error, 1)
@@ -128,7 +130,7 @@ func TestEnableChatDebugNormalizesHiddenWorkerResponses(t *testing.T) {
 	}
 	response, _ := fields["response"].(string)
 	if strings.Contains(response, "\"name\":\"read_file\"") {
-		t.Fatalf("expected hidden-worker debug log to suppress later malformed tool calls, got %s", response)
+		t.Fatalf("expected debug log to suppress later malformed tool calls, got %s", response)
 	}
 	if !strings.Contains(response, "\"name\":\"list_dir\"") {
 		t.Fatalf("expected canonical first tool call to remain in log, got %s", response)
@@ -150,8 +152,8 @@ func TestEnableChatDebugNormalizesInspectTurnResponses(t *testing.T) {
 	}
 
 	msgs := []llm.Message{
-		{Role: llm.RoleSystem, Content: "You are forge, a coding agent."},
-		{Role: llm.RoleUser, Content: "HARNESS MODE: inspect\nUSER REQUEST:\ndescribe this directory"},
+		{Role: llm.RoleSystem, Content: debugReactSystemPrompt},
+		{Role: llm.RoleUser, Content: "describe this directory"},
 	}
 	out := make(chan llm.Token, 4)
 	errCh := make(chan error, 1)
@@ -180,7 +182,7 @@ func TestEnableChatDebugNormalizesInspectTurnResponses(t *testing.T) {
 	}
 }
 
-func TestEnableChatDebugNormalizesStrictLocalResponses(t *testing.T) {
+func TestEnableChatDebugNormalizesReactPreviewResponses(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "chat-debug.jsonl")
 	inner := &debugMockDriver{
 		response: "<tool_call>\n{\"name\":\"preview_server_status\",\"args\":{}}\n</tool_call>Preview is already live.",
@@ -195,8 +197,8 @@ func TestEnableChatDebugNormalizesStrictLocalResponses(t *testing.T) {
 	}
 
 	msgs := []llm.Message{
-		{Role: llm.RoleSystem, Content: "You are forge, the user's coding assistant. This is a strict visible collaboration turn."},
-		{Role: llm.RoleUser, Content: "HARNESS MODE: visible-collaboration\nUSER REQUEST:\nshow me the preview"},
+		{Role: llm.RoleSystem, Content: debugReactSystemPrompt},
+		{Role: llm.RoleUser, Content: "show me the preview"},
 	}
 	out := make(chan llm.Token, 4)
 	errCh := make(chan error, 1)
@@ -218,10 +220,10 @@ func TestEnableChatDebugNormalizesStrictLocalResponses(t *testing.T) {
 	}
 	response, _ := fields["response"].(string)
 	if strings.Contains(response, "Preview is already live.") {
-		t.Fatalf("expected strict-local debug log to suppress visible prose, got %s", response)
+		t.Fatalf("expected react preview debug log to suppress visible prose, got %s", response)
 	}
 	if !strings.Contains(response, "\"name\":\"preview_server_status\"") {
-		t.Fatalf("expected strict-local tool call to remain in log, got %s", response)
+		t.Fatalf("expected react preview tool call to remain in log, got %s", response)
 	}
 }
 
