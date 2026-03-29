@@ -130,6 +130,35 @@ func (s *Session) AppendToolResults(results string) {
 	s.AppendUserMessage(results)
 }
 
+// AppendAssistantWithToolCalls records an assistant message that contains native
+// tool calls (may have empty text content). Used by the native tool calling path.
+func (s *Session) AppendAssistantWithToolCalls(calls []llm.NativeToolCall) {
+	if s == nil || len(calls) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.history = append(s.history, llm.Message{
+		Role:      llm.RoleAssistant,
+		ToolCalls: append([]llm.NativeToolCall(nil), calls...),
+	})
+}
+
+// AppendNativeToolResult records a tool execution result matched to a specific
+// tool call ID. Used by the native tool calling path.
+func (s *Session) AppendNativeToolResult(toolCallID, result string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.history = append(s.history, llm.Message{
+		Role:       llm.RoleTool,
+		ToolCallID: toolCallID,
+		Content:    result,
+	})
+}
+
 func (s *Session) Messages(systemPrompt string) []llm.Message {
 	return BuildMessages(systemPrompt, s.Snapshot())
 }
