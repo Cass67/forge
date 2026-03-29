@@ -8,6 +8,21 @@
 
 **Tech Stack:** Go, existing `internal/agent` parser/tool helpers, existing `internal/agent/tools` registry, existing `internal/llm` streaming interfaces, existing runtime event rendering.
 
+## Progress Update
+
+Status on `main` as of 2026-03-29:
+- `internal/react/session.go` now owns canonical turn records, history, and clear/reset behavior.
+- `internal/react/loop.go` now owns the turn loop and no longer falls back to the deleted legacy agent runtime.
+- `internal/runtime/chat.go` is react-only on the live path and no longer depends on the old harness/kernel stack.
+- the old default-path architecture has been deleted:
+  - `internal/harness/*`
+  - dormant `chat.agents` config and TUI plumbing
+  - the legacy `internal/agent` execution engine, role prompts, and subagent contracts
+
+Result:
+- the architecture cutover this plan targeted is complete
+- remaining work is refinement and polish, not another rewrite
+
 ---
 
 ## File Map
@@ -37,26 +52,26 @@
 - Modify: `internal/react/loop_test.go`
 - Create: `internal/react/session_test.go`
 
-- [ ] **Step 1: Write failing tests for canonical turn history**
+- [x] **Step 1: Write failing tests for canonical turn history**
 
 Cover:
 - each turn stores normalized input, final response, tool calls, and error state
 - snapshots are safe copies
 - compaction preserves recent turns while summarizing older ones
 
-- [ ] **Step 2: Run the focused react tests to verify they fail**
+- [x] **Step 2: Run the focused react tests to verify they fail**
 
 Run: `go test ./internal/react -run 'TestRunnerRunRecords|TestSession|TestCompactSessionHistory'`
 Expected: FAIL because the session does not yet act as the canonical runtime history.
 
-- [ ] **Step 3: Implement the minimal unified turn record model**
+- [x] **Step 3: Implement the minimal unified turn record model**
 
 Implement:
 - turn records in session state
 - completion recording from the runner
 - snapshot copies for turn records and tool-call metadata
 
-- [ ] **Step 4: Re-run the focused react tests to verify they pass**
+- [x] **Step 4: Re-run the focused react tests to verify they pass**
 
 Run: `go test ./internal/react -run 'TestRunnerRunRecords|TestSession|TestCompactSessionHistory'`
 Expected: PASS
@@ -68,7 +83,7 @@ Expected: PASS
 - Modify: `internal/react/prompt.go`
 - Modify: `internal/react/loop_test.go`
 
-- [ ] **Step 1: Write failing loop tests before implementation**
+- [x] **Step 1: Write failing loop tests before implementation**
 
 Cover:
 - stream model output
@@ -78,19 +93,19 @@ Cover:
 - continue until a final assistant answer
 - retry or fail clearly on malformed non-final plain-text output
 
-- [ ] **Step 2: Run the focused loop tests to verify they fail**
+- [x] **Step 2: Run the focused loop tests to verify they fail**
 
 Run: `go test ./internal/react -run 'TestRunnerLoop|TestRunnerRunRejectsInvalidWorkingOutput|TestRunnerAppendsToolResults'`
 Expected: FAIL because `Runner.Run` still delegates the full turn to `Agent.Run`.
 
-- [ ] **Step 3: Implement the minimal real loop**
+- [x] **Step 3: Implement the minimal real loop**
 
 Implement:
 - a runtime-owned turn loop in `internal/react/loop.go`
 - tool execution against the existing registry under current approval policy
 - final-answer detection without kernel worker contracts
 
-- [ ] **Step 4: Re-run the focused loop tests to verify they pass**
+- [x] **Step 4: Re-run the focused loop tests to verify they pass**
 
 Run: `go test ./internal/react -run 'TestRunnerLoop|TestRunnerRunRejectsInvalidWorkingOutput|TestRunnerAppendsToolResults'`
 Expected: PASS
@@ -101,25 +116,35 @@ Expected: PASS
 - Modify: `internal/runtime/chat.go`
 - Modify: `internal/runtime/chat_test.go`
 
-- [ ] **Step 1: Write failing wiring tests**
+- [x] **Step 1: Write failing wiring tests**
 
 Cover:
 - `react` runtime still emits progress events
 - `react` runtime no longer depends on synthetic response patching for continuity
 - runtime wiring still registers `spawn_agent` and `wait_agent`
 
-- [ ] **Step 2: Run the focused runtime tests to verify they fail**
+- [x] **Step 2: Run the focused runtime tests to verify they fail**
 
 Run: `go test ./internal/runtime -run 'TestRunChatTurn|TestRegisterReactDelegationTools'`
 Expected: FAIL if runtime assumptions still depend on the thin wrapper behavior.
 
-- [ ] **Step 3: Implement the minimal runtime adjustments**
+- [x] **Step 3: Implement the minimal runtime adjustments**
 
 Implement:
 - keep runtime chat wiring thin
 - keep trace/debug visibility intact while `react` owns more turn state
 
-- [ ] **Step 4: Re-run the focused runtime tests to verify they pass**
+- [x] **Step 4: Re-run the focused runtime tests to verify they pass**
 
 Run: `go test ./internal/runtime -run 'TestRunChatTurn|TestRegisterReactDelegationTools'`
 Expected: PASS
+
+## Remaining Work
+
+The large rewrite is done. What remains is smaller follow-up work:
+
+- `internal/react/prompt.go` is still only turn-input normalization. If we want richer runtime-owned prompt composition, that should land here.
+- `internal/react/compact.go` and `Session.compact()` still do simple truncation plus concatenated summary text, not semantic compaction.
+- `Runner.streamResponse()` still buffers the full streamed response before parsing/executing tools. If we want token-forwarding or earlier tool-call interception, that is a separate polish pass.
+- spawned-agent lifecycle tools still return minimal JSON metadata envelopes. That is acceptable for the current runtime, but could be simplified further later.
+- unrelated local worktree changes still exist outside this plan under `internal/bootstrap`, docs, and local artifacts. They are not part of the react/runtime migration.
