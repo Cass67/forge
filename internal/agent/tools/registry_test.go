@@ -149,3 +149,78 @@ func TestRegistryAll(t *testing.T) {
 		t.Errorf("tools not in registration order: %v", []string{all[0].Name, all[1].Name, all[2].Name})
 	}
 }
+
+func TestToLLMToolDefsBasic(t *testing.T) {
+	reg := NewRegistry()
+	reg.Register(Tool{
+		Name:        "read_file",
+		Description: "Read a file",
+		Parameters: []ParameterDef{
+			{Name: "path", Type: "string", Description: "file path", Required: true},
+			{Name: "start_line", Type: "int", Description: "start line", Required: false},
+		},
+	})
+
+	defs := reg.ToLLMToolDefs()
+	if len(defs) != 1 {
+		t.Fatalf("want 1 def, got %d", len(defs))
+	}
+	d := defs[0]
+	if d.Name != "read_file" {
+		t.Fatalf("name = %q, want read_file", d.Name)
+	}
+	if len(d.Parameters) != 2 {
+		t.Fatalf("params = %d, want 2", len(d.Parameters))
+	}
+	if d.Parameters[0].Name != "path" || !d.Parameters[0].Required {
+		t.Fatal("first param should be path (required)")
+	}
+	if d.Parameters[1].Name != "start_line" || d.Parameters[1].Required {
+		t.Fatal("second param should be start_line (optional)")
+	}
+}
+
+func TestToLLMToolDefsExcludesToolHelp(t *testing.T) {
+	reg := NewRegistry()
+	reg.Register(Tool{Name: "read_file", Description: "read"})
+	reg.Register(Tool{Name: "tool_help", Description: "meta"})
+
+	defs := reg.ToLLMToolDefs()
+	for _, d := range defs {
+		if d.Name == "tool_help" {
+			t.Fatal("tool_help should be excluded from native tool defs")
+		}
+	}
+	if len(defs) != 1 {
+		t.Fatalf("want 1 def after excluding tool_help, got %d", len(defs))
+	}
+}
+
+func TestToLLMToolDefsTypeMapping(t *testing.T) {
+	reg := NewRegistry()
+	reg.Register(Tool{
+		Name: "write_file",
+		Parameters: []ParameterDef{
+			{Name: "path", Type: "string", Required: true},
+			{Name: "line_count", Type: "int", Required: false},
+			{Name: "overwrite", Type: "bool", Required: false},
+		},
+	})
+	defs := reg.ToLLMToolDefs()
+	if len(defs) != 1 {
+		t.Fatalf("want 1 def, got %d", len(defs))
+	}
+	params := map[string]string{}
+	for _, p := range defs[0].Parameters {
+		params[p.Name] = p.Type
+	}
+	if params["path"] != "string" {
+		t.Fatalf("string type mismatch, got %q", params["path"])
+	}
+	if params["line_count"] != "integer" {
+		t.Fatalf("int should map to integer, got %q", params["line_count"])
+	}
+	if params["overwrite"] != "boolean" {
+		t.Fatalf("bool should map to boolean, got %q", params["overwrite"])
+	}
+}
