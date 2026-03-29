@@ -481,6 +481,130 @@ func TestRunnerNativePathHandlesMalformedArgsJSON(t *testing.T) {
 	}
 }
 
+type nativeSequenceDriver struct {
+	steps     [][]llm.Token
+	callCount int
+	allMsgs   [][]llm.Message
+}
+
+func (d *nativeSequenceDriver) Name() string { return "native-sequence" }
+
+func (d *nativeSequenceDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	close(out)
+	return errors.New("Stream should not be called on a NativeToolCaller driver")
+}
+
+func (d *nativeSequenceDriver) StreamWithTools(_ context.Context, msgs []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
+	defer close(out)
+	d.allMsgs = append(d.allMsgs, append([]llm.Message(nil), msgs...))
+	if d.callCount >= len(d.steps) {
+		return errors.New("no scripted step")
+	}
+	for _, tok := range d.steps[d.callCount] {
+		out <- tok
+	}
+	d.callCount++
+	return nil
+}
+
+func TestRunnerBlocksCommitWhileMergeConflictsRemain(t *testing.T) {
+	driver := &nativeSequenceDriver{
+		steps: [][]llm.Token{
+			{{ToolCall: &llm.NativeToolCall{ID: "c1", Name: "run_command", ArgsJSON: `{"command":"git merge feature/go-rewrite"}`}}},
+			{{ToolCall: &llm.NativeToolCall{ID: "c2", Name: "run_command", ArgsJSON: `{"command":"git commit -m \"merge\" "}`}}},
+			{{Text: "stopped after conflict"}},
+		},
+	}
+	reg := agenttools.NewRegistry()
+	executedCommands := []string{}
+	reg.Register(agenttools.Tool{
+		Name:        "run_command",
+		Description: "run shell command",
+		Parameters:  []agenttools.ParameterDef{{Name: "command", Type: "string", Required: true}},
+		AutoApprove: true,
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			command, _ := args["command"].(string)
+			executedCommands = append(executedCommands, command)
+			if strings.Contains(command, "git merge feature/go-rewrite") {
+				return "Auto-merging .gitignore\nCONFLICT (content): Merge conflict in .gitignore\nAutomatic merge failed; fix conflicts and then commit the result.\n\nexit 1", nil
+			}
+			return "unexpected execution", nil
+		},
+	})
+	session := NewSession()
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+	if err := r.Run(context.Background(), "merge the branch"); err != nil {
+		t.Fatal(err)
+	}
+	if len(executedCommands) != 1 {
+		t.Fatalf("executed commands = %#v, want only merge command", executedCommands)
+	}
+	if len(driver.allMsgs) < 2 {
+		t.Fatalf("driver messages = %#v", driver.allMsgs)
+	}
+	foundRuntimeNote := false
+	for _, msg := range driver.allMsgs[1] {
+		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Resolve unmerged files before retrying commit") {
+			foundRuntimeNote = true
+		}
+	}
+	if !foundRuntimeNote {
+		t.Fatalf("expected runtime note in second request, got %#v", driver.allMsgs[1])
+	}
+	snap := session.Snapshot()
+	foundBlockedResult := false
+	for _, msg := range snap.History {
+		if msg.Role == llm.RoleTool && strings.Contains(msg.Content, "blocked: unmerged git conflicts remain") {
+			foundBlockedResult = true
+		}
+	}
+	if !foundBlockedResult {
+		t.Fatalf("expected blocked commit tool result, history=%#v", snap.History)
+	}
+}
+
+func TestRunnerRequiresMutationBeforeRetryingFailedCommit(t *testing.T) {
+	driver := &nativeSequenceDriver{
+		steps: [][]llm.Token{
+			{{ToolCall: &llm.NativeToolCall{ID: "c1", Name: "git_commit", ArgsJSON: `{"message":"merge branch"}`}}},
+			{{ToolCall: &llm.NativeToolCall{ID: "c2", Name: "git_commit", ArgsJSON: `{"message":"merge branch"}`}}},
+			{{Text: "waiting for a real fix"}},
+		},
+	}
+	reg := agenttools.NewRegistry()
+	gitCommitCalls := 0
+	reg.Register(agenttools.Tool{
+		Name:        "git_commit",
+		Description: "commit changes",
+		Parameters:  []agenttools.ParameterDef{{Name: "message", Type: "string", Required: true}},
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			gitCommitCalls++
+			return "[INFO] Checking merge-conflict files only.\nprettier.................................................................Passed\nyamllint.................................................................Failed\n.pre-commit-config.yaml:139\nLine too long (304 > 160 characters)\n\nexit 1", nil
+		},
+	})
+	session := NewSession()
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+	if err := r.Run(context.Background(), "finish the merge"); err != nil {
+		t.Fatal(err)
+	}
+	if gitCommitCalls != 1 {
+		t.Fatalf("git commit calls = %d, want 1", gitCommitCalls)
+	}
+	snap := session.Snapshot()
+	foundBlockedResult := false
+	for _, msg := range snap.History {
+		if msg.Role == llm.RoleTool && strings.Contains(msg.Content, "blocked: the previous commit attempt already failed") {
+			foundBlockedResult = true
+		}
+	}
+	if !foundBlockedResult {
+		t.Fatalf("expected blocked repeated commit result, history=%#v", snap.History)
+	}
+}
+
 func TestRunnerClearHistoryResetsSessionState(t *testing.T) {
 	r := NewRunner(Config{
 		Driver:       &nativeScriptedDriver{responses: []string{"done"}},

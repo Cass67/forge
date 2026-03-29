@@ -38,6 +38,30 @@ func (d *debugMockDriver) LastRequestMode() string { return d.requestMode }
 
 func (d *debugMockDriver) ResetConversation() { d.reset = true }
 
+type debugNativeToolDriver struct {
+	lastMessages []llm.Message
+	lastTools    []llm.ToolDef
+}
+
+func (d *debugNativeToolDriver) Name() string { return "debug-native-tool" }
+
+func (d *debugNativeToolDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	close(out)
+	return nil
+}
+
+func (d *debugNativeToolDriver) StreamWithTools(_ context.Context, messages []llm.Message, tools []llm.ToolDef, out chan<- llm.Token) error {
+	defer close(out)
+	d.lastMessages = append([]llm.Message(nil), messages...)
+	d.lastTools = append([]llm.ToolDef(nil), tools...)
+	out <- llm.Token{ToolCall: &llm.NativeToolCall{
+		ID:       "call_1",
+		Name:     "run_command",
+		ArgsJSON: `{"command":"git status --short"}`,
+	}}
+	return nil
+}
+
 func TestEnableChatDebugWrapsDriverAndLogsRequestResponse(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "chat-debug.jsonl")
 	inner := &debugMockDriver{
@@ -86,6 +110,52 @@ func TestEnableChatDebugWrapsDriverAndLogsRequestResponse(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("debug log missing %q: %s", want, text)
 		}
+	}
+}
+
+func TestEnableChatDebugLogsNativeToolCalls(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chat-debug.jsonl")
+	inner := &debugNativeToolDriver{}
+	setup := &ChatSetup{
+		ChatModel: "openai/gpt-5",
+		WorkDir:   t.TempDir(),
+		Driver:    inner,
+	}
+
+	if _, err := EnableChatDebug(setup, path); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs := []llm.Message{{Role: llm.RoleUser, Content: "check repo status"}}
+	tools := []llm.ToolDef{{Name: "run_command", Description: "run a shell command"}}
+	out := make(chan llm.Token, 4)
+	errCh := make(chan error, 1)
+	go func() {
+		native := setup.Driver.(llm.NativeToolCaller)
+		errCh <- native.StreamWithTools(context.Background(), msgs, tools, out)
+	}()
+	for range out {
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+
+	lines := readDebugLines(t, path)
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &entry); err != nil {
+		t.Fatal(err)
+	}
+	fields, _ := entry["fields"].(map[string]any)
+	toolCalls, _ := fields["tool_calls"].([]any)
+	if len(toolCalls) != 1 {
+		t.Fatalf("tool_calls = %#v, want one native tool call", fields["tool_calls"])
+	}
+	first, _ := toolCalls[0].(map[string]any)
+	if got := first["name"]; got != "run_command" {
+		t.Fatalf("tool call name = %#v, want run_command", got)
+	}
+	if got := first["args_json"]; got != `{"command":"git status --short"}` {
+		t.Fatalf("tool call args_json = %#v", got)
 	}
 }
 

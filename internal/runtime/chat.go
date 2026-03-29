@@ -214,7 +214,7 @@ func RunChatLive(setup *ChatSetup) {
 		Renderer:        evRenderer,
 		SystemPrompt:    func() string { return agent.BuildNativeSystemPrompt(setup.WorkDir) },
 		Session:         reactruntime.NewSession(),
-		MaxSessionTurns: 20,
+		MaxSessionTurns: chatMaxTurns(setup),
 		Progress: func(text string) {
 			evRenderer.Info(text)
 		},
@@ -443,7 +443,7 @@ func RunChatConsole(setup *ChatSetup) {
 		Renderer:        renderer,
 		SystemPrompt:    func() string { return agent.BuildNativeSystemPrompt(setup.WorkDir) },
 		Session:         reactruntime.NewSession(),
-		MaxSessionTurns: 20,
+		MaxSessionTurns: chatMaxTurns(setup),
 		Progress: func(text string) {
 			renderer.Info(text)
 		},
@@ -551,6 +551,13 @@ func reactDelegationSystemSuffix(role string) string {
 
 func resolveChatRuntimeMode() chatRuntimeMode {
 	return chatRuntimeReact
+}
+
+func chatMaxTurns(setup *ChatSetup) int {
+	if setup == nil || setup.Config == nil || setup.Config.Chat.MaxTurns < 1 {
+		return 20
+	}
+	return setup.Config.Chat.MaxTurns
 }
 
 type chatTurnRunner interface {

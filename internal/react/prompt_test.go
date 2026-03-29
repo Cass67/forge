@@ -101,3 +101,23 @@ func TestBuildMessages_LargeToolResultTruncated(t *testing.T) {
 		t.Error("original snapshot history must not be mutated by BuildMessages")
 	}
 }
+
+func TestBuildMessages_IncludesRuntimeNoteAsSystemMessage(t *testing.T) {
+	snap := SessionSnapshot{
+		RuntimeNote: "Git merge workflow active. Resolve unmerged files before retrying commit.",
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "merge the branch"},
+		},
+	}
+
+	msgs := BuildMessages("sys", snap)
+	if len(msgs) < 3 {
+		t.Fatalf("messages = %#v", msgs)
+	}
+	if msgs[1].Role != llm.RoleSystem {
+		t.Fatalf("runtime note role = %q, want system", msgs[1].Role)
+	}
+	if !strings.Contains(msgs[1].Content, "Git merge workflow active") {
+		t.Fatalf("runtime note = %q", msgs[1].Content)
+	}
+}
