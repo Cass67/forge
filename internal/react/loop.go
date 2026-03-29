@@ -2,6 +2,7 @@ package react
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -133,8 +134,35 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 	start := time.Now()
 	defer r.emitStats(start)
 
+	// Determine at loop start whether to use provider-native tool calling.
+	nativeCaller, isNative := r.driver.(llm.NativeToolCaller)
+	var toolDefs []llm.ToolDef
+	if isNative && r.tools != nil {
+		toolDefs = r.tools.ToLLMToolDefs()
+		if len(toolDefs) == 0 {
+			isNative = false
+		}
+	}
+
 	invalidResponses := 0
 	for step := 0; step < r.maxSessionTurns; step++ {
+		if isNative {
+			calls, err := r.streamNativeTurn(ctx, turn, nativeCaller, toolDefs)
+			if err != nil {
+				r.session.CompleteTurn(turn, "", nil, err)
+				return err
+			}
+			if calls == nil {
+				// streamNativeTurn already recorded the final response
+				return nil
+			}
+			if err := r.executeNativeToolCalls(ctx, turn, calls); err != nil {
+				return err
+			}
+			continue
+		}
+
+		// XML text parsing path (unchanged)
 		streamed, err := r.streamResponse(ctx)
 		if err != nil {
 			r.session.CompleteTurn(turn, "", nil, err)
@@ -272,6 +300,109 @@ func (r *Runner) executeToolCalls(ctx context.Context, calls []agent.ToolCall) (
 		results = append(results, fmt.Sprintf("[%s] %s", call.Name, result))
 	}
 	return results, nil
+}
+
+// streamNativeTurn runs one native tool calling step.
+// Returns nil calls (+ nil error) when a final text answer was received.
+// Returns non-nil calls when the model requested tool executions.
+func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.NativeToolCaller, toolDefs []llm.ToolDef) ([]llm.NativeToolCall, error) {
+	messages := r.session.Messages(r.nativeCurrentSystemPrompt())
+	out := make(chan llm.Token, 64)
+	streamCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- caller.StreamWithTools(streamCtx, messages, toolDefs, out)
+	}()
+
+	var textBuf strings.Builder
+	var toolCalls []llm.NativeToolCall
+	visibleEmitted := 0
+
+	for tok := range out {
+		if tok.ToolCall != nil {
+			toolCalls = append(toolCalls, *tok.ToolCall)
+			continue
+		}
+		if tok.Text != "" {
+			textBuf.WriteString(tok.Text)
+			current := textBuf.String()
+			safe := safeVisiblePrefix(current)
+			if r.renderer != nil && len(safe) > visibleEmitted {
+				r.renderer.AgentToken(safe[visibleEmitted:])
+				visibleEmitted = len(safe)
+			}
+		}
+	}
+	if err := <-errCh; err != nil {
+		return nil, err
+	}
+
+	if len(toolCalls) > 0 {
+		r.session.AppendAssistantWithToolCalls(toolCalls)
+		return toolCalls, nil
+	}
+
+	// Final text answer
+	finalText := strings.TrimSpace(textBuf.String())
+	if finalText == "" {
+		return nil, fmt.Errorf("react runtime: empty native response")
+	}
+	r.session.AppendAssistantMessage(finalText)
+	r.session.CompleteTurn(turn, finalText, nil, nil)
+	if r.renderer != nil && visibleEmitted < len(finalText) {
+		r.renderer.AgentText(finalText[visibleEmitted:])
+	}
+	return nil, nil
+}
+
+// executeNativeToolCalls executes a batch of native tool calls and appends results
+// to the session. On unknown tool or execution error, appends an error result and
+// continues processing remaining calls (same behaviour as the XML path).
+func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []llm.NativeToolCall) error {
+	for _, call := range calls {
+		tool, ok := r.tools.Get(call.Name)
+		if !ok {
+			errMsg := fmt.Sprintf("error: unknown tool %q", call.Name)
+			if r.renderer != nil {
+				r.renderer.Error(fmt.Sprintf("unknown tool %q", call.Name))
+			}
+			r.session.AppendNativeToolResult(call.ID, errMsg)
+			r.session.CompleteTurn(turn, "", nil, fmt.Errorf("%s", errMsg))
+			return fmt.Errorf("%s", errMsg)
+		}
+
+		var args map[string]any
+		if err := json.Unmarshal([]byte(call.ArgsJSON), &args); err != nil {
+			args = map[string]any{}
+		}
+
+		if r.renderer != nil {
+			r.renderer.ToolCall(call.Name, reactToolSummary(agent.ToolCall{Args: args}))
+		}
+
+		result, err := tool.Execute(ctx, args)
+		diff := ""
+		if tool.LastDiff != nil {
+			diff = tool.LastDiff()
+		}
+		if err != nil {
+			errResult := fmt.Sprintf("error: %v", err)
+			if r.renderer != nil {
+				r.renderer.ToolResult(call.Name, errResult, diff, true)
+			}
+			r.session.AppendNativeToolResult(call.ID, errResult)
+			r.session.CompleteTurn(turn, "", nil, err)
+			return err
+		}
+
+		display := truncateToolResult(result)
+		if r.renderer != nil {
+			r.renderer.ToolResult(call.Name, display, diff, false)
+		}
+		r.session.AppendNativeToolResult(call.ID, result)
+	}
+	return nil
 }
 
 func (r *Runner) currentSystemPrompt() string {

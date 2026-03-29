@@ -564,6 +564,156 @@ func TestRunnerNativeCurrentSystemPromptUsesNativePromptWhenSet(t *testing.T) {
 	}
 }
 
+// nativeToolCallDriver simulates a provider that returns a native tool call
+// on the first invocation and a plain text response on subsequent invocations.
+type nativeToolCallDriver struct {
+	callCount int
+	lastTools []llm.ToolDef
+	lastMsgs  []llm.Message
+}
+
+func (d *nativeToolCallDriver) Name() string { return "native-tool-driver" }
+
+func (d *nativeToolCallDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	close(out)
+	return errors.New("Stream should not be called on a NativeToolCaller driver")
+}
+
+func (d *nativeToolCallDriver) StreamWithTools(_ context.Context, msgs []llm.Message, tools []llm.ToolDef, out chan<- llm.Token) error {
+	defer close(out)
+	d.callCount++
+	d.lastTools = tools
+	d.lastMsgs = msgs
+	switch d.callCount {
+	case 1:
+		out <- llm.Token{ToolCall: &llm.NativeToolCall{ID: "c1", Name: "git_status", ArgsJSON: `{}`}}
+	default:
+		out <- llm.Token{Text: "No changes detected."}
+	}
+	return nil
+}
+
+func TestRunnerNativeToolCallingPath(t *testing.T) {
+	driver := &nativeToolCallDriver{}
+	reg := agenttools.NewRegistry()
+	called := false
+	reg.Register(agenttools.Tool{
+		Name:        "git_status",
+		Description: "git status",
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			called = true
+			return "nothing to commit", nil
+		},
+	})
+	session := NewSession()
+	r := NewRunner(Config{
+		Driver:  driver,
+		Tools:   reg,
+		Session: session,
+	})
+
+	if err := r.Run(context.Background(), "check the repo"); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("git_status tool should have been called")
+	}
+	if driver.callCount != 2 {
+		t.Fatalf("driver calls = %d, want 2 (tool call turn + final answer turn)", driver.callCount)
+	}
+
+	// Session history: user + assistant(tool_calls) + tool(result) + assistant(final)
+	snap := session.Snapshot()
+	roles := make([]llm.Role, 0, len(snap.History))
+	for _, m := range snap.History {
+		roles = append(roles, m.Role)
+	}
+	want := []llm.Role{llm.RoleUser, llm.RoleAssistant, llm.RoleTool, llm.RoleAssistant}
+	if len(roles) != len(want) {
+		t.Fatalf("history roles = %v, want %v", roles, want)
+	}
+	for i, r := range want {
+		if roles[i] != r {
+			t.Fatalf("history[%d] role = %q, want %q", i, roles[i], r)
+		}
+	}
+}
+
+func TestRunnerNativePathUsesNativeSystemPrompt(t *testing.T) {
+	driver := &nativeToolCallDriver{}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name: "git_status", AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) { return "ok", nil },
+	})
+	nativePromptCalled := false
+	r := NewRunner(Config{
+		Driver:       driver,
+		Tools:        reg,
+		SystemPrompt: func() string { return "xml-prompt-with-tool-format" },
+		NativeSystemPrompt: func() string {
+			nativePromptCalled = true
+			return "native-prompt"
+		},
+	})
+	_ = r.Run(context.Background(), "check")
+	if !nativePromptCalled {
+		t.Fatal("native system prompt should be used when driver implements NativeToolCaller")
+	}
+	// Also verify the native prompt was sent to the driver, not the XML prompt
+	for _, msg := range driver.lastMsgs {
+		if msg.Role == llm.RoleSystem && msg.Content == "xml-prompt-with-tool-format" {
+			t.Fatal("XML prompt should NOT be sent to a NativeToolCaller driver")
+		}
+	}
+}
+
+func TestRunnerNativePathPassesToolDefs(t *testing.T) {
+	driver := &nativeToolCallDriver{}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "read_file",
+		Description: "read a file",
+		Parameters:  []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}},
+		AutoApprove: true,
+		Execute:     func(_ context.Context, _ map[string]any) (string, error) { return "content", nil },
+	})
+	r := NewRunner(Config{Driver: driver, Tools: reg})
+	_ = r.Run(context.Background(), "read something")
+	if len(driver.lastTools) == 0 {
+		t.Fatal("tool defs should be passed to StreamWithTools")
+	}
+	if driver.lastTools[0].Name != "read_file" {
+		t.Fatalf("first tool def name = %q, want read_file", driver.lastTools[0].Name)
+	}
+}
+
+func TestRunnerFallsBackToXMLWhenNoNativeToolCaller(t *testing.T) {
+	// A plain scriptedDriver does NOT implement NativeToolCaller.
+	// The runner should use the XML text parsing path.
+	driver := &scriptedDriver{responses: []string{
+		"<tool_call>\n{\"name\":\"git_status\",\"args\":{}}\n</tool_call>",
+		"Clean.",
+	}}
+	reg := agenttools.NewRegistry()
+	called := false
+	reg.Register(agenttools.Tool{
+		Name: "git_status", AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			called = true
+			return "nothing to commit", nil
+		},
+	})
+	r := NewRunner(Config{Driver: driver, Tools: reg})
+	if err := r.Run(context.Background(), "check"); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("git_status should be called via XML fallback path")
+	}
+}
+
 func TestRunnerClearHistoryResetsSessionState(t *testing.T) {
 	r := NewRunner(Config{
 		Driver:       &scriptedDriver{responses: []string{"done"}},
