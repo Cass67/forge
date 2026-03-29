@@ -99,6 +99,15 @@ func TestProviderKeysTrimWhitespace(t *testing.T) {
 	}
 }
 
+func TestZAIKeySupportsZhipuEnv(t *testing.T) {
+	setTempHome(t)
+	cfg := &config.Config{}
+	t.Setenv("ZHIPU_API_KEY", "zhipu-env-key")
+	if got := cfg.ZAIKey(); got != "zhipu-env-key" {
+		t.Fatalf("ZAIKey() = %q, want %q", got, "zhipu-env-key")
+	}
+}
+
 func TestCopilotClientIDUsesBundledDefault(t *testing.T) {
 	path := writeTemp(t, "")
 	cfg, err := config.Load(path)
@@ -208,8 +217,8 @@ decision = "forbidden"
 
 func TestChatModel(t *testing.T) {
 	cfg, _ := config.Load("/nonexistent/path.toml")
-	if got := cfg.ChatModel(); got != cfg.Models.Writer {
-		t.Errorf("ChatModel() = %q, want %q (writer default)", got, cfg.Models.Writer)
+	if got := cfg.ChatModel(); got != "" {
+		t.Errorf("ChatModel() = %q, want empty when chat config is unset", got)
 	}
 	cfg.Chat.Model = "gpt-4o"
 	if got := cfg.ChatModel(); got != "gpt-4o" {

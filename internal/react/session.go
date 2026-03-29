@@ -97,13 +97,20 @@ func (s *Session) AppendAssistantMessage(text string) {
 	s.history = append(s.history, llm.Message{Role: llm.RoleAssistant, Content: strings.TrimSpace(text)})
 }
 
-func (s *Session) AppendToolResults(results string) {
-	if s == nil || strings.TrimSpace(results) == "" {
+func (s *Session) AppendUserMessage(text string) {
+	if s == nil || strings.TrimSpace(text) == "" {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.history = append(s.history, llm.Message{Role: llm.RoleUser, Content: strings.TrimSpace(results)})
+	s.history = append(s.history, llm.Message{Role: llm.RoleUser, Content: strings.TrimSpace(text)})
+}
+
+func (s *Session) AppendToolResults(results string) {
+	if s == nil || strings.TrimSpace(results) == "" {
+		return
+	}
+	s.AppendUserMessage(results)
 }
 
 func (s *Session) Messages(systemPrompt string) []llm.Message {
