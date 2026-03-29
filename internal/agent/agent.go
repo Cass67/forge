@@ -124,7 +124,7 @@ func NewAgent(driver llm.Driver, toolReg *tools.Registry, approve tools.Approval
 		workDir:           workDir,
 		maxTurns:          maxTurns,
 		renderer:          renderer,
-		system:            BuildSystemPrompt(workDir, toolReg, skills.Describe(loadedSkills)),
+		system:            BuildSystemPrompt(workDir, toolReg, ""),
 		skills:            loadedSkills,
 		state:             state,
 		dispatchResults:   make(map[string]string),
@@ -190,7 +190,7 @@ func (a *Agent) systemPrompt() string {
 	if a.systemOverride {
 		return a.system
 	}
-	return BuildSystemPrompt(a.workDir, a.tools, skills.Describe(a.skills))
+	return BuildSystemPrompt(a.workDir, a.tools, "")
 }
 
 // SetTools replaces the agent's tool registry.

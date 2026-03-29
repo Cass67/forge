@@ -254,7 +254,7 @@ func RunChatLive(setup *ChatSetup) {
 				evRenderer.Info(text)
 			},
 		})
-		registerReactDelegationTools(reg, a, setup, baseReg)
+		registerReactDelegationTools(reg, a, setup, baseReg, approve)
 	}
 
 	if setup.Config.Chat.Agents.Enabled && runtimeMode == chatRuntimeLegacy {
@@ -535,7 +535,7 @@ func RunChatConsole(setup *ChatSetup) {
 				renderer.Info(text)
 			},
 		})
-		registerReactDelegationTools(reg, a, setup, baseReg)
+		registerReactDelegationTools(reg, a, setup, baseReg, approve)
 	}
 
 	if setup.Config.Chat.Agents.Enabled && runtimeMode == chatRuntimeLegacy {
@@ -598,24 +598,47 @@ func useHarnessKernelRuntime() bool {
 	return resolveChatRuntimeMode() == chatRuntimeKernel
 }
 
-func registerReactDelegationTools(reg *tools.Registry, a *agent.Agent, setup *ChatSetup, baseReg *tools.Registry) {
+func registerReactDelegationTools(reg *tools.Registry, a *agent.Agent, setup *ChatSetup, baseReg *tools.Registry, approve tools.ApprovalFunc) {
 	if reg == nil || a == nil || setup == nil || baseReg == nil {
 		return
 	}
 	pool := reactruntime.NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
-		roleModels := map[string]string{}
-		if setup.Config != nil {
-			roleModels = setup.Config.AgentRoleModels()
+		driver := setup.Driver
+		if driver == nil && setup.MakeDriver != nil && strings.TrimSpace(setup.ChatModel) != "" {
+			driver = setup.MakeDriver(setup.ChatModel)
 		}
-		return a.SpawnSubAgent(ctx, reactruntime.MapSpawnRole(role), task, agent.MultiAgentConfig{
-			Enabled:    true,
-			RoleModels: roleModels,
-			MakeDriver: setup.MakeDriver,
-			BaseTools:  baseReg.Filter(nil),
-		})
+		if driver == nil {
+			return "", fmt.Errorf("react delegation driver unavailable")
+		}
+		role = reactruntime.MapSpawnRole(role)
+		childTools := baseReg.Filter(nil)
+		child := agent.NewAgent(driver, childTools, approve, setup.WorkDir, setup.Config.Chat.MaxTurns, agent.NewHiddenWorkerRenderer(nil), a.Skills(), chatstate.New())
+		child.SetSubAgentMode(true)
+		child.SetSystem(agent.BuildSystemPrompt(setup.WorkDir, childTools, "") + "\n\n" + reactDelegationSystemSuffix(role))
+		if err := child.Run(ctx, task); err != nil {
+			return "", err
+		}
+		return child.LastResponse(), nil
 	})
 	reg.Register(reacttools.NewSpawnAgent(pool))
 	reg.Register(reacttools.NewWaitAgent(pool))
+}
+
+func reactDelegationSystemSuffix(role string) string {
+	var sb strings.Builder
+	sb.WriteString("You are forge's spawned agent for a bounded delegated task.\n")
+	sb.WriteString("- Complete the delegated task autonomously and return a plain-text result to the parent agent.\n")
+	sb.WriteString("- Stay within the delegated scope.\n")
+	sb.WriteString("- Do not mention internal runtime machinery, worker contracts, or role names in your answer unless directly relevant.\n")
+	switch reactruntime.MapSpawnRole(role) {
+	case "explorer":
+		sb.WriteString("- Bias toward inspection, tracing, and evidence gathering.\n")
+	case "worker":
+		sb.WriteString("- Bias toward concrete implementation and verification.\n")
+	default:
+		sb.WriteString("- Use your judgment to inspect, act, and verify as needed.\n")
+	}
+	return strings.TrimSpace(sb.String())
 }
 
 func resolveChatRuntimeMode() chatRuntimeMode {

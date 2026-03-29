@@ -77,13 +77,12 @@ func TestMapSpawnRole(t *testing.T) {
 		in   string
 		want string
 	}{
-		{in: "default", want: "builder"},
-		{in: "explorer", want: "scout"},
-		{in: "worker", want: "builder"},
-		{in: "doctor", want: "doctor"},
-		{in: "architect", want: "architect"},
-		{in: "builder", want: "builder"},
-		{in: "unknown", want: "builder"},
+		{in: "default", want: "default"},
+		{in: "explorer", want: "explorer"},
+		{in: "worker", want: "worker"},
+		{in: "  explorer  ", want: "explorer"},
+		{in: "unknown", want: "default"},
+		{in: "", want: "default"},
 	}
 	for _, tc := range tests {
 		if got := MapSpawnRole(tc.in); got != tc.want {
