@@ -311,3 +311,44 @@ func TestRetryDelegatesConversationResetter(t *testing.T) {
 		t.Fatal("ResetConversation not forwarded")
 	}
 }
+
+type nativeInnerDriver struct {
+	callCount int
+}
+
+func (d *nativeInnerDriver) Name() string { return "native" }
+func (d *nativeInnerDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	close(out)
+	return nil
+}
+func (d *nativeInnerDriver) StreamWithTools(_ context.Context, _ []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
+	defer close(out)
+	d.callCount++
+	out <- llm.Token{ToolCall: &llm.NativeToolCall{ID: "c1", Name: "git_status", ArgsJSON: "{}"}}
+	return nil
+}
+
+func TestRetryDriverForwardsNativeToolCaller(t *testing.T) {
+	inner := &nativeInnerDriver{}
+	retry := llm.NewRetryDriver(inner, 1, 0, 0, 0)
+
+	caller, ok := any(retry).(llm.NativeToolCaller)
+	if !ok {
+		t.Fatal("RetryDriver should implement NativeToolCaller when inner driver does")
+	}
+	out := make(chan llm.Token, 4)
+	err := caller.StreamWithTools(context.Background(), nil, nil, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var toks []llm.Token
+	for tok := range out {
+		toks = append(toks, tok)
+	}
+	if len(toks) != 1 || toks[0].ToolCall == nil {
+		t.Fatal("expected one tool call token")
+	}
+	if inner.callCount != 1 {
+		t.Fatalf("inner callCount = %d, want 1", inner.callCount)
+	}
+}
