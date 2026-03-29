@@ -545,6 +545,25 @@ func TestRunnerSetDriverSwitchesSubsequentTurns(t *testing.T) {
 	}
 }
 
+func TestRunnerNativeCurrentSystemPromptFallsBackToSystemPrompt(t *testing.T) {
+	r := NewRunner(Config{
+		SystemPrompt: func() string { return "  base prompt  " },
+	})
+	if got := r.nativeCurrentSystemPrompt(); got != "base prompt" {
+		t.Fatalf("got %q, want %q", got, "base prompt")
+	}
+}
+
+func TestRunnerNativeCurrentSystemPromptUsesNativePromptWhenSet(t *testing.T) {
+	r := NewRunner(Config{
+		SystemPrompt:       func() string { return "base" },
+		NativeSystemPrompt: func() string { return "  native  " },
+	})
+	if got := r.nativeCurrentSystemPrompt(); got != "native" {
+		t.Fatalf("got %q, want %q", got, "native")
+	}
+}
+
 func TestRunnerClearHistoryResetsSessionState(t *testing.T) {
 	r := NewRunner(Config{
 		Driver:       &scriptedDriver{responses: []string{"done"}},
