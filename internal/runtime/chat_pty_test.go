@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +18,17 @@ import (
 
 	"github.com/creack/pty"
 )
+
+var (
+	ansiCSIRe = regexp.MustCompile(`\x1b\[[0-9:;<=>?]*[ -/]*[@-~]`)
+	ansiOSCRe = regexp.MustCompile(`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)`)
+)
+
+func stripANSI(s string) string {
+	s = ansiCSIRe.ReplaceAllString(s, "")
+	s = ansiOSCRe.ReplaceAllString(s, "")
+	return s
+}
 
 const ptyResponseSentinel = "FORGE_TEST_RESPONSE_DONE"
 
@@ -150,7 +162,7 @@ func TestDebugChatDoesNotEnterAltScreen(t *testing.T) {
 	}()
 
 	waitForPTYOutput(t, capture, "Type a message or /help", 10*time.Second)
-	initial := capture.String()
+	initial := stripANSI(capture.String())
 	if !strings.Contains(initial, "test-model") || !strings.Contains(initial, "FORGE") {
 		t.Fatalf("expected shared debug header in initial output, got:\n%s", initial)
 	}
