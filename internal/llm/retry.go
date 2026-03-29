@@ -103,27 +103,31 @@ func (d *RetryDriver) Stream(ctx context.Context, messages []Message, out chan<-
 			errCh <- d.inner.Stream(callCtx, messages, internal)
 		}()
 
-		var tokens []Token
+		var emittedAny bool
 		for tok := range internal {
-			tokens = append(tokens, tok)
+			emittedAny = true
+			select {
+			case out <- tok:
+			case <-ctx.Done():
+				for range internal {
+				} // drain so inner goroutine can finish
+				<-errCh
+				return ctx.Err()
+			}
 		}
 
 		lastErr = <-errCh
 		if lastErr == nil {
-			for _, tok := range tokens {
-				select {
-				case out <- tok:
-				case <-ctx.Done():
-					return ctx.Err()
-				}
-			}
 			return nil
 		}
 		if isRateLimited(lastErr) {
 			rememberRateLimit(d.Name())
 		}
-
 		if !isRetryable(lastErr) {
+			return lastErr
+		}
+		// Tokens were already forwarded downstream; retrying would corrupt state.
+		if emittedAny {
 			return lastErr
 		}
 	}
@@ -166,26 +170,31 @@ func (d *RetryDriver) StreamWithTools(ctx context.Context, messages []Message, t
 			errCh <- caller.StreamWithTools(callCtx, messages, tools, internal)
 		}()
 
-		var tokens []Token
+		var emittedAny bool
 		for tok := range internal {
-			tokens = append(tokens, tok)
+			emittedAny = true
+			select {
+			case out <- tok:
+			case <-ctx.Done():
+				for range internal {
+				} // drain so inner goroutine can finish
+				<-errCh
+				return ctx.Err()
+			}
 		}
 
 		lastErr = <-errCh
 		if lastErr == nil {
-			for _, tok := range tokens {
-				select {
-				case out <- tok:
-				case <-ctx.Done():
-					return ctx.Err()
-				}
-			}
 			return nil
 		}
 		if isRateLimited(lastErr) {
 			rememberRateLimit(d.Name())
 		}
 		if !isRetryable(lastErr) {
+			return lastErr
+		}
+		// Tokens were already forwarded downstream; retrying would corrupt state.
+		if emittedAny {
 			return lastErr
 		}
 	}
