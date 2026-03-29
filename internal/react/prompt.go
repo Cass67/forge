@@ -24,6 +24,9 @@ func BuildMessages(systemPrompt string, snapshot SessionSnapshot) []llm.Message 
 	if summary := compactionContext(snapshot); summary != "" {
 		messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: summary})
 	}
+	if note := strings.TrimSpace(snapshot.RuntimeNote); note != "" {
+		messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: note})
+	}
 
 	for _, msg := range snapshot.History {
 		// Pass through tool-role messages and assistant messages with native tool calls

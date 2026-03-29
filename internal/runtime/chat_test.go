@@ -401,6 +401,17 @@ func TestRunChatTurnShortCircuitsPromptBoundaryRequests(t *testing.T) {
 	}
 }
 
+func TestChatMaxTurnsUsesConfigValue(t *testing.T) {
+	setup := &ChatSetup{Config: &config.Config{}}
+	setup.Config.Chat.MaxTurns = 64
+	if got := chatMaxTurns(setup); got != 64 {
+		t.Fatalf("chatMaxTurns = %d, want 64", got)
+	}
+	if got := chatMaxTurns(nil); got != 20 {
+		t.Fatalf("chatMaxTurns(nil) = %d, want 20", got)
+	}
+}
+
 func TestRunChatTurnCompletesComplexVisiblePreviewTurn(t *testing.T) {
 	workDir := writeTranscriptFixtureRepo(t)
 	cfg := &config.Config{}
