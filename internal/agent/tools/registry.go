@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"forge/internal/llm"
 )
 
 type PromptVisibility int
@@ -304,6 +306,45 @@ func formatToolSignature(t Tool) string {
 		params = append(params, name)
 	}
 	return fmt.Sprintf("%s(%s)", t.Name, strings.Join(params, ", "))
+}
+
+// ToLLMToolDefs converts registered tools to llm.ToolDef for native tool calling.
+// tool_help is excluded — it is only meaningful in the XML text-based path.
+func (r *Registry) ToLLMToolDefs() []llm.ToolDef {
+	defs := make([]llm.ToolDef, 0, len(r.order))
+	for _, name := range r.order {
+		if name == "tool_help" {
+			continue
+		}
+		t := r.tools[name]
+		params := make([]llm.ToolParam, 0, len(t.Parameters))
+		for _, p := range t.Parameters {
+			params = append(params, llm.ToolParam{
+				Name:        p.Name,
+				Type:        mapParamType(p.Type),
+				Description: p.Description,
+				Required:    p.Required,
+			})
+		}
+		defs = append(defs, llm.ToolDef{
+			Name:        t.Name,
+			Description: t.Description,
+			Parameters:  params,
+		})
+	}
+	return defs
+}
+
+// mapParamType converts forge parameter type strings to JSON Schema type names.
+func mapParamType(t string) string {
+	switch t {
+	case "int":
+		return "integer"
+	case "bool":
+		return "boolean"
+	default:
+		return "string"
+	}
 }
 
 func hiddenToolMatches(tool Tool, query string) bool {
