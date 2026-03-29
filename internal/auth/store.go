@@ -23,6 +23,7 @@ type Tokens struct {
 	GroqAPIKey          string            `json:"groq_api_key,omitempty"`
 	MistralAPIKey       string            `json:"mistral_api_key,omitempty"`
 	XAIAPIKey           string            `json:"xai_api_key,omitempty"`
+	ZAIAPIKey           string            `json:"zai_api_key,omitempty"`
 	NVIDIAAPIKey        string            `json:"nvidia_api_key,omitempty"`
 	OpenRouterAPIKey    string            `json:"openrouter_api_key,omitempty"`
 	TogetherAPIKey      string            `json:"together_api_key,omitempty"`
@@ -141,6 +142,9 @@ func merge(dst, src *Tokens) *Tokens {
 	}
 	if src.XAIAPIKey != "" {
 		dst.XAIAPIKey = src.XAIAPIKey
+	}
+	if src.ZAIAPIKey != "" {
+		dst.ZAIAPIKey = src.ZAIAPIKey
 	}
 	if src.NVIDIAAPIKey != "" {
 		dst.NVIDIAAPIKey = src.NVIDIAAPIKey
