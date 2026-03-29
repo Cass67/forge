@@ -143,8 +143,9 @@ Expected: PASS
 
 The large rewrite is done. What remains is smaller follow-up work:
 
-- `internal/react/prompt.go` is still only turn-input normalization. If we want richer runtime-owned prompt composition, that should land here.
-- `internal/react/compact.go` and `Session.compact()` still do simple truncation plus concatenated summary text, not semantic compaction.
-- `Runner.streamResponse()` still buffers the full streamed response before parsing/executing tools. If we want token-forwarding or earlier tool-call interception, that is a separate polish pass.
+- `internal/react/prompt.go` now owns runtime-built messages, including system prompt, compaction summary, runtime notes, native tool calls, and truncated tool-result history.
+- `internal/react/compact.go` and `Session.compact()` now preserve older context through semantic turn summaries instead of raw input concatenation.
+- `Runner.streamResponse()` now forwards plain assistant tokens incrementally and executes complete native tool calls as soon as they are streamed.
+- `internal/react/loop.go` now tracks merge/commit blockers so the native runtime stops repeating doomed `git commit` attempts during conflict resolution.
 - spawned-agent lifecycle tools still return minimal JSON metadata envelopes. That is acceptable for the current runtime, but could be simplified further later.
-- unrelated local worktree changes still exist outside this plan under `internal/bootstrap`, docs, and local artifacts. They are not part of the react/runtime migration.
+- if we want stronger merge ergonomics beyond the base runtime guards, the next isolated improvement is a dedicated git-conflict workflow/skill rather than another general loop rewrite.
