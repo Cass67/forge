@@ -55,6 +55,18 @@ func TestAppendNativeToolResult(t *testing.T) {
 	}
 }
 
+func TestAppendNativeToolResultGuardsEmptyID(t *testing.T) {
+	s := NewSession()
+	s.RecordInput("check")
+	s.AppendAssistantWithToolCalls([]llm.NativeToolCall{{ID: "c1", Name: "git_status", ArgsJSON: "{}"}})
+	s.AppendNativeToolResult("", "result")
+	snap := s.Snapshot()
+	// Empty toolCallID should be ignored — only user+assistant in history
+	if len(snap.History) != 2 {
+		t.Fatalf("empty toolCallID should be ignored, got %d history entries", len(snap.History))
+	}
+}
+
 func TestMessagesIncludesToolRoleMessages(t *testing.T) {
 	s := NewSession()
 	s.RecordInput("check status")

@@ -147,7 +147,7 @@ func (s *Session) AppendAssistantWithToolCalls(calls []llm.NativeToolCall) {
 // AppendNativeToolResult records a tool execution result matched to a specific
 // tool call ID. Used by the native tool calling path.
 func (s *Session) AppendNativeToolResult(toolCallID, result string) {
-	if s == nil {
+	if s == nil || strings.TrimSpace(toolCallID) == "" {
 		return
 	}
 	s.mu.Lock()
