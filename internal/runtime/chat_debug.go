@@ -50,14 +50,13 @@ func EnableChatDebug(setup *ChatSetup, path string) (string, error) {
 	}
 	rec := &chatDebugRecorder{log: log}
 	runtimeMode := string(resolveChatRuntimeMode())
-	visibleAgents := setup.Config != nil && setup.Config.Chat.Agents.Enabled && runtimeMode == string(chatRuntimeLegacy)
 	rec.log.Info("chat.debug.enabled", map[string]any{
 		"path":           resolved,
 		"model":          setup.ChatModel,
 		"work_dir":       setup.WorkDir,
 		"surface_mode":   "debug",
 		"runtime_mode":   runtimeMode,
-		"agents_enabled": visibleAgents,
+		"agents_enabled": false,
 	})
 	if setup.Driver != nil {
 		setup.Driver = rec.wrapDriver(setup.Driver)
@@ -238,13 +237,7 @@ func (d *chatDebugDriver) ResetConversation() {
 
 func isStrictTurnRequest(messages []llm.Message) bool {
 	for _, msg := range messages {
-		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "You are forge's hidden worker runtime.") {
-			return true
-		}
-		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "This is a strict visible collaboration turn.") {
-			return true
-		}
-		if msg.Role == llm.RoleUser && strings.Contains(msg.Content, "HARNESS MODE: inspect") {
+		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Only respond with plain text (no tool calls) when you have a complete final answer.") {
 			return true
 		}
 	}

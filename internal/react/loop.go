@@ -3,21 +3,29 @@ package react
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
+
+	"forge/internal/agent"
+	agenttools "forge/internal/agent/tools"
+	"forge/internal/llm"
 )
 
-type TurnRunner interface {
-	Run(context.Context, string) error
-}
-
 type Config struct {
-	Agent           TurnRunner
+	Driver          llm.Driver
+	Tools           *agenttools.Registry
+	Renderer        agent.RenderTarget
+	SystemPrompt    func() string
 	Session         *Session
 	Progress        func(string)
 	MaxSessionTurns int
 }
 
 type Runner struct {
-	agent           TurnRunner
+	driver          llm.Driver
+	tools           *agenttools.Registry
+	renderer        agent.RenderTarget
+	systemPrompt    func() string
 	session         *Session
 	progress        func(string)
 	maxSessionTurns int
@@ -28,8 +36,15 @@ func NewRunner(cfg Config) *Runner {
 	if session == nil {
 		session = NewSession()
 	}
+	reg := cfg.Tools
+	if reg == nil {
+		reg = agenttools.NewRegistry()
+	}
 	return &Runner{
-		agent:           cfg.Agent,
+		driver:          cfg.Driver,
+		tools:           reg,
+		renderer:        cfg.Renderer,
+		systemPrompt:    cfg.SystemPrompt,
 		session:         session,
 		progress:        cfg.Progress,
 		maxSessionTurns: maxSessionTurns(cfg.MaxSessionTurns),
@@ -37,8 +52,8 @@ func NewRunner(cfg Config) *Runner {
 }
 
 func (r *Runner) Run(ctx context.Context, input string) error {
-	if r == nil || r.agent == nil {
-		return fmt.Errorf("react runner: agent is nil")
+	if r == nil {
+		return fmt.Errorf("react runner: runner is nil")
 	}
 	prompt := BuildPrompt(input)
 	if prompt == "" {
@@ -51,7 +66,201 @@ func (r *Runner) Run(ctx context.Context, input string) error {
 	if CompactSessionHistory(r.session, r.maxSessionTurns) && r.progress != nil {
 		r.progress("react runtime: compacted session context")
 	}
-	return r.agent.Run(ctx, prompt)
+	if r.driver == nil {
+		err := fmt.Errorf("react runner: driver is nil")
+		r.session.CompleteTurn(turn, "", nil, err)
+		return err
+	}
+	return r.runLoop(ctx, turn)
+}
+
+func (r *Runner) SetDriver(driver llm.Driver) {
+	if r == nil {
+		return
+	}
+	r.driver = driver
+}
+
+func (r *Runner) LastResponse() string {
+	if r == nil || r.session == nil {
+		return ""
+	}
+	snap := r.session.Snapshot()
+	for i := len(snap.Turns) - 1; i >= 0; i-- {
+		if response := strings.TrimSpace(snap.Turns[i].FinalResponse); response != "" {
+			return response
+		}
+	}
+	return ""
+}
+
+func (r *Runner) ClearHistory() {
+	if r == nil || r.session == nil {
+		return
+	}
+	r.session.Clear()
+}
+
+func (r *Runner) runLoop(ctx context.Context, turn int) error {
+	start := time.Now()
+	defer r.emitStats(start)
+
+	for step := 0; step < r.maxSessionTurns; step++ {
+		response, err := r.streamResponse(ctx)
+		if err != nil {
+			r.session.CompleteTurn(turn, "", nil, err)
+			return err
+		}
+		calls, visibleText := agent.ParseToolCalls(response)
+		trimmedVisible := strings.TrimSpace(visibleText)
+		if len(calls) == 0 {
+			if retry := invalidWorkingResponseNudge(response); retry != "" && step+1 < r.maxSessionTurns {
+				r.session.AppendToolResults(retry)
+				continue
+			}
+			final := strings.TrimSpace(response)
+			if trimmedVisible != "" {
+				final = trimmedVisible
+			}
+			r.session.AppendAssistantMessage(final)
+			r.session.CompleteTurn(turn, final, nil, nil)
+			if r.renderer != nil && final != "" {
+				r.renderer.AgentText(final)
+			}
+			return nil
+		}
+
+		results, err := r.executeToolCalls(ctx, calls)
+		r.session.AppendToolResults(compactToolResults(results))
+		r.session.CompleteTurn(turn, "", calls, err)
+		if err != nil {
+			return err
+		}
+	}
+
+	err := fmt.Errorf("react runtime: max steps (%d) exceeded", r.maxSessionTurns)
+	r.session.CompleteTurn(turn, "", nil, err)
+	return err
+}
+
+func (r *Runner) streamResponse(ctx context.Context) (string, error) {
+	messages := r.session.Messages(r.currentSystemPrompt())
+	out := make(chan llm.Token, 64)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- r.driver.Stream(ctx, messages, out)
+	}()
+
+	var sb strings.Builder
+	for tok := range out {
+		sb.WriteString(tok.Text)
+	}
+	if err := <-errCh; err != nil {
+		return "", err
+	}
+	if reporter, ok := r.driver.(llm.RequestModeReporter); ok {
+		if mode := strings.TrimSpace(reporter.LastRequestMode()); mode != "" && r.renderer != nil {
+			r.renderer.Info("context: " + mode)
+		}
+	}
+	return sb.String(), nil
+}
+
+func (r *Runner) executeToolCalls(ctx context.Context, calls []agent.ToolCall) ([]string, error) {
+	results := make([]string, 0, len(calls))
+	for _, call := range calls {
+		tool, ok := r.tools.Get(call.Name)
+		if !ok {
+			msg := fmt.Sprintf("[%s] error: unknown tool %q", call.Name, call.Name)
+			if r.renderer != nil {
+				r.renderer.Error(strings.TrimPrefix(msg, "["+call.Name+"] "))
+			}
+			results = append(results, msg)
+			continue
+		}
+		if r.renderer != nil {
+			r.renderer.ToolCall(call.Name, reactToolSummary(call))
+		}
+		result, err := tool.Execute(ctx, call.Args)
+		diff := ""
+		if tool.LastDiff != nil {
+			diff = tool.LastDiff()
+		}
+		if err != nil {
+			errResult := fmt.Sprintf("error: %v", err)
+			if r.renderer != nil {
+				r.renderer.ToolResult(call.Name, errResult, diff, true)
+			}
+			results = append(results, fmt.Sprintf("[%s] %s", call.Name, errResult))
+			return results, err
+		}
+		display := truncateToolResult(result)
+		if r.renderer != nil {
+			r.renderer.ToolResult(call.Name, display, diff, false)
+		}
+		results = append(results, fmt.Sprintf("[%s] %s", call.Name, result))
+	}
+	return results, nil
+}
+
+func (r *Runner) currentSystemPrompt() string {
+	if r.systemPrompt == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.systemPrompt())
+}
+
+func (r *Runner) emitStats(start time.Time) {
+	if r == nil || r.renderer == nil {
+		return
+	}
+	var usage llm.Usage
+	if reporter, ok := r.driver.(llm.UsageReporter); ok {
+		usage = reporter.LastUsage()
+	}
+	r.renderer.Stats(time.Since(start), usage)
+}
+
+func invalidWorkingResponseNudge(response string) string {
+	trimmed := strings.TrimSpace(response)
+	switch {
+	case trimmed == "":
+		return "Runtime note: your previous response was empty. Call a tool if you still need to inspect or act; otherwise provide the final answer."
+	case strings.HasPrefix(trimmed, "/"):
+		return "Runtime note: do not emit /skill invocations or slash commands. Either call a tool or provide the final answer."
+	case strings.Contains(trimmed, "<tool_call") && !strings.Contains(trimmed, "</tool_call>"):
+		return "Runtime note: malformed tool markup. Return exactly valid <tool_call>...</tool_call> blocks or a final answer."
+	default:
+		return ""
+	}
+}
+
+func compactToolResults(results []string) string {
+	return strings.TrimSpace(strings.Join(results, "\n"))
+}
+
+func reactToolSummary(call agent.ToolCall) string {
+	if path, _ := call.Args["path"].(string); strings.TrimSpace(path) != "" {
+		return strings.TrimSpace(path)
+	}
+	if command, _ := call.Args["command"].(string); strings.TrimSpace(command) != "" {
+		return strings.TrimSpace(command)
+	}
+	if query, _ := call.Args["query"].(string); strings.TrimSpace(query) != "" {
+		return strings.TrimSpace(query)
+	}
+	if pattern, _ := call.Args["pattern"].(string); strings.TrimSpace(pattern) != "" {
+		return strings.TrimSpace(pattern)
+	}
+	return ""
+}
+
+func truncateToolResult(result string) string {
+	lines := strings.Split(result, "\n")
+	if len(lines) > 20 {
+		return strings.Join(lines[:20], "\n") + fmt.Sprintf("\n... (%d more lines)", len(lines)-20)
+	}
+	return result
 }
 
 func maxSessionTurns(value int) int {
