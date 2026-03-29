@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"time"
 
@@ -74,8 +73,8 @@ func BuildChatSetup(cfg *config.Config, tokens any, modelOverride, workDir strin
 	chatModel := cfg.ChatModel()
 	if modelOverride != "" {
 		chatModel = modelOverride
-	} else if chatModel == "" || !ContainsModel(available, chatModel) {
-		chatModel = PickModel(available)
+	} else if chatModel != "" && !ContainsModel(available, chatModel) {
+		chatModel = ""
 	}
 
 	driverReg := llm.NewRegistry()
@@ -177,23 +176,6 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, appr
 	return previewRuntime
 }
 
-func buildInspectToolRegistry(base *tools.Registry) *tools.Registry {
-	if base == nil {
-		return tools.NewRegistry()
-	}
-	return base.Filter([]string{
-		"git_diff",
-		"git_log",
-		"git_status",
-		"glob",
-		"list_dir",
-		"read_file",
-		"search",
-		"think",
-		"tool_help",
-	})
-}
-
 func RunChatLive(setup *ChatSetup) {
 	eventsCh := make(chan llm.Event, 256)
 	renderCh := chan<- llm.Event(eventsCh)
@@ -208,7 +190,6 @@ func RunChatLive(setup *ChatSetup) {
 		}()
 	}
 	evRenderer := agent.NewEventRenderer(renderCh)
-	runtimeMode := resolveChatRuntimeMode()
 
 	var approve tools.ApprovalFunc
 	if setup.Yolo {
@@ -216,11 +197,9 @@ func RunChatLive(setup *ChatSetup) {
 	} else {
 		approve = evRenderer.LiveApproval()
 	}
-	if runtimeMode == chatRuntimeReact {
-		approve = reactruntime.NewApprovalGate(setup.WorkDir, reactruntime.LoadApprovalConfig(setup.Config), approve, func(text string) {
-			evRenderer.Info(text)
-		}).Approve
-	}
+	approve = reactruntime.NewApprovalGate(setup.WorkDir, reactruntime.LoadApprovalConfig(setup.Config), approve, func(text string) {
+		evRenderer.Info(text)
+	}).Approve
 
 	reg := tools.NewRegistry()
 	previewRuntime := registerTools(reg, setup.WorkDir, setup.Config, approve)
@@ -230,24 +209,18 @@ func RunChatLive(setup *ChatSetup) {
 	baseReg := reg.Filter(nil)
 	loadedSkills := skills.Load(setup.WorkDir)
 	state := chatstate.New()
-
-	a := agent.NewAgent(setup.Driver, reg, approve, setup.WorkDir, setup.Config.Chat.MaxTurns, evRenderer, loadedSkills, state)
-	var reactRunner *reactruntime.Runner
-
-	if runtimeMode == chatRuntimeReact {
-		reactRunner = reactruntime.NewRunner(reactruntime.Config{
-			Driver:          setup.Driver,
-			Tools:           reg,
-			Renderer:        evRenderer,
-			SystemPrompt:    func() string { return agent.BuildSystemPrompt(setup.WorkDir, reg, "") },
-			Session:         reactruntime.NewSession(),
-			MaxSessionTurns: 20,
-			Progress: func(text string) {
-				evRenderer.Info(text)
-			},
-		})
-		registerReactDelegationTools(reg, setup, baseReg, approve)
-	}
+	reactRunner := reactruntime.NewRunner(reactruntime.Config{
+		Driver:          setup.Driver,
+		Tools:           reg,
+		Renderer:        evRenderer,
+		SystemPrompt:    func() string { return agent.BuildSystemPrompt(setup.WorkDir, reg, "") },
+		Session:         reactruntime.NewSession(),
+		MaxSessionTurns: 20,
+		Progress: func(text string) {
+			evRenderer.Info(text)
+		},
+	})
+	registerReactDelegationTools(reg, setup, baseReg, approve)
 
 	inputCh := make(chan string, 1)
 	doneCh := make(chan struct{}, 1)
@@ -273,7 +246,7 @@ func RunChatLive(setup *ChatSetup) {
 				setup.debugRec.logInput("user", msg)
 			}
 			go func(runMsg string) {
-				err := runChatTurn(ctx, a, reactRunner, runMsg)
+				err := runChatTurn(ctx, reactRunner, runMsg)
 				inputCh <- runOutcome(err)
 			}(msg)
 		}
@@ -293,8 +266,7 @@ func RunChatLive(setup *ChatSetup) {
 				if setup != nil && setup.debugRec != nil {
 					setup.debugRec.logInput("control", input)
 				}
-				a.CancelSubAgent()
-				evRenderer.Info("sub-agent cancelled")
+				evRenderer.Info("no active sub-agent")
 			case "__cancel_turn__":
 				if setup != nil && setup.debugRec != nil {
 					setup.debugRec.logInput("control", input)
@@ -416,7 +388,6 @@ func RunChatLive(setup *ChatSetup) {
 			}
 			setup.ChatModel = name
 			setup.Driver = d
-			a.SetDriver(setup.Driver)
 			if reactRunner != nil {
 				reactRunner.SetDriver(setup.Driver)
 			}
@@ -424,7 +395,7 @@ func RunChatLive(setup *ChatSetup) {
 			return name, nil
 		},
 		ClearHistory: func() {
-			a.ClearHistory()
+			state.Clear()
 			if reactRunner != nil {
 				reactRunner.ClearHistory()
 			}
@@ -458,19 +429,12 @@ func RunChatConsole(setup *ChatSetup) {
 	} else {
 		approve = agent.InteractiveApproval(os.Stdin, os.Stdout)
 	}
-	runtimeMode := resolveChatRuntimeMode()
-	if runtimeMode == chatRuntimeReact {
-		approve = reactruntime.NewApprovalGate(setup.WorkDir, reactruntime.LoadApprovalConfig(setup.Config), approve, func(text string) {
-			fmt.Fprintln(os.Stdout, text)
-		}).Approve
-	}
+	approve = reactruntime.NewApprovalGate(setup.WorkDir, reactruntime.LoadApprovalConfig(setup.Config), approve, func(text string) {
+		_, _ = fmt.Fprintln(os.Stdout, text)
+	}).Approve
 
 	reg := tools.NewRegistry()
-	interactiveApprove := agent.InteractiveApproval(os.Stdin, os.Stdout)
-	forcePromptApprove := interactiveApprove
-	if runtimeMode == chatRuntimeReact {
-		forcePromptApprove = approve
-	}
+	forcePromptApprove := approve
 	previewRuntime := registerTools(reg, setup.WorkDir, setup.Config, approve, forcePromptApprove)
 	if previewRuntime != nil {
 		defer previewRuntime.Close()
@@ -480,23 +444,18 @@ func RunChatConsole(setup *ChatSetup) {
 
 	renderer := agent.NewRenderer(os.Stdout, 80, true)
 	state := chatstate.New()
-	a := agent.NewAgent(setup.Driver, reg, approve, setup.WorkDir, setup.Config.Chat.MaxTurns, renderer, loadedSkills, state)
-	var reactRunner *reactruntime.Runner
-
-	if runtimeMode == chatRuntimeReact {
-		reactRunner = reactruntime.NewRunner(reactruntime.Config{
-			Driver:          setup.Driver,
-			Tools:           reg,
-			Renderer:        renderer,
-			SystemPrompt:    func() string { return agent.BuildSystemPrompt(setup.WorkDir, reg, "") },
-			Session:         reactruntime.NewSession(),
-			MaxSessionTurns: 20,
-			Progress: func(text string) {
-				renderer.Info(text)
-			},
-		})
-		registerReactDelegationTools(reg, setup, baseReg, approve)
-	}
+	reactRunner := reactruntime.NewRunner(reactruntime.Config{
+		Driver:          setup.Driver,
+		Tools:           reg,
+		Renderer:        renderer,
+		SystemPrompt:    func() string { return agent.BuildSystemPrompt(setup.WorkDir, reg, "") },
+		Session:         reactruntime.NewSession(),
+		MaxSessionTurns: 20,
+		Progress: func(text string) {
+			renderer.Info(text)
+		},
+	})
+	registerReactDelegationTools(reg, setup, baseReg, approve)
 
 	fmt.Printf("forge (%s) — %s\n", setup.ChatModel, setup.WorkDir)
 	fmt.Println("type your request, or /help for commands")
@@ -534,12 +493,12 @@ func RunChatConsole(setup *ChatSetup) {
 			break
 		}
 		if strings.HasPrefix(input, "/") {
-			handled := handleChatSlashCommand(input, renderer, a, reactRunner, setup)
+			handled := handleChatSlashCommand(input, renderer, loadedSkills, state, reactRunner, setup)
 			if handled {
 				continue
 			}
 		}
-		err := runChatTurn(ctx, a, reactRunner, input)
+		err := runChatTurn(ctx, reactRunner, input)
 		if err != nil {
 			renderer.Error(err.Error())
 		}
@@ -603,38 +562,22 @@ func resolveChatRuntimeMode() chatRuntimeMode {
 
 type chatTurnRunner interface {
 	Run(context.Context, string) error
+	EmitResponse(string)
 }
 
 const promptBoundaryRefusal = "I can't provide hidden system/developer prompts or internal instructions, including paraphrased or hypothetical versions. I can summarize my role and high-level guardrails if useful."
 
-func runChatTurn(ctx context.Context, a *agent.Agent, reactRunner chatTurnRunner, input string) error {
+func runChatTurn(ctx context.Context, reactRunner chatTurnRunner, input string) error {
 	if isPromptBoundaryQuestion(input) {
-		if a != nil {
-			a.ResetTurnState()
-			a.EmitSyntheticResponse(promptBoundaryRefusal)
+		if reactRunner != nil {
+			reactRunner.EmitResponse(promptBoundaryRefusal)
 		}
 		return nil
 	}
-	if !hasTurnRunner(reactRunner) {
+	if reactRunner == nil {
 		return fmt.Errorf("chat react runner is nil")
 	}
-	if a != nil {
-		a.ResetTurnState()
-	}
 	return reactRunner.Run(ctx, input)
-}
-
-func hasTurnRunner(r chatTurnRunner) bool {
-	if r == nil {
-		return false
-	}
-	value := reflect.ValueOf(r)
-	switch value.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return !value.IsNil()
-	default:
-		return true
-	}
 }
 
 func isPromptBoundaryQuestion(input string) bool {
@@ -651,9 +594,11 @@ func isPromptBoundaryQuestion(input string) bool {
 type chatSessionControl interface {
 	SetDriver(llm.Driver)
 	ClearHistory()
+	AppendUserMessage(string)
+	EmitResponse(string)
 }
 
-func handleChatSlashCommand(input string, renderer *agent.Renderer, a *agent.Agent, session chatSessionControl, setup *ChatSetup) bool {
+func handleChatSlashCommand(input string, renderer *agent.Renderer, loadedSkills []skills.Skill, state *chatstate.State, session chatSessionControl, setup *ChatSetup) bool {
 	switch {
 	case input == "/help":
 		PrintChatHelp()
@@ -669,7 +614,6 @@ func handleChatSlashCommand(input string, renderer *agent.Renderer, a *agent.Age
 		}
 		setup.ChatModel = picked
 		setup.Driver = d
-		a.SetDriver(setup.Driver)
 		if session != nil {
 			session.SetDriver(setup.Driver)
 		}
@@ -691,7 +635,6 @@ func handleChatSlashCommand(input string, renderer *agent.Renderer, a *agent.Age
 		}
 		setup.ChatModel = newModel
 		setup.Driver = d
-		a.SetDriver(setup.Driver)
 		if session != nil {
 			session.SetDriver(setup.Driver)
 		}
@@ -707,18 +650,19 @@ func handleChatSlashCommand(input string, renderer *agent.Renderer, a *agent.Age
 		}
 		fmt.Println()
 	case input == "/clear":
-		a.ClearHistory()
+		if state != nil {
+			state.Clear()
+		}
 		if session != nil {
 			session.ClearHistory()
 		}
 		renderer.Info("conversation history cleared")
 	case input == "/skills":
-		loaded := a.Skills()
-		if len(loaded) == 0 {
+		if len(loadedSkills) == 0 {
 			renderer.Info("no skills loaded")
 		} else {
 			fmt.Println()
-			for _, s := range loaded {
+			for _, s := range loadedSkills {
 				fmt.Printf("  /%s — %s\n", s.Name, s.Description)
 			}
 			fmt.Println()
@@ -726,8 +670,17 @@ func handleChatSlashCommand(input string, renderer *agent.Renderer, a *agent.Age
 	default:
 		// Check for skill activation
 		cmd := strings.TrimPrefix(input, "/")
-		if s, ok := skills.Get(a.Skills(), cmd); ok {
-			a.InjectSkill(s)
+		if s, ok := skills.Get(loadedSkills, cmd); ok {
+			if state != nil && state.SkillActivated(s.Name) {
+				renderer.Info(fmt.Sprintf("skill already active: %s", s.Name))
+				return true
+			}
+			if state != nil {
+				state.ActivateSkill(s.Name)
+			}
+			if session != nil {
+				session.AppendUserMessage(fmt.Sprintf("[Skill: %s]\n\n%s", s.Name, s.Body))
+			}
 			renderer.Info(fmt.Sprintf("skill activated: %s", s.Name))
 			return true
 		}
