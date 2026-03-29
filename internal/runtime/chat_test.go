@@ -420,7 +420,7 @@ func TestRunChatTurnCompletesComplexVisiblePreviewTurn(t *testing.T) {
 		Driver:          driver,
 		Tools:           reg,
 		Renderer:        renderer,
-		SystemPrompt:    func() string { return agent.BuildSystemPrompt(workDir, reg, "") },
+		SystemPrompt:    func() string { return agent.BuildNativeSystemPrompt(workDir) },
 		Session:         reactruntime.NewSession(),
 		MaxSessionTurns: 20,
 	})

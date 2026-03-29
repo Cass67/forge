@@ -172,7 +172,6 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, appr
 	webSearch := tools.NewWebSearch()
 	webSearch.PromptVisibility = tools.PromptHidden
 	reg.Register(webSearch)
-	reg.Register(tools.NewToolHelp(reg))
 	return previewRuntime
 }
 
@@ -210,13 +209,12 @@ func RunChatLive(setup *ChatSetup) {
 	loadedSkills := skills.Load(setup.WorkDir)
 	state := chatstate.New()
 	reactRunner := reactruntime.NewRunner(reactruntime.Config{
-		Driver:             setup.Driver,
-		Tools:              reg,
-		Renderer:           evRenderer,
-		SystemPrompt:       func() string { return agent.BuildSystemPrompt(setup.WorkDir, reg, "") },
-		NativeSystemPrompt: func() string { return agent.BuildNativeSystemPrompt(setup.WorkDir) },
-		Session:            reactruntime.NewSession(),
-		MaxSessionTurns:    20,
+		Driver:          setup.Driver,
+		Tools:           reg,
+		Renderer:        evRenderer,
+		SystemPrompt:    func() string { return agent.BuildNativeSystemPrompt(setup.WorkDir) },
+		Session:         reactruntime.NewSession(),
+		MaxSessionTurns: 20,
 		Progress: func(text string) {
 			evRenderer.Info(text)
 		},
@@ -440,13 +438,12 @@ func RunChatConsole(setup *ChatSetup) {
 	renderer := agent.NewRenderer(os.Stdout, 80, true)
 	state := chatstate.New()
 	reactRunner := reactruntime.NewRunner(reactruntime.Config{
-		Driver:             setup.Driver,
-		Tools:              reg,
-		Renderer:           renderer,
-		SystemPrompt:       func() string { return agent.BuildSystemPrompt(setup.WorkDir, reg, "") },
-		NativeSystemPrompt: func() string { return agent.BuildNativeSystemPrompt(setup.WorkDir) },
-		Session:            reactruntime.NewSession(),
-		MaxSessionTurns:    20,
+		Driver:          setup.Driver,
+		Tools:           reg,
+		Renderer:        renderer,
+		SystemPrompt:    func() string { return agent.BuildNativeSystemPrompt(setup.WorkDir) },
+		Session:         reactruntime.NewSession(),
+		MaxSessionTurns: 20,
 		Progress: func(text string) {
 			renderer.Info(text)
 		},
@@ -521,11 +518,10 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 			Tools:    childTools,
 			Renderer: agent.NewSilentRenderer(nil),
 			SystemPrompt: func() string {
-				return agent.BuildSystemPrompt(setup.WorkDir, childTools, "") + "\n\n" + reactDelegationSystemSuffix(role)
+				return agent.BuildNativeSystemPrompt(setup.WorkDir) + "\n\n" + reactDelegationSystemSuffix(role)
 			},
-			NativeSystemPrompt: func() string { return agent.BuildNativeSystemPrompt(setup.WorkDir) },
-			Session:            reactruntime.NewSession(),
-			MaxSessionTurns:    setup.Config.Chat.MaxTurns,
+			Session:         reactruntime.NewSession(),
+			MaxSessionTurns: setup.Config.Chat.MaxTurns,
 		})
 		if err := childRunner.Run(ctx, task); err != nil {
 			return "", err

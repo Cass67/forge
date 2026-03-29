@@ -30,6 +30,10 @@ func (d *ptyTestDriver) Stream(_ context.Context, _ []llm.Message, out chan<- ll
 	return nil
 }
 
+func (d *ptyTestDriver) StreamWithTools(ctx context.Context, msgs []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
+	return d.Stream(ctx, msgs, out)
+}
+
 type ptyCapture struct {
 	mu  sync.Mutex
 	buf bytes.Buffer

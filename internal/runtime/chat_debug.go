@@ -168,6 +168,45 @@ func (d *chatDebugDriver) Stream(ctx context.Context, messages []llm.Message, ou
 	return err
 }
 
+func (d *chatDebugDriver) StreamWithTools(ctx context.Context, messages []llm.Message, tools []llm.ToolDef, out chan<- llm.Token) error {
+	inner, ok := d.inner.(llm.NativeToolCaller)
+	if !ok {
+		close(out)
+		return fmt.Errorf("chatDebugDriver: inner driver %q does not support native tool calling", d.inner.Name())
+	}
+	if d.rec != nil {
+		d.rec.log.Debug("llm.request", map[string]any{
+			"driver":   d.inner.Name(),
+			"messages": messages,
+		})
+	}
+
+	internal := make(chan llm.Token, 64)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- inner.StreamWithTools(ctx, messages, tools, internal)
+	}()
+
+	var response strings.Builder
+	for tok := range internal {
+		response.WriteString(tok.Text)
+		out <- tok
+	}
+	err := <-errCh
+	if d.rec != nil {
+		fields := map[string]any{
+			"driver":   d.inner.Name(),
+			"response": response.String(),
+		}
+		if err != nil {
+			fields["error"] = err.Error()
+		}
+		d.rec.log.Debug("llm.response", fields)
+	}
+	close(out)
+	return err
+}
+
 func (d *chatDebugDriver) SetParams(p llm.Params) {
 	if c, ok := d.inner.(llm.Configurable); ok {
 		c.SetParams(p)
