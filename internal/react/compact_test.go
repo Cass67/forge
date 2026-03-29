@@ -5,12 +5,16 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"forge/internal/agent"
 )
 
 func TestCompactSessionHistoryTrimsOldTurns(t *testing.T) {
 	session := NewSession()
 	for i := 1; i <= 6; i++ {
-		session.RecordInput(fmt.Sprintf("prompt %d", i))
+		turn := session.RecordInput(fmt.Sprintf("prompt %d", i))
+		session.AppendAssistantMessage(fmt.Sprintf("answer %d", i))
+		session.CompleteTurn(turn, fmt.Sprintf("answer %d", i), nil, nil)
 	}
 
 	changed := CompactSessionHistory(session, 3)
@@ -29,6 +33,39 @@ func TestCompactSessionHistoryTrimsOldTurns(t *testing.T) {
 	}
 	if !strings.Contains(snap.CompactionSummary, "prompt 1") {
 		t.Fatalf("CompactionSummary = %q", snap.CompactionSummary)
+	}
+	if !strings.Contains(snap.CompactionSummary, "answer 1") {
+		t.Fatalf("expected semantic summary to include prior outcome, got %q", snap.CompactionSummary)
+	}
+}
+
+func TestCompactSessionHistorySummarizesToolsAndErrors(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("inspect repo")
+	session.AppendToolResults("[list_dir] README.md\ninternal")
+	session.AppendAssistantMessage("repo overview")
+	session.CompleteTurn(turn, "repo overview", []agent.ToolCall{{Name: "list_dir"}}, fmt.Errorf("tool timeout"))
+
+	next := session.RecordInput("follow up")
+	session.AppendAssistantMessage("done")
+	session.CompleteTurn(next, "done", nil, nil)
+
+	if !CompactSessionHistory(session, 1) {
+		t.Fatal("expected compaction")
+	}
+
+	snap := session.Snapshot()
+	if !strings.Contains(snap.CompactionSummary, "inspect repo") {
+		t.Fatalf("summary = %q", snap.CompactionSummary)
+	}
+	if !strings.Contains(snap.CompactionSummary, "tools: list_dir") {
+		t.Fatalf("expected tool usage in summary, got %q", snap.CompactionSummary)
+	}
+	if !strings.Contains(snap.CompactionSummary, "outcome: repo overview") {
+		t.Fatalf("expected final outcome in summary, got %q", snap.CompactionSummary)
+	}
+	if !strings.Contains(snap.CompactionSummary, "error: tool timeout") {
+		t.Fatalf("expected error in summary, got %q", snap.CompactionSummary)
 	}
 }
 
