@@ -60,6 +60,21 @@ func TestDriverForExplicitCompatProviderKeepsRegistryNameForNestedProviderModel(
 	}
 }
 
+func TestDriverForExplicitZAICodingPlanProvider(t *testing.T) {
+	cfg := testConfig()
+	cfg.Keys.ZAI = "zai-key"
+	d := DriverForModel(cfg, &auth.Tokens{}, "zai-coding-plan/glm-4.6")
+	if d == nil {
+		t.Fatal("expected explicit provider-qualified model to resolve")
+	}
+	if got := d.Name(); got != "zai-coding-plan/glm-4.6" {
+		t.Fatalf("driver.Name() = %q, want %q", got, "zai-coding-plan/glm-4.6")
+	}
+	if _, ok := d.(*drivers.OpenAIDriver); !ok {
+		t.Fatalf("expected OpenAIDriver, got %T", d)
+	}
+}
+
 func TestCompatAPIModelPreservesOpenRouterFreeRouterAlias(t *testing.T) {
 	// "free" is no longer a special-cased alias; it passes through unchanged
 	// like any other model name. The curated model list no longer includes it.
@@ -688,6 +703,60 @@ func TestCustomCompatProviderSupportedProviderBackendsShowsCustomProvider(t *tes
 	}
 	if !foundOCA {
 		t.Fatal("expected oca in SupportedProviderBackends")
+	}
+}
+
+func TestBuildCompatProvidersIncludesZAICodingPlan(t *testing.T) {
+	cfg := testConfig()
+	cfg.Keys.ZAI = "zai-key"
+	providers := BuildCompatProviders(cfg, &auth.Tokens{})
+
+	found := false
+	for _, p := range providers {
+		if p.Name != "zai-coding-plan" {
+			continue
+		}
+		found = true
+		if p.Label != "Z.AI Coding Plan" {
+			t.Fatalf("label = %q, want %q", p.Label, "Z.AI Coding Plan")
+		}
+		if p.BaseURL != "https://api.z.ai/api/coding/paas/v4" {
+			t.Fatalf("base_url = %q", p.BaseURL)
+		}
+		if p.KeyFn() != "zai-key" {
+			t.Fatalf("KeyFn() = %q, want %q", p.KeyFn(), "zai-key")
+		}
+		if !p.IsModel("glm-4.6") {
+			t.Fatal("expected glm-4.6 to match zai-coding-plan")
+		}
+		if !containsTestString(p.Models, "glm-5.1") {
+			t.Fatalf("expected glm-5.1 in coding plan models, got %#v", p.Models)
+		}
+	}
+	if !found {
+		t.Fatal("expected zai-coding-plan in BuildCompatProviders output")
+	}
+}
+
+func TestSupportedProviderBackendsIncludesZAICodingPlan(t *testing.T) {
+	cfg := testConfig()
+	backends := SupportedProviderBackends(cfg, &auth.Tokens{})
+
+	found := false
+	for _, backend := range backends {
+		if backend.ID != "zai-coding-plan" {
+			continue
+		}
+		found = true
+		if backend.Label != "Z.AI Coding Plan" {
+			t.Fatalf("label = %q, want %q", backend.Label, "Z.AI Coding Plan")
+		}
+		if backend.DefaultModel != "zai-coding-plan/glm-5.1" {
+			t.Fatalf("default model = %q, want %q", backend.DefaultModel, "zai-coding-plan/glm-5.1")
+		}
+	}
+	if !found {
+		t.Fatal("expected zai-coding-plan in SupportedProviderBackends")
 	}
 }
 
