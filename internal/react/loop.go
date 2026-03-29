@@ -13,23 +13,25 @@ import (
 )
 
 type Config struct {
-	Driver          llm.Driver
-	Tools           *agenttools.Registry
-	Renderer        agent.RenderTarget
-	SystemPrompt    func() string
-	Session         *Session
-	Progress        func(string)
-	MaxSessionTurns int
+	Driver             llm.Driver
+	Tools              *agenttools.Registry
+	Renderer           agent.RenderTarget
+	SystemPrompt       func() string
+	NativeSystemPrompt func() string // used when native tool calling is active; no XML tool format
+	Session            *Session
+	Progress           func(string)
+	MaxSessionTurns    int
 }
 
 type Runner struct {
-	driver          llm.Driver
-	tools           *agenttools.Registry
-	renderer        agent.RenderTarget
-	systemPrompt    func() string
-	session         *Session
-	progress        func(string)
-	maxSessionTurns int
+	driver             llm.Driver
+	tools              *agenttools.Registry
+	renderer           agent.RenderTarget
+	systemPrompt       func() string
+	nativeSystemPrompt func() string
+	session            *Session
+	progress           func(string)
+	maxSessionTurns    int
 }
 
 type streamedResponse struct {
@@ -47,13 +49,14 @@ func NewRunner(cfg Config) *Runner {
 		reg = agenttools.NewRegistry()
 	}
 	return &Runner{
-		driver:          cfg.Driver,
-		tools:           reg,
-		renderer:        cfg.Renderer,
-		systemPrompt:    cfg.SystemPrompt,
-		session:         session,
-		progress:        cfg.Progress,
-		maxSessionTurns: maxSessionTurns(cfg.MaxSessionTurns),
+		driver:             cfg.Driver,
+		tools:              reg,
+		renderer:           cfg.Renderer,
+		systemPrompt:       cfg.SystemPrompt,
+		nativeSystemPrompt: cfg.NativeSystemPrompt,
+		session:            session,
+		progress:           cfg.Progress,
+		maxSessionTurns:    maxSessionTurns(cfg.MaxSessionTurns),
 	}
 }
 
@@ -276,6 +279,13 @@ func (r *Runner) currentSystemPrompt() string {
 		return ""
 	}
 	return strings.TrimSpace(r.systemPrompt())
+}
+
+func (r *Runner) nativeCurrentSystemPrompt() string {
+	if r.nativeSystemPrompt != nil {
+		return strings.TrimSpace(r.nativeSystemPrompt())
+	}
+	return r.currentSystemPrompt()
 }
 
 func (r *Runner) emitStats(start time.Time) {
