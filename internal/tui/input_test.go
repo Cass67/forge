@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"forge/internal/tui"
+
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -75,5 +76,22 @@ func TestInputRoundsClampedToRange(t *testing.T) {
 	}
 	if tui.ClampRounds(5) != 5 {
 		t.Error("expected 5 unchanged")
+	}
+}
+
+func TestInputIgnoresSplitMouseTrackingSequence(t *testing.T) {
+	m := tui.NewInputModel([]string{"gpt-5.4"}, []string{"gpt-5-mini"}, "", "")
+	m.Prompt = "draft"
+
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Alt: true, Runes: []rune{'['}})
+	im := m2.(tui.InputModel)
+	if im.Prompt != "draft" {
+		t.Fatalf("after CSI start, prompt = %q", im.Prompt)
+	}
+
+	m3, _ := im.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("<64;50;33M")})
+	im = m3.(tui.InputModel)
+	if im.Prompt != "draft" {
+		t.Fatalf("after mouse fragment, prompt = %q", im.Prompt)
 	}
 }

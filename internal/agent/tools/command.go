@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -13,9 +14,13 @@ var (
 	pseudoGitStatusCommandPattern = regexp.MustCompile(`(^|(?:&&|\|\||;|\|)\s*)git_status(\s|$)`)
 	pseudoGitLogCommandPattern    = regexp.MustCompile(`(^|(?:&&|\|\||;|\|)\s*)git_log(?:\s+([0-9]+))?(\s|$)`)
 	pseudoGitDiffCommandPattern   = regexp.MustCompile(`(^|(?:&&|\|\||;|\|)\s*)git_diff(?:\s+([^\s;&|]+))?(\s|$)`)
+	adHocPreviewServerPattern     = regexp.MustCompile(`(?i)(python(?:3)?\s+-m\s+http\.server|npx\s+http-server|python(?:3)?\s+-m\s+simplehttpserver|ruby\s+-run\s+-e\s+httpd|busybox\s+httpd)`)
 )
 
-func NewRunCommand(workDir string, timeoutSecs int, approve ApprovalFunc, forcePrompt ...ApprovalFunc) Tool {
+func NewRunCommand(workDir string, timeoutSecs int, manager *ExecSessionManager, approve ApprovalFunc, forcePrompt ...ApprovalFunc) Tool {
+	if manager == nil {
+		manager = NewExecSessionManager()
+	}
 	return Tool{
 		Name:        "run_command",
 		Description: "Execute a shell command.",
@@ -26,6 +31,13 @@ func NewRunCommand(workDir string, timeoutSecs int, approve ApprovalFunc, forceP
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			command, _ := args["command"].(string)
 			command = normalizePseudoToolCommands(command)
+			if looksLikeAdHocPreviewServer(command) {
+				return "use preview_server_ensure instead of launching an ad-hoc web server with run_command", nil
+			}
+			background := isBackgroundCommand(command)
+			if background {
+				command = stripBackgroundCommandSuffix(command)
+			}
 
 			approver := approve
 			if isDestructive(command) && len(forcePrompt) > 0 && forcePrompt[0] != nil {
@@ -42,6 +54,21 @@ func NewRunCommand(workDir string, timeoutSecs int, approve ApprovalFunc, forceP
 			}
 			if !approved {
 				return "run_command denied by user", nil
+			}
+			if background {
+				sessionID, err := manager.Start(workDir, command)
+				if err != nil {
+					return "", err
+				}
+				payload, err := json.Marshal(execSessionStatus{
+					Status:    "running",
+					SessionID: sessionID,
+					Command:   command,
+				})
+				if err != nil {
+					return "", err
+				}
+				return string(payload), nil
 			}
 
 			timeout := time.Duration(timeoutSecs) * time.Second
@@ -114,4 +141,22 @@ func isDestructive(cmd string) bool {
 		}
 	}
 	return false
+}
+
+func looksLikeAdHocPreviewServer(cmd string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(cmd))
+	if normalized == "" {
+		return false
+	}
+	return adHocPreviewServerPattern.MatchString(normalized)
+}
+
+func isBackgroundCommand(cmd string) bool {
+	return strings.HasSuffix(strings.TrimSpace(cmd), "&")
+}
+
+func stripBackgroundCommandSuffix(cmd string) string {
+	trimmed := strings.TrimSpace(cmd)
+	trimmed = strings.TrimSuffix(trimmed, "&")
+	return strings.TrimSpace(trimmed)
 }

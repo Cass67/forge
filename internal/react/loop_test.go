@@ -222,6 +222,77 @@ func TestRunnerRejectsFinalAnswerWhenCompletionCheckFails(t *testing.T) {
 	}
 }
 
+func TestRunnerRetriesRetryableCompletionFailureOnce(t *testing.T) {
+	driver := &nativeScriptedDriver{responses: []string{"I'll inspect the repo first.", "Inspected the repo and found the theme entrypoints."}}
+	session := NewSession()
+	renderer := &recordingRenderer{}
+	r := NewRunner(Config{
+		Driver:   driver,
+		Session:  session,
+		Renderer: renderer,
+		CompletionCheck: func(_ SessionSnapshot, finalText string) error {
+			if strings.Contains(finalText, "I'll inspect") {
+				return NewRetryableCompletionError(
+					"non-compliant completion: narrated intent without evidence",
+					"You have not inspected the repository yet. Use tools first and then answer with concrete evidence.",
+				)
+			}
+			return nil
+		},
+	})
+
+	if err := r.Run(context.Background(), "theme this app"); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callCount != 2 {
+		t.Fatalf("driver calls = %d, want 2", driver.callCount)
+	}
+	snap := session.Snapshot()
+	if len(snap.History) != 3 {
+		t.Fatalf("history = %#v", snap.History)
+	}
+	if snap.History[1].Role != llm.RoleUser || !strings.Contains(snap.History[1].Content, "You have not inspected") {
+		t.Fatalf("history retry prompt = %#v", snap.History)
+	}
+	if got := snap.Turns[0].FinalResponse; got != "Inspected the repo and found the theme entrypoints." {
+		t.Fatalf("final response = %q", got)
+	}
+	renderer.mu.Lock()
+	defer renderer.mu.Unlock()
+	if len(renderer.tokenTexts) != 0 {
+		t.Fatalf("expected buffered final answer rendering, got tokens %#v", renderer.tokenTexts)
+	}
+	if len(renderer.fullTexts) != 1 || renderer.fullTexts[0] != "Inspected the repo and found the theme entrypoints." {
+		t.Fatalf("full texts = %#v", renderer.fullTexts)
+	}
+}
+
+func TestRunnerFailsAfterSecondRetryableCompletionFailure(t *testing.T) {
+	driver := &nativeScriptedDriver{responses: []string{"I'll inspect the repo first.", "I'll inspect it next."}}
+	session := NewSession()
+	r := NewRunner(Config{
+		Driver:  driver,
+		Session: session,
+		CompletionCheck: func(_ SessionSnapshot, _ string) error {
+			return NewRetryableCompletionError(
+				"non-compliant completion",
+				"Use tools before answering.",
+			)
+		},
+	})
+
+	err := r.Run(context.Background(), "inspect repo")
+	if err == nil {
+		t.Fatal("expected failure after second retryable completion")
+	}
+	if !strings.Contains(err.Error(), "non-compliant completion") {
+		t.Fatalf("err = %v", err)
+	}
+	if driver.callCount != 2 {
+		t.Fatalf("driver calls = %d, want 2", driver.callCount)
+	}
+}
+
 func TestRunnerRejectsBranchTargetMismatch(t *testing.T) {
 	driver := &nativeScriptedDriver{responses: []string{"merge complete"}}
 	session := NewSession()
@@ -339,6 +410,86 @@ func TestRunnerNativeToolCallingPath(t *testing.T) {
 		if roles[i] != r {
 			t.Fatalf("history[%d] role = %q, want %q", i, roles[i], r)
 		}
+	}
+}
+
+type pendingInputDriver struct {
+	callCount int
+	lastMsgs  []llm.Message
+}
+
+func (d *pendingInputDriver) Name() string { return "pending-input-driver" }
+
+func (d *pendingInputDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	close(out)
+	return errors.New("Stream should not be called on a NativeToolCaller driver")
+}
+
+func (d *pendingInputDriver) StreamWithTools(_ context.Context, msgs []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
+	defer close(out)
+	d.callCount++
+	d.lastMsgs = append([]llm.Message(nil), msgs...)
+	switch d.callCount {
+	case 1:
+		out <- llm.Token{ToolCall: &llm.NativeToolCall{ID: "c1", Name: "git_status", ArgsJSON: `{}`}}
+	default:
+		lastUser := ""
+		for i := len(msgs) - 1; i >= 0; i-- {
+			if msgs[i].Role == llm.RoleUser {
+				lastUser = msgs[i].Content
+				break
+			}
+		}
+		if lastUser != "steer toward tests" {
+			out <- llm.Token{Text: "missing pending steer"}
+			return nil
+		}
+		out <- llm.Token{Text: "handled queued steer after tool result"}
+	}
+	return nil
+}
+
+func TestRunnerConsumesQueuedPendingInputWithinActiveLoop(t *testing.T) {
+	driver := &pendingInputDriver{}
+	reg := agenttools.NewRegistry()
+	session := NewSession()
+	reg.Register(agenttools.Tool{
+		Name:        "git_status",
+		Description: "git status",
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			session.QueuePendingInput("steer toward tests")
+			return "working tree clean", nil
+		},
+	})
+	r := NewRunner(Config{
+		Driver:  driver,
+		Tools:   reg,
+		Session: session,
+	})
+
+	if err := r.Run(context.Background(), "inspect repo"); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callCount != 2 {
+		t.Fatalf("driver calls = %d, want 2", driver.callCount)
+	}
+	if got := r.LastResponse(); got != "handled queued steer after tool result" {
+		t.Fatalf("last response = %q", got)
+	}
+	snap := session.Snapshot()
+	if len(snap.History) < 4 {
+		t.Fatalf("history = %#v", snap.History)
+	}
+	foundQueuedUser := false
+	for _, msg := range snap.History {
+		if msg.Role == llm.RoleUser && msg.Content == "steer toward tests" {
+			foundQueuedUser = true
+			break
+		}
+	}
+	if !foundQueuedUser {
+		t.Fatalf("expected queued input in history, got %#v", snap.History)
 	}
 }
 

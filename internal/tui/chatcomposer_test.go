@@ -55,6 +55,23 @@ func TestChatComposerBracketedPasteKeepsLiteralMultilineText(t *testing.T) {
 	}
 }
 
+func TestChatComposerIgnoresMouseTrackingSequences(t *testing.T) {
+	c := NewChatComposer()
+	c.InsertString("draft")
+
+	action := c.HandleKey(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune("[<64;56;33M[<65;58;32M"),
+	}, false)
+
+	if action != (ComposerAction{}) {
+		t.Fatalf("action = %#v", action)
+	}
+	if got := c.Text(); got != "draft" {
+		t.Fatalf("text = %q", got)
+	}
+}
+
 func TestChatComposerCtrlCClearsDraftWhenIdle(t *testing.T) {
 	c := NewChatComposer()
 	c.InsertString("keep this local")

@@ -27,6 +27,9 @@ func BuildMessages(systemPrompt string, snapshot SessionSnapshot) []llm.Message 
 	if note := strings.TrimSpace(snapshot.RuntimeNote); note != "" {
 		messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: note})
 	}
+	if snapshot.Interrupted {
+		messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: "The previous turn was interrupted by the user. Any commands or tools from that turn may have partially executed; verify current state before continuing and do not assume unfinished work completed cleanly."})
+	}
 	if task := taskStateContext(snapshot); task != "" {
 		messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: task})
 	}
@@ -93,6 +96,18 @@ func taskStateContext(snapshot SessionSnapshot) string {
 	}
 	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "analysis") {
 		parts = append(parts, "Analysis guidance: gather enough source-grounded evidence to support the answer, avoid repetitive repo-wide searching once the pattern is clear, and summarize findings or recommendations instead of continuing low-yield exploration.")
+	}
+	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "inspect") {
+		parts = append(parts, "Inspection guidance: your first action should be a repo read/search tool call, not prose. Inspect the relevant files or symbols before answering, and keep the answer bounded to what the evidence actually shows.")
+	}
+	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "implement") {
+		parts = append(parts, "Implementation guidance: do not start with planning prose. First inspect the relevant code with repo tools, then make the change with edit tools, and only claim completion after relevant verification.")
+	}
+	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "validate") {
+		parts = append(parts, "Validation guidance: run the relevant tests or checks before you say the work is verified. If no verification ran, say that clearly instead of implying success.")
+	}
+	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "preview") {
+		parts = append(parts, "Preview guidance: prefer preview_server_ensure, preview_server_status, artifact_write, artifact_read, and file edit tools. Do not launch an ad-hoc local webserver with shell commands when preview tools can serve the page directly.")
 	}
 	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "merge") && strings.TrimSpace(snapshot.TaskState.TargetBranch) != "" {
 		parts = append(parts, "Merge guidance: use git_merge_status for unresolved conflicts and conflict previews, and use git_branch_state with the target branch before claiming the merge is complete. Prefer these tools over repeated raw git log or graph commands.")
