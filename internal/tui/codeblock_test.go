@@ -102,8 +102,10 @@ func TestRenderMessageContentStylesBareHeaders(t *testing.T) {
 	withTrueColorProfile(t)
 
 	theme := lookupThemeForTest(t, "default")
-	// Weaker models often emit short standalone title-case lines as section headers
-	// with no ## prefix and no trailing colon.
+	// Weaker models often emit standalone title-case lines as section headers
+	// with no ## prefix and no trailing colon.  The context-aware path also
+	// catches long headers that reference file paths when they are immediately
+	// followed by a list item (the pattern seen in debug session output).
 	content := strings.Join([]string{
 		"Summary",
 		"- Forge is a terminal-first coding agent.",
@@ -113,6 +115,10 @@ func TestRenderMessageContentStylesBareHeaders(t *testing.T) {
 		"",
 		"High-level architecture and flow",
 		"- CLI entrypoint is cmd/forge/main.go.",
+		"",
+		// Long header with path reference — only caught via context signal.
+		"Summary (grounded to README.md and cmd/forge/main.go)",
+		"- Purpose: Forge is a terminal-first coding agent.",
 	}, "\n")
 
 	got := renderMessageContent(content, 80, theme)
@@ -120,6 +126,7 @@ func TestRenderMessageContentStylesBareHeaders(t *testing.T) {
 	assertStyledSubstring(t, got, "Summary", theme.AccentPrimary)
 	assertStyledSubstring(t, got, "What I inspected (source-grounded)", theme.AccentPrimary)
 	assertStyledSubstring(t, got, "High-level architecture and flow", theme.AccentPrimary)
+	assertStyledSubstring(t, got, "Summary (grounded to README.md and cmd/forge/main.go)", theme.AccentPrimary)
 }
 
 func TestRenderMessageContentStylesWeakerModelOutput(t *testing.T) {
