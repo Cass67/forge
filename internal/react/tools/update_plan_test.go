@@ -26,3 +26,25 @@ func TestUpdatePlanStoresPlanInSession(t *testing.T) {
 		t.Fatalf("plan state = %#v", snap.PlanState)
 	}
 }
+
+func TestUpdatePlanRejectsMultipleInProgressSteps(t *testing.T) {
+	session := react.NewSession()
+	tool := NewUpdatePlan(session)
+	_, err := tool.Execute(context.Background(), map[string]any{
+		"steps_json": `[{"step":"Inspect files","status":"in_progress"},{"step":"Patch runtime","status":"in_progress"}]`,
+	})
+	if err == nil || !strings.Contains(err.Error(), "exactly one in_progress") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestUpdatePlanRejectsPendingPlanWithoutInProgressStep(t *testing.T) {
+	session := react.NewSession()
+	tool := NewUpdatePlan(session)
+	_, err := tool.Execute(context.Background(), map[string]any{
+		"steps_json": `[{"step":"Inspect files","status":"completed"},{"step":"Patch runtime","status":"pending"}]`,
+	})
+	if err == nil || !strings.Contains(err.Error(), "exactly one in_progress") {
+		t.Fatalf("err = %v", err)
+	}
+}

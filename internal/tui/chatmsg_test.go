@@ -92,6 +92,21 @@ func TestChatMessageRenderWorking(t *testing.T) {
 	}
 }
 
+func TestChatMessageRenderPlan(t *testing.T) {
+	m := ChatMessage{
+		Kind:    MsgPlan,
+		Header:  "Plan",
+		Content: "Explanation: Runtime alignment\nPlan:\n- [completed] Inspect loop\n- [in_progress] Tighten prompt",
+	}
+	got := m.Render(70, lookupThemeForTest(t, "default"))
+	if got == "" {
+		t.Fatal("expected non-empty render")
+	}
+	if !strings.Contains(got, "Plan") || !strings.Contains(got, "[in_progress] Tighten prompt") {
+		t.Fatalf("plan render missing content: %s", got)
+	}
+}
+
 func TestChatMessageRenderStatusUsesSemanticStatusProfile(t *testing.T) {
 	withTrueColorProfile(t)
 

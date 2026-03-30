@@ -49,6 +49,9 @@ func NewUpdatePlan(session planToolSession) agenttools.Tool {
 					return "", fmt.Errorf("plan step %d has invalid status %q", i+1, steps[i].Status)
 				}
 			}
+			if err := validatePlanSteps(steps); err != nil {
+				return "", err
+			}
 			explanation, _ := args["explanation"].(string)
 			state := react.PlanState{
 				Explanation: strings.TrimSpace(explanation),
@@ -58,4 +61,33 @@ func NewUpdatePlan(session planToolSession) agenttools.Tool {
 			return react.FormatPlanState(state), nil
 		},
 	}
+}
+
+func validatePlanSteps(steps []react.PlanStep) error {
+	if len(steps) == 0 {
+		return fmt.Errorf("at least one plan step is required")
+	}
+	inProgress := 0
+	pending := 0
+	for _, step := range steps {
+		switch step.Status {
+		case "in_progress":
+			inProgress++
+		case "pending":
+			pending++
+		}
+	}
+	if pending > 0 && inProgress != 1 {
+		return fmt.Errorf("plan must have exactly one in_progress step while work remains")
+	}
+	if pending == 0 && inProgress > 1 {
+		return fmt.Errorf("plan must have exactly one in_progress step while work remains")
+	}
+	if pending == 0 && inProgress == 0 {
+		return nil
+	}
+	if inProgress != 1 {
+		return fmt.Errorf("plan must have exactly one in_progress step while work remains")
+	}
+	return nil
 }

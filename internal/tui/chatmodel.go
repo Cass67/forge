@@ -365,6 +365,41 @@ func (m *ChatModel) AddMessage(msg ChatMessage) {
 	m.refreshViewport()
 }
 
+func (m *ChatModel) upsertPlanMessage(content string) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return
+	}
+	msg := ChatMessage{Kind: MsgPlan, Header: "Plan", Content: content}
+	for i := range m.messages {
+		if m.messages[i].Kind != MsgPlan {
+			continue
+		}
+		m.messages[i] = msg
+		m.rebuildTranscriptStateFromMessages()
+		m.refreshViewport()
+		return
+	}
+	m.AddMessage(msg)
+}
+
+func (m *ChatModel) upsertTaskContextMessage(content string) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return
+	}
+	msg := ChatMessage{Kind: MsgForge, Header: "Task", Content: content}
+	for i := range m.messages {
+		if m.messages[i].Kind == MsgForge && strings.TrimSpace(m.messages[i].Header) == "Task" {
+			m.messages[i] = msg
+			m.rebuildTranscriptStateFromMessages()
+			m.refreshViewport()
+			return
+		}
+	}
+	m.AddMessage(msg)
+}
+
 func (m *ChatModel) AddWorkingMessage(content string) {
 	m.recordWorkingMessage(strings.TrimSpace(content))
 }
@@ -1365,6 +1400,21 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		m.appendTools("", fmt.Sprintf("● %s\n", ev.Agent))
 		m.appendTools("", fmt.Sprintf("  %s\n", ev.Text))
 	case llm.EventToolResult:
+		if ev.Agent == "__task_context" {
+			if !ev.IsError {
+				m.upsertTaskContextMessage(ev.Text)
+			}
+			return m, nil
+		}
+		if ev.Agent == "__validation" {
+			if text := strings.TrimSpace(ev.Text); text != "" {
+				m.AddMessage(ChatMessage{Kind: MsgStatus, Content: text})
+			}
+			return m, nil
+		}
+		if ev.Agent == "update_plan" && !ev.IsError {
+			m.upsertPlanMessage(ev.Text)
+		}
 		if ev.Content != "" {
 			m.lastToolResult = ev.Content
 		} else if ev.Text != "" {
