@@ -48,10 +48,15 @@ func NewSearch(workDir string) Tool {
 }
 
 func searchRg(ctx context.Context, workDir, pattern, searchPath, glob string) (string, error) {
-	args := []string{"-n", "--no-heading", pattern, searchPath}
-	if glob != "" {
-		args = []string{"-n", "--no-heading", "--glob", glob, pattern, searchPath}
+	// Pass ignore files explicitly so they apply regardless of the user's rg config.
+	args := []string{"-n", "--no-heading"}
+	for _, name := range []string{".ignore", ".rgignore"} {
+		args = append(args, "--ignore-file", name)
 	}
+	if glob != "" {
+		args = append(args, "--glob", glob)
+	}
+	args = append(args, pattern, searchPath)
 	cmd := exec.CommandContext(ctx, "rg", args...)
 	cmd.Dir = workDir
 	out, err := cmd.Output()
@@ -65,10 +70,19 @@ func searchRg(ctx context.Context, workDir, pattern, searchPath, glob string) (s
 }
 
 func searchGrep(ctx context.Context, workDir, pattern, searchPath, glob string) (string, error) {
-	args := []string{"-rn", pattern, searchPath}
-	if glob != "" {
-		args = []string{"-rn", "--include", glob, pattern, searchPath}
+	// grep has no native ignore-file support; exclude known secret-bearing filenames.
+	guard := newIgnoreGuard(workDir)
+	args := []string{"-rn"}
+	for _, pat := range guard.patterns {
+		// Only use simple filename patterns (no path separators) as --exclude globs.
+		if !strings.Contains(pat, "/") {
+			args = append(args, "--exclude="+pat)
+		}
 	}
+	if glob != "" {
+		args = append(args, "--include", glob)
+	}
+	args = append(args, pattern, searchPath)
 	cmd := exec.CommandContext(ctx, "grep", args...)
 	cmd.Dir = workDir
 	out, err := cmd.Output()

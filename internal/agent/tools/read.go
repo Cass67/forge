@@ -8,6 +8,7 @@ import (
 )
 
 func NewReadFile(workDir string) Tool {
+	guard := newIgnoreGuard(workDir)
 	return Tool{
 		Name:        "read_file",
 		Description: "Read a file's contents. Returns content with line numbers.",
@@ -22,6 +23,9 @@ func NewReadFile(workDir string) Tool {
 			resolved, err := ResolvePath(workDir, path)
 			if err != nil {
 				return "", err
+			}
+			if guard.blocked(resolved) {
+				return fmt.Sprintf("error: %q is excluded by the secret-file policy (.ignore)", path), nil
 			}
 
 			data, err := os.ReadFile(resolved)

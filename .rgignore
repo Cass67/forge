@@ -1,4 +1,5 @@
 # Keep ripgrep aligned with the default secret-exclusion policy.
+config.toml
 .env
 .env.*
 *.env
