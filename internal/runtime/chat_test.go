@@ -680,6 +680,58 @@ func TestValidateTaskCompletionBuildsEvidenceAwareRetryPromptForIntentNarration(
 	}
 }
 
+func TestValidateTaskCompletionAllowsDescriptiveImplementedInText(t *testing.T) {
+	// "X is implemented in Y" describes existing code; it must not be treated as a change claim.
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "explain this repo",
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "explain this repo"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{
+				{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"ARCHITECTURE.md"}`},
+				{ID: "c2", Name: "list_dir", ArgsJSON: `{"path":"internal/tui"}`},
+			}},
+			{Role: llm.RoleTool, ToolCallID: "c1", Content: "ok"},
+			{Role: llm.RoleTool, ToolCallID: "c2", Content: "ok"},
+		},
+	}
+
+	finalText := strings.Join([]string{
+		"Forge is a terminal-first coding agent.",
+		"The live chat surface is implemented in internal/tui/chatmodel.go.",
+		"The TUI is implemented using Bubble Tea.",
+		"Tool results are wired through the renderer.",
+	}, "\n")
+
+	if err := validateTaskCompletion(t.TempDir(), snapshot, finalText); err != nil {
+		t.Fatalf("unexpected err = %v", err)
+	}
+}
+
+func TestValidateTaskCompletionRejectsFirstPersonChangeClaimWithoutEdits(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "explain this repo",
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "explain this repo"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"README.md"}`}}},
+			{Role: llm.RoleTool, ToolCallID: "c1", Content: "ok"},
+		},
+	}
+
+	for _, text := range []string{
+		"Updated the runtime flow and added a new retry path.",
+		"I implemented the new theme.",
+		"We've added a new retry path.",
+	} {
+		err := validateTaskCompletion(t.TempDir(), snapshot, text)
+		if err == nil {
+			t.Fatalf("expected rejection for %q", text)
+		}
+		if !strings.Contains(err.Error(), "claimed code changes without edits") {
+			t.Fatalf("wrong error for %q: %v", text, err)
+		}
+	}
+}
+
 func TestValidateTaskCompletionAllowsVerifiedPreviewURL(t *testing.T) {
 	snapshot := reactruntime.SessionSnapshot{
 		LastInput: "start a preview for themes_preview.html and tell me the verified url",
