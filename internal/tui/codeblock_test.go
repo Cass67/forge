@@ -98,6 +98,32 @@ func TestRenderMessageContentStylesHeadingsListsAndStrongEmphasis(t *testing.T) 
 	}
 }
 
+func TestRenderMessageContentStylesWeakerModelOutput(t *testing.T) {
+	withTrueColorProfile(t)
+
+	theme := lookupThemeForTest(t, "default")
+	// Weaker models often produce colon-style headers and N) numbered lists
+	// instead of ## headings and 1. items.
+	content := strings.Join([]string{
+		"Architecture:",
+		"1) Entry point is cmd/forge/main.go",
+		"2) Runtime lives under internal/react",
+		"**Key files:**",
+		"- internal/tui/chatmodel.go",
+	}, "\n")
+
+	got := renderMessageContent(content, 80, theme)
+
+	assertStyledSubstring(t, got, "Architecture:", theme.AccentPrimary)
+	assertStyledSubstring(t, got, "Key files:", theme.AccentPrimary)
+	assertStyledSubstring(t, got, "1)", theme.AccentSecondary)
+	assertStyledSubstring(t, got, "2)", theme.AccentSecondary)
+	assertStyledSubstring(t, got, "-", theme.AccentSecondary)
+	if strings.Contains(got, "**Key files:**") {
+		t.Fatalf("expected bold markers stripped from colon header, got: %q", got)
+	}
+}
+
 func TestRenderMessageContentProseDoesNotPaintInlineBackgroundBlocks(t *testing.T) {
 	withTrueColorProfile(t)
 
