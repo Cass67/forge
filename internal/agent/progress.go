@@ -61,11 +61,20 @@ func progressLine(role, toolName, summary string) string {
 		return "Looking at recent commits for context"
 	case "git_commit":
 		return "Creating a commit"
+	case "list_mcp_resources":
+		return "Listing MCP resources"
+	case "list_mcp_resource_templates":
+		return "Listing MCP resource templates"
+	case "read_mcp_resource":
+		return "Reading MCP resource content"
 	case "think":
 		return "Reasoning through the next step"
 	case "delegate":
 		return delegateProgressLine(summary)
 	default:
+		if strings.HasPrefix(toolName, "mcp__") {
+			return mcpProgressLine(toolName)
+		}
 		return ""
 	}
 }
@@ -114,4 +123,17 @@ func searchProgressLine(summary string) string {
 	default:
 		return fmt.Sprintf("Searching for %q", strings.TrimSpace(summary))
 	}
+}
+
+func mcpProgressLine(toolName string) string {
+	parts := strings.Split(toolName, "__")
+	if len(parts) < 3 {
+		return "Calling an MCP tool"
+	}
+	server := strings.TrimSpace(parts[1])
+	tool := strings.TrimSpace(parts[2])
+	if server == "" || tool == "" {
+		return "Calling an MCP tool"
+	}
+	return fmt.Sprintf("Calling MCP %s:%s", server, tool)
 }

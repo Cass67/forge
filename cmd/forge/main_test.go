@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"forge/internal/config"
+	"forge/internal/mcp"
 )
 
 func TestStartsWithFlag(t *testing.T) {
@@ -66,6 +70,9 @@ func TestPrintHelpPromotesMakeAndKeepsImproveAlias(t *testing.T) {
 	if !strings.Contains(output, "forge improve <path> [flags]    Compatibility alias for forge make <path> [flags]") {
 		t.Fatalf("expected forge improve alias help entry, got:\n%s", output)
 	}
+	if !strings.Contains(output, "forge mcp [list|get|add|remove|login|logout]") {
+		t.Fatalf("expected forge mcp help entry, got:\n%s", output)
+	}
 }
 
 func TestPrintChatHelpMentionsAdvancedDebugView(t *testing.T) {
@@ -97,4 +104,190 @@ func captureStdout(t *testing.T, fn func()) string {
 	}
 	_ = r.Close()
 	return buf.String()
+}
+
+func TestRunMCPAddListGetAndRemove(t *testing.T) {
+	oldLoad := loadMainConfigFn
+	oldSave := saveMainConfigFn
+	oldPath := mainConfigPathFn
+	defer func() {
+		loadMainConfigFn = oldLoad
+		saveMainConfigFn = oldSave
+		mainConfigPathFn = oldPath
+	}()
+
+	cfg := &config.Config{}
+	var savedPath string
+	loadMainConfigFn = func() (*config.Config, error) {
+		return cfg, nil
+	}
+	saveMainConfigFn = func(path string, in *config.Config) error {
+		savedPath = path
+		cfg = in
+		return nil
+	}
+	mainConfigPathFn = func() string {
+		return filepath.Join(t.TempDir(), "config.toml")
+	}
+
+	addOutput := captureStdout(t, func() {
+		runMCPAdd([]string{"context7", "--url", "https://mcp.context7.com/mcp", "--timeout-ms", "5000"})
+	})
+	if !strings.Contains(addOutput, "Added MCP server context7.") {
+		t.Fatalf("addOutput = %q", addOutput)
+	}
+	server, ok := cfg.MCPServers["context7"]
+	if !ok {
+		t.Fatal("expected MCP server to be saved")
+	}
+	if server.Type != "remote" || server.URL != "https://mcp.context7.com/mcp" || server.TimeoutMS != 5000 {
+		t.Fatalf("saved server = %#v", server)
+	}
+	if savedPath == "" {
+		t.Fatal("expected config path to be used")
+	}
+
+	listOutput := captureStdout(t, runMCPList)
+	if !strings.Contains(listOutput, "context7") || !strings.Contains(listOutput, "remote") {
+		t.Fatalf("listOutput = %q", listOutput)
+	}
+
+	getOutput := captureStdout(t, func() {
+		runMCPGet("context7")
+	})
+	if !strings.Contains(getOutput, "name = context7") || !strings.Contains(getOutput, "url = https://mcp.context7.com/mcp") {
+		t.Fatalf("getOutput = %q", getOutput)
+	}
+
+	removeOutput := captureStdout(t, func() {
+		runMCPRemove("context7")
+	})
+	if !strings.Contains(removeOutput, "Removed MCP server context7.") {
+		t.Fatalf("removeOutput = %q", removeOutput)
+	}
+	if _, ok := cfg.MCPServers["context7"]; ok {
+		t.Fatal("expected MCP server to be removed")
+	}
+}
+
+func TestRunMCPAddStdioCommand(t *testing.T) {
+	oldLoad := loadMainConfigFn
+	oldSave := saveMainConfigFn
+	oldPath := mainConfigPathFn
+	defer func() {
+		loadMainConfigFn = oldLoad
+		saveMainConfigFn = oldSave
+		mainConfigPathFn = oldPath
+	}()
+
+	cfg := &config.Config{}
+	loadMainConfigFn = func() (*config.Config, error) {
+		return cfg, nil
+	}
+	saveMainConfigFn = func(path string, in *config.Config) error {
+		cfg = in
+		return nil
+	}
+	mainConfigPathFn = func() string { return filepath.Join(t.TempDir(), "config.toml") }
+
+	captureStdout(t, func() {
+		runMCPAdd([]string{"filesystem", "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"})
+	})
+	server := cfg.MCPServers["filesystem"]
+	if server.Type != "stdio" {
+		t.Fatalf("server.Type = %q", server.Type)
+	}
+	if len(server.Command) != 4 || server.Command[0] != "npx" {
+		t.Fatalf("server.Command = %#v", server.Command)
+	}
+}
+
+func TestRunMCPAddUsesContext7Preset(t *testing.T) {
+	oldLoad := loadMainConfigFn
+	oldSave := saveMainConfigFn
+	oldPath := mainConfigPathFn
+	defer func() {
+		loadMainConfigFn = oldLoad
+		saveMainConfigFn = oldSave
+		mainConfigPathFn = oldPath
+	}()
+
+	cfg := &config.Config{}
+	loadMainConfigFn = func() (*config.Config, error) {
+		return cfg, nil
+	}
+	saveMainConfigFn = func(path string, in *config.Config) error {
+		cfg = in
+		return nil
+	}
+	mainConfigPathFn = func() string { return filepath.Join(t.TempDir(), "config.toml") }
+
+	captureStdout(t, func() {
+		runMCPAdd([]string{"context7"})
+	})
+	server := cfg.MCPServers["context7"]
+	if server.Type != "remote" || server.URL != "https://mcp.context7.com/mcp" {
+		t.Fatalf("server = %#v", server)
+	}
+}
+
+func TestRunMCPLoginAndLogout(t *testing.T) {
+	oldLoad := loadMainConfigFn
+	oldSave := saveMainConfigFn
+	oldPath := mainConfigPathFn
+	oldPrompt := promptMCPTokenFn
+	oldXDG := os.Getenv("XDG_CONFIG_HOME")
+	defer func() {
+		loadMainConfigFn = oldLoad
+		saveMainConfigFn = oldSave
+		mainConfigPathFn = oldPath
+		promptMCPTokenFn = oldPrompt
+		_ = os.Setenv("XDG_CONFIG_HOME", oldXDG)
+	}()
+
+	tmp := t.TempDir()
+	if err := os.Setenv("XDG_CONFIG_HOME", tmp); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		MCPServers: map[string]config.MCPServerConfig{
+			"context7": {Type: "remote", URL: "https://mcp.context7.com/mcp"},
+		},
+	}
+	loadMainConfigFn = func() (*config.Config, error) {
+		return cfg, nil
+	}
+	saveMainConfigFn = func(path string, in *config.Config) error {
+		cfg = in
+		return nil
+	}
+	mainConfigPathFn = func() string { return filepath.Join(tmp, "forge", "config.toml") }
+	promptMCPTokenFn = func() (string, error) { return "secret-token", nil }
+
+	loginOutput := captureStdout(t, func() {
+		runMCPLogin("context7")
+	})
+	if !strings.Contains(loginOutput, "Stored MCP token for context7.") {
+		t.Fatalf("loginOutput = %q", loginOutput)
+	}
+	if token, ok, err := mcp.BearerToken("context7"); err != nil || !ok || token != "secret-token" {
+		t.Fatalf("BearerToken() = (%q, %t, %v)", token, ok, err)
+	}
+
+	getOutput := captureStdout(t, func() {
+		runMCPGet("context7")
+	})
+	if !strings.Contains(getOutput, "auth = bearer_token") {
+		t.Fatalf("getOutput = %q", getOutput)
+	}
+
+	logoutOutput := captureStdout(t, func() {
+		runMCPLogout("context7")
+	})
+	if !strings.Contains(logoutOutput, "Cleared MCP token for context7.") {
+		t.Fatalf("logoutOutput = %q", logoutOutput)
+	}
+	if _, ok, err := mcp.BearerToken("context7"); err != nil || ok {
+		t.Fatalf("BearerToken() after logout = (%t, %v)", ok, err)
+	}
 }
