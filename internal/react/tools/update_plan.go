@@ -67,11 +67,21 @@ func NewUpdatePlan(session planToolSession) agenttools.Tool {
 
 // normalizePlanStatus lowercases the status and normalises spaces/hyphens to
 // underscores so that "In Progress", "in-progress", "In_Progress" etc. all
-// map to the canonical "in_progress" token.
+// map to the canonical "in_progress" token. Common synonyms for the three
+// canonical values are also mapped so that model-generated variants like
+// "done", "finished", "complete", "started", "running" are accepted.
 func normalizePlanStatus(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	s = strings.ReplaceAll(s, " ", "_")
 	s = strings.ReplaceAll(s, "-", "_")
+	switch s {
+	case "done", "finished", "complete", "completed_step", "success", "succeeded":
+		return "completed"
+	case "started", "running", "active", "doing", "wip", "in_progress_step":
+		return "in_progress"
+	case "todo", "not_started", "queued", "waiting":
+		return "pending"
+	}
 	return s
 }
 
