@@ -6,12 +6,12 @@ This document explains how to work effectively in the Forge repository.
 
 If you are orienting yourself for the first time, read these in order:
 
-1. [README.md](/Users/cass/git/forge/README.md)
-2. [ARCHITECTURE.md](/Users/cass/git/forge/ARCHITECTURE.md)
-3. [cmd/forge/main.go](/Users/cass/git/forge/cmd/forge/main.go)
-4. [internal/bootstrap/runtime.go](/Users/cass/git/forge/internal/bootstrap/runtime.go)
-5. [internal/runtime/chat.go](/Users/cass/git/forge/internal/runtime/chat.go)
-6. [internal/agent/agent.go](/Users/cass/git/forge/internal/agent/agent.go)
+1. [README.md](./README.md)
+2. [ARCHITECTURE.md](./ARCHITECTURE.md)
+3. [cmd/forge/main.go](./cmd/forge/main.go)
+4. [internal/bootstrap/runtime.go](./internal/bootstrap/runtime.go)
+5. [internal/runtime/chat.go](./internal/runtime/chat.go)
+6. [internal/agent/agent.go](./internal/agent/agent.go)
 
 ## Repository Shape
 

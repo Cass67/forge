@@ -1170,3 +1170,87 @@ func TestRunnerNonValidationCommandSkipsValidationTracking(t *testing.T) {
 		}
 	}
 }
+
+func TestHasPorcelainConflictsOnlyMatchesConflictCodes(t *testing.T) {
+	// Normal staged changes must NOT be treated as conflicts.
+	normal := "M  README.md\nA  newfile.go\nD  old.go\n?? untracked.txt"
+	if hasPorcelainConflicts(normal) {
+		t.Fatalf("staged/unstaged changes falsely detected as conflicts: %q", normal)
+	}
+
+	// Empty output = no conflicts.
+	if hasPorcelainConflicts("") {
+		t.Fatal("empty output falsely detected as conflicts")
+	}
+
+	// Lines with conflict XY codes must be detected.
+	for _, code := range []string{"UU", "AA", "DD", "AU", "UA", "DU", "UD"} {
+		line := code + " somefile.go"
+		if !hasPorcelainConflicts(line) {
+			t.Errorf("conflict code %q not detected", code)
+		}
+	}
+}
+
+func TestBlockedToolResultDoesNotFireOnStagedChange(t *testing.T) {
+	r := NewRunner(Config{})
+	// Simulate: agent runs `git status --porcelain` and gets a staged modification.
+	r.updateGitWorkflowForCommand("git status --porcelain", "M  README.md")
+
+	if r.gitWorkflow.unmergedFiles {
+		t.Fatal("staged change incorrectly set unmergedFiles=true")
+	}
+
+	// Commit should not be blocked.
+	args := map[string]any{"command": "git commit -m \"update readme\""}
+	if blocked := r.blockedToolResult("run_command", args); blocked != "" {
+		t.Fatalf("commit blocked unexpectedly: %q", blocked)
+	}
+}
+
+func TestBlockedToolResultFiresOnActualConflict(t *testing.T) {
+	r := NewRunner(Config{})
+	// Simulate: git status --porcelain reports an unmerged file.
+	r.updateGitWorkflowForCommand("git status --porcelain", "UU README.md")
+
+	if !r.gitWorkflow.unmergedFiles {
+		t.Fatal("UU status code did not set unmergedFiles=true")
+	}
+
+	args := map[string]any{"command": "git commit -m \"update readme\""}
+	if blocked := r.blockedToolResult("run_command", args); blocked == "" {
+		t.Fatal("expected commit to be blocked when UU conflict present")
+	}
+}
+
+func TestBlockedToolResultClearsAfterConflictResolution(t *testing.T) {
+	r := NewRunner(Config{})
+	// Conflict detected via git status --porcelain.
+	r.updateGitWorkflowForCommand("git status --porcelain", "UU README.md")
+	if !r.gitWorkflow.unmergedFiles {
+		t.Fatal("setup: expected unmergedFiles=true")
+	}
+	// Agent resolves and re-checks: no more conflict lines.
+	r.updateGitWorkflowForCommand("git status --porcelain", "M  README.md")
+	if r.gitWorkflow.unmergedFiles {
+		t.Fatal("unmergedFiles should be cleared after clean porcelain output")
+	}
+}
+
+func TestLsFilesUnmergedRecognizedAsConflictCheck(t *testing.T) {
+	if !isGitUnmergedListCommand("git ls-files -u") {
+		t.Fatal("git ls-files -u not recognized as unmerged-list command")
+	}
+	if !isGitUnmergedListCommand("git ls-files --unmerged") {
+		t.Fatal("git ls-files --unmerged not recognized as unmerged-list command")
+	}
+	r := NewRunner(Config{})
+	r.updateGitWorkflowForCommand("git ls-files -u", "")
+	if r.gitWorkflow.unmergedFiles {
+		t.Fatal("empty ls-files -u output should not set unmergedFiles")
+	}
+	r.updateGitWorkflowForCommand("git ls-files -u", "100644 abc123 1\tREADME.md")
+	if !r.gitWorkflow.unmergedFiles {
+		t.Fatal("non-empty ls-files -u output should set unmergedFiles")
+	}
+}

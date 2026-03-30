@@ -511,8 +511,21 @@ func (r *Runner) updateGitWorkflowForCommand(command, result string) {
 	switch {
 	case command == "":
 		return
-	case isGitConflictCheckCommand(command):
-		if hasUnmergedFiles(result) {
+	case isGitUnmergedListCommand(command):
+		// Commands that only output unmerged files: any non-empty line = conflict.
+		if hasNonEmptyOutput(result) {
+			r.gitWorkflow.mergeActive = true
+			r.gitWorkflow.unmergedFiles = true
+			return
+		}
+		r.gitWorkflow.unmergedFiles = false
+		if r.gitWorkflow.commitBlocker == commitBlockerNone {
+			r.gitWorkflow.blockerSummary = ""
+		}
+	case isGitStatusPorcelainCommand(command):
+		// git status --porcelain mixes staged/unstaged changes with conflict markers.
+		// Only lines with explicit conflict XY codes indicate unmerged files.
+		if hasPorcelainConflicts(result) {
 			r.gitWorkflow.mergeActive = true
 			r.gitWorkflow.unmergedFiles = true
 			return
@@ -650,8 +663,19 @@ func isGitMergeLike(command string) bool {
 	return strings.HasPrefix(command, "git merge ") || strings.Contains(command, " git merge ")
 }
 
-func isGitConflictCheckCommand(command string) bool {
-	return strings.Contains(command, "git diff --name-only --diff-filter=u") || strings.Contains(command, "git status --porcelain")
+// isGitUnmergedListCommand matches commands whose output consists exclusively of
+// unmerged-file entries, so any non-empty line is a conflict indicator.
+func isGitUnmergedListCommand(command string) bool {
+	return strings.Contains(command, "git diff --name-only --diff-filter=u") ||
+		strings.Contains(command, "git diff --name-only --diff-filter=U") ||
+		strings.Contains(command, "git ls-files -u") ||
+		strings.Contains(command, "git ls-files --unmerged")
+}
+
+// isGitStatusPorcelainCommand matches git status --porcelain, whose output mixes
+// all change types; only specific XY codes indicate unmerged files.
+func isGitStatusPorcelainCommand(command string) bool {
+	return strings.Contains(command, "git status --porcelain")
 }
 
 func hasMergeConflict(result string) bool {
@@ -659,21 +683,34 @@ func hasMergeConflict(result string) bool {
 	return strings.Contains(lower, "automatic merge failed") || strings.Contains(lower, "conflict (")
 }
 
-func hasUnmergedFiles(result string) bool {
+// hasNonEmptyOutput returns true when result contains at least one non-blank,
+// non-exit-code line. Used for commands that only emit unmerged-file paths.
+func hasNonEmptyOutput(result string) bool {
 	trimmed := strings.TrimSpace(result)
 	if trimmed == "" || trimmed == "exit 0" {
 		return false
 	}
-	lines := strings.Split(trimmed, "\n")
-	for _, line := range lines {
+	for _, line := range strings.Split(trimmed, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "exit ") {
-			continue
-		}
-		if strings.HasPrefix(line, "UU ") || strings.HasPrefix(line, "AA ") || strings.HasPrefix(line, "DD ") {
+		if line != "" && !strings.HasPrefix(line, "exit ") {
 			return true
 		}
-		return true
+	}
+	return false
+}
+
+// hasPorcelainConflicts checks git status --porcelain output for lines whose XY
+// status code indicates an unmerged (conflicted) file. Normal staged/unstaged
+// changes (e.g. "M  README.md") are not treated as conflicts.
+func hasPorcelainConflicts(result string) bool {
+	conflictPrefixes := []string{"UU ", "AA ", "DD ", "AU ", "UA ", "DU ", "UD "}
+	for _, line := range strings.Split(result, "\n") {
+		line = strings.TrimSpace(line)
+		for _, prefix := range conflictPrefixes {
+			if strings.HasPrefix(line, prefix) {
+				return true
+			}
+		}
 	}
 	return false
 }
