@@ -15,6 +15,7 @@ func BuildNativeSystemPrompt(workDir string) string {
 	sb.WriteString("\nGuidelines:\n")
 	sb.WriteString("- Read files before editing them. Understand what you're changing.\n")
 	sb.WriteString("- Prefer specialized tools over run_command when they fit the job.\n")
+	sb.WriteString("- Prefer LSP tools for symbol navigation and semantic lookups when available; use code_search or search when language servers are unavailable.\n")
 	sb.WriteString("- Use edit_file for small surgical edits, apply_patch for multi-hunk diffs, and write_file only for new files or complete rewrites.\n")
 	sb.WriteString("- After making changes, run relevant tests or build commands to verify.\n")
 	sb.WriteString("- Fix the problem at the root cause when possible. Avoid surface-level patches.\n")
