@@ -39,7 +39,7 @@ func NewUpdatePlan(session planToolSession) agenttools.Tool {
 			}
 			for i := range steps {
 				steps[i].Step = strings.TrimSpace(steps[i].Step)
-				steps[i].Status = strings.TrimSpace(steps[i].Status)
+				steps[i].Status = normalizePlanStatus(steps[i].Status)
 				if steps[i].Step == "" {
 					return "", fmt.Errorf("plan step %d is missing step text", i+1)
 				}
@@ -63,6 +63,16 @@ func NewUpdatePlan(session planToolSession) agenttools.Tool {
 			return react.FormatPlanState(state), nil
 		},
 	}
+}
+
+// normalizePlanStatus lowercases the status and normalises spaces/hyphens to
+// underscores so that "In Progress", "in-progress", "In_Progress" etc. all
+// map to the canonical "in_progress" token.
+func normalizePlanStatus(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.ReplaceAll(s, " ", "_")
+	s = strings.ReplaceAll(s, "-", "_")
+	return s
 }
 
 // normalizePlanSteps enforces the one-in_progress rule by auto-promoting

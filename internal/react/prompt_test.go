@@ -56,7 +56,7 @@ func TestSessionMessagesIncludeCompactionSummaryContext(t *testing.T) {
 }
 
 func TestBuildMessages_LargeToolResultTruncated(t *testing.T) {
-	lines := make([]string, 100)
+	lines := make([]string, 300)
 	for i := range lines {
 		lines[i] = fmt.Sprintf("output line %d", i+1)
 	}
@@ -82,14 +82,14 @@ func TestBuildMessages_LargeToolResultTruncated(t *testing.T) {
 		t.Fatal("no tool message in output")
 	}
 	// Middle lines must be absent from LLM context
-	if strings.Contains(toolMsg.Content, "output line 50") {
+	if strings.Contains(toolMsg.Content, "output line 150") {
 		t.Error("middle lines should be truncated from LLM context")
 	}
 	// Head and tail must be preserved
 	if !strings.Contains(toolMsg.Content, "output line 1") {
 		t.Error("head lines should be present in LLM context")
 	}
-	if !strings.Contains(toolMsg.Content, "output line 100") {
+	if !strings.Contains(toolMsg.Content, "output line 300") {
 		t.Error("tail lines should be present in LLM context")
 	}
 	// Truncation marker must appear
@@ -97,7 +97,7 @@ func TestBuildMessages_LargeToolResultTruncated(t *testing.T) {
 		t.Error("truncation marker should be present")
 	}
 	// Original snapshot must not be mutated — truncateToolResults must copy
-	if !strings.Contains(snap.History[2].Content, "output line 50") {
+	if !strings.Contains(snap.History[2].Content, "output line 150") {
 		t.Error("original snapshot history must not be mutated by BuildMessages")
 	}
 }
