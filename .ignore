@@ -1,4 +1,5 @@
 # Secret-bearing files and directories: exclude from default search/read flows.
+config.toml
 .env
 .env.*
 *.env
