@@ -237,14 +237,17 @@ func RunChatLive(setup *ChatSetup) {
 	evRenderer := agent.NewEventRenderer(renderCh)
 
 	var approve tools.ApprovalFunc
+	gate := reactruntime.NewApprovalGate(setup.WorkDir, reactruntime.LoadApprovalConfig(setup.Config), nil, func(text string) {
+		evRenderer.Info(text)
+	})
 	if setup.Yolo {
 		approve = agent.YoloApproval()
 	} else {
 		approve = evRenderer.LiveApproval()
 	}
-	approve = reactruntime.NewApprovalGate(setup.WorkDir, reactruntime.LoadApprovalConfig(setup.Config), approve, func(text string) {
-		evRenderer.Info(text)
-	}).Approve
+	gate.SetPrompt(approve)
+	approve = gate.Approve
+	defer gate.Restore()
 
 	reg := tools.NewRegistry()
 	session := reactruntime.NewSession()
@@ -475,9 +478,11 @@ func RunChatConsole(setup *ChatSetup) {
 	} else {
 		approve = agent.InteractiveApproval(os.Stdin, os.Stdout)
 	}
-	approve = reactruntime.NewApprovalGate(setup.WorkDir, reactruntime.LoadApprovalConfig(setup.Config), approve, func(text string) {
+	gate := reactruntime.NewApprovalGate(setup.WorkDir, reactruntime.LoadApprovalConfig(setup.Config), approve, func(text string) {
 		_, _ = fmt.Fprintln(os.Stdout, text)
-	}).Approve
+	})
+	approve = gate.Approve
+	defer gate.Restore()
 
 	reg := tools.NewRegistry()
 	renderer := agent.NewRenderer(os.Stdout, 80, true)

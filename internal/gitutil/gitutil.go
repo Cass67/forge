@@ -79,6 +79,36 @@ func BranchExists(dir, name string) (bool, error) {
 	return true, nil
 }
 
+// IsBranchMerged reports whether branch has been fully merged into base.
+func IsBranchMerged(dir, branch, base string) (bool, error) {
+	branch = strings.TrimSpace(branch)
+	base = strings.TrimSpace(base)
+	if branch == "" || base == "" {
+		return false, fmt.Errorf("branch and base are required")
+	}
+	// git branch --merged <base> lists all branches merged into base.
+	out, err := output(dir, "git", "branch", "--merged", base)
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "* ")) == branch {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// DeleteBranch deletes a local branch. The branch must already be merged or
+// the call will fail (it uses -d, not -D).
+func DeleteBranch(dir, name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("branch name is required")
+	}
+	return run(dir, "git", "branch", "-d", name)
+}
+
 // CheckoutNewBranch creates and switches to a new branch.
 func CheckoutNewBranch(dir, name string) error {
 	name = strings.TrimSpace(name)
