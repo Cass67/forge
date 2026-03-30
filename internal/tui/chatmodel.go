@@ -2118,7 +2118,7 @@ func (m ChatModel) submitSkillInput(s skills.Skill, turnLabel, msg string) (tea.
 var builtinCommands = []string{
 	"/clear", "/clear all", "/clear agent", "/clear tools",
 	"/help", "/stats", "/trace",
-	"/theme", "/theme low", "/theme default", "/theme light", "/theme dusk",
+	"/theme", "/theme low", "/theme default", "/theme light", "/theme dusk", "/theme midnight-ink", "/theme eclipse",
 	"/tools", "/toggle tools", "/toggle tools on", "/toggle tools off",
 	"/models", "/model", "/provider",
 	"/skills", "/auto-skills", "/sessions", "/save", "/restore",
@@ -2372,7 +2372,7 @@ func (m ChatModel) helpLines() []string {
 			"",
 			"Layout and display:",
 			"  /theme             cycle chat themes",
-			"  /theme <name>      select default, codex, opencode, low, light, dusk, or eclipse",
+			"  /theme <name>      select default, codex, opencode, low, light, dusk, midnight-ink, or eclipse",
 			"",
 			"Export and cleanup:",
 			"  /copy agent        copy transcript",
