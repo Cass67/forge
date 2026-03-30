@@ -4413,7 +4413,6 @@ func fillSurfaceRows(view string, width int, bg lipgloss.Color) string {
 	lines := strings.Split(view, "\n")
 	fill := lipgloss.NewStyle().Background(bg)
 	for i, line := range lines {
-		line = paintPlainSpacesWithBG(line, bg)
 		printable := ansiPrintableWidth(line)
 		if printable < width {
 			line += fill.Render(strings.Repeat(" ", width-printable))
@@ -4421,40 +4420,6 @@ func fillSurfaceRows(view string, width int, bg lipgloss.Color) string {
 		lines[i] = line
 	}
 	return strings.Join(lines, "\n")
-}
-
-func paintPlainSpacesWithBG(line string, bg lipgloss.Color) string {
-	if line == "" || !strings.Contains(line, " ") {
-		return line
-	}
-	fill := lipgloss.NewStyle().Background(bg)
-	var out strings.Builder
-	out.Grow(len(line) + 16)
-	for i := 0; i < len(line); {
-		if line[i] == '\x1b' {
-			if esc, n := consumeANSIEscape(line[i:]); n > 0 {
-				out.WriteString(esc)
-				i += n
-				continue
-			}
-		}
-		if line[i] != ' ' {
-			out.WriteByte(line[i])
-			i++
-			continue
-		}
-		start := i
-		for i < len(line) && line[i] == ' ' {
-			i++
-		}
-		runLen := i - start
-		if runLen >= 2 {
-			out.WriteString(fill.Render(strings.Repeat(" ", runLen)))
-			continue
-		}
-		out.WriteByte(' ')
-	}
-	return out.String()
 }
 
 func (m ChatModel) renderLiveProgressSlot(theme chatTheme) string {
