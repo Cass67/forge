@@ -242,6 +242,52 @@ func TestChatTranscriptRepoReviewConversationEndsWithVisiblePromptBoundaryRefusa
 	}
 }
 
+func TestChatTranscriptRoutesInteractiveShellWorkThroughExecSession(t *testing.T) {
+	workDir := writeTranscriptFixtureRepo(t)
+	cfg := &config.Config{}
+	cfg.Chat.MaxTurns = 8
+
+	driver := &scriptedTranscriptDriver{}
+	setup := &ChatSetup{
+		Config:    cfg,
+		ChatModel: "test-model",
+		WorkDir:   workDir,
+		Driver:    driver,
+	}
+
+	turns := runChatTranscript(t, setup, []transcriptStep{
+		{
+			Input:           "start a dev server for this app and keep it running so i can steer changes",
+			WantContains:    []string{"terminal session", "http://127.0.0.1:4173"},
+			WantNotContains: []string{"<tool_call>", "unexpected driver input"},
+			Timeout:         8 * time.Second,
+		},
+	})
+
+	if len(turns) != 1 {
+		t.Fatalf("turns = %d, want 1", len(turns))
+	}
+	foundStart := false
+	foundStatus := false
+	for _, ev := range turns[0].Events {
+		if ev.Kind == llm.EventToolCall && ev.Agent == "exec_session_start" {
+			foundStart = true
+		}
+		if ev.Kind == llm.EventToolResult && (ev.Agent == "exec_session_start" || ev.Agent == "exec_session_status") {
+			foundStatus = true
+		}
+	}
+	if !foundStart {
+		t.Fatalf("expected exec_session_start tool call in events: %#v", summarizeTranscriptEventKinds(turns[0].Events))
+	}
+	if !foundStatus {
+		t.Fatalf("expected exec session status/result in events: %#v", summarizeTranscriptEventKinds(turns[0].Events))
+	}
+	if len(driver.unexpected) > 0 {
+		t.Fatalf("unexpected driver paths: %#v", driver.unexpected)
+	}
+}
+
 func TestChatTranscriptRepoReviewPlanningFollowUpStaysGrounded(t *testing.T) {
 	workDir := writeTranscriptFixtureRepo(t)
 	cfg := &config.Config{}
@@ -604,6 +650,8 @@ func (d *scriptedTranscriptDriver) Stream(_ context.Context, messages []llm.Mess
 	switch {
 	case isTranscriptPreviewRequest(lowerReq):
 		out <- llm.Token{Text: d.previewResponse(lowerReq, messages)}
+	case isTranscriptPTYRequest(lowerReq):
+		out <- llm.Token{Text: d.ptyResponse(lowerReq, messages)}
 	case strings.Contains(lowerReq, "write me a script to clean this up"):
 		out <- llm.Token{Text: d.cleanupScriptResponse(messages)}
 	case isTranscriptRepoRequest(lowerReq):
@@ -631,6 +679,8 @@ func (d *scriptedTranscriptDriver) StreamWithTools(_ context.Context, msgs []llm
 	switch {
 	case isTranscriptPreviewRequest(lowerReq):
 		response = d.previewResponse(lowerReq, msgs)
+	case isTranscriptPTYRequest(lowerReq):
+		response = d.ptyResponse(lowerReq, msgs)
 	case strings.Contains(lowerReq, "write me a script to clean this up"):
 		response = d.cleanupScriptResponse(msgs)
 	case isTranscriptRepoRequest(lowerReq):
@@ -813,6 +863,17 @@ func (d *scriptedTranscriptDriver) cleanupScriptResponse(messages []llm.Message)
 	return "Added tools/cleanup_workspace.sh to clean generated artifacts in one place."
 }
 
+func (d *scriptedTranscriptDriver) ptyResponse(_ string, messages []llm.Message) string {
+	currentToolResults := currentTranscriptToolResults(messages)
+	if !strings.Contains(currentToolResults, "[exec_session_start]") {
+		return transcriptToolCall("exec_session_start", `{"command":"printf 'ready on http://127.0.0.1:4173\n'","cols":120,"rows":40}`)
+	}
+	if !strings.Contains(currentToolResults, "[exec_session_status]") {
+		return transcriptToolCall("exec_session_status", `{"session_id":1}`)
+	}
+	return "The dev server is up in a terminal session and reported ready on http://127.0.0.1:4173."
+}
+
 func latestTranscriptRequest(messages []llm.Message) string {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role != llm.RoleUser {
@@ -825,6 +886,15 @@ func latestTranscriptRequest(messages []llm.Message) string {
 		return content
 	}
 	return ""
+}
+
+func isTranscriptPTYRequest(content string) bool {
+	content = strings.ToLower(strings.TrimSpace(content))
+	if content == "" {
+		return false
+	}
+	return (strings.Contains(content, "dev server") || strings.Contains(content, "keep it running") || strings.Contains(content, "terminal session")) &&
+		(strings.Contains(content, "steer") || strings.Contains(content, "running") || strings.Contains(content, "start"))
 }
 
 func hasTranscriptToolEvidence(messages []llm.Message, needle string) bool {

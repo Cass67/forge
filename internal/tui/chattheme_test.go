@@ -34,18 +34,18 @@ func TestChatThemeLookupSupportsLegacyAliases(t *testing.T) {
 	}
 }
 
-func TestChatThemeDefaultUsesBlackSurfacePalette(t *testing.T) {
+func TestChatThemeDefaultUsesLayeredSurfacePalette(t *testing.T) {
 	theme, ok := lookupChatTheme("default")
 	if !ok {
 		t.Fatal("missing default theme")
 	}
-	if theme.AppBG != lipgloss.Color("#000000") {
+	if theme.AppBG != lipgloss.Color("#090d14") {
 		t.Fatalf("app background = %q", theme.AppBG)
 	}
-	if theme.PanelBG != theme.AppBG {
+	if theme.PanelBG != lipgloss.Color("#111824") {
 		t.Fatalf("panel background = %q", theme.PanelBG)
 	}
-	if theme.HeaderBG != theme.AppBG {
+	if theme.HeaderBG != lipgloss.Color("#151f2e") {
 		t.Fatalf("header background = %q", theme.HeaderBG)
 	}
 	if theme.Text != lipgloss.Color("#eaf0f8") {
@@ -57,7 +57,7 @@ func TestChatThemeDefaultUsesBlackSurfacePalette(t *testing.T) {
 	if theme.AccentPrimary != lipgloss.Color("#79c0ff") {
 		t.Fatalf("accent primary = %q", theme.AccentPrimary)
 	}
-	if theme.Border != lipgloss.Color("#1f2b38") {
+	if theme.Border != lipgloss.Color("#2a3a4d") {
 		t.Fatalf("border = %q", theme.Border)
 	}
 	if theme.BorderFocus != theme.AccentPrimary {

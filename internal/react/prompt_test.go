@@ -241,6 +241,9 @@ func TestBuildMessages_IncludesImplementationTaskGuidance(t *testing.T) {
 	if !strings.Contains(msgs[1].Content, "do not start with planning prose") {
 		t.Fatalf("task state missing first action guidance: %q", msgs[1].Content)
 	}
+	if !strings.Contains(msgs[1].Content, "exec_session_start") {
+		t.Fatalf("task state missing PTY exec guidance: %q", msgs[1].Content)
+	}
 }
 
 func TestBuildMessages_IncludesPreviewTaskGuidance(t *testing.T) {

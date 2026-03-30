@@ -26,34 +26,55 @@ type chatTheme struct {
 	Error           lipgloss.Color
 }
 
+func (t chatTheme) appSurface() lipgloss.Color {
+	if t.AppBG == "" {
+		return lipgloss.Color("#0b0f17")
+	}
+	return t.AppBG
+}
+
+func (t chatTheme) panelSurface() lipgloss.Color {
+	if t.PanelBG == "" {
+		return t.appSurface()
+	}
+	return t.PanelBG
+}
+
+func (t chatTheme) headerSurface() lipgloss.Color {
+	if t.HeaderBG == "" {
+		return t.panelSurface()
+	}
+	return t.HeaderBG
+}
+
 var chatThemeRegistry = []chatTheme{
 	{
 		ID:              "default",
 		Label:           "default",
 		LowContrast:     false,
-		AppBG:           lipgloss.Color("#000000"),
-		PanelBG:         lipgloss.Color("#000000"),
-		HeaderBG:        lipgloss.Color("#000000"),
+		AppBG:           lipgloss.Color("#090d14"),
+		PanelBG:         lipgloss.Color("#111824"),
+		HeaderBG:        lipgloss.Color("#151f2e"),
 		HeaderFG:        lipgloss.Color("#f2f6fb"),
-		Border:          lipgloss.Color("#1f2b38"),
+		Border:          lipgloss.Color("#2a3a4d"),
 		BorderFocus:     lipgloss.Color("#79c0ff"),
 		Text:            lipgloss.Color("#eaf0f8"),
 		TextDim:         lipgloss.Color("#8d9aae"),
 		AccentPrimary:   lipgloss.Color("#79c0ff"),
-		AccentSecondary: lipgloss.Color("#f0c674"),
+		AccentSecondary: lipgloss.Color("#ffcb6b"),
 		Success:         lipgloss.Color("#6fda9c"),
-		Warning:         lipgloss.Color("#f0c674"),
+		Warning:         lipgloss.Color("#ffcb6b"),
 		Error:           lipgloss.Color("#ff7f7f"),
 	},
 	{
 		ID:              "codex",
 		Label:           "codex",
 		LowContrast:     false,
-		AppBG:           lipgloss.Color("#000000"),
-		PanelBG:         lipgloss.Color("#000000"),
-		HeaderBG:        lipgloss.Color("#000000"),
+		AppBG:           lipgloss.Color("#080c13"),
+		PanelBG:         lipgloss.Color("#101725"),
+		HeaderBG:        lipgloss.Color("#162133"),
 		HeaderFG:        lipgloss.Color("#f3f6fb"),
-		Border:          lipgloss.Color("#1d2b3a"),
+		Border:          lipgloss.Color("#26384d"),
 		BorderFocus:     lipgloss.Color("#66b6ff"),
 		Text:            lipgloss.Color("#e6edf7"),
 		TextDim:         lipgloss.Color("#8c9cb0"),
@@ -67,11 +88,11 @@ var chatThemeRegistry = []chatTheme{
 		ID:              "opencode",
 		Label:           "opencode",
 		LowContrast:     false,
-		AppBG:           lipgloss.Color("#000000"),
-		PanelBG:         lipgloss.Color("#000000"),
-		HeaderBG:        lipgloss.Color("#000000"),
+		AppBG:           lipgloss.Color("#0b0f14"),
+		PanelBG:         lipgloss.Color("#151b24"),
+		HeaderBG:        lipgloss.Color("#1b2431"),
 		HeaderFG:        lipgloss.Color("#f2f5fb"),
-		Border:          lipgloss.Color("#243244"),
+		Border:          lipgloss.Color("#304258"),
 		BorderFocus:     lipgloss.Color("#7cc4ff"),
 		Text:            lipgloss.Color("#e5ecf7"),
 		TextDim:         lipgloss.Color("#90a0b7"),
@@ -85,9 +106,9 @@ var chatThemeRegistry = []chatTheme{
 		ID:              "low",
 		Label:           "low contrast",
 		LowContrast:     true,
-		AppBG:           lipgloss.Color("#000000"),
-		PanelBG:         lipgloss.Color("#000000"),
-		HeaderBG:        lipgloss.Color("#000000"),
+		AppBG:           lipgloss.Color("#101212"),
+		PanelBG:         lipgloss.Color("#171a1a"),
+		HeaderBG:        lipgloss.Color("#1d2121"),
 		HeaderFG:        lipgloss.Color("#c9d1d9"),
 		Border:          lipgloss.Color("#3b434b"),
 		BorderFocus:     lipgloss.Color("#7fbf7f"),
@@ -103,16 +124,16 @@ var chatThemeRegistry = []chatTheme{
 		ID:              "light",
 		Label:           "light",
 		LowContrast:     false,
-		AppBG:           lipgloss.Color("#ffffff"),
+		AppBG:           lipgloss.Color("#f6f8fb"),
 		PanelBG:         lipgloss.Color("#ffffff"),
-		HeaderBG:        lipgloss.Color("#ffffff"),
+		HeaderBG:        lipgloss.Color("#edf2f8"),
 		HeaderFG:        lipgloss.Color("#24292f"),
 		Border:          lipgloss.Color("#d0d7de"),
 		BorderFocus:     lipgloss.Color("#0969da"),
 		Text:            lipgloss.Color("#24292f"),
 		TextDim:         lipgloss.Color("#57606a"),
 		AccentPrimary:   lipgloss.Color("#0969da"),
-		AccentSecondary: lipgloss.Color("#8250df"),
+		AccentSecondary: lipgloss.Color("#bc4c00"),
 		Success:         lipgloss.Color("#1a7f37"),
 		Warning:         lipgloss.Color("#9a6700"),
 		Error:           lipgloss.Color("#cf222e"),
@@ -121,9 +142,9 @@ var chatThemeRegistry = []chatTheme{
 		ID:              "dusk",
 		Label:           "dusk",
 		LowContrast:     false,
-		AppBG:           lipgloss.Color("#000000"),
-		PanelBG:         lipgloss.Color("#000000"),
-		HeaderBG:        lipgloss.Color("#000000"),
+		AppBG:           lipgloss.Color("#120f1c"),
+		PanelBG:         lipgloss.Color("#1a1628"),
+		HeaderBG:        lipgloss.Color("#221d33"),
 		HeaderFG:        lipgloss.Color("#e2e8f0"),
 		Border:          lipgloss.Color("#334155"),
 		BorderFocus:     lipgloss.Color("#c084fc"),
@@ -140,7 +161,7 @@ var chatThemeRegistry = []chatTheme{
 		Label:           "midnight ink",
 		LowContrast:     false,
 		AppBG:           lipgloss.Color("#0a0e1a"),
-		PanelBG:         lipgloss.Color("#0a0e1a"),
+		PanelBG:         lipgloss.Color("#11182a"),
 		HeaderBG:        lipgloss.Color("#131a2e"),
 		HeaderFG:        lipgloss.Color("#e8eef6"),
 		Border:          lipgloss.Color("#1e2a42"),
@@ -157,9 +178,9 @@ var chatThemeRegistry = []chatTheme{
 		ID:              "eclipse",
 		Label:           "eclipse",
 		LowContrast:     false,
-		AppBG:           lipgloss.Color("#000000"),
-		PanelBG:         lipgloss.Color("#000000"),
-		HeaderBG:        lipgloss.Color("#000000"),
+		AppBG:           lipgloss.Color("#101010"),
+		PanelBG:         lipgloss.Color("#171717"),
+		HeaderBG:        lipgloss.Color("#1e1f1f"),
 		HeaderFG:        lipgloss.Color("#e4e4e7"),
 		Border:          lipgloss.Color("#3f3f46"),
 		BorderFocus:     lipgloss.Color("#34d399"),

@@ -124,7 +124,7 @@ func TestBuildStatsOverlayShowsRequestModeAndMetadata(t *testing.T) {
 	}
 }
 
-func TestRenderStatusHeaderUsesAppBackground(t *testing.T) {
+func TestRenderStatusHeaderUsesHeaderBackgroundSurface(t *testing.T) {
 	withTrueColorProfile(t)
 
 	theme := chatTheme{
@@ -142,11 +142,11 @@ func TestRenderStatusHeaderUsesAppBackground(t *testing.T) {
 		WorkDir: "/tmp/work",
 	}, 80)
 
-	if strings.Contains(rendered, ansiBackground(theme.HeaderBG)) {
-		t.Fatalf("header should not use header background as the surface fill: %q", rendered)
+	if !strings.Contains(rendered, ansiBackground(theme.HeaderBG)) {
+		t.Fatalf("header missing header background fill: %q", rendered)
 	}
-	if !strings.Contains(rendered, ansiBackground(theme.AppBG)) {
-		t.Fatalf("header missing app background fill: %q", rendered)
+	if strings.Contains(rendered, ansiBackground(theme.AppBG)) && theme.AppBG != theme.HeaderBG {
+		t.Fatalf("header should not fall back to app background as the primary surface: %q", rendered)
 	}
 }
 
@@ -213,11 +213,13 @@ func TestRenderStatusHeaderUsesSplitRailCardAtWideWidths(t *testing.T) {
 			t.Fatalf("wide header missing %q in:\n%s", want, header)
 		}
 	}
+	for _, want := range []string{"▌ model", "▌ dir"} {
+		if !strings.Contains(header, want) {
+			t.Fatalf("wide header missing rail label %q in:\n%s", want, header)
+		}
+	}
 	if strings.ContainsAny(header, "╭╮╰╯") {
 		t.Fatalf("header should be flat (no box border), got:\n%s", header)
-	}
-	if strings.Contains(header, "│") {
-		t.Fatalf("header should not include a vertical separator glyph, got:\n%s", header)
 	}
 	for _, line := range headerLines {
 		if ansiPrintableWidth(line) > 80 {
@@ -292,13 +294,13 @@ func TestRenderStatusHeaderPaintsFullRowWidth(t *testing.T) {
 		WorkDir: "/tmp/work",
 	}, 120)
 
-	wantBG := ansiBackground(theme.AppBG)
+	wantBG := ansiBackground(theme.HeaderBG)
 	for idx, line := range strings.Split(rendered, "\n") {
 		if ansiPrintableWidth(line) != 120 {
 			t.Fatalf("line %d width = %d, want 120: %q", idx+1, ansiPrintableWidth(line), strippedLine(line))
 		}
 		if !strings.Contains(line, wantBG) {
-			t.Fatalf("line %d missing app background %q: %q", idx+1, wantBG, line)
+			t.Fatalf("line %d missing header background %q: %q", idx+1, wantBG, line)
 		}
 		if strings.HasSuffix(line, " ") {
 			t.Fatalf("line %d ends with plain spaces instead of styled fill: %q", idx+1, line)
@@ -306,7 +308,7 @@ func TestRenderStatusHeaderPaintsFullRowWidth(t *testing.T) {
 	}
 }
 
-func TestRenderStatusHeaderFlatAcrossAllThemes(t *testing.T) {
+func TestRenderStatusHeaderUsesHeaderSurfaceAcrossAllThemes(t *testing.T) {
 	withTrueColorProfile(t)
 
 	for _, theme := range orderedChatThemes() {
@@ -318,8 +320,8 @@ func TestRenderStatusHeaderFlatAcrossAllThemes(t *testing.T) {
 		if strings.ContainsAny(plain, "╭╮╰╯│") {
 			t.Fatalf("theme %q rendered boxed/separator glyphs in header:\n%s", theme.ID, plain)
 		}
-		if strings.Contains(rendered, ansiBackground(theme.HeaderBG)) && theme.HeaderBG != theme.AppBG {
-			t.Fatalf("theme %q leaked HeaderBG into header surface", theme.ID)
+		if !strings.Contains(plain, "▌ model") || !strings.Contains(plain, "▌ dir") {
+			t.Fatalf("theme %q should keep the strengthened rail layout:\n%s", theme.ID, plain)
 		}
 		for idx, line := range strings.Split(rendered, "\n") {
 			if strings.HasSuffix(line, " ") {

@@ -169,6 +169,18 @@ func TestChatComposerRenderUsesBoxedShell(t *testing.T) {
 	}
 }
 
+func TestChatComposerRenderShowsControlHintsInTopBar(t *testing.T) {
+	c := NewChatComposer()
+
+	rendered := strippedLine(c.Render(lookupThemeForTest(t, "default"), 64))
+
+	for _, want := range []string{"Enter send", "Alt+Enter newline", "Esc cancel"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected composer hint %q, got %q", want, rendered)
+		}
+	}
+}
+
 func TestChatComposerVisibleLineBudget(t *testing.T) {
 	c := NewChatComposer()
 	c.InsertString("short")

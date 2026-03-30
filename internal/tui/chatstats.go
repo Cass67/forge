@@ -334,48 +334,42 @@ func renderStatusHeaderForHeight(theme chatTheme, data chatStatusData, width, he
 }
 
 func buildWideHeaderLines(theme chatTheme, modelValue, workDirValue string, width int) []string {
-	const railWidth = 5
+	bg := theme.headerSurface()
 	const sep = "   "
-	metaWidth := max(12, width-railWidth-len(sep))
+	metaWidth := max(12, width-len(sep))
 	modelProminent := lipgloss.NewStyle().
 		Foreground(theme.HeaderFG).
-		Background(theme.AppBG).
+		Background(bg).
 		Bold(true).
 		Render(truncateRightEllipsis(modelValue, metaWidth))
-	labelStyle := lipgloss.NewStyle().Foreground(theme.TextDim).Background(theme.AppBG)
-	valueStyle := lipgloss.NewStyle().Foreground(theme.Text).Background(theme.AppBG)
-	railStyle := lipgloss.NewStyle().Background(theme.AppBG).Bold(true)
 
 	lines := []string{
-		padStyledWidth(railStyle.Render(renderForgeWordmark(theme))+sep+modelProminent, width),
-		padStyledWidth(strings.Repeat(" ", railWidth)+sep+labelStyle.Render("model  ")+valueStyle.Render(truncateRightEllipsis(modelValue, max(1, metaWidth-7))), width),
-		padStyledWidth(strings.Repeat(" ", railWidth)+sep+labelStyle.Render("dir    ")+valueStyle.Render(truncateLeftEllipsis(workDirValue, max(1, metaWidth-7))), width),
+		padStyledWidth(renderForgeWordmark(theme)+sep+modelProminent, width),
+		buildHeaderMetaLine(theme, "model", truncateRightEllipsis(modelValue, max(1, width-16)), width),
+		buildHeaderMetaLine(theme, "dir", truncateLeftEllipsis(workDirValue, max(1, width-16)), width),
 	}
 	return lines
 }
 
 func buildMediumHeaderLines(theme chatTheme, modelValue, workDirValue string, width int) []string {
-	labelStyle := lipgloss.NewStyle().Foreground(theme.TextDim).Background(theme.AppBG)
-	valueStyle := lipgloss.NewStyle().Foreground(theme.Text).Background(theme.AppBG)
-	railStyle := lipgloss.NewStyle().Background(theme.AppBG).Bold(true)
+	bg := theme.headerSurface()
 	prominentWidth := max(1, width-7)
 
 	lines := []string{
-		padStyledWidth(railStyle.Render(renderForgeWordmark(theme)+"  ")+lipgloss.NewStyle().Foreground(theme.HeaderFG).Background(theme.AppBG).Bold(true).Render(truncateRightEllipsis(modelValue, prominentWidth)), width),
-		padStyledWidth(labelStyle.Render("model  ")+valueStyle.Render(truncateRightEllipsis(modelValue, max(1, width-7))), width),
-		padStyledWidth(labelStyle.Render("dir    ")+valueStyle.Render(truncateLeftEllipsis(workDirValue, max(1, width-7))), width),
+		padStyledWidth(renderForgeWordmark(theme)+"  "+lipgloss.NewStyle().Foreground(theme.HeaderFG).Background(bg).Bold(true).Render(truncateRightEllipsis(modelValue, prominentWidth)), width),
+		buildHeaderMetaLine(theme, "model", truncateRightEllipsis(modelValue, max(1, width-14)), width),
+		buildHeaderMetaLine(theme, "dir", truncateLeftEllipsis(workDirValue, max(1, width-14)), width),
 	}
 	return lines
 }
 
 func buildNarrowHeaderLines(theme chatTheme, modelValue, workDirValue string, width int) []string {
-	labelStyle := lipgloss.NewStyle().Foreground(theme.TextDim).Background(theme.AppBG)
-	valueStyle := lipgloss.NewStyle().Foreground(theme.Text).Background(theme.AppBG)
+	bg := theme.headerSurface()
 
 	lines := []string{
-		padStyledWidth(lipgloss.NewStyle().Foreground(theme.HeaderFG).Background(theme.AppBG).Bold(true).Render(truncateRightEllipsis(modelValue, width)), width),
-		padStyledWidth(labelStyle.Render("model  ")+valueStyle.Render(truncateRightEllipsis(modelValue, max(1, width-7))), width),
-		padStyledWidth(labelStyle.Render("dir    ")+valueStyle.Render(truncateLeftEllipsis(workDirValue, max(1, width-7))), width),
+		padStyledWidth(lipgloss.NewStyle().Foreground(theme.HeaderFG).Background(bg).Bold(true).Render(truncateRightEllipsis(modelValue, width)), width),
+		buildHeaderMetaLine(theme, "model", truncateRightEllipsis(modelValue, max(1, width-14)), width),
+		buildHeaderMetaLine(theme, "dir", truncateLeftEllipsis(workDirValue, max(1, width-14)), width),
 	}
 	return lines
 }
@@ -386,29 +380,51 @@ func renderCompactStatusHeader(theme chatTheme, data chatStatusData, width int) 
 	}
 	innerWidth := min(68, max(16, width-4))
 	wordmark := renderForgeWordmark(theme)
-	model := lipgloss.NewStyle().Foreground(theme.HeaderFG).Background(theme.AppBG).Bold(true).Render(truncateRightEllipsis(headerModelValue(data.Model), max(1, innerWidth/2)))
+	bg := theme.headerSurface()
+	model := lipgloss.NewStyle().Foreground(theme.HeaderFG).Background(bg).Bold(true).Render(truncateRightEllipsis(headerModelValue(data.Model), max(1, innerWidth/2)))
 	dirWidth := max(1, innerWidth-ansiPrintableWidth(wordmark+"  "+model)-2)
-	dir := lipgloss.NewStyle().Foreground(theme.TextDim).Background(theme.AppBG).Render(truncateLeftEllipsis(headerWorkDirValue(data.WorkDir), dirWidth))
+	dir := lipgloss.NewStyle().Foreground(theme.TextDim).Background(bg).Render(truncateLeftEllipsis(headerWorkDirValue(data.WorkDir), dirWidth))
 	line := padStyledWidth(wordmark+"  "+model+"  "+dir, innerWidth)
 	return fillHeaderSurface(line, width, theme)
 }
 
 func fillHeaderSurface(header string, width int, theme chatTheme) string {
-	return fillSurfaceRows(header, width, theme.AppBG)
+	return fillSurfaceRows(header, width, theme.headerSurface())
 }
 
 func renderForgeWordmark(theme chatTheme) string {
+	bg := theme.headerSurface()
 	var b strings.Builder
 	for _, ch := range "FORGE" {
 		b.WriteString(
 			lipgloss.NewStyle().
 				Foreground(theme.AccentPrimary).
-				Background(theme.AppBG).
+				Background(bg).
 				Bold(true).
 				Render(string(ch)),
 		)
 	}
 	return b.String()
+}
+
+func buildHeaderMetaLine(theme chatTheme, label, value string, width int) string {
+	bg := theme.headerSurface()
+	rail := lipgloss.NewStyle().
+		Foreground(theme.AccentSecondary).
+		Background(bg).
+		Bold(true).
+		Render("▌ ")
+	labelText := strings.TrimSpace(label)
+	labelStyled := lipgloss.NewStyle().
+		Foreground(theme.TextDim).
+		Background(bg).
+		Render(labelText)
+	valueWidth := max(1, width-ansiPrintableWidth(rail)-len(labelText)-2)
+	valueStyled := lipgloss.NewStyle().
+		Foreground(theme.Text).
+		Background(bg).
+		Render(truncateRightEllipsis(value, valueWidth))
+	return padStyledWidth(rail+labelStyled+"  "+valueStyled, width)
 }
 
 func headerModelValue(model string) string {

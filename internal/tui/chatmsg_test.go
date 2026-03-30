@@ -25,14 +25,15 @@ func TestChatMessageRenderUser(t *testing.T) {
 	if !strings.Contains(got, "hello world") {
 		t.Fatalf("render missing content: %s", got)
 	}
-	if strings.ContainsAny(strippedLine(got), "│╭╮╰╯") {
-		t.Fatalf("expected flat user message, got: %s", strippedLine(got))
+	if !strings.Contains(strippedLine(got), "▌ You") {
+		t.Fatalf("expected accented user message header, got: %s", strippedLine(got))
 	}
 }
 
 func TestChatMessageRenderAgent(t *testing.T) {
 	m := ChatMessage{
 		Kind:    MsgAgent,
+		Header:  "Forge • 23:00:00",
 		Content: "I can help with that.",
 	}
 	got := m.Render(60, lookupThemeForTest(t, "default"))
@@ -42,8 +43,8 @@ func TestChatMessageRenderAgent(t *testing.T) {
 	if !strings.Contains(got, "I can help with that.") {
 		t.Fatalf("render missing content: %s", got)
 	}
-	if strings.ContainsAny(strippedLine(got), "│╭╮╰╯") {
-		t.Fatalf("expected flat agent message, got: %s", strippedLine(got))
+	if !strings.Contains(strippedLine(got), "▌ Forge") {
+		t.Fatalf("expected accented agent message header, got: %s", strippedLine(got))
 	}
 }
 

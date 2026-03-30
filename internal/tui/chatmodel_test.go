@@ -277,6 +277,64 @@ func TestChatModelShowsCommandSessionExitOutputInTranscript(t *testing.T) {
 	}
 }
 
+func TestChatModelShowsExecSessionStatusInTranscript(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test-model", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{
+		Kind:  llm.EventToolResult,
+		Agent: "exec_session_start",
+		Text:  `{"status":"running","session_id":9,"command":"npm run dev","pty":true,"cols":120,"rows":40}`,
+	})
+	m = updated.(ChatModel)
+
+	if len(m.messages) == 0 {
+		t.Fatal("expected exec session status message")
+	}
+	if got := m.messages[len(m.messages)-1].Content; got != "terminal session 9 running: npm run dev" {
+		t.Fatalf("exec session status = %q", got)
+	}
+}
+
+func TestChatModelShowsExecSessionOutputPreviewInTranscript(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test-model", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{
+		Kind:  llm.EventToolResult,
+		Agent: "exec_session_status",
+		Text:  `{"status":"running","session_id":9,"command":"npm run dev","pty":true,"cols":120,"rows":40,"output":"ready on http://127.0.0.1:4173\nwatching for changes"}`,
+	})
+	m = updated.(ChatModel)
+
+	got := m.messages[len(m.messages)-1].Content
+	if !strings.Contains(got, "terminal session 9 running: npm run dev") {
+		t.Fatalf("exec session status = %q", got)
+	}
+	if !strings.Contains(got, "ready on http://127.0.0.1:4173") {
+		t.Fatalf("expected running output preview in %q", got)
+	}
+}
+
+func TestChatModelShowsExecSessionResizeInTranscript(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test-model", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{
+		Kind:  llm.EventToolResult,
+		Agent: "exec_session_resize",
+		Text:  `{"status":"running","session_id":9,"command":"npm run dev","pty":true,"cols":132,"rows":44}`,
+	})
+	m = updated.(ChatModel)
+
+	if got := m.messages[len(m.messages)-1].Content; got != "terminal session 9 resized to 132x44: npm run dev" {
+		t.Fatalf("resize status = %q", got)
+	}
+}
+
 func TestChatModelIgnoresSplitMouseTrackingSequence(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test-model", WorkDir: "/tmp"})
 	m.width = 80
@@ -3997,6 +4055,14 @@ func TestToolResultProgressLineKeepsErrors(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	got := m.toolResultProgressLine(llm.Event{Kind: llm.EventToolResult, Agent: "forge", IsError: true, Text: "permission denied"})
 	if got == "" || !strings.Contains(got, "hit an issue") {
+		t.Fatalf("progress line = %q", got)
+	}
+}
+
+func TestToolCallProgressLineDescribesExecSessionStart(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	got := m.toolCallProgressLine(llm.Event{Kind: llm.EventToolCall, Agent: "exec_session_start", Text: "npm run dev"})
+	if got != "Starting terminal session: npm run dev" {
 		t.Fatalf("progress line = %q", got)
 	}
 }
