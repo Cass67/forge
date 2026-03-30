@@ -231,7 +231,17 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 
 	emptyRetried := false
 	completionRetried := false
+	budgetWarnAt := r.maxSessionTurns * 2 / 3
+	budgetWarnSent := false
 	for step := 0; step < r.maxSessionTurns; step++ {
+		if !budgetWarnSent && step >= budgetWarnAt {
+			budgetWarnSent = true
+			remaining := r.maxSessionTurns - step
+			r.session.AppendUserMessage(fmt.Sprintf(
+				"[budget] %d steps remaining. Stop gathering context. Complete any pending edits, run verification, and deliver your final answer.",
+				remaining,
+			))
+		}
 		if r.applyPendingInput() {
 			r.syncRuntimeNote()
 		}
