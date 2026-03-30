@@ -275,6 +275,22 @@ func TestHandleChatSlashCommandActivatesSkillInReactSession(t *testing.T) {
 	}
 }
 
+func TestDetectTaskStateFromInputUsesBranchMentionInsteadOfPronoun(t *testing.T) {
+	state, ok := detectTaskStateFromInput("take a look at the go branch and merge it into main")
+	if !ok {
+		t.Fatal("expected task state")
+	}
+	if state.SourceRef == "it" {
+		t.Fatalf("source ref should not stay a pronoun: %#v", state)
+	}
+	if state.SourceRef != "go" {
+		t.Fatalf("source ref = %q, want %q", state.SourceRef, "go")
+	}
+	if state.TargetBranch != "main" {
+		t.Fatalf("target branch = %q", state.TargetBranch)
+	}
+}
+
 func TestResolveChatRuntimeModeReadsEnv(t *testing.T) {
 	t.Setenv("FORGE_CHAT_RUNTIME", "")
 	if got := resolveChatRuntimeMode(); got != chatRuntimeReact {
@@ -435,7 +451,7 @@ func TestRunChatTurnCompletesComplexVisiblePreviewTurn(t *testing.T) {
 	approve := agent.YoloApproval()
 
 	reg := tools.NewRegistry()
-	previewRuntime := registerTools(reg, workDir, cfg, approve)
+	previewRuntime := registerTools(reg, workDir, cfg, reactruntime.NewSession(), approve)
 	if previewRuntime != nil {
 		defer previewRuntime.Close()
 	}
@@ -471,7 +487,7 @@ func TestRunChatTurnCompletesComplexVisiblePreviewTurn(t *testing.T) {
 func TestRegisterToolsIncludesPreviewLifecycleTools(t *testing.T) {
 	reg := tools.NewRegistry()
 	cfg := &config.Config{}
-	registerTools(reg, t.TempDir(), cfg, agent.YoloApproval())
+	registerTools(reg, t.TempDir(), cfg, reactruntime.NewSession(), agent.YoloApproval())
 
 	for _, name := range []string{"artifact_write", "artifact_read", "preview_server_ensure", "preview_server_status"} {
 		if _, ok := reg.Get(name); !ok {
@@ -485,7 +501,7 @@ func TestRegisterReactDelegationToolsAddsSpawnAndWait(t *testing.T) {
 	cfg := &config.Config{}
 	workDir := t.TempDir()
 	approve := agent.YoloApproval()
-	registerTools(reg, workDir, cfg, approve)
+	registerTools(reg, workDir, cfg, reactruntime.NewSession(), approve)
 	baseReg := reg.Filter(nil)
 
 	setup := &ChatSetup{
@@ -508,7 +524,7 @@ func TestRegisterToolsAddsGitMergeStatus(t *testing.T) {
 	cfg := &config.Config{}
 	workDir := t.TempDir()
 
-	registerTools(reg, workDir, cfg, agent.YoloApproval())
+	registerTools(reg, workDir, cfg, reactruntime.NewSession(), agent.YoloApproval())
 	if _, ok := reg.Get("git_merge_status"); !ok {
 		t.Fatal("git_merge_status tool not registered")
 	}
@@ -519,9 +535,22 @@ func TestRegisterToolsAddsGitBranchState(t *testing.T) {
 	cfg := &config.Config{}
 	workDir := t.TempDir()
 
-	registerTools(reg, workDir, cfg, agent.YoloApproval())
+	registerTools(reg, workDir, cfg, reactruntime.NewSession(), agent.YoloApproval())
 	if _, ok := reg.Get("git_branch_state"); !ok {
 		t.Fatal("git_branch_state tool not registered")
+	}
+}
+
+func TestRegisterToolsAddsCodexStyleEditingAndPlanningTools(t *testing.T) {
+	reg := tools.NewRegistry()
+	cfg := &config.Config{}
+	workDir := t.TempDir()
+
+	registerTools(reg, workDir, cfg, reactruntime.NewSession(), agent.YoloApproval())
+	for _, name := range []string{"apply_patch", "update_plan", "tool_help", "view_image", "code_search"} {
+		if _, ok := reg.Get(name); !ok {
+			t.Fatalf("%s tool not registered", name)
+		}
 	}
 }
 
@@ -530,7 +559,7 @@ func TestRegisterReactDelegationToolsDoesNotUseLegacyRoleModelMapping(t *testing
 	cfg := &config.Config{}
 	workDir := t.TempDir()
 	approve := agent.YoloApproval()
-	registerTools(reg, workDir, cfg, approve)
+	registerTools(reg, workDir, cfg, reactruntime.NewSession(), approve)
 	baseReg := reg.Filter(nil)
 
 	var makeDriverCalls []string

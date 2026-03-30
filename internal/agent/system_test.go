@@ -14,6 +14,12 @@ func TestBuildNativeSystemPrompt(t *testing.T) {
 	if !strings.Contains(prompt, "edit_file") {
 		t.Error("missing edit_file guideline")
 	}
+	if !strings.Contains(prompt, "apply_patch") {
+		t.Error("missing apply_patch guideline")
+	}
+	if !strings.Contains(prompt, "update_plan") {
+		t.Error("missing update_plan guideline")
+	}
 	if !strings.Contains(prompt, "KEEP GOING") {
 		t.Error("missing autonomy instruction")
 	}
@@ -26,9 +32,6 @@ func TestBuildNativeSystemPrompt(t *testing.T) {
 	// Native prompt must NOT contain XML tool format instructions
 	if strings.Contains(prompt, "<tool_call>") {
 		t.Error("native prompt should not contain XML tool call format")
-	}
-	if strings.Contains(prompt, "tool_help") {
-		t.Error("native prompt should not reference tool_help")
 	}
 }
 

@@ -159,6 +159,38 @@ func TestApprovalGateSwitchesOffProtectedBranchForMutation(t *testing.T) {
 	}
 }
 
+func TestApprovalGateDoesNotSwitchBranchesForReadOnlyGitQueries(t *testing.T) {
+	repo := setupApprovalRepo(t)
+	ensureMainBranch(t, repo)
+
+	gate := NewApprovalGate(repo, ApprovalConfig{
+		DefaultPolicy: ApprovalNever,
+		SandboxPolicy: SandboxWorkspaceWrite,
+	}, func(action tools.Action) (bool, error) {
+		return true, nil
+	}, nil)
+
+	approved, err := gate.Approve(tools.Action{
+		Tool:    "run_command",
+		Summary: "git branch -vv",
+		Detail:  "git branch -vv",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !approved {
+		t.Fatal("expected read-only git query to be approved")
+	}
+
+	branch, err := gitutil.CurrentBranch(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if branch != "main" {
+		t.Fatalf("expected to stay on main for read-only query, got %q", branch)
+	}
+}
+
 func setupApprovalRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

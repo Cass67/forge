@@ -180,19 +180,23 @@ func TestToLLMToolDefsBasic(t *testing.T) {
 	}
 }
 
-func TestToLLMToolDefsExcludesToolHelp(t *testing.T) {
+func TestToLLMToolDefsIncludesToolHelp(t *testing.T) {
 	reg := NewRegistry()
 	reg.Register(Tool{Name: "read_file", Description: "read"})
 	reg.Register(Tool{Name: "tool_help", Description: "meta"})
 
 	defs := reg.ToLLMToolDefs()
+	foundToolHelp := false
 	for _, d := range defs {
 		if d.Name == "tool_help" {
-			t.Fatal("tool_help should be excluded from native tool defs")
+			foundToolHelp = true
 		}
 	}
-	if len(defs) != 1 {
-		t.Fatalf("want 1 def after excluding tool_help, got %d", len(defs))
+	if !foundToolHelp {
+		t.Fatal("tool_help should be included in native tool defs")
+	}
+	if len(defs) != 2 {
+		t.Fatalf("want 2 defs including tool_help, got %d", len(defs))
 	}
 }
 

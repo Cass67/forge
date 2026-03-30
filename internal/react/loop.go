@@ -439,7 +439,7 @@ func (r *Runner) syncRuntimeNote() {
 
 func (s gitWorkflowState) runtimeNote() string {
 	if s.unmergedFiles {
-		return "Git merge workflow active. Call git_merge_status to inspect unresolved files and next steps. Resolve each conflicted file, stage the resolutions, and only retry commit once unmerged files are gone."
+		return "Git merge workflow active. Call git_merge_status to inspect unresolved files, conflict previews, and next steps. Resolve each conflicted file, stage the resolutions, and only retry commit once unmerged files are gone."
 	}
 	if s.commitBlocker != commitBlockerNone {
 		summary := strings.TrimSpace(s.blockerSummary)
