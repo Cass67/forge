@@ -346,3 +346,95 @@ func TestGitBranchStateReportsTargetContainment(t *testing.T) {
 		t.Fatalf("expected reverse containment false, got: %s", result)
 	}
 }
+
+func TestGitBranchStateSuggestsUpdatingTargetBranchWhenHeadIsElsewhere(t *testing.T) {
+	dir := initGitRepo(t)
+	runWithEnv := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v failed: %s\n%s", args, err, out)
+		}
+	}
+
+	runWithEnv("checkout", "-b", "feature/go-rewrite")
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runWithEnv("add", "feature.txt")
+	runWithEnv("commit", "-m", "feature work")
+
+	tool := NewGitBranchState(dir)
+	result, err := tool.Execute(context.Background(), map[string]any{"target_branch": "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "next_action: switch to main and fast-forward or merge the current HEAD into it") {
+		t.Fatalf("expected next_action guidance, got: %s", result)
+	}
+}
+
+func TestGitMergeStatusIncludesConflictPreviews(t *testing.T) {
+	dir := initGitRepo(t)
+	runWithEnv := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v failed: %s\n%s", args, err, out)
+		}
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nfunc shared() string {\n\treturn \"base\"\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runWithEnv("add", "main.go")
+	runWithEnv("commit", "-m", "add base file")
+
+	runWithEnv("checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nfunc shared() string {\n\treturn \"feature\"\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runWithEnv("add", "main.go")
+	runWithEnv("commit", "-m", "feature change")
+
+	runWithEnv("checkout", "main")
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nfunc shared() string {\n\treturn \"main\"\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runWithEnv("add", "main.go")
+	runWithEnv("commit", "-m", "main change")
+
+	cmd := exec.Command("git", "merge", "feature")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@test.com",
+		"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@test.com",
+	)
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("expected merge conflict, got success: %s", out)
+	}
+
+	tool := NewGitMergeStatus(dir)
+	result, err := tool.Execute(context.Background(), map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "conflict_previews:") {
+		t.Fatalf("expected conflict previews, got: %s", result)
+	}
+	if !strings.Contains(result, "<<<<<<< HEAD") || !strings.Contains(result, ">>>>>>> feature") {
+		t.Fatalf("expected marker preview, got: %s", result)
+	}
+}

@@ -30,6 +30,9 @@ func BuildMessages(systemPrompt string, snapshot SessionSnapshot) []llm.Message 
 	if task := taskStateContext(snapshot); task != "" {
 		messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: task})
 	}
+	if plan := planStateContext(snapshot); plan != "" {
+		messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: plan})
+	}
 
 	for _, msg := range snapshot.History {
 		// Pass through tool-role messages and assistant messages with native tool calls
@@ -85,5 +88,15 @@ func taskStateContext(snapshot SessionSnapshot) string {
 	if requiredVerification != "" {
 		parts = append(parts, "Required verification: "+requiredVerification)
 	}
+	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "merge") && strings.TrimSpace(snapshot.TaskState.TargetBranch) != "" {
+		parts = append(parts, "Merge guidance: use git_merge_status for unresolved conflicts and conflict previews, and use git_branch_state with the target branch before claiming the merge is complete. Prefer these tools over repeated raw git log or graph commands.")
+	}
 	return strings.Join(parts, "\n")
+}
+
+func planStateContext(snapshot SessionSnapshot) string {
+	if snapshot.PlanState == nil || len(snapshot.PlanState.Steps) == 0 {
+		return ""
+	}
+	return "Current plan:\n" + FormatPlanState(*snapshot.PlanState)
 }

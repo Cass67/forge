@@ -21,6 +21,16 @@ type TaskState struct {
 	TargetBranch         string
 }
 
+type PlanStep struct {
+	Step   string `json:"step"`
+	Status string `json:"status"`
+}
+
+type PlanState struct {
+	Explanation string     `json:"explanation,omitempty"`
+	Steps       []PlanStep `json:"steps"`
+}
+
 type TurnRecord struct {
 	Number        int
 	Input         string
@@ -39,6 +49,7 @@ type SessionSnapshot struct {
 	CompactionSummary string
 	RuntimeNote       string
 	TaskState         *TaskState
+	PlanState         *PlanState
 }
 
 type Session struct {
@@ -52,6 +63,7 @@ type Session struct {
 	compactionSummary string
 	runtimeNote       string
 	taskState         *TaskState
+	planState         *PlanState
 }
 
 func NewSession() *Session {
@@ -168,6 +180,7 @@ func (s *Session) Snapshot() SessionSnapshot {
 		CompactionSummary: s.compactionSummary,
 		RuntimeNote:       s.runtimeNote,
 		TaskState:         cloneTaskState(s.taskState),
+		PlanState:         clonePlanState(s.planState),
 	}
 }
 
@@ -186,6 +199,7 @@ func (s *Session) Clear() {
 	s.compactionSummary = ""
 	s.runtimeNote = ""
 	s.taskState = nil
+	s.planState = nil
 }
 
 func (s *Session) SetRuntimeNote(text string) {
@@ -224,6 +238,52 @@ func cloneTaskState(state *TaskState) *TaskState {
 	}
 	cloned := *state
 	return &cloned
+}
+
+func (s *Session) SetPlanState(state PlanState) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(state.Steps) == 0 {
+		s.planState = nil
+		return
+	}
+	cloned := PlanState{
+		Explanation: strings.TrimSpace(state.Explanation),
+		Steps:       make([]PlanStep, 0, len(state.Steps)),
+	}
+	for _, step := range state.Steps {
+		cloned.Steps = append(cloned.Steps, PlanStep{
+			Step:   strings.TrimSpace(step.Step),
+			Status: strings.TrimSpace(step.Status),
+		})
+	}
+	s.planState = &cloned
+}
+
+func clonePlanState(state *PlanState) *PlanState {
+	if state == nil {
+		return nil
+	}
+	cloned := PlanState{
+		Explanation: state.Explanation,
+		Steps:       append([]PlanStep(nil), state.Steps...),
+	}
+	return &cloned
+}
+
+func FormatPlanState(state PlanState) string {
+	var parts []string
+	if explanation := strings.TrimSpace(state.Explanation); explanation != "" {
+		parts = append(parts, "Explanation: "+explanation)
+	}
+	parts = append(parts, "Plan:")
+	for _, step := range state.Steps {
+		parts = append(parts, fmt.Sprintf("- [%s] %s", strings.TrimSpace(step.Status), strings.TrimSpace(step.Step)))
+	}
+	return strings.Join(parts, "\n")
 }
 
 func (s *Session) compact(keep int) bool {

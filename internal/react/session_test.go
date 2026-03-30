@@ -106,3 +106,19 @@ func TestSessionTaskStateAppearsInSnapshot(t *testing.T) {
 		t.Fatalf("required verification = %q", snap.TaskState.RequiredVerification)
 	}
 }
+
+func TestSessionPlanStateAppearsInSnapshot(t *testing.T) {
+	s := NewSession()
+	s.SetPlanState(PlanState{
+		Explanation: "Doing the runtime work in slices",
+		Steps: []PlanStep{
+			{Step: "Inspect code", Status: "completed"},
+			{Step: "Patch runtime", Status: "in_progress"},
+		},
+	})
+
+	snap := s.Snapshot()
+	if snap.PlanState == nil || len(snap.PlanState.Steps) != 2 {
+		t.Fatalf("plan state = %#v", snap.PlanState)
+	}
+}

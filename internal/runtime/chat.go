@@ -35,6 +35,7 @@ var (
 	defaultConfigPath = config.DefaultPath
 	runChatLiveUI     = tui.RunChatLive
 	mergeIntoBranchRE = regexp.MustCompile(`(?i)\bmerge\s+(?:the\s+)?(.+?)\s+into\s+([a-zA-Z0-9._/\-]+)\b`)
+	branchMentionRE   = regexp.MustCompile(`(?i)\b(?:look at|inspect|check|review|take a look at)\s+(?:the\s+)?([a-zA-Z0-9._/\-]+)\s+branch\b`)
 )
 
 type chatRuntimeMode string
@@ -145,7 +146,7 @@ func refreshChatSetupState(setup *ChatSetup) (*config.Config, *auth.Tokens) {
 	return cfg, tokens
 }
 
-func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, approve tools.ApprovalFunc, forcePrompt ...tools.ApprovalFunc) *tools.PreviewRuntime {
+func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, session *reactruntime.Session, approve tools.ApprovalFunc, forcePrompt ...tools.ApprovalFunc) *tools.PreviewRuntime {
 	fp := approve
 	if len(forcePrompt) > 0 {
 		fp = forcePrompt[0]
@@ -154,12 +155,14 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, appr
 	reg.Register(tools.NewReadFile(workDir))
 	reg.Register(tools.NewWriteFile(workDir, approve))
 	reg.Register(tools.NewEditFile(workDir, approve))
+	reg.Register(tools.NewApplyPatch(workDir, approve))
 	reg.Register(tools.NewArtifactWrite(previewRuntime))
 	reg.Register(tools.NewArtifactRead(previewRuntime))
 	reg.Register(tools.NewPreviewServerEnsure(previewRuntime))
 	reg.Register(tools.NewPreviewServerStatus(previewRuntime))
 	reg.Register(tools.NewListDir(workDir, cfg.Chat.IgnoreDirs))
 	reg.Register(tools.NewSearch(workDir))
+	reg.Register(tools.NewCodeSearch(workDir))
 	reg.Register(tools.NewRunCommand(workDir, cfg.Chat.CommandTimeout, approve, fp))
 	reg.Register(tools.NewThink())
 	reg.Register(tools.NewGlob(workDir, cfg.Chat.IgnoreDirs))
@@ -168,6 +171,9 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, appr
 	reg.Register(tools.NewGitLog(workDir))
 	reg.Register(tools.NewGitBranchState(workDir))
 	reg.Register(tools.NewGitMergeStatus(workDir))
+	reg.Register(tools.NewViewImage(workDir))
+	reg.Register(tools.NewToolHelp(reg))
+	reg.Register(reacttools.NewUpdatePlan(session))
 	gitCommit := tools.NewGitCommit(workDir, approve)
 	gitCommit.PromptVisibility = tools.PromptHidden
 	reg.Register(gitCommit)
@@ -206,7 +212,8 @@ func RunChatLive(setup *ChatSetup) {
 	}).Approve
 
 	reg := tools.NewRegistry()
-	previewRuntime := registerTools(reg, setup.WorkDir, setup.Config, approve)
+	session := reactruntime.NewSession()
+	previewRuntime := registerTools(reg, setup.WorkDir, setup.Config, session, approve)
 	if previewRuntime != nil {
 		defer previewRuntime.Close()
 	}
@@ -218,7 +225,7 @@ func RunChatLive(setup *ChatSetup) {
 		Tools:           reg,
 		Renderer:        evRenderer,
 		SystemPrompt:    func() string { return agent.BuildNativeSystemPrompt(setup.WorkDir) },
-		Session:         reactruntime.NewSession(),
+		Session:         session,
 		MaxSessionTurns: chatMaxTurns(setup),
 		CompletionCheck: func(snapshot reactruntime.SessionSnapshot, finalText string) error {
 			return validateTaskCompletion(setup.WorkDir, snapshot, finalText)
@@ -436,7 +443,7 @@ func RunChatConsole(setup *ChatSetup) {
 
 	reg := tools.NewRegistry()
 	forcePromptApprove := approve
-	previewRuntime := registerTools(reg, setup.WorkDir, setup.Config, approve, forcePromptApprove)
+	previewRuntime := registerTools(reg, setup.WorkDir, setup.Config, reactruntime.NewSession(), approve, forcePromptApprove)
 	if previewRuntime != nil {
 		defer previewRuntime.Close()
 	}
@@ -603,6 +610,11 @@ func detectTaskStateFromInput(input string) (reactruntime.TaskState, bool) {
 	}
 	sourceRef := strings.TrimSpace(match[1])
 	targetBranch := strings.TrimSpace(match[2])
+	if isMergePronoun(sourceRef) {
+		if mentioned := detectMentionedBranch(text); mentioned != "" {
+			sourceRef = mentioned
+		}
+	}
 	if sourceRef == "" || targetBranch == "" {
 		return reactruntime.TaskState{}, false
 	}
@@ -613,6 +625,23 @@ func detectTaskStateFromInput(input string) (reactruntime.TaskState, bool) {
 		TargetBranch:         targetBranch,
 		RequiredVerification: fmt.Sprintf("verify branch %s contains the resulting HEAD commit", targetBranch),
 	}, true
+}
+
+func isMergePronoun(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "it", "this", "that", "them":
+		return true
+	default:
+		return false
+	}
+}
+
+func detectMentionedBranch(text string) string {
+	match := branchMentionRE.FindStringSubmatch(strings.TrimSpace(text))
+	if len(match) != 2 {
+		return ""
+	}
+	return strings.TrimSpace(match[1])
 }
 
 func validateTaskCompletion(workDir string, snapshot reactruntime.SessionSnapshot, finalText string) error {
@@ -629,7 +658,7 @@ func validateTaskCompletion(workDir string, snapshot reactruntime.SessionSnapsho
 		return err
 	}
 	if !contains {
-		return fmt.Errorf("task incomplete: target branch %s does not contain HEAD", task.TargetBranch)
+		return fmt.Errorf("task incomplete: target branch %s does not contain HEAD; switch to %s and fast-forward or merge the resolved HEAD into it, then verify with git_branch_state", task.TargetBranch, task.TargetBranch)
 	}
 	return nil
 }
