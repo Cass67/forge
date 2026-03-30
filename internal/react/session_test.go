@@ -29,6 +29,12 @@ func TestAppendAssistantWithToolCalls(t *testing.T) {
 	if last.ToolCalls[0].ID != "c1" || last.ToolCalls[0].Name != "git_status" {
 		t.Fatal("first tool call mismatch")
 	}
+	if len(snap.Turns) != 1 || len(snap.Turns[0].ToolCalls) != 2 {
+		t.Fatalf("turn tool calls = %#v", snap.Turns)
+	}
+	if snap.Turns[0].ToolCalls[1].Name != "run_command" {
+		t.Fatalf("turn tool calls = %#v", snap.Turns[0].ToolCalls)
+	}
 }
 
 func TestAppendNativeToolResult(t *testing.T) {
@@ -120,5 +126,25 @@ func TestSessionPlanStateAppearsInSnapshot(t *testing.T) {
 	snap := s.Snapshot()
 	if snap.PlanState == nil || len(snap.PlanState.Steps) != 2 {
 		t.Fatalf("plan state = %#v", snap.PlanState)
+	}
+}
+
+func TestSessionQueuesAndDrainsPendingInput(t *testing.T) {
+	s := NewSession()
+	s.QueuePendingInput("steer toward tests")
+	s.QueuePendingInput("focus on service/main.py")
+
+	if !s.HasPendingInput() {
+		t.Fatal("expected pending input")
+	}
+	got := s.TakePendingInput()
+	if len(got) != 2 {
+		t.Fatalf("pending input = %#v", got)
+	}
+	if got[0] != "steer toward tests" || got[1] != "focus on service/main.py" {
+		t.Fatalf("pending input order = %#v", got)
+	}
+	if s.HasPendingInput() {
+		t.Fatal("expected pending input to be drained")
 	}
 }

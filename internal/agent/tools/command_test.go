@@ -2,14 +2,16 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 func TestRunCommandBasic(t *testing.T) {
 	dir := t.TempDir()
-	tool := NewRunCommand(dir, 60, func(a Action) (bool, error) { return true, nil })
+	tool := NewRunCommand(dir, 60, nil, func(a Action) (bool, error) { return true, nil })
 
 	result, err := tool.Execute(context.Background(), map[string]any{"command": "echo hello"})
 	if err != nil {
@@ -25,7 +27,7 @@ func TestRunCommandBasic(t *testing.T) {
 
 func TestRunCommandFailure(t *testing.T) {
 	dir := t.TempDir()
-	tool := NewRunCommand(dir, 60, func(a Action) (bool, error) { return true, nil })
+	tool := NewRunCommand(dir, 60, nil, func(a Action) (bool, error) { return true, nil })
 
 	result, err := tool.Execute(context.Background(), map[string]any{"command": "false"})
 	if err != nil {
@@ -38,7 +40,7 @@ func TestRunCommandFailure(t *testing.T) {
 
 func TestRunCommandDenied(t *testing.T) {
 	dir := t.TempDir()
-	tool := NewRunCommand(dir, 60, func(a Action) (bool, error) { return false, nil })
+	tool := NewRunCommand(dir, 60, nil, func(a Action) (bool, error) { return false, nil })
 
 	result, err := tool.Execute(context.Background(), map[string]any{"command": "echo hello"})
 	if err != nil {
@@ -51,7 +53,7 @@ func TestRunCommandDenied(t *testing.T) {
 
 func TestRunCommandTimeout(t *testing.T) {
 	dir := t.TempDir()
-	tool := NewRunCommand(dir, 1, func(a Action) (bool, error) { return true, nil })
+	tool := NewRunCommand(dir, 1, nil, func(a Action) (bool, error) { return true, nil })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -61,6 +63,21 @@ func TestRunCommandTimeout(t *testing.T) {
 	}
 	if !strings.Contains(result, "timeout") && !strings.Contains(result, "killed") && !strings.Contains(result, "signal") {
 		t.Errorf("expected timeout indication, got: %s", result)
+	}
+}
+
+func TestRunCommandRejectsAdHocPreviewServerLaunches(t *testing.T) {
+	dir := t.TempDir()
+	tool := NewRunCommand(dir, 60, nil, func(a Action) (bool, error) { return true, nil })
+
+	result, err := tool.Execute(context.Background(), map[string]any{
+		"command": "python3 -m http.server 8765 --bind 127.0.0.1 &",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "preview_server_ensure") {
+		t.Fatalf("expected preview tool guidance, got: %s", result)
 	}
 }
 
@@ -108,5 +125,155 @@ func TestNormalizePseudoToolCommandsAppliesDefaultGitLogCount(t *testing.T) {
 	got := normalizePseudoToolCommands(raw)
 	if got != "git log --oneline -n 10" {
 		t.Fatalf("normalized git_log = %q", got)
+	}
+}
+
+func TestRunCommandBackgroundSessionReturnsHandle(t *testing.T) {
+	dir := t.TempDir()
+	manager := NewExecSessionManager()
+	defer manager.Close()
+	tool := NewRunCommand(dir, 60, manager, func(a Action) (bool, error) { return true, nil })
+
+	result, err := tool.Execute(context.Background(), map[string]any{"command": "sleep 1 &"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Status    string `json:"status"`
+		SessionID int    `json:"session_id"`
+		Command   string `json:"command"`
+	}
+	if err := json.Unmarshal([]byte(result), &payload); err != nil {
+		t.Fatalf("expected json payload, got %q: %v", result, err)
+	}
+	if payload.Status != "running" {
+		t.Fatalf("status = %q", payload.Status)
+	}
+	if payload.SessionID == 0 {
+		t.Fatalf("session_id = %d", payload.SessionID)
+	}
+	if payload.Command != "sleep 1" {
+		t.Fatalf("command = %q", payload.Command)
+	}
+}
+
+func TestCommandStatusReportsBackgroundSessionLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	manager := NewExecSessionManager()
+	defer manager.Close()
+	runTool := NewRunCommand(dir, 60, manager, func(a Action) (bool, error) { return true, nil })
+	statusTool := NewCommandStatus(manager)
+
+	result, err := runTool.Execute(context.Background(), map[string]any{"command": "sleep 1 &"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var started struct {
+		SessionID int `json:"session_id"`
+	}
+	if err := json.Unmarshal([]byte(result), &started); err != nil {
+		t.Fatalf("start payload = %q: %v", result, err)
+	}
+	if started.SessionID == 0 {
+		t.Fatalf("session_id = %d", started.SessionID)
+	}
+
+	status, err := statusTool.Execute(context.Background(), map[string]any{"session_id": started.SessionID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(status, `"session_id":`) || !strings.Contains(status, `"status":"running"`) {
+		t.Fatalf("running status = %s", status)
+	}
+
+	time.Sleep(1200 * time.Millisecond)
+
+	status, err = statusTool.Execute(context.Background(), map[string]any{"session_id": started.SessionID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(status, `"status":"exited"`) {
+		t.Fatalf("final status = %s", status)
+	}
+}
+
+func TestCommandWriteStdinWritesToSession(t *testing.T) {
+	dir := t.TempDir()
+	manager := NewExecSessionManager()
+	defer manager.Close()
+	runTool := NewRunCommand(dir, 60, manager, func(a Action) (bool, error) { return true, nil })
+	writeTool := NewCommandWriteStdin(manager)
+	statusTool := NewCommandStatus(manager)
+
+	result, err := runTool.Execute(context.Background(), map[string]any{"command": "cat > /dev/null &"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var started struct {
+		SessionID int `json:"session_id"`
+	}
+	if err := json.Unmarshal([]byte(result), &started); err != nil {
+		t.Fatalf("start payload = %q: %v", result, err)
+	}
+
+	if _, err := writeTool.Execute(context.Background(), map[string]any{"session_id": started.SessionID, "chars": "hello\n"}); err != nil {
+		t.Fatal(err)
+	}
+	status, err := statusTool.Execute(context.Background(), map[string]any{"session_id": started.SessionID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(status, `"status":"running"`) {
+		t.Fatalf("status after stdin write = %s", status)
+	}
+}
+
+func TestExecSessionManagerEmitsExitNotification(t *testing.T) {
+	dir := t.TempDir()
+	manager := NewExecSessionManager()
+	defer manager.Close()
+
+	var (
+		mu      sync.Mutex
+		events  []execSessionStatus
+		waitFor = make(chan struct{}, 1)
+	)
+	manager.SetEventHandler(func(status execSessionStatus) {
+		mu.Lock()
+		events = append(events, status)
+		mu.Unlock()
+		if status.Status == "exited" {
+			select {
+			case waitFor <- struct{}{}:
+			default:
+			}
+		}
+	})
+
+	sessionID, err := manager.Start(dir, "printf ready")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionID == 0 {
+		t.Fatal("expected non-zero session id")
+	}
+
+	select {
+	case <-waitFor:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for exit notification")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) == 0 {
+		t.Fatal("expected lifecycle events")
+	}
+	last := events[len(events)-1]
+	if last.Status != "exited" {
+		t.Fatalf("last status = %#v", last)
+	}
+	if strings.TrimSpace(last.Output) != "ready" {
+		t.Fatalf("last output = %q", last.Output)
 	}
 }

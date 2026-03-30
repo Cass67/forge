@@ -204,7 +204,11 @@ func (c *ChatComposer) HandleKey(msg tea.KeyMsg, busy bool) ComposerAction {
 	case tea.KeySpace:
 		c.InsertString(" ")
 	case tea.KeyRunes:
-		c.InsertString(string(msg.Runes))
+		text := string(msg.Runes)
+		if !msg.Paste {
+			text = stripMouseTrackingSequences(text)
+		}
+		c.InsertString(text)
 	}
 	return ComposerAction{}
 }

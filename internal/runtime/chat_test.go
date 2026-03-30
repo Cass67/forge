@@ -292,6 +292,32 @@ func TestDetectTaskStateFromInputUsesBranchMentionInsteadOfPronoun(t *testing.T)
 	}
 }
 
+func TestDetectTaskStateFromInputClassifiesPreviewWork(t *testing.T) {
+	state, ok := detectTaskStateFromInput("start a preview for themes_preview.html and show me the verified url")
+	if !ok {
+		t.Fatal("expected task state")
+	}
+	if state.Operation != "preview" {
+		t.Fatalf("operation = %q", state.Operation)
+	}
+	if !strings.Contains(state.RequiredVerification, "preview") {
+		t.Fatalf("required verification = %q", state.RequiredVerification)
+	}
+}
+
+func TestDetectTaskStateFromInputClassifiesImplementationWork(t *testing.T) {
+	state, ok := detectTaskStateFromInput("i need a new theme for this app")
+	if !ok {
+		t.Fatal("expected task state")
+	}
+	if state.Operation != "implement" {
+		t.Fatalf("operation = %q", state.Operation)
+	}
+	if !strings.Contains(state.RequiredVerification, "edit tools") {
+		t.Fatalf("required verification = %q", state.RequiredVerification)
+	}
+}
+
 func TestResolveChatRuntimeModeReadsEnv(t *testing.T) {
 	t.Setenv("FORGE_CHAT_RUNTIME", "")
 	if got := resolveChatRuntimeMode(); got != chatRuntimeReact {
@@ -489,7 +515,7 @@ func TestRunChatTurnCompletesComplexVisiblePreviewTurn(t *testing.T) {
 	approve := agent.YoloApproval()
 
 	reg := tools.NewRegistry()
-	previewRuntime, _ := registerTools(reg, workDir, cfg, reactruntime.NewSession(), approve, nil)
+	previewRuntime, _ := registerTools(reg, workDir, cfg, reactruntime.NewSession(), approve, nil, nil)
 	if previewRuntime != nil {
 		defer previewRuntime.Close()
 	}
@@ -525,7 +551,7 @@ func TestRunChatTurnCompletesComplexVisiblePreviewTurn(t *testing.T) {
 func TestRegisterToolsIncludesPreviewLifecycleTools(t *testing.T) {
 	reg := tools.NewRegistry()
 	cfg := &config.Config{}
-	_, _ = registerTools(reg, t.TempDir(), cfg, reactruntime.NewSession(), agent.YoloApproval(), nil)
+	_, _ = registerTools(reg, t.TempDir(), cfg, reactruntime.NewSession(), agent.YoloApproval(), nil, nil)
 
 	for _, name := range []string{"artifact_write", "artifact_read", "preview_server_ensure", "preview_server_status"} {
 		if _, ok := reg.Get(name); !ok {
@@ -534,12 +560,95 @@ func TestRegisterToolsIncludesPreviewLifecycleTools(t *testing.T) {
 	}
 }
 
+func TestValidateTaskCompletionRejectsRepoGroundedAnswerWithoutToolUse(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "i need a new theme for this app",
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "i need a new theme for this app"},
+		},
+	}
+
+	err := validateTaskCompletion(t.TempDir(), snapshot, "I'll inspect the app's theming setup first, then implement a new theme.")
+	if err == nil {
+		t.Fatal("expected completion rejection")
+	}
+	if !strings.Contains(err.Error(), "repo-grounded turn finished without tool evidence") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestValidateTaskCompletionRejectsBlockedClaimWithoutToolError(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "research the best tui themes for this app",
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "research the best tui themes for this app"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"README.md"}`}}},
+			{Role: llm.RoleTool, ToolCallID: "c1", Content: "ok"},
+		},
+	}
+
+	err := validateTaskCompletion(t.TempDir(), snapshot, "I am blocked because the tools produced no output.")
+	if err == nil {
+		t.Fatal("expected blocked-claim rejection")
+	}
+	if !strings.Contains(err.Error(), "claimed tool blockage") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestValidateTaskCompletionAllowsRepoGroundedAnswerWithReadEvidence(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "inspect the theme setup in this app",
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "inspect the theme setup in this app"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"internal/tui/chattheme.go"}`}}},
+			{Role: llm.RoleTool, ToolCallID: "c1", Content: "theme source"},
+		},
+	}
+
+	if err := validateTaskCompletion(t.TempDir(), snapshot, "I inspected the theme definitions and found the palette entries in chattheme.go."); err != nil {
+		t.Fatalf("unexpected err = %v", err)
+	}
+}
+
+func TestValidateTaskCompletionAllowsGroundedFollowUpWithoutFreshToolUse(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "make a plan for improvements",
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "tell me about this repo and tell me what i need to improve upon"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"service/main.py"}`}}},
+			{Role: llm.RoleTool, ToolCallID: "c1", Content: "service source"},
+			{Role: llm.RoleAssistant, Content: "Top improvement areas are stronger pre-commit hygiene and better test coverage around the service entrypoint."},
+			{Role: llm.RoleUser, Content: "make a plan for improvements"},
+		},
+	}
+
+	if err := validateTaskCompletion(t.TempDir(), snapshot, "Start with focused tests around service/main.py, then tighten the pre-commit checks so the service path is verified automatically."); err != nil {
+		t.Fatalf("unexpected err = %v", err)
+	}
+}
+
+func TestValidateTaskCompletionAllowsVerifiedPreviewURL(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "start a preview for themes_preview.html and tell me the verified url",
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "start a preview for themes_preview.html and tell me the verified url"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "c1", Name: "preview_server_ensure", ArgsJSON: `{"path":"themes_preview.html"}`}}},
+			{Role: llm.RoleTool, ToolCallID: "c1", Content: `{"status":"running","url":"http://127.0.0.1:4123/themes_preview.html"}`},
+		},
+	}
+
+	if err := validateTaskCompletion(t.TempDir(), snapshot, "The preview is live and verified at http://127.0.0.1:4123/themes_preview.html."); err != nil {
+		t.Fatalf("unexpected err = %v", err)
+	}
+}
+
 func TestRegisterReactDelegationToolsAddsSpawnAndWait(t *testing.T) {
 	reg := tools.NewRegistry()
 	cfg := &config.Config{}
 	workDir := t.TempDir()
 	approve := agent.YoloApproval()
-	_, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), approve, nil)
+	_, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), approve, nil, nil)
 	baseReg := reg.Filter(nil)
 
 	setup := &ChatSetup{
@@ -562,7 +671,7 @@ func TestRegisterToolsAddsGitMergeStatus(t *testing.T) {
 	cfg := &config.Config{}
 	workDir := t.TempDir()
 
-	_, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), agent.YoloApproval(), nil)
+	_, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), agent.YoloApproval(), nil, nil)
 	if _, ok := reg.Get("git_merge_status"); !ok {
 		t.Fatal("git_merge_status tool not registered")
 	}
@@ -573,7 +682,7 @@ func TestRegisterToolsAddsGitBranchState(t *testing.T) {
 	cfg := &config.Config{}
 	workDir := t.TempDir()
 
-	_, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), agent.YoloApproval(), nil)
+	_, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), agent.YoloApproval(), nil, nil)
 	if _, ok := reg.Get("git_branch_state"); !ok {
 		t.Fatal("git_branch_state tool not registered")
 	}
@@ -584,7 +693,7 @@ func TestRegisterToolsAddsCodexStyleEditingAndPlanningTools(t *testing.T) {
 	cfg := &config.Config{}
 	workDir := t.TempDir()
 
-	_, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), agent.YoloApproval(), nil)
+	_, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), agent.YoloApproval(), nil, nil)
 	for _, name := range []string{"apply_patch", "update_plan", "tool_help", "view_image", "code_search", "lsp_definition", "lsp_references", "lsp_hover", "lsp_document_symbols"} {
 		if _, ok := reg.Get(name); !ok {
 			t.Fatalf("%s tool not registered", name)
@@ -614,7 +723,7 @@ func TestRegisterToolsAddsMCPResourceToolsWhenServersConfigured(t *testing.T) {
 	reg := tools.NewRegistry()
 	workDir := t.TempDir()
 
-	_, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), agent.YoloApproval(), nil)
+	_, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), agent.YoloApproval(), nil, nil)
 	for _, name := range []string{"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "mcp__context7__resolve_library_id"} {
 		if _, ok := reg.Get(name); !ok {
 			t.Fatalf("%s tool not registered", name)
@@ -627,7 +736,7 @@ func TestRegisterReactDelegationToolsDoesNotUseLegacyRoleModelMapping(t *testing
 	cfg := &config.Config{}
 	workDir := t.TempDir()
 	approve := agent.YoloApproval()
-	_, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), approve, nil)
+	_, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), approve, nil, nil)
 	baseReg := reg.Filter(nil)
 
 	var makeDriverCalls []string
@@ -687,6 +796,8 @@ type stubChatTurnRunner struct {
 	err          error
 	lastResponse string
 	taskState    *reactruntime.TaskState
+	queued       []string
+	interrupted  bool
 }
 
 func (s *stubChatTurnRunner) Run(_ context.Context, input string) error {
@@ -701,6 +812,14 @@ func (s *stubChatTurnRunner) EmitResponse(text string) {
 
 func (s *stubChatTurnRunner) SetTaskState(state reactruntime.TaskState) {
 	s.taskState = &state
+}
+
+func (s *stubChatTurnRunner) QueuePendingInput(text string) {
+	s.queued = append(s.queued, text)
+}
+
+func (s *stubChatTurnRunner) MarkInterrupted() {
+	s.interrupted = true
 }
 
 type stubChatSessionControl struct {
