@@ -3,6 +3,7 @@ package runtime
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -30,16 +31,20 @@ import (
 )
 
 var (
-	loadChatConfig    = bootstrap.LoadConfig
-	loadChatTokens    = bootstrap.LoadTokens
-	saveLastChatModel = config.SaveChatLastModel
-	defaultConfigPath = config.DefaultPath
-	runChatLiveUI     = tui.RunChatLive
-	mergeIntoBranchRE = regexp.MustCompile(`(?i)\bmerge\s+(?:the\s+)?(.+?)\s+into\s+([a-zA-Z0-9._/\-]+)\b`)
-	branchMentionRE   = regexp.MustCompile(`(?i)\b(?:look at|inspect|check|review|take a look at)\s+(?:the\s+)?([a-zA-Z0-9._/\-]+)\s+branch\b`)
-	planRequestRE     = regexp.MustCompile(`(?i)\b(?:write|make|create|draft|prepare)\b.*\b(?:implementation\s+)?plan\b|\b(?:implementation\s+)?plan\b.*\b(?:for|to)\b`)
-	analysisRequestRE = regexp.MustCompile(`(?i)\b(audit|analy[sz]e|diagnose|investigate|research|compare|review|explain)\b.*\b(repo|repository|codebase|app|behavior|issue|problem|dead code|cleanup)\b`)
-	newChatMCPManager = func() *mcp.Manager { return mcp.NewManager() }
+	loadChatConfig     = bootstrap.LoadConfig
+	loadChatTokens     = bootstrap.LoadTokens
+	saveLastChatModel  = config.SaveChatLastModel
+	defaultConfigPath  = config.DefaultPath
+	runChatLiveUI      = tui.RunChatLive
+	mergeIntoBranchRE  = regexp.MustCompile(`(?i)\bmerge\s+(?:the\s+)?(.+?)\s+into\s+([a-zA-Z0-9._/\-]+)\b`)
+	branchMentionRE    = regexp.MustCompile(`(?i)\b(?:look at|inspect|check|review|take a look at)\s+(?:the\s+)?([a-zA-Z0-9._/\-]+)\s+branch\b`)
+	planRequestRE      = regexp.MustCompile(`(?i)\b(?:write|make|create|draft|prepare)\b.*\b(?:implementation\s+)?plan\b|\b(?:implementation\s+)?plan\b.*\b(?:for|to)\b`)
+	analysisRequestRE  = regexp.MustCompile(`(?i)\b(audit|analy[sz]e|diagnose|investigate|research|compare|review|explain)\b.*\b(repo|repository|codebase|app|behavior|issue|problem|dead code|cleanup)\b`)
+	previewRequestRE   = regexp.MustCompile(`(?i)\b(preview|web ?page|themes?_preview\.html|mock up|show me|show on (?:the )?screen|show on web)\b`)
+	validateRequestRE  = regexp.MustCompile(`(?i)\b(test|tests|verify|validated?|check|checks|pass|passes|build)\b`)
+	implementRequestRE = regexp.MustCompile(`(?i)\b(fix|implement|change|update|add|create|build|redesign|theme|refactor|patch)\b`)
+	inspectRequestRE   = regexp.MustCompile(`(?i)\b(inspect|look at|take a look|review|tell me about|what do you think|anything i need change|research)\b`)
+	newChatMCPManager  = func() *mcp.Manager { return mcp.NewManager() }
 )
 
 type chatRuntimeMode string
@@ -150,12 +155,22 @@ func refreshChatSetupState(setup *ChatSetup) (*config.Config, *auth.Tokens) {
 	return cfg, tokens
 }
 
-func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, session *reactruntime.Session, approve tools.ApprovalFunc, notify func(string), forcePrompt ...tools.ApprovalFunc) (*tools.PreviewRuntime, *mcp.Manager) {
+func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, session *reactruntime.Session, approve tools.ApprovalFunc, notify func(string), emitCommandStatus func(tools.ExecSessionStatus), forcePrompt ...tools.ApprovalFunc) (*tools.PreviewRuntime, *mcp.Manager) {
 	fp := approve
 	if len(forcePrompt) > 0 {
 		fp = forcePrompt[0]
 	}
 	previewRuntime := tools.NewPreviewRuntime(workDir, approve)
+	execManager := tools.NewExecSessionManager()
+	execManager.SetEventHandler(func(status tools.ExecSessionStatus) {
+		if emitCommandStatus != nil {
+			emitCommandStatus(status)
+			return
+		}
+		if notify != nil {
+			notify(fmt.Sprintf("command session %d changed state", status.SessionID))
+		}
+	})
 	mcpManager := newChatMCPManager()
 	if notify != nil {
 		mcpManager.SetEventHandler(func(ev mcp.Event) {
@@ -190,7 +205,9 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 	reg.Register(tools.NewLSPReferences(workDir))
 	reg.Register(tools.NewLSPHover(workDir))
 	reg.Register(tools.NewLSPDocumentSymbols(workDir))
-	reg.Register(tools.NewRunCommand(workDir, cfg.Chat.CommandTimeout, approve, fp))
+	reg.Register(tools.NewRunCommand(workDir, cfg.Chat.CommandTimeout, execManager, approve, fp))
+	reg.Register(tools.NewCommandStatus(execManager))
+	reg.Register(tools.NewCommandWriteStdin(execManager))
 	reg.Register(tools.NewThink())
 	reg.Register(tools.NewGlob(workDir, cfg.Chat.IgnoreDirs))
 	reg.Register(tools.NewGitStatus(workDir))
@@ -251,7 +268,14 @@ func RunChatLive(setup *ChatSetup) {
 
 	reg := tools.NewRegistry()
 	session := reactruntime.NewSession()
-	previewRuntime, mcpManager := registerTools(reg, setup.WorkDir, setup.Config, session, approve, evRenderer.Info)
+	previewRuntime, mcpManager := registerTools(reg, setup.WorkDir, setup.Config, session, approve, evRenderer.Info, func(status tools.ExecSessionStatus) {
+		payload, err := json.Marshal(status)
+		if err != nil {
+			evRenderer.Info(fmt.Sprintf("command session %d changed state", status.SessionID))
+			return
+		}
+		evRenderer.ToolResult("command_status", string(payload), "", false)
+	})
 	if previewRuntime != nil {
 		defer previewRuntime.Close()
 	}
@@ -285,7 +309,6 @@ func RunChatLive(setup *ChatSetup) {
 
 	go func() {
 		var running bool
-		var queue []string
 		runOutcome := func(err error) string {
 			if err != nil {
 				bootstrap.ReportModelFailure(setup.ChatModel, err)
@@ -322,29 +345,22 @@ func RunChatLive(setup *ChatSetup) {
 					setup.debugRec.logInput("control", input)
 				}
 				if running {
+					reactRunner.MarkInterrupted()
 					cancel()
 					ctx, cancel = context.WithCancel(context.Background())
-					queue = nil
 					evRenderer.Info("turn canceled")
 				}
 			case "__turn_done__":
 				evRenderer.TurnDone()
 				running = false
-				if len(queue) > 0 {
-					next := queue[0]
-					queue = queue[1:]
-					evRenderer.Info(fmt.Sprintf("applying queued steering (%d remaining)", len(queue)))
-					startRun(next)
-				}
 			case "__turn_failed__":
 				running = false
-				queue = nil
 			default:
 				if running {
 					if setup != nil && setup.debugRec != nil {
 						setup.debugRec.logInput("queued", input)
 					}
-					queue = append(queue, input)
+					reactRunner.QueuePendingInput(input)
 					evRenderer.Info(fmt.Sprintf("queued steering: %s", input))
 					continue
 				}
@@ -487,7 +503,14 @@ func RunChatConsole(setup *ChatSetup) {
 	reg := tools.NewRegistry()
 	renderer := agent.NewRenderer(os.Stdout, 80, true)
 	forcePromptApprove := approve
-	previewRuntime, mcpManager := registerTools(reg, setup.WorkDir, setup.Config, reactruntime.NewSession(), approve, renderer.Info, forcePromptApprove)
+	previewRuntime, mcpManager := registerTools(reg, setup.WorkDir, setup.Config, reactruntime.NewSession(), approve, renderer.Info, func(status tools.ExecSessionStatus) {
+		payload, err := json.Marshal(status)
+		if err != nil {
+			renderer.Info(fmt.Sprintf("command session %d changed state", status.SessionID))
+			return
+		}
+		renderer.ToolResult("command_status", string(payload), "", false)
+	}, forcePromptApprove)
 	if previewRuntime != nil {
 		defer previewRuntime.Close()
 	}
@@ -624,6 +647,8 @@ type chatTurnRunner interface {
 	Run(context.Context, string) error
 	EmitResponse(string)
 	SetTaskState(reactruntime.TaskState)
+	QueuePendingInput(string)
+	MarkInterrupted()
 }
 
 const promptBoundaryRefusal = "I can't provide hidden system/developer prompts or internal instructions, including paraphrased or hypothetical versions. I can summarize my role and high-level guardrails if useful."
@@ -664,26 +689,53 @@ func detectTaskStateFromInput(input string) (reactruntime.TaskState, bool) {
 		}, true
 	}
 	match := mergeIntoBranchRE.FindStringSubmatch(text)
-	if len(match) != 3 {
-		return reactruntime.TaskState{}, false
-	}
-	sourceRef := strings.TrimSpace(match[1])
-	targetBranch := strings.TrimSpace(match[2])
-	if isMergePronoun(sourceRef) {
-		if mentioned := detectMentionedBranch(text); mentioned != "" {
-			sourceRef = mentioned
+	if len(match) == 3 {
+		sourceRef := strings.TrimSpace(match[1])
+		targetBranch := strings.TrimSpace(match[2])
+		if isMergePronoun(sourceRef) {
+			if mentioned := detectMentionedBranch(text); mentioned != "" {
+				sourceRef = mentioned
+			}
+		}
+		if sourceRef != "" && targetBranch != "" {
+			return reactruntime.TaskState{
+				Objective:            text,
+				Operation:            "merge",
+				SourceRef:            sourceRef,
+				TargetBranch:         targetBranch,
+				RequiredVerification: fmt.Sprintf("verify branch %s contains the resulting HEAD commit", targetBranch),
+			}, true
 		}
 	}
-	if sourceRef == "" || targetBranch == "" {
-		return reactruntime.TaskState{}, false
+	if previewRequestRE.MatchString(text) {
+		return reactruntime.TaskState{
+			Objective:            text,
+			Operation:            "preview",
+			RequiredVerification: "use preview or artifact tools, verify the preview URL or visible result, and do not rely on an ad-hoc shell webserver",
+		}, true
 	}
-	return reactruntime.TaskState{
-		Objective:            text,
-		Operation:            "merge",
-		SourceRef:            sourceRef,
-		TargetBranch:         targetBranch,
-		RequiredVerification: fmt.Sprintf("verify branch %s contains the resulting HEAD commit", targetBranch),
-	}, true
+	if validateRequestRE.MatchString(text) && repoGroundedInputPattern.MatchString(text) {
+		return reactruntime.TaskState{
+			Objective:            text,
+			Operation:            "validate",
+			RequiredVerification: "run the relevant tests or checks before claiming the work is verified",
+		}, true
+	}
+	if implementRequestRE.MatchString(text) && repoGroundedInputPattern.MatchString(text) {
+		return reactruntime.TaskState{
+			Objective:            text,
+			Operation:            "implement",
+			RequiredVerification: "inspect the relevant code, make the change with edit tools, and run the relevant verification before claiming completion",
+		}, true
+	}
+	if inspectRequestRE.MatchString(text) && repoGroundedInputPattern.MatchString(text) {
+		return reactruntime.TaskState{
+			Objective:            text,
+			Operation:            "inspect",
+			RequiredVerification: "inspect the repository with read/search tools before answering, then summarize only what the evidence supports",
+		}, true
+	}
+	return reactruntime.TaskState{}, false
 }
 
 func isMergePronoun(value string) bool {
@@ -704,7 +756,9 @@ func detectMentionedBranch(text string) string {
 }
 
 func validateTaskCompletion(workDir string, snapshot reactruntime.SessionSnapshot, finalText string) error {
-	_ = finalText
+	if err := validateGeneralTaskCompletion(snapshot, finalText); err != nil {
+		return err
+	}
 	if snapshot.TaskState == nil {
 		return nil
 	}
