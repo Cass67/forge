@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/creack/pty"
 )
 
 const execSessionOutputLimit = 64 * 1024
@@ -29,10 +32,13 @@ type execSession struct {
 
 	mu       sync.Mutex
 	cmd      *exec.Cmd
-	stdin    io.WriteCloser
+	ptyFile  *os.File
 	output   bytes.Buffer
 	done     bool
 	exitCode int
+	ptyMode  bool
+	cols     int
+	rows     int
 	onEvent  func(ExecSessionStatus)
 }
 
@@ -42,6 +48,9 @@ type execSessionStatus struct {
 	Command   string `json:"command"`
 	Output    string `json:"output,omitempty"`
 	ExitCode  int    `json:"exit_code,omitempty"`
+	PTY       bool   `json:"pty,omitempty"`
+	Cols      int    `json:"cols,omitempty"`
+	Rows      int    `json:"rows,omitempty"`
 }
 
 type ExecSessionStatus = execSessionStatus
@@ -54,6 +63,14 @@ func NewExecSessionManager() *ExecSessionManager {
 }
 
 func (m *ExecSessionManager) Start(workDir, command string) (int, error) {
+	return m.start(workDir, command, 80, 24, true)
+}
+
+func (m *ExecSessionManager) StartPTY(workDir, command string, cols, rows int) (int, error) {
+	return m.start(workDir, command, cols, rows, true)
+}
+
+func (m *ExecSessionManager) start(workDir, command string, cols, rows int, ptyMode bool) (int, error) {
 	if m == nil {
 		return 0, fmt.Errorf("exec session manager is nil")
 	}
@@ -61,22 +78,47 @@ func (m *ExecSessionManager) Start(workDir, command string) (int, error) {
 	if command == "" {
 		return 0, fmt.Errorf("command is required")
 	}
+	if cols <= 0 {
+		cols = 80
+	}
+	if rows <= 0 {
+		rows = 24
+	}
 
 	cmd := exec.Command("sh", "-c", command)
 	cmd.Dir = workDir
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return 0, err
+	var (
+		stream io.Reader
+		ptmx   *os.File
+		err    error
+	)
+	if ptyMode {
+		ptmx, err = pty.StartWithSize(cmd, &pty.Winsize{
+			Cols: uint16(cols),
+			Rows: uint16(rows),
+		})
+		if err != nil {
+			return 0, err
+		}
+		stream = ptmx
+	} else {
+		stdout, pipeErr := cmd.StdoutPipe()
+		if pipeErr != nil {
+			return 0, pipeErr
+		}
+		stderr, pipeErr := cmd.StderrPipe()
+		if pipeErr != nil {
+			return 0, pipeErr
+		}
+		if _, pipeErr = cmd.StdinPipe(); pipeErr != nil {
+			return 0, pipeErr
+		}
+		if pipeErr = cmd.Start(); pipeErr != nil {
+			return 0, pipeErr
+		}
+		stream = io.MultiReader(stdout, stderr)
 	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return 0, err
-	}
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return 0, err
-	}
-	if err := cmd.Start(); err != nil {
+	if !ptyMode && err != nil {
 		return 0, err
 	}
 
@@ -89,14 +131,16 @@ func (m *ExecSessionManager) Start(workDir, command string) (int, error) {
 		workDir:   workDir,
 		startedAt: time.Now(),
 		cmd:       cmd,
-		stdin:     stdin,
+		ptyFile:   ptmx,
+		ptyMode:   ptyMode,
+		cols:      cols,
+		rows:      rows,
 		onEvent:   m.onEvent,
 	}
 	m.sessions[id] = sess
 	m.mu.Unlock()
 
-	go sess.capture(stdout)
-	go sess.capture(stderr)
+	go sess.capture(stream)
 	go sess.wait()
 
 	return id, nil
@@ -140,6 +184,32 @@ func (m *ExecSessionManager) Write(id int, chars string) (string, error) {
 		return "", fmt.Errorf("unknown session %d", id)
 	}
 	return sess.write(chars)
+}
+
+func (m *ExecSessionManager) Resize(id, cols, rows int) (string, error) {
+	if m == nil {
+		return "", fmt.Errorf("exec session manager is nil")
+	}
+	m.mu.Lock()
+	sess := m.sessions[id]
+	m.mu.Unlock()
+	if sess == nil {
+		return "", fmt.Errorf("unknown session %d", id)
+	}
+	return sess.resize(cols, rows)
+}
+
+func (m *ExecSessionManager) Stop(id int) (string, error) {
+	if m == nil {
+		return "", fmt.Errorf("exec session manager is nil")
+	}
+	m.mu.Lock()
+	sess := m.sessions[id]
+	m.mu.Unlock()
+	if sess == nil {
+		return "", fmt.Errorf("unknown session %d", id)
+	}
+	return sess.stop()
 }
 
 func (m *ExecSessionManager) Close() {
@@ -197,6 +267,9 @@ func (s *execSession) wait() {
 	}
 	status := s.snapshotLocked()
 	s.mu.Unlock()
+	if s.ptyFile != nil {
+		_ = s.ptyFile.Close()
+	}
 	s.notify(status)
 }
 
@@ -226,17 +299,49 @@ func (s *execSession) write(chars string) (string, error) {
 	if s.done {
 		return "", fmt.Errorf("session %d has already exited", s.id)
 	}
-	if s.stdin == nil {
+	if s.ptyFile == nil {
 		return "", fmt.Errorf("session %d does not accept input", s.id)
 	}
-	if _, err := io.WriteString(s.stdin, chars); err != nil {
+	if _, err := io.WriteString(s.ptyFile, chars); err != nil {
 		return "", err
 	}
-	payload, err := json.Marshal(execSessionStatus{
-		Status:    "running",
-		SessionID: s.id,
-		Command:   s.command,
-	})
+	payload, err := json.Marshal(s.snapshotLocked())
+	if err != nil {
+		return "", err
+	}
+	return string(payload), nil
+}
+
+func (s *execSession) resize(cols, rows int) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.done {
+		return "", fmt.Errorf("session %d has already exited", s.id)
+	}
+	if s.ptyFile == nil {
+		return "", fmt.Errorf("session %d does not support resize", s.id)
+	}
+	if cols <= 0 {
+		cols = s.cols
+	}
+	if rows <= 0 {
+		rows = s.rows
+	}
+	if err := pty.Setsize(s.ptyFile, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)}); err != nil {
+		return "", err
+	}
+	s.cols = cols
+	s.rows = rows
+	payload, err := json.Marshal(s.snapshotLocked())
+	if err != nil {
+		return "", err
+	}
+	return string(payload), nil
+}
+
+func (s *execSession) stop() (string, error) {
+	s.kill()
+	payload, err := json.Marshal(s.snapshot())
 	if err != nil {
 		return "", err
 	}
@@ -260,15 +365,25 @@ func (s *execSession) snapshotLocked() execSessionStatus {
 		Command:   s.command,
 		Output:    strings.TrimSpace(s.output.String()),
 		ExitCode:  s.exitCode,
+		PTY:       s.ptyMode,
+		Cols:      s.cols,
+		Rows:      s.rows,
 	}
 }
 
 func NewCommandStatus(manager *ExecSessionManager) Tool {
+	tool := NewExecSessionStatus(manager)
+	tool.Name = "command_status"
+	tool.Description = "Check the status of a background command session."
+	return tool
+}
+
+func NewExecSessionStatus(manager *ExecSessionManager) Tool {
 	return Tool{
-		Name:        "command_status",
-		Description: "Check the status of a background command session.",
+		Name:        "exec_session_status",
+		Description: "Check the status of an interactive exec session.",
 		Parameters: []ParameterDef{
-			{Name: "session_id", Type: "int", Description: "background command session id", Required: true},
+			{Name: "session_id", Type: "int", Description: "exec session id", Required: true},
 		},
 		AutoApprove: true,
 		Execute: func(_ context.Context, args map[string]any) (string, error) {
@@ -284,12 +399,19 @@ func NewCommandStatus(manager *ExecSessionManager) Tool {
 }
 
 func NewCommandWriteStdin(manager *ExecSessionManager) Tool {
+	tool := NewExecSessionWrite(manager)
+	tool.Name = "command_write_stdin"
+	tool.Description = "Write input to a background command session."
+	return tool
+}
+
+func NewExecSessionWrite(manager *ExecSessionManager) Tool {
 	return Tool{
-		Name:        "command_write_stdin",
-		Description: "Write input to a background command session.",
+		Name:        "exec_session_write",
+		Description: "Write input to an interactive exec session.",
 		Parameters: []ParameterDef{
-			{Name: "session_id", Type: "int", Description: "background command session id", Required: true},
-			{Name: "chars", Type: "string", Description: "text to write to the session stdin", Required: true},
+			{Name: "session_id", Type: "int", Description: "exec session id", Required: true},
+			{Name: "chars", Type: "string", Description: "text to write to the session", Required: true},
 		},
 		AutoApprove: true,
 		Execute: func(_ context.Context, args map[string]any) (string, error) {
@@ -303,4 +425,98 @@ func NewCommandWriteStdin(manager *ExecSessionManager) Tool {
 			return manager.Write(id, chars)
 		},
 	}
+}
+
+func NewExecSessionStart(workDir string, manager *ExecSessionManager, approve ApprovalFunc) Tool {
+	if manager == nil {
+		manager = NewExecSessionManager()
+	}
+	return Tool{
+		Name:        "exec_session_start",
+		Description: "Start an interactive PTY-backed terminal session for long-running or interactive shell work.",
+		Parameters: []ParameterDef{
+			{Name: "command", Type: "string", Description: "command to run inside the PTY session", Required: true},
+			{Name: "cols", Type: "int", Description: "terminal width in columns", Required: false},
+			{Name: "rows", Type: "int", Description: "terminal height in rows", Required: false},
+		},
+		AutoApprove: false,
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			command, _ := args["command"].(string)
+			command = normalizePseudoToolCommands(command)
+			approved, err := approve(Action{
+				Tool:    "exec_session_start",
+				Summary: command,
+				Detail:  command,
+			})
+			if err != nil {
+				return "", err
+			}
+			if !approved {
+				return "exec_session_start denied by user", nil
+			}
+			cols := intArg(args["cols"], 80)
+			rows := intArg(args["rows"], 24)
+			sessionID, err := manager.StartPTY(workDir, command, cols, rows)
+			if err != nil {
+				return "", err
+			}
+			payload, err := json.Marshal(execSessionStatus{
+				Status:    "running",
+				SessionID: sessionID,
+				Command:   command,
+				PTY:       true,
+				Cols:      cols,
+				Rows:      rows,
+			})
+			if err != nil {
+				return "", err
+			}
+			return string(payload), nil
+		},
+	}
+}
+
+func NewExecSessionResize(manager *ExecSessionManager) Tool {
+	return Tool{
+		Name:        "exec_session_resize",
+		Description: "Resize an interactive exec session PTY.",
+		Parameters: []ParameterDef{
+			{Name: "session_id", Type: "int", Description: "exec session id", Required: true},
+			{Name: "cols", Type: "int", Description: "terminal width in columns", Required: true},
+			{Name: "rows", Type: "int", Description: "terminal height in rows", Required: true},
+		},
+		AutoApprove: true,
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			id := intArg(args["session_id"], 0)
+			return manager.Resize(id, intArg(args["cols"], 0), intArg(args["rows"], 0))
+		},
+	}
+}
+
+func NewExecSessionStop(manager *ExecSessionManager) Tool {
+	return Tool{
+		Name:        "exec_session_stop",
+		Description: "Stop an interactive exec session.",
+		Parameters: []ParameterDef{
+			{Name: "session_id", Type: "int", Description: "exec session id", Required: true},
+		},
+		AutoApprove: true,
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			return manager.Stop(intArg(args["session_id"], 0))
+		},
+	}
+}
+
+func intArg(value any, fallback int) int {
+	switch raw := value.(type) {
+	case int:
+		if raw != 0 {
+			return raw
+		}
+	case float64:
+		if raw != 0 {
+			return int(raw)
+		}
+	}
+	return fallback
 }

@@ -560,6 +560,18 @@ func TestRegisterToolsIncludesPreviewLifecycleTools(t *testing.T) {
 	}
 }
 
+func TestRegisterToolsIncludesExecSessionLifecycleTools(t *testing.T) {
+	reg := tools.NewRegistry()
+	cfg := &config.Config{}
+	_, _ = registerTools(reg, t.TempDir(), cfg, reactruntime.NewSession(), agent.YoloApproval(), nil, nil)
+
+	for _, name := range []string{"exec_session_start", "exec_session_status", "exec_session_write", "exec_session_resize", "exec_session_stop"} {
+		if _, ok := reg.Get(name); !ok {
+			t.Fatalf("%s tool not registered", name)
+		}
+	}
+}
+
 func TestValidateTaskCompletionRejectsRepoGroundedAnswerWithoutToolUse(t *testing.T) {
 	snapshot := reactruntime.SessionSnapshot{
 		LastInput: "i need a new theme for this app",

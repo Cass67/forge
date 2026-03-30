@@ -1715,7 +1715,7 @@ func commandSessionStatusMessage(ev llm.Event) string {
 		return ""
 	}
 	switch ev.Agent {
-	case "run_command", "command_status":
+	case "run_command", "command_status", "exec_session_start", "exec_session_status", "exec_session_write", "exec_session_resize", "exec_session_stop":
 	default:
 		return ""
 	}
