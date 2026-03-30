@@ -344,14 +344,14 @@ func (r *Runner) blockedToolResult(toolName string, args map[string]any) string 
 	}
 	switch {
 	case r.gitWorkflow.unmergedFiles:
-		return "blocked: unmerged git conflicts remain. Resolve conflicted files and stage them before retrying commit."
+		return "blocked: unmerged git conflicts remain. Resolve conflicted files, stage them, and call git_merge_status before retrying commit."
 	case r.gitWorkflow.commitBlocker == commitBlockerRestage:
 		if toolName == "run_command" && strings.Contains(strings.ToLower(stringArg(args, "command")), "git add") {
 			return ""
 		}
-		return "blocked: the previous commit attempt modified files via hooks. Re-stage those files before retrying commit."
+		return "blocked: the previous commit attempt modified files via hooks. Re-stage those files and call git_merge_status before retrying commit."
 	case r.gitWorkflow.commitBlocker == commitBlockerEdit:
-		return "blocked: the previous commit attempt already failed and nothing has changed since then. Fix the reported hook issues before retrying commit."
+		return "blocked: the previous commit attempt already failed and nothing has changed since then. Fix the reported hook issues and call git_merge_status before retrying commit."
 	default:
 		return ""
 	}
@@ -424,17 +424,17 @@ func (r *Runner) syncRuntimeNote() {
 
 func (s gitWorkflowState) runtimeNote() string {
 	if s.unmergedFiles {
-		return "Git merge workflow active. Resolve unmerged files before retrying commit. Check `git diff --name-only --diff-filter=U`, resolve each conflicted file, stage the resolutions, and only retry commit once unmerged files are gone."
+		return "Git merge workflow active. Call git_merge_status to inspect unresolved files and next steps. Resolve each conflicted file, stage the resolutions, and only retry commit once unmerged files are gone."
 	}
 	if s.commitBlocker != commitBlockerNone {
 		summary := strings.TrimSpace(s.blockerSummary)
 		if summary == "" {
 			summary = "commit blockers remain"
 		}
-		return "Git merge workflow active. " + summary + ". Do not retry the same commit until you have made the required fix."
+		return "Git merge workflow active. " + summary + ". Call git_merge_status after each fix and do not retry the same commit until the blockers are cleared."
 	}
 	if s.mergeActive {
-		return "Git merge workflow active. Keep resolving and validating the merge until commit succeeds."
+		return "Git merge workflow active. Call git_merge_status to inspect the current merge state, then keep resolving and validating the merge until commit succeeds."
 	}
 	return ""
 }

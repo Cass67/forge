@@ -207,3 +207,87 @@ func TestGitCommitNothingToCommit(t *testing.T) {
 		t.Errorf("expected nothing to commit, got: %s", result)
 	}
 }
+
+func TestGitMergeStatusCleanRepo(t *testing.T) {
+	dir := initGitRepo(t)
+
+	tool := NewGitMergeStatus(dir)
+	result, err := tool.Execute(context.Background(), map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "operation: none") {
+		t.Fatalf("expected no merge operation, got: %s", result)
+	}
+	if !strings.Contains(result, "next_action: no merge in progress") {
+		t.Fatalf("expected clean next action, got: %s", result)
+	}
+}
+
+func TestGitMergeStatusReportsConflicts(t *testing.T) {
+	dir := initGitRepo(t)
+	writeFile := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runWithEnv := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v failed: %s\n%s", args, err, out)
+		}
+	}
+	currentBranchCmd := exec.Command("git", "branch", "--show-current")
+	currentBranchCmd.Dir = dir
+	currentBranch, err := currentBranchCmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseBranch := strings.TrimSpace(string(currentBranch))
+	if baseBranch == "" {
+		t.Fatal("expected current branch name")
+	}
+
+	runWithEnv("checkout", "-b", "feature")
+	writeFile("main.go", "package main\n\nfunc feature() {}\n")
+	runWithEnv("add", "main.go")
+	runWithEnv("commit", "-m", "feature change")
+
+	runWithEnv("checkout", baseBranch)
+	writeFile("main.go", "package main\n\nfunc mainline() {}\n")
+	runWithEnv("add", "main.go")
+	runWithEnv("commit", "-m", "main change")
+
+	cmd := exec.Command("git", "merge", "feature")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@test.com",
+		"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@test.com",
+	)
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("expected merge conflict, got success: %s", out)
+	}
+
+	tool := NewGitMergeStatus(dir)
+	result, err := tool.Execute(context.Background(), map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "operation: merge") {
+		t.Fatalf("expected merge operation, got: %s", result)
+	}
+	if !strings.Contains(result, "unmerged_files:\n- main.go") {
+		t.Fatalf("expected conflicted file listing, got: %s", result)
+	}
+	if !strings.Contains(result, "next_action: resolve each unmerged file, stage it, then re-run git_merge_status") {
+		t.Fatalf("expected conflict guidance, got: %s", result)
+	}
+}
