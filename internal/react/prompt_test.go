@@ -127,6 +127,8 @@ func TestBuildMessages_IncludesTaskStateAsSystemMessage(t *testing.T) {
 		TaskState: &TaskState{
 			Objective:            "merge feature/go-rewrite into main",
 			RequiredVerification: "verify main contains the resulting commit",
+			Operation:            "merge",
+			TargetBranch:         "main",
 		},
 		History: []llm.Message{
 			{Role: llm.RoleUser, Content: "merge it"},
@@ -145,5 +147,32 @@ func TestBuildMessages_IncludesTaskStateAsSystemMessage(t *testing.T) {
 	}
 	if !strings.Contains(msgs[1].Content, "verify main contains the resulting commit") {
 		t.Fatalf("task state missing verification = %q", msgs[1].Content)
+	}
+	if !strings.Contains(msgs[1].Content, "git_branch_state") || !strings.Contains(msgs[1].Content, "git_merge_status") {
+		t.Fatalf("task state missing merge guidance = %q", msgs[1].Content)
+	}
+}
+
+func TestBuildMessages_IncludesPlanStateAsSystemMessage(t *testing.T) {
+	snap := SessionSnapshot{
+		PlanState: &PlanState{
+			Explanation: "Working through the approved runtime alignment",
+			Steps: []PlanStep{
+				{Step: "Add apply_patch", Status: "completed"},
+				{Step: "Add update_plan", Status: "in_progress"},
+			},
+		},
+		History: []llm.Message{{Role: llm.RoleUser, Content: "keep going"}},
+	}
+
+	msgs := BuildMessages("sys", snap)
+	if len(msgs) < 3 {
+		t.Fatalf("messages = %#v", msgs)
+	}
+	if msgs[1].Role != llm.RoleSystem || !strings.Contains(msgs[1].Content, "Current plan:") {
+		t.Fatalf("plan message = %#v", msgs[1])
+	}
+	if !strings.Contains(msgs[1].Content, "[in_progress] Add update_plan") {
+		t.Fatalf("plan content = %q", msgs[1].Content)
 	}
 }

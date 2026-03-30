@@ -6,21 +6,24 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
 func NewGitMergeStatus(workDir string) Tool {
 	return Tool{
 		Name:        "git_merge_status",
-		Description: "Inspect merge/rebase/cherry-pick conflict state, list unresolved files, and suggest the next merge-resolution step.",
-		Parameters:  []ParameterDef{},
+		Description: "Inspect merge/rebase/cherry-pick conflict state, list unresolved files, include focused conflict previews, and suggest the next merge-resolution step.",
+		Parameters: []ParameterDef{
+			{Name: "preview_lines", Type: "number", Description: "optional number of surrounding lines to include around each conflict marker", Required: false},
+		},
 		AutoApprove: true,
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			gitDir, err := resolveGitDir(ctx, workDir)
 			if err != nil {
 				return fmt.Sprintf("error resolving git dir: %v", err), nil
 			}
-			state, err := inspectGitMergeState(ctx, workDir, gitDir)
+			state, err := inspectGitMergeState(ctx, workDir, gitDir, previewLinesArg(args, 2))
 			if err != nil {
 				return fmt.Sprintf("error inspecting git merge state: %v", err), nil
 			}
@@ -30,10 +33,37 @@ func NewGitMergeStatus(workDir string) Tool {
 }
 
 type gitMergeState struct {
-	operation string
-	unmerged  []string
-	staged    []string
-	unstaged  []string
+	operation        string
+	unmerged         []string
+	staged           []string
+	unstaged         []string
+	conflictPreviews []gitConflictPreview
+}
+
+type gitConflictPreview struct {
+	path    string
+	snippet string
+}
+
+func previewLinesArg(args map[string]any, fallback int) int {
+	if args == nil {
+		return fallback
+	}
+	switch value := args["preview_lines"].(type) {
+	case float64:
+		if value >= 0 {
+			return int(value)
+		}
+	case int:
+		if value >= 0 {
+			return value
+		}
+	case string:
+		if parsed, err := strconv.Atoi(strings.TrimSpace(value)); err == nil && parsed >= 0 {
+			return parsed
+		}
+	}
+	return fallback
 }
 
 func resolveGitDir(ctx context.Context, workDir string) (string, error) {
@@ -50,7 +80,7 @@ func resolveGitDir(ctx context.Context, workDir string) (string, error) {
 	return filepath.Clean(path), nil
 }
 
-func inspectGitMergeState(ctx context.Context, workDir, gitDir string) (gitMergeState, error) {
+func inspectGitMergeState(ctx context.Context, workDir, gitDir string, previewLines int) (gitMergeState, error) {
 	state := gitMergeState{operation: detectGitOperation(gitDir)}
 
 	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
@@ -80,7 +110,47 @@ func inspectGitMergeState(ctx context.Context, workDir, gitDir string) (gitMerge
 			state.unstaged = append(state.unstaged, entry)
 		}
 	}
+	for _, path := range state.unmerged {
+		if preview := buildConflictPreview(workDir, path, previewLines); preview != "" {
+			state.conflictPreviews = append(state.conflictPreviews, gitConflictPreview{
+				path:    path,
+				snippet: preview,
+			})
+		}
+	}
 	return state, nil
+}
+
+func buildConflictPreview(workDir, relPath string, surrounding int) string {
+	content, err := os.ReadFile(filepath.Join(workDir, relPath))
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(strings.ReplaceAll(string(content), "\r\n", "\n"), "\n")
+	start := -1
+	end := -1
+	for idx, line := range lines {
+		if strings.HasPrefix(line, "<<<<<<< ") {
+			start = idx
+		}
+		if start >= 0 && strings.HasPrefix(line, ">>>>>>> ") {
+			end = idx
+			break
+		}
+	}
+	if start < 0 {
+		return ""
+	}
+	if end < 0 {
+		end = min(len(lines)-1, start+surrounding+4)
+	}
+	from := max(0, start-surrounding)
+	to := min(len(lines)-1, end+surrounding)
+	var preview []string
+	for idx := from; idx <= to; idx++ {
+		preview = append(preview, fmt.Sprintf("%4d | %s", idx+1, lines[idx]))
+	}
+	return strings.Join(preview, "\n")
 }
 
 func detectGitOperation(gitDir string) string {
@@ -156,6 +226,8 @@ func (s gitMergeState) render() string {
 	sb.WriteString("\n")
 	sb.WriteString(renderMergeSection("unstaged_files", s.unstaged))
 	sb.WriteString("\n")
+	sb.WriteString(renderConflictPreviews(s.conflictPreviews))
+	sb.WriteString("\n")
 	sb.WriteString("next_action: ")
 	sb.WriteString(s.nextAction())
 	return sb.String()
@@ -172,6 +244,25 @@ func renderMergeSection(name string, items []string) string {
 		sb.WriteString("- ")
 		sb.WriteString(item)
 		sb.WriteString("\n")
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+func renderConflictPreviews(previews []gitConflictPreview) string {
+	if len(previews) == 0 {
+		return "conflict_previews: none"
+	}
+	var sb strings.Builder
+	sb.WriteString("conflict_previews:\n")
+	for _, preview := range previews {
+		sb.WriteString("- path: ")
+		sb.WriteString(preview.path)
+		sb.WriteString("\n")
+		for _, line := range strings.Split(preview.snippet, "\n") {
+			sb.WriteString("  ")
+			sb.WriteString(line)
+			sb.WriteString("\n")
+		}
 	}
 	return strings.TrimRight(sb.String(), "\n")
 }

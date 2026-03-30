@@ -34,6 +34,7 @@ type gitBranchState struct {
 	targetExists       bool
 	headContainsTarget string
 	targetContainsHead string
+	nextAction         string
 }
 
 func inspectGitBranchState(ctx context.Context, workDir, targetBranch string) (gitBranchState, error) {
@@ -58,6 +59,7 @@ func inspectGitBranchState(ctx context.Context, workDir, targetBranch string) (g
 		targetContainsHead: "unknown",
 	}
 	if targetBranch == "" {
+		state.nextAction = "set target_branch to compare HEAD against a branch"
 		return state, nil
 	}
 
@@ -66,6 +68,7 @@ func inspectGitBranchState(ctx context.Context, workDir, targetBranch string) (g
 		state.headContainsTarget = boolString(gitMergeBaseIsAncestor(ctx, workDir, targetBranch, "HEAD"))
 		state.targetContainsHead = boolString(gitMergeBaseIsAncestor(ctx, workDir, "HEAD", targetBranch))
 	}
+	state.nextAction = state.suggestNextAction()
 	return state, nil
 }
 
@@ -107,7 +110,9 @@ func (s gitBranchState) render() string {
 		sb.WriteString("target_branch: none\n")
 		sb.WriteString("target_exists: unknown\n")
 		sb.WriteString("head_contains_target: unknown\n")
-		sb.WriteString("target_contains_head: unknown")
+		sb.WriteString("target_contains_head: unknown\n")
+		sb.WriteString("next_action: ")
+		sb.WriteString(emptyToUnknown(s.nextAction))
 		return sb.String()
 	}
 	sb.WriteString("target_branch: ")
@@ -121,7 +126,25 @@ func (s gitBranchState) render() string {
 	sb.WriteString("\n")
 	sb.WriteString("target_contains_head: ")
 	sb.WriteString(s.targetContainsHead)
+	sb.WriteString("\n")
+	sb.WriteString("next_action: ")
+	sb.WriteString(emptyToUnknown(s.nextAction))
 	return sb.String()
+}
+
+func (s gitBranchState) suggestNextAction() string {
+	switch {
+	case strings.TrimSpace(s.targetBranch) == "":
+		return "set target_branch to compare HEAD against a branch"
+	case !s.targetExists:
+		return "create or fetch the target branch before verifying completion"
+	case s.targetContainsHead == "true":
+		return "target branch already contains HEAD"
+	case strings.TrimSpace(s.currentBranch) != "" && s.currentBranch != s.targetBranch && s.headContainsTarget == "true":
+		return fmt.Sprintf("switch to %s and fast-forward or merge the current HEAD into it", s.targetBranch)
+	default:
+		return fmt.Sprintf("use git log or merge-base to understand why %s does not contain HEAD yet", s.targetBranch)
+	}
 }
 
 func emptyToUnknown(value string) string {

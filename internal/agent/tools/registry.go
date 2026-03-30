@@ -309,13 +309,9 @@ func formatToolSignature(t Tool) string {
 }
 
 // ToLLMToolDefs converts registered tools to llm.ToolDef for native tool calling.
-// tool_help is excluded — it is only meaningful in the XML text-based path.
 func (r *Registry) ToLLMToolDefs() []llm.ToolDef {
 	defs := make([]llm.ToolDef, 0, len(r.order))
 	for _, name := range r.order {
-		if name == "tool_help" {
-			continue
-		}
 		t := r.tools[name]
 		params := make([]llm.ToolParam, 0, len(t.Parameters))
 		for _, p := range t.Parameters {

@@ -193,6 +193,9 @@ func commandLikelyMutates(command string) bool {
 	if lower == "" {
 		return false
 	}
+	if gitBranchReadOnlyCommand(lower) {
+		return false
+	}
 	markers := []string{
 		"git add", "git commit", "git checkout", "git switch", "git branch", "git merge", "git rebase", "git push", "git pull",
 		"rm ", "rm\t", "mv ", "mv\t", "cp ", "cp\t", "sed -i", "perl -i", "tee ", "cat >", ">>",
@@ -203,6 +206,19 @@ func commandLikelyMutates(command string) bool {
 		}
 	}
 	return false
+}
+
+func gitBranchReadOnlyCommand(command string) bool {
+	if !strings.HasPrefix(command, "git branch") {
+		return false
+	}
+	readOnlyFlags := []string{" -a", " -r", " -vv", " --merged", " --no-merged", " --show-current", " --contains", " --sort"}
+	for _, flag := range readOnlyFlags {
+		if strings.Contains(command, flag) {
+			return true
+		}
+	}
+	return strings.TrimSpace(command) == "git branch"
 }
 
 func (g *ApprovalGate) ensureSafeBranch(action tools.Action) error {
