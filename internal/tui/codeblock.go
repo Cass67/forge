@@ -51,6 +51,8 @@ func renderProseLine(line string, theme chatTheme) string {
 		return renderMarkdownListItem(line, theme)
 	case isColonHeader(line):
 		return renderColonHeader(line, theme)
+	case isBareHeader(line):
+		return renderBareHeader(line, theme)
 	default:
 		return renderEmphasizedSemantic(line, profileProse, theme)
 	}
@@ -90,6 +92,42 @@ func renderColonHeader(line string, theme chatTheme) string {
 		Foreground(theme.AccentPrimary).
 		Bold(true).
 		Render(stripStrongMarkers(line))
+}
+
+// isBareHeader detects short standalone title-case lines that weaker models
+// emit as section headers without any markdown marker or trailing colon.
+// e.g. "Summary", "What I inspected (source-grounded)", "High-level architecture and flow".
+func isBareHeader(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if len(trimmed) < 4 || len(trimmed) > 45 {
+		return false
+	}
+	// Must not already be handled by other cases (no leading markers).
+	if strings.ContainsAny(string(trimmed[0]), "-*#>`") {
+		return false
+	}
+	// Must start with an uppercase letter.
+	r := []rune(trimmed)
+	if !unicode.IsUpper(r[0]) {
+		return false
+	}
+	// Must not end with sentence-ending punctuation (those are sentences, not headers).
+	last := r[len(r)-1]
+	if last == '.' || last == ',' || last == ';' || last == '?' || last == '!' || last == ':' {
+		return false
+	}
+	// Exclude lines that contain file-path separators or dashes used inline (em/en dash).
+	if strings.ContainsAny(trimmed, "/\\") || strings.Contains(trimmed, "–") || strings.Contains(trimmed, "—") {
+		return false
+	}
+	return true
+}
+
+func renderBareHeader(line string, theme chatTheme) string {
+	return lipgloss.NewStyle().
+		Foreground(theme.AccentPrimary).
+		Bold(true).
+		Render(strings.TrimSpace(line))
 }
 
 func renderMarkdownHeading(line string, theme chatTheme) string {
