@@ -38,13 +38,33 @@ func TestUpdatePlanRejectsMultipleInProgressSteps(t *testing.T) {
 	}
 }
 
-func TestUpdatePlanRejectsPendingPlanWithoutInProgressStep(t *testing.T) {
+func TestUpdatePlanAutoPromotesFirstPendingWhenNoInProgress(t *testing.T) {
 	session := react.NewSession()
 	tool := NewUpdatePlan(session)
-	_, err := tool.Execute(context.Background(), map[string]any{
+	result, err := tool.Execute(context.Background(), map[string]any{
 		"steps_json": `[{"step":"Inspect files","status":"completed"},{"step":"Patch runtime","status":"pending"}]`,
 	})
-	if err == nil || !strings.Contains(err.Error(), "exactly one in_progress") {
-		t.Fatalf("err = %v", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "[in_progress] Patch runtime") {
+		t.Fatalf("expected pending step auto-promoted to in_progress, got %q", result)
+	}
+}
+
+func TestUpdatePlanAutoPromotesFirstStepWhenAllPending(t *testing.T) {
+	session := react.NewSession()
+	tool := NewUpdatePlan(session)
+	result, err := tool.Execute(context.Background(), map[string]any{
+		"steps_json": `[{"step":"Remove stray files","status":"pending"},{"step":"Update .gitignore","status":"pending"},{"step":"Run lint","status":"pending"}]`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "[in_progress] Remove stray files") {
+		t.Fatalf("expected first step auto-promoted, got %q", result)
+	}
+	if strings.Contains(result, "[in_progress] Update .gitignore") || strings.Contains(result, "[in_progress] Run lint") {
+		t.Fatalf("expected only first step promoted, got %q", result)
 	}
 }
