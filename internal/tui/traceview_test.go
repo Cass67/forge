@@ -48,11 +48,11 @@ func TestRenderTraceDockPanelUsesAppBackground(t *testing.T) {
 
 	rendered := renderTraceDockPanel(theme, "tool_call read_file", "/tmp/forge-debug.jsonl", 80, 8)
 
-	if strings.Contains(rendered, ansiBackground(theme.HeaderBG)) {
-		t.Fatalf("trace dock should not use header background as the dock surface: %q", rendered)
+	if !strings.Contains(rendered, ansiBackground(theme.PanelBG)) {
+		t.Fatalf("trace dock missing panel background fill: %q", rendered)
 	}
-	if !strings.Contains(rendered, ansiBackground(theme.AppBG)) {
-		t.Fatalf("trace dock missing app background fill: %q", rendered)
+	if !strings.Contains(rendered, "Trace dock") {
+		t.Fatalf("trace dock missing upgraded title chrome: %q", rendered)
 	}
 }
 

@@ -40,6 +40,7 @@ type execSession struct {
 	cols     int
 	rows     int
 	onEvent  func(ExecSessionStatus)
+	lastEmit time.Time
 }
 
 type execSessionStatus struct {
@@ -243,7 +244,11 @@ func (s *execSession) capture(r io.Reader) {
 				}
 				s.output.Write(buf[:n])
 			}
+			status, notify := s.maybeSnapshotForOutputLocked(buf[:n])
 			s.mu.Unlock()
+			if notify {
+				s.notify(status)
+			}
 		}
 		if err != nil {
 			return
@@ -291,6 +296,19 @@ func (s *execSession) notify(status ExecSessionStatus) {
 		return
 	}
 	s.onEvent(status)
+}
+
+func (s *execSession) maybeSnapshotForOutputLocked(chunk []byte) (ExecSessionStatus, bool) {
+	if s == nil || s.onEvent == nil || s.done {
+		return ExecSessionStatus{}, false
+	}
+	text := string(chunk)
+	now := time.Now()
+	if !strings.Contains(text, "\n") && now.Sub(s.lastEmit) < 200*time.Millisecond {
+		return ExecSessionStatus{}, false
+	}
+	s.lastEmit = now
+	return s.snapshotLocked(), true
 }
 
 func (s *execSession) write(chars string) (string, error) {

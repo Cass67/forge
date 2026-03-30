@@ -101,7 +101,7 @@ func taskStateContext(snapshot SessionSnapshot) string {
 		parts = append(parts, "Inspection guidance: your first action should be a repo read/search tool call, not prose. Inspect the relevant files or symbols before answering, and keep the answer bounded to what the evidence actually shows.")
 	}
 	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "implement") {
-		parts = append(parts, "Implementation guidance: do not start with planning prose. First inspect the relevant code with repo tools, then make the change with edit tools, and only claim completion after relevant verification.")
+		parts = append(parts, "Implementation guidance: do not start with planning prose. First inspect the relevant code with repo tools, then make the change with edit tools, and only claim completion after relevant verification. If you need interactive or long-running terminal work such as dev servers, watchers, REPLs, or TUIs, use exec_session_start instead of run_command.")
 	}
 	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "validate") {
 		parts = append(parts, "Validation guidance: run the relevant tests or checks before you say the work is verified. If no verification ran, say that clearly instead of implying success.")
