@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -637,6 +638,45 @@ func TestValidateTaskCompletionAllowsGroundedFollowUpWithoutFreshToolUse(t *test
 
 	if err := validateTaskCompletion(t.TempDir(), snapshot, "Start with focused tests around service/main.py, then tighten the pre-commit checks so the service path is verified automatically."); err != nil {
 		t.Fatalf("unexpected err = %v", err)
+	}
+}
+
+func TestValidateTaskCompletionBuildsEvidenceAwareRetryPromptForIntentNarration(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "Answer directly from the repo evidence you already gathered.",
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "explain this repo"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{
+				{ID: "c1", Name: "list_dir", ArgsJSON: `{"path":"internal/agent"}`},
+				{ID: "c2", Name: "read_file", ArgsJSON: `{"path":"internal/runtime/chat.go"}`},
+				{ID: "c3", Name: "code_search", ArgsJSON: `{"query":"type Agent"}`},
+			}},
+			{Role: llm.RoleTool, ToolCallID: "c1", Content: "ok"},
+			{Role: llm.RoleTool, ToolCallID: "c2", Content: "ok"},
+			{Role: llm.RoleTool, ToolCallID: "c3", Content: "ok"},
+			{Role: llm.RoleUser, Content: "Answer directly from the repo evidence you already gathered."},
+		},
+	}
+
+	err := validateTaskCompletion(t.TempDir(), snapshot, "I'll inspect the repo and summarize the architecture.")
+	if err == nil {
+		t.Fatal("expected retryable completion rejection")
+	}
+
+	var retryable *reactruntime.RetryableCompletionError
+	if !errors.As(err, &retryable) {
+		t.Fatalf("expected retryable completion error, got %T: %v", err, err)
+	}
+	if !strings.Contains(retryable.Prompt, "You already gathered repo evidence") {
+		t.Fatalf("retry prompt = %q", retryable.Prompt)
+	}
+	for _, want := range []string{"list_dir(internal/agent)", "read_file(internal/runtime/chat.go)", "code_search(type Agent)"} {
+		if !strings.Contains(retryable.Prompt, want) {
+			t.Fatalf("retry prompt missing %q: %q", want, retryable.Prompt)
+		}
+	}
+	if !strings.Contains(retryable.Prompt, "Do not narrate next steps") {
+		t.Fatalf("retry prompt = %q", retryable.Prompt)
 	}
 }
 
