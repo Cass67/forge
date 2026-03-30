@@ -13,6 +13,7 @@ const (
 	MsgUser    MsgKind = iota // User input
 	MsgAgent                  // Agent response
 	MsgForge                  // Forge steering input
+	MsgPlan                   // Persistent plan/todo state
 	MsgWorking                // Inline progress / working-state update
 	MsgStatus                 // Status line (e.g. "Agent complete")
 )
@@ -32,6 +33,8 @@ func (m ChatMessage) accentColor(theme chatTheme) lipgloss.Color {
 		return theme.AccentPrimary
 	case MsgForge:
 		return theme.AccentSecondary
+	case MsgPlan:
+		return theme.Warning
 	case MsgWorking:
 		return theme.TextDim
 	default:
@@ -65,6 +68,25 @@ func (m ChatMessage) Render(width int, theme chatTheme) string {
 			Background(theme.AppBG).
 			Width(width).
 			Render(prefix + body)
+	}
+
+	if m.Kind == MsgPlan {
+		headerColor := m.accentColor(theme)
+		header := strings.TrimSpace(m.Header)
+		if header == "" {
+			header = "Plan"
+		}
+		body := RenderSemanticPlain(strings.TrimSpace(m.Content), profileProse, theme)
+		blocks := []string{
+			renderMessageHeader(header, width, theme, headerColor),
+			lipgloss.NewStyle().
+				Width(width).
+				Render(indentRenderedBlock(body, "  ")),
+		}
+		return lipgloss.NewStyle().
+			Background(theme.AppBG).
+			Width(width).
+			Render(lipgloss.JoinVertical(lipgloss.Left, blocks...))
 	}
 
 	headerColor := m.accentColor(theme)

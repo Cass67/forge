@@ -25,15 +25,17 @@ type Config struct {
 }
 
 type Runner struct {
-	driver          llm.Driver
-	tools           *agenttools.Registry
-	renderer        agent.RenderTarget
-	systemPrompt    func() string
-	session         *Session
-	progress        func(string)
-	maxSessionTurns int
-	gitWorkflow     gitWorkflowState
-	completionCheck func(SessionSnapshot, string) error
+	driver             llm.Driver
+	tools              *agenttools.Registry
+	renderer           agent.RenderTarget
+	systemPrompt       func() string
+	session            *Session
+	progress           func(string)
+	maxSessionTurns    int
+	gitWorkflow        gitWorkflowState
+	planWorkflow       planWorkflowState
+	validationWorkflow validationWorkflowState
+	completionCheck    func(SessionSnapshot, string) error
 }
 
 type gitCommitBlocker int
@@ -51,6 +53,22 @@ type gitWorkflowState struct {
 	blockerSummary string
 }
 
+type planWorkflowState struct {
+	mode               string
+	active             bool
+	explorationBatches int
+	synthesisRequired  bool
+}
+
+type validationWorkflowState struct {
+	ran    bool
+	passed bool
+	cmd    string
+}
+
+const planExplorationBudget = 3
+const analysisExplorationBudget = 4
+
 func NewRunner(cfg Config) *Runner {
 	session := cfg.Session
 	if session == nil {
@@ -60,7 +78,7 @@ func NewRunner(cfg Config) *Runner {
 	if reg == nil {
 		reg = agenttools.NewRegistry()
 	}
-	return &Runner{
+	runner := &Runner{
 		driver:          cfg.Driver,
 		tools:           reg,
 		renderer:        cfg.Renderer,
@@ -70,6 +88,12 @@ func NewRunner(cfg Config) *Runner {
 		maxSessionTurns: maxSessionTurns(cfg.MaxSessionTurns),
 		completionCheck: cfg.CompletionCheck,
 	}
+	if snap := session.Snapshot(); snap.TaskState != nil && isSynthesisGuardOperation(snap.TaskState.Operation) {
+		runner.planWorkflow.active = true
+		runner.planWorkflow.mode = strings.ToLower(strings.TrimSpace(snap.TaskState.Operation))
+		runner.syncRuntimeNote()
+	}
+	return runner
 }
 
 func (r *Runner) Run(ctx context.Context, input string) error {
@@ -120,6 +144,8 @@ func (r *Runner) ClearHistory() {
 		return
 	}
 	r.gitWorkflow = gitWorkflowState{}
+	r.planWorkflow = planWorkflowState{}
+	r.validationWorkflow = validationWorkflowState{}
 	r.session.Clear()
 }
 
@@ -134,7 +160,31 @@ func (r *Runner) SetTaskState(state TaskState) {
 	if r == nil || r.session == nil {
 		return
 	}
+	r.planWorkflow = planWorkflowState{
+		mode:   strings.ToLower(strings.TrimSpace(state.Operation)),
+		active: isSynthesisGuardOperation(state.Operation),
+	}
 	r.session.SetTaskState(state)
+	r.syncRuntimeNote()
+	if r.renderer != nil {
+		if text := formatTaskContextSummary(state); text != "" {
+			r.renderer.ToolResult("__task_context", text, "", false)
+		}
+	}
+}
+
+func formatTaskContextSummary(state TaskState) string {
+	var parts []string
+	if obj := strings.TrimSpace(state.Objective); obj != "" {
+		if len(obj) > 200 {
+			obj = obj[:200] + "..."
+		}
+		parts = append(parts, "Objective: "+obj)
+	}
+	if v := strings.TrimSpace(state.RequiredVerification); v != "" {
+		parts = append(parts, "Verify: "+v)
+	}
+	return strings.Join(parts, "\n")
 }
 
 func (r *Runner) EmitResponse(text string) {
@@ -271,11 +321,12 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 				r.renderer.ToolResult(call.Name, blocked, "", true)
 			}
 			r.session.AppendNativeToolResult(call.ID, blocked)
+			r.updatePlanWorkflow(call.Name, args, "", true)
 			continue
 		}
 
 		if r.renderer != nil {
-			r.renderer.ToolCall(call.Name, reactToolSummary(agent.ToolCall{Args: args}))
+			r.renderer.ToolCall(call.Name, reactToolSummary(args))
 		}
 
 		result, err := tool.Execute(ctx, args)
@@ -300,6 +351,8 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 		}
 		r.session.AppendNativeToolResult(call.ID, result)
 		r.updateGitWorkflow(call.Name, args, result)
+		r.updatePlanWorkflow(call.Name, args, result, false)
+		r.updateValidationWorkflow(call.Name, args, result)
 	}
 	return nil
 }
@@ -322,17 +375,17 @@ func (r *Runner) emitStats(start time.Time) {
 	r.renderer.Stats(time.Since(start), usage)
 }
 
-func reactToolSummary(call agent.ToolCall) string {
-	if path, _ := call.Args["path"].(string); strings.TrimSpace(path) != "" {
+func reactToolSummary(args map[string]any) string {
+	if path, _ := args["path"].(string); strings.TrimSpace(path) != "" {
 		return strings.TrimSpace(path)
 	}
-	if command, _ := call.Args["command"].(string); strings.TrimSpace(command) != "" {
+	if command, _ := args["command"].(string); strings.TrimSpace(command) != "" {
 		return strings.TrimSpace(command)
 	}
-	if query, _ := call.Args["query"].(string); strings.TrimSpace(query) != "" {
+	if query, _ := args["query"].(string); strings.TrimSpace(query) != "" {
 		return strings.TrimSpace(query)
 	}
-	if pattern, _ := call.Args["pattern"].(string); strings.TrimSpace(pattern) != "" {
+	if pattern, _ := args["pattern"].(string); strings.TrimSpace(pattern) != "" {
 		return strings.TrimSpace(pattern)
 	}
 	return ""
@@ -354,6 +407,9 @@ func maxSessionTurns(value int) int {
 }
 
 func (r *Runner) blockedToolResult(toolName string, args map[string]any) string {
+	if blocked := r.blockedPlanToolResult(toolName, args); blocked != "" {
+		return blocked
+	}
 	if !isCommitToolCall(toolName, args) {
 		return ""
 	}
@@ -369,6 +425,24 @@ func (r *Runner) blockedToolResult(toolName string, args map[string]any) string 
 		return "blocked: the previous commit attempt already failed and nothing has changed since then. Fix the reported hook issues and call git_merge_status before retrying commit."
 	default:
 		return ""
+	}
+}
+
+func (r *Runner) blockedPlanToolResult(toolName string, args map[string]any) string {
+	if !r.planWorkflow.active || !r.planWorkflow.synthesisRequired {
+		return ""
+	}
+	if allowsPlanSynthesis(toolName) {
+		return ""
+	}
+	if !isExplorationToolCall(toolName, args) {
+		return ""
+	}
+	switch r.planWorkflow.mode {
+	case "analysis":
+		return "blocked: enough evidence has been gathered for analysis. Stop exploring and summarize findings or recommendations from the evidence you already have."
+	default:
+		return "blocked: enough evidence has been gathered for planning. Stop exploring and synthesize a concise plan from the evidence you already have, and use update_plan if you need to track the plan."
 	}
 }
 
@@ -434,7 +508,53 @@ func (r *Runner) syncRuntimeNote() {
 	if r == nil || r.session == nil {
 		return
 	}
-	r.session.SetRuntimeNote(r.gitWorkflow.runtimeNote())
+	notes := make([]string, 0, 3)
+	if note := strings.TrimSpace(r.planWorkflow.runtimeNote()); note != "" {
+		notes = append(notes, note)
+	}
+	if note := strings.TrimSpace(r.gitWorkflow.runtimeNote()); note != "" {
+		notes = append(notes, note)
+	}
+	if note := strings.TrimSpace(r.validationWorkflow.runtimeNote()); note != "" {
+		notes = append(notes, note)
+	}
+	r.session.SetRuntimeNote(strings.Join(notes, "\n\n"))
+}
+
+func (r *Runner) updatePlanWorkflow(toolName string, args map[string]any, _ string, blocked bool) {
+	if !r.planWorkflow.active {
+		return
+	}
+	if toolName == "update_plan" {
+		r.planWorkflow.explorationBatches = 0
+		r.planWorkflow.synthesisRequired = false
+		r.syncRuntimeNote()
+		return
+	}
+	if blocked {
+		r.syncRuntimeNote()
+		return
+	}
+	if !isExplorationToolCall(toolName, args) {
+		return
+	}
+	r.planWorkflow.explorationBatches++
+	if r.planWorkflow.explorationBatches >= synthesisGuardBudget(r.planWorkflow.mode) {
+		r.planWorkflow.synthesisRequired = true
+	}
+	r.syncRuntimeNote()
+}
+
+func (s planWorkflowState) runtimeNote() string {
+	if !s.active || !s.synthesisRequired {
+		return ""
+	}
+	switch s.mode {
+	case "analysis":
+		return "Analysis guidance: you have enough evidence to answer. Avoid exhaustive repo-wide searches, stop exploring and summarize findings or recommendations now. Put any uncertainty into open questions instead of doing more low-yield research."
+	default:
+		return "Planning task guidance: you have enough evidence to write the plan. Avoid exhaustive repo-wide searches, stop exploring and synthesize the next actionable plan now. Use update_plan to capture the steps, and put any uncertainty into open questions instead of doing more broad research."
+	}
 }
 
 func (s gitWorkflowState) runtimeNote() string {
@@ -524,4 +644,115 @@ func summarizeCommitFailure(result string) string {
 	default:
 		return "commit blockers remain"
 	}
+}
+
+func (r *Runner) updateValidationWorkflow(toolName string, args map[string]any, result string) {
+	if toolName != "run_command" {
+		return
+	}
+	command := strings.TrimSpace(stringArg(args, "command"))
+	if !isValidationCommand(strings.ToLower(command)) {
+		return
+	}
+	passed := isValidationPass(result)
+	r.validationWorkflow.ran = true
+	r.validationWorkflow.passed = passed
+	r.validationWorkflow.cmd = command
+	if r.renderer != nil {
+		r.renderer.ToolResult("__validation", formatValidationResult(command, passed), "", !passed)
+	}
+	r.syncRuntimeNote()
+}
+
+func isValidationCommand(command string) bool {
+	for _, prefix := range []string{
+		"go test", "go build",
+		"npm test", "npm run build",
+		"bun test", "bun run build",
+		"yarn test",
+		"pnpm test",
+		"pytest", "cargo test", "cargo build",
+	} {
+		if strings.HasPrefix(command, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func isValidationPass(result string) bool {
+	if idx := strings.LastIndex(result, "\nexit "); idx >= 0 {
+		code := strings.TrimSpace(result[idx+len("\nexit "):])
+		return code == "0"
+	}
+	lower := strings.ToLower(result)
+	return !strings.Contains(lower, "\nfail\t")
+}
+
+func formatValidationResult(cmd string, passed bool) string {
+	if passed {
+		return "validation passed: " + cmd
+	}
+	return "validation failed: " + cmd
+}
+
+func (s validationWorkflowState) runtimeNote() string {
+	if !s.ran || s.passed {
+		return ""
+	}
+	return "Last validation failed: " + s.cmd + " — fix the reported errors before finishing."
+}
+
+func isExplorationToolCall(toolName string, args map[string]any) bool {
+	switch toolName {
+	case "read_file", "list_dir", "search", "glob", "code_search", "tool_help", "view_image",
+		"lsp_definition", "lsp_references", "lsp_hover", "lsp_document_symbols",
+		"web_fetch", "web_search", "git_status", "git_diff", "git_log", "git_branch_state", "git_merge_status":
+		return true
+	case "run_command":
+		return isReadOnlyCommand(strings.ToLower(strings.TrimSpace(stringArg(args, "command"))))
+	default:
+		return false
+	}
+}
+
+func allowsPlanSynthesis(toolName string) bool {
+	switch toolName {
+	case "update_plan", "think":
+		return true
+	default:
+		return false
+	}
+}
+
+func isSynthesisGuardOperation(operation string) bool {
+	switch strings.ToLower(strings.TrimSpace(operation)) {
+	case "plan", "analysis":
+		return true
+	default:
+		return false
+	}
+}
+
+func synthesisGuardBudget(mode string) int {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "analysis":
+		return analysisExplorationBudget
+	default:
+		return planExplorationBudget
+	}
+}
+
+func isReadOnlyCommand(command string) bool {
+	if command == "" {
+		return false
+	}
+	for _, prefix := range []string{
+		"rg ", "grep ", "sed ", "cat ", "ls", "git status", "git diff", "git log", "git show", "git branch", "git grep", "go test", "npm test", "pnpm test", "yarn test",
+	} {
+		if strings.HasPrefix(command, prefix) {
+			return true
+		}
+	}
+	return false
 }

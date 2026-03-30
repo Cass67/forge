@@ -669,6 +669,169 @@ func TestRunnerRequiresMutationBeforeRetryingFailedCommit(t *testing.T) {
 	}
 }
 
+func TestRunnerNudgesAndBlocksExcessivePlanExploration(t *testing.T) {
+	driver := &nativeSequenceDriver{
+		steps: [][]llm.Token{
+			{{ToolCall: &llm.NativeToolCall{ID: "c1", Name: "search", ArgsJSON: `{"pattern":"xml"}`}}},
+			{{ToolCall: &llm.NativeToolCall{ID: "c2", Name: "read_file", ArgsJSON: `{"path":"internal/agent/system.go"}`}}},
+			{{ToolCall: &llm.NativeToolCall{ID: "c3", Name: "code_search", ArgsJSON: `{"query":"BuildXMLPrompt"}`}}},
+			{{ToolCall: &llm.NativeToolCall{ID: "c4", Name: "search", ArgsJSON: `{"pattern":"legacy xml"}`}}},
+			{{Text: "Plan:\n1. Remove dead XML prompt helpers\n2. Delete unused parser tests\n3. Verify native tool path coverage"}},
+		},
+	}
+	reg := agenttools.NewRegistry()
+	searchCalls := 0
+	readCalls := 0
+	codeSearchCalls := 0
+	reg.Register(agenttools.Tool{
+		Name:        "search",
+		Description: "search text",
+		Parameters:  []agenttools.ParameterDef{{Name: "pattern", Type: "string", Required: true}},
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			searchCalls++
+			return "match", nil
+		},
+	})
+	reg.Register(agenttools.Tool{
+		Name:        "read_file",
+		Description: "read file",
+		Parameters:  []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}},
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			readCalls++
+			return "content", nil
+		},
+	})
+	reg.Register(agenttools.Tool{
+		Name:        "code_search",
+		Description: "search code",
+		Parameters:  []agenttools.ParameterDef{{Name: "query", Type: "string", Required: true}},
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			codeSearchCalls++
+			return "symbol result", nil
+		},
+	})
+
+	session := NewSession()
+	session.SetTaskState(TaskState{
+		Objective:            "write a plan for removing dead xml code",
+		Operation:            "plan",
+		RequiredVerification: "produce a concise plan grounded in enough repo evidence",
+	})
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session, MaxSessionTurns: 8})
+
+	if err := r.Run(context.Background(), "write a cleanup plan"); err != nil {
+		t.Fatal(err)
+	}
+	if searchCalls != 1 {
+		t.Fatalf("search calls = %d, want 1 executed search before planning block", searchCalls)
+	}
+	if readCalls != 1 || codeSearchCalls != 1 {
+		t.Fatalf("tool calls = (%d,%d), want (1,1)", readCalls, codeSearchCalls)
+	}
+	if len(driver.allMsgs) < 4 {
+		t.Fatalf("driver messages = %#v", driver.allMsgs)
+	}
+	foundSynthesisNote := false
+	for _, msg := range driver.allMsgs[3] {
+		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Planning task guidance") && strings.Contains(msg.Content, "stop exploring and synthesize") {
+			foundSynthesisNote = true
+		}
+	}
+	if !foundSynthesisNote {
+		t.Fatalf("expected planning synthesis note in fourth request, got %#v", driver.allMsgs[3])
+	}
+
+	snap := session.Snapshot()
+	foundBlockedResult := false
+	for _, msg := range snap.History {
+		if msg.Role == llm.RoleTool && strings.Contains(msg.Content, "blocked: enough evidence has been gathered for planning") {
+			foundBlockedResult = true
+		}
+	}
+	if !foundBlockedResult {
+		t.Fatalf("expected blocked planning result, history=%#v", snap.History)
+	}
+}
+
+func TestRunnerNudgesAndBlocksExcessiveAnalysisExploration(t *testing.T) {
+	driver := &nativeSequenceDriver{
+		steps: [][]llm.Token{
+			{{ToolCall: &llm.NativeToolCall{ID: "c1", Name: "search", ArgsJSON: `{"pattern":"dead code"}`}}},
+			{{ToolCall: &llm.NativeToolCall{ID: "c2", Name: "read_file", ArgsJSON: `{"path":"internal/agent/parse.go"}`}}},
+			{{ToolCall: &llm.NativeToolCall{ID: "c3", Name: "code_search", ArgsJSON: `{"query":"ParseToolCalls"}`}}},
+			{{ToolCall: &llm.NativeToolCall{ID: "c4", Name: "search", ArgsJSON: `{"pattern":"legacy parser"}`}}},
+			{{Text: "Findings:\n- XML parser helpers remain under internal/agent/parse.go\n- The native runtime path no longer needs them"}},
+		},
+	}
+	reg := agenttools.NewRegistry()
+	searchCalls := 0
+	readCalls := 0
+	codeSearchCalls := 0
+	reg.Register(agenttools.Tool{
+		Name:        "search",
+		Description: "search text",
+		Parameters:  []agenttools.ParameterDef{{Name: "pattern", Type: "string", Required: true}},
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			searchCalls++
+			return "match", nil
+		},
+	})
+	reg.Register(agenttools.Tool{
+		Name:        "read_file",
+		Description: "read file",
+		Parameters:  []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}},
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			readCalls++
+			return "content", nil
+		},
+	})
+	reg.Register(agenttools.Tool{
+		Name:        "code_search",
+		Description: "search code",
+		Parameters:  []agenttools.ParameterDef{{Name: "query", Type: "string", Required: true}},
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			codeSearchCalls++
+			return "symbol result", nil
+		},
+	})
+
+	session := NewSession()
+	session.SetTaskState(TaskState{
+		Objective:            "audit the repo and explain cleanup targets",
+		Operation:            "analysis",
+		RequiredVerification: "produce source-grounded findings and stop when the answer can be written",
+	})
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session, MaxSessionTurns: 8})
+
+	if err := r.Run(context.Background(), "audit the repo"); err != nil {
+		t.Fatal(err)
+	}
+	if searchCalls != 2 {
+		t.Fatalf("search calls = %d, want 2 executed searches before analysis block", searchCalls)
+	}
+	if readCalls != 1 || codeSearchCalls != 1 {
+		t.Fatalf("tool calls = (%d,%d), want (1,1)", readCalls, codeSearchCalls)
+	}
+	if len(driver.allMsgs) < 5 {
+		t.Fatalf("driver messages = %#v", driver.allMsgs)
+	}
+	foundSynthesisNote := false
+	for _, msg := range driver.allMsgs[4] {
+		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Analysis guidance") && strings.Contains(msg.Content, "summarize findings") {
+			foundSynthesisNote = true
+		}
+	}
+	if !foundSynthesisNote {
+		t.Fatalf("expected analysis synthesis note in fifth request, got %#v", driver.allMsgs[4])
+	}
+}
+
 func TestRunnerClearHistoryResetsSessionState(t *testing.T) {
 	r := NewRunner(Config{
 		Driver:       &nativeScriptedDriver{responses: []string{"done"}},
@@ -690,5 +853,145 @@ func TestRunnerClearHistoryResetsSessionState(t *testing.T) {
 	}
 	if snap := r.session.Snapshot(); snap.Turn != 0 || len(snap.History) != 0 || len(snap.Turns) != 0 {
 		t.Fatalf("snapshot after clear = %#v", snap)
+	}
+}
+
+type toolResultCapture struct {
+	silentRenderer
+	calls []struct {
+		name    string
+		text    string
+		isError bool
+	}
+}
+
+func (r *toolResultCapture) ToolResult(name, text, diff string, isError bool) {
+	r.calls = append(r.calls, struct {
+		name    string
+		text    string
+		isError bool
+	}{name, text, isError})
+}
+
+func TestRunnerTracksValidationPassOnGoTest(t *testing.T) {
+	driver := &nativeSequenceDriver{
+		steps: [][]llm.Token{
+			{{ToolCall: &llm.NativeToolCall{ID: "c1", Name: "run_command", ArgsJSON: `{"command":"go test ./..."}`}}},
+			{{Text: "all tests pass"}},
+		},
+	}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "run_command",
+		Description: "run shell command",
+		Parameters:  []agenttools.ParameterDef{{Name: "command", Type: "string", Required: true}},
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return "ok  forge/internal/react\nexit 0", nil
+		},
+	})
+	rec := &toolResultCapture{}
+	r := NewRunner(Config{Driver: driver, Tools: reg, Renderer: rec})
+	if err := r.Run(context.Background(), "verify tests pass"); err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, c := range rec.calls {
+		if c.name == "__validation" && strings.Contains(c.text, "validation passed") && !c.isError {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected __validation passed call, got %#v", rec.calls)
+	}
+	if note := r.session.Snapshot().RuntimeNote; note != "" {
+		t.Fatalf("runtime note should be empty on pass, got %q", note)
+	}
+}
+
+func TestRunnerTracksValidationFailOnGoTest(t *testing.T) {
+	driver := &nativeSequenceDriver{
+		steps: [][]llm.Token{
+			{{ToolCall: &llm.NativeToolCall{ID: "c1", Name: "run_command", ArgsJSON: `{"command":"go test ./..."}`}}},
+			{{Text: "tests failed"}},
+		},
+	}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "run_command",
+		Description: "run shell command",
+		Parameters:  []agenttools.ParameterDef{{Name: "command", Type: "string", Required: true}},
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return "--- FAIL: TestFoo\nFAIL\tforge/internal/react\nexit 1", nil
+		},
+	})
+	rec := &toolResultCapture{}
+	r := NewRunner(Config{Driver: driver, Tools: reg, Renderer: rec})
+	if err := r.Run(context.Background(), "run the tests"); err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, c := range rec.calls {
+		if c.name == "__validation" && strings.Contains(c.text, "validation failed") && c.isError {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected __validation failed call, got %#v", rec.calls)
+	}
+	note := r.session.Snapshot().RuntimeNote
+	if !strings.Contains(note, "Last validation failed") {
+		t.Fatalf("expected failure runtime note, got %q", note)
+	}
+}
+
+func TestRunnerEmitsTaskContextOnSetTaskState(t *testing.T) {
+	rec := &toolResultCapture{}
+	r := NewRunner(Config{
+		Driver:   &nativeScriptedDriver{responses: []string{"done"}},
+		Renderer: rec,
+	})
+	r.SetTaskState(TaskState{
+		Objective:            "merge the feature branch",
+		RequiredVerification: "verify branch main contains HEAD",
+	})
+	var found bool
+	for _, c := range rec.calls {
+		if c.name == "__task_context" && strings.Contains(c.text, "Objective:") && strings.Contains(c.text, "Verify:") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected __task_context call, got %#v", rec.calls)
+	}
+}
+
+func TestRunnerNonValidationCommandSkipsValidationTracking(t *testing.T) {
+	driver := &nativeSequenceDriver{
+		steps: [][]llm.Token{
+			{{ToolCall: &llm.NativeToolCall{ID: "c1", Name: "run_command", ArgsJSON: `{"command":"ls -la"}`}}},
+			{{Text: "done"}},
+		},
+	}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "run_command",
+		Description: "run shell command",
+		Parameters:  []agenttools.ParameterDef{{Name: "command", Type: "string", Required: true}},
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return "file.go\nexit 0", nil
+		},
+	})
+	rec := &toolResultCapture{}
+	r := NewRunner(Config{Driver: driver, Tools: reg, Renderer: rec})
+	if err := r.Run(context.Background(), "list files"); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range rec.calls {
+		if c.name == "__validation" {
+			t.Fatalf("expected no __validation call for ls, got %#v", rec.calls)
+		}
 	}
 }

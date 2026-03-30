@@ -213,6 +213,31 @@ func TestChatModelHandlesToolCallEvent(t *testing.T) {
 	}
 }
 
+func TestChatModelShowsPersistentPlanAfterUpdatePlanResult(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 90
+	m.height = 28
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventToolResult, Agent: "update_plan", Text: "Explanation: Runtime alignment\nPlan:\n- [completed] Inspect loop\n- [in_progress] Tighten prompt", IsError: false})
+	m = updated.(ChatModel)
+
+	var foundPlan bool
+	for _, msg := range m.messages {
+		if msg.Kind == MsgPlan {
+			foundPlan = true
+			if !strings.Contains(msg.Content, "[in_progress] Tighten prompt") {
+				t.Fatalf("plan message = %#v", msg)
+			}
+		}
+	}
+	if !foundPlan {
+		t.Fatalf("expected persistent plan message, got %#v", m.messages)
+	}
+	if got := strippedLine(m.View()); !strings.Contains(got, "[in_progress] Tighten prompt") {
+		t.Fatalf("expected plan visible in main pane, got:\n%s", got)
+	}
+}
+
 func TestChatModelToolCallEventWithoutAgentSkipsWorkingActivity(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp", DebugEnabled: true})
 	m.width = 80
@@ -3890,4 +3915,91 @@ func TestChatModelToolCallCheckpointIncludesSemanticToolName(t *testing.T) {
 		}
 	}
 	t.Fatalf("expected semantic tool checkpoint in transcript, got %#v", m.messages)
+}
+
+func TestChatModelShowsTaskContextOnTaskContextEvent(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 90
+	m.height = 28
+
+	updated, _ := m.Update(llm.Event{
+		Kind:  llm.EventToolResult,
+		Agent: "__task_context",
+		Text:  "Objective: merge the feature branch\nVerify: branch main contains HEAD",
+	})
+	m = updated.(ChatModel)
+
+	var found bool
+	for _, msg := range m.messages {
+		if msg.Kind == MsgForge && strings.TrimSpace(msg.Header) == "Task" &&
+			strings.Contains(msg.Content, "Objective:") && strings.Contains(msg.Content, "Verify:") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected Task message in main pane, got %#v", m.messages)
+	}
+	if got := strippedLine(m.View()); !strings.Contains(got, "Objective:") {
+		t.Fatalf("expected task context visible in main pane, got:\n%s", got)
+	}
+}
+
+func TestChatModelUpsertsTaskContextOnRepeatEvent(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 90
+	m.height = 28
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventToolResult, Agent: "__task_context", Text: "Objective: first"})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{Kind: llm.EventToolResult, Agent: "__task_context", Text: "Objective: updated"})
+	m = updated.(ChatModel)
+
+	taskCount := 0
+	for _, msg := range m.messages {
+		if msg.Kind == MsgForge && strings.TrimSpace(msg.Header) == "Task" {
+			taskCount++
+		}
+	}
+	if taskCount != 1 {
+		t.Fatalf("expected exactly one Task message (upserted), got %d, messages=%#v", taskCount, m.messages)
+	}
+}
+
+func TestChatModelShowsValidationStatusOnValidationEvent(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 90
+	m.height = 28
+
+	updated, _ := m.Update(llm.Event{
+		Kind:    llm.EventToolResult,
+		Agent:   "__validation",
+		Text:    "validation passed: go test ./...",
+		IsError: false,
+	})
+	m = updated.(ChatModel)
+
+	var found bool
+	for _, msg := range m.messages {
+		if msg.Kind == MsgStatus && strings.Contains(msg.Content, "validation passed") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected validation status message, got %#v", m.messages)
+	}
+}
+
+func TestChatModelValidationEventDoesNotUpdateLastToolResult(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 90
+	m.height = 28
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventToolResult, Agent: "run_command", Text: "real output", Content: "real output"})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{Kind: llm.EventToolResult, Agent: "__validation", Text: "validation passed: go test ./..."})
+	m = updated.(ChatModel)
+
+	if m.lastToolResult != "real output" {
+		t.Fatalf("lastToolResult should not be overwritten by __validation event, got %q", m.lastToolResult)
+	}
 }

@@ -5,7 +5,6 @@ import (
 	"strings"
 	"sync"
 
-	"forge/internal/agent"
 	"forge/internal/llm"
 )
 
@@ -87,7 +86,7 @@ func (s *Session) RecordInput(input string) int {
 	return s.turn
 }
 
-func (s *Session) CompleteTurn(turn int, response string, toolCalls []agent.ToolCall, err error) {
+func (s *Session) CompleteTurn(turn int, response string, toolCalls []TurnToolCall, err error) {
 	if s == nil {
 		return
 	}
@@ -101,10 +100,7 @@ func (s *Session) CompleteTurn(turn int, response string, toolCalls []agent.Tool
 			s.turns[i].FinalResponse = strings.TrimSpace(response)
 		}
 		if toolCalls != nil {
-			s.turns[i].ToolCalls = make([]TurnToolCall, 0, len(toolCalls))
-			for _, call := range toolCalls {
-				s.turns[i].ToolCalls = append(s.turns[i].ToolCalls, TurnToolCall{Name: strings.TrimSpace(call.Name)})
-			}
+			s.turns[i].ToolCalls = append([]TurnToolCall(nil), toolCalls...)
 		}
 		if err != nil {
 			s.turns[i].Error = strings.TrimSpace(err.Error())

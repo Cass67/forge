@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"forge/internal/agent"
 	"forge/internal/llm"
 	"forge/internal/logger"
 )
@@ -146,27 +145,14 @@ func (d *chatDebugDriver) Stream(ctx context.Context, messages []llm.Message, ou
 	}
 	err := <-errCh
 	if d.rec != nil {
-		responseText := response.String()
-		normalized := false
-		if isStrictTurnRequest(messages) {
-			if normalizedText, changed := agent.NormalizeStrictWorkerTurnForLogging(responseText); changed {
-				responseText = normalizedText
-				normalized = true
-			}
-		}
 		fields := map[string]any{
 			"driver":   d.inner.Name(),
-			"response": responseText,
-		}
-		if normalized {
-			fields["response_normalized"] = true
+			"response": response.String(),
 		}
 		if err != nil {
 			fields["error"] = err.Error()
-			d.rec.log.Debug("llm.response", fields)
-		} else {
-			d.rec.log.Debug("llm.response", fields)
 		}
+		d.rec.log.Debug("llm.response", fields)
 	}
 	close(out)
 	return err
@@ -250,15 +236,6 @@ func (d *chatDebugDriver) ResetConversation() {
 	if resetter, ok := d.inner.(llm.ConversationResetter); ok {
 		resetter.ResetConversation()
 	}
-}
-
-func isStrictTurnRequest(messages []llm.Message) bool {
-	for _, msg := range messages {
-		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Only respond with plain text (no tool calls) when you have a complete final answer.") {
-			return true
-		}
-	}
-	return false
 }
 
 func taskStateFromMessages(messages []llm.Message) map[string]any {

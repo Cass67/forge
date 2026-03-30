@@ -176,3 +176,47 @@ func TestBuildMessages_IncludesPlanStateAsSystemMessage(t *testing.T) {
 		t.Fatalf("plan content = %q", msgs[1].Content)
 	}
 }
+
+func TestBuildMessages_IncludesPlanTaskGuidance(t *testing.T) {
+	snap := SessionSnapshot{
+		TaskState: &TaskState{
+			Objective:            "write a plan for removing dead xml code",
+			Operation:            "plan",
+			RequiredVerification: "produce a concise plan grounded in enough repo evidence",
+		},
+		History: []llm.Message{{Role: llm.RoleUser, Content: "write a cleanup plan"}},
+	}
+
+	msgs := BuildMessages("sys", snap)
+	if len(msgs) < 3 {
+		t.Fatalf("messages = %#v", msgs)
+	}
+	if !strings.Contains(msgs[1].Content, "Planning guidance") {
+		t.Fatalf("task state missing planning guidance: %q", msgs[1].Content)
+	}
+	if !strings.Contains(msgs[1].Content, "avoid exhaustive repo-wide searches") {
+		t.Fatalf("task state missing synthesis guidance: %q", msgs[1].Content)
+	}
+}
+
+func TestBuildMessages_IncludesAnalysisTaskGuidance(t *testing.T) {
+	snap := SessionSnapshot{
+		TaskState: &TaskState{
+			Objective:            "audit the repo and explain cleanup targets",
+			Operation:            "analysis",
+			RequiredVerification: "produce source-grounded findings and stop when the answer can be written",
+		},
+		History: []llm.Message{{Role: llm.RoleUser, Content: "audit the repo"}},
+	}
+
+	msgs := BuildMessages("sys", snap)
+	if len(msgs) < 3 {
+		t.Fatalf("messages = %#v", msgs)
+	}
+	if !strings.Contains(msgs[1].Content, "Analysis guidance") {
+		t.Fatalf("task state missing analysis guidance: %q", msgs[1].Content)
+	}
+	if !strings.Contains(msgs[1].Content, "summarize findings") {
+		t.Fatalf("task state missing analysis synthesis guidance: %q", msgs[1].Content)
+	}
+}
