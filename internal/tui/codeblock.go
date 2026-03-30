@@ -49,9 +49,47 @@ func renderProseLine(line string, theme chatTheme) string {
 		return renderMarkdownHeading(line, theme)
 	case isMarkdownListItem(line):
 		return renderMarkdownListItem(line, theme)
+	case isColonHeader(line):
+		return renderColonHeader(line, theme)
 	default:
 		return renderEmphasizedSemantic(line, profileProse, theme)
 	}
+}
+
+// isColonHeader detects lines that look like section labels, e.g. "Architecture:"
+// or "**Key files:**". Weaker models often use these instead of markdown headings.
+func isColonHeader(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return false
+	}
+	// Must end with a colon (possibly after bold markers).
+	if !strings.HasSuffix(trimmed, ":") && !strings.HasSuffix(trimmed, ":**") {
+		return false
+	}
+	// Strip trailing bold markers for length check.
+	clean := strings.TrimSuffix(trimmed, "**")
+	clean = strings.TrimSuffix(clean, ":")
+	clean = strings.TrimSpace(clean)
+	// Strip leading bold markers too.
+	clean = strings.TrimPrefix(clean, "**")
+	clean = strings.TrimSpace(clean)
+	// Must be short enough to be a header (not a full sentence ending with colon).
+	if len(clean) > 60 {
+		return false
+	}
+	// Must not be a code path or URL (contains / or .).
+	if strings.ContainsAny(clean, "/.") {
+		return false
+	}
+	return clean != ""
+}
+
+func renderColonHeader(line string, theme chatTheme) string {
+	return lipgloss.NewStyle().
+		Foreground(theme.AccentPrimary).
+		Bold(true).
+		Render(stripStrongMarkers(line))
 }
 
 func renderMarkdownHeading(line string, theme chatTheme) string {
@@ -193,6 +231,13 @@ func splitMarkdownListItem(line string) (indent, marker, body string) {
 	}
 	if j > 0 && j+1 < len(trimmed) && trimmed[j] == '.' && trimmed[j+1] == ' ' {
 		return indent, trimmed[:j+1], trimmed[j+2:]
+	}
+	if j > 0 && j < len(trimmed) && trimmed[j] == ')' && (j+1 >= len(trimmed) || trimmed[j+1] == ' ') {
+		bodyStart := j + 1
+		if bodyStart < len(trimmed) && trimmed[bodyStart] == ' ' {
+			bodyStart++
+		}
+		return indent, trimmed[:j+1], trimmed[bodyStart:]
 	}
 	return indent, "", line
 }
