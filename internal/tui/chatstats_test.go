@@ -124,12 +124,10 @@ func TestBuildStatsOverlayShowsRequestModeAndMetadata(t *testing.T) {
 	}
 }
 
-func TestRenderStatusHeaderUsesHeaderBackgroundSurface(t *testing.T) {
-	withTrueColorProfile(t)
-
+func TestRenderStatusHeaderUsesAppBackgroundSurface(t *testing.T) {
 	theme := chatTheme{
 		AppBG:         lipgloss.Color("#112233"),
-		HeaderBG:      lipgloss.Color("#445566"),
+		HeaderBG:      lipgloss.Color("#112233"),
 		HeaderFG:      lipgloss.Color("#ddeeff"),
 		AccentPrimary: lipgloss.Color("#88aaff"),
 		Text:          lipgloss.Color("#eef2f7"),
@@ -142,11 +140,33 @@ func TestRenderStatusHeaderUsesHeaderBackgroundSurface(t *testing.T) {
 		WorkDir: "/tmp/work",
 	}, 80)
 
-	if !strings.Contains(rendered, ansiBackground(theme.HeaderBG)) {
-		t.Fatalf("header missing header background fill: %q", rendered)
+	for _, want := range []string{"FORGE", "model", "dir", "openai/gpt-5", "/tmp/work"} {
+		if !strings.Contains(strippedLine(rendered), want) {
+			t.Fatalf("header missing %q: %q", want, strippedLine(rendered))
+		}
 	}
-	if strings.Contains(rendered, ansiBackground(theme.AppBG)) && theme.AppBG != theme.HeaderBG {
-		t.Fatalf("header should not fall back to app background as the primary surface: %q", rendered)
+}
+
+func TestRenderStatusHeaderDoesNotPaintInlineHeaderBlocks(t *testing.T) {
+	withTrueColorProfile(t)
+
+	theme := chatTheme{
+		AppBG:           lipgloss.Color("#112233"),
+		HeaderBG:        lipgloss.Color("#445566"),
+		HeaderFG:        lipgloss.Color("#ddeeff"),
+		AccentPrimary:   lipgloss.Color("#88aaff"),
+		AccentSecondary: lipgloss.Color("#ffcc66"),
+		Text:            lipgloss.Color("#eef2f7"),
+		TextDim:         lipgloss.Color("#8b97a8"),
+		Border:          lipgloss.Color("#334455"),
+	}
+	rendered := renderStatusHeader(theme, chatStatusData{
+		Model:   "openai/gpt-5",
+		WorkDir: "/tmp/work",
+	}, 80)
+
+	if strings.Contains(rendered, ansiBackgroundFragment(theme.HeaderBG)) {
+		t.Fatalf("header should not paint inline background blocks: %q", rendered)
 	}
 }
 
@@ -286,24 +306,15 @@ func TestRenderStatusHeaderFallsBackAcrossWidths(t *testing.T) {
 }
 
 func TestRenderStatusHeaderPaintsFullRowWidth(t *testing.T) {
-	withTrueColorProfile(t)
-
 	theme := lookupThemeForTest(t, "default")
 	rendered := renderStatusHeader(theme, chatStatusData{
 		Model:   "openai/gpt-5.4",
 		WorkDir: "/tmp/work",
 	}, 120)
 
-	wantBG := ansiBackground(theme.HeaderBG)
 	for idx, line := range strings.Split(rendered, "\n") {
 		if ansiPrintableWidth(line) != 120 {
 			t.Fatalf("line %d width = %d, want 120: %q", idx+1, ansiPrintableWidth(line), strippedLine(line))
-		}
-		if !strings.Contains(line, wantBG) {
-			t.Fatalf("line %d missing header background %q: %q", idx+1, wantBG, line)
-		}
-		if strings.HasSuffix(line, " ") {
-			t.Fatalf("line %d ends with plain spaces instead of styled fill: %q", idx+1, line)
 		}
 	}
 }
@@ -324,8 +335,8 @@ func TestRenderStatusHeaderUsesHeaderSurfaceAcrossAllThemes(t *testing.T) {
 			t.Fatalf("theme %q should keep the strengthened rail layout:\n%s", theme.ID, plain)
 		}
 		for idx, line := range strings.Split(rendered, "\n") {
-			if strings.HasSuffix(line, " ") {
-				t.Fatalf("theme %q line %d has plain trailing spaces: %q", theme.ID, idx+1, line)
+			if ansiPrintableWidth(line) != 96 {
+				t.Fatalf("theme %q line %d width = %d, want 96: %q", theme.ID, idx+1, ansiPrintableWidth(line), strippedLine(line))
 			}
 		}
 	}
