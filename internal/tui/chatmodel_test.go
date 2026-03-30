@@ -3509,9 +3509,7 @@ func TestChatModelViewAddsSpacerBeforeComposer(t *testing.T) {
 	}
 }
 
-func TestChatModelViewPaintsSpacerWithAppBackground(t *testing.T) {
-	withTrueColorProfile(t)
-
+func TestChatModelViewKeepsBlankSpacerBeforeComposer(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
 	m = updated.(ChatModel)
@@ -3529,30 +3527,25 @@ func TestChatModelViewPaintsSpacerWithAppBackground(t *testing.T) {
 	if promptLine <= 0 {
 		t.Fatalf("expected composer prompt line, got:\n%s", strippedLine(view))
 	}
-
-	wantBG := ansiBackground(m.theme().AppBG)
-	if !strings.Contains(lines[promptLine-1], wantBG) {
-		t.Fatalf("expected spacer line to use app background %q, got %q", wantBG, lines[promptLine-1])
+	if strings.TrimSpace(strippedLine(lines[promptLine-1])) != "" {
+		t.Fatalf("expected blank spacer before composer, got %q", strippedLine(lines[promptLine-1]))
 	}
 }
 
-func TestChatModelViewPaintsTranscriptLinesWithAppBackground(t *testing.T) {
-	withTrueColorProfile(t)
-
+func TestChatModelViewRendersTranscriptLinesWithoutForcedBackground(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
 	m = updated.(ChatModel)
 	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Forge • 12:00:00", Content: "latest transcript line"})
 
 	view := m.View()
-	wantBG := ansiBackgroundFragment(m.theme().AppBG)
 	lines := strings.Split(view, "\n")
 	var sawTranscript bool
 	for _, line := range lines {
 		if strings.Contains(line, "latest transcript line") {
 			sawTranscript = true
-			if !strings.Contains(line, wantBG) {
-				t.Fatalf("transcript line missing app background %q: %q", wantBG, line)
+			if strings.Contains(line, ansiBackgroundFragment(m.theme().AppBG)) {
+				t.Fatalf("transcript line should not force app background fill: %q", line)
 			}
 		}
 	}
@@ -3577,9 +3570,7 @@ func TestChatModelViewHasNoPlainTrailingSpacesOnSurfaceRows(t *testing.T) {
 	}
 }
 
-func TestChatModelViewPaintsMessageSeparatorsWithAppBackground(t *testing.T) {
-	withTrueColorProfile(t)
-
+func TestChatModelViewKeepsPlainMessageSeparators(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 90, Height: 20})
 	m = updated.(ChatModel)
@@ -3587,19 +3578,48 @@ func TestChatModelViewPaintsMessageSeparatorsWithAppBackground(t *testing.T) {
 	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Forge • 12:00:01", Content: "second message"})
 
 	lines := strings.Split(m.chatVisible, "\n")
-	wantBG := ansiBackground(m.theme().AppBG)
 	foundSeparator := false
 	for _, line := range lines {
 		if strings.TrimSpace(strippedLine(line)) != "" {
 			continue
 		}
 		foundSeparator = true
-		if !strings.Contains(line, wantBG) {
-			t.Fatalf("separator line missing app background %q: %q", wantBG, line)
+		if strings.Contains(line, ansiBackgroundFragment(m.theme().AppBG)) {
+			t.Fatalf("separator line should not force app background fill: %q", line)
 		}
 	}
 	if !foundSeparator {
 		t.Fatalf("expected separator line between messages in chat content:\n%s", strippedLine(m.chatVisible))
+	}
+}
+
+func TestChatModelKeepsAutoscrollWhenManualModeIsAlreadyAtBottom(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 12})
+	m = updated.(ChatModel)
+
+	for i := 0; i < 12; i++ {
+		m.AddMessage(ChatMessage{
+			Kind:    MsgAgent,
+			Header:  fmt.Sprintf("Forge • 12:00:%02d", i),
+			Content: fmt.Sprintf("line %02d", i),
+		})
+	}
+
+	totalBefore := strings.Count(m.chatVisible, "\n") + 1
+	maxBefore := max(0, totalBefore-max(1, m.chatViewport.Height))
+	m.followMode = followManual
+	m.chatViewport.YOffset = maxBefore
+
+	m.AddMessage(ChatMessage{
+		Kind:    MsgStatus,
+		Content: "Error: context canceled",
+	})
+
+	totalAfter := strings.Count(m.chatVisible, "\n") + 1
+	maxAfter := max(0, totalAfter-max(1, m.chatViewport.Height))
+	if m.chatViewport.YOffset != maxAfter {
+		t.Fatalf("viewport yOffset = %d, want %d", m.chatViewport.YOffset, maxAfter)
 	}
 }
 

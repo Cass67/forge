@@ -2,6 +2,7 @@ package tui
 
 import (
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/reflow/wordwrap"
@@ -35,14 +36,165 @@ func renderMessageContent(content string, width int, theme chatTheme) string {
 
 func renderWrappedProseBlock(body string, width int, theme chatTheme) string {
 	lines := wrapProseLines(body, width)
-	style := lipgloss.NewStyle().
-		Foreground(theme.Text).
-		Background(theme.AppBG)
 	rendered := make([]string, 0, len(lines))
 	for _, line := range lines {
-		rendered = append(rendered, style.Width(width).Render(RenderSemanticPlain(line, profileProse, theme)))
+		rendered = append(rendered, padStyledWidth(renderProseLine(line, theme), width))
 	}
 	return strings.Join(rendered, "\n")
+}
+
+func renderProseLine(line string, theme chatTheme) string {
+	switch {
+	case isMarkdownHeading(line):
+		return renderMarkdownHeading(line, theme)
+	case isMarkdownListItem(line):
+		return renderMarkdownListItem(line, theme)
+	default:
+		return renderEmphasizedSemantic(line, profileProse, theme)
+	}
+}
+
+func renderMarkdownHeading(line string, theme chatTheme) string {
+	level := 0
+	for level < len(line) && line[level] == '#' {
+		level++
+	}
+	marker := lipgloss.NewStyle().
+		Foreground(theme.AccentPrimary).
+		Bold(true).
+		Render(strings.Repeat("#", level))
+	title := strings.TrimSpace(line[level:])
+	if title == "" {
+		return marker
+	}
+	titleStyle := lipgloss.NewStyle().
+		Foreground(theme.AccentPrimary).
+		Bold(true)
+	return marker + " " + titleStyle.Render(stripStrongMarkers(title))
+}
+
+func renderMarkdownListItem(line string, theme chatTheme) string {
+	indent, marker, body := splitMarkdownListItem(line)
+	indentStyled := lipgloss.NewStyle().Render(indent)
+	markerStyled := lipgloss.NewStyle().
+		Foreground(theme.AccentSecondary).
+		Bold(true).
+		Render(marker)
+	body = strings.TrimLeft(body, " ")
+	if body == "" {
+		return indentStyled + markerStyled
+	}
+	return indentStyled + markerStyled + " " + renderEmphasizedSemantic(body, profileProse, theme)
+}
+
+func renderEmphasizedSemantic(line string, profile semanticProfile, theme chatTheme) string {
+	segments := splitStrongSegments(line)
+	if len(segments) == 0 {
+		return RenderSemanticPlain(line, profile, theme)
+	}
+	var out strings.Builder
+	for _, seg := range segments {
+		rendered := RenderSemanticPlain(seg.text, profile, theme)
+		if seg.strong {
+			rendered = lipgloss.NewStyle().
+				Foreground(theme.Text).
+				Bold(true).
+				Render(rendered)
+		}
+		out.WriteString(rendered)
+	}
+	return out.String()
+}
+
+type proseSegment struct {
+	text   string
+	strong bool
+}
+
+func splitStrongSegments(line string) []proseSegment {
+	if !strings.Contains(line, "**") {
+		return []proseSegment{{text: line}}
+	}
+	segments := make([]proseSegment, 0, 4)
+	var plain strings.Builder
+	flushPlain := func() {
+		if plain.Len() == 0 {
+			return
+		}
+		segments = append(segments, proseSegment{text: plain.String()})
+		plain.Reset()
+	}
+
+	inCode := false
+	for i := 0; i < len(line); {
+		if line[i] == '`' {
+			inCode = !inCode
+			plain.WriteByte(line[i])
+			i++
+			continue
+		}
+		if !inCode && i+1 < len(line) && line[i] == '*' && line[i+1] == '*' {
+			end := strings.Index(line[i+2:], "**")
+			if end < 0 {
+				plain.WriteString(line[i:])
+				break
+			}
+			flushPlain()
+			strongText := line[i+2 : i+2+end]
+			segments = append(segments, proseSegment{text: strongText, strong: true})
+			i += 4 + end
+			continue
+		}
+		plain.WriteByte(line[i])
+		i++
+	}
+	flushPlain()
+	return segments
+}
+
+func stripStrongMarkers(text string) string {
+	var out strings.Builder
+	for _, seg := range splitStrongSegments(text) {
+		out.WriteString(seg.text)
+	}
+	return out.String()
+}
+
+func isMarkdownHeading(line string) bool {
+	line = strings.TrimLeft(line, " ")
+	if line == "" || line[0] != '#' {
+		return false
+	}
+	i := 0
+	for i < len(line) && line[i] == '#' {
+		i++
+	}
+	return i > 0 && i < len(line) && line[i] == ' '
+}
+
+func isMarkdownListItem(line string) bool {
+	_, marker, body := splitMarkdownListItem(line)
+	return marker != "" && strings.TrimSpace(body) != ""
+}
+
+func splitMarkdownListItem(line string) (indent, marker, body string) {
+	i := 0
+	for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
+		i++
+	}
+	indent = line[:i]
+	trimmed := line[i:]
+	if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
+		return indent, trimmed[:1], trimmed[2:]
+	}
+	j := 0
+	for j < len(trimmed) && unicode.IsDigit(rune(trimmed[j])) {
+		j++
+	}
+	if j > 0 && j+1 < len(trimmed) && trimmed[j] == '.' && trimmed[j+1] == ' ' {
+		return indent, trimmed[:j+1], trimmed[j+2:]
+	}
+	return indent, "", line
 }
 
 func wrapProseLines(text string, width int) []string {
