@@ -4349,29 +4349,41 @@ func (m ChatModel) toolCallCheckpoint(ev llm.Event) (string, string) {
 		if strings.TrimSpace(label) == "" || label == "." {
 			return "", ""
 		}
-		key := "explore:read:" + normalizeProgressComparable(label)
-		return key, "• Explored\n  └ Read " + label
+		key := "tool:read:" + normalizeProgressComparable(label)
+		return key, formatCheckpointToolMessage(agent, label)
 	case "list_dir":
 		target := strings.Trim(strings.TrimSpace(summary), "\"'")
 		if target == "" || target == "." {
 			target = "workspace root"
 		}
-		key := "explore:list:" + normalizeProgressComparable(target)
-		return key, "• Explored\n  └ Listed " + target
+		key := "tool:list:" + normalizeProgressComparable(target)
+		return key, formatCheckpointToolMessage(agent, target)
 	case "glob":
 		pattern := strings.Trim(strings.TrimSpace(summary), "\"'")
 		if pattern == "" {
 			return "", ""
 		}
-		key := "explore:glob:" + normalizeProgressComparable(pattern)
-		return key, fmt.Sprintf("• Explored\n  └ Matched files for %q", pattern)
+		key := "tool:glob:" + normalizeProgressComparable(pattern)
+		return key, formatCheckpointToolMessage(agent, fmt.Sprintf("%q", pattern))
 	case "search":
 		pattern := strings.Trim(strings.TrimSpace(summary), "\"'")
 		if pattern == "" {
 			return "", ""
 		}
-		key := "explore:search:" + normalizeProgressComparable(pattern)
-		return key, fmt.Sprintf("• Explored\n  └ Searched for %q", pattern)
+		key := "tool:search:" + normalizeProgressComparable(pattern)
+		return key, formatCheckpointToolMessage(agent, fmt.Sprintf("%q", pattern))
+	case "code_search", "git_status", "git_log", "git_diff", "git_branch_state", "git_merge_status", "tool_help":
+		if summary == "" {
+			return "", ""
+		}
+		key := "tool:" + agent + ":" + normalizeProgressComparable(summary)
+		return key, formatCheckpointToolMessage(agent, summary)
+	case "lsp_definition", "lsp_references", "lsp_hover", "lsp_document_symbols":
+		if summary == "" {
+			return "", ""
+		}
+		key := "tool:" + agent + ":" + normalizeProgressComparable(summary)
+		return key, formatCheckpointToolMessage(agent, summary)
 	default:
 		return "", ""
 	}
@@ -4477,6 +4489,18 @@ func formatCheckpointRunMessage(command string, lines []string) string {
 		b.WriteString(line)
 	}
 	return b.String()
+}
+
+func formatCheckpointToolMessage(toolName, detail string) string {
+	toolName = strings.TrimSpace(toolName)
+	detail = strings.TrimSpace(detail)
+	if toolName == "" {
+		return ""
+	}
+	if detail == "" {
+		return "• " + toolName
+	}
+	return "• " + toolName + "\n  └ " + detail
 }
 
 func combineProgressNarrative(current, next string) string {
