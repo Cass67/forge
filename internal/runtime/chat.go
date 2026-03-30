@@ -163,6 +163,7 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, appr
 	reg.Register(tools.NewGitStatus(workDir))
 	reg.Register(tools.NewGitDiff(workDir))
 	reg.Register(tools.NewGitLog(workDir))
+	reg.Register(tools.NewGitMergeStatus(workDir))
 	gitCommit := tools.NewGitCommit(workDir, approve)
 	gitCommit.PromptVisibility = tools.PromptHidden
 	reg.Register(gitCommit)

@@ -545,7 +545,7 @@ func TestRunnerBlocksCommitWhileMergeConflictsRemain(t *testing.T) {
 	}
 	foundRuntimeNote := false
 	for _, msg := range driver.allMsgs[1] {
-		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Resolve unmerged files before retrying commit") {
+		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Call git_merge_status to inspect unresolved files and next steps") {
 			foundRuntimeNote = true
 		}
 	}
