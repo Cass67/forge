@@ -801,10 +801,10 @@ func (m *ChatModel) refreshViewport() {
 func (m ChatModel) composer() ChatComposer {
 	composer := NewChatComposer()
 	minLines := 3
-	maxLines := 7
+	maxLines := 15
 	if m.height > 0 && m.height < 14 {
 		minLines = 2
-		maxLines = 5
+		maxLines = 10
 	}
 	composer.SetLineBudget(minLines, maxLines)
 	composer.SetText(m.inputBuf)
@@ -996,6 +996,7 @@ func (m ChatModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	x, y := msg.X, msg.Y
 	ctx.inChat = x >= ctx.chatX && x < ctx.chatX+ctx.chatW && y >= ctx.chatY && y < ctx.chatY+ctx.chatH
 	ctx.inTools = ctx.toolsW > 0 && x >= ctx.toolsX && x < ctx.toolsX+ctx.toolsW && y >= ctx.toolsY && y < ctx.toolsY+ctx.toolsH
+	inInput := y >= ctx.inputY && y < ctx.inputY+m.inputHeight()
 	chatScrollbarX := ctx.chatX + max(1, ctx.chatW-2)
 	toolsScrollbarX := ctx.toolsX + max(1, ctx.toolsW-2)
 	ctx.inChatScrollbar = ctx.inChat && x == chatScrollbarX && y > ctx.chatY && y < ctx.chatY+ctx.chatH-1
@@ -1003,6 +1004,9 @@ func (m ChatModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 	scrollStep := 6
 	if tea.MouseEvent(msg).IsWheel() {
+		if inInput {
+			return m, nil
+		}
 		switch msg.Button {
 		case tea.MouseButtonWheelUp:
 			if ctx.inTools {
