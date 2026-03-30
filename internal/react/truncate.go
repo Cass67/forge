@@ -10,7 +10,7 @@ import (
 const (
 	// toolResultMaxLines is the line budget passed to truncateToolResults in BuildMessages.
 	// Results at or below this threshold are sent to the LLM unmodified.
-	toolResultMaxLines = 40
+	toolResultMaxLines = 200
 )
 
 // truncateToolResults returns a copy of messages where any RoleTool message

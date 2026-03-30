@@ -3,6 +3,7 @@ package react
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -669,20 +670,24 @@ func TestRunnerRequiresMutationBeforeRetryingFailedCommit(t *testing.T) {
 	}
 }
 
-func TestRunnerNudgesAndBlocksExcessivePlanExploration(t *testing.T) {
-	driver := &nativeSequenceDriver{
-		steps: [][]llm.Token{
-			{{ToolCall: &llm.NativeToolCall{ID: "c1", Name: "search", ArgsJSON: `{"pattern":"xml"}`}}},
-			{{ToolCall: &llm.NativeToolCall{ID: "c2", Name: "read_file", ArgsJSON: `{"path":"internal/agent/system.go"}`}}},
-			{{ToolCall: &llm.NativeToolCall{ID: "c3", Name: "code_search", ArgsJSON: `{"query":"BuildXMLPrompt"}`}}},
-			{{ToolCall: &llm.NativeToolCall{ID: "c4", Name: "search", ArgsJSON: `{"pattern":"legacy xml"}`}}},
-			{{Text: "Plan:\n1. Remove dead XML prompt helpers\n2. Delete unused parser tests\n3. Verify native tool path coverage"}},
-		},
+func TestRunnerNudgesOnExcessivePlanExploration(t *testing.T) {
+	// Build planExplorationBudget+1 exploration steps to cross the synthesis threshold,
+	// then a final text response. The model should never be blocked — only nudged via
+	// the runtime note injected into the system prompt.
+	const explorations = planExplorationBudget + 1
+	steps := make([][]llm.Token, explorations+1)
+	for i := 0; i < explorations; i++ {
+		steps[i] = []llm.Token{{ToolCall: &llm.NativeToolCall{
+			ID:       fmt.Sprintf("c%d", i+1),
+			Name:     "search",
+			ArgsJSON: fmt.Sprintf(`{"pattern":"pattern%d"}`, i),
+		}}}
 	}
+	steps[explorations] = []llm.Token{{Text: "Plan: all done."}}
+
+	driver := &nativeSequenceDriver{steps: steps}
 	reg := agenttools.NewRegistry()
 	searchCalls := 0
-	readCalls := 0
-	codeSearchCalls := 0
 	reg.Register(agenttools.Tool{
 		Name:        "search",
 		Description: "search text",
@@ -691,26 +696,6 @@ func TestRunnerNudgesAndBlocksExcessivePlanExploration(t *testing.T) {
 		Execute: func(_ context.Context, _ map[string]any) (string, error) {
 			searchCalls++
 			return "match", nil
-		},
-	})
-	reg.Register(agenttools.Tool{
-		Name:        "read_file",
-		Description: "read file",
-		Parameters:  []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}},
-		AutoApprove: true,
-		Execute: func(_ context.Context, _ map[string]any) (string, error) {
-			readCalls++
-			return "content", nil
-		},
-	})
-	reg.Register(agenttools.Tool{
-		Name:        "code_search",
-		Description: "search code",
-		Parameters:  []agenttools.ParameterDef{{Name: "query", Type: "string", Required: true}},
-		AutoApprove: true,
-		Execute: func(_ context.Context, _ map[string]any) (string, error) {
-			codeSearchCalls++
-			return "symbol result", nil
 		},
 	})
 
@@ -720,56 +705,53 @@ func TestRunnerNudgesAndBlocksExcessivePlanExploration(t *testing.T) {
 		Operation:            "plan",
 		RequiredVerification: "produce a concise plan grounded in enough repo evidence",
 	})
-	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session, MaxSessionTurns: 8})
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session, MaxSessionTurns: explorations + 5})
 
 	if err := r.Run(context.Background(), "write a cleanup plan"); err != nil {
 		t.Fatal(err)
 	}
-	if searchCalls != 1 {
-		t.Fatalf("search calls = %d, want 1 executed search before planning block", searchCalls)
+	// All exploration calls must execute — no blocking
+	if searchCalls != explorations {
+		t.Fatalf("search calls = %d, want %d (no blocking)", searchCalls, explorations)
 	}
-	if readCalls != 1 || codeSearchCalls != 1 {
-		t.Fatalf("tool calls = (%d,%d), want (1,1)", readCalls, codeSearchCalls)
-	}
-	if len(driver.allMsgs) < 4 {
-		t.Fatalf("driver messages = %#v", driver.allMsgs)
-	}
+	// Synthesis note must appear in a request sent after the budget is exceeded
 	foundSynthesisNote := false
-	for _, msg := range driver.allMsgs[3] {
-		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Planning task guidance") && strings.Contains(msg.Content, "stop exploring and synthesize") {
-			foundSynthesisNote = true
+	for _, msgs := range driver.allMsgs[planExplorationBudget:] {
+		for _, msg := range msgs {
+			if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Planning task guidance") {
+				foundSynthesisNote = true
+			}
 		}
 	}
 	if !foundSynthesisNote {
-		t.Fatalf("expected planning synthesis note in fourth request, got %#v", driver.allMsgs[3])
+		t.Fatalf("expected planning synthesis note after budget exceeded, allMsgs=%d", len(driver.allMsgs))
 	}
-
+	// No blocking should have occurred
 	snap := session.Snapshot()
-	foundBlockedResult := false
 	for _, msg := range snap.History {
-		if msg.Role == llm.RoleTool && strings.Contains(msg.Content, "blocked: enough evidence has been gathered for planning") {
-			foundBlockedResult = true
+		if msg.Role == llm.RoleTool && strings.Contains(msg.Content, "blocked:") {
+			t.Fatalf("expected no blocking, got blocked tool result: %s", msg.Content)
 		}
-	}
-	if !foundBlockedResult {
-		t.Fatalf("expected blocked planning result, history=%#v", snap.History)
 	}
 }
 
-func TestRunnerNudgesAndBlocksExcessiveAnalysisExploration(t *testing.T) {
-	driver := &nativeSequenceDriver{
-		steps: [][]llm.Token{
-			{{ToolCall: &llm.NativeToolCall{ID: "c1", Name: "search", ArgsJSON: `{"pattern":"dead code"}`}}},
-			{{ToolCall: &llm.NativeToolCall{ID: "c2", Name: "read_file", ArgsJSON: `{"path":"internal/agent/parse.go"}`}}},
-			{{ToolCall: &llm.NativeToolCall{ID: "c3", Name: "code_search", ArgsJSON: `{"query":"ParseToolCalls"}`}}},
-			{{ToolCall: &llm.NativeToolCall{ID: "c4", Name: "search", ArgsJSON: `{"pattern":"legacy parser"}`}}},
-			{{Text: "Findings:\n- XML parser helpers remain under internal/agent/parse.go\n- The native runtime path no longer needs them"}},
-		},
+func TestRunnerNudgesOnExcessiveAnalysisExploration(t *testing.T) {
+	// Build analysisExplorationBudget+1 exploration steps to cross the threshold,
+	// then a final text response. Tools must never be blocked — only nudged.
+	const explorations = analysisExplorationBudget + 1
+	steps := make([][]llm.Token, explorations+1)
+	for i := 0; i < explorations; i++ {
+		steps[i] = []llm.Token{{ToolCall: &llm.NativeToolCall{
+			ID:       fmt.Sprintf("c%d", i+1),
+			Name:     "search",
+			ArgsJSON: fmt.Sprintf(`{"pattern":"pattern%d"}`, i),
+		}}}
 	}
+	steps[explorations] = []llm.Token{{Text: "Findings: all done."}}
+
+	driver := &nativeSequenceDriver{steps: steps}
 	reg := agenttools.NewRegistry()
 	searchCalls := 0
-	readCalls := 0
-	codeSearchCalls := 0
 	reg.Register(agenttools.Tool{
 		Name:        "search",
 		Description: "search text",
@@ -780,26 +762,6 @@ func TestRunnerNudgesAndBlocksExcessiveAnalysisExploration(t *testing.T) {
 			return "match", nil
 		},
 	})
-	reg.Register(agenttools.Tool{
-		Name:        "read_file",
-		Description: "read file",
-		Parameters:  []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}},
-		AutoApprove: true,
-		Execute: func(_ context.Context, _ map[string]any) (string, error) {
-			readCalls++
-			return "content", nil
-		},
-	})
-	reg.Register(agenttools.Tool{
-		Name:        "code_search",
-		Description: "search code",
-		Parameters:  []agenttools.ParameterDef{{Name: "query", Type: "string", Required: true}},
-		AutoApprove: true,
-		Execute: func(_ context.Context, _ map[string]any) (string, error) {
-			codeSearchCalls++
-			return "symbol result", nil
-		},
-	})
 
 	session := NewSession()
 	session.SetTaskState(TaskState{
@@ -807,28 +769,33 @@ func TestRunnerNudgesAndBlocksExcessiveAnalysisExploration(t *testing.T) {
 		Operation:            "analysis",
 		RequiredVerification: "produce source-grounded findings and stop when the answer can be written",
 	})
-	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session, MaxSessionTurns: 8})
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session, MaxSessionTurns: explorations + 5})
 
 	if err := r.Run(context.Background(), "audit the repo"); err != nil {
 		t.Fatal(err)
 	}
-	if searchCalls != 2 {
-		t.Fatalf("search calls = %d, want 2 executed searches before analysis block", searchCalls)
+	// All exploration calls must execute — no blocking
+	if searchCalls != explorations {
+		t.Fatalf("search calls = %d, want %d (no blocking)", searchCalls, explorations)
 	}
-	if readCalls != 1 || codeSearchCalls != 1 {
-		t.Fatalf("tool calls = (%d,%d), want (1,1)", readCalls, codeSearchCalls)
-	}
-	if len(driver.allMsgs) < 5 {
-		t.Fatalf("driver messages = %#v", driver.allMsgs)
-	}
+	// Analysis synthesis note must appear after budget is exceeded
 	foundSynthesisNote := false
-	for _, msg := range driver.allMsgs[4] {
-		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Analysis guidance") && strings.Contains(msg.Content, "summarize findings") {
-			foundSynthesisNote = true
+	for _, msgs := range driver.allMsgs[analysisExplorationBudget:] {
+		for _, msg := range msgs {
+			if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Analysis guidance") {
+				foundSynthesisNote = true
+			}
 		}
 	}
 	if !foundSynthesisNote {
-		t.Fatalf("expected analysis synthesis note in fifth request, got %#v", driver.allMsgs[4])
+		t.Fatalf("expected analysis synthesis note after budget exceeded, allMsgs=%d", len(driver.allMsgs))
+	}
+	// No blocking should have occurred
+	snap := session.Snapshot()
+	for _, msg := range snap.History {
+		if msg.Role == llm.RoleTool && strings.Contains(msg.Content, "blocked:") {
+			t.Fatalf("expected no blocking, got blocked tool result: %s", msg.Content)
+		}
 	}
 }
 
