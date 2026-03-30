@@ -5,6 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/wordwrap"
 )
 
 const (
@@ -267,15 +268,23 @@ func composerWrappedLines(text string, width int) []string {
 	rawLines := strings.Split(text, "\n")
 	out := make([]string, 0, len(rawLines))
 	for _, raw := range rawLines {
-		runes := []rune(raw)
-		if len(runes) == 0 {
-			out = append(out, "")
+		if strings.TrimSpace(raw) == "" {
+			out = append(out, raw)
 			continue
 		}
-		for len(runes) > 0 {
-			take := min(width, len(runes))
-			out = append(out, string(runes[:take]))
-			runes = runes[take:]
+		wrapped := wordwrap.String(raw, width)
+		for _, line := range strings.Split(wrapped, "\n") {
+			// Hard-break any line still wider than width (long unbroken words).
+			runes := []rune(line)
+			if len(runes) <= width {
+				out = append(out, line)
+				continue
+			}
+			for len(runes) > 0 {
+				take := min(width, len(runes))
+				out = append(out, string(runes[:take]))
+				runes = runes[take:]
+			}
 		}
 	}
 	return out
