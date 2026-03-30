@@ -21,6 +21,7 @@ type Config struct {
 	Session         *Session
 	Progress        func(string)
 	MaxSessionTurns int
+	CompletionCheck func(SessionSnapshot, string) error
 }
 
 type Runner struct {
@@ -32,6 +33,7 @@ type Runner struct {
 	progress        func(string)
 	maxSessionTurns int
 	gitWorkflow     gitWorkflowState
+	completionCheck func(SessionSnapshot, string) error
 }
 
 type gitCommitBlocker int
@@ -66,6 +68,7 @@ func NewRunner(cfg Config) *Runner {
 		session:         session,
 		progress:        cfg.Progress,
 		maxSessionTurns: maxSessionTurns(cfg.MaxSessionTurns),
+		completionCheck: cfg.CompletionCheck,
 	}
 }
 
@@ -125,6 +128,13 @@ func (r *Runner) AppendUserMessage(text string) {
 		return
 	}
 	r.session.AppendUserMessage(text)
+}
+
+func (r *Runner) SetTaskState(state TaskState) {
+	if r == nil || r.session == nil {
+		return
+	}
+	r.session.SetTaskState(state)
 }
 
 func (r *Runner) EmitResponse(text string) {
@@ -216,6 +226,11 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 	finalText := strings.TrimSpace(textBuf.String())
 	if finalText == "" {
 		return nil, fmt.Errorf("react runtime: empty native response")
+	}
+	if r.completionCheck != nil {
+		if err := r.completionCheck(r.session.Snapshot(), finalText); err != nil {
+			return nil, err
+		}
 	}
 	r.session.AppendAssistantMessage(finalText)
 	r.session.CompleteTurn(turn, finalText, nil, nil)
