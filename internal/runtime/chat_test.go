@@ -547,7 +547,7 @@ func TestRegisterToolsAddsCodexStyleEditingAndPlanningTools(t *testing.T) {
 	workDir := t.TempDir()
 
 	registerTools(reg, workDir, cfg, reactruntime.NewSession(), agent.YoloApproval())
-	for _, name := range []string{"apply_patch", "update_plan", "tool_help", "view_image", "code_search"} {
+	for _, name := range []string{"apply_patch", "update_plan", "tool_help", "view_image", "code_search", "lsp_definition", "lsp_references", "lsp_hover", "lsp_document_symbols"} {
 		if _, ok := reg.Get(name); !ok {
 			t.Fatalf("%s tool not registered", name)
 		}
