@@ -49,8 +49,10 @@ func NewUpdatePlan(session planToolSession) agenttools.Tool {
 					return "", fmt.Errorf("plan step %d has invalid status %q", i+1, steps[i].Status)
 				}
 			}
-			if err := validatePlanSteps(steps); err != nil {
-				return "", err
+			var normErr error
+			steps, normErr = normalizePlanSteps(steps)
+			if normErr != nil {
+				return "", normErr
 			}
 			explanation, _ := args["explanation"].(string)
 			state := react.PlanState{
@@ -63,31 +65,33 @@ func NewUpdatePlan(session planToolSession) agenttools.Tool {
 	}
 }
 
-func validatePlanSteps(steps []react.PlanStep) error {
+// normalizePlanSteps enforces the one-in_progress rule by auto-promoting
+// the first pending step when no in_progress step is present. It rejects
+// plans with multiple in_progress steps.
+func normalizePlanSteps(steps []react.PlanStep) ([]react.PlanStep, error) {
 	if len(steps) == 0 {
-		return fmt.Errorf("at least one plan step is required")
+		return nil, fmt.Errorf("at least one plan step is required")
 	}
 	inProgress := 0
-	pending := 0
-	for _, step := range steps {
+	firstPending := -1
+	for i, step := range steps {
 		switch step.Status {
 		case "in_progress":
 			inProgress++
 		case "pending":
-			pending++
+			if firstPending < 0 {
+				firstPending = i
+			}
 		}
 	}
-	if pending > 0 && inProgress != 1 {
-		return fmt.Errorf("plan must have exactly one in_progress step while work remains")
+	if inProgress > 1 {
+		return nil, fmt.Errorf("plan must have exactly one in_progress step while work remains")
 	}
-	if pending == 0 && inProgress > 1 {
-		return fmt.Errorf("plan must have exactly one in_progress step while work remains")
+	// Auto-promote the first pending step when none is in_progress yet.
+	if inProgress == 0 && firstPending >= 0 {
+		out := append([]react.PlanStep(nil), steps...)
+		out[firstPending].Status = "in_progress"
+		return out, nil
 	}
-	if pending == 0 && inProgress == 0 {
-		return nil
-	}
-	if inProgress != 1 {
-		return fmt.Errorf("plan must have exactly one in_progress step while work remains")
-	}
-	return nil
+	return steps, nil
 }
