@@ -99,7 +99,7 @@ func TestDebugSurfaceShowsVisibleTraceChromeByDefault(t *testing.T) {
 	setToolsContent(&m, "tool_call read_file\nstatus: complete\n")
 
 	view := m.View()
-	if !strings.Contains(view, "Debug trace") {
+	if !strings.Contains(view, "Trace dock") {
 		t.Fatalf("expected debug surface to render visible trace chrome, got:\n%s", strippedLine(view))
 	}
 	if !strings.Contains(view, "tool_call read_file") {

@@ -278,6 +278,49 @@ func TestExecSessionManagerEmitsExitNotification(t *testing.T) {
 	}
 }
 
+func TestExecSessionManagerEmitsRunningOutputNotification(t *testing.T) {
+	dir := t.TempDir()
+	manager := NewExecSessionManager()
+	defer manager.Close()
+
+	var (
+		mu      sync.Mutex
+		events  []execSessionStatus
+		running = make(chan struct{}, 1)
+	)
+	manager.SetEventHandler(func(status execSessionStatus) {
+		mu.Lock()
+		events = append(events, status)
+		mu.Unlock()
+		if status.Status == "running" && strings.Contains(status.Output, "ready on http://127.0.0.1:4173") {
+			select {
+			case running <- struct{}{}:
+			default:
+			}
+		}
+	})
+
+	sessionID, err := manager.StartPTY(dir, "printf 'ready on http://127.0.0.1:4173\\n'; sleep 1", 120, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionID == 0 {
+		t.Fatal("expected non-zero session id")
+	}
+
+	select {
+	case <-running:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for running output notification")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) == 0 {
+		t.Fatal("expected lifecycle events")
+	}
+}
+
 func TestRunCommandRejectsInteractiveCommandsInFavorOfExecSession(t *testing.T) {
 	dir := t.TempDir()
 	tool := NewRunCommand(dir, 60, nil, func(a Action) (bool, error) { return true, nil })

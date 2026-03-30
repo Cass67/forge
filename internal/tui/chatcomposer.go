@@ -9,7 +9,7 @@ import (
 
 const (
 	chatComposerMinBodyLines = 3
-	chatComposerMaxBodyLines = 15
+	chatComposerMaxBodyLines = 7
 )
 
 type ComposerAction struct {
@@ -112,14 +112,27 @@ func (c ChatComposer) Render(theme chatTheme, width int) string {
 	innerWidth := max(1, width-2)
 	bodyWidth := max(1, innerWidth-2)
 	bodyLines := c.visibleBodyLines(bodyWidth)
+	panelBG := theme.panelSurface()
+	headerBG := theme.headerSurface()
+
+	hintText := "Enter send"
+	switch {
+	case innerWidth >= 48:
+		hintText = "Enter send • Alt+Enter newline"
+	case innerWidth >= 32:
+		hintText = "Enter send • newline"
+	}
+	if innerWidth >= 60 {
+		hintText = "Enter send • Alt+Enter newline • Esc cancel"
+	}
 
 	topLabel := " Prompt "
-	topFill := strings.Repeat("─", max(0, innerWidth-len([]rune(topLabel))))
+	topContent := fitCell(topLabel+hintText, innerWidth)
 	top := lipgloss.JoinHorizontal(
 		lipgloss.Left,
-		lipgloss.NewStyle().Foreground(theme.BorderFocus).Background(theme.PanelBG).Render("╭"),
-		lipgloss.NewStyle().Foreground(theme.TextDim).Background(theme.PanelBG).Bold(true).Render(topLabel),
-		lipgloss.NewStyle().Foreground(theme.BorderFocus).Background(theme.PanelBG).Render(topFill+"╮"),
+		lipgloss.NewStyle().Foreground(theme.BorderFocus).Background(headerBG).Render("╭"),
+		lipgloss.NewStyle().Foreground(theme.TextDim).Background(headerBG).Bold(true).Render(topContent),
+		lipgloss.NewStyle().Foreground(theme.BorderFocus).Background(headerBG).Render("╮"),
 	)
 
 	out := make([]string, 0, len(bodyLines)+2)
@@ -133,26 +146,26 @@ func (c ChatComposer) Render(theme chatTheme, width int) string {
 		text := fitCell(prefix+line, innerWidth)
 		bodyStyle := lipgloss.NewStyle().
 			Foreground(theme.Text).
-			Background(theme.PanelBG).
+			Background(panelBG).
 			Render(text)
 		if c.text == "" {
 			bodyStyle = lipgloss.NewStyle().
 				Foreground(theme.TextDim).
-				Background(theme.PanelBG).
+				Background(panelBG).
 				Render(text)
 		}
 		row := lipgloss.JoinHorizontal(
 			lipgloss.Left,
-			lipgloss.NewStyle().Foreground(theme.Border).Background(theme.PanelBG).Render("│"),
+			lipgloss.NewStyle().Foreground(theme.Border).Background(panelBG).Render("│"),
 			bodyStyle,
-			lipgloss.NewStyle().Foreground(theme.Border).Background(theme.PanelBG).Render("│"),
+			lipgloss.NewStyle().Foreground(theme.Border).Background(panelBG).Render("│"),
 		)
 		out = append(out, row)
 	}
 
 	bottom := lipgloss.NewStyle().
-		Foreground(theme.Border).
-		Background(theme.PanelBG).
+		Foreground(theme.BorderFocus).
+		Background(panelBG).
 		Render("╰" + strings.Repeat("─", innerWidth) + "╯")
 	out = append(out, bottom)
 	return strings.Join(out, "\n")

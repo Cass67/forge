@@ -87,6 +87,23 @@ func TestRenderSemanticProseStylesInlineCodeContents(t *testing.T) {
 	assertStyledSubstring(t, rendered, "verify_cpe_transfer_and_ack.sh", theme.TextDim)
 }
 
+func TestRenderSemanticProseDoesNotPaintTokenBackgroundBlocks(t *testing.T) {
+	withTrueColorProfile(t)
+
+	theme := lookupThemeForTest(t, "default")
+	rendered := RenderSemanticPlain("Ran git log --oneline in ./internal/tui and got status: approved", profileProse, theme)
+
+	if strings.Contains(rendered, ansiBackgroundFragment(theme.AppBG)) {
+		t.Fatalf("semantic prose should not paint app background blocks: %q", rendered)
+	}
+	if strings.Contains(rendered, ansiBackgroundFragment(theme.PanelBG)) {
+		t.Fatalf("semantic prose should not paint panel background blocks: %q", rendered)
+	}
+	if strings.Contains(rendered, ansiBackgroundFragment(theme.HeaderBG)) {
+		t.Fatalf("semantic prose should not paint header background blocks: %q", rendered)
+	}
+}
+
 func TestRenderSemanticProseKeepsBarePathsOnDimTextNotAccentBlue(t *testing.T) {
 	withTrueColorProfile(t)
 

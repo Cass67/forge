@@ -37,6 +37,25 @@ func (d *nativeScriptedDriver) StreamWithTools(_ context.Context, _ []llm.Messag
 	return nil
 }
 
+type captureMessagesDriver struct {
+	lastMessages []llm.Message
+	response     string
+}
+
+func (d *captureMessagesDriver) Name() string { return "capture-messages" }
+
+func (d *captureMessagesDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	close(out)
+	return errors.New("Stream should not be called on a NativeToolCaller driver")
+}
+
+func (d *captureMessagesDriver) StreamWithTools(_ context.Context, msgs []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
+	defer close(out)
+	d.lastMessages = append([]llm.Message(nil), msgs...)
+	out <- llm.Token{Text: d.response}
+	return nil
+}
+
 // scriptedDriver is a plain Driver (no NativeToolCaller) used to test that
 // a non-native driver causes the runner to return an error.
 type scriptedDriver struct {
@@ -290,6 +309,44 @@ func TestRunnerFailsAfterSecondRetryableCompletionFailure(t *testing.T) {
 	}
 	if driver.callCount != 2 {
 		t.Fatalf("driver calls = %d, want 2", driver.callCount)
+	}
+}
+
+func TestRunnerIncludesInterruptedGuidanceAfterExecSessionTurn(t *testing.T) {
+	driver := &captureMessagesDriver{response: "checked current state before continuing"}
+	session := NewSession()
+
+	turn := session.RecordInput("start the dev server")
+	session.AppendAssistantWithToolCalls([]llm.NativeToolCall{{
+		ID:       "call-1",
+		Name:     "exec_session_start",
+		ArgsJSON: `{"command":"npm run dev","cols":120,"rows":40}`,
+	}})
+	session.AppendNativeToolResult("call-1", `{"status":"running","session_id":9,"command":"npm run dev","pty":true,"cols":120,"rows":40}`)
+	session.CompleteTurn(turn, "", []TurnToolCall{{Name: "exec_session_start"}}, nil)
+	session.MarkInterrupted()
+
+	r := NewRunner(Config{
+		Driver:  driver,
+		Session: session,
+	})
+
+	if err := r.Run(context.Background(), "continue from there"); err != nil {
+		t.Fatal(err)
+	}
+
+	var interruptedMsg string
+	for _, msg := range driver.lastMessages {
+		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "previous turn was interrupted") {
+			interruptedMsg = msg.Content
+			break
+		}
+	}
+	if interruptedMsg == "" {
+		t.Fatalf("expected interrupted guidance in messages: %#v", driver.lastMessages)
+	}
+	if !strings.Contains(interruptedMsg, "verify current state before continuing") {
+		t.Fatalf("interrupted guidance = %q", interruptedMsg)
 	}
 }
 

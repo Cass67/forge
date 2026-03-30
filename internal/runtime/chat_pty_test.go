@@ -180,7 +180,7 @@ func TestDebugChatDoesNotEnterAltScreen(t *testing.T) {
 	if strings.Contains(output, "chat debug log:") {
 		t.Fatalf("debug chat should not print a prelude before the shared UI: %q", output)
 	}
-	if !strings.Contains(output, "Debug trace") {
+	if !strings.Contains(output, "Trace dock") {
 		t.Fatalf("expected debug surface to render trace dock, got:\n%s", output)
 	}
 	if !strings.Contains(output, prompt) {

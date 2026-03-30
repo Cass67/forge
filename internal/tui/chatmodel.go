@@ -803,7 +803,7 @@ func (m *ChatModel) refreshViewport() {
 func (m ChatModel) composer() ChatComposer {
 	composer := NewChatComposer()
 	minLines := 3
-	maxLines := 15
+	maxLines := chatComposerMaxBodyLines
 	if m.height > 0 && m.height < 14 {
 		minLines = 2
 		maxLines = 10
@@ -1726,6 +1726,9 @@ func commandSessionStatusMessage(ev llm.Event) string {
 		Command   string `json:"command"`
 		Output    string `json:"output"`
 		ExitCode  int    `json:"exit_code"`
+		PTY       bool   `json:"pty"`
+		Cols      int    `json:"cols"`
+		Rows      int    `json:"rows"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(ev.Text)), &payload); err != nil {
 		return ""
@@ -1734,24 +1737,45 @@ func commandSessionStatusMessage(ev llm.Event) string {
 		return ""
 	}
 	command := strings.TrimSpace(payload.Command)
+	sessionLabel := "command session"
+	if payload.PTY || strings.HasPrefix(strings.TrimSpace(ev.Agent), "exec_session_") {
+		sessionLabel = "terminal session"
+	}
+	sizeLabel := ""
+	if payload.Cols > 0 && payload.Rows > 0 {
+		sizeLabel = fmt.Sprintf("%dx%d", payload.Cols, payload.Rows)
+	}
 	switch payload.Status {
 	case "running":
-		if command == "" {
-			return fmt.Sprintf("command session %d running", payload.SessionID)
+		if ev.Agent == "exec_session_resize" && sizeLabel != "" {
+			if command == "" {
+				return fmt.Sprintf("%s %d resized to %s", sessionLabel, payload.SessionID, sizeLabel)
+			}
+			return fmt.Sprintf("%s %d resized to %s: %s", sessionLabel, payload.SessionID, sizeLabel, command)
 		}
-		return fmt.Sprintf("command session %d running: %s", payload.SessionID, command)
+		output := summarizeCommandSessionOutput(payload.Output)
+		if command == "" {
+			if output == "" {
+				return fmt.Sprintf("%s %d running", sessionLabel, payload.SessionID)
+			}
+			return fmt.Sprintf("%s %d running\n  └ %s", sessionLabel, payload.SessionID, output)
+		}
+		if output == "" {
+			return fmt.Sprintf("%s %d running: %s", sessionLabel, payload.SessionID, command)
+		}
+		return fmt.Sprintf("%s %d running: %s\n  └ %s", sessionLabel, payload.SessionID, command, output)
 	case "exited":
 		output := summarizeCommandSessionOutput(payload.Output)
 		if command == "" {
 			if output == "" {
-				return fmt.Sprintf("command session %d exited with code %d", payload.SessionID, payload.ExitCode)
+				return fmt.Sprintf("%s %d exited with code %d", sessionLabel, payload.SessionID, payload.ExitCode)
 			}
-			return fmt.Sprintf("command session %d exited with code %d\n  └ %s", payload.SessionID, payload.ExitCode, output)
+			return fmt.Sprintf("%s %d exited with code %d\n  └ %s", sessionLabel, payload.SessionID, payload.ExitCode, output)
 		}
 		if output == "" {
-			return fmt.Sprintf("command session %d exited with code %d: %s", payload.SessionID, payload.ExitCode, command)
+			return fmt.Sprintf("%s %d exited with code %d: %s", sessionLabel, payload.SessionID, payload.ExitCode, command)
 		}
-		return fmt.Sprintf("command session %d exited with code %d: %s\n  └ %s", payload.SessionID, payload.ExitCode, command, output)
+		return fmt.Sprintf("%s %d exited with code %d: %s\n  └ %s", sessionLabel, payload.SessionID, payload.ExitCode, command, output)
 	default:
 		return ""
 	}
@@ -5006,6 +5030,17 @@ func (m ChatModel) toolCallProgressLine(ev llm.Event) string {
 			return "Running a command"
 		}
 		return fmt.Sprintf("Running %s", summary)
+	case "exec_session_start":
+		if summary == "" {
+			return "Starting terminal session"
+		}
+		return fmt.Sprintf("Starting terminal session: %s", summary)
+	case "exec_session_resize":
+		return "Resizing terminal session"
+	case "exec_session_write":
+		return "Writing to terminal session"
+	case "exec_session_stop":
+		return "Stopping terminal session"
 	default:
 		if summary == "" {
 			return ""
