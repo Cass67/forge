@@ -37,13 +37,17 @@ func renderMessageContent(content string, width int, theme chatTheme) string {
 func renderWrappedProseBlock(body string, width int, theme chatTheme) string {
 	lines := wrapProseLines(body, width)
 	rendered := make([]string, 0, len(lines))
-	for _, line := range lines {
-		rendered = append(rendered, padStyledWidth(renderProseLine(line, theme), width))
+	for i, line := range lines {
+		next := ""
+		if i+1 < len(lines) {
+			next = lines[i+1]
+		}
+		rendered = append(rendered, padStyledWidth(renderProseLine(line, next, theme), width))
 	}
 	return strings.Join(rendered, "\n")
 }
 
-func renderProseLine(line string, theme chatTheme) string {
+func renderProseLine(line, nextLine string, theme chatTheme) string {
 	switch {
 	case isMarkdownHeading(line):
 		return renderMarkdownHeading(line, theme)
@@ -51,7 +55,7 @@ func renderProseLine(line string, theme chatTheme) string {
 		return renderMarkdownListItem(line, theme)
 	case isColonHeader(line):
 		return renderColonHeader(line, theme)
-	case isBareHeader(line):
+	case isBareHeader(line, nextLine):
 		return renderBareHeader(line, theme)
 	default:
 		return renderEmphasizedSemantic(line, profileProse, theme)
@@ -94,12 +98,19 @@ func renderColonHeader(line string, theme chatTheme) string {
 		Render(stripStrongMarkers(line))
 }
 
-// isBareHeader detects short standalone title-case lines that weaker models
-// emit as section headers without any markdown marker or trailing colon.
-// e.g. "Summary", "What I inspected (source-grounded)", "High-level architecture and flow".
-func isBareHeader(line string) bool {
+// isBareHeader detects standalone title-case lines that weaker models emit as
+// section headers without any markdown marker or trailing colon, e.g.:
+//
+//	"Summary"
+//	"What I inspected (source-grounded)"
+//	"Summary (grounded to README.md and cmd/forge/main.go)"
+//
+// nextLine is used as a strong context signal: a line immediately followed by
+// a list item is almost certainly a section header even when it is long or
+// contains path characters.
+func isBareHeader(line, nextLine string) bool {
 	trimmed := strings.TrimSpace(line)
-	if len(trimmed) < 4 || len(trimmed) > 45 {
+	if trimmed == "" {
 		return false
 	}
 	// Must not already be handled by other cases (no leading markers).
@@ -116,7 +127,15 @@ func isBareHeader(line string) bool {
 	if last == '.' || last == ',' || last == ';' || last == '?' || last == '!' || last == ':' {
 		return false
 	}
-	// Exclude lines that contain file-path separators or dashes used inline (em/en dash).
+	// When the next line is a list item, we have strong evidence this is a header.
+	// Relax the length and character constraints in that case.
+	if isMarkdownListItem(nextLine) {
+		return len(trimmed) <= 120
+	}
+	// Without context, apply stricter limits: short, no path separators or inline dashes.
+	if len(trimmed) > 45 {
+		return false
+	}
 	if strings.ContainsAny(trimmed, "/\\") || strings.Contains(trimmed, "–") || strings.Contains(trimmed, "—") {
 		return false
 	}
