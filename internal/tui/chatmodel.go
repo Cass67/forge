@@ -197,14 +197,15 @@ type ChatModel struct {
 	width  int
 	height int
 
-	chatViewport viewport.Model
-	chatContent  string
-	chatVisible  string
-	paneFocus    chatPaneFocus
-	toolsScroll  int
-	followMode   chatFollowMode
-	debugEnabled bool
-	traceVisible bool
+	chatViewport    viewport.Model
+	chatContent     string
+	chatVisible     string
+	paneFocus       chatPaneFocus
+	discardMouseCSI bool
+	toolsScroll     int
+	followMode      chatFollowMode
+	debugEnabled    bool
+	traceVisible    bool
 
 	toolsSections   []toolsSection
 	toolsVisible    bool
@@ -236,6 +237,7 @@ type ChatModel struct {
 	autoSkillsMode         string
 	state                  *chatstate.State
 	themeID                string
+	pendingQueuedInput     []string
 
 	helpVisible bool
 	helpTab     int
@@ -1356,6 +1358,17 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.discardMouseCSI {
+			if isMouseTrackingFragment(msg) {
+				m.discardMouseCSI = false
+				return m, nil
+			}
+			m.discardMouseCSI = false
+		}
+		if startsMouseTrackingSequence(msg) {
+			m.discardMouseCSI = true
+			return m, nil
+		}
 		return m.handleKey(msg)
 
 	case tea.MouseMsg:
@@ -1432,6 +1445,10 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 				m.UpdateRecentActivity("", line)
 			}
 		}
+		if status := runtimeStatusMessage(ev); status != "" {
+			m.AddMessage(ChatMessage{Kind: MsgStatus, Content: status})
+			m.flash = status
+		}
 		if ev.Agent == "delegate" {
 			state := m.delegateResultState()
 			label := "Agent"
@@ -1482,6 +1499,7 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 	case llm.EventDone:
 		m.busy = false
 		m.activeSubAgent = ""
+		m.pendingQueuedInput = nil
 		m.finalizeLiveProgressRecord()
 		m.markLastAssistantRecordFinal()
 		m.resetProgressCheckpointState()
@@ -1492,6 +1510,7 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		}
 	case llm.EventError:
 		m.busy = false
+		m.pendingQueuedInput = nil
 		m.finalizeLiveProgressRecord()
 		m.markLastAssistantRecordFinal()
 		m.resetProgressCheckpointState()
@@ -1507,6 +1526,7 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 	case llm.EventAbort:
 		m.busy = false
 		m.activeSubAgent = ""
+		m.pendingQueuedInput = nil
 		m.finalizeLiveProgressRecord()
 		m.markLastAssistantRecordFinal()
 		m.resetProgressCheckpointState()
@@ -1530,6 +1550,9 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		}
 		return m, m.beginProviderDiagnosticsFetch(false)
 	case llm.EventProgress:
+		if strings.Contains(strings.ToLower(ev.Text), "applying") && strings.Contains(strings.ToLower(ev.Text), "queued input") {
+			m.pendingQueuedInput = nil
+		}
 		if line := m.progressEventLine(ev); line != "" {
 			m.UpdateRecentActivity(ev.Agent, line)
 		}
@@ -1644,6 +1667,121 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "…"
+}
+
+func runtimeStatusMessage(ev llm.Event) string {
+	if status := previewStatusMessage(ev); status != "" {
+		return status
+	}
+	return commandSessionStatusMessage(ev)
+}
+
+func previewStatusMessage(ev llm.Event) string {
+	if ev.IsError {
+		return ""
+	}
+	switch ev.Agent {
+	case "preview_server_ensure", "preview_server_status":
+	default:
+		return ""
+	}
+
+	var payload struct {
+		Status string `json:"status"`
+		URL    string `json:"url"`
+		Reused bool   `json:"reused"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(ev.Text)), &payload); err != nil {
+		return ""
+	}
+	if strings.TrimSpace(payload.URL) == "" {
+		return ""
+	}
+	switch ev.Agent {
+	case "preview_server_ensure":
+		if payload.Reused {
+			return "preview still live at " + payload.URL
+		}
+		return "preview live at " + payload.URL
+	case "preview_server_status":
+		return "preview status: " + payload.URL
+	default:
+		return ""
+	}
+}
+
+func commandSessionStatusMessage(ev llm.Event) string {
+	if ev.IsError {
+		return ""
+	}
+	switch ev.Agent {
+	case "run_command", "command_status":
+	default:
+		return ""
+	}
+
+	var payload struct {
+		Status    string `json:"status"`
+		SessionID int    `json:"session_id"`
+		Command   string `json:"command"`
+		Output    string `json:"output"`
+		ExitCode  int    `json:"exit_code"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(ev.Text)), &payload); err != nil {
+		return ""
+	}
+	if payload.SessionID == 0 || strings.TrimSpace(payload.Status) == "" {
+		return ""
+	}
+	command := strings.TrimSpace(payload.Command)
+	switch payload.Status {
+	case "running":
+		if command == "" {
+			return fmt.Sprintf("command session %d running", payload.SessionID)
+		}
+		return fmt.Sprintf("command session %d running: %s", payload.SessionID, command)
+	case "exited":
+		output := summarizeCommandSessionOutput(payload.Output)
+		if command == "" {
+			if output == "" {
+				return fmt.Sprintf("command session %d exited with code %d", payload.SessionID, payload.ExitCode)
+			}
+			return fmt.Sprintf("command session %d exited with code %d\n  └ %s", payload.SessionID, payload.ExitCode, output)
+		}
+		if output == "" {
+			return fmt.Sprintf("command session %d exited with code %d: %s", payload.SessionID, payload.ExitCode, command)
+		}
+		return fmt.Sprintf("command session %d exited with code %d: %s\n  └ %s", payload.SessionID, payload.ExitCode, command, output)
+	default:
+		return ""
+	}
+}
+
+func summarizeCommandSessionOutput(output string) string {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return ""
+	}
+	lines := strings.Split(output, "\n")
+	parts := make([]string, 0, min(2, len(lines)))
+	for _, line := range lines {
+		line = compactStatusText(line)
+		if line == "" {
+			continue
+		}
+		parts = append(parts, truncate(line, 120))
+		if len(parts) == 2 {
+			break
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	summary := strings.Join(parts, " | ")
+	if len(lines) > len(parts) {
+		summary += fmt.Sprintf(" | … +%d lines", len(lines)-len(parts))
+	}
+	return summary
 }
 
 func latestFencedCodeBlock(content string) string {
@@ -1900,7 +2038,18 @@ func (m ChatModel) trySubmitText(input string) (ChatModel, tea.Cmd, bool) {
 	}
 
 	if m.busy {
-		return m, nil, false
+		m.flash = "queued steering"
+		m.pendingQueuedInput = append(m.pendingQueuedInput, input)
+		m.inputBuf = ""
+		m.inputPos = 0
+		if m.inputCh != nil {
+			ch := m.inputCh
+			return m, func() tea.Msg {
+				ch <- input
+				return nil
+			}, true
+		}
+		return m, nil, true
 	}
 
 	if strings.TrimSpace(m.model) == "" {
@@ -4196,6 +4345,9 @@ func (m ChatModel) View() string {
 	if gap := m.renderComposerGap(theme); gap != "" {
 		parts = append(parts, gap)
 	}
+	if preview := m.renderPendingInputPreview(theme); preview != "" {
+		parts = append(parts, preview)
+	}
 	parts = append(parts, liveRegion, inputBox)
 	base := lipgloss.NewStyle().
 		Background(theme.AppBG).
@@ -4296,6 +4448,27 @@ func (m ChatModel) renderLiveProgressSlot(theme chatTheme) string {
 		slotStyle = slotStyle.Foreground(theme.AccentPrimary).Bold(true)
 	}
 	return slotStyle.Render(fitCell(prefix+" "+message, max(1, m.width)))
+}
+
+func (m ChatModel) renderPendingInputPreview(theme chatTheme) string {
+	if len(m.pendingQueuedInput) == 0 {
+		return ""
+	}
+	lines := []string{"Queued input"}
+	limit := min(3, len(m.pendingQueuedInput))
+	for i := 0; i < limit; i++ {
+		lines = append(lines, "  ↳ "+truncate(strings.TrimSpace(m.pendingQueuedInput[i]), max(20, m.width-8)))
+	}
+	if len(m.pendingQueuedInput) > limit {
+		lines = append(lines, fmt.Sprintf("  … %d more", len(m.pendingQueuedInput)-limit))
+	}
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(theme.Border).
+		Background(theme.AppBG).
+		Foreground(theme.TextDim).
+		Width(max(10, m.width-2)).
+		Render(strings.Join(lines, "\n"))
 }
 
 func (m ChatModel) renderComposerGap(theme chatTheme) string {

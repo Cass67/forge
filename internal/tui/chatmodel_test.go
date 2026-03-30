@@ -213,6 +213,90 @@ func TestChatModelHandlesToolCallEvent(t *testing.T) {
 	}
 }
 
+func TestChatModelShowsPreviewStatusInTranscript(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test-model", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{
+		Kind:  llm.EventToolResult,
+		Agent: "preview_server_ensure",
+		Text:  `{"status":"live","url":"http://127.0.0.1:8765/index.html","reused":false}`,
+	})
+	m = updated.(ChatModel)
+
+	if len(m.messages) == 0 {
+		t.Fatal("expected preview status message")
+	}
+	if got := m.messages[len(m.messages)-1].Content; got != "preview live at http://127.0.0.1:8765/index.html" {
+		t.Fatalf("preview status = %q", got)
+	}
+}
+
+func TestChatModelShowsCommandSessionStatusInTranscript(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test-model", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{
+		Kind:  llm.EventToolResult,
+		Agent: "run_command",
+		Text:  `{"status":"running","session_id":7,"command":"sleep 1"}`,
+	})
+	m = updated.(ChatModel)
+
+	if len(m.messages) == 0 {
+		t.Fatal("expected command session status message")
+	}
+	if got := m.messages[len(m.messages)-1].Content; got != "command session 7 running: sleep 1" {
+		t.Fatalf("command status = %q", got)
+	}
+}
+
+func TestChatModelShowsCommandSessionExitOutputInTranscript(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test-model", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{
+		Kind:  llm.EventToolResult,
+		Agent: "command_status",
+		Text:  `{"status":"exited","session_id":7,"command":"npm run dev","exit_code":0,"output":"ready on http://127.0.0.1:3000\nwatching for changes"}`,
+	})
+	m = updated.(ChatModel)
+
+	if len(m.messages) == 0 {
+		t.Fatal("expected command exit status message")
+	}
+	got := m.messages[len(m.messages)-1].Content
+	if !strings.Contains(got, "command session 7 exited with code 0: npm run dev") {
+		t.Fatalf("exit status = %q", got)
+	}
+	if !strings.Contains(got, "ready on http://127.0.0.1:3000") {
+		t.Fatalf("exit output summary missing from %q", got)
+	}
+}
+
+func TestChatModelIgnoresSplitMouseTrackingSequence(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test-model", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+	m.inputBuf = "draft"
+	m.inputPos = len([]rune(m.inputBuf))
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Alt: true, Runes: []rune{'['}})
+	m = updated.(ChatModel)
+	if got := m.inputBuf; got != "draft" {
+		t.Fatalf("after CSI start, inputBuf = %q", got)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("<64;50;33M")})
+	m = updated.(ChatModel)
+	if got := m.inputBuf; got != "draft" {
+		t.Fatalf("after mouse fragment, inputBuf = %q", got)
+	}
+}
+
 func TestChatModelShowsPersistentPlanAfterUpdatePlanResult(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 90
@@ -3279,10 +3363,12 @@ func TestPromptEchoSubmitClearsComposerAndKeepsUserTurnVisible(t *testing.T) {
 	}
 }
 
-func TestChatModelEnterWhileBusyDoesNotSubmitNewTurn(t *testing.T) {
+func TestChatModelEnterWhileBusyQueuesSteering(t *testing.T) {
 	inputCh := make(chan string, 1)
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.inputCh = inputCh
+	m.width = 80
+	m.height = 20
 	m.busy = true
 	m.inputBuf = "draft while running"
 	m.inputPos = len([]rune(m.inputBuf))
@@ -3294,19 +3380,32 @@ func TestChatModelEnterWhileBusyDoesNotSubmitNewTurn(t *testing.T) {
 	updated, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(ChatModel)
 
-	if cmd != nil {
-		t.Fatal("expected no submit command while busy")
+	if cmd == nil {
+		t.Fatal("expected queued steering command while busy")
 	}
 	if got := len(m.messages); got != 2 {
 		t.Fatalf("messages = %#v", m.messages)
 	}
-	if got := m.inputBuf; got != "draft while running" {
+	if got := m.inputBuf; got != "" {
 		t.Fatalf("inputBuf = %q", got)
+	}
+	msg := cmd()
+	if msg != nil {
+		t.Fatalf("expected nil tea.Msg from queue command, got %#v", msg)
 	}
 	select {
 	case prompt := <-inputCh:
-		t.Fatalf("unexpected queued prompt %q", prompt)
+		if prompt != "draft while running" {
+			t.Fatalf("queued prompt = %q", prompt)
+		}
 	default:
+		t.Fatal("expected queued prompt")
+	}
+	if !strings.Contains(m.flash, "queued steering") {
+		t.Fatalf("flash = %q", m.flash)
+	}
+	if got := strippedLine(m.View()); !strings.Contains(got, "Queued input") || !strings.Contains(got, "draft while running") {
+		t.Fatalf("expected queued input preview, got:\n%s", got)
 	}
 }
 
