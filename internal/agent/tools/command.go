@@ -15,6 +15,7 @@ var (
 	pseudoGitLogCommandPattern    = regexp.MustCompile(`(^|(?:&&|\|\||;|\|)\s*)git_log(?:\s+([0-9]+))?(\s|$)`)
 	pseudoGitDiffCommandPattern   = regexp.MustCompile(`(^|(?:&&|\|\||;|\|)\s*)git_diff(?:\s+([^\s;&|]+))?(\s|$)`)
 	adHocPreviewServerPattern     = regexp.MustCompile(`(?i)(python(?:3)?\s+-m\s+http\.server|npx\s+http-server|python(?:3)?\s+-m\s+simplehttpserver|ruby\s+-run\s+-e\s+httpd|busybox\s+httpd)`)
+	interactiveCommandPattern     = regexp.MustCompile(`(?i)\b(npm run dev|pnpm dev|yarn dev|npm run start|pnpm start|yarn start|vite|next dev|tail -f|top|htop|less|more|vim|nvim|nano|watch\b|python(?:3)?\s+-i|node\b|irb\b|rails console|python manage\.py shell)\b`)
 )
 
 func NewRunCommand(workDir string, timeoutSecs int, manager *ExecSessionManager, approve ApprovalFunc, forcePrompt ...ApprovalFunc) Tool {
@@ -33,6 +34,9 @@ func NewRunCommand(workDir string, timeoutSecs int, manager *ExecSessionManager,
 			command = normalizePseudoToolCommands(command)
 			if looksLikeAdHocPreviewServer(command) {
 				return "use preview_server_ensure instead of launching an ad-hoc web server with run_command", nil
+			}
+			if requiresExecSession(command) {
+				return "use exec_session_start instead of run_command for interactive or long-running terminal work", nil
 			}
 			background := isBackgroundCommand(command)
 			if background {
@@ -159,4 +163,12 @@ func stripBackgroundCommandSuffix(cmd string) string {
 	trimmed := strings.TrimSpace(cmd)
 	trimmed = strings.TrimSuffix(trimmed, "&")
 	return strings.TrimSpace(trimmed)
+}
+
+func requiresExecSession(cmd string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(cmd))
+	if normalized == "" {
+		return false
+	}
+	return interactiveCommandPattern.MatchString(normalized)
 }
