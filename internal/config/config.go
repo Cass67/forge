@@ -103,18 +103,29 @@ type ApprovalConfig struct {
 	Rules             []ApprovalRuleConfig `toml:"rules"`
 }
 
+type MCPServerConfig struct {
+	Type      string            `toml:"type"`
+	Command   []string          `toml:"command"`
+	Env       map[string]string `toml:"env"`
+	URL       string            `toml:"url"`
+	Headers   map[string]string `toml:"headers"`
+	Enabled   *bool             `toml:"enabled"`
+	TimeoutMS int               `toml:"timeout_ms"`
+}
+
 type Config struct {
-	Models   Models         `toml:"models"`
-	Session  Session        `toml:"session"`
-	Keys     Keys           `toml:"keys"`
-	Passes   Passes         `toml:"passes"`
-	Pipeline []PipelinePass `toml:"pipeline"`
-	Copilot  Copilot        `toml:"copilot"`
-	Log      Log            `toml:"log"`
-	Retry    Retry          `toml:"retry"`
-	Git      Git            `toml:"git"`
-	Chat     ChatConfig     `toml:"chat"`
-	Approval ApprovalConfig `toml:"approval"`
+	Models     Models                     `toml:"models"`
+	Session    Session                    `toml:"session"`
+	Keys       Keys                       `toml:"keys"`
+	Passes     Passes                     `toml:"passes"`
+	Pipeline   []PipelinePass             `toml:"pipeline"`
+	Copilot    Copilot                    `toml:"copilot"`
+	Log        Log                        `toml:"log"`
+	Retry      Retry                      `toml:"retry"`
+	Git        Git                        `toml:"git"`
+	Chat       ChatConfig                 `toml:"chat"`
+	Approval   ApprovalConfig             `toml:"approval"`
+	MCPServers map[string]MCPServerConfig `toml:"mcp_servers"`
 }
 
 // defaultCopilotClientID is the bundled GitHub OAuth App client ID used for
@@ -252,6 +263,13 @@ func setDefaults(c *Config) {
 	}
 	c.Models.WriterParams.Temperature = -1
 	c.Models.AuditorParams.Temperature = -1
+}
+
+func (c MCPServerConfig) IsEnabled() bool {
+	if c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
 }
 
 func (c *Config) AnthropicKey() string {
