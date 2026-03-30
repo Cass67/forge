@@ -5,8 +5,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -32,6 +34,7 @@ var (
 	saveLastChatModel = config.SaveChatLastModel
 	defaultConfigPath = config.DefaultPath
 	runChatLiveUI     = tui.RunChatLive
+	mergeIntoBranchRE = regexp.MustCompile(`(?i)\bmerge\s+(?:the\s+)?(.+?)\s+into\s+([a-zA-Z0-9._/\-]+)\b`)
 )
 
 type chatRuntimeMode string
@@ -163,6 +166,7 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, appr
 	reg.Register(tools.NewGitStatus(workDir))
 	reg.Register(tools.NewGitDiff(workDir))
 	reg.Register(tools.NewGitLog(workDir))
+	reg.Register(tools.NewGitBranchState(workDir))
 	reg.Register(tools.NewGitMergeStatus(workDir))
 	gitCommit := tools.NewGitCommit(workDir, approve)
 	gitCommit.PromptVisibility = tools.PromptHidden
@@ -216,6 +220,9 @@ func RunChatLive(setup *ChatSetup) {
 		SystemPrompt:    func() string { return agent.BuildNativeSystemPrompt(setup.WorkDir) },
 		Session:         reactruntime.NewSession(),
 		MaxSessionTurns: chatMaxTurns(setup),
+		CompletionCheck: func(snapshot reactruntime.SessionSnapshot, finalText string) error {
+			return validateTaskCompletion(setup.WorkDir, snapshot, finalText)
+		},
 		Progress: func(text string) {
 			evRenderer.Info(text)
 		},
@@ -564,6 +571,7 @@ func chatMaxTurns(setup *ChatSetup) int {
 type chatTurnRunner interface {
 	Run(context.Context, string) error
 	EmitResponse(string)
+	SetTaskState(reactruntime.TaskState)
 }
 
 const promptBoundaryRefusal = "I can't provide hidden system/developer prompts or internal instructions, including paraphrased or hypothetical versions. I can summarize my role and high-level guardrails if useful."
@@ -578,7 +586,69 @@ func runChatTurn(ctx context.Context, reactRunner chatTurnRunner, input string) 
 	if reactRunner == nil {
 		return fmt.Errorf("chat react runner is nil")
 	}
+	if state, ok := detectTaskStateFromInput(input); ok {
+		reactRunner.SetTaskState(state)
+	}
 	return reactRunner.Run(ctx, input)
+}
+
+func detectTaskStateFromInput(input string) (reactruntime.TaskState, bool) {
+	text := strings.TrimSpace(input)
+	if text == "" {
+		return reactruntime.TaskState{}, false
+	}
+	match := mergeIntoBranchRE.FindStringSubmatch(text)
+	if len(match) != 3 {
+		return reactruntime.TaskState{}, false
+	}
+	sourceRef := strings.TrimSpace(match[1])
+	targetBranch := strings.TrimSpace(match[2])
+	if sourceRef == "" || targetBranch == "" {
+		return reactruntime.TaskState{}, false
+	}
+	return reactruntime.TaskState{
+		Objective:            text,
+		Operation:            "merge",
+		SourceRef:            sourceRef,
+		TargetBranch:         targetBranch,
+		RequiredVerification: fmt.Sprintf("verify branch %s contains the resulting HEAD commit", targetBranch),
+	}, true
+}
+
+func validateTaskCompletion(workDir string, snapshot reactruntime.SessionSnapshot, finalText string) error {
+	_ = finalText
+	if snapshot.TaskState == nil {
+		return nil
+	}
+	task := snapshot.TaskState
+	if strings.ToLower(strings.TrimSpace(task.Operation)) != "merge" || strings.TrimSpace(task.TargetBranch) == "" {
+		return nil
+	}
+	contains, err := gitBranchContainsHead(workDir, task.TargetBranch)
+	if err != nil {
+		return err
+	}
+	if !contains {
+		return fmt.Errorf("task incomplete: target branch %s does not contain HEAD", task.TargetBranch)
+	}
+	return nil
+}
+
+func gitBranchContainsHead(workDir, branch string) (bool, error) {
+	verify := exec.Command("git", "rev-parse", "--verify", "--quiet", branch)
+	verify.Dir = workDir
+	if err := verify.Run(); err != nil {
+		return false, fmt.Errorf("verify target branch %s: %w", branch, err)
+	}
+	cmd := exec.Command("git", "merge-base", "--is-ancestor", "HEAD", branch)
+	cmd.Dir = workDir
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return false, nil
+		}
+		return false, fmt.Errorf("check whether %s contains HEAD: %w", branch, err)
+	}
+	return true, nil
 }
 
 func isPromptBoundaryQuestion(input string) bool {
@@ -597,6 +667,7 @@ type chatSessionControl interface {
 	ClearHistory()
 	AppendUserMessage(string)
 	EmitResponse(string)
+	SetTaskState(reactruntime.TaskState)
 }
 
 func handleChatSlashCommand(input string, renderer *agent.Renderer, loadedSkills []skills.Skill, state *chatstate.State, session chatSessionControl, setup *ChatSetup) bool {

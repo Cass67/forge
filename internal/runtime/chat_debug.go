@@ -123,10 +123,14 @@ func (d *chatDebugDriver) Name() string { return d.inner.Name() }
 
 func (d *chatDebugDriver) Stream(ctx context.Context, messages []llm.Message, out chan<- llm.Token) error {
 	if d.rec != nil {
-		d.rec.log.Debug("llm.request", map[string]any{
+		fields := map[string]any{
 			"driver":   d.inner.Name(),
 			"messages": messages,
-		})
+		}
+		if taskState := taskStateFromMessages(messages); len(taskState) > 0 {
+			fields["task_state"] = taskState
+		}
+		d.rec.log.Debug("llm.request", fields)
 	}
 
 	internal := make(chan llm.Token, 64)
@@ -175,10 +179,14 @@ func (d *chatDebugDriver) StreamWithTools(ctx context.Context, messages []llm.Me
 		return fmt.Errorf("chatDebugDriver: inner driver %q does not support native tool calling", d.inner.Name())
 	}
 	if d.rec != nil {
-		d.rec.log.Debug("llm.request", map[string]any{
+		fields := map[string]any{
 			"driver":   d.inner.Name(),
 			"messages": messages,
-		})
+		}
+		if taskState := taskStateFromMessages(messages); len(taskState) > 0 {
+			fields["task_state"] = taskState
+		}
+		d.rec.log.Debug("llm.request", fields)
 	}
 
 	internal := make(chan llm.Token, 64)
@@ -251,4 +259,32 @@ func isStrictTurnRequest(messages []llm.Message) bool {
 		}
 	}
 	return false
+}
+
+func taskStateFromMessages(messages []llm.Message) map[string]any {
+	state := map[string]any{}
+	for _, msg := range messages {
+		if msg.Role != llm.RoleSystem {
+			continue
+		}
+		for _, line := range strings.Split(msg.Content, "\n") {
+			line = strings.TrimSpace(line)
+			switch {
+			case strings.HasPrefix(line, "Task objective: "):
+				state["objective"] = strings.TrimSpace(strings.TrimPrefix(line, "Task objective: "))
+			case strings.HasPrefix(line, "Task operation: "):
+				state["operation"] = strings.TrimSpace(strings.TrimPrefix(line, "Task operation: "))
+			case strings.HasPrefix(line, "Task source ref: "):
+				state["source_ref"] = strings.TrimSpace(strings.TrimPrefix(line, "Task source ref: "))
+			case strings.HasPrefix(line, "Task target branch: "):
+				state["target_branch"] = strings.TrimSpace(strings.TrimPrefix(line, "Task target branch: "))
+			case strings.HasPrefix(line, "Required verification: "):
+				state["required_verification"] = strings.TrimSpace(strings.TrimPrefix(line, "Required verification: "))
+			}
+		}
+	}
+	if len(state) == 0 {
+		return nil
+	}
+	return state
 }

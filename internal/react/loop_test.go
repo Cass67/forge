@@ -187,6 +187,70 @@ func TestRunnerRunRecordsTurnError(t *testing.T) {
 	}
 }
 
+func TestRunnerRejectsFinalAnswerWhenCompletionCheckFails(t *testing.T) {
+	driver := &nativeScriptedDriver{responses: []string{"done"}}
+	session := NewSession()
+	session.SetTaskState(TaskState{
+		Objective:            "merge feature/go-rewrite into main",
+		RequiredVerification: "verify main contains the resulting commit",
+	})
+	r := NewRunner(Config{
+		Driver:  driver,
+		Session: session,
+		CompletionCheck: func(snapshot SessionSnapshot, finalText string) error {
+			if snapshot.TaskState == nil {
+				t.Fatal("expected task state during completion check")
+			}
+			if finalText != "done" {
+				t.Fatalf("finalText = %q", finalText)
+			}
+			return errors.New("postcondition not satisfied")
+		},
+	})
+
+	err := r.Run(context.Background(), "finish merge")
+	if err == nil {
+		t.Fatal("expected completion check failure")
+	}
+	if !strings.Contains(err.Error(), "postcondition not satisfied") {
+		t.Fatalf("err = %v", err)
+	}
+	snap := session.Snapshot()
+	if len(snap.Turns) != 1 || snap.Turns[0].Error == "" {
+		t.Fatalf("expected recorded completion error, snapshot=%#v", snap)
+	}
+}
+
+func TestRunnerRejectsBranchTargetMismatch(t *testing.T) {
+	driver := &nativeScriptedDriver{responses: []string{"merge complete"}}
+	session := NewSession()
+	session.SetTaskState(TaskState{
+		Objective:            "merge feature/go-rewrite into main",
+		Operation:            "merge",
+		SourceRef:            "feature/go-rewrite",
+		TargetBranch:         "main",
+		RequiredVerification: "verify branch main contains the resulting HEAD commit",
+	})
+	r := NewRunner(Config{
+		Driver:  driver,
+		Session: session,
+		CompletionCheck: func(snapshot SessionSnapshot, finalText string) error {
+			if snapshot.TaskState == nil || snapshot.TaskState.TargetBranch != "main" {
+				t.Fatalf("unexpected task state: %#v", snapshot.TaskState)
+			}
+			return errors.New("task incomplete: target branch main does not contain HEAD")
+		},
+	})
+
+	err := r.Run(context.Background(), "finish merge")
+	if err == nil {
+		t.Fatal("expected branch target mismatch failure")
+	}
+	if !strings.Contains(err.Error(), "target branch main does not contain HEAD") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestRunnerReturnsErrorForNonNativeDriver(t *testing.T) {
 	// A plain scriptedDriver does NOT implement NativeToolCaller.
 	// The runner must return an error — no XML fallback.

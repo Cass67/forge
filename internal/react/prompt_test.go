@@ -121,3 +121,29 @@ func TestBuildMessages_IncludesRuntimeNoteAsSystemMessage(t *testing.T) {
 		t.Fatalf("runtime note = %q", msgs[1].Content)
 	}
 }
+
+func TestBuildMessages_IncludesTaskStateAsSystemMessage(t *testing.T) {
+	snap := SessionSnapshot{
+		TaskState: &TaskState{
+			Objective:            "merge feature/go-rewrite into main",
+			RequiredVerification: "verify main contains the resulting commit",
+		},
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "merge it"},
+		},
+	}
+
+	msgs := BuildMessages("sys", snap)
+	if len(msgs) < 3 {
+		t.Fatalf("messages = %#v", msgs)
+	}
+	if msgs[1].Role != llm.RoleSystem {
+		t.Fatalf("task state role = %q, want system", msgs[1].Role)
+	}
+	if !strings.Contains(msgs[1].Content, "Task objective") {
+		t.Fatalf("task state message = %q", msgs[1].Content)
+	}
+	if !strings.Contains(msgs[1].Content, "verify main contains the resulting commit") {
+		t.Fatalf("task state missing verification = %q", msgs[1].Content)
+	}
+}
