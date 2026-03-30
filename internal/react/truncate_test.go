@@ -19,7 +19,7 @@ func TestTruncateToolResults_ShortResultUnchanged(t *testing.T) {
 }
 
 func TestTruncateToolResults_LongResultTruncated(t *testing.T) {
-	lines := make([]string, 100)
+	lines := make([]string, 300)
 	for i := range lines {
 		lines[i] = fmt.Sprintf("line %d", i+1)
 	}
@@ -29,13 +29,13 @@ func TestTruncateToolResults_LongResultTruncated(t *testing.T) {
 	}
 	got := truncateToolResults(msgs, toolResultMaxLines)
 	result := got[0].Content
-	if strings.Contains(result, "line 50") {
+	if strings.Contains(result, "line 150") {
 		t.Error("middle lines should be dropped")
 	}
 	if !strings.Contains(result, "line 1") {
 		t.Error("head lines should be present")
 	}
-	if !strings.Contains(result, "line 100") {
+	if !strings.Contains(result, "line 300") {
 		t.Error("tail lines should be present")
 	}
 	if !strings.Contains(result, "truncated") {
@@ -127,7 +127,7 @@ func TestTruncateToolResults_ScalesHeadTailWithMaxLines(t *testing.T) {
 }
 
 func TestTruncateToolResults_TruncationMarkerFormat(t *testing.T) {
-	lines := make([]string, 100)
+	lines := make([]string, 300)
 	for i := range lines {
 		lines[i] = fmt.Sprintf("line %d", i+1)
 	}
@@ -136,7 +136,6 @@ func TestTruncateToolResults_TruncationMarkerFormat(t *testing.T) {
 	}
 	got := truncateToolResults(msgs, toolResultMaxLines)
 	result := got[0].Content
-	// head=26, tail=14, omitted=60
 	if !strings.Contains(result, "lines truncated)") {
 		t.Errorf("marker should contain 'lines truncated)', got: %q", result)
 	}

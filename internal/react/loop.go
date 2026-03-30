@@ -66,8 +66,8 @@ type validationWorkflowState struct {
 	cmd    string
 }
 
-const planExplorationBudget = 3
-const analysisExplorationBudget = 4
+const planExplorationBudget = 10
+const analysisExplorationBudget = 15
 
 func NewRunner(cfg Config) *Runner {
 	session := cfg.Session
@@ -212,9 +212,15 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 
 	toolDefs := r.tools.ToLLMToolDefs()
 
+	emptyRetried := false
 	for step := 0; step < r.maxSessionTurns; step++ {
 		calls, err := r.streamNativeTurn(ctx, turn, nativeCaller, toolDefs)
 		if err != nil {
+			if !emptyRetried && strings.Contains(err.Error(), "empty native response") {
+				emptyRetried = true
+				r.session.AppendUserMessage("Please provide a response summarizing what you've done and what the result is.")
+				continue
+			}
 			r.session.CompleteTurn(turn, "", nil, err)
 			return err
 		}
@@ -401,15 +407,12 @@ func truncateToolResult(result string) string {
 
 func maxSessionTurns(value int) int {
 	if value < 1 {
-		return 20
+		return 50
 	}
 	return value
 }
 
 func (r *Runner) blockedToolResult(toolName string, args map[string]any) string {
-	if blocked := r.blockedPlanToolResult(toolName, args); blocked != "" {
-		return blocked
-	}
 	if !isCommitToolCall(toolName, args) {
 		return ""
 	}
@@ -425,24 +428,6 @@ func (r *Runner) blockedToolResult(toolName string, args map[string]any) string 
 		return "blocked: the previous commit attempt already failed and nothing has changed since then. Fix the reported hook issues and call git_merge_status before retrying commit."
 	default:
 		return ""
-	}
-}
-
-func (r *Runner) blockedPlanToolResult(toolName string, args map[string]any) string {
-	if !r.planWorkflow.active || !r.planWorkflow.synthesisRequired {
-		return ""
-	}
-	if allowsPlanSynthesis(toolName) {
-		return ""
-	}
-	if !isExplorationToolCall(toolName, args) {
-		return ""
-	}
-	switch r.planWorkflow.mode {
-	case "analysis":
-		return "blocked: enough evidence has been gathered for analysis. Stop exploring and summarize findings or recommendations from the evidence you already have."
-	default:
-		return "blocked: enough evidence has been gathered for planning. Stop exploring and synthesize a concise plan from the evidence you already have, and use update_plan if you need to track the plan."
 	}
 }
 
@@ -525,17 +510,22 @@ func (r *Runner) updatePlanWorkflow(toolName string, args map[string]any, _ stri
 	if !r.planWorkflow.active {
 		return
 	}
-	if toolName == "update_plan" {
+	if blocked {
+		r.syncRuntimeNote()
+		return
+	}
+	if allowsPlanSynthesis(toolName) {
+		// update_plan or think: reset exploration counter so the model can keep working
 		r.planWorkflow.explorationBatches = 0
 		r.planWorkflow.synthesisRequired = false
 		r.syncRuntimeNote()
 		return
 	}
-	if blocked {
-		r.syncRuntimeNote()
-		return
-	}
 	if !isExplorationToolCall(toolName, args) {
+		// write mutation: the model made progress — reset exploration state
+		r.planWorkflow.explorationBatches = 0
+		r.planWorkflow.synthesisRequired = false
+		r.syncRuntimeNote()
 		return
 	}
 	r.planWorkflow.explorationBatches++
