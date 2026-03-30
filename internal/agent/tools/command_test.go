@@ -277,3 +277,119 @@ func TestExecSessionManagerEmitsExitNotification(t *testing.T) {
 		t.Fatalf("last output = %q", last.Output)
 	}
 }
+
+func TestRunCommandRejectsInteractiveCommandsInFavorOfExecSession(t *testing.T) {
+	dir := t.TempDir()
+	tool := NewRunCommand(dir, 60, nil, func(a Action) (bool, error) { return true, nil })
+
+	result, err := tool.Execute(context.Background(), map[string]any{"command": "npm run dev"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "exec_session_start") {
+		t.Fatalf("expected exec_session_start guidance, got: %s", result)
+	}
+}
+
+func TestExecSessionPTYLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	manager := NewExecSessionManager()
+	defer manager.Close()
+
+	startTool := NewExecSessionStart(dir, manager, func(a Action) (bool, error) { return true, nil })
+	statusTool := NewExecSessionStatus(manager)
+	writeTool := NewExecSessionWrite(manager)
+	resizeTool := NewExecSessionResize(manager)
+	stopTool := NewExecSessionStop(manager)
+
+	startResult, err := startTool.Execute(context.Background(), map[string]any{
+		"command": "cat",
+		"cols":    100,
+		"rows":    30,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var started struct {
+		Status    string `json:"status"`
+		SessionID int    `json:"session_id"`
+		Command   string `json:"command"`
+		PTY       bool   `json:"pty"`
+		Cols      int    `json:"cols"`
+		Rows      int    `json:"rows"`
+	}
+	if err := json.Unmarshal([]byte(startResult), &started); err != nil {
+		t.Fatalf("start payload = %q: %v", startResult, err)
+	}
+	if started.Status != "running" || started.SessionID == 0 || !started.PTY {
+		t.Fatalf("unexpected start payload: %#v", started)
+	}
+	if started.Cols != 100 || started.Rows != 30 {
+		t.Fatalf("size = %dx%d", started.Cols, started.Rows)
+	}
+
+	if _, err := writeTool.Execute(context.Background(), map[string]any{"session_id": started.SessionID, "chars": "hello from pty\n"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var status struct {
+		Status    string `json:"status"`
+		Output    string `json:"output"`
+		Cols      int    `json:"cols"`
+		Rows      int    `json:"rows"`
+		SessionID int    `json:"session_id"`
+		PTY       bool   `json:"pty"`
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		result, err := statusTool.Execute(context.Background(), map[string]any{"session_id": started.SessionID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal([]byte(result), &status); err != nil {
+			t.Fatalf("status payload = %q: %v", result, err)
+		}
+		if strings.Contains(status.Output, "hello from pty") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for PTY echo, last status: %#v", status)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if _, err := resizeTool.Execute(context.Background(), map[string]any{"session_id": started.SessionID, "cols": 120, "rows": 40}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := statusTool.Execute(context.Background(), map[string]any{"session_id": started.SessionID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(result), &status); err != nil {
+		t.Fatalf("status after resize = %q: %v", result, err)
+	}
+	if status.Cols != 120 || status.Rows != 40 {
+		t.Fatalf("resized size = %dx%d", status.Cols, status.Rows)
+	}
+
+	if _, err := stopTool.Execute(context.Background(), map[string]any{"session_id": started.SessionID}); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		result, err := statusTool.Execute(context.Background(), map[string]any{"session_id": started.SessionID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal([]byte(result), &status); err != nil {
+			t.Fatalf("status after stop = %q: %v", result, err)
+		}
+		if status.Status == "exited" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for PTY stop, last status: %#v", status)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
