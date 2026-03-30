@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-
-	"forge/internal/agent"
 )
 
 func TestCompactSessionHistoryTrimsOldTurns(t *testing.T) {
@@ -44,7 +42,7 @@ func TestCompactSessionHistorySummarizesToolsAndErrors(t *testing.T) {
 	turn := session.RecordInput("inspect repo")
 	session.AppendUserMessage("[list_dir] README.md\ninternal")
 	session.AppendAssistantMessage("repo overview")
-	session.CompleteTurn(turn, "repo overview", []agent.ToolCall{{Name: "list_dir"}}, fmt.Errorf("tool timeout"))
+	session.CompleteTurn(turn, "repo overview", []TurnToolCall{{Name: "list_dir"}}, fmt.Errorf("tool timeout"))
 
 	next := session.RecordInput("follow up")
 	session.AppendAssistantMessage("done")

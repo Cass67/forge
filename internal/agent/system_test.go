@@ -63,3 +63,23 @@ func TestBuildNativeSystemPromptIncludesCodexStyleBehaviorGuidance(t *testing.T)
 		}
 	}
 }
+
+func TestBuildNativeSystemPromptIncludesRicherCodexStyleContract(t *testing.T) {
+	prompt := BuildNativeSystemPrompt("/home/user/project")
+
+	for _, want := range []string{
+		"Before making tool calls, send a brief progress update",
+		"High-quality plans",
+		"Low-quality plans",
+		"exactly one in_progress step",
+		"Prefer rg or rg --files",
+		"Use git log or git blame",
+		"When approval is non-interactive",
+		"When approval is interactive",
+		"Final answers should be concise",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}

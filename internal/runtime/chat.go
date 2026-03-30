@@ -37,6 +37,8 @@ var (
 	runChatLiveUI     = tui.RunChatLive
 	mergeIntoBranchRE = regexp.MustCompile(`(?i)\bmerge\s+(?:the\s+)?(.+?)\s+into\s+([a-zA-Z0-9._/\-]+)\b`)
 	branchMentionRE   = regexp.MustCompile(`(?i)\b(?:look at|inspect|check|review|take a look at)\s+(?:the\s+)?([a-zA-Z0-9._/\-]+)\s+branch\b`)
+	planRequestRE     = regexp.MustCompile(`(?i)\b(?:write|make|create|draft|prepare)\b.*\b(?:implementation\s+)?plan\b|\b(?:implementation\s+)?plan\b.*\b(?:for|to)\b`)
+	analysisRequestRE = regexp.MustCompile(`(?i)\b(audit|analy[sz]e|diagnose|investigate|research|compare|review|explain)\b.*\b(repo|repository|codebase|app|behavior|issue|problem|dead code|cleanup)\b`)
 	newChatMCPManager = func() *mcp.Manager { return mcp.NewManager() }
 )
 
@@ -641,6 +643,20 @@ func detectTaskStateFromInput(input string) (reactruntime.TaskState, bool) {
 	text := strings.TrimSpace(input)
 	if text == "" {
 		return reactruntime.TaskState{}, false
+	}
+	if planRequestRE.MatchString(text) {
+		return reactruntime.TaskState{
+			Objective:            text,
+			Operation:            "plan",
+			RequiredVerification: "produce a concise plan grounded in enough repo evidence; stop researching once the next actionable plan can be written",
+		}, true
+	}
+	if analysisRequestRE.MatchString(text) {
+		return reactruntime.TaskState{
+			Objective:            text,
+			Operation:            "analysis",
+			RequiredVerification: "produce source-grounded findings and stop once the answer or cleanup recommendation can be written",
+		}, true
 	}
 	match := mergeIntoBranchRE.FindStringSubmatch(text)
 	if len(match) != 3 {

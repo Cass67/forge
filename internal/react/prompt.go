@@ -88,6 +88,12 @@ func taskStateContext(snapshot SessionSnapshot) string {
 	if requiredVerification != "" {
 		parts = append(parts, "Required verification: "+requiredVerification)
 	}
+	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "plan") {
+		parts = append(parts, "Planning guidance: gather only enough repo evidence to support the plan, avoid exhaustive repo-wide searches, and once the next actionable plan is clear, stop exploring and synthesize it. Use update_plan for multi-step plans and leave unresolved details as open questions instead of continuing broad research.")
+	}
+	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "analysis") {
+		parts = append(parts, "Analysis guidance: gather enough source-grounded evidence to support the answer, avoid repetitive repo-wide searching once the pattern is clear, and summarize findings or recommendations instead of continuing low-yield exploration.")
+	}
 	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "merge") && strings.TrimSpace(snapshot.TaskState.TargetBranch) != "" {
 		parts = append(parts, "Merge guidance: use git_merge_status for unresolved conflicts and conflict previews, and use git_branch_state with the target branch before claiming the merge is complete. Prefer these tools over repeated raw git log or graph commands.")
 	}

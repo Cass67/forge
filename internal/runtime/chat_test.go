@@ -434,6 +434,43 @@ func TestRunChatTurnSeedsGitTargetState(t *testing.T) {
 	}
 }
 
+func TestRunChatTurnSeedsPlanTaskState(t *testing.T) {
+	reactRunner := &stubChatTurnRunner{}
+	input := "write a plan for removing dead xml code and other dead code paths"
+	if err := runChatTurn(context.Background(), reactRunner, input); err != nil {
+		t.Fatal(err)
+	}
+	if reactRunner.taskState == nil {
+		t.Fatal("expected task state to be seeded")
+	}
+	if reactRunner.taskState.Operation != "plan" {
+		t.Fatalf("operation = %q", reactRunner.taskState.Operation)
+	}
+	if reactRunner.taskState.Objective != input {
+		t.Fatalf("objective = %q", reactRunner.taskState.Objective)
+	}
+	if !strings.Contains(reactRunner.taskState.RequiredVerification, "concise plan") {
+		t.Fatalf("required verification = %q", reactRunner.taskState.RequiredVerification)
+	}
+}
+
+func TestRunChatTurnSeedsAnalysisTaskState(t *testing.T) {
+	reactRunner := &stubChatTurnRunner{}
+	input := "audit the repo and explain what dead code should be cleaned up"
+	if err := runChatTurn(context.Background(), reactRunner, input); err != nil {
+		t.Fatal(err)
+	}
+	if reactRunner.taskState == nil {
+		t.Fatal("expected task state to be seeded")
+	}
+	if reactRunner.taskState.Operation != "analysis" {
+		t.Fatalf("operation = %q", reactRunner.taskState.Operation)
+	}
+	if !strings.Contains(reactRunner.taskState.RequiredVerification, "source-grounded") {
+		t.Fatalf("required verification = %q", reactRunner.taskState.RequiredVerification)
+	}
+}
+
 func TestChatMaxTurnsUsesConfigValue(t *testing.T) {
 	setup := &ChatSetup{Config: &config.Config{}}
 	setup.Config.Chat.MaxTurns = 64
