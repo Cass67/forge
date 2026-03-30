@@ -243,7 +243,7 @@ func TestChatModelToolCallCheckpointsPreviousMilestone(t *testing.T) {
 		if msg.Kind == MsgWorking && strings.Contains(msg.Content, "Reading AGENTS.md") {
 			sawWorking = true
 		}
-		if msg.Kind == MsgStatus && strings.Contains(msg.Content, "Read README.md") {
+		if msg.Kind == MsgStatus && strings.Contains(msg.Content, "• read_file") && strings.Contains(msg.Content, "README.md") {
 			sawReadmeCheckpoint = true
 		}
 	}
@@ -262,13 +262,13 @@ func TestChatModelToolCallEmitsExploredCheckpoint(t *testing.T) {
 
 	var sawCheckpoint bool
 	for _, msg := range m.messages {
-		if msg.Kind == MsgStatus && strings.Contains(msg.Content, "• Explored") && strings.Contains(msg.Content, "Read README.md") {
+		if msg.Kind == MsgStatus && strings.Contains(msg.Content, "• read_file") && strings.Contains(msg.Content, "README.md") {
 			sawCheckpoint = true
 			break
 		}
 	}
 	if !sawCheckpoint {
-		t.Fatalf("expected explored checkpoint in transcript, got %#v", m.messages)
+		t.Fatalf("expected tool checkpoint in transcript, got %#v", m.messages)
 	}
 }
 
@@ -284,7 +284,7 @@ func TestChatModelToolCallCheckpointDedupesRepeatedSteps(t *testing.T) {
 
 	var count int
 	for _, msg := range m.messages {
-		if msg.Kind == MsgStatus && strings.Contains(msg.Content, "Read README.md") {
+		if msg.Kind == MsgStatus && strings.Contains(msg.Content, "• read_file") && strings.Contains(msg.Content, "README.md") {
 			count++
 		}
 	}
@@ -3875,4 +3875,19 @@ func TestToolResultProgressLineKeepsErrors(t *testing.T) {
 	if got == "" || !strings.Contains(got, "hit an issue") {
 		t.Fatalf("progress line = %q", got)
 	}
+}
+func TestChatModelToolCallCheckpointIncludesSemanticToolName(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "lsp_definition", Text: "main.go:12:4"})
+	m = updated.(ChatModel)
+
+	for _, msg := range m.messages {
+		if msg.Kind == MsgStatus && strings.Contains(msg.Content, "• lsp_definition") && strings.Contains(msg.Content, "main.go:12:4") {
+			return
+		}
+	}
+	t.Fatalf("expected semantic tool checkpoint in transcript, got %#v", m.messages)
 }
