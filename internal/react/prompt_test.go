@@ -220,3 +220,65 @@ func TestBuildMessages_IncludesAnalysisTaskGuidance(t *testing.T) {
 		t.Fatalf("task state missing analysis synthesis guidance: %q", msgs[1].Content)
 	}
 }
+
+func TestBuildMessages_IncludesImplementationTaskGuidance(t *testing.T) {
+	snap := SessionSnapshot{
+		TaskState: &TaskState{
+			Objective:            "i need a new theme for this app",
+			Operation:            "implement",
+			RequiredVerification: "inspect the relevant code, make the change with edit tools, and run the relevant verification before claiming completion",
+		},
+		History: []llm.Message{{Role: llm.RoleUser, Content: "i need a new theme for this app"}},
+	}
+
+	msgs := BuildMessages("sys", snap)
+	if len(msgs) < 3 {
+		t.Fatalf("messages = %#v", msgs)
+	}
+	if !strings.Contains(msgs[1].Content, "Implementation guidance") {
+		t.Fatalf("task state missing implementation guidance: %q", msgs[1].Content)
+	}
+	if !strings.Contains(msgs[1].Content, "do not start with planning prose") {
+		t.Fatalf("task state missing first action guidance: %q", msgs[1].Content)
+	}
+}
+
+func TestBuildMessages_IncludesPreviewTaskGuidance(t *testing.T) {
+	snap := SessionSnapshot{
+		TaskState: &TaskState{
+			Objective:            "start a preview for themes_preview.html and show me the verified url",
+			Operation:            "preview",
+			RequiredVerification: "use preview or artifact tools, verify the preview URL or visible result, and do not rely on an ad-hoc shell webserver",
+		},
+		History: []llm.Message{{Role: llm.RoleUser, Content: "start a preview for themes_preview.html"}},
+	}
+
+	msgs := BuildMessages("sys", snap)
+	if len(msgs) < 3 {
+		t.Fatalf("messages = %#v", msgs)
+	}
+	if !strings.Contains(msgs[1].Content, "Preview guidance") {
+		t.Fatalf("task state missing preview guidance: %q", msgs[1].Content)
+	}
+	if !strings.Contains(msgs[1].Content, "Do not launch an ad-hoc local webserver") {
+		t.Fatalf("task state missing preview routing guidance: %q", msgs[1].Content)
+	}
+}
+
+func TestBuildMessages_IncludesInterruptedTurnGuidance(t *testing.T) {
+	snap := SessionSnapshot{
+		Interrupted: true,
+		History:     []llm.Message{{Role: llm.RoleUser, Content: "continue"}},
+	}
+	msgs := BuildMessages("sys", snap)
+	found := false
+	for _, msg := range msgs {
+		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "previous turn was interrupted") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("messages missing interrupted guidance: %#v", msgs)
+	}
+}

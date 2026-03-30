@@ -49,6 +49,8 @@ type SessionSnapshot struct {
 	RuntimeNote       string
 	TaskState         *TaskState
 	PlanState         *PlanState
+	PendingInput      []string
+	Interrupted       bool
 }
 
 type Session struct {
@@ -63,6 +65,8 @@ type Session struct {
 	runtimeNote       string
 	taskState         *TaskState
 	planState         *PlanState
+	pendingInput      []string
+	interrupted       bool
 }
 
 func NewSession() *Session {
@@ -105,6 +109,7 @@ func (s *Session) CompleteTurn(turn int, response string, toolCalls []TurnToolCa
 		if err != nil {
 			s.turns[i].Error = strings.TrimSpace(err.Error())
 		}
+		s.interrupted = false
 		return
 	}
 }
@@ -135,6 +140,13 @@ func (s *Session) AppendAssistantWithToolCalls(calls []llm.NativeToolCall) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if len(s.turns) > 0 {
+		last := &s.turns[len(s.turns)-1]
+		last.ToolCalls = make([]TurnToolCall, 0, len(calls))
+		for _, call := range calls {
+			last.ToolCalls = append(last.ToolCalls, TurnToolCall{Name: strings.TrimSpace(call.Name)})
+		}
+	}
 	s.history = append(s.history, llm.Message{
 		Role:      llm.RoleAssistant,
 		ToolCalls: append([]llm.NativeToolCall(nil), calls...),
@@ -177,6 +189,8 @@ func (s *Session) Snapshot() SessionSnapshot {
 		RuntimeNote:       s.runtimeNote,
 		TaskState:         cloneTaskState(s.taskState),
 		PlanState:         clonePlanState(s.planState),
+		PendingInput:      append([]string(nil), s.pendingInput...),
+		Interrupted:       s.interrupted,
 	}
 }
 
@@ -196,6 +210,8 @@ func (s *Session) Clear() {
 	s.runtimeNote = ""
 	s.taskState = nil
 	s.planState = nil
+	s.pendingInput = nil
+	s.interrupted = false
 }
 
 func (s *Session) SetRuntimeNote(text string) {
@@ -268,6 +284,47 @@ func clonePlanState(state *PlanState) *PlanState {
 		Steps:       append([]PlanStep(nil), state.Steps...),
 	}
 	return &cloned
+}
+
+func (s *Session) QueuePendingInput(text string) {
+	if s == nil || strings.TrimSpace(text) == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingInput = append(s.pendingInput, strings.TrimSpace(text))
+}
+
+func (s *Session) HasPendingInput() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.pendingInput) > 0
+}
+
+func (s *Session) TakePendingInput() []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.pendingInput) == 0 {
+		return nil
+	}
+	out := append([]string(nil), s.pendingInput...)
+	s.pendingInput = nil
+	return out
+}
+
+func (s *Session) MarkInterrupted() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.interrupted = true
 }
 
 func FormatPlanState(state PlanState) string {
