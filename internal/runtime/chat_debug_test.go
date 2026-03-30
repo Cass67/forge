@@ -159,6 +159,52 @@ func TestEnableChatDebugLogsNativeToolCalls(t *testing.T) {
 	}
 }
 
+func TestEnableChatDebugLogsTaskStateMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chat-debug.jsonl")
+	inner := &debugNativeToolDriver{}
+	setup := &ChatSetup{
+		ChatModel: "openai/gpt-5",
+		WorkDir:   t.TempDir(),
+		Driver:    inner,
+	}
+
+	if _, err := EnableChatDebug(setup, path); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: "sys"},
+		{Role: llm.RoleSystem, Content: "Task objective: merge feature/go-rewrite into main\nTask operation: merge\nTask source ref: feature/go-rewrite\nTask target branch: main\nRequired verification: verify branch main contains the resulting HEAD commit"},
+		{Role: llm.RoleUser, Content: "do it"},
+	}
+	tools := []llm.ToolDef{{Name: "run_command", Description: "run a shell command"}}
+	out := make(chan llm.Token, 4)
+	errCh := make(chan error, 1)
+	go func() {
+		native := setup.Driver.(llm.NativeToolCaller)
+		errCh <- native.StreamWithTools(context.Background(), msgs, tools, out)
+	}()
+	for range out {
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+
+	lines := readDebugLines(t, path)
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(lines[1]), &entry); err != nil {
+		t.Fatal(err)
+	}
+	fields, _ := entry["fields"].(map[string]any)
+	taskState, _ := fields["task_state"].(map[string]any)
+	if taskState == nil {
+		t.Fatalf("expected task_state in debug request fields: %#v", fields)
+	}
+	if got := taskState["target_branch"]; got != "main" {
+		t.Fatalf("target_branch = %#v", got)
+	}
+}
+
 const debugReactSystemPrompt = "You are forge, a coding agent.\n- Only respond with plain text (no tool calls) when you have a complete final answer."
 
 func TestEnableChatDebugNormalizesReactMalformedToolResponses(t *testing.T) {

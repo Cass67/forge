@@ -401,6 +401,22 @@ func TestRunChatTurnShortCircuitsPromptBoundaryRequests(t *testing.T) {
 	}
 }
 
+func TestRunChatTurnSeedsGitTargetState(t *testing.T) {
+	reactRunner := &stubChatTurnRunner{}
+	if err := runChatTurn(context.Background(), reactRunner, "resolve the merge conflict and merge the go branch into main"); err != nil {
+		t.Fatal(err)
+	}
+	if reactRunner.taskState == nil {
+		t.Fatal("expected task state to be seeded")
+	}
+	if reactRunner.taskState.Operation != "merge" {
+		t.Fatalf("operation = %q", reactRunner.taskState.Operation)
+	}
+	if reactRunner.taskState.TargetBranch != "main" {
+		t.Fatalf("target branch = %q", reactRunner.taskState.TargetBranch)
+	}
+}
+
 func TestChatMaxTurnsUsesConfigValue(t *testing.T) {
 	setup := &ChatSetup{Config: &config.Config{}}
 	setup.Config.Chat.MaxTurns = 64
@@ -498,6 +514,17 @@ func TestRegisterToolsAddsGitMergeStatus(t *testing.T) {
 	}
 }
 
+func TestRegisterToolsAddsGitBranchState(t *testing.T) {
+	reg := tools.NewRegistry()
+	cfg := &config.Config{}
+	workDir := t.TempDir()
+
+	registerTools(reg, workDir, cfg, agent.YoloApproval())
+	if _, ok := reg.Get("git_branch_state"); !ok {
+		t.Fatal("git_branch_state tool not registered")
+	}
+}
+
 func TestRegisterReactDelegationToolsDoesNotUseLegacyRoleModelMapping(t *testing.T) {
 	reg := tools.NewRegistry()
 	cfg := &config.Config{}
@@ -562,6 +589,7 @@ type stubChatTurnRunner struct {
 	input        string
 	err          error
 	lastResponse string
+	taskState    *reactruntime.TaskState
 }
 
 func (s *stubChatTurnRunner) Run(_ context.Context, input string) error {
@@ -574,11 +602,16 @@ func (s *stubChatTurnRunner) EmitResponse(text string) {
 	s.lastResponse = text
 }
 
+func (s *stubChatTurnRunner) SetTaskState(state reactruntime.TaskState) {
+	s.taskState = &state
+}
+
 type stubChatSessionControl struct {
 	driver          llm.Driver
 	cleared         bool
 	lastUserMessage string
 	lastResponse    string
+	taskState       *reactruntime.TaskState
 }
 
 func (s *stubChatSessionControl) SetDriver(driver llm.Driver) {
@@ -595,6 +628,10 @@ func (s *stubChatSessionControl) AppendUserMessage(text string) {
 
 func (s *stubChatSessionControl) EmitResponse(text string) {
 	s.lastResponse = text
+}
+
+func (s *stubChatSessionControl) SetTaskState(state reactruntime.TaskState) {
+	s.taskState = &state
 }
 
 type kernelMockDriver struct {

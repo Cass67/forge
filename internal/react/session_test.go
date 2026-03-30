@@ -87,3 +87,22 @@ func TestMessagesIncludesToolRoleMessages(t *testing.T) {
 		t.Fatal("message 4 should be tool result with correct ID")
 	}
 }
+
+func TestSessionTaskStateAppearsInSnapshot(t *testing.T) {
+	s := NewSession()
+	s.SetTaskState(TaskState{
+		Objective:            "merge feature/go-rewrite into main",
+		RequiredVerification: "verify main contains the resulting commit",
+	})
+
+	snap := s.Snapshot()
+	if snap.TaskState == nil {
+		t.Fatal("expected task state in snapshot")
+	}
+	if snap.TaskState.Objective != "merge feature/go-rewrite into main" {
+		t.Fatalf("objective = %q", snap.TaskState.Objective)
+	}
+	if snap.TaskState.RequiredVerification != "verify main contains the resulting commit" {
+		t.Fatalf("required verification = %q", snap.TaskState.RequiredVerification)
+	}
+}

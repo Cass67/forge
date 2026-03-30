@@ -43,3 +43,20 @@ func TestBuildNativeSystemPromptOmitsProjectScanSummary(t *testing.T) {
 		t.Fatalf("prompt should not include detected-language summary: %q", prompt)
 	}
 }
+
+func TestBuildNativeSystemPromptIncludesCodexStyleBehaviorGuidance(t *testing.T) {
+	prompt := BuildNativeSystemPrompt("/home/user/project")
+
+	for _, want := range []string{
+		"Fix the problem at the root cause",
+		"Do not attempt to fix unrelated bugs or broken tests",
+		"start as specific as possible",
+		"provide progress updates",
+		"Do not git commit your changes or create new git branches unless explicitly requested",
+		"Treat the surrounding codebase with respect",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}

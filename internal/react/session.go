@@ -13,6 +13,14 @@ type TurnToolCall struct {
 	Name string
 }
 
+type TaskState struct {
+	Objective            string
+	RequiredVerification string
+	Operation            string
+	SourceRef            string
+	TargetBranch         string
+}
+
 type TurnRecord struct {
 	Number        int
 	Input         string
@@ -30,6 +38,7 @@ type SessionSnapshot struct {
 	CompactedTurns    int
 	CompactionSummary string
 	RuntimeNote       string
+	TaskState         *TaskState
 }
 
 type Session struct {
@@ -42,6 +51,7 @@ type Session struct {
 	compactedTurns    int
 	compactionSummary string
 	runtimeNote       string
+	taskState         *TaskState
 }
 
 func NewSession() *Session {
@@ -157,6 +167,7 @@ func (s *Session) Snapshot() SessionSnapshot {
 		CompactedTurns:    s.compactedTurns,
 		CompactionSummary: s.compactionSummary,
 		RuntimeNote:       s.runtimeNote,
+		TaskState:         cloneTaskState(s.taskState),
 	}
 }
 
@@ -174,6 +185,7 @@ func (s *Session) Clear() {
 	s.compactedTurns = 0
 	s.compactionSummary = ""
 	s.runtimeNote = ""
+	s.taskState = nil
 }
 
 func (s *Session) SetRuntimeNote(text string) {
@@ -183,6 +195,35 @@ func (s *Session) SetRuntimeNote(text string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.runtimeNote = strings.TrimSpace(text)
+}
+
+func (s *Session) SetTaskState(state TaskState) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	objective := strings.TrimSpace(state.Objective)
+	requiredVerification := strings.TrimSpace(state.RequiredVerification)
+	if objective == "" && requiredVerification == "" {
+		s.taskState = nil
+		return
+	}
+	s.taskState = &TaskState{
+		Objective:            objective,
+		RequiredVerification: requiredVerification,
+		Operation:            strings.TrimSpace(state.Operation),
+		SourceRef:            strings.TrimSpace(state.SourceRef),
+		TargetBranch:         strings.TrimSpace(state.TargetBranch),
+	}
+}
+
+func cloneTaskState(state *TaskState) *TaskState {
+	if state == nil {
+		return nil
+	}
+	cloned := *state
+	return &cloned
 }
 
 func (s *Session) compact(keep int) bool {

@@ -291,3 +291,58 @@ func TestGitMergeStatusReportsConflicts(t *testing.T) {
 		t.Fatalf("expected conflict guidance, got: %s", result)
 	}
 }
+
+func TestGitBranchStateReportsCurrentBranch(t *testing.T) {
+	dir := initGitRepo(t)
+
+	tool := NewGitBranchState(dir)
+	result, err := tool.Execute(context.Background(), map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "current_branch: ") {
+		t.Fatalf("expected current branch, got: %s", result)
+	}
+	if !strings.Contains(result, "head_contains_target: unknown") {
+		t.Fatalf("expected unknown target containment without a target, got: %s", result)
+	}
+}
+
+func TestGitBranchStateReportsTargetContainment(t *testing.T) {
+	dir := initGitRepo(t)
+	runWithEnv := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v failed: %s\n%s", args, err, out)
+		}
+	}
+
+	runWithEnv("checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runWithEnv("add", "feature.txt")
+	runWithEnv("commit", "-m", "feature work")
+
+	tool := NewGitBranchState(dir)
+	result, err := tool.Execute(context.Background(), map[string]any{"target_branch": "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "target_branch: main") {
+		t.Fatalf("expected target branch in output, got: %s", result)
+	}
+	if !strings.Contains(result, "head_contains_target: true") {
+		t.Fatalf("expected head to contain target branch tip, got: %s", result)
+	}
+	if !strings.Contains(result, "target_contains_head: false") {
+		t.Fatalf("expected reverse containment false, got: %s", result)
+	}
+}
