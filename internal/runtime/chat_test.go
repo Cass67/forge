@@ -487,6 +487,17 @@ func TestRegisterReactDelegationToolsAddsSpawnAndWait(t *testing.T) {
 	}
 }
 
+func TestRegisterToolsAddsGitMergeStatus(t *testing.T) {
+	reg := tools.NewRegistry()
+	cfg := &config.Config{}
+	workDir := t.TempDir()
+
+	registerTools(reg, workDir, cfg, agent.YoloApproval())
+	if _, ok := reg.Get("git_merge_status"); !ok {
+		t.Fatal("git_merge_status tool not registered")
+	}
+}
+
 func TestRegisterReactDelegationToolsDoesNotUseLegacyRoleModelMapping(t *testing.T) {
 	reg := tools.NewRegistry()
 	cfg := &config.Config{}
