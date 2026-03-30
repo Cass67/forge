@@ -41,11 +41,13 @@ type ApprovalConfig struct {
 }
 
 type ApprovalGate struct {
-	workDir  string
-	cfg      ApprovalConfig
-	prompt   tools.ApprovalFunc
-	progress func(string)
-	now      func() time.Time
+	workDir         string
+	cfg             ApprovalConfig
+	prompt          tools.ApprovalFunc
+	progress        func(string)
+	now             func() time.Time
+	originalBranch  string
+	didSwitchBranch bool
 }
 
 func NewApprovalGate(workDir string, cfg ApprovalConfig, prompt tools.ApprovalFunc, progress func(string)) *ApprovalGate {
@@ -60,6 +62,14 @@ func NewApprovalGate(workDir string, cfg ApprovalConfig, prompt tools.ApprovalFu
 		prompt:   prompt,
 		progress: progress,
 		now:      time.Now,
+	}
+}
+
+// SetPrompt replaces the approval prompt function. Useful when the prompt
+// function depends on values not yet available at construction time.
+func (g *ApprovalGate) SetPrompt(prompt tools.ApprovalFunc) {
+	if prompt != nil {
+		g.prompt = prompt
 	}
 }
 
@@ -236,6 +246,9 @@ func (g *ApprovalGate) ensureSafeBranch(action tools.Action) error {
 	if !isProtectedBranch(current) {
 		return nil
 	}
+	if !g.didSwitchBranch {
+		g.originalBranch = current
+	}
 	target := safeBranchName(action.Summary, g.now())
 	exists, err := gitutil.BranchExists(g.workDir, target)
 	if err != nil {
@@ -248,10 +261,46 @@ func (g *ApprovalGate) ensureSafeBranch(action tools.Action) error {
 	} else if err := gitutil.CheckoutNewBranch(g.workDir, target); err != nil {
 		return err
 	}
+	g.didSwitchBranch = true
 	if g.progress != nil {
 		g.progress("Switched to branch " + target)
 	}
 	return nil
+}
+
+// Restore switches back to the original branch if the gate created a
+// safety branch during the session, and deletes the safety branch when
+// its commits have been merged into the original branch. This should be
+// called when the session ends.
+func (g *ApprovalGate) Restore() {
+	if g == nil || !g.didSwitchBranch || g.originalBranch == "" {
+		return
+	}
+	// Record the safety branch name before switching away from it.
+	safetyBranch, err := gitutil.CurrentBranch(g.workDir)
+	if err != nil {
+		safetyBranch = ""
+	}
+	if err := checkoutBranch(g.workDir, g.originalBranch); err != nil {
+		if g.progress != nil {
+			g.progress(fmt.Sprintf("warning: could not restore branch %s: %v", g.originalBranch, err))
+		}
+		return
+	}
+	if g.progress != nil {
+		g.progress("Restored branch " + g.originalBranch)
+	}
+	// Delete the safety branch if it is now fully merged into the original.
+	if safetyBranch != "" && safetyBranch != g.originalBranch {
+		merged, err := gitutil.IsBranchMerged(g.workDir, safetyBranch, g.originalBranch)
+		if err == nil && merged {
+			if delErr := gitutil.DeleteBranch(g.workDir, safetyBranch); delErr == nil {
+				if g.progress != nil {
+					g.progress("Deleted merged branch " + safetyBranch)
+				}
+			}
+		}
+	}
 }
 
 func safeBranchName(seed string, now time.Time) string {
