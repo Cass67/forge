@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -48,7 +49,7 @@ func enforceCompletionEvidence(snapshot reactruntime.SessionSnapshot, finalText 
 	if intentNarrationPattern.MatchString(finalText) && len(evidence.toolCalls) == 0 {
 		return reactruntime.NewRetryableCompletionError(
 			"non-compliant completion: intent narration without action",
-			"Do the work now. Use tools to inspect the repository and only answer after you have concrete evidence.",
+			buildIntentNarrationRetryPrompt(evidence, priorEvidence),
 		)
 	}
 	if blockedClaimPattern.MatchString(finalText) && !evidence.hasToolErr {
@@ -139,4 +140,70 @@ func validateGeneralTaskCompletion(snapshot reactruntime.SessionSnapshot, finalT
 		return err
 	}
 	return nil
+}
+
+func buildIntentNarrationRetryPrompt(evidence, priorEvidence turnEvidence) string {
+	combined := combineEvidence(priorEvidence, evidence)
+	summary := summarizeToolCalls(combined.toolCalls)
+	if summary == "" {
+		return "Do the work now. Use tools to inspect the repository and only answer after you have concrete evidence."
+	}
+	return fmt.Sprintf(
+		"You already gathered repo evidence in this session: %s. Do not narrate next steps. Answer directly from that evidence in 3-6 concrete bullets, cite the files, paths, or symbols you inspected, and only mention verification if you actually ran it.",
+		summary,
+	)
+}
+
+func combineEvidence(a, b turnEvidence) turnEvidence {
+	combined := turnEvidence{
+		toolCalls:  append([]llm.NativeToolCall{}, a.toolCalls...),
+		hasRead:    a.hasRead || b.hasRead,
+		hasWrite:   a.hasWrite || b.hasWrite,
+		hasCheck:   a.hasCheck || b.hasCheck,
+		hasToolErr: a.hasToolErr || b.hasToolErr,
+	}
+	combined.toolCalls = append(combined.toolCalls, b.toolCalls...)
+	return combined
+}
+
+func summarizeToolCalls(calls []llm.NativeToolCall) string {
+	if len(calls) == 0 {
+		return ""
+	}
+	summaries := make([]string, 0, 4)
+	seen := make(map[string]struct{}, len(calls))
+	for _, call := range calls {
+		entry := summarizeToolCall(call)
+		if entry == "" {
+			continue
+		}
+		if _, ok := seen[entry]; ok {
+			continue
+		}
+		seen[entry] = struct{}{}
+		summaries = append(summaries, entry)
+		if len(summaries) == 4 {
+			break
+		}
+	}
+	return strings.Join(summaries, ", ")
+}
+
+func summarizeToolCall(call llm.NativeToolCall) string {
+	name := strings.TrimSpace(call.Name)
+	if name == "" {
+		return ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(call.ArgsJSON), &payload); err != nil {
+		return name
+	}
+	for _, key := range []string{"path", "query", "command"} {
+		if raw, ok := payload[key]; ok {
+			if value := strings.TrimSpace(fmt.Sprint(raw)); value != "" {
+				return fmt.Sprintf("%s(%s)", name, value)
+			}
+		}
+	}
+	return name
 }
