@@ -98,6 +98,30 @@ func TestRenderMessageContentStylesHeadingsListsAndStrongEmphasis(t *testing.T) 
 	}
 }
 
+func TestRenderMessageContentStylesBareHeaders(t *testing.T) {
+	withTrueColorProfile(t)
+
+	theme := lookupThemeForTest(t, "default")
+	// Weaker models often emit short standalone title-case lines as section headers
+	// with no ## prefix and no trailing colon.
+	content := strings.Join([]string{
+		"Summary",
+		"- Forge is a terminal-first coding agent.",
+		"",
+		"What I inspected (source-grounded)",
+		"- README.md covers project intent.",
+		"",
+		"High-level architecture and flow",
+		"- CLI entrypoint is cmd/forge/main.go.",
+	}, "\n")
+
+	got := renderMessageContent(content, 80, theme)
+
+	assertStyledSubstring(t, got, "Summary", theme.AccentPrimary)
+	assertStyledSubstring(t, got, "What I inspected (source-grounded)", theme.AccentPrimary)
+	assertStyledSubstring(t, got, "High-level architecture and flow", theme.AccentPrimary)
+}
+
 func TestRenderMessageContentStylesWeakerModelOutput(t *testing.T) {
 	withTrueColorProfile(t)
 
