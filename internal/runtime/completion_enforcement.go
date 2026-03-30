@@ -11,10 +11,14 @@ import (
 )
 
 var (
-	intentNarrationPattern   = regexp.MustCompile(`(?i)\b(i['’]ll|let me|first[, ]+i['’]ll|then[, ]+i['’]ll|next[, ]+i['’]ll)\b`)
-	blockedClaimPattern      = regexp.MustCompile(`(?i)\b(blocked|unable to access|unable to inspect|produced no output|tooling.*(?:failed|unavailable)|can't access the repo|cannot access the repo)\b`)
-	inspectionClaimPattern   = regexp.MustCompile(`(?i)\b(inspect(?:ed)?|review(?:ed)?|read|searched|located|analy[sz]ed|looked at|checked)\b`)
-	changeClaimPattern       = regexp.MustCompile(`(?i)\b(fixed|updated|changed|implemented|added|wired|patched|refactored|edited)\b`)
+	intentNarrationPattern = regexp.MustCompile(`(?i)\b(i['’]ll|let me|first[, ]+i['’]ll|then[, ]+i['’]ll|next[, ]+i['’]ll)\b`)
+	blockedClaimPattern    = regexp.MustCompile(`(?i)\b(blocked|unable to access|unable to inspect|produced no output|tooling.*(?:failed|unavailable)|can't access the repo|cannot access the repo)\b`)
+	inspectionClaimPattern = regexp.MustCompile(`(?i)\b(inspect(?:ed)?|review(?:ed)?|read|searched|located|analy[sz]ed|looked at|checked)\b`)
+	// changeClaimPattern matches first-person change claims ("I fixed X", "we added X") and
+	// sentence-leading past-tense claims ("Fixed the bug", "Updated the file").
+	// Requires a first-person subject or sentence start to avoid false positives like
+	// "X is implemented in Y" where the model is describing existing code, not claiming edits.
+	changeClaimPattern       = regexp.MustCompile("(?im)(?:(?:^|[.!?]\\s+)\\s*|(?:i|we)(?:[''`]ve)?\\s+)(fixed|updated|changed|implemented|added|wired|patched|refactored|edited)\\b")
 	validationClaimPattern   = regexp.MustCompile(`(?i)\b(tested|validated|checks pass|tests pass|build passes|lint passes|compiled|verified (?:it|the fix|the change|the changes|it works|they work|working))\b`)
 	repoGroundedInputPattern = regexp.MustCompile(`(?i)\b(repo|repository|code|codebase|project|worktree|branch|file|files|app|theme|tui|ui|test|tests|fix|implement|update|change|edit|style)\b`)
 	validationCmdPattern     = regexp.MustCompile(`(?i)\b(go test|pytest|npm test|pnpm test|yarn test|cargo test|go build|cargo check|npm run build|pnpm build|yarn build|golangci-lint|go vet)\b`)
@@ -79,9 +83,12 @@ func enforceCompletionEvidence(snapshot reactruntime.SessionSnapshot, finalText 
 	return nil
 }
 
+// currentTurnStartIndex returns the index after the last real user message.
+// Budget-warning injections (prefixed with "[budget]") are not treated as
+// turn boundaries so they don't orphan prior tool-call evidence.
 func currentTurnStartIndex(history []llm.Message) int {
 	for i := len(history) - 1; i >= 0; i-- {
-		if history[i].Role == llm.RoleUser {
+		if history[i].Role == llm.RoleUser && !strings.HasPrefix(strings.TrimSpace(history[i].Content), "[budget]") {
 			return i + 1
 		}
 	}
