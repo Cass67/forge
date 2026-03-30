@@ -38,6 +38,8 @@ type Runner struct {
 	completionCheck    func(SessionSnapshot, string) error
 }
 
+const interruptedTurnRuntimeNote = "Previous turn was interrupted. Re-check any partially completed tool or command state before continuing."
+
 type gitCommitBlocker int
 
 const (
@@ -156,6 +158,21 @@ func (r *Runner) AppendUserMessage(text string) {
 	r.session.AppendUserMessage(text)
 }
 
+func (r *Runner) QueuePendingInput(text string) {
+	if r == nil || r.session == nil {
+		return
+	}
+	r.session.QueuePendingInput(text)
+}
+
+func (r *Runner) MarkInterrupted() {
+	if r == nil || r.session == nil {
+		return
+	}
+	r.session.MarkInterrupted()
+	r.session.SetRuntimeNote(strings.TrimSpace(strings.Join([]string{strings.TrimSpace(r.session.Snapshot().RuntimeNote), interruptedTurnRuntimeNote}, "\n\n")))
+}
+
 func (r *Runner) SetTaskState(state TaskState) {
 	if r == nil || r.session == nil {
 		return
@@ -213,7 +230,11 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 	toolDefs := r.tools.ToLLMToolDefs()
 
 	emptyRetried := false
+	completionRetried := false
 	for step := 0; step < r.maxSessionTurns; step++ {
+		if r.applyPendingInput() {
+			r.syncRuntimeNote()
+		}
 		calls, err := r.streamNativeTurn(ctx, turn, nativeCaller, toolDefs)
 		if err != nil {
 			if !emptyRetried && strings.Contains(err.Error(), "empty native response") {
@@ -221,11 +242,25 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 				r.session.AppendUserMessage("Please provide a response summarizing what you've done and what the result is.")
 				continue
 			}
+			var retryable *RetryableCompletionError
+			if errors.As(err, &retryable) && !completionRetried {
+				completionRetried = true
+				if prompt := strings.TrimSpace(retryable.Prompt); prompt != "" {
+					r.session.AppendUserMessage(prompt)
+				}
+				if r.progress != nil {
+					r.progress("react runtime: retrying after non-compliant completion")
+				}
+				continue
+			}
 			r.session.CompleteTurn(turn, "", nil, err)
 			return err
 		}
 		if calls == nil {
 			// streamNativeTurn already recorded the final response
+			if r.applyPendingInput() {
+				continue
+			}
 			return nil
 		}
 		if err := r.executeNativeToolCalls(ctx, turn, calls); err != nil {
@@ -254,6 +289,7 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 	var textBuf strings.Builder
 	var toolCalls []llm.NativeToolCall
 	visibleEmitted := 0
+	streamVisible := r.completionCheck == nil
 
 	for tok := range out {
 		if tok.ToolCall != nil {
@@ -263,7 +299,7 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 		if tok.Text != "" {
 			textBuf.WriteString(tok.Text)
 			current := textBuf.String()
-			if r.renderer != nil && len(current) > visibleEmitted {
+			if streamVisible && r.renderer != nil && len(current) > visibleEmitted {
 				r.renderer.AgentToken(current[visibleEmitted:])
 				visibleEmitted = len(current)
 			}
@@ -368,6 +404,23 @@ func (r *Runner) currentSystemPrompt() string {
 		return ""
 	}
 	return strings.TrimSpace(r.systemPrompt())
+}
+
+func (r *Runner) applyPendingInput() bool {
+	if r == nil || r.session == nil {
+		return false
+	}
+	pending := r.session.TakePendingInput()
+	if len(pending) == 0 {
+		return false
+	}
+	for _, text := range pending {
+		r.session.AppendUserMessage(text)
+	}
+	if r.progress != nil {
+		r.progress(fmt.Sprintf("react runtime: applying %d queued input message(s)", len(pending)))
+	}
+	return true
 }
 
 func (r *Runner) emitStats(start time.Time) {

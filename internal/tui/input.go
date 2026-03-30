@@ -19,20 +19,21 @@ type SessionStarted struct {
 
 // InputModel is the Bubble Tea model for the input screen.
 type InputModel struct {
-	Prompt        string
-	WriterModels  []string
-	AuditorModels []string
-	WriterIdx     int
-	AuditorIdx    int
-	ModelFocus    int // 0 = writer selected, 1 = auditor selected
-	Rounds        int
-	LangHint      string
-	ContextFiles  []string
-	RoundsInput   string
-	RoundsErr     string
-	Preserved     bool
-	Interactive   bool
-	Width         int
+	Prompt          string
+	WriterModels    []string
+	AuditorModels   []string
+	WriterIdx       int
+	AuditorIdx      int
+	ModelFocus      int // 0 = writer selected, 1 = auditor selected
+	Rounds          int
+	LangHint        string
+	ContextFiles    []string
+	RoundsInput     string
+	RoundsErr       string
+	Preserved       bool
+	Interactive     bool
+	Width           int
+	discardMouseCSI bool
 }
 
 func NewInputModel(writerModels, auditorModels []string, defaultWriter, defaultAuditor string) InputModel {
@@ -84,6 +85,17 @@ func (m InputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
+		return m, nil
+	}
+	if m.discardMouseCSI {
+		if isMouseTrackingFragment(key) {
+			m.discardMouseCSI = false
+			return m, nil
+		}
+		m.discardMouseCSI = false
+	}
+	if startsMouseTrackingSequence(key) {
+		m.discardMouseCSI = true
 		return m, nil
 	}
 
