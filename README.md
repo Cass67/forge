@@ -240,13 +240,13 @@ flowchart LR
 
 ## Documentation
 
-- [ARCHITECTURE.md](/Users/cass/git/forge/ARCHITECTURE.md): detailed internal architecture
-- [BUILD.md](/Users/cass/git/forge/BUILD.md): local builds and cross-compilation
-- [CONTRIBUTING.md](/Users/cass/git/forge/CONTRIBUTING.md): contributor workflow and repo conventions
-- [LOCAL_TOOLING.md](/Users/cass/git/forge/LOCAL_TOOLING.md): local toolchain requirements for hooks
-- [docs/multi-agent.md](/Users/cass/git/forge/docs/multi-agent.md): archived notes for the older visible multi-agent design
+- [ARCHITECTURE.md](ARCHITECTURE.md): detailed internal architecture
+- [BUILD.md](BUILD.md): local builds and cross-compilation
+- [CONTRIBUTING.md](CONTRIBUTING.md): contributor workflow and repo conventions
+- [LOCAL_TOOLING.md](LOCAL_TOOLING.md): local toolchain requirements for hooks
+- [docs/multi-agent.md](docs/multi-agent.md): archived notes for the older visible multi-agent design
 
 ## Notes
 
 - Forge does not currently produce one native binary that runs unchanged on every OS. Build one binary per target OS/architecture pair.
-- `forge` currently uses the Bubble Tea chat frontend through [internal/tui/chatmodel.go](/Users/cass/git/forge/internal/tui/chatmodel.go).
+- `forge` currently uses the Bubble Tea chat frontend through [internal/tui/chatmodel.go](internal/tui/chatmodel.go).
