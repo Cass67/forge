@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	"forge/internal/llm"
 )
@@ -48,6 +49,7 @@ type ApprovalFunc func(action Action) (bool, error)
 
 // Registry holds available tools.
 type Registry struct {
+	mu        sync.RWMutex
 	tools     map[string]Tool
 	order     []string
 	disclosed map[string]bool
@@ -63,18 +65,26 @@ func NewRegistry() *Registry {
 
 // Register adds a tool to the registry.
 func (r *Registry) Register(t Tool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.tools[t.Name]; !exists {
+		r.order = append(r.order, t.Name)
+	}
 	r.tools[t.Name] = t
-	r.order = append(r.order, t.Name)
 }
 
 // Get retrieves a tool by name.
 func (r *Registry) Get(name string) (Tool, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	t, ok := r.tools[name]
 	return t, ok
 }
 
 // All returns all registered tools in registration order.
 func (r *Registry) All() []Tool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	result := make([]Tool, 0, len(r.order))
 	for _, name := range r.order {
 		result = append(result, r.tools[name])
@@ -85,6 +95,8 @@ func (r *Registry) All() []Tool {
 // Filter returns a new registry containing only the named tools.
 // If allowed is nil, a copy of the full registry is returned.
 func (r *Registry) Filter(allowed []string) *Registry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	if allowed == nil {
 		filtered := NewRegistry()
 		for _, name := range r.order {
@@ -119,6 +131,7 @@ func (r *Registry) DescribeForSingleToolPrompt() string {
 }
 
 func (r *Registry) describeForPrompt(singleToolTurns bool) string {
+	r.mu.RLock()
 	tools := make([]Tool, 0, len(r.order))
 	for _, name := range r.order {
 		tool := r.tools[name]
@@ -127,10 +140,12 @@ func (r *Registry) describeForPrompt(singleToolTurns bool) string {
 		}
 		tools = append(tools, tool)
 	}
+	hiddenNames := r.hiddenToolNamesLocked()
+	r.mu.RUnlock()
 
 	var sb strings.Builder
 	sb.WriteString(r.describeTools(tools, false, singleToolTurns))
-	if len(r.hiddenToolNames()) > 0 {
+	if len(hiddenNames) > 0 {
 		sb.WriteString("\nSpecialized tools are hidden by default to save context. Use tool_help(query) to reveal only what you need.\n")
 	}
 	return sb.String()
@@ -142,6 +157,8 @@ func (r *Registry) RevealMatchingTools(query string) []Tool {
 		return nil
 	}
 
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	var matched []Tool
 	for _, name := range r.order {
 		tool := r.tools[name]
@@ -157,10 +174,14 @@ func (r *Registry) RevealMatchingTools(query string) []Tool {
 }
 
 func (r *Registry) ResetDisclosure() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	clear(r.disclosed)
 }
 
 func (r *Registry) DescribeNamedTools(names []string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	tools := make([]Tool, 0, len(names))
 	for _, name := range names {
 		if tool, ok := r.tools[name]; ok {
@@ -171,6 +192,12 @@ func (r *Registry) DescribeNamedTools(names []string) string {
 }
 
 func (r *Registry) hiddenToolNames() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.hiddenToolNamesLocked()
+}
+
+func (r *Registry) hiddenToolNamesLocked() []string {
 	names := make([]string, 0, len(r.tools))
 	for _, name := range r.order {
 		if r.tools[name].PromptVisibility == PromptHidden && !r.disclosed[name] {
@@ -310,6 +337,8 @@ func formatToolSignature(t Tool) string {
 
 // ToLLMToolDefs converts registered tools to llm.ToolDef for native tool calling.
 func (r *Registry) ToLLMToolDefs() []llm.ToolDef {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	defs := make([]llm.ToolDef, 0, len(r.order))
 	for _, name := range r.order {
 		t := r.tools[name]

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -14,13 +15,16 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"golang.org/x/term"
 
 	"forge/internal/auth"
 	"forge/internal/bootstrap"
 	"forge/internal/cli"
+	"forge/internal/config"
 	"forge/internal/copilot"
 	"forge/internal/history"
 	"forge/internal/llm"
+	"forge/internal/mcp"
 	"forge/internal/output"
 	runtimepkg "forge/internal/runtime"
 	"forge/internal/session"
@@ -31,7 +35,18 @@ import (
 var (
 	runMakeInteractiveFn = runMakeInteractive
 	runImproveArgsFn     = runImproveArgs
+	loadMainConfigFn     = bootstrap.LoadConfig
+	saveMainConfigFn     = config.Save
+	mainConfigPathFn     = config.DefaultPath
+	promptMCPTokenFn     = promptMCPToken
 )
+
+var mcpServerPresets = map[string]config.MCPServerConfig{
+	"context7": {
+		Type: "remote",
+		URL:  "https://mcp.context7.com/mcp",
+	},
+}
 
 func main() {
 	args := os.Args[1:]
@@ -59,6 +74,7 @@ func main() {
 			},
 		},
 		"make": {Name: "make", Run: func(args []string) { runMake(args) }},
+		"mcp":  {Name: "mcp", Run: func(args []string) { runMCP(args) }},
 		"improve": {Name: "improve", Run: func(args []string) {
 			runImproveArgsFn("improve", args)
 		}},
@@ -99,6 +115,253 @@ func runMake(args []string) {
 		return
 	}
 	runImproveArgsFn("make", args)
+}
+
+func runMCP(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: forge mcp [list|get|add|remove|login|logout]")
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "list":
+		runMCPList()
+	case "get":
+		runMCPGet(cli.RequireArg(args[1:], "usage: forge mcp get <name>"))
+	case "add":
+		runMCPAdd(args[1:])
+	case "remove", "rm":
+		runMCPRemove(cli.RequireArg(args[1:], "usage: forge mcp remove <name>"))
+	case "login":
+		runMCPLogin(cli.RequireArg(args[1:], "usage: forge mcp login <name>"))
+	case "logout":
+		runMCPLogout(cli.RequireArg(args[1:], "usage: forge mcp logout <name>"))
+	default:
+		fmt.Fprintln(os.Stderr, "usage: forge mcp [list|get|add|remove|login|logout]")
+		os.Exit(1)
+	}
+}
+
+func runMCPList() {
+	cfg, err := loadMainConfigFn()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
+		os.Exit(1)
+	}
+	if len(cfg.MCPServers) == 0 {
+		fmt.Println("No MCP servers configured.")
+		return
+	}
+	names := make([]string, 0, len(cfg.MCPServers))
+	for name := range cfg.MCPServers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	if _, err := fmt.Fprintln(w, "NAME\tTYPE\tENABLED\tTARGET"); err != nil {
+		fmt.Fprintf(os.Stderr, "error writing MCP list: %v\n", err)
+		os.Exit(1)
+	}
+	for _, name := range names {
+		server := cfg.MCPServers[name]
+		target := strings.TrimSpace(server.URL)
+		if target == "" && len(server.Command) > 0 {
+			target = strings.Join(server.Command, " ")
+		}
+		authState := ""
+		if token, ok, _ := mcp.BearerToken(name); ok && token != "" {
+			authState = " (auth)"
+		}
+		if _, err := fmt.Fprintf(w, "%s%s\t%s\t%t\t%s\n", name, authState, inferMCPServerType(server), server.IsEnabled(), target); err != nil {
+			fmt.Fprintf(os.Stderr, "error writing MCP list: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	_ = w.Flush()
+}
+
+func runMCPGet(name string) {
+	cfg, err := loadMainConfigFn()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
+		os.Exit(1)
+	}
+	server, ok := cfg.MCPServers[name]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "error: unknown MCP server %q\n", name)
+		os.Exit(1)
+	}
+	fmt.Printf("name = %s\n", name)
+	fmt.Printf("type = %s\n", inferMCPServerType(server))
+	fmt.Printf("enabled = %t\n", server.IsEnabled())
+	if server.URL != "" {
+		fmt.Printf("url = %s\n", server.URL)
+	}
+	if len(server.Command) > 0 {
+		fmt.Printf("command = %s\n", strings.Join(server.Command, " "))
+	}
+	if server.TimeoutMS > 0 {
+		fmt.Printf("timeout_ms = %d\n", server.TimeoutMS)
+	}
+	if token, ok, _ := mcp.BearerToken(name); ok && token != "" {
+		fmt.Println("auth = bearer_token")
+	}
+}
+
+func runMCPAdd(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: forge mcp add <name> [--url URL] [--timeout-ms N] [--disabled] [-- command args...]")
+		os.Exit(1)
+	}
+	name := args[0]
+
+	fs := flag.NewFlagSet("mcp add", flag.ExitOnError)
+	url := fs.String("url", "", "Streamable HTTP MCP endpoint")
+	disabled := fs.Bool("disabled", false, "Add the server in a disabled state")
+	timeoutMS := fs.Int("timeout-ms", 0, "Per-request timeout in milliseconds")
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(args[1:]); err != nil {
+		fmt.Fprintln(os.Stderr, "usage: forge mcp add <name> [--url URL] [--timeout-ms N] [--disabled] [-- command args...]")
+		os.Exit(1)
+	}
+	command := append([]string(nil), fs.Args()...)
+	if *url == "" && len(command) == 0 {
+		if preset, ok := mcpServerPresets[name]; ok {
+			server := preset
+			if *timeoutMS > 0 {
+				server.TimeoutMS = *timeoutMS
+			}
+			if *disabled {
+				server.Enabled = boolPtr(false)
+			}
+			saveMCPServer(name, server)
+			fmt.Printf("Added MCP server %s.\n", name)
+			return
+		}
+		fmt.Fprintln(os.Stderr, "error: provide --url for a remote MCP server or command args for a stdio server")
+		os.Exit(1)
+	}
+	if *url != "" && len(command) > 0 {
+		fmt.Fprintln(os.Stderr, "error: choose either --url or a stdio command, not both")
+		os.Exit(1)
+	}
+
+	server := config.MCPServerConfig{
+		URL:       strings.TrimSpace(*url),
+		Command:   command,
+		TimeoutMS: *timeoutMS,
+	}
+	if *disabled {
+		server.Enabled = boolPtr(false)
+	}
+	if server.URL != "" {
+		server.Type = "remote"
+	} else {
+		server.Type = "stdio"
+	}
+	saveMCPServer(name, server)
+	fmt.Printf("Added MCP server %s.\n", name)
+}
+
+func runMCPRemove(name string) {
+	cfg, err := loadMainConfigFn()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
+		os.Exit(1)
+	}
+	if _, ok := cfg.MCPServers[name]; !ok {
+		fmt.Fprintf(os.Stderr, "error: unknown MCP server %q\n", name)
+		os.Exit(1)
+	}
+	delete(cfg.MCPServers, name)
+	if err := saveMainConfigFn(mainConfigPathFn(), cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "error saving config: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Removed MCP server %s.\n", name)
+}
+
+func runMCPLogin(name string) {
+	cfg, err := loadMainConfigFn()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
+		os.Exit(1)
+	}
+	server, ok := cfg.MCPServers[name]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "error: unknown MCP server %q\n", name)
+		os.Exit(1)
+	}
+	if inferMCPServerType(server) != "remote" {
+		fmt.Fprintln(os.Stderr, "error: forge mcp login is only supported for remote MCP servers")
+		os.Exit(1)
+	}
+	token, err := promptMCPTokenFn()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error reading MCP token: %v\n", err)
+		os.Exit(1)
+	}
+	if strings.TrimSpace(token) == "" {
+		fmt.Fprintln(os.Stderr, "error: empty token")
+		os.Exit(1)
+	}
+	if err := mcp.SaveBearerToken(name, token); err != nil {
+		fmt.Fprintf(os.Stderr, "error saving MCP token: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Stored MCP token for %s.\n", name)
+}
+
+func runMCPLogout(name string) {
+	if err := mcp.DeleteBearerToken(name); err != nil {
+		fmt.Fprintf(os.Stderr, "error clearing MCP token: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Cleared MCP token for %s.\n", name)
+}
+
+func inferMCPServerType(server config.MCPServerConfig) string {
+	if strings.TrimSpace(server.Type) != "" {
+		return strings.TrimSpace(server.Type)
+	}
+	if strings.TrimSpace(server.URL) != "" {
+		return "remote"
+	}
+	if len(server.Command) > 0 {
+		return "stdio"
+	}
+	return "unknown"
+}
+
+func boolPtr(v bool) *bool { return &v }
+
+func promptMCPToken() (string, error) {
+	if _, err := fmt.Fprint(os.Stdout, "MCP bearer token: "); err != nil {
+		return "", err
+	}
+	tokenBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
+	if _, printErr := fmt.Fprintln(os.Stdout); printErr != nil && err == nil {
+		err = printErr
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(tokenBytes)), nil
+}
+
+func saveMCPServer(name string, server config.MCPServerConfig) {
+	cfg, err := loadMainConfigFn()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
+		os.Exit(1)
+	}
+	if cfg.MCPServers == nil {
+		cfg.MCPServers = make(map[string]config.MCPServerConfig)
+	}
+	cfg.MCPServers[name] = server
+	if err := saveMainConfigFn(mainConfigPathFn(), cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "error saving config: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func runMakeInteractive() {
@@ -915,6 +1178,8 @@ Usage:
   forge status                    Show auth and Copilot allowance status
   forge perf [summary|list]       Show token/perf summary across sessions
   forge perf show <id>            Show token/perf details for a session
+  forge mcp [list|get|add|remove|login|logout]
+                                  Manage MCP server configuration
   forge skills list               List loaded skills
   forge skills dir                Show global/project skill directories
   forge skills install [flags] <source>

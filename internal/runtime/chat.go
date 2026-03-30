@@ -21,6 +21,7 @@ import (
 	"forge/internal/config"
 	"forge/internal/copilot"
 	"forge/internal/llm"
+	"forge/internal/mcp"
 	"forge/internal/modelcatalog"
 	reactruntime "forge/internal/react"
 	reacttools "forge/internal/react/tools"
@@ -36,6 +37,7 @@ var (
 	runChatLiveUI     = tui.RunChatLive
 	mergeIntoBranchRE = regexp.MustCompile(`(?i)\bmerge\s+(?:the\s+)?(.+?)\s+into\s+([a-zA-Z0-9._/\-]+)\b`)
 	branchMentionRE   = regexp.MustCompile(`(?i)\b(?:look at|inspect|check|review|take a look at)\s+(?:the\s+)?([a-zA-Z0-9._/\-]+)\s+branch\b`)
+	newChatMCPManager = func() *mcp.Manager { return mcp.NewManager() }
 )
 
 type chatRuntimeMode string
@@ -146,12 +148,31 @@ func refreshChatSetupState(setup *ChatSetup) (*config.Config, *auth.Tokens) {
 	return cfg, tokens
 }
 
-func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, session *reactruntime.Session, approve tools.ApprovalFunc, forcePrompt ...tools.ApprovalFunc) *tools.PreviewRuntime {
+func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, session *reactruntime.Session, approve tools.ApprovalFunc, notify func(string), forcePrompt ...tools.ApprovalFunc) (*tools.PreviewRuntime, *mcp.Manager) {
 	fp := approve
 	if len(forcePrompt) > 0 {
 		fp = forcePrompt[0]
 	}
 	previewRuntime := tools.NewPreviewRuntime(workDir, approve)
+	mcpManager := newChatMCPManager()
+	if notify != nil {
+		mcpManager.SetEventHandler(func(ev mcp.Event) {
+			switch ev.Kind {
+			case mcp.EventToolsChanged, mcp.EventResourcesChanged:
+				for _, def := range ev.Snapshot.Tools {
+					reg.Register(tools.NewMCPDynamicTool(def, mcpManager))
+				}
+				notify(fmt.Sprintf("%s (%s)", strings.TrimSpace(ev.Message), ev.ServerName))
+			case mcp.EventResourceUpdated:
+				notify(fmt.Sprintf("MCP resource updated on %s: %s", ev.ServerName, ev.URI))
+			case mcp.EventLogMessage, mcp.EventProgress:
+				notify(fmt.Sprintf("%s (%s)", strings.TrimSpace(ev.Message), ev.ServerName))
+			case mcp.EventRefreshed:
+			default:
+			}
+		})
+	}
+	_ = mcpManager.Refresh(context.Background(), cfg)
 	reg.Register(tools.NewReadFile(workDir))
 	reg.Register(tools.NewWriteFile(workDir, approve))
 	reg.Register(tools.NewEditFile(workDir, approve))
@@ -178,6 +199,14 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 	reg.Register(tools.NewViewImage(workDir))
 	reg.Register(tools.NewToolHelp(reg))
 	reg.Register(reacttools.NewUpdatePlan(session))
+	if mcpManager.HasServers() {
+		reg.Register(tools.NewListMCPResources(mcpManager))
+		reg.Register(tools.NewListMCPResourceTemplates(mcpManager))
+		reg.Register(tools.NewReadMCPResource(mcpManager))
+		for _, def := range mcpManager.Tools() {
+			reg.Register(tools.NewMCPDynamicTool(def, mcpManager))
+		}
+	}
 	gitCommit := tools.NewGitCommit(workDir, approve)
 	gitCommit.PromptVisibility = tools.PromptHidden
 	reg.Register(gitCommit)
@@ -187,7 +216,7 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 	webSearch := tools.NewWebSearch()
 	webSearch.PromptVisibility = tools.PromptHidden
 	reg.Register(webSearch)
-	return previewRuntime
+	return previewRuntime, mcpManager
 }
 
 func RunChatLive(setup *ChatSetup) {
@@ -217,9 +246,12 @@ func RunChatLive(setup *ChatSetup) {
 
 	reg := tools.NewRegistry()
 	session := reactruntime.NewSession()
-	previewRuntime := registerTools(reg, setup.WorkDir, setup.Config, session, approve)
+	previewRuntime, mcpManager := registerTools(reg, setup.WorkDir, setup.Config, session, approve, evRenderer.Info)
 	if previewRuntime != nil {
 		defer previewRuntime.Close()
+	}
+	if mcpManager != nil {
+		defer func() { _ = mcpManager.Close() }()
 	}
 	baseReg := reg.Filter(nil)
 	loadedSkills := skills.Load(setup.WorkDir)
@@ -446,15 +478,17 @@ func RunChatConsole(setup *ChatSetup) {
 	}).Approve
 
 	reg := tools.NewRegistry()
+	renderer := agent.NewRenderer(os.Stdout, 80, true)
 	forcePromptApprove := approve
-	previewRuntime := registerTools(reg, setup.WorkDir, setup.Config, reactruntime.NewSession(), approve, forcePromptApprove)
+	previewRuntime, mcpManager := registerTools(reg, setup.WorkDir, setup.Config, reactruntime.NewSession(), approve, renderer.Info, forcePromptApprove)
 	if previewRuntime != nil {
 		defer previewRuntime.Close()
 	}
+	if mcpManager != nil {
+		defer func() { _ = mcpManager.Close() }()
+	}
 	baseReg := reg.Filter(nil)
 	loadedSkills := skills.Load(setup.WorkDir)
-
-	renderer := agent.NewRenderer(os.Stdout, 80, true)
 	state := chatstate.New()
 	reactRunner := reactruntime.NewRunner(reactruntime.Config{
 		Driver:          setup.Driver,
