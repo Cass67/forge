@@ -60,17 +60,15 @@ func renderTraceDockPanel(theme chatTheme, content, debugLogPath string, width, 
 	if width <= 0 || height <= 0 {
 		return ""
 	}
-	headerBG := theme.headerSurface()
-	panelBG := theme.panelSurface()
-	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Background(headerBG).Bold(true)
-	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim).Background(panelBG)
-	textStyle := lipgloss.NewStyle().Foreground(theme.Text).Background(panelBG)
+	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true)
+	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
+	textStyle := lipgloss.NewStyle().Foreground(theme.Text)
 	contentWidth := max(1, width-6)
 	contentHeight := max(1, height-1)
 
 	headerLine := titleStyle.Width(contentWidth).Render(fitCell(" Trace dock ", contentWidth))
 	lines := make([]traceStyledLine, 0, contentHeight)
-	lines = append(lines, traceStyledLine{text: headerLine, style: lipgloss.NewStyle().Background(headerBG)})
+	lines = append(lines, traceStyledLine{text: headerLine, style: lipgloss.NewStyle()})
 	lines = appendTraceStyledLine(lines, dimStyle, "Visible because forge was started with -d.", contentWidth)
 	if path := strings.TrimSpace(debugLogPath); path != "" {
 		for _, line := range wrapTraceText("Log: "+path, contentWidth) {
@@ -101,7 +99,6 @@ func renderTraceDockPanel(theme chatTheme, content, debugLogPath string, width, 
 		BorderTop(true).
 		BorderStyle(lipgloss.NormalBorder()).
 		BorderForeground(theme.Border).
-		Background(panelBG).
 		Padding(0, 1).
 		Width(width - 2).
 		Height(contentHeight).

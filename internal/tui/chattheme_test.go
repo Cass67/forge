@@ -34,18 +34,18 @@ func TestChatThemeLookupSupportsLegacyAliases(t *testing.T) {
 	}
 }
 
-func TestChatThemeDefaultUsesLayeredSurfacePalette(t *testing.T) {
+func TestChatThemeDefaultUsesBlackSurfacePalette(t *testing.T) {
 	theme, ok := lookupChatTheme("default")
 	if !ok {
 		t.Fatal("missing default theme")
 	}
-	if theme.AppBG != lipgloss.Color("#090d14") {
+	if theme.AppBG != lipgloss.Color("#000000") {
 		t.Fatalf("app background = %q", theme.AppBG)
 	}
-	if theme.PanelBG != lipgloss.Color("#111824") {
+	if theme.PanelBG != theme.AppBG {
 		t.Fatalf("panel background = %q", theme.PanelBG)
 	}
-	if theme.HeaderBG != lipgloss.Color("#151f2e") {
+	if theme.HeaderBG != theme.AppBG {
 		t.Fatalf("header background = %q", theme.HeaderBG)
 	}
 	if theme.Text != lipgloss.Color("#eaf0f8") {

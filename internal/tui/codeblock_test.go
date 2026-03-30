@@ -75,6 +75,46 @@ func TestRenderMessageContentStylesInlineCodeSemantically(t *testing.T) {
 	assertStyledSubstring(t, got, "runner.sh", theme.TextDim)
 }
 
+func TestRenderMessageContentStylesHeadingsListsAndStrongEmphasis(t *testing.T) {
+	withTrueColorProfile(t)
+
+	theme := lookupThemeForTest(t, "default")
+	content := strings.Join([]string{
+		"## Forge overview",
+		"- **Host-owned** completion checks",
+		"1. `go test ./internal/tui` before merge",
+	}, "\n")
+
+	got := renderMessageContent(content, 80, theme)
+
+	assertStyledSubstring(t, got, "##", theme.AccentPrimary)
+	assertStyledSubstring(t, got, "Forge overview", theme.AccentPrimary)
+	assertStyledSubstring(t, got, "-", theme.AccentSecondary)
+	assertStyledSubstring(t, got, "Host-owned", theme.Text)
+	assertStyledSubstring(t, got, "1.", theme.AccentSecondary)
+	assertStyledSubstring(t, got, "go test ./internal/tui", theme.AccentSecondary)
+	if strings.Contains(got, "**Host-owned**") {
+		t.Fatalf("expected strong emphasis markers to be stripped, got: %q", got)
+	}
+}
+
+func TestRenderMessageContentProseDoesNotPaintInlineBackgroundBlocks(t *testing.T) {
+	withTrueColorProfile(t)
+
+	theme := lookupThemeForTest(t, "default")
+	got := renderMessageContent("Objective: explain this repo\nVerify: produce source-grounded findings", 80, theme)
+
+	if strings.Contains(got, ansiBackgroundFragment(theme.AppBG)) {
+		t.Fatalf("prose content should not paint app background blocks inline: %q", got)
+	}
+	if strings.Contains(got, ansiBackgroundFragment(theme.PanelBG)) {
+		t.Fatalf("prose content should not paint panel background blocks inline: %q", got)
+	}
+	if strings.Contains(got, ansiBackgroundFragment(theme.HeaderBG)) {
+		t.Fatalf("prose content should not paint header background blocks inline: %q", got)
+	}
+}
+
 func TestRenderMessageContentWrapsProseWithoutSplittingShortWords(t *testing.T) {
 	theme := lookupThemeForTest(t, "default")
 	content := "It also wasn’t really a harness limitation here, because I had the tools needed to create the file. The failure was that I responded conversationally instead of continuing the task flow and writing the plan into the repo."

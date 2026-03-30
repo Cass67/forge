@@ -760,6 +760,12 @@ func (m *ChatModel) refreshViewport() {
 		contentWidth = 60
 	}
 	theme := m.theme()
+	prevTotalLines := strings.Count(m.chatVisible, "\n") + 1
+	if prevTotalLines == 0 {
+		prevTotalLines = 1
+	}
+	prevMaxScroll := max(0, prevTotalLines-max(1, m.chatViewport.Height))
+	wasPinnedToBottom := m.followMode == followManual && m.chatViewport.YOffset >= prevMaxScroll
 
 	var blocks []string
 	messageBlockIndex := make([]int, len(m.messages))
@@ -783,10 +789,7 @@ func (m *ChatModel) refreshViewport() {
 	}
 	content := ""
 	if len(blocks) > 0 {
-		separator := lipgloss.NewStyle().
-			Background(theme.AppBG).
-			Width(contentWidth).
-			Render("")
+		separator := strings.Repeat(" ", contentWidth)
 		content = strings.Join(blocks, "\n"+separator+"\n")
 	}
 	visible := content
@@ -796,6 +799,9 @@ func (m *ChatModel) refreshViewport() {
 	totalLines := strings.Count(visible, "\n") + 1
 	if totalLines == 0 {
 		totalLines = 1
+	}
+	if wasPinnedToBottom {
+		m.followMode = followBottom
 	}
 	m.applyViewportFollow(totalLines)
 }
@@ -4337,7 +4343,6 @@ func (m ChatModel) View() string {
 	chatScrollbar := scrollbarColumn(chatTotalLines, m.chatViewport.Height, m.chatViewport.YOffset, chatBodyHeight)
 	chatBody := joinWithScrollbar(chatLines, chatScrollbar, chatContentWidth, chatBodyHeight)
 	chatPane := lipgloss.NewStyle().
-		Background(theme.AppBG).
 		Foreground(theme.Text).
 		Width(m.width).
 		Height(chatBodyHeight).
@@ -4374,7 +4379,6 @@ func (m ChatModel) View() string {
 	}
 	parts = append(parts, liveRegion, inputBox)
 	base := lipgloss.NewStyle().
-		Background(theme.AppBG).
 		Foreground(theme.Text).
 		Width(m.width).
 		Height(m.height).
@@ -4411,11 +4415,10 @@ func (m ChatModel) View() string {
 func fillSurfaceRows(view string, width int, bg lipgloss.Color) string {
 	width = max(1, width)
 	lines := strings.Split(view, "\n")
-	fill := lipgloss.NewStyle().Background(bg)
 	for i, line := range lines {
 		printable := ansiPrintableWidth(line)
 		if printable < width {
-			line += fill.Render(strings.Repeat(" ", width-printable))
+			line += strings.Repeat(" ", width-printable)
 		}
 		lines[i] = line
 	}
@@ -4425,7 +4428,6 @@ func fillSurfaceRows(view string, width int, bg lipgloss.Color) string {
 func (m ChatModel) renderLiveProgressSlot(theme chatTheme) string {
 	message, busy := m.transientStatusMessage()
 	slotStyle := lipgloss.NewStyle().
-		Background(theme.AppBG).
 		Foreground(theme.TextDim).
 		Width(m.width)
 	if message == "" {
@@ -4466,7 +4468,6 @@ func (m ChatModel) renderComposerGap(theme chatTheme) string {
 		return ""
 	}
 	line := lipgloss.NewStyle().
-		Background(theme.AppBG).
 		Width(m.width).
 		Render("")
 	if gapLines == 1 {

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestChatComposerEnterSubmitsAndClears(t *testing.T) {
@@ -178,6 +179,27 @@ func TestChatComposerRenderShowsControlHintsInTopBar(t *testing.T) {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected composer hint %q, got %q", want, rendered)
 		}
+	}
+}
+
+func TestChatComposerRenderDoesNotPaintInlineBackgroundBlocks(t *testing.T) {
+	withTrueColorProfile(t)
+
+	c := NewChatComposer()
+	theme := chatTheme{
+		AppBG:       lipgloss.Color("#112233"),
+		PanelBG:     lipgloss.Color("#223344"),
+		HeaderBG:    lipgloss.Color("#445566"),
+		HeaderFG:    lipgloss.Color("#ddeeff"),
+		Text:        lipgloss.Color("#eef2f7"),
+		TextDim:     lipgloss.Color("#8b97a8"),
+		Border:      lipgloss.Color("#334455"),
+		BorderFocus: lipgloss.Color("#88aaff"),
+	}
+
+	rendered := c.Render(theme, 64)
+	if strings.Contains(rendered, ansiBackgroundFragment(theme.PanelBG)) || strings.Contains(rendered, ansiBackgroundFragment(theme.HeaderBG)) {
+		t.Fatalf("composer should not paint inline background blocks: %q", rendered)
 	}
 }
 

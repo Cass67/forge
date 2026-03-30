@@ -112,8 +112,6 @@ func (c ChatComposer) Render(theme chatTheme, width int) string {
 	innerWidth := max(1, width-2)
 	bodyWidth := max(1, innerWidth-2)
 	bodyLines := c.visibleBodyLines(bodyWidth)
-	panelBG := theme.panelSurface()
-	headerBG := theme.headerSurface()
 
 	hintText := "Enter send"
 	switch {
@@ -130,9 +128,9 @@ func (c ChatComposer) Render(theme chatTheme, width int) string {
 	topContent := fitCell(topLabel+hintText, innerWidth)
 	top := lipgloss.JoinHorizontal(
 		lipgloss.Left,
-		lipgloss.NewStyle().Foreground(theme.BorderFocus).Background(headerBG).Render("╭"),
-		lipgloss.NewStyle().Foreground(theme.TextDim).Background(headerBG).Bold(true).Render(topContent),
-		lipgloss.NewStyle().Foreground(theme.BorderFocus).Background(headerBG).Render("╮"),
+		lipgloss.NewStyle().Foreground(theme.BorderFocus).Render("╭"),
+		lipgloss.NewStyle().Foreground(theme.TextDim).Bold(true).Render(topContent),
+		lipgloss.NewStyle().Foreground(theme.BorderFocus).Render("╮"),
 	)
 
 	out := make([]string, 0, len(bodyLines)+2)
@@ -146,26 +144,23 @@ func (c ChatComposer) Render(theme chatTheme, width int) string {
 		text := fitCell(prefix+line, innerWidth)
 		bodyStyle := lipgloss.NewStyle().
 			Foreground(theme.Text).
-			Background(panelBG).
 			Render(text)
 		if c.text == "" {
 			bodyStyle = lipgloss.NewStyle().
 				Foreground(theme.TextDim).
-				Background(panelBG).
 				Render(text)
 		}
 		row := lipgloss.JoinHorizontal(
 			lipgloss.Left,
-			lipgloss.NewStyle().Foreground(theme.Border).Background(panelBG).Render("│"),
+			lipgloss.NewStyle().Foreground(theme.Border).Render("│"),
 			bodyStyle,
-			lipgloss.NewStyle().Foreground(theme.Border).Background(panelBG).Render("│"),
+			lipgloss.NewStyle().Foreground(theme.Border).Render("│"),
 		)
 		out = append(out, row)
 	}
 
 	bottom := lipgloss.NewStyle().
 		Foreground(theme.BorderFocus).
-		Background(panelBG).
 		Render("╰" + strings.Repeat("─", innerWidth) + "╯")
 	out = append(out, bottom)
 	return strings.Join(out, "\n")

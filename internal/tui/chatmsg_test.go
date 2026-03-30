@@ -129,9 +129,7 @@ func TestChatMessageRenderWorkingHighlightsHighSignalTokens(t *testing.T) {
 	assertStyledSubstring(t, got, "./internal/tui", theme.TextDim)
 }
 
-func TestChatMessageRenderUsesAppBackgroundForStableTranscriptSurface(t *testing.T) {
-	withTrueColorProfile(t)
-
+func TestChatMessageRenderDoesNotForceTranscriptBackgroundFill(t *testing.T) {
 	theme := lookupThemeForTest(t, "default")
 	m := ChatMessage{
 		Kind:    MsgUser,
@@ -140,21 +138,20 @@ func TestChatMessageRenderUsesAppBackgroundForStableTranscriptSurface(t *testing
 	}
 
 	got := m.Render(60, theme)
-	wantBG := ansiBackgroundFragment(theme.AppBG)
 	lines := strings.Split(got, "\n")
 	var sawHeader bool
 	var sawBody bool
 	for _, line := range lines {
 		if strings.Contains(line, "You") {
 			sawHeader = true
-			if !strings.Contains(line, wantBG) {
-				t.Fatalf("header line should include app background %q: %q", wantBG, line)
+			if strings.Contains(line, ansiBackgroundFragment(theme.AppBG)) {
+				t.Fatalf("header line should not force app background fill: %q", line)
 			}
 		}
 		if strings.Contains(line, "hello world") {
 			sawBody = true
-			if !strings.Contains(line, wantBG) {
-				t.Fatalf("body line should include app background %q: %q", wantBG, line)
+			if strings.Contains(line, ansiBackgroundFragment(theme.AppBG)) {
+				t.Fatalf("body line should not force app background fill: %q", line)
 			}
 		}
 	}
@@ -163,27 +160,22 @@ func TestChatMessageRenderUsesAppBackgroundForStableTranscriptSurface(t *testing
 	}
 }
 
-func TestChatMessageStatusRenderUsesAppBackground(t *testing.T) {
-	withTrueColorProfile(t)
-
+func TestChatMessageStatusRenderDoesNotForceAppBackground(t *testing.T) {
 	theme := lookupThemeForTest(t, "default")
 	got := (ChatMessage{Kind: MsgStatus, Content: "Agent complete"}).Render(60, theme)
-	if !strings.Contains(got, ansiBackgroundFragment(theme.AppBG)) {
-		t.Fatalf("status render should include app background: %q", got)
+	if strings.Contains(got, ansiBackgroundFragment(theme.AppBG)) {
+		t.Fatalf("status render should not force app background: %q", got)
 	}
 }
 
-func TestChatMessageHeaderUsesAppBackground(t *testing.T) {
-	withTrueColorProfile(t)
-
+func TestChatMessageHeaderDoesNotForceAppBackground(t *testing.T) {
 	theme := lookupThemeForTest(t, "default")
 	got := (ChatMessage{Kind: MsgForge, Header: "Forge • 10:44:08", Content: "repo overview"}).Render(80, theme)
 
 	lines := strings.Split(got, "\n")
-	wantBG := ansiBackgroundFragment(theme.AppBG)
 	for _, line := range lines {
-		if strings.Contains(line, "Forge") && strings.Contains(line, "10:44:08") && !strings.Contains(line, wantBG) {
-			t.Fatalf("message header should include app background: %q", line)
+		if strings.Contains(line, "Forge") && strings.Contains(line, "10:44:08") && strings.Contains(line, ansiBackgroundFragment(theme.AppBG)) {
+			t.Fatalf("message header should not force app background: %q", line)
 		}
 	}
 }
