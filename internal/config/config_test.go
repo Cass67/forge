@@ -329,3 +329,107 @@ func TestSaveChatLastModelAddsChatSectionWhenMissing(t *testing.T) {
 		t.Fatalf("expected chat section with last_model, got:\n%s", content)
 	}
 }
+
+func TestLoadMCPServers(t *testing.T) {
+	toml := `
+[mcp_servers.context7]
+type = "remote"
+url = "https://mcp.context7.com/mcp"
+enabled = true
+timeout_ms = 12000
+
+[mcp_servers.context7.headers]
+X-Test = "value"
+
+[mcp_servers.files]
+type = "stdio"
+enabled = false
+timeout_ms = 8000
+command = ["node", "server.js", "--stdio"]
+
+[mcp_servers.files.env]
+NODE_ENV = "test"
+`
+	path := writeTemp(t, toml)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.MCPServers) != 2 {
+		t.Fatalf("MCPServers = %d, want 2", len(cfg.MCPServers))
+	}
+	context7, ok := cfg.MCPServers["context7"]
+	if !ok {
+		t.Fatal("missing context7 server")
+	}
+	if context7.Type != "remote" {
+		t.Fatalf("context7.Type = %q", context7.Type)
+	}
+	if context7.URL != "https://mcp.context7.com/mcp" {
+		t.Fatalf("context7.URL = %q", context7.URL)
+	}
+	if !context7.IsEnabled() {
+		t.Fatal("context7.IsEnabled() = false, want true")
+	}
+	if context7.TimeoutMS != 12000 {
+		t.Fatalf("context7.TimeoutMS = %d", context7.TimeoutMS)
+	}
+	if context7.Headers["X-Test"] != "value" {
+		t.Fatalf("context7.Headers = %#v", context7.Headers)
+	}
+	files, ok := cfg.MCPServers["files"]
+	if !ok {
+		t.Fatal("missing files server")
+	}
+	if files.Type != "stdio" {
+		t.Fatalf("files.Type = %q", files.Type)
+	}
+	if files.IsEnabled() {
+		t.Fatal("files.IsEnabled() = true, want false")
+	}
+	if got := strings.Join(files.Command, " "); got != "node server.js --stdio" {
+		t.Fatalf("files.Command = %q", got)
+	}
+	if files.Env["NODE_ENV"] != "test" {
+		t.Fatalf("files.Env = %#v", files.Env)
+	}
+}
+
+func TestSaveRoundTripsMCPServers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	cfg := &config.Config{
+		MCPServers: map[string]config.MCPServerConfig{
+			"context7": {
+				Type:      "remote",
+				URL:       "https://mcp.context7.com/mcp",
+				Enabled:   boolPtr(true),
+				TimeoutMS: 15000,
+			},
+			"files": {
+				Type:      "stdio",
+				Command:   []string{"node", "server.js"},
+				Env:       map[string]string{"NODE_ENV": "development"},
+				Enabled:   boolPtr(true),
+				TimeoutMS: 5000,
+			},
+		},
+	}
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(loaded.MCPServers) != 2 {
+		t.Fatalf("loaded.MCPServers = %d, want 2", len(loaded.MCPServers))
+	}
+	if loaded.MCPServers["context7"].URL != "https://mcp.context7.com/mcp" {
+		t.Fatalf("context7.URL = %q", loaded.MCPServers["context7"].URL)
+	}
+	if got := strings.Join(loaded.MCPServers["files"].Command, " "); got != "node server.js" {
+		t.Fatalf("files.Command = %q", got)
+	}
+}
+
+func boolPtr(v bool) *bool { return &v }
