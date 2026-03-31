@@ -92,6 +92,7 @@ type SessionSnapshot struct {
 	CompactedTurns    int
 	CompactionSummary string
 	MemorySummary     string
+	HookOutputSet     bool
 	HookOutput        hooks.ExecutionOutput
 	HookOverlays      []hooks.Overlay
 	RuntimeNote       string
@@ -112,6 +113,7 @@ type Session struct {
 	compactedTurns    int
 	compactionSummary string
 	memorySummary     string
+	hookOutputSet     bool
 	hookOutput        hooks.ExecutionOutput
 	hookOverlays      []hooks.Overlay
 	runtimeNote       string
@@ -240,6 +242,7 @@ func (s *Session) Snapshot() SessionSnapshot {
 		CompactedTurns:    s.compactedTurns,
 		CompactionSummary: s.compactionSummary,
 		MemorySummary:     s.memorySummary,
+		HookOutputSet:     s.hookOutputSet,
 		HookOutput:        cloneHookOutput(s.hookOutput),
 		HookOverlays:      append([]hooks.Overlay(nil), s.hookOverlays...),
 		RuntimeNote:       s.runtimeNote,
@@ -265,6 +268,7 @@ func (s *Session) Clear() {
 	s.compactedTurns = 0
 	s.compactionSummary = ""
 	s.memorySummary = ""
+	s.hookOutputSet = false
 	s.hookOutput = hooks.ExecutionOutput{}
 	s.hookOverlays = nil
 	s.runtimeNote = ""
@@ -282,15 +286,17 @@ func (s *Session) SetRuntimeNote(text string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	text = strings.TrimSpace(text)
+	s.hookOutputSet = true
 	if text == "" {
 		s.hookOutput.Note = nil
 		s.syncLegacyHookStateLocked()
 		return
 	}
-	if s.hookOutput.Note == nil {
-		s.hookOutput.Note = &hooks.NoteResult{}
+	s.hookOutput.Note = &hooks.NoteResult{
+		Message:    text,
+		Priority:   hooks.PriorityHigh,
+		Provenance: "runtime",
 	}
-	s.hookOutput.Note.Message = text
 	s.syncLegacyHookStateLocked()
 }
 
@@ -309,6 +315,7 @@ func (s *Session) SetHookOverlays(overlays []hooks.Overlay) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.hookOutputSet = true
 	s.hookOutput.Overlays = append([]hooks.OverlayResult(nil), overlays...)
 	s.syncLegacyHookStateLocked()
 }
@@ -323,6 +330,7 @@ func (s *Session) SetHookOverlay(overlay hooks.Overlay) {
 	if key == "" {
 		return
 	}
+	s.hookOutputSet = true
 	for i := range s.hookOutput.Overlays {
 		if strings.EqualFold(strings.TrimSpace(s.hookOutput.Overlays[i].Key), key) {
 			s.hookOutput.Overlays[i] = overlay
@@ -344,6 +352,7 @@ func (s *Session) ClearHookOverlay(key string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.hookOutputSet = true
 	filtered := s.hookOutput.Overlays[:0]
 	for _, overlay := range s.hookOutput.Overlays {
 		if strings.EqualFold(strings.TrimSpace(overlay.Key), key) {
@@ -361,6 +370,7 @@ func (s *Session) SetHookOutput(output hooks.ExecutionOutput) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.hookOutputSet = true
 	s.hookOutput = cloneHookOutput(output)
 	s.syncLegacyHookStateLocked()
 }

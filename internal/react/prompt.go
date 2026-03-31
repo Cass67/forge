@@ -43,20 +43,24 @@ func BuildMessages(systemPrompt string, snapshot SessionSnapshot) []llm.Message 
 			Content:  "Current mode: " + strings.TrimSpace(string(mode)),
 		})
 	}
-	if hookOutput.Note != nil {
-		if note := strings.TrimSpace(hookOutput.Note.Message); note != "" {
+	if snapshot.HookOutputSet {
+		if hookOutput.Note != nil {
+			if note := strings.TrimSpace(snapshot.RuntimeNote); note != "" {
+				systemOverlays = append(systemOverlays, promptcomposer.Overlay{
+					Key:      "runtime_note",
+					Priority: promptcomposer.PriorityHigh,
+					Content:  note,
+				})
+			}
+		}
+	} else {
+		if note := strings.TrimSpace(snapshot.RuntimeNote); note != "" {
 			systemOverlays = append(systemOverlays, promptcomposer.Overlay{
 				Key:      "runtime_note",
 				Priority: promptcomposer.PriorityHigh,
 				Content:  note,
 			})
 		}
-	} else if note := strings.TrimSpace(snapshot.RuntimeNote); note != "" {
-		systemOverlays = append(systemOverlays, promptcomposer.Overlay{
-			Key:      "runtime_note",
-			Priority: promptcomposer.PriorityHigh,
-			Content:  note,
-		})
 	}
 	if snapshot.Interrupted {
 		systemOverlays = append(systemOverlays, promptcomposer.Overlay{
@@ -186,14 +190,15 @@ func planStateContext(snapshot SessionSnapshot) string {
 }
 
 func promptHookOutput(snapshot SessionSnapshot) hooks.ExecutionOutput {
-	output := cloneHookOutput(snapshot.HookOutput)
-	if len(output.Overlays) == 0 && len(snapshot.HookOverlays) > 0 {
+	if snapshot.HookOutputSet {
+		return cloneHookOutput(snapshot.HookOutput)
+	}
+	output := hooks.ExecutionOutput{}
+	if len(snapshot.HookOverlays) > 0 {
 		output.Overlays = append([]hooks.OverlayResult(nil), snapshot.HookOverlays...)
 	}
-	if output.Note == nil || strings.TrimSpace(output.Note.Message) == "" {
-		if note := strings.TrimSpace(snapshot.RuntimeNote); note != "" {
-			output.Note = &hooks.NoteResult{Message: note}
-		}
+	if note := strings.TrimSpace(snapshot.RuntimeNote); note != "" {
+		output.Note = &hooks.NoteResult{Message: note}
 	}
 	return output
 }
