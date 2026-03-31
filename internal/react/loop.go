@@ -37,6 +37,7 @@ type Runner struct {
 	planWorkflow       planWorkflowState
 	searchWorkflow     sameFileSearchWorkflowState
 	validationWorkflow validationWorkflowState
+	repeatWorkflow     repeatToolCallState
 	completionCheck    func(SessionSnapshot, string) error
 	turnComplete       func(SessionSnapshot)
 }
@@ -76,9 +77,16 @@ type sameFileSearchWorkflowState struct {
 	nudged   bool
 }
 
+type repeatToolCallState struct {
+	lastToolName string
+	lastTarget   string
+	streak       int
+}
+
 const planExplorationBudget = 10
 const analysisExplorationBudget = 15
 const sameFileSearchThrashThreshold = 5
+const repeatToolCallThreshold = 6
 
 func NewRunner(cfg Config) *Runner {
 	session := cfg.Session
@@ -159,6 +167,7 @@ func (r *Runner) ClearHistory() {
 	r.planWorkflow = planWorkflowState{}
 	r.searchWorkflow = sameFileSearchWorkflowState{}
 	r.validationWorkflow = validationWorkflowState{}
+	r.repeatWorkflow = repeatToolCallState{}
 	r.session.Clear()
 }
 
@@ -243,6 +252,7 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 	completionRetried := false
 	budgetWarnAt := r.maxSessionTurns * 2 / 3
 	budgetWarnSent := false
+	budgetEnforced := false
 	for step := 0; step < r.maxSessionTurns; step++ {
 		if !budgetWarnSent && step >= budgetWarnAt {
 			budgetWarnSent = true
@@ -251,6 +261,18 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 				"[budget] %d steps remaining. Stop gathering context. Complete any pending edits, run verification, and deliver your final answer.",
 				remaining,
 			))
+		}
+		if budgetWarnSent && !budgetEnforced && r.repeatWorkflow.streak >= repeatToolCallThreshold {
+			budgetEnforced = true
+			r.session.AppendUserMessage(
+				"[budget] You are repeating the same actions without making progress. This is your final step: synthesize what you have found and deliver your answer now. Do not call any more tools.",
+			)
+		}
+		if budgetWarnSent && !budgetEnforced && r.repeatWorkflow.streak >= repeatToolCallThreshold {
+			budgetEnforced = true
+			r.session.AppendUserMessage(
+				"[budget] You are repeating the same actions without making progress. This is your final step: synthesize what you have found and deliver your answer now. Do not call any more tools.",
+			)
 		}
 		if r.applyPendingInput() {
 			r.syncRuntimeNote()
@@ -425,6 +447,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 		r.updatePlanWorkflow(call.Name, args, result, false)
 		r.updateSameFileSearchWorkflow(call.Name, args, false)
 		r.updateValidationWorkflow(call.Name, args, result)
+		r.updateRepeatToolCallWorkflow(call.Name, args, result)
 	}
 	return nil
 }
@@ -656,6 +679,16 @@ func (r *Runner) syncRuntimeOverlays() {
 		})
 	} else {
 		r.session.ClearHookOverlay("git_workflow")
+	}
+	if content := strings.TrimSpace(r.repeatWorkflow.overlayContent()); content != "" {
+		r.session.SetHookOverlay(HookOverlay{
+			Key:        "repeat_loop",
+			Content:    content,
+			Priority:   HookPriorityHigh,
+			Provenance: "runtime",
+		})
+	} else {
+		r.session.ClearHookOverlay("repeat_loop")
 	}
 }
 
@@ -918,6 +951,49 @@ func (s sameFileSearchWorkflowState) overlayContent() string {
 		return ""
 	}
 	return "Search thrash guidance: you have repeatedly searched the same file without switching to a direct read. Stop trying more patterns on " + s.path + ". Read that file now, inspect the relevant function or block directly, then continue editing."
+}
+
+func (r *Runner) updateRepeatToolCallWorkflow(toolName string, args map[string]any, result string) {
+	target := repeatToolCallTarget(toolName, args)
+	if target == "" {
+		r.repeatWorkflow = repeatToolCallState{}
+		r.syncRuntimeNote()
+		return
+	}
+	key := toolName + ":" + target
+	lastKey := r.repeatWorkflow.lastToolName + ":" + r.repeatWorkflow.lastTarget
+	if key == lastKey {
+		r.repeatWorkflow.streak++
+	} else {
+		r.repeatWorkflow = repeatToolCallState{
+			lastToolName: toolName,
+			lastTarget:   target,
+			streak:       1,
+		}
+	}
+	r.syncRuntimeNote()
+}
+
+func repeatToolCallTarget(toolName string, args map[string]any) string {
+	switch toolName {
+	case "read_file":
+		return strings.TrimSpace(stringArg(args, "path"))
+	case "code_search", "search":
+		return strings.TrimSpace(stringArg(args, "query"))
+	case "run_command":
+		return strings.TrimSpace(stringArg(args, "command"))
+	case "glob":
+		return strings.TrimSpace(stringArg(args, "pattern"))
+	default:
+		return ""
+	}
+}
+
+func (s repeatToolCallState) overlayContent() string {
+	if s.streak < repeatToolCallThreshold {
+		return ""
+	}
+	return fmt.Sprintf("Loop detection: you have called %s on the same target %q %d times in a row without making progress. Stop repeating this action. Either the approach is wrong or you already have the information you need. Switch to a different tool or synthesize your findings now.", s.lastToolName, s.lastTarget, s.streak)
 }
 
 func isExplorationToolCall(toolName string, args map[string]any) bool {
