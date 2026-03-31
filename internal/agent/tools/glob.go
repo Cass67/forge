@@ -31,7 +31,7 @@ func NewGlob(workDir string, ignoreDirs []string) Tool {
 				basePath = p
 			}
 
-			resolved, err := ResolvePath(workDir, basePath)
+			resolved, err := ResolvePathAllowEscape(workDir, basePath)
 			if err != nil {
 				return fmt.Sprintf("error: %v", err), nil
 			}
