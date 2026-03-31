@@ -75,8 +75,12 @@ func TestApprovalDecisionRecordsRuleBasedPaths(t *testing.T) {
 			}
 
 			updates := gate.ApprovalUpdates()
-			if len(updates) != 1 {
-				t.Fatalf("update count = %d, want 1", len(updates))
+			wantUpdates := 1
+			if tc.decision == DecisionPrompt {
+				wantUpdates = 2
+			}
+			if len(updates) != wantUpdates {
+				t.Fatalf("update count = %d, want %d", len(updates), wantUpdates)
 			}
 			got := updates[0]
 			if got.Decision != tc.wantDecision {
@@ -87,6 +91,18 @@ func TestApprovalDecisionRecordsRuleBasedPaths(t *testing.T) {
 			}
 			if !strings.Contains(got.Reason, tc.wantReasonContain) {
 				t.Fatalf("reason = %q, want to contain %q", got.Reason, tc.wantReasonContain)
+			}
+			if tc.decision == DecisionPrompt {
+				final := updates[1]
+				if final.Decision != ApprovalDecisionAllow {
+					t.Fatalf("final decision = %q, want %q", final.Decision, ApprovalDecisionAllow)
+				}
+				if final.Source != ApprovalDecisionSourceUser {
+					t.Fatalf("final source = %q, want %q", final.Source, ApprovalDecisionSourceUser)
+				}
+				if !strings.Contains(final.Reason, "user approved prompt") {
+					t.Fatalf("final reason = %q, want user approval wording", final.Reason)
+				}
 			}
 		})
 	}
@@ -118,8 +134,8 @@ func TestApprovalDecisionRecordsSandboxDeniedPromptEscalation(t *testing.T) {
 	}
 
 	updates := gate.ApprovalUpdates()
-	if len(updates) != 1 {
-		t.Fatalf("update count = %d, want 1", len(updates))
+	if len(updates) != 2 {
+		t.Fatalf("update count = %d, want 2", len(updates))
 	}
 	got := updates[0]
 	if got.Decision != ApprovalDecisionPrompt {
@@ -132,6 +148,13 @@ func TestApprovalDecisionRecordsSandboxDeniedPromptEscalation(t *testing.T) {
 		if !strings.Contains(got.Reason, want) {
 			t.Fatalf("reason = %q, want to contain %q", got.Reason, want)
 		}
+	}
+	final := updates[1]
+	if final.Decision != ApprovalDecisionAllow {
+		t.Fatalf("final decision = %q, want %q", final.Decision, ApprovalDecisionAllow)
+	}
+	if final.Source != ApprovalDecisionSourceUser {
+		t.Fatalf("final source = %q, want %q", final.Source, ApprovalDecisionSourceUser)
 	}
 }
 
@@ -247,8 +270,8 @@ func TestApprovalDecisionRecordsGuardianWarnForTrustedCommand(t *testing.T) {
 	}
 
 	updates := gate.ApprovalUpdates()
-	if len(updates) != 1 {
-		t.Fatalf("update count = %d, want 1", len(updates))
+	if len(updates) != 2 {
+		t.Fatalf("update count = %d, want 2", len(updates))
 	}
 	got := updates[0]
 	if got.Decision != ApprovalDecisionPrompt {
@@ -259,6 +282,93 @@ func TestApprovalDecisionRecordsGuardianWarnForTrustedCommand(t *testing.T) {
 	}
 	if !strings.Contains(got.Reason, "guardian warning required prompt") {
 		t.Fatalf("reason = %q, want guardian warning wording", got.Reason)
+	}
+	final := updates[1]
+	if final.Decision != ApprovalDecisionAllow {
+		t.Fatalf("final decision = %q, want %q", final.Decision, ApprovalDecisionAllow)
+	}
+	if final.Source != ApprovalDecisionSourceUser {
+		t.Fatalf("final source = %q, want %q", final.Source, ApprovalDecisionSourceUser)
+	}
+}
+
+func TestApprovalDecisionRecordsPromptApprovalOutcome(t *testing.T) {
+	promptCalls := 0
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy: ApprovalOnRequest,
+		SandboxPolicy: SandboxWorkspaceWrite,
+	}, func(action tools.Action) (bool, error) {
+		promptCalls++
+		return true, nil
+	}, nil)
+
+	approved, err := gate.Approve(tools.Action{
+		Tool:    "write_file",
+		Summary: "write internal/app.go",
+		Detail:  "write internal/app.go",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !approved {
+		t.Fatal("expected prompt approval to allow action")
+	}
+	if promptCalls != 1 {
+		t.Fatalf("prompt calls = %d, want 1", promptCalls)
+	}
+
+	updates := gate.ApprovalUpdates()
+	if len(updates) != 2 {
+		t.Fatalf("update count = %d, want 2", len(updates))
+	}
+	if updates[0].Decision != ApprovalDecisionPrompt || updates[0].Source != ApprovalDecisionSourcePolicy {
+		t.Fatalf("prompt request update = %#v", updates[0])
+	}
+	if updates[1].Decision != ApprovalDecisionAllow || updates[1].Source != ApprovalDecisionSourceUser {
+		t.Fatalf("prompt approval update = %#v", updates[1])
+	}
+	if !strings.Contains(updates[1].Reason, "user approved prompt") {
+		t.Fatalf("reason = %q, want user approval wording", updates[1].Reason)
+	}
+}
+
+func TestApprovalDecisionRecordsPromptRejectionOutcome(t *testing.T) {
+	promptCalls := 0
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy: ApprovalOnRequest,
+		SandboxPolicy: SandboxWorkspaceWrite,
+	}, func(action tools.Action) (bool, error) {
+		promptCalls++
+		return false, nil
+	}, nil)
+
+	approved, err := gate.Approve(tools.Action{
+		Tool:    "write_file",
+		Summary: "write internal/app.go",
+		Detail:  "write internal/app.go",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved {
+		t.Fatal("expected prompt rejection to deny action")
+	}
+	if promptCalls != 1 {
+		t.Fatalf("prompt calls = %d, want 1", promptCalls)
+	}
+
+	updates := gate.ApprovalUpdates()
+	if len(updates) != 2 {
+		t.Fatalf("update count = %d, want 2", len(updates))
+	}
+	if updates[0].Decision != ApprovalDecisionPrompt || updates[0].Source != ApprovalDecisionSourcePolicy {
+		t.Fatalf("prompt request update = %#v", updates[0])
+	}
+	if updates[1].Decision != ApprovalDecisionForbidden || updates[1].Source != ApprovalDecisionSourceUser {
+		t.Fatalf("prompt rejection update = %#v", updates[1])
+	}
+	if !strings.Contains(updates[1].Reason, "user denied prompt") {
+		t.Fatalf("reason = %q, want user rejection wording", updates[1].Reason)
 	}
 }
 
@@ -318,6 +428,20 @@ func TestApprovalDecisionReasonFormatting(t *testing.T) {
 			source:   ApprovalDecisionSourcePolicy,
 			detail:   "write foo.txt",
 			want:     "policy allowed: write foo.txt",
+		},
+		{
+			name:     "user allow",
+			decision: ApprovalDecisionAllow,
+			source:   ApprovalDecisionSourceUser,
+			detail:   "write foo.txt",
+			want:     "user approved prompt: write foo.txt",
+		},
+		{
+			name:     "user forbid",
+			decision: ApprovalDecisionForbidden,
+			source:   ApprovalDecisionSourceUser,
+			detail:   "write foo.txt",
+			want:     "user denied prompt: write foo.txt",
 		},
 	}
 

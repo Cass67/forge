@@ -22,6 +22,7 @@ const (
 	ApprovalDecisionSourceTrusted  ApprovalDecisionSource = "trusted"
 	ApprovalDecisionSourcePolicy   ApprovalDecisionSource = "policy"
 	ApprovalDecisionSourceGuardian ApprovalDecisionSource = "guardian"
+	ApprovalDecisionSourceUser     ApprovalDecisionSource = "user"
 )
 
 type ApprovalUpdate struct {
@@ -82,6 +83,15 @@ func approvalReasonHead(decision ApprovalDecision, source ApprovalDecisionSource
 			return "guardian blocked"
 		case ApprovalDecisionAllow:
 			return "guardian allowed"
+		}
+	case ApprovalDecisionSourceUser:
+		switch decision {
+		case ApprovalDecisionAllow:
+			return "user approved prompt"
+		case ApprovalDecisionForbidden:
+			return "user denied prompt"
+		case ApprovalDecisionPrompt:
+			return "user prompt response"
 		}
 	}
 	if trimmed := strings.TrimSpace(string(source)); trimmed != "" {

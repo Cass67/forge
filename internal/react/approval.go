@@ -159,6 +159,7 @@ func (g *ApprovalGate) Approve(action tools.Action) (bool, error) {
 	if action.Tool == "" {
 		return false, fmt.Errorf("approval action tool is required")
 	}
+	evaluationAction := action
 
 	mutating := actionMutates(action)
 	if mutating {
@@ -177,8 +178,7 @@ func (g *ApprovalGate) Approve(action tools.Action) (bool, error) {
 		overrideAction := action
 		overrideAction.Summary = firstNonEmpty(overrideAction.Summary, overrideAction.Tool)
 		overrideAction.Summary = "sandbox denied: " + overrideAction.Summary
-		g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionPrompt, ApprovalDecisionSourceSandbox, detail))
-		return g.prompt(overrideAction)
+		return g.promptWithRecordedOutcome(ApprovalDecisionSourceSandbox, detail, overrideAction)
 	}
 
 	guardianWarn := false
@@ -211,21 +211,19 @@ func (g *ApprovalGate) Approve(action tools.Action) (bool, error) {
 		}
 	}
 
-	if decision, matched := g.ruleDecision(action); matched {
+	if decision, matched := g.ruleDecision(evaluationAction); matched {
 		switch decision {
 		case DecisionAllow:
 			if guardianWarn {
-				g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionPrompt, ApprovalDecisionSourceGuardian, approvalUpdateDetail(action)))
-				return g.prompt(action)
+				return g.promptWithRecordedOutcome(ApprovalDecisionSourceGuardian, approvalUpdateDetail(evaluationAction), action)
 			}
-			g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionAllow, ApprovalDecisionSourceRule, approvalUpdateDetail(action)))
+			g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionAllow, ApprovalDecisionSourceRule, approvalUpdateDetail(evaluationAction)))
 			return true, nil
 		case DecisionForbidden:
-			g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionForbidden, ApprovalDecisionSourceRule, approvalUpdateDetail(action)))
+			g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionForbidden, ApprovalDecisionSourceRule, approvalUpdateDetail(evaluationAction)))
 			return false, nil
 		case DecisionPrompt:
-			g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionPrompt, ApprovalDecisionSourceRule, approvalUpdateDetail(action)))
-			return g.prompt(action)
+			return g.promptWithRecordedOutcome(ApprovalDecisionSourceRule, approvalUpdateDetail(evaluationAction), action)
 		default:
 			return false, fmt.Errorf("unknown approval rule decision %q", decision)
 		}
@@ -234,17 +232,15 @@ func (g *ApprovalGate) Approve(action tools.Action) (bool, error) {
 	switch g.cfg.DefaultPolicy {
 	case ApprovalNever:
 		if guardianWarn {
-			g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionPrompt, ApprovalDecisionSourceGuardian, approvalUpdateDetail(action)))
-			return g.prompt(action)
+			return g.promptWithRecordedOutcome(ApprovalDecisionSourceGuardian, approvalUpdateDetail(evaluationAction), action)
 		}
-		g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionAllow, ApprovalDecisionSourcePolicy, approvalUpdateDetail(action)))
+		g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionAllow, ApprovalDecisionSourcePolicy, approvalUpdateDetail(evaluationAction)))
 		return true, nil
 	case ApprovalOnFailure:
 		if guardianWarn {
-			g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionPrompt, ApprovalDecisionSourceGuardian, approvalUpdateDetail(action)))
-			return g.prompt(action)
+			return g.promptWithRecordedOutcome(ApprovalDecisionSourceGuardian, approvalUpdateDetail(evaluationAction), action)
 		}
-		g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionAllow, ApprovalDecisionSourcePolicy, approvalUpdateDetail(action)))
+		g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionAllow, ApprovalDecisionSourcePolicy, approvalUpdateDetail(evaluationAction)))
 		return true, nil
 	case ApprovalOnRequest:
 		if guardianWarn || actionNeedsPrompt(action) {
@@ -252,25 +248,37 @@ func (g *ApprovalGate) Approve(action tools.Action) (bool, error) {
 			if guardianWarn {
 				source = ApprovalDecisionSourceGuardian
 			}
-			g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionPrompt, source, approvalUpdateDetail(action)))
-			return g.prompt(action)
+			return g.promptWithRecordedOutcome(source, approvalUpdateDetail(evaluationAction), action)
 		}
-		g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionAllow, ApprovalDecisionSourcePolicy, approvalUpdateDetail(action)))
+		g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionAllow, ApprovalDecisionSourcePolicy, approvalUpdateDetail(evaluationAction)))
 		return true, nil
 	case ApprovalUnlessTrusted:
-		if !guardianWarn && actionTrusted(action, g.cfg.KnownSafeCommand) {
-			g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionAllow, ApprovalDecisionSourceTrusted, approvalUpdateDetail(action)))
+		if !guardianWarn && actionTrusted(evaluationAction, g.cfg.KnownSafeCommand) {
+			g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionAllow, ApprovalDecisionSourceTrusted, approvalUpdateDetail(evaluationAction)))
 			return true, nil
 		}
 		source := ApprovalDecisionSourcePolicy
 		if guardianWarn {
 			source = ApprovalDecisionSourceGuardian
 		}
-		g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionPrompt, source, approvalUpdateDetail(action)))
-		return g.prompt(action)
+		return g.promptWithRecordedOutcome(source, approvalUpdateDetail(evaluationAction), action)
 	default:
 		return false, fmt.Errorf("unknown approval policy %q", g.cfg.DefaultPolicy)
 	}
+}
+
+func (g *ApprovalGate) promptWithRecordedOutcome(source ApprovalDecisionSource, detail string, action tools.Action) (bool, error) {
+	g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionPrompt, source, detail))
+	approved, err := g.prompt(action)
+	if err != nil {
+		return false, err
+	}
+	finalDecision := ApprovalDecisionForbidden
+	if approved {
+		finalDecision = ApprovalDecisionAllow
+	}
+	g.recordApprovalUpdate(NewApprovalUpdate(finalDecision, ApprovalDecisionSourceUser, detail))
+	return approved, nil
 }
 
 func (g *ApprovalGate) emitGuardianEvent(event GuardianEvent) {
