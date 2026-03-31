@@ -82,7 +82,7 @@ func (c *Config) Validate() []ValidationIssue {
 		ruleField := fmt.Sprintf("approval.rules[%d]", i)
 		hasPrefix := len(rule.CommandPrefix) > 0
 		hasCommand := strings.TrimSpace(rule.Command) != ""
-		if hasPrefix == hasCommand {
+		if hasPrefix && hasCommand {
 			add(ruleField, "must set exactly one of command_prefix or command")
 		}
 		if hasPrefix {

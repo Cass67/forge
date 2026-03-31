@@ -49,8 +49,6 @@ func LoadApprovalConfig(cfg *config.Config) ApprovalConfig {
 			approvalRule.Command = command
 			approvalRule.matcher = matcher
 			approvalRule.hasMatcher = true
-		default:
-			continue
 		}
 		out.Rules = append(out.Rules, approvalRule)
 	}
