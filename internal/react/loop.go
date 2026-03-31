@@ -14,32 +14,36 @@ import (
 )
 
 type Config struct {
-	Driver          llm.Driver
-	Tools           *agenttools.Registry
-	Renderer        agent.RenderTarget
-	SystemPrompt    func() string
-	Session         *Session
-	Progress        func(string)
-	MaxSessionTurns int
-	CompletionCheck func(SessionSnapshot, string) error
-	TurnComplete    func(SessionSnapshot)
+	Driver                llm.Driver
+	Tools                 *agenttools.Registry
+	Renderer              agent.RenderTarget
+	SystemPrompt          func() string
+	Session               *Session
+	Progress              func(string)
+	MaxSessionTurns       int
+	CompletionCheck       func(SessionSnapshot, string) error
+	TurnComplete          func(SessionSnapshot)
+	CompactionMaxFailures int
+	Interactive           bool
 }
 
 type Runner struct {
-	driver             llm.Driver
-	tools              *agenttools.Registry
-	renderer           agent.RenderTarget
-	systemPrompt       func() string
-	session            *Session
-	progress           func(string)
-	maxSessionTurns    int
-	gitWorkflow        gitWorkflowState
-	planWorkflow       planWorkflowState
-	searchWorkflow     sameFileSearchWorkflowState
-	validationWorkflow validationWorkflowState
-	repeatWorkflow     repeatToolCallState
-	completionCheck    func(SessionSnapshot, string) error
-	turnComplete       func(SessionSnapshot)
+	driver                llm.Driver
+	tools                 *agenttools.Registry
+	renderer              agent.RenderTarget
+	systemPrompt          func() string
+	session               *Session
+	progress              func(string)
+	maxSessionTurns       int
+	compactionFailures    int
+	compactionMaxFailures int
+	gitWorkflow           gitWorkflowState
+	planWorkflow          planWorkflowState
+	searchWorkflow        sameFileSearchWorkflowState
+	validationWorkflow    validationWorkflowState
+	repeatWorkflow        repeatToolCallState
+	completionCheck       func(SessionSnapshot, string) error
+	turnComplete          func(SessionSnapshot)
 }
 
 type gitCommitBlocker int
@@ -98,15 +102,16 @@ func NewRunner(cfg Config) *Runner {
 		reg = agenttools.NewRegistry()
 	}
 	runner := &Runner{
-		driver:          cfg.Driver,
-		tools:           reg,
-		renderer:        cfg.Renderer,
-		systemPrompt:    cfg.SystemPrompt,
-		session:         session,
-		progress:        cfg.Progress,
-		maxSessionTurns: maxSessionTurns(cfg.MaxSessionTurns),
-		completionCheck: cfg.CompletionCheck,
-		turnComplete:    cfg.TurnComplete,
+		driver:                cfg.Driver,
+		tools:                 reg,
+		renderer:              cfg.Renderer,
+		systemPrompt:          cfg.SystemPrompt,
+		session:               session,
+		progress:              cfg.Progress,
+		maxSessionTurns:       maxSessionTurns(cfg.MaxSessionTurns),
+		compactionMaxFailures: cfg.CompactionMaxFailures,
+		completionCheck:       cfg.CompletionCheck,
+		turnComplete:          cfg.TurnComplete,
 	}
 	if snap := session.Snapshot(); snap.TaskState != nil && isSynthesisGuardOperation(snap.TaskState.Operation) {
 		runner.planWorkflow.active = true
@@ -128,8 +133,18 @@ func (r *Runner) Run(ctx context.Context, input string) error {
 	if r.progress != nil {
 		r.progress(fmt.Sprintf("react runtime: executing turn %d", turn))
 	}
-	if CompactSessionHistory(r.session, r.maxSessionTurns) && r.progress != nil {
-		r.progress("react runtime: compacted session context")
+	if CompactSessionHistory(r.session, r.maxSessionTurns) {
+		if r.progress != nil {
+			r.progress("react runtime: compacted session context")
+		}
+		r.compactionFailures = 0
+	} else if r.compactionMaxFailures > 0 && r.session.Snapshot().Turn > r.maxSessionTurns/2 {
+		r.compactionFailures++
+		if r.compactionFailures >= r.compactionMaxFailures {
+			if r.progress != nil {
+				r.progress("react runtime: compaction circuit breaker tripped")
+			}
+		}
 	}
 	if r.driver == nil {
 		err := fmt.Errorf("react runner: driver is nil")
