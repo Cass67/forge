@@ -70,3 +70,51 @@ func TestBreaker_Reset(t *testing.T) {
 		t.Error("failures should be 0 after reset")
 	}
 }
+
+func TestBreaker_HalfOpenFailureReopens(t *testing.T) {
+	b := NewBreaker("test", 2, 50*time.Millisecond)
+	b.RecordFailure()
+	b.RecordFailure()
+	if b.State() != StateOpen {
+		t.Fatal("should be open")
+	}
+	time.Sleep(60 * time.Millisecond)
+	b.Allow() // transitions to half-open
+	if b.State() != StateHalfOpen {
+		t.Fatal("should be half-open after Allow()")
+	}
+	b.RecordFailure() // probe fails → re-open
+	if b.State() != StateOpen {
+		t.Errorf("state = %v, want open", b.State())
+	}
+}
+
+func TestBreaker_NewBreakerValidation(t *testing.T) {
+	b := NewBreaker("test", 0, 0)
+	if b.maxFailures != 1 {
+		t.Errorf("maxFailures = %d, want 1", b.maxFailures)
+	}
+	if b.cooldown != 5*time.Minute {
+		t.Errorf("cooldown = %v, want 5m", b.cooldown)
+	}
+}
+
+func TestBreaker_IgnoresFailuresWhileOpen(t *testing.T) {
+	b := NewBreaker("test", 2, time.Hour)
+	b.RecordFailure()
+	b.RecordFailure()
+	if b.State() != StateOpen {
+		t.Fatal("should be open")
+	}
+	// Record more failures — should not extend cooldown
+	b.RecordFailure()
+	b.RecordFailure()
+	b.RecordFailure()
+	if b.State() != StateOpen {
+		t.Error("should still be open")
+	}
+	// Cooldown hasn't elapsed, so Allow should still block
+	if b.Allow() {
+		t.Error("open breaker should not allow")
+	}
+}
