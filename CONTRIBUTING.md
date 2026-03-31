@@ -177,9 +177,17 @@ Prefer targeted tests while iterating, then run the full suite before committing
 Examples:
 
 ```bash
-just test-pkg ./internal/agent -run TestAgentRunDoesNotRetryShortFinalAnswer
-just test-pkg ./internal/bootstrap -run TestCanonicalAnthropicModel
-just test-pkg ./internal/tui -run TestChatModelModelsOverlayLeadingDigitStartsSearch
+just test-pkg ./internal/agent
+just test-pkg ./internal/bootstrap
+just test-pkg ./internal/tui
+```
+
+For narrower test selection, use the raw Go command directly:
+
+```bash
+go test ./internal/agent -run TestAgentRunDoesNotRetryShortFinalAnswer
+go test ./internal/bootstrap -run TestCanonicalAnthropicModel
+go test ./internal/tui -run TestChatModelModelsOverlayLeadingDigitStartsSearch
 ```
 
 Final verification:
