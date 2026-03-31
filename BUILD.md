@@ -7,6 +7,7 @@ It does not cover packaging or distribution systems such as Homebrew, Scoop, `.d
 ## Requirements
 
 - Go `1.25.x`
+- `just` installed and available on your `PATH`
 - a working C toolchain is not required for the current default build
 
 For local development and commit hooks, see [LOCAL_TOOLING.md](/Users/cass/git/forge/LOCAL_TOOLING.md).
