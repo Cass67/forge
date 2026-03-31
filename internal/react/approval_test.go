@@ -70,6 +70,13 @@ func TestApprovalGateUnlessTrustedSkipsPromptForKnownSafe(t *testing.T) {
 	if promptCalls != 0 {
 		t.Fatalf("prompt calls = %d, want 0", promptCalls)
 	}
+	updates := gate.ApprovalUpdates()
+	if len(updates) != 1 {
+		t.Fatalf("update count = %d, want 1", len(updates))
+	}
+	if updates[0].Decision != ApprovalDecisionAllow || updates[0].Source != ApprovalDecisionSourceTrusted {
+		t.Fatalf("trusted approval update = %#v", updates[0])
+	}
 }
 
 func TestApprovalGateUnlessTrustedPromptsForEscapedWildcardSummary(t *testing.T) {
@@ -122,6 +129,13 @@ func TestApprovalGateOnRequestPromptsForMutations(t *testing.T) {
 	}
 	if promptCalls != 1 {
 		t.Fatalf("prompt calls = %d, want 1", promptCalls)
+	}
+	updates := gate.ApprovalUpdates()
+	if len(updates) != 1 {
+		t.Fatalf("update count = %d, want 1", len(updates))
+	}
+	if updates[0].Decision != ApprovalDecisionPrompt || updates[0].Source != ApprovalDecisionSourcePolicy {
+		t.Fatalf("prompt approval update = %#v", updates[0])
 	}
 }
 
@@ -193,6 +207,13 @@ func TestApprovalGateGuardianWarningForcesPrompt(t *testing.T) {
 	}
 	if event.Action.Tool != "run_command" {
 		t.Fatalf("guardian event = %#v", event)
+	}
+	updates := gate.ApprovalUpdates()
+	if len(updates) != 1 {
+		t.Fatalf("update count = %d, want 1", len(updates))
+	}
+	if updates[0].Decision != ApprovalDecisionPrompt {
+		t.Fatalf("guardian warning update = %#v", updates[0])
 	}
 }
 
