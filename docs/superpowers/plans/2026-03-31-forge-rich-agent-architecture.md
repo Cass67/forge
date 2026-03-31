@@ -212,6 +212,107 @@
 - Decide whether other runtime services such as guardian warnings or blocked-plan reminders should migrate from ad hoc notes into the same hook-overlay path.
 - Keep the implementation log in this file current as each slice lands.
 
+### 2026-03-31 Checkpoint 13
+
+- Added keyed hook-overlay management on `Session`:
+  - `SetHookOverlay`
+  - `ClearHookOverlay`
+- This avoids the earlier problem where one runtime-owned overlay could replace the entire hook-overlay list.
+- Switched suggested-skill overlay handling to the keyed API so future runtime services can add overlays without stomping each other.
+- Added tests for overlay upsert and keyed removal semantics.
+
+### Next Slice
+
+- Migrate at least one more runtime-owned reminder from ad hoc runtime notes into the hook-overlay path so the new overlay API carries more than suggested-skill nudges.
+- Keep the implementation log in this file current as each slice lands.
+
+### 2026-03-31 Checkpoint 14
+
+- Migrated blocked-plan guidance from an ad hoc mode runtime note into the keyed hook-overlay path.
+- The runner now:
+  - publishes `plan_blocker` as a runtime-owned hook overlay in plan mode when the current plan is blocked
+  - clears that overlay automatically when the blocker no longer applies
+- Suggested-skill overlays and blocked-plan overlays now coexist cleanly because both use keyed overlay upsert/clear instead of replacing the entire hook set.
+- Added focused tests for:
+  - blocked-plan hook-overlay rendering
+  - coexistence between blocked-plan and suggested-skill overlays
+
+### Next Slice
+
+- Decide whether guardian warnings should also become hook overlays so approval risk cues are visible to both the model and the user before approval prompts fire.
+- Keep the implementation log in this file current as each slice lands.
+
+### 2026-03-31 Checkpoint 15
+
+- Routed guardian review outcomes into the keyed hook-overlay path instead of keeping them implicit inside approval prompting alone.
+- Approval-gate guardian reviews now emit structured observer events for:
+  - allow
+  - warn
+  - block
+- Runtime chat consumes those events and publishes a high-priority `guardian_warning` overlay when the guardian warns or blocks, including the guardian reason and action summary.
+- The same path clears the overlay when a later guardian review is `allow`, preventing stale approval risk guidance from lingering in session context.
+- Added focused tests for:
+  - guardian observer event emission
+  - guardian-warning hook overlay creation
+  - guardian-warning overlay clearing on allow
+
+### Next Slice
+
+- Continue migrating runtime-owned reminders off ad hoc notes and into keyed hook overlays, starting with review workflow guidance.
+- Keep the implementation log in this file current as each slice lands.
+
+### 2026-03-31 Checkpoint 16
+
+- Migrated review workflow guidance from `RuntimeNote` into the keyed hook-overlay path.
+- The runner now publishes `review_guidance` as a runtime-owned high-priority overlay whenever the active task mode is `review`, and clears it automatically outside review mode.
+- This leaves `RuntimeNote` for genuinely aggregated workflow state while keeping mode-specific runtime nudges on the same overlay path as:
+  - suggested skills
+  - blocked-plan guidance
+  - guardian warnings
+- Updated runner coverage so review guidance is asserted through `[hook:runtime]` overlay rendering instead of a dedicated ad hoc system note.
+
+### Next Slice
+
+- Continue collapsing remaining runtime-only guidance into overlays or a dedicated policy surface, with validation/search workflow nudges as the next candidates.
+- Keep the implementation log in this file current as each slice lands.
+
+### 2026-03-31 Checkpoint 17
+
+- Migrated two more transient runtime nudges from `RuntimeNote` into keyed hook overlays:
+  - validation-failure guidance
+  - same-file search-thrash guidance
+- The runner now publishes:
+  - `validation_failure` when the most recent validation command failed
+  - `search_thrash` when repeated `search`/`code_search` calls keep hitting the same file without a direct read
+- Both overlays are high-priority runtime-owned hints and clear automatically once the underlying workflow state no longer applies.
+- This leaves `RuntimeNote` increasingly focused on aggregated workflow state such as synthesis/merge state rather than one-off coaching.
+- Updated focused runner coverage so validation/search nudges are asserted through `[hook:runtime]` overlay rendering.
+
+### Next Slice
+
+- Reassess the remaining `RuntimeNote` users and decide whether synthesis and git workflow guidance should stay aggregated notes or move behind the same policy/overlay layer.
+- Keep the implementation log in this file current as each slice lands.
+
+### 2026-03-31 Checkpoint 18
+
+- Migrated synthesis-budget nudges for `plan` and `analysis` work out of `RuntimeNote` and into the keyed hook-overlay path.
+- The runner now publishes a high-priority `synthesis_guidance` overlay whenever exploration has crossed the configured budget and the model should stop researching and synthesize an answer or plan.
+- This unifies all transient runtime coaching under the overlay system:
+  - suggested skills
+  - blocked-plan reminders
+  - guardian warnings
+  - review guidance
+  - validation failure
+  - search thrash
+  - synthesis guidance
+- Left git workflow state on `RuntimeNote` for now because it behaves more like durable workflow context than a transient hint.
+- Updated focused runner coverage so plan/analysis exploration nudges are asserted through `[hook:runtime]` overlay rendering.
+
+### Next Slice
+
+- Decide whether git workflow state should remain an aggregated runtime note or become a richer dedicated workflow/overlay object with more structured merge-state cues.
+- Keep the implementation log in this file current as each slice lands.
+
 ## Program Structure
 
 This program should be implemented in dependency order:

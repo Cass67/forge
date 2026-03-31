@@ -50,7 +50,7 @@ func NewAskUserQuestion() agenttools.Tool {
 				if label == "" {
 					return "", fmt.Errorf("option %d is missing a label", i+1)
 				}
-				b.WriteString(fmt.Sprintf("\n%d. %s", i+1, label))
+				fmt.Fprintf(&b, "\n%d. %s", i+1, label)
 				if desc := strings.TrimSpace(opt.Description); desc != "" {
 					b.WriteString(" — ")
 					b.WriteString(desc)

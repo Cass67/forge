@@ -130,6 +130,7 @@ func TestApprovalGateGuardianBlocksDestructiveAction(t *testing.T) {
 
 func TestApprovalGateGuardianWarningForcesPrompt(t *testing.T) {
 	promptCalls := 0
+	var event GuardianEvent
 	gate := NewApprovalGate("", ApprovalConfig{
 		DefaultPolicy: ApprovalNever,
 		SandboxPolicy: SandboxWorkspaceWrite,
@@ -144,6 +145,7 @@ func TestApprovalGateGuardianWarningForcesPrompt(t *testing.T) {
 		return tools.ReviewApprovalAction(transcript, action)
 	})
 	gate.SetGuardianContext(func() string { return "" })
+	gate.SetGuardianObserver(func(ev GuardianEvent) { event = ev })
 
 	approved, err := gate.Approve(tools.Action{
 		Tool:    "run_command",
@@ -158,6 +160,41 @@ func TestApprovalGateGuardianWarningForcesPrompt(t *testing.T) {
 	}
 	if promptCalls != 1 {
 		t.Fatalf("prompt calls = %d, want 1", promptCalls)
+	}
+	if event.Decision != tools.GuardianWarn {
+		t.Fatalf("guardian event = %#v", event)
+	}
+	if event.Action.Tool != "run_command" {
+		t.Fatalf("guardian event = %#v", event)
+	}
+}
+
+func TestApprovalGateGuardianObserverReceivesBlockEvent(t *testing.T) {
+	var event GuardianEvent
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy: ApprovalNever,
+		SandboxPolicy: SandboxWorkspaceWrite,
+	}, func(action tools.Action) (bool, error) {
+		return true, nil
+	}, nil)
+	gate.SetGuardianReviewer(func(transcript string, action tools.Action) tools.GuardianReview {
+		return tools.ReviewApprovalAction(transcript, action)
+	})
+	gate.SetGuardianObserver(func(ev GuardianEvent) { event = ev })
+
+	approved, err := gate.Approve(tools.Action{
+		Tool:    "run_command",
+		Summary: "rm -rf /",
+		Detail:  "rm -rf /",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved {
+		t.Fatal("expected blocked action")
+	}
+	if event.Decision != tools.GuardianBlock {
+		t.Fatalf("guardian event = %#v", event)
 	}
 }
 

@@ -40,12 +40,19 @@ type ApprovalConfig struct {
 	KnownSafeCommand []string
 }
 
+type GuardianEvent struct {
+	Decision tools.GuardianDecision
+	Reason   string
+	Action   tools.Action
+}
+
 type ApprovalGate struct {
 	workDir         string
 	cfg             ApprovalConfig
 	prompt          tools.ApprovalFunc
 	guardian        func(string, tools.Action) tools.GuardianReview
 	guardianContext func() string
+	guardianObserve func(GuardianEvent)
 	progress        func(string)
 	now             func() time.Time
 	originalBranch  string
@@ -84,6 +91,12 @@ func (g *ApprovalGate) SetGuardianReviewer(reviewer func(string, tools.Action) t
 func (g *ApprovalGate) SetGuardianContext(provider func() string) {
 	if g != nil {
 		g.guardianContext = provider
+	}
+}
+
+func (g *ApprovalGate) SetGuardianObserver(observer func(GuardianEvent)) {
+	if g != nil {
+		g.guardianObserve = observer
 	}
 }
 
@@ -155,6 +168,11 @@ func (g *ApprovalGate) Approve(action tools.Action) (bool, error) {
 			transcript = strings.TrimSpace(g.guardianContext())
 		}
 		review := g.guardian(transcript, action)
+		g.emitGuardianEvent(GuardianEvent{
+			Decision: review.Decision,
+			Reason:   strings.TrimSpace(review.Reason),
+			Action:   action,
+		})
 		switch review.Decision {
 		case tools.GuardianBlock:
 			if g.progress != nil && strings.TrimSpace(review.Reason) != "" {
@@ -212,6 +230,13 @@ func (g *ApprovalGate) Approve(action tools.Action) (bool, error) {
 	default:
 		return false, fmt.Errorf("unknown approval policy %q", g.cfg.DefaultPolicy)
 	}
+}
+
+func (g *ApprovalGate) emitGuardianEvent(event GuardianEvent) {
+	if g == nil || g.guardianObserve == nil {
+		return
+	}
+	g.guardianObserve(event)
 }
 
 func normalizeApprovalConfig(cfg ApprovalConfig) ApprovalConfig {
