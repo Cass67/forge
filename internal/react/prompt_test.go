@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"forge/internal/hooks"
 	"forge/internal/llm"
 )
 
@@ -219,6 +220,53 @@ func TestBuildMessages_IncludesHookOverlayAsSystemMessage(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("messages missing hook overlay: %#v", msgs)
+	}
+}
+
+func TestBuildMessages_UsesNormalizedHookOutputWithoutDuplicatingVisibleNote(t *testing.T) {
+	snap := SessionSnapshot{
+		HookOutput: hooks.ExecutionOutput{
+			Overlays: []hooks.OverlayResult{{
+				Key:        "reminder",
+				Content:    "Prefer the preview lifecycle tools over an ad-hoc webserver.",
+				Priority:   hooks.PriorityHigh,
+				Provenance: "runtime",
+			}},
+			Note: &hooks.NoteResult{
+				Message:    "Normalized runtime note.",
+				Priority:   hooks.PriorityHigh,
+				Provenance: "runtime",
+			},
+		},
+		HookOverlays: []HookOverlay{{
+			Key:        "reminder",
+			Content:    "legacy copy should not render twice",
+			Priority:   HookPriorityHigh,
+			Provenance: "runtime",
+		}},
+		RuntimeNote: "Normalized runtime note.",
+		History:     []llm.Message{{Role: llm.RoleUser, Content: "keep going"}},
+	}
+
+	msgs := BuildMessages("sys", snap)
+	overlayCount := 0
+	noteCount := 0
+	for _, msg := range msgs {
+		if msg.Role != llm.RoleSystem {
+			continue
+		}
+		if strings.Contains(msg.Content, "[hook:runtime]") && strings.Contains(msg.Content, "Prefer the preview lifecycle tools over an ad-hoc webserver.") {
+			overlayCount++
+		}
+		if strings.Contains(msg.Content, "Normalized runtime note.") {
+			noteCount++
+		}
+	}
+	if overlayCount != 1 {
+		t.Fatalf("overlay count = %d, messages = %#v", overlayCount, msgs)
+	}
+	if noteCount != 1 {
+		t.Fatalf("runtime note count = %d, messages = %#v", noteCount, msgs)
 	}
 }
 
