@@ -258,9 +258,8 @@ func (g *ApprovalGate) ruleDecision(action tools.Action) (RuleDecision, bool) {
 			continue
 		}
 		if len(rule.CommandPrefix) > 0 {
-			summaryTokens := strings.Fields(strings.ToLower(action.Summary))
-			prefixTokens := lowerTokens(rule.CommandPrefix)
-			if !tokenPrefixMatch(summaryTokens, prefixTokens) {
+			matcher, err := parseShellRuleTokens(rule.CommandPrefix)
+			if err != nil || !matcher.matches(action.Summary) {
 				continue
 			}
 		}
@@ -284,14 +283,7 @@ func actionTrusted(action tools.Action, knownSafe []string) bool {
 	if action.Tool != "run_command" {
 		return false
 	}
-	commandTokens := strings.Fields(strings.ToLower(action.Summary))
-	for _, rawPrefix := range knownSafe {
-		prefixTokens := strings.Fields(strings.ToLower(strings.TrimSpace(rawPrefix)))
-		if tokenPrefixMatch(commandTokens, prefixTokens) {
-			return true
-		}
-	}
-	return false
+	return matchesAnyShellRule(action.Summary, knownSafe)
 }
 
 func actionMutates(action tools.Action) bool {
@@ -440,29 +432,6 @@ func branchSlug(input string) string {
 		}
 	}
 	return strings.Trim(b.String(), "-")
-}
-
-func lowerTokens(values []string) []string {
-	out := make([]string, 0, len(values))
-	for _, v := range values {
-		v = strings.ToLower(strings.TrimSpace(v))
-		if v != "" {
-			out = append(out, v)
-		}
-	}
-	return out
-}
-
-func tokenPrefixMatch(tokens []string, prefix []string) bool {
-	if len(prefix) == 0 || len(tokens) < len(prefix) {
-		return false
-	}
-	for i := range prefix {
-		if tokens[i] != prefix[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func isProtectedBranch(branch string) bool {
