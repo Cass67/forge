@@ -34,7 +34,7 @@ func TestValidate_InvalidFields(t *testing.T) {
 	}
 }
 
-func TestValidate_ApprovalRulesRequireExactlyOneMatcherShape(t *testing.T) {
+func TestValidateApprovalRulesRequireOnlyOneExplicitMatcherShape(t *testing.T) {
 	var cfg Config
 	setDefaults(&cfg)
 	cfg.Approval.Rules = []ApprovalRuleConfig{
@@ -45,7 +45,7 @@ func TestValidate_ApprovalRulesRequireExactlyOneMatcherShape(t *testing.T) {
 			Decision:      "forbidden",
 		},
 		{
-			Tool:     "run_command",
+			Tool:     "write_file",
 			Decision: "allow",
 		},
 	}
@@ -54,12 +54,12 @@ func TestValidate_ApprovalRulesRequireExactlyOneMatcherShape(t *testing.T) {
 	if !hasIssueContaining(issues, "approval.rules[0]", "exactly one of command_prefix or command") {
 		t.Fatalf("expected exclusive matcher issue for rule 0, got %v", issues)
 	}
-	if !hasIssueContaining(issues, "approval.rules[1]", "exactly one of command_prefix or command") {
-		t.Fatalf("expected exclusive matcher issue for rule 1, got %v", issues)
+	if hasIssueContaining(issues, "approval.rules[1]", "exactly one of command_prefix or command") {
+		t.Fatalf("tool-only rule should remain valid, got %v", issues)
 	}
 }
 
-func TestValidate_ApprovalRulesRejectMalformedMatchers(t *testing.T) {
+func TestValidateApprovalRulesRejectMalformedMatchers(t *testing.T) {
 	var cfg Config
 	setDefaults(&cfg)
 	cfg.Approval.Rules = []ApprovalRuleConfig{

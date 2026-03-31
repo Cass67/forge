@@ -299,7 +299,10 @@ func (g *ApprovalGate) ruleDecision(action tools.Action) (RuleDecision, bool) {
 			continue
 		}
 		matcher, ok := rule.shellMatcher()
-		if !ok || !matcher.matches(action.Summary) {
+		if ok && !matcher.matches(action.Summary) {
+			continue
+		}
+		if !ok && rule.hasExplicitMatcher() {
 			continue
 		}
 		return rule.Decision, true
@@ -326,6 +329,10 @@ func (r ApprovalRule) shellMatcher() (shellRule, bool) {
 		return matcher, true
 	}
 	return shellRule{}, false
+}
+
+func (r ApprovalRule) hasExplicitMatcher() bool {
+	return r.hasMatcher || strings.TrimSpace(r.Command) != "" || len(r.CommandPrefix) > 0
 }
 
 func actionNeedsPrompt(action tools.Action) bool {
