@@ -16,4 +16,3 @@ var defaultKnownSafeCommandPrefixes = []string{
 	"npm test",
 	"npm run lint",
 }
-
