@@ -298,6 +298,45 @@ func (s *Session) SetHookOverlays(overlays []hooks.Overlay) {
 	s.hookOverlays = append([]hooks.Overlay(nil), overlays...)
 }
 
+func (s *Session) SetHookOverlay(overlay hooks.Overlay) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := strings.TrimSpace(overlay.Key)
+	if key == "" {
+		return
+	}
+	for i := range s.hookOverlays {
+		if strings.EqualFold(strings.TrimSpace(s.hookOverlays[i].Key), key) {
+			s.hookOverlays[i] = overlay
+			return
+		}
+	}
+	s.hookOverlays = append(s.hookOverlays, overlay)
+}
+
+func (s *Session) ClearHookOverlay(key string) {
+	if s == nil {
+		return
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	filtered := s.hookOverlays[:0]
+	for _, overlay := range s.hookOverlays {
+		if strings.EqualFold(strings.TrimSpace(overlay.Key), key) {
+			continue
+		}
+		filtered = append(filtered, overlay)
+	}
+	s.hookOverlays = append([]hooks.Overlay(nil), filtered...)
+}
+
 func (s *Session) SetMode(mode Mode) {
 	if s == nil {
 		return

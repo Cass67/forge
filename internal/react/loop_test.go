@@ -401,7 +401,7 @@ func TestRunnerIncludesInterruptedGuidanceAfterExecSessionTurn(t *testing.T) {
 
 	var interruptedMsg string
 	for _, msg := range driver.lastMessages {
-		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "previous turn was interrupted") {
+		if msg.Role == llm.RoleSystem && strings.Contains(strings.ToLower(msg.Content), "previous turn was interrupted") {
 			interruptedMsg = msg.Content
 			break
 		}
@@ -434,7 +434,7 @@ func TestRunnerIncludesReviewRuntimeGuidance(t *testing.T) {
 
 	var reviewMsg string
 	for _, msg := range driver.lastMessages {
-		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Review workflow active") {
+		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "[hook:runtime]") && strings.Contains(msg.Content, "Review workflow active") {
 			reviewMsg = msg.Content
 			break
 		}
@@ -473,7 +473,7 @@ func TestRunnerIncludesBlockedPlanRuntimeGuidance(t *testing.T) {
 
 	var blockedMsg string
 	for _, msg := range driver.lastMessages {
-		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Current plan is blocked") {
+		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "[hook:runtime]") && strings.Contains(msg.Content, "Current plan is blocked") {
 			blockedMsg = msg.Content
 			break
 		}
@@ -483,6 +483,54 @@ func TestRunnerIncludesBlockedPlanRuntimeGuidance(t *testing.T) {
 	}
 	if !strings.Contains(blockedMsg, "ask_user_question") {
 		t.Fatalf("blocked guidance = %q", blockedMsg)
+	}
+}
+
+func TestRunnerBlockedPlanOverlayCoexistsWithSuggestedSkillOverlay(t *testing.T) {
+	driver := &captureMessagesDriver{response: "Plan is blocked on user input."}
+	session := NewSession()
+	session.SetHookOverlay(HookOverlay{
+		Key:        "suggested_skill",
+		Content:    "suggested skill: /brainstorming (planning work benefits from explicit design before implementation)",
+		Priority:   HookPriorityNormal,
+		Provenance: "runtime",
+	})
+	session.SetTaskState(TaskState{
+		Objective:            "write a plan for prompt/runtime work",
+		Operation:            "plan",
+		RequiredVerification: "produce a concise plan grounded in enough repo evidence",
+	})
+	session.SetPlanState(PlanState{
+		Steps: []PlanStep{
+			{Step: "Confirm whether plan mode should be mandatory by default", Status: "blocked", Blocker: "need user decision on default behavior"},
+			{Step: "Implement the approved runtime behavior", Status: "pending"},
+		},
+	})
+
+	r := NewRunner(Config{
+		Driver:  driver,
+		Session: session,
+	})
+
+	if err := r.Run(context.Background(), "keep going"); err != nil {
+		t.Fatal(err)
+	}
+
+	foundSuggested := false
+	foundBlocked := false
+	for _, msg := range driver.lastMessages {
+		if msg.Role != llm.RoleSystem {
+			continue
+		}
+		if strings.Contains(msg.Content, "suggested skill: /brainstorming") {
+			foundSuggested = true
+		}
+		if strings.Contains(msg.Content, "Current plan is blocked") {
+			foundBlocked = true
+		}
+	}
+	if !foundSuggested || !foundBlocked {
+		t.Fatalf("expected both overlays, got %#v", driver.lastMessages)
 	}
 }
 
@@ -1017,7 +1065,7 @@ func TestRunnerRequiresMutationBeforeRetryingFailedCommit(t *testing.T) {
 func TestRunnerNudgesOnExcessivePlanExploration(t *testing.T) {
 	// Build planExplorationBudget+1 exploration steps to cross the synthesis threshold,
 	// then a final text response. The model should never be blocked — only nudged via
-	// the runtime note injected into the system prompt.
+	// a runtime hook overlay injected into the system prompt.
 	const explorations = planExplorationBudget + 1
 	steps := make([][]llm.Token, explorations+1)
 	for i := 0; i < explorations; i++ {
@@ -1062,7 +1110,7 @@ func TestRunnerNudgesOnExcessivePlanExploration(t *testing.T) {
 	foundSynthesisNote := false
 	for _, msgs := range driver.allMsgs[planExplorationBudget:] {
 		for _, msg := range msgs {
-			if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Planning task guidance") {
+			if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "[hook:runtime]") && strings.Contains(msg.Content, "Planning task guidance") {
 				foundSynthesisNote = true
 			}
 		}
@@ -1126,7 +1174,7 @@ func TestRunnerNudgesOnExcessiveAnalysisExploration(t *testing.T) {
 	foundSynthesisNote := false
 	for _, msgs := range driver.allMsgs[analysisExplorationBudget:] {
 		for _, msg := range msgs {
-			if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Analysis guidance") {
+			if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "[hook:runtime]") && strings.Contains(msg.Content, "Analysis guidance") {
 				foundSynthesisNote = true
 			}
 		}
@@ -1186,16 +1234,16 @@ func TestRunnerNudgesOnRepeatedSameFileCodeSearch(t *testing.T) {
 	if codeSearchCalls != repeatedSearches {
 		t.Fatalf("code_search calls = %d, want %d (no blocking)", codeSearchCalls, repeatedSearches)
 	}
-	foundRuntimeNote := false
+	foundOverlay := false
 	for _, msgs := range driver.allMsgs[sameFileSearchThrashThreshold:] {
 		for _, msg := range msgs {
-			if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Search thrash guidance") {
-				foundRuntimeNote = true
+			if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "[hook:runtime]") && strings.Contains(msg.Content, "Search thrash guidance") {
+				foundOverlay = true
 			}
 		}
 	}
-	if !foundRuntimeNote {
-		t.Fatalf("expected search thrash runtime note after threshold, allMsgs=%d", len(driver.allMsgs))
+	if !foundOverlay {
+		t.Fatalf("expected search thrash overlay after threshold, allMsgs=%d", len(driver.allMsgs))
 	}
 	snap := session.Snapshot()
 	for _, msg := range snap.History {
@@ -1313,9 +1361,19 @@ func TestRunnerTracksValidationFailOnGoTest(t *testing.T) {
 	if !found {
 		t.Fatalf("expected __validation failed call, got %#v", rec.calls)
 	}
-	note := r.session.Snapshot().RuntimeNote
-	if !strings.Contains(note, "Last validation failed") {
-		t.Fatalf("expected failure runtime note, got %q", note)
+	foundOverlay := false
+	for _, msgs := range driver.allMsgs[1:] {
+		for _, msg := range msgs {
+			if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "[hook:runtime]") && strings.Contains(msg.Content, "Last validation failed") {
+				foundOverlay = true
+			}
+		}
+	}
+	if !foundOverlay {
+		t.Fatalf("expected failure validation overlay, allMsgs=%#v", driver.allMsgs)
+	}
+	if note := r.session.Snapshot().RuntimeNote; note != "" {
+		t.Fatalf("runtime note should be empty after overlay migration, got %q", note)
 	}
 }
 

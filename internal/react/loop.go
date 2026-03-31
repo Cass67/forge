@@ -592,6 +592,7 @@ func (r *Runner) syncRuntimeNote() {
 	if r == nil || r.session == nil {
 		return
 	}
+	r.syncRuntimeOverlays()
 	notes := make([]string, 0, 4)
 	if note := strings.TrimSpace(r.modeRuntimeNote()); note != "" {
 		notes = append(notes, note)
@@ -611,22 +612,68 @@ func (r *Runner) syncRuntimeNote() {
 	r.session.SetRuntimeNote(strings.Join(notes, "\n\n"))
 }
 
+func (r *Runner) syncRuntimeOverlays() {
+	if r == nil || r.session == nil {
+		return
+	}
+	snap := r.session.Snapshot()
+	if snap.Mode == ModeReview {
+		r.session.SetHookOverlay(HookOverlay{
+			Key:        "review_guidance",
+			Content:    "Review workflow active. Lead with findings before summary, keep findings grounded in repo evidence, and call out regressions, risks, or missing tests explicitly.",
+			Priority:   HookPriorityHigh,
+			Provenance: "runtime",
+		})
+	} else {
+		r.session.ClearHookOverlay("review_guidance")
+	}
+	if blocker := currentPlanBlocker(snap.PlanState); blocker != "" && snap.Mode == ModePlan {
+		r.session.SetHookOverlay(HookOverlay{
+			Key:        "plan_blocker",
+			Content:    "Current plan is blocked: " + blocker + ". Resolve the blocker directly if you can, otherwise use ask_user_question to get the missing decision before continuing broad work.",
+			Priority:   HookPriorityHigh,
+			Provenance: "runtime",
+		})
+	} else {
+		r.session.ClearHookOverlay("plan_blocker")
+	}
+	if content := strings.TrimSpace(r.planWorkflow.overlayContent()); content != "" {
+		r.session.SetHookOverlay(HookOverlay{
+			Key:        "synthesis_guidance",
+			Content:    content,
+			Priority:   HookPriorityHigh,
+			Provenance: "runtime",
+		})
+	} else {
+		r.session.ClearHookOverlay("synthesis_guidance")
+	}
+	if content := strings.TrimSpace(r.validationWorkflow.overlayContent()); content != "" {
+		r.session.SetHookOverlay(HookOverlay{
+			Key:        "validation_failure",
+			Content:    content,
+			Priority:   HookPriorityHigh,
+			Provenance: "runtime",
+		})
+	} else {
+		r.session.ClearHookOverlay("validation_failure")
+	}
+	if content := strings.TrimSpace(r.searchWorkflow.overlayContent()); content != "" {
+		r.session.SetHookOverlay(HookOverlay{
+			Key:        "search_thrash",
+			Content:    content,
+			Priority:   HookPriorityHigh,
+			Provenance: "runtime",
+		})
+	} else {
+		r.session.ClearHookOverlay("search_thrash")
+	}
+}
+
 func (r *Runner) modeRuntimeNote() string {
 	if r == nil || r.session == nil {
 		return ""
 	}
-	snap := r.session.Snapshot()
-	switch snap.Mode {
-	case ModeReview:
-		return "Review workflow active. Lead with findings before summary, keep findings grounded in repo evidence, and call out regressions, risks, or missing tests explicitly."
-	case ModePlan:
-		if blocker := currentPlanBlocker(snap.PlanState); blocker != "" {
-			return "Current plan is blocked: " + blocker + ". Resolve the blocker directly if you can, otherwise use ask_user_question to get the missing decision before continuing broad work."
-		}
-		return ""
-	default:
-		return ""
-	}
+	return ""
 }
 
 func currentPlanBlocker(state *PlanState) string {
@@ -700,7 +747,7 @@ func (r *Runner) updatePlanWorkflow(toolName string, args map[string]any, _ stri
 	r.syncRuntimeNote()
 }
 
-func (s planWorkflowState) runtimeNote() string {
+func (s planWorkflowState) overlayContent() string {
 	if !s.active || !s.synthesisRequired {
 		return ""
 	}
@@ -710,6 +757,10 @@ func (s planWorkflowState) runtimeNote() string {
 	default:
 		return "Planning task guidance: you have enough evidence to write the plan. Avoid exhaustive repo-wide searches, stop exploring and synthesize the next actionable plan now. Use update_plan to capture the steps, and put any uncertainty into open questions instead of doing more broad research."
 	}
+}
+
+func (s planWorkflowState) runtimeNote() string {
+	return ""
 }
 
 func (s gitWorkflowState) runtimeNote() string {
@@ -875,18 +926,26 @@ func formatValidationResult(cmd string, passed bool) string {
 	return "validation failed: " + cmd
 }
 
-func (s validationWorkflowState) runtimeNote() string {
+func (s validationWorkflowState) overlayContent() string {
 	if !s.ran || s.passed {
 		return ""
 	}
 	return "Last validation failed: " + s.cmd + " — fix the reported errors before finishing."
 }
 
-func (s sameFileSearchWorkflowState) runtimeNote() string {
+func (s validationWorkflowState) runtimeNote() string {
+	return ""
+}
+
+func (s sameFileSearchWorkflowState) overlayContent() string {
 	if !s.nudged || s.path == "" {
 		return ""
 	}
 	return "Search thrash guidance: you have repeatedly searched the same file without switching to a direct read. Stop trying more patterns on " + s.path + ". Read that file now, inspect the relevant function or block directly, then continue editing."
+}
+
+func (s sameFileSearchWorkflowState) runtimeNote() string {
+	return ""
 }
 
 func isExplorationToolCall(toolName string, args map[string]any) bool {
