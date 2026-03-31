@@ -32,6 +32,8 @@ Forge is not a hosted SaaS or remote coding sandbox. It is a native local tool t
 
 ## Quick Start
 
+Prerequisite: install `just` and make sure it is available on your `PATH`. If you need setup details, see [BUILD.md](./BUILD.md).
+
 Build locally:
 
 ```bash
