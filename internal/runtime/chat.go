@@ -334,6 +334,11 @@ func RunChatLive(setup *ChatSetup) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// nudgeForwarder routes nudge calls from the goroutine to liveCfg.NotifyNudge.
+	// It is populated once liveCfg is built (below), before the first user input
+	// arrives. The goroutine captures it by reference so it sees the final value.
+	var nudgeForwarder func(mode, taskOp, suggestedSkill string)
+
 	go func() {
 		var running bool
 		runOutcome := func(err error) string {
@@ -350,9 +355,17 @@ func RunChatLive(setup *ChatSetup) {
 			if setup != nil && setup.debugRec != nil {
 				setup.debugRec.logInput("user", msg)
 			}
+			if taskState, ok := detectTaskStateFromInput(msg); ok {
+				if nudgeForwarder != nil {
+					nudgeForwarder(taskState.Operation, taskState.Operation, "")
+				}
+			}
 			applySuggestedSkillOverlay(session, msg, loadedSkills, state)
-			if nudge := suggestedSkillNudge(msg, loadedSkills, state); nudge != "" {
+			if nudge, skillName := suggestedSkillNudgeWithName(msg, loadedSkills, state); nudge != "" {
 				evRenderer.Info(nudge)
+				if nudgeForwarder != nil {
+					nudgeForwarder("", "", skillName)
+				}
 			}
 			go func(runMsg string) {
 				err := runChatTurn(ctx, reactRunner, runMsg)
@@ -502,6 +515,13 @@ func RunChatLive(setup *ChatSetup) {
 		State:           state,
 		CopilotClientID: setup.Config.CopilotClientID(),
 	}
+	// NotifyNudge is intentionally set after the struct literal so that
+	// nudgeForwarder can be assigned the same function reference. The goroutine
+	// captures nudgeForwarder by closure, so it calls the correct function once
+	// populated. The bubbletea layer wraps liveCfg.NotifyNudge with p.Send, so
+	// calls through nudgeForwarder also reach the TUI mode badge.
+	liveCfg.NotifyNudge = func(mode, taskOp, suggestedSkill string) { /* forwarded by bubbletea */ }
+	nudgeForwarder = liveCfg.NotifyNudge
 	runChatLiveUI(eventsCh, liveCfg, inputCh, doneCh)
 }
 
@@ -723,8 +743,15 @@ func runChatTurn(ctx context.Context, reactRunner chatTurnRunner, input string) 
 }
 
 func suggestedSkillNudge(input string, loadedSkills []skills.Skill, state *chatstate.State) string {
+	nudge, _ := suggestedSkillNudgeWithName(input, loadedSkills, state)
+	return nudge
+}
+
+// suggestedSkillNudgeWithName returns the human-readable nudge string and the
+// raw skill name separately so callers can forward the name to NotifyNudge.
+func suggestedSkillNudgeWithName(input string, loadedSkills []skills.Skill, state *chatstate.State) (nudge, skillName string) {
 	if len(loadedSkills) == 0 || strings.TrimSpace(input) == "" {
-		return ""
+		return "", ""
 	}
 	active := map[string]bool{}
 	if state != nil {
@@ -738,9 +765,9 @@ func suggestedSkillNudge(input string, loadedSkills []skills.Skill, state *chats
 	}
 	suggestion, ok := skills.Suggest(loadedSkills, mode, input, active)
 	if !ok {
-		return ""
+		return "", ""
 	}
-	return fmt.Sprintf("suggested skill: /%s (%s)", suggestion.Name, suggestion.Reason)
+	return fmt.Sprintf("suggested skill: /%s (%s)", suggestion.Name, suggestion.Reason), suggestion.Name
 }
 
 func applySuggestedSkillOverlay(session *reactruntime.Session, input string, loadedSkills []skills.Skill, state *chatstate.State) {
