@@ -164,7 +164,7 @@ func compileShellPattern(pattern string) (bool, *regexp.Regexp, error) {
 			}
 		case r == '*':
 			hasWildcard = true
-			out.WriteString(".*")
+			out.WriteString(`[^\s]+`)
 			lastWasSpace = false
 		default:
 			out.WriteString(regexp.QuoteMeta(strings.ToLower(string(r))))

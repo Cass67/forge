@@ -72,6 +72,33 @@ func TestApprovalGateUnlessTrustedSkipsPromptForKnownSafe(t *testing.T) {
 	}
 }
 
+func TestApprovalGateUnlessTrustedPromptsForEscapedWildcardSummary(t *testing.T) {
+	promptCalls := 0
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy:    ApprovalUnlessTrusted,
+		SandboxPolicy:    SandboxWorkspaceWrite,
+		KnownSafeCommand: []string{"git status"},
+	}, func(action tools.Action) (bool, error) {
+		promptCalls++
+		return true, nil
+	}, nil)
+
+	approved, err := gate.Approve(tools.Action{
+		Tool:    "run_command",
+		Summary: `git \* status`,
+		Detail:  `git \* status`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !approved {
+		t.Fatal("expected prompt approval to allow escaped wildcard summary")
+	}
+	if promptCalls != 1 {
+		t.Fatalf("prompt calls = %d, want 1", promptCalls)
+	}
+}
+
 func TestApprovalGateOnRequestPromptsForMutations(t *testing.T) {
 	promptCalls := 0
 	gate := NewApprovalGate("", ApprovalConfig{
