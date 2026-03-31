@@ -46,6 +46,10 @@ type ChatLiveConfig struct {
 	ModelInfo             func(model string) *modelcatalog.ModelInfo
 	DescribeModel         func(model string) string
 	RequestMode           func() string
+	// NotifyNudge is called by the runtime when it wants to push a nudge update
+	// to the TUI. The arguments map to SelectNudge(mode, taskOp, suggestedSkill).
+	// When nil, nudges are not pushed from the runtime.
+	NotifyNudge func(mode, taskOp, suggestedSkill string)
 }
 
 type ProviderOption struct {

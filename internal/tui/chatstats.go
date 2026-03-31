@@ -29,6 +29,7 @@ type chatStatusData struct {
 	CopilotLive  *copilot.UserQuota
 	CodexUsage   *codexusage.Snapshot
 	ModelInfo    *modelcatalog.ModelInfo
+	AgentMode    string // non-empty mode badge e.g. "[plan]" surfaced by runtime nudges
 }
 
 type chatStatsData struct {
@@ -51,6 +52,9 @@ func buildStatusLine1(data chatStatusData) string {
 	}
 	if workDir := strings.TrimSpace(data.WorkDir); workDir != "" {
 		parts = append(parts, workDir)
+	}
+	if mode := strings.TrimSpace(data.AgentMode); mode != "" {
+		parts = append(parts, mode)
 	}
 	return strings.Join(parts, " • ")
 }
