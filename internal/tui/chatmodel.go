@@ -31,6 +31,9 @@ import (
 
 type chatTickMsg time.Time
 type chatApprovalMsg tools.Action
+
+// agentNudgeMsg carries a nudge update from the runtime to the TUI.
+type agentNudgeMsg NudgeSuggestion
 type providerAuthStartedMsg struct {
 	providerID string
 	verifyURL  string
@@ -236,6 +239,7 @@ type ChatModel struct {
 	skills                 []skills.Skill
 	autoSkillsMode         string
 	state                  *chatstate.State
+	currentNudge           NudgeSuggestion
 	themeID                string
 	pendingQueuedInput     []string
 
@@ -1360,6 +1364,15 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statsCodexErr = msg.err.Error()
 		} else {
 			m.statsCodexErr = ""
+		}
+		return m, nil
+
+	case agentNudgeMsg:
+		nudge := NudgeSuggestion(msg)
+		m.currentNudge = nudge
+		m.statusData.AgentMode = nudge.Label
+		if nudge.Flash != "" && m.flash == "" {
+			m.flash = nudge.Flash
 		}
 		return m, nil
 

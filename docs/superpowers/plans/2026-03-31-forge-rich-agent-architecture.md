@@ -327,9 +327,35 @@
   - overlay shifts to shorter merge-active message after conflict resolution
   - overlay clears on successful commit
 
+### 2026-03-31 Checkpoint 20 (Task 9: UX nudges)
+
+- Created `internal/tui/nudges.go`:
+  - `NudgeSuggestion` struct with `Kind`, `Label`, and `Flash` fields
+  - `NudgeKind` constants: `NudgeMode`, `NudgeSkill`, `NudgePlanMode`, `NudgeVerification`
+  - `SelectNudge(mode, taskOp, suggestedSkill string) NudgeSuggestion` — pure function, priority-ordered selection:
+    1. non-default session mode wins (plan, implement, review, validate, preview)
+    2. task operation suggests plan mode or verification when not in an explicit mode
+    3. suggested skill fallback when no structural nudge applies
+- Added `agentNudgeMsg` bubbletea message type and handler in `chatmodel.go`:
+  - updates `m.statusData.AgentMode` for the mode badge in the status header
+  - sets `m.currentNudge` for state tracking
+  - fires `m.flash` for the nudge hint when no flash is already showing
+- Extended `chatStatusData` with `AgentMode` field and updated `buildStatusLine1` to append the mode badge when set
+- Added `NotifyNudge func(mode, taskOp, suggestedSkill string)` to `ChatLiveConfig` so the runtime can push nudge updates; wired it in `chatlive_bubbletea.go` to forward through `p.Send(agentNudgeMsg)`
+- Created `internal/tui/nudges_test.go` with 14 focused tests covering:
+  - empty nudge for default chat mode
+  - mode badge for plan/implement/review/validate
+  - plan mode suggestion from task operation
+  - verification nudge from task operation
+  - skill suggestion flash
+  - mode priority over skill suggestion
+  - case insensitivity
+  - `agentNudgeMsg` handler: badge update, flash-on-arrival, no-overwrite of existing flash
+  - `buildStatusLine1` badge inclusion and omission
+
 ### Next Slice
 
-- Start Task 9: add TUI-level nudges that surface suggested skills, plan mode, and verification prompts driven by runtime policy and task state.
+- Task 10: Integration hardening — run the full `./internal/...` suite, add end-to-end behavior tests, and update spec/plan with any implementation-driven adjustments.
 - Keep the implementation log in this file current as each slice lands.
 
 ## Program Structure
