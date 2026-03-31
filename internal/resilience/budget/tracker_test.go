@@ -45,3 +45,36 @@ func TestSessionBudget_Interactive(t *testing.T) {
 		t.Error("should be interactive after set")
 	}
 }
+
+func TestSessionBudget_ResetErrors(t *testing.T) {
+	sb := NewSessionBudget(true, 3)
+	sb.RecordError()
+	sb.RecordError()
+	sb.RecordError() // exhausted
+	sb.ResetErrors()
+	// After reset, need 3 more errors to exhaust
+	if sb.RecordError() {
+		t.Error("should not exhaust immediately after reset")
+	}
+	sb.RecordError()
+	if !sb.RecordError() {
+		t.Error("should exhaust on third error after reset")
+	}
+}
+
+func TestNewTracker_Defaults(t *testing.T) {
+	tr := NewTracker(0, 0)
+	if tr.threshold != 500 {
+		t.Errorf("threshold = %d, want 500", tr.threshold)
+	}
+	if tr.requiredChecks != 2 {
+		t.Errorf("requiredChecks = %d, want 2", tr.requiredChecks)
+	}
+}
+
+func TestNewSessionBudget_Defaults(t *testing.T) {
+	sb := NewSessionBudget(true, 0)
+	if sb.maxErrors != 5 {
+		t.Errorf("maxErrors = %d, want 5", sb.maxErrors)
+	}
+}

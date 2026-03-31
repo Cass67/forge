@@ -6,10 +6,9 @@ import "sync"
 
 // Tracker monitors token deltas across turns to detect diminishing returns.
 type Tracker struct {
-	mu             sync.Mutex
+	mu             sync.RWMutex
 	threshold      int
 	requiredChecks int
-	deltas         []int
 	lowDeltaStreak int
 }
 
@@ -34,7 +33,6 @@ func NewTracker(threshold, requiredChecks int) *Tracker {
 func (t *Tracker) RecordTurn(delta int) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.deltas = append(t.deltas, delta)
 	if delta < t.threshold {
 		t.lowDeltaStreak++
 	} else {
@@ -45,8 +43,8 @@ func (t *Tracker) RecordTurn(delta int) bool {
 
 // DiminishingReturns returns true if the tracker has detected diminishing returns.
 func (t *Tracker) DiminishingReturns() bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	return t.lowDeltaStreak >= t.requiredChecks
 }
 
@@ -54,20 +52,19 @@ func (t *Tracker) DiminishingReturns() bool {
 func (t *Tracker) Reset() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.deltas = nil
 	t.lowDeltaStreak = 0
 }
 
 // LowDeltaStreak returns the current streak of low-delta turns.
 func (t *Tracker) LowDeltaStreak() int {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	return t.lowDeltaStreak
 }
 
 // SessionBudget tracks interactive mode state (foreground vs background).
 type SessionBudget struct {
-	mu          sync.Mutex
+	mu          sync.RWMutex
 	interactive bool
 	errorBudget int
 	maxErrors   int
@@ -86,8 +83,8 @@ func NewSessionBudget(interactive bool, maxErrors int) *SessionBudget {
 
 // IsInteractive returns true if the session is in interactive (foreground) mode.
 func (s *SessionBudget) IsInteractive() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.interactive
 }
 
