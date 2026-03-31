@@ -15,6 +15,19 @@ func RunChatLiveBubbleTea(events <-chan llm.Event, cfg ChatLiveConfig, inputCh c
 
 	p := tea.NewProgram(m, programOptionsForSurfaceMode(cfg.SurfaceMode())...)
 
+	// Wire NotifyNudge so the runtime can push structured nudges to the TUI.
+	if cfg.NotifyNudge != nil {
+		// NotifyNudge is set by the caller — wrap it to also forward to the program.
+		origNotify := cfg.NotifyNudge
+		cfg.NotifyNudge = func(mode, taskOp, suggestedSkill string) {
+			origNotify(mode, taskOp, suggestedSkill)
+			nudge := SelectNudge(mode, taskOp, suggestedSkill)
+			if nudge.Kind != NudgeNone {
+				p.Send(agentNudgeMsg(nudge))
+			}
+		}
+	}
+
 	// Feed LLM events into the program
 	go func() {
 		for ev := range events {
