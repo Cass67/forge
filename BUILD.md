@@ -11,35 +11,53 @@ It does not cover packaging or distribution systems such as Homebrew, Scoop, `.d
 
 For local development and commit hooks, see [LOCAL_TOOLING.md](/Users/cass/git/forge/LOCAL_TOOLING.md).
 
-## Source Build
+## Primary Local Workflow
 
-From the repository root:
+From the repository root, use the `just` recipes first:
+
+```bash
+just build
+```
+
+Run the binary:
+
+```bash
+just run
+```
+
+Run tests:
+
+```bash
+just test
+```
+
+Run the combined build-and-test check:
+
+```bash
+just check
+```
+
+For hook-compatible verification, use:
+
+```bash
+just pre-commit
+```
+
+## Underlying Go Commands
+
+`just build` wraps the standard local build:
 
 ```bash
 go build -o ./bin/forge ./cmd/forge
 ```
 
-Run it:
+`just test` wraps the repository test suite:
 
 ```bash
-./bin/forge
-```
-
-## Fast Dev Loop
-
-For an edit-build-run loop on the current machine:
-
-```bash
-go build -o ./bin/forge ./cmd/forge
-./bin/forge
-```
-
-For a stricter verification loop:
-
-```bash
-go build ./...
 go test ./...
 ```
+
+`just check` runs the same build-and-test sequence as the recipes above.
 
 ## Common Local Builds
 
@@ -124,8 +142,7 @@ Use that only if it helps your local workflow. It is not required for normal dev
 Before treating a build as release-ready, run:
 
 ```bash
-go build ./...
-go test ./...
+just check
 ```
 
 If you are preparing code for commit, also expect the repo hooks to run:
@@ -140,7 +157,7 @@ If you are preparing code for commit, also expect the repo hooks to run:
 If you want to mirror commit behavior more closely, run:
 
 ```bash
-pre-commit run --all-files
+just pre-commit
 ```
 
 ## Build Output Conventions
