@@ -2,8 +2,9 @@ package tui_test
 
 import (
 	"forge/internal/tui"
-	tea "github.com/charmbracelet/bubbletea"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestStartupCheckPass(t *testing.T) {

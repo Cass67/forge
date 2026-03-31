@@ -3,10 +3,11 @@ package tui_test
 import (
 	"forge/internal/llm"
 	"forge/internal/tui"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestRunningAppendToken(t *testing.T) {

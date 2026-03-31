@@ -1,11 +1,11 @@
 package summarizer_test
 
 import (
+	"forge/internal/summarizer"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"forge/internal/summarizer"
 )
 
 func TestAppendEntry(t *testing.T) {

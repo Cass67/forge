@@ -1,8 +1,8 @@
 package output_test
 
 import (
-	"testing"
 	"forge/internal/output"
+	"testing"
 )
 
 func TestParseEmpty(t *testing.T) {

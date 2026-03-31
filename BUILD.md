@@ -10,7 +10,7 @@ It does not cover packaging or distribution systems such as Homebrew, Scoop, `.d
 - `just` installed and available on your `PATH`
 - a working C toolchain is not required for the current default build
 
-For local development and commit hooks, see [LOCAL_TOOLING.md](/Users/cass/git/forge/LOCAL_TOOLING.md).
+For local development and commit hooks, see [LOCAL_TOOLING.md](./LOCAL_TOOLING.md).
 
 ## Primary Local Workflow
 
@@ -204,13 +204,13 @@ Check your Go version:
 go version
 ```
 
-Forge currently declares Go `1.25.0` in [go.mod](/Users/cass/git/forge/go.mod).
+Forge currently declares Go `1.25.0` in [go.mod](./go.mod).
 
 ### Hooks fail on commit but build succeeds
 
 The build only proves the binary compiles. The repo hooks also enforce formatting, linting, vulnerability checks, and secret scanning.
 
-See [LOCAL_TOOLING.md](/Users/cass/git/forge/LOCAL_TOOLING.md) for the required local tools.
+See [LOCAL_TOOLING.md](./LOCAL_TOOLING.md) for the required local tools.
 
 ### Cross-compiled binary starts but behaves differently
 
