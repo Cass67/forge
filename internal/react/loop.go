@@ -10,6 +10,7 @@ import (
 
 	"forge/internal/agent"
 	agenttools "forge/internal/agent/tools"
+	"forge/internal/hooks"
 	"forge/internal/llm"
 )
 
@@ -33,6 +34,7 @@ type Runner struct {
 	renderer              agent.RenderTarget
 	systemPrompt          func() string
 	session               *Session
+	hooks                 *hooks.Registry
 	progress              func(string)
 	maxSessionTurns       int
 	compactionFailures    int
@@ -92,6 +94,32 @@ const analysisExplorationBudget = 15
 const sameFileSearchThrashThreshold = 5
 const repeatToolCallThreshold = 6
 
+var loopHookOverlayKeys = map[string]struct{}{
+	"review_guidance":    {},
+	"plan_blocker":       {},
+	"synthesis_guidance": {},
+	"validation_failure": {},
+	"search_thrash":      {},
+	"git_workflow":       {},
+	"repeat_loop":        {},
+}
+
+type promptHookPayload struct {
+	Mode               Mode
+	PlanState          *PlanState
+	PlanWorkflow       planWorkflowState
+	ValidationWorkflow validationWorkflowState
+	SearchWorkflow     sameFileSearchWorkflowState
+	GitWorkflow        gitWorkflowState
+	RepeatWorkflow     repeatToolCallState
+}
+
+type beforeToolHookPayload struct {
+	ToolName    string
+	Args        map[string]any
+	GitWorkflow gitWorkflowState
+}
+
 func NewRunner(cfg Config) *Runner {
 	session := cfg.Session
 	if session == nil {
@@ -107,6 +135,7 @@ func NewRunner(cfg Config) *Runner {
 		renderer:              cfg.Renderer,
 		systemPrompt:          cfg.SystemPrompt,
 		session:               session,
+		hooks:                 newLoopHookRegistry(),
 		progress:              cfg.Progress,
 		maxSessionTurns:       maxSessionTurns(cfg.MaxSessionTurns),
 		compactionMaxFailures: cfg.CompactionMaxFailures,
@@ -423,7 +452,9 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 			return errors.New(parseErr)
 		}
 
-		if blocked := r.blockedToolResult(call.Name, args); blocked != "" {
+		beforeTool := r.beforeToolHookOutput(ctx, call.Name, args)
+		if beforeTool.Block != nil {
+			blocked := strings.TrimSpace(beforeTool.Block.Message)
 			if r.renderer != nil {
 				r.renderer.ToolResult(call.Name, blocked, "", true)
 			}
@@ -534,22 +565,11 @@ func maxSessionTurns(value int) int {
 }
 
 func (r *Runner) blockedToolResult(toolName string, args map[string]any) string {
-	if !isCommitToolCall(toolName, args) {
+	output := r.beforeToolHookOutput(context.Background(), toolName, args)
+	if output.Block == nil {
 		return ""
 	}
-	switch {
-	case r.gitWorkflow.unmergedFiles:
-		return "blocked: unmerged git conflicts remain. Resolve conflicted files, stage them, and call git_merge_status before retrying commit."
-	case r.gitWorkflow.commitBlocker == commitBlockerRestage:
-		if toolName == "run_command" && strings.Contains(strings.ToLower(stringArg(args, "command")), "git add") {
-			return ""
-		}
-		return "blocked: the previous commit attempt modified files via hooks. Re-stage those files and call git_merge_status before retrying commit."
-	case r.gitWorkflow.commitBlocker == commitBlockerEdit:
-		return "blocked: the previous commit attempt already failed and nothing has changed since then. Fix the reported hook issues and call git_merge_status before retrying commit."
-	default:
-		return ""
-	}
+	return strings.TrimSpace(output.Block.Message)
 }
 
 func (r *Runner) updateGitWorkflow(toolName string, args map[string]any, result string) {
@@ -627,84 +647,254 @@ func (r *Runner) syncRuntimeNote() {
 	if r == nil || r.session == nil {
 		return
 	}
-	r.syncRuntimeOverlays()
-}
-
-func (r *Runner) syncRuntimeOverlays() {
-	if r == nil || r.session == nil {
+	base := promptHookOutput(r.session.Snapshot())
+	output := mergePromptHookOutput(base, r.promptHookOutput(context.Background()))
+	if !r.session.Snapshot().HookOutputSet && !hasHookOutputContent(output) {
 		return
 	}
-	snap := r.session.Snapshot()
-	if snap.Mode == ModeReview {
-		r.session.SetHookOverlay(HookOverlay{
-			Key:        "review_guidance",
-			Content:    "Review workflow active. Lead with findings before summary, keep findings grounded in repo evidence, and call out regressions, risks, or missing tests explicitly.",
-			Priority:   HookPriorityHigh,
-			Provenance: "runtime",
-		})
-	} else {
-		r.session.ClearHookOverlay("review_guidance")
+	r.session.SetHookOutput(output)
+}
+
+func (r *Runner) promptHookOutput(ctx context.Context) hooks.ExecutionOutput {
+	if r == nil || r.hooks == nil {
+		return hooks.ExecutionOutput{}
 	}
-	if blocker := currentPlanBlocker(snap.PlanState); blocker != "" && snap.Mode == ModePlan {
-		r.session.SetHookOverlay(HookOverlay{
-			Key:        "plan_blocker",
-			Content:    "Current plan is blocked: " + blocker + ". Resolve the blocker directly if you can, otherwise use ask_user_question to get the missing decision before continuing broad work.",
-			Priority:   HookPriorityHigh,
-			Provenance: "runtime",
-		})
-	} else {
-		r.session.ClearHookOverlay("plan_blocker")
+	snap := SessionSnapshot{}
+	if r.session != nil {
+		snap = r.session.Snapshot()
 	}
-	if content := strings.TrimSpace(r.planWorkflow.overlayContent()); content != "" {
-		r.session.SetHookOverlay(HookOverlay{
-			Key:        "synthesis_guidance",
-			Content:    content,
-			Priority:   HookPriorityHigh,
-			Provenance: "runtime",
-		})
-	} else {
-		r.session.ClearHookOverlay("synthesis_guidance")
+	return r.hooks.Dispatch(ctx, hooks.Event{
+		Point:    hooks.PointPromptContext,
+		Snapshot: snap,
+		Transient: promptHookPayload{
+			Mode:               snap.Mode,
+			PlanState:          snap.PlanState,
+			PlanWorkflow:       r.planWorkflow,
+			ValidationWorkflow: r.validationWorkflow,
+			SearchWorkflow:     r.searchWorkflow,
+			GitWorkflow:        r.gitWorkflow,
+			RepeatWorkflow:     r.repeatWorkflow,
+		},
+	})
+}
+
+func (r *Runner) beforeToolHookOutput(ctx context.Context, toolName string, args map[string]any) hooks.ExecutionOutput {
+	if r == nil || r.hooks == nil {
+		return hooks.ExecutionOutput{}
 	}
-	if content := strings.TrimSpace(r.validationWorkflow.overlayContent()); content != "" {
-		r.session.SetHookOverlay(HookOverlay{
-			Key:        "validation_failure",
-			Content:    content,
-			Priority:   HookPriorityHigh,
-			Provenance: "runtime",
-		})
-	} else {
-		r.session.ClearHookOverlay("validation_failure")
+	snap := SessionSnapshot{}
+	if r.session != nil {
+		snap = r.session.Snapshot()
 	}
-	if content := strings.TrimSpace(r.searchWorkflow.overlayContent()); content != "" {
-		r.session.SetHookOverlay(HookOverlay{
-			Key:        "search_thrash",
-			Content:    content,
-			Priority:   HookPriorityHigh,
-			Provenance: "runtime",
-		})
-	} else {
-		r.session.ClearHookOverlay("search_thrash")
+	return r.hooks.Dispatch(ctx, hooks.Event{
+		Point:    hooks.PointBeforeTool,
+		Snapshot: snap,
+		Transient: beforeToolHookPayload{
+			ToolName:    toolName,
+			Args:        cloneArgs(args),
+			GitWorkflow: r.gitWorkflow,
+		},
+	})
+}
+
+func newLoopHookRegistry() *hooks.Registry {
+	registry := hooks.NewRegistry()
+	registry.Register(hooks.PointPromptContext, "review_guidance", reviewPromptHook)
+	registry.Register(hooks.PointPromptContext, "plan_blocker", blockedPlanPromptHook)
+	registry.Register(hooks.PointPromptContext, "synthesis_guidance", synthesisPromptHook)
+	registry.Register(hooks.PointPromptContext, "validation_failure", validationPromptHook)
+	registry.Register(hooks.PointPromptContext, "search_thrash", searchThrashPromptHook)
+	registry.Register(hooks.PointPromptContext, "git_workflow", gitWorkflowPromptHook)
+	registry.Register(hooks.PointPromptContext, "repeat_loop", repeatLoopPromptHook)
+	registry.Register(hooks.PointBeforeTool, "git_commit_blocker", beforeToolGitCommitBlockHook)
+	return registry
+}
+
+func reviewPromptHook(_ context.Context, event hooks.Event) []hooks.Result {
+	payload, ok := event.Transient.(promptHookPayload)
+	if !ok || payload.Mode != ModeReview {
+		return nil
 	}
-	if content := strings.TrimSpace(r.gitWorkflow.overlayContent()); content != "" {
-		r.session.SetHookOverlay(HookOverlay{
-			Key:        "git_workflow",
-			Content:    content,
-			Priority:   HookPriorityHigh,
-			Provenance: "runtime",
-		})
-	} else {
-		r.session.ClearHookOverlay("git_workflow")
+	return []hooks.Result{hooks.OverlayResult{
+		Key:        "review_guidance",
+		Content:    "Review workflow active. Lead with findings before summary, keep findings grounded in repo evidence, and call out regressions, risks, or missing tests explicitly.",
+		Priority:   hooks.PriorityHigh,
+		Provenance: "runtime",
+	}}
+}
+
+func blockedPlanPromptHook(_ context.Context, event hooks.Event) []hooks.Result {
+	payload, ok := event.Transient.(promptHookPayload)
+	if !ok {
+		return nil
 	}
-	if content := strings.TrimSpace(r.repeatWorkflow.overlayContent()); content != "" {
-		r.session.SetHookOverlay(HookOverlay{
-			Key:        "repeat_loop",
-			Content:    content,
-			Priority:   HookPriorityHigh,
-			Provenance: "runtime",
-		})
-	} else {
-		r.session.ClearHookOverlay("repeat_loop")
+	blocker := currentPlanBlocker(payload.PlanState)
+	if payload.Mode != ModePlan || blocker == "" {
+		return nil
 	}
+	return []hooks.Result{hooks.OverlayResult{
+		Key:        "plan_blocker",
+		Content:    "Current plan is blocked: " + blocker + ". Resolve the blocker directly if you can, otherwise use ask_user_question to get the missing decision before continuing broad work.",
+		Priority:   hooks.PriorityHigh,
+		Provenance: "runtime",
+	}}
+}
+
+func synthesisPromptHook(_ context.Context, event hooks.Event) []hooks.Result {
+	payload, ok := event.Transient.(promptHookPayload)
+	if !ok {
+		return nil
+	}
+	content := strings.TrimSpace(payload.PlanWorkflow.overlayContent())
+	if content == "" {
+		return nil
+	}
+	return []hooks.Result{hooks.OverlayResult{
+		Key:        "synthesis_guidance",
+		Content:    content,
+		Priority:   hooks.PriorityHigh,
+		Provenance: "runtime",
+	}}
+}
+
+func validationPromptHook(_ context.Context, event hooks.Event) []hooks.Result {
+	payload, ok := event.Transient.(promptHookPayload)
+	if !ok {
+		return nil
+	}
+	content := strings.TrimSpace(payload.ValidationWorkflow.overlayContent())
+	if content == "" {
+		return nil
+	}
+	return []hooks.Result{hooks.OverlayResult{
+		Key:        "validation_failure",
+		Content:    content,
+		Priority:   hooks.PriorityHigh,
+		Provenance: "runtime",
+	}}
+}
+
+func searchThrashPromptHook(_ context.Context, event hooks.Event) []hooks.Result {
+	payload, ok := event.Transient.(promptHookPayload)
+	if !ok {
+		return nil
+	}
+	content := strings.TrimSpace(payload.SearchWorkflow.overlayContent())
+	if content == "" {
+		return nil
+	}
+	return []hooks.Result{hooks.OverlayResult{
+		Key:        "search_thrash",
+		Content:    content,
+		Priority:   hooks.PriorityHigh,
+		Provenance: "runtime",
+	}}
+}
+
+func gitWorkflowPromptHook(_ context.Context, event hooks.Event) []hooks.Result {
+	payload, ok := event.Transient.(promptHookPayload)
+	if !ok {
+		return nil
+	}
+	content := strings.TrimSpace(payload.GitWorkflow.overlayContent())
+	if content == "" {
+		return nil
+	}
+	return []hooks.Result{hooks.OverlayResult{
+		Key:        "git_workflow",
+		Content:    content,
+		Priority:   hooks.PriorityHigh,
+		Provenance: "runtime",
+	}}
+}
+
+func repeatLoopPromptHook(_ context.Context, event hooks.Event) []hooks.Result {
+	payload, ok := event.Transient.(promptHookPayload)
+	if !ok {
+		return nil
+	}
+	content := strings.TrimSpace(payload.RepeatWorkflow.overlayContent())
+	if content == "" {
+		return nil
+	}
+	return []hooks.Result{hooks.OverlayResult{
+		Key:        "repeat_loop",
+		Content:    content,
+		Priority:   hooks.PriorityHigh,
+		Provenance: "runtime",
+	}}
+}
+
+func beforeToolGitCommitBlockHook(_ context.Context, event hooks.Event) []hooks.Result {
+	payload, ok := event.Transient.(beforeToolHookPayload)
+	if !ok || !isCommitToolCall(payload.ToolName, payload.Args) {
+		return nil
+	}
+	switch {
+	case payload.GitWorkflow.unmergedFiles:
+		return []hooks.Result{hooks.BlockResult{
+			Message:    "blocked: unmerged git conflicts remain. Resolve conflicted files, stage them, and call git_merge_status before retrying commit.",
+			Provenance: "runtime",
+		}}
+	case payload.GitWorkflow.commitBlocker == commitBlockerRestage:
+		if payload.ToolName == "run_command" && strings.Contains(strings.ToLower(stringArg(payload.Args, "command")), "git add") {
+			return nil
+		}
+		return []hooks.Result{hooks.BlockResult{
+			Message:    "blocked: the previous commit attempt modified files via hooks. Re-stage those files and call git_merge_status before retrying commit.",
+			Provenance: "runtime",
+		}}
+	case payload.GitWorkflow.commitBlocker == commitBlockerEdit:
+		return []hooks.Result{hooks.BlockResult{
+			Message:    "blocked: the previous commit attempt already failed and nothing has changed since then. Fix the reported hook issues and call git_merge_status before retrying commit.",
+			Provenance: "runtime",
+		}}
+	default:
+		return nil
+	}
+}
+
+func mergePromptHookOutput(base, runtime hooks.ExecutionOutput) hooks.ExecutionOutput {
+	merged := hooks.ExecutionOutput{
+		Overlays: filterPromptHookOverlays(base.Overlays),
+		Failures: append([]hooks.Failure(nil), runtime.Failures...),
+	}
+	if base.Note != nil {
+		note := *base.Note
+		merged.Note = &note
+	}
+	if runtime.Note != nil && (merged.Note == nil || runtime.Note.Priority > merged.Note.Priority) {
+		note := *runtime.Note
+		merged.Note = &note
+	}
+	merged.Overlays = append(merged.Overlays, runtime.Overlays...)
+	return merged
+}
+
+func filterPromptHookOverlays(overlays []hooks.OverlayResult) []hooks.OverlayResult {
+	filtered := make([]hooks.OverlayResult, 0, len(overlays))
+	for _, overlay := range overlays {
+		if _, ok := loopHookOverlayKeys[strings.TrimSpace(overlay.Key)]; ok {
+			continue
+		}
+		filtered = append(filtered, overlay)
+	}
+	return filtered
+}
+
+func hasHookOutputContent(output hooks.ExecutionOutput) bool {
+	return len(output.Overlays) > 0 || output.Note != nil || output.Block != nil || len(output.Failures) > 0
+}
+
+func cloneArgs(args map[string]any) map[string]any {
+	if len(args) == 0 {
+		return nil
+	}
+	cloned := make(map[string]any, len(args))
+	for key, value := range args {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func currentPlanBlocker(state *PlanState) string {

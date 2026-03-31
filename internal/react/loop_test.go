@@ -10,6 +10,7 @@ import (
 	"time"
 
 	agenttools "forge/internal/agent/tools"
+	"forge/internal/hooks"
 	"forge/internal/llm"
 )
 
@@ -532,6 +533,144 @@ func TestRunnerBlockedPlanOverlayCoexistsWithSuggestedSkillOverlay(t *testing.T)
 	if !foundSuggested || !foundBlocked {
 		t.Fatalf("expected both overlays, got %#v", driver.lastMessages)
 	}
+}
+
+func TestRunnerPromptHookOutputIncludesRuntimeGuidance(t *testing.T) {
+	t.Run("review guidance", func(t *testing.T) {
+		session := NewSession()
+		session.SetTaskState(TaskState{
+			Objective:            "review this repo",
+			Operation:            "review",
+			RequiredVerification: "lead with findings",
+		})
+		r := NewRunner(Config{Session: session})
+
+		output := r.promptHookOutput(context.Background())
+
+		if got := hookOverlayContent(output, "review_guidance"); !strings.Contains(got, "Lead with findings") {
+			t.Fatalf("review_guidance = %q", got)
+		}
+	})
+
+	t.Run("blocked plan guidance", func(t *testing.T) {
+		session := NewSession()
+		session.SetTaskState(TaskState{
+			Objective:            "write a plan",
+			Operation:            "plan",
+			RequiredVerification: "produce a concise plan",
+		})
+		session.SetPlanState(PlanState{
+			Steps: []PlanStep{
+				{Step: "Get a user decision", Status: "blocked", Blocker: "need user decision on default behavior"},
+			},
+		})
+		r := NewRunner(Config{Session: session})
+
+		output := r.promptHookOutput(context.Background())
+
+		if got := hookOverlayContent(output, "plan_blocker"); !strings.Contains(got, "ask_user_question") {
+			t.Fatalf("plan_blocker = %q", got)
+		}
+	})
+
+	t.Run("synthesis validation search git and repeat guidance", func(t *testing.T) {
+		session := NewSession()
+		r := NewRunner(Config{Session: session})
+		r.planWorkflow = planWorkflowState{
+			mode:              "analysis",
+			active:            true,
+			synthesisRequired: true,
+		}
+		r.validationWorkflow = validationWorkflowState{
+			ran:    true,
+			passed: false,
+			cmd:    "go test ./internal/react",
+		}
+		r.searchWorkflow = sameFileSearchWorkflowState{
+			toolName: "code_search",
+			path:     "internal/react/loop.go",
+			streak:   sameFileSearchThrashThreshold,
+			nudged:   true,
+		}
+		r.gitWorkflow = gitWorkflowState{
+			mergeActive:    true,
+			commitBlocker:  commitBlockerEdit,
+			blockerSummary: "commit blocked by pre-commit hook failures",
+		}
+		r.repeatWorkflow = repeatToolCallState{
+			lastToolName: "read_file",
+			lastTarget:   "internal/react/loop.go",
+			streak:       repeatToolCallThreshold,
+		}
+
+		output := r.promptHookOutput(context.Background())
+
+		if got := hookOverlayContent(output, "synthesis_guidance"); !strings.Contains(got, "Analysis guidance") {
+			t.Fatalf("synthesis_guidance = %q", got)
+		}
+		if got := hookOverlayContent(output, "validation_failure"); !strings.Contains(got, "Last validation failed") {
+			t.Fatalf("validation_failure = %q", got)
+		}
+		if got := hookOverlayContent(output, "search_thrash"); !strings.Contains(got, "Search thrash guidance") {
+			t.Fatalf("search_thrash = %q", got)
+		}
+		if got := hookOverlayContent(output, "git_workflow"); !strings.Contains(got, "Git merge workflow active") {
+			t.Fatalf("git_workflow = %q", got)
+		}
+		if got := hookOverlayContent(output, "repeat_loop"); !strings.Contains(got, "Loop detection") {
+			t.Fatalf("repeat_loop = %q", got)
+		}
+	})
+}
+
+func TestRunnerBeforeToolHookBlocksCommitWorkflow(t *testing.T) {
+	t.Run("unmerged conflicts", func(t *testing.T) {
+		r := NewRunner(Config{})
+		r.gitWorkflow.unmergedFiles = true
+
+		output := r.beforeToolHookOutput(context.Background(), "run_command", map[string]any{
+			"command": `git commit -m "merge"`,
+		})
+
+		if output.Block == nil || !strings.Contains(output.Block.Message, "unmerged git conflicts remain") {
+			t.Fatalf("block = %#v", output.Block)
+		}
+	})
+
+	t.Run("restage blocker allows git add", func(t *testing.T) {
+		r := NewRunner(Config{})
+		r.gitWorkflow.commitBlocker = commitBlockerRestage
+
+		output := r.beforeToolHookOutput(context.Background(), "run_command", map[string]any{
+			"command": "git add README.md",
+		})
+
+		if output.Block != nil {
+			t.Fatalf("unexpected block = %#v", output.Block)
+		}
+	})
+
+	t.Run("edit blocker", func(t *testing.T) {
+		r := NewRunner(Config{})
+		r.gitWorkflow.commitBlocker = commitBlockerEdit
+
+		output := r.beforeToolHookOutput(context.Background(), "git_commit", map[string]any{
+			"message": "merge branch",
+		})
+
+		if output.Block == nil || !strings.Contains(output.Block.Message, "previous commit attempt already failed") {
+			t.Fatalf("block = %#v", output.Block)
+		}
+	})
+}
+
+func hookOverlayContent(output hooks.ExecutionOutput, key string) string {
+	for _, overlay := range output.Overlays {
+		if overlay.Key == key {
+			return overlay.Content
+		}
+	}
+	return ""
 }
 
 func TestRunnerRejectsBranchTargetMismatch(t *testing.T) {
