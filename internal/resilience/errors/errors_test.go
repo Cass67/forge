@@ -141,6 +141,46 @@ func TestClassifyError_Nil(t *testing.T) {
 	}
 }
 
+func TestClassifyError_DataPolicy(t *testing.T) {
+	fe := ClassifyError(errors.New("Request blocked by data policy"))
+	if fe.Class != ErrorClassClient {
+		t.Errorf("expected client, got %v", fe.Class)
+	}
+	if fe.Type != "data_policy" {
+		t.Errorf("expected data_policy type, got %q", fe.Type)
+	}
+	if fe.Retryable {
+		t.Error("data policy errors should not be retryable")
+	}
+}
+
+func TestClassifyError_DefaultFallback(t *testing.T) {
+	fe := ClassifyError(errors.New("something completely weird"))
+	if fe.Class != ErrorClassUnknown {
+		t.Errorf("expected unknown, got %v", fe.Class)
+	}
+	if !fe.Retryable {
+		t.Error("unknown errors should be retryable by default")
+	}
+	if fe.UserMessage != "something completely weird" {
+		t.Errorf("user message = %q, want original message", fe.UserMessage)
+	}
+}
+
+func TestForgeError_ErrorAndUnwrap(t *testing.T) {
+	raw := errors.New("raw error")
+	fe := ForgeError{
+		Message: "classified message",
+		Raw:     raw,
+	}
+	if fe.Error() != "classified message" {
+		t.Errorf("Error() = %q, want %q", fe.Error(), "classified message")
+	}
+	if errors.Unwrap(fe) != raw {
+		t.Error("Unwrap() did not return raw error")
+	}
+}
+
 func TestParseRetryAfterDelay(t *testing.T) {
 	tests := []struct {
 		msg      string

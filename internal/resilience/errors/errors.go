@@ -192,7 +192,7 @@ func ClassifyError(err error) ForgeError {
 func tryClassifyCapacity(lower, msg string, err error) *ForgeError {
 	if strings.Contains(lower, "429") || strings.Contains(lower, "too many requests") ||
 		strings.Contains(lower, "rate limit exceeded") || strings.Contains(lower, "rate limited") ||
-		strings.Contains(lower, "server overloaded") || strings.Contains(lower, "overloaded") {
+		strings.Contains(lower, "server overloaded") || strings.Contains(lower, "capacity overloaded") {
 		return &ForgeError{
 			Class:       ErrorClassCapacity,
 			Type:        "rate_limited",
@@ -226,17 +226,16 @@ var retryDelayRegexes = []*regexp.Regexp{
 	regexp.MustCompile(`try again in ([\d.]+)\s*s`),
 	regexp.MustCompile(`retry after ([\d.]+)`),
 	regexp.MustCompile(`rate limit reset in ([\d.]+)\s*s`),
-	regexp.MustCompile(`please try again in ([\d.]+)\s*s`),
 }
 
 var authPatterns = []string{
-	"401", "403", "invalid_api_key", "authentication",
+	"401 unauthorized", "403 forbidden", "invalid_api_key", "authentication",
 	"incorrect api key", "unauthorized",
 }
 
 var billingPatterns = []string{
 	"insufficient_quota", "quota exceeded", "billing",
-	"usage limit", "credit",
+	"usage limit", "insufficient credit",
 }
 
 var contextPatterns = []string{
