@@ -164,6 +164,11 @@ func looksLikeActionablePlan(finalText string) bool {
 }
 
 func looksLikeReviewFindings(finalText string) bool {
+	// Accept any structured list (≥2 bullets/items) as findings — "Finding:" label is not required.
+	if len(actionablePlanPattern.FindAllString(finalText, -1)) >= 2 {
+		return true
+	}
+	// Also accept explicit "Finding:" labels for legacy compatibility.
 	return len(reviewFindingPattern.FindAllString(finalText, -1)) >= 1
 }
 

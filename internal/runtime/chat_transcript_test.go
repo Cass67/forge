@@ -752,13 +752,13 @@ func (d *scriptedTranscriptDriver) repoResponse(request string, messages []llm.M
 
 	switch {
 	case strings.Contains(request, "make a plan for improvements"):
-		return "Start with focused tests around service/main.py, then tighten the pre-commit checks so the service path is verified automatically."
+		return "- Start with focused tests around service/main.py to cover the main entry function\n- tighten the pre-commit checks to exercise the service path automatically on every commit"
 	case strings.Contains(request, "anything i need change"):
 		return "Top next change is adding focused tests around service/main.py and tightening the pre-commit checks so the service path is verified automatically."
 	case strings.Contains(request, "what do you think"):
 		return "Top improvement areas are stronger pre-commit hygiene and better test coverage around the service entrypoint."
 	case evaluative:
-		return "Top improvement areas are stronger pre-commit hygiene and better test coverage around the service entrypoint. The repo already has lint hooks, but service/main.py still needs clearer verification."
+		return "- Top improvement areas are stronger pre-commit hygiene — ruff runs but the Python service path is not exercised\n- The service entrypoint at service/main.py needs focused test coverage; no test directly exercises the main entry function"
 	default:
 		return "Top-level listing shows a README, and README describes the repo as a small Python service fixture with code under service/."
 	}

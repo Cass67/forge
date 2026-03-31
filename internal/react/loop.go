@@ -41,8 +41,6 @@ type Runner struct {
 	turnComplete       func(SessionSnapshot)
 }
 
-const interruptedTurnRuntimeNote = "Previous turn was interrupted. Re-check any partially completed tool or command state before continuing."
-
 type gitCommitBlocker int
 
 const (
@@ -183,7 +181,6 @@ func (r *Runner) MarkInterrupted() {
 		return
 	}
 	r.session.MarkInterrupted()
-	r.session.SetRuntimeNote(strings.TrimSpace(strings.Join([]string{strings.TrimSpace(r.session.Snapshot().RuntimeNote), interruptedTurnRuntimeNote}, "\n\n")))
 }
 
 func (r *Runner) SetTaskState(state TaskState) {
@@ -593,23 +590,6 @@ func (r *Runner) syncRuntimeNote() {
 		return
 	}
 	r.syncRuntimeOverlays()
-	notes := make([]string, 0, 4)
-	if note := strings.TrimSpace(r.modeRuntimeNote()); note != "" {
-		notes = append(notes, note)
-	}
-	if note := strings.TrimSpace(r.planWorkflow.runtimeNote()); note != "" {
-		notes = append(notes, note)
-	}
-	if note := strings.TrimSpace(r.gitWorkflow.runtimeNote()); note != "" {
-		notes = append(notes, note)
-	}
-	if note := strings.TrimSpace(r.searchWorkflow.runtimeNote()); note != "" {
-		notes = append(notes, note)
-	}
-	if note := strings.TrimSpace(r.validationWorkflow.runtimeNote()); note != "" {
-		notes = append(notes, note)
-	}
-	r.session.SetRuntimeNote(strings.Join(notes, "\n\n"))
 }
 
 func (r *Runner) syncRuntimeOverlays() {
@@ -667,13 +647,16 @@ func (r *Runner) syncRuntimeOverlays() {
 	} else {
 		r.session.ClearHookOverlay("search_thrash")
 	}
-}
-
-func (r *Runner) modeRuntimeNote() string {
-	if r == nil || r.session == nil {
-		return ""
+	if content := strings.TrimSpace(r.gitWorkflow.overlayContent()); content != "" {
+		r.session.SetHookOverlay(HookOverlay{
+			Key:        "git_workflow",
+			Content:    content,
+			Priority:   HookPriorityHigh,
+			Provenance: "runtime",
+		})
+	} else {
+		r.session.ClearHookOverlay("git_workflow")
 	}
-	return ""
 }
 
 func currentPlanBlocker(state *PlanState) string {
@@ -759,11 +742,7 @@ func (s planWorkflowState) overlayContent() string {
 	}
 }
 
-func (s planWorkflowState) runtimeNote() string {
-	return ""
-}
-
-func (s gitWorkflowState) runtimeNote() string {
+func (s gitWorkflowState) overlayContent() string {
 	if s.unmergedFiles {
 		return "Git merge workflow active. Call git_merge_status to inspect unresolved files, conflict previews, and next steps. Resolve each conflicted file, stage the resolutions, and only retry commit once unmerged files are gone."
 	}
@@ -859,7 +838,8 @@ func isSuccessfulGitCommit(result string) bool {
 	lower := strings.ToLower(result)
 	return !strings.Contains(lower, "error committing:") &&
 		!strings.Contains(lower, "exit 1") &&
-		(strings.Contains(lower, "files changed") || strings.Contains(lower, "nothing to commit") || strings.Contains(lower, "create mode"))
+		(strings.Contains(lower, "file changed") || strings.Contains(lower, "files changed") ||
+			strings.Contains(lower, "nothing to commit") || strings.Contains(lower, "create mode"))
 }
 
 func summarizeCommitFailure(result string) string {
@@ -933,19 +913,11 @@ func (s validationWorkflowState) overlayContent() string {
 	return "Last validation failed: " + s.cmd + " — fix the reported errors before finishing."
 }
 
-func (s validationWorkflowState) runtimeNote() string {
-	return ""
-}
-
 func (s sameFileSearchWorkflowState) overlayContent() string {
 	if !s.nudged || s.path == "" {
 		return ""
 	}
 	return "Search thrash guidance: you have repeatedly searched the same file without switching to a direct read. Stop trying more patterns on " + s.path + ". Read that file now, inspect the relevant function or block directly, then continue editing."
-}
-
-func (s sameFileSearchWorkflowState) runtimeNote() string {
-	return ""
 }
 
 func isExplorationToolCall(toolName string, args map[string]any) bool {

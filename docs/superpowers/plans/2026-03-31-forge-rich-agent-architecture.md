@@ -308,9 +308,28 @@
 - Left git workflow state on `RuntimeNote` for now because it behaves more like durable workflow context than a transient hint.
 - Updated focused runner coverage so plan/analysis exploration nudges are asserted through `[hook:runtime]` overlay rendering.
 
+### 2026-03-31 Checkpoint 19
+
+- Fixed two pre-existing test failures:
+  - `looksLikeReviewFindings` was too strict (required literal `"Finding:"` label); broadened to accept any bulleted list with ≥2 items so realistic review output passes without the prescriptive label.
+  - Review corpus fixture responses updated to bullet format; plan follow-up fixture response updated to bullet format so both satisfy the completion enforcement rules.
+  - `"Current mode: chat"` overlay was injected even in the default mode; suppressed mode overlay for `ModeChat` since surfacing the default adds no value and broke two prompt-assembly tests.
+- Migrated git workflow guidance from `RuntimeNote` into the keyed hook-overlay path:
+  - Added `gitWorkflowState.overlayContent()` and wired a `git_workflow` keyed overlay in `syncRuntimeOverlays()`.
+  - All transient runtime coaching is now on the unified overlay path: suggested skills, plan blocker, synthesis guidance, review guidance, validation failure, search thrash, git workflow.
+- Fixed `isSuccessfulGitCommit` to also recognise singular `"file changed"` (single-file commits) alongside `"files changed"`.
+- Cleaned up the now-dead `RuntimeNote` infrastructure:
+  - Removed all five `runtimeNote()` methods (all returned `""`).
+  - Removed redundant `interruptedTurnRuntimeNote` constant and its `SetRuntimeNote` call from `MarkInterrupted()` (the `session.Interrupted` flag already generates the interrupted overlay in `BuildMessages`).
+  - Collapsed `syncRuntimeNote()` to a thin wrapper around `syncRuntimeOverlays()`.
+- Added focused git workflow overlay tests:
+  - overlay appears on unmerged files
+  - overlay shifts to shorter merge-active message after conflict resolution
+  - overlay clears on successful commit
+
 ### Next Slice
 
-- Decide whether git workflow state should remain an aggregated runtime note or become a richer dedicated workflow/overlay object with more structured merge-state cues.
+- Start Task 9: add TUI-level nudges that surface suggested skills, plan mode, and verification prompts driven by runtime policy and task state.
 - Keep the implementation log in this file current as each slice lands.
 
 ## Program Structure
