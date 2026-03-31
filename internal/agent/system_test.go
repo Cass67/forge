@@ -72,6 +72,8 @@ func TestBuildNativeSystemPromptIncludesRicherCodexStyleContract(t *testing.T) {
 		"High-quality plans",
 		"Low-quality plans",
 		"exactly one in_progress step",
+		"enter_plan_mode",
+		"ask_user_question",
 		"Prefer rg or rg --files",
 		"Use git log or git blame",
 		"When approval is non-interactive",

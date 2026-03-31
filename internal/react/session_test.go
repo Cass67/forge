@@ -129,6 +129,52 @@ func TestSessionPlanStateAppearsInSnapshot(t *testing.T) {
 	}
 }
 
+func TestPlanStateHelpersExposeActiveAndBlockedSteps(t *testing.T) {
+	state := PlanState{
+		Steps: []PlanStep{
+			{Step: "Wait for approval", Status: "blocked", Blocker: "need user confirmation"},
+			{Step: "Patch runtime", Status: "pending"},
+		},
+	}
+
+	if !state.HasActiveStep() {
+		t.Fatal("expected active step")
+	}
+	active, ok := state.ActiveStep()
+	if !ok {
+		t.Fatal("expected active step details")
+	}
+	if active.Step != "Wait for approval" {
+		t.Fatalf("active step = %#v", active)
+	}
+	blocked, ok := state.BlockedStep()
+	if !ok {
+		t.Fatal("expected blocked step details")
+	}
+	if blocked.Blocker != "need user confirmation" {
+		t.Fatalf("blocked step = %#v", blocked)
+	}
+}
+
+func TestPlanStateHelpersReportNoActiveStepWhenAllCompleted(t *testing.T) {
+	state := PlanState{
+		Steps: []PlanStep{
+			{Step: "Inspect code", Status: "completed"},
+			{Step: "Patch runtime", Status: "completed"},
+		},
+	}
+
+	if state.HasActiveStep() {
+		t.Fatal("did not expect active step")
+	}
+	if _, ok := state.ActiveStep(); ok {
+		t.Fatal("did not expect active step details")
+	}
+	if _, ok := state.BlockedStep(); ok {
+		t.Fatal("did not expect blocked step details")
+	}
+}
+
 func TestSessionQueuesAndDrainsPendingInput(t *testing.T) {
 	s := NewSession()
 	s.QueuePendingInput("steer toward tests")
@@ -146,5 +192,26 @@ func TestSessionQueuesAndDrainsPendingInput(t *testing.T) {
 	}
 	if s.HasPendingInput() {
 		t.Fatal("expected pending input to be drained")
+	}
+}
+
+func TestSessionDefaultsToChatModeAndTracksTaskMode(t *testing.T) {
+	s := NewSession()
+	if got := s.Snapshot().Mode; got != ModeChat {
+		t.Fatalf("default mode = %q, want %q", got, ModeChat)
+	}
+
+	s.SetTaskState(TaskState{
+		Objective:            "plan the runtime work",
+		Operation:            "plan",
+		RequiredVerification: "produce a plan",
+	})
+	if got := s.Snapshot().Mode; got != ModePlan {
+		t.Fatalf("mode after task state = %q, want %q", got, ModePlan)
+	}
+
+	s.SetMode(ModeImplement)
+	if got := s.Snapshot().Mode; got != ModeImplement {
+		t.Fatalf("mode after explicit set = %q, want %q", got, ModeImplement)
 	}
 }

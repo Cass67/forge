@@ -44,6 +44,8 @@ type ApprovalGate struct {
 	workDir         string
 	cfg             ApprovalConfig
 	prompt          tools.ApprovalFunc
+	guardian        func(string, tools.Action) tools.GuardianReview
+	guardianContext func() string
 	progress        func(string)
 	now             func() time.Time
 	originalBranch  string
@@ -73,6 +75,53 @@ func (g *ApprovalGate) SetPrompt(prompt tools.ApprovalFunc) {
 	}
 }
 
+func (g *ApprovalGate) SetGuardianReviewer(reviewer func(string, tools.Action) tools.GuardianReview) {
+	if g != nil {
+		g.guardian = reviewer
+	}
+}
+
+func (g *ApprovalGate) SetGuardianContext(provider func() string) {
+	if g != nil {
+		g.guardianContext = provider
+	}
+}
+
+func CompactGuardianContext(snapshot SessionSnapshot) string {
+	var parts []string
+	if mode := strings.TrimSpace(string(snapshot.Mode)); mode != "" {
+		parts = append(parts, "mode="+mode)
+	}
+	if snapshot.TaskState != nil {
+		if op := strings.TrimSpace(snapshot.TaskState.Operation); op != "" {
+			parts = append(parts, "operation="+op)
+		}
+		if obj := strings.TrimSpace(snapshot.TaskState.Objective); obj != "" {
+			parts = append(parts, "objective="+clipApprovalText(obj, 160))
+		}
+	}
+	if snapshot.PlanState != nil {
+		if step, ok := snapshot.PlanState.ActiveStep(); ok {
+			parts = append(parts, "active_step="+clipApprovalText(step.Step, 120))
+			if blocker := strings.TrimSpace(step.Blocker); blocker != "" {
+				parts = append(parts, "blocker="+clipApprovalText(blocker, 120))
+			}
+		}
+	}
+	if input := strings.TrimSpace(snapshot.LastInput); input != "" {
+		parts = append(parts, "last_input="+clipApprovalText(input, 160))
+	}
+	return strings.Join(parts, "\n")
+}
+
+func clipApprovalText(text string, max int) string {
+	text = strings.TrimSpace(text)
+	if max < 1 || len(text) <= max {
+		return text
+	}
+	return text[:max] + "..."
+}
+
 func (g *ApprovalGate) Approve(action tools.Action) (bool, error) {
 	action.Tool = strings.TrimSpace(action.Tool)
 	action.Summary = strings.TrimSpace(action.Summary)
@@ -99,9 +148,36 @@ func (g *ApprovalGate) Approve(action tools.Action) (bool, error) {
 		return g.prompt(overrideAction)
 	}
 
+	guardianWarn := false
+	if g.guardian != nil {
+		transcript := ""
+		if g.guardianContext != nil {
+			transcript = strings.TrimSpace(g.guardianContext())
+		}
+		review := g.guardian(transcript, action)
+		switch review.Decision {
+		case tools.GuardianBlock:
+			if g.progress != nil && strings.TrimSpace(review.Reason) != "" {
+				g.progress("guardian blocked approval: " + strings.TrimSpace(review.Reason))
+			}
+			return false, nil
+		case tools.GuardianWarn:
+			guardianWarn = true
+			if reason := strings.TrimSpace(review.Reason); reason != "" {
+				action.Summary = "[guardian] " + reason + " :: " + action.Summary
+				if g.progress != nil {
+					g.progress("guardian warned: " + reason)
+				}
+			}
+		}
+	}
+
 	if decision, matched := g.ruleDecision(action); matched {
 		switch decision {
 		case DecisionAllow:
+			if guardianWarn {
+				return g.prompt(action)
+			}
 			return true, nil
 		case DecisionForbidden:
 			return false, nil
@@ -114,16 +190,22 @@ func (g *ApprovalGate) Approve(action tools.Action) (bool, error) {
 
 	switch g.cfg.DefaultPolicy {
 	case ApprovalNever:
+		if guardianWarn {
+			return g.prompt(action)
+		}
 		return true, nil
 	case ApprovalOnFailure:
+		if guardianWarn {
+			return g.prompt(action)
+		}
 		return true, nil
 	case ApprovalOnRequest:
-		if actionNeedsPrompt(action) {
+		if guardianWarn || actionNeedsPrompt(action) {
 			return g.prompt(action)
 		}
 		return true, nil
 	case ApprovalUnlessTrusted:
-		if actionTrusted(action, g.cfg.KnownSafeCommand) {
+		if !guardianWarn && actionTrusted(action, g.cfg.KnownSafeCommand) {
 			return true, nil
 		}
 		return g.prompt(action)

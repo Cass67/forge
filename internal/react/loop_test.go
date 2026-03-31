@@ -189,6 +189,70 @@ func TestRunnerRunRecordsCompletedTurnDetails(t *testing.T) {
 	}
 }
 
+func TestRunnerInvokesTurnCompleteHookAfterSuccessfulTurn(t *testing.T) {
+	driver := &nativeScriptedDriver{responses: []string{"repo overview"}}
+	session := NewSession()
+	var got SessionSnapshot
+	called := false
+	r := NewRunner(Config{
+		Driver:  driver,
+		Session: session,
+		TurnComplete: func(snapshot SessionSnapshot) {
+			called = true
+			got = snapshot
+		},
+	})
+
+	if err := r.Run(context.Background(), "inspect repo"); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("expected turn-complete hook")
+	}
+	if got.Turn != 1 {
+		t.Fatalf("snapshot turn = %d", got.Turn)
+	}
+	if len(got.Turns) != 1 || got.Turns[0].FinalResponse != "repo overview" {
+		t.Fatalf("snapshot turns = %#v", got.Turns)
+	}
+}
+
+func TestRunnerTurnCompleteHookCanFeedMemorySummaryIntoNextTurn(t *testing.T) {
+	driver := &captureMessagesDriver{response: "second answer"}
+	session := NewSession()
+	r := NewRunner(Config{
+		Driver:  driver,
+		Session: session,
+		TurnComplete: func(snapshot SessionSnapshot) {
+			if len(snapshot.Turns) == 1 {
+				session.SetMemorySummary("Remembered: runtime flow was already inspected.")
+			}
+		},
+	})
+
+	firstDriver := &nativeScriptedDriver{responses: []string{"first answer"}}
+	r.SetDriver(firstDriver)
+	if err := r.Run(context.Background(), "inspect repo"); err != nil {
+		t.Fatal(err)
+	}
+
+	r.SetDriver(driver)
+	if err := r.Run(context.Background(), "keep going"); err != nil {
+		t.Fatal(err)
+	}
+
+	foundMemory := false
+	for _, msg := range driver.lastMessages {
+		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Memory summary:") {
+			foundMemory = true
+			break
+		}
+	}
+	if !foundMemory {
+		t.Fatalf("expected memory summary in second turn messages: %#v", driver.lastMessages)
+	}
+}
+
 func TestRunnerRunRecordsTurnError(t *testing.T) {
 	driver := &errorDriver{err: context.DeadlineExceeded}
 	session := NewSession()
@@ -347,6 +411,78 @@ func TestRunnerIncludesInterruptedGuidanceAfterExecSessionTurn(t *testing.T) {
 	}
 	if !strings.Contains(interruptedMsg, "verify current state before continuing") {
 		t.Fatalf("interrupted guidance = %q", interruptedMsg)
+	}
+}
+
+func TestRunnerIncludesReviewRuntimeGuidance(t *testing.T) {
+	driver := &captureMessagesDriver{response: "- Finding: runtime guidance is present."}
+	session := NewSession()
+	session.SetTaskState(TaskState{
+		Objective:            "review this repo and tell me what i need to change",
+		Operation:            "review",
+		RequiredVerification: "produce source-grounded findings first, ordered by severity, and keep the summary secondary to the actual review issues",
+	})
+
+	r := NewRunner(Config{
+		Driver:  driver,
+		Session: session,
+	})
+
+	if err := r.Run(context.Background(), "review this repo"); err != nil {
+		t.Fatal(err)
+	}
+
+	var reviewMsg string
+	for _, msg := range driver.lastMessages {
+		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Review workflow active") {
+			reviewMsg = msg.Content
+			break
+		}
+	}
+	if reviewMsg == "" {
+		t.Fatalf("expected review runtime guidance in messages: %#v", driver.lastMessages)
+	}
+	if !strings.Contains(reviewMsg, "Lead with findings") {
+		t.Fatalf("review guidance = %q", reviewMsg)
+	}
+}
+
+func TestRunnerIncludesBlockedPlanRuntimeGuidance(t *testing.T) {
+	driver := &captureMessagesDriver{response: "Plan is blocked on user input."}
+	session := NewSession()
+	session.SetTaskState(TaskState{
+		Objective:            "write a plan for prompt/runtime work",
+		Operation:            "plan",
+		RequiredVerification: "produce a concise plan grounded in enough repo evidence",
+	})
+	session.SetPlanState(PlanState{
+		Steps: []PlanStep{
+			{Step: "Confirm whether plan mode should be mandatory by default", Status: "blocked", Blocker: "need user decision on default behavior"},
+			{Step: "Implement the approved runtime behavior", Status: "pending"},
+		},
+	})
+
+	r := NewRunner(Config{
+		Driver:  driver,
+		Session: session,
+	})
+
+	if err := r.Run(context.Background(), "keep going"); err != nil {
+		t.Fatal(err)
+	}
+
+	var blockedMsg string
+	for _, msg := range driver.lastMessages {
+		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Current plan is blocked") {
+			blockedMsg = msg.Content
+			break
+		}
+	}
+	if blockedMsg == "" {
+		t.Fatalf("expected blocked plan runtime guidance in messages: %#v", driver.lastMessages)
+	}
+	if !strings.Contains(blockedMsg, "ask_user_question") {
+		t.Fatalf("blocked guidance = %q", blockedMsg)
 	}
 }
 
@@ -999,6 +1135,68 @@ func TestRunnerNudgesOnExcessiveAnalysisExploration(t *testing.T) {
 		t.Fatalf("expected analysis synthesis note after budget exceeded, allMsgs=%d", len(driver.allMsgs))
 	}
 	// No blocking should have occurred
+	snap := session.Snapshot()
+	for _, msg := range snap.History {
+		if msg.Role == llm.RoleTool && strings.Contains(msg.Content, "blocked:") {
+			t.Fatalf("expected no blocking, got blocked tool result: %s", msg.Content)
+		}
+	}
+}
+
+func TestRunnerNudgesOnRepeatedSameFileCodeSearch(t *testing.T) {
+	const repeatedSearches = sameFileSearchThrashThreshold + 1
+	steps := make([][]llm.Token, repeatedSearches+1)
+	for i := 0; i < repeatedSearches; i++ {
+		steps[i] = []llm.Token{{ToolCall: &llm.NativeToolCall{
+			ID:       fmt.Sprintf("c%d", i+1),
+			Name:     "code_search",
+			ArgsJSON: fmt.Sprintf(`{"path":"internal/tui/chatmodel.go","query":"pattern%d"}`, i),
+		}}}
+	}
+	steps[repeatedSearches] = []llm.Token{{Text: "Done."}}
+
+	driver := &nativeSequenceDriver{steps: steps}
+	reg := agenttools.NewRegistry()
+	codeSearchCalls := 0
+	reg.Register(agenttools.Tool{
+		Name:        "code_search",
+		Description: "search code",
+		Parameters: []agenttools.ParameterDef{
+			{Name: "path", Type: "string", Required: true},
+			{Name: "query", Type: "string", Required: true},
+		},
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			codeSearchCalls++
+			return "no matches", nil
+		},
+	})
+
+	session := NewSession()
+	session.SetTaskState(TaskState{
+		Objective:            "add a file tree panel to the tui",
+		Operation:            "implement",
+		RequiredVerification: "inspect the relevant code, make the change with edit tools, and run the relevant verification before claiming completion",
+	})
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session, MaxSessionTurns: repeatedSearches + 5})
+
+	if err := r.Run(context.Background(), "add the panel"); err != nil {
+		t.Fatal(err)
+	}
+	if codeSearchCalls != repeatedSearches {
+		t.Fatalf("code_search calls = %d, want %d (no blocking)", codeSearchCalls, repeatedSearches)
+	}
+	foundRuntimeNote := false
+	for _, msgs := range driver.allMsgs[sameFileSearchThrashThreshold:] {
+		for _, msg := range msgs {
+			if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Search thrash guidance") {
+				foundRuntimeNote = true
+			}
+		}
+	}
+	if !foundRuntimeNote {
+		t.Fatalf("expected search thrash runtime note after threshold, allMsgs=%d", len(driver.allMsgs))
+	}
 	snap := session.Snapshot()
 	for _, msg := range snap.History {
 		if msg.Role == llm.RoleTool && strings.Contains(msg.Content, "blocked:") {

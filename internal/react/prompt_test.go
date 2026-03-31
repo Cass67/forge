@@ -159,7 +159,7 @@ func TestBuildMessages_IncludesPlanStateAsSystemMessage(t *testing.T) {
 			Explanation: "Working through the approved runtime alignment",
 			Steps: []PlanStep{
 				{Step: "Add apply_patch", Status: "completed"},
-				{Step: "Add update_plan", Status: "in_progress"},
+				{Step: "Add update_plan", Status: "blocked", Blocker: "waiting on user confirmation for the next edit slice"},
 			},
 		},
 		History: []llm.Message{{Role: llm.RoleUser, Content: "keep going"}},
@@ -172,8 +172,84 @@ func TestBuildMessages_IncludesPlanStateAsSystemMessage(t *testing.T) {
 	if msgs[1].Role != llm.RoleSystem || !strings.Contains(msgs[1].Content, "Current plan:") {
 		t.Fatalf("plan message = %#v", msgs[1])
 	}
-	if !strings.Contains(msgs[1].Content, "[in_progress] Add update_plan") {
+	if !strings.Contains(msgs[1].Content, "[blocked] Add update_plan") {
 		t.Fatalf("plan content = %q", msgs[1].Content)
+	}
+	if !strings.Contains(msgs[1].Content, "blocker: waiting on user confirmation for the next edit slice") {
+		t.Fatalf("plan content = %q", msgs[1].Content)
+	}
+}
+
+func TestBuildMessages_IncludesMemorySummaryAsSystemMessage(t *testing.T) {
+	snap := SessionSnapshot{
+		MemorySummary: "Previously learned: the runtime branch-switch guard should stay local-first.",
+		History:       []llm.Message{{Role: llm.RoleUser, Content: "keep going"}},
+	}
+
+	msgs := BuildMessages("sys", snap)
+	if len(msgs) < 3 {
+		t.Fatalf("messages = %#v", msgs)
+	}
+	if msgs[1].Role != llm.RoleSystem || !strings.Contains(msgs[1].Content, "Memory summary:") {
+		t.Fatalf("memory message = %#v", msgs[1])
+	}
+	if !strings.Contains(msgs[1].Content, "runtime branch-switch guard") {
+		t.Fatalf("memory content = %q", msgs[1].Content)
+	}
+}
+
+func TestBuildMessages_IncludesHookOverlayAsSystemMessage(t *testing.T) {
+	snap := SessionSnapshot{
+		HookOverlays: []HookOverlay{{
+			Key:        "reminder",
+			Content:    "Prefer the preview lifecycle tools over an ad-hoc webserver.",
+			Priority:   HookPriorityHigh,
+			Provenance: "runtime",
+		}},
+		History: []llm.Message{{Role: llm.RoleUser, Content: "keep going"}},
+	}
+
+	msgs := BuildMessages("sys", snap)
+	found := false
+	for _, msg := range msgs {
+		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "[hook:runtime]") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("messages missing hook overlay: %#v", msgs)
+	}
+}
+
+func TestBuildMessages_PlacesDynamicSystemOverlaysAfterBaseSystemPrompt(t *testing.T) {
+	snap := SessionSnapshot{
+		RuntimeNote: "runtime note",
+		Mode:        ModePlan,
+		TaskState: &TaskState{
+			Objective:            "inspect prompt composition",
+			RequiredVerification: "make sure overlays follow the base system prompt",
+			Operation:            "analysis",
+		},
+		PlanState: &PlanState{
+			Steps: []PlanStep{
+				{Step: "Add prompt composer", Status: "in_progress"},
+			},
+		},
+		History: []llm.Message{{Role: llm.RoleUser, Content: "inspect the prompt flow"}},
+	}
+
+	msgs := BuildMessages("base system", snap)
+	if len(msgs) < 5 {
+		t.Fatalf("messages = %#v", msgs)
+	}
+	for i, want := range []string{"base system", "Current mode: plan", "runtime note", "Task objective", "Current plan:"} {
+		if msgs[i].Role != llm.RoleSystem {
+			t.Fatalf("message %d role = %q, want system", i, msgs[i].Role)
+		}
+		if !strings.Contains(msgs[i].Content, want) {
+			t.Fatalf("message %d = %q, want substring %q", i, msgs[i].Content, want)
+		}
 	}
 }
 
@@ -196,6 +272,9 @@ func TestBuildMessages_IncludesPlanTaskGuidance(t *testing.T) {
 	}
 	if !strings.Contains(msgs[1].Content, "avoid exhaustive repo-wide searches") {
 		t.Fatalf("task state missing synthesis guidance: %q", msgs[1].Content)
+	}
+	if !strings.Contains(msgs[1].Content, "enter_plan_mode") || !strings.Contains(msgs[1].Content, "ask_user_question") {
+		t.Fatalf("task state missing plan/question tool guidance: %q", msgs[1].Content)
 	}
 }
 
@@ -241,6 +320,9 @@ func TestBuildMessages_IncludesImplementationTaskGuidance(t *testing.T) {
 	if !strings.Contains(msgs[1].Content, "do not start with planning prose") {
 		t.Fatalf("task state missing first action guidance: %q", msgs[1].Content)
 	}
+	if !strings.Contains(msgs[1].Content, "If repeated searches on the same file are not resolving the insertion point, read that file directly") {
+		t.Fatalf("task state missing same-file search guidance: %q", msgs[1].Content)
+	}
 	if !strings.Contains(msgs[1].Content, "exec_session_start") {
 		t.Fatalf("task state missing PTY exec guidance: %q", msgs[1].Content)
 	}
@@ -265,6 +347,28 @@ func TestBuildMessages_IncludesPreviewTaskGuidance(t *testing.T) {
 	}
 	if !strings.Contains(msgs[1].Content, "Do not launch an ad-hoc local webserver") {
 		t.Fatalf("task state missing preview routing guidance: %q", msgs[1].Content)
+	}
+}
+
+func TestBuildMessages_IncludesReviewTaskGuidance(t *testing.T) {
+	snap := SessionSnapshot{
+		TaskState: &TaskState{
+			Objective:            "review this repo and tell me what i need to change",
+			Operation:            "review",
+			RequiredVerification: "produce source-grounded findings first, ordered by severity, and keep the summary secondary to the actual review issues",
+		},
+		History: []llm.Message{{Role: llm.RoleUser, Content: "review this repo and tell me what i need to change"}},
+	}
+
+	msgs := BuildMessages("sys", snap)
+	if len(msgs) < 3 {
+		t.Fatalf("messages = %#v", msgs)
+	}
+	if !strings.Contains(msgs[1].Content, "Review guidance") {
+		t.Fatalf("task state missing review guidance: %q", msgs[1].Content)
+	}
+	if !strings.Contains(msgs[1].Content, "findings before summary") {
+		t.Fatalf("task state missing findings-first guidance: %q", msgs[1].Content)
 	}
 }
 
