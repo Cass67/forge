@@ -35,6 +35,19 @@ func TestShellRuleWildcardMatch(t *testing.T) {
 	}
 }
 
+func TestShellRuleWildcardMatchesSingleTokenOnly(t *testing.T) {
+	rule, err := parseShellRule("git * status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rule.matches("git commit status") {
+		t.Fatal("expected single-token wildcard match")
+	}
+	if rule.matches("git commit --amend status") {
+		t.Fatal("wildcard should not span multiple tokens")
+	}
+}
+
 func TestShellRuleEscapedWildcardLiteral(t *testing.T) {
 	rule, err := parseShellRule(`git \* status`)
 	if err != nil {
