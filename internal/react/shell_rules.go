@@ -51,14 +51,14 @@ func parseShellRulePrefix(tokens []string) (shellRule, error) {
 	cleaned := make([]string, 0, len(tokens))
 	for _, token := range tokens {
 		if trimmed := strings.TrimSpace(token); trimmed != "" {
-			cleaned = append(cleaned, trimmed)
+			cleaned = append(cleaned, strings.ToLower(trimmed))
 		}
 	}
 	if len(cleaned) == 0 {
 		return shellRule{}, fmt.Errorf("shell rule is empty")
 	}
 	return shellRule{
-		raw:    strings.ToLower(strings.Join(cleaned, " ")),
+		raw:    strings.Join(cleaned, " "),
 		tokens: cleaned,
 		kind:   shellRulePrefix,
 	}, nil
