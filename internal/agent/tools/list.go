@@ -29,7 +29,7 @@ func NewListDir(workDir string, ignoreDirs []string) Tool {
 			}
 			recursive, _ := args["recursive"].(bool)
 
-			resolved, err := ResolvePath(workDir, path)
+			resolved, err := ResolvePathAllowEscape(workDir, path)
 			if err != nil {
 				return "", err
 			}

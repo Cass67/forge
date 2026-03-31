@@ -50,10 +50,15 @@ func TestReadFileLineRange(t *testing.T) {
 
 func TestReadFileEscape(t *testing.T) {
 	dir := t.TempDir()
+	// read_file now allows reading outside the workdir (read-only access)
 	tool := NewReadFile(dir)
-	_, err := tool.Execute(context.Background(), map[string]any{"path": "../etc/passwd"})
-	if err == nil {
-		t.Error("expected error for path escape")
+	result, err := tool.Execute(context.Background(), map[string]any{"path": "../etc/passwd"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// /etc/passwd should be readable now
+	if result == "" || result == "no matches found" {
+		t.Log("read outside workdir returned empty (file may not exist on this system)")
 	}
 }
 

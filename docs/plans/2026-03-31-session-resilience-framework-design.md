@@ -198,3 +198,70 @@ persistent_heartbeat_ms = 30000
 1. **Retry smarter** - parse server-provided delays, classify errors granularly, use exponential backoff with jitter
 2. **Fail faster** - circuit breakers stop wasteful retries after N failures, background queries bail immediately on capacity errors
 3. **Recover transparently** - withheld errors mean the model never sees recoverable failures, preventing error → retry → error spirals
+
+---
+
+## Implementation Status
+
+**Date completed:** 2026-03-31  
+**Status:** ✅ Complete — 12 commits, all 30 test packages passing, 0 lint issues
+
+### What was actually built vs design
+
+| Design Component | Implementation | Deviation from Design |
+|---|---|---|
+| `retry/` package | Enhanced `internal/llm/retry.go` in-place | Kept as enhanced retry.go instead of new package — less churn, same functionality |
+| `circuit/` package | `internal/resilience/circuit/breaker.go` | None — matches design exactly |
+| `budget/` package | `internal/resilience/budget/tracker.go` | Simplified: removed unbounded `deltas` slice (latent memory leak found in review) |
+| `errors/` package | `internal/resilience/errors/errors.go` | Tightened overly broad patterns (`"401"` → `"401 unauthorized"`, `"credit"` → `"insufficient credit"`) |
+| `recovery/` package | `internal/resilience/recovery/manager.go` | Extracted `GuardCompaction` constant; added slice copy in `TakeWithheldErrors` |
+| TUI errors | `internal/tui/errors.go` rewritten | Added `containsLower`/`indexLower` helpers to avoid `strings` import |
+| Loop integration | `internal/react/loop.go` | Added compaction failure tracking + circuit breaker tripping |
+| Config section | `internal/config/config.go` | Added `Resilience` struct with 5 fields and defaults |
+| Bootstrap wiring | `internal/runtime/chat.go` + `session.go` | Wired `NewRetryDriverWithIdleTimeout` + `CompactionMaxFailures` + `Interactive` |
+
+### Code review fixes applied during implementation
+
+Every task went through spec review + code quality review. Fixes applied:
+
+- **Task 1 (errors):** Tightened `"401"`/`"403"` patterns to avoid false positives; removed redundant regex; added data policy + default fallback tests
+- **Task 2 (circuit):** Added `RecordFailure` guard for open state (prevents cooldown extension); made `State()` report effective state matching `Allow()`; added half-open→re-open test
+- **Task 3 (budget):** Removed unbounded `deltas` slice (memory leak); switched to `RWMutex` for read-heavy methods; added `ResetErrors` + default value tests
+- **Task 4 (recovery):** Extracted `GuardCompaction` constant; added slice copy in `TakeWithheldErrors` (prevents aliasing footgun); added guard-isolation test
+- **Task 5 (retry):** All existing 27 tests pass — backward compatibility preserved
+
+### Final commit log
+
+```
+69fc00f feat: wire resilience config into bootstrap and chat setup
+2838f42 feat: add resilience config section with sensible defaults
+3dc2a30 feat: integrate compaction failure tracking into react loop
+51267e7 refactor: update TUI error handling to use resilience taxonomy
+88c9247 refactor: enhance retry driver with error taxonomy and retry-after parsing
+531654a fix: harden recovery manager per code review — extract constant, copy slice, add test
+6a9eeca fix: harden budget tracker per code review — remove unbounded deltas, RWMutex, add tests
+e9ee455 feat: add budget tracker package for resilience framework
+5a793b0 fix: harden circuit breaker per code review — guard RecordFailure, fix State(), add tests
+64ce9dd feat: add circuit breaker package for resilience framework
+0a426c1 fix: tighten error patterns and add missing tests per code review
+690605f feat: add error taxonomy package for resilience framework
+```
+
+### Test results
+
+```
+30 packages tested, all PASS
+0 lint issues (golangci-lint)
+0 build errors
+```
+
+### Configuration (actual defaults)
+
+```toml
+[resilience]
+compaction_max_failures = 3       # trips after 3 consecutive compaction failures
+token_diminishing_threshold = 500 # flags when token delta < 500 for 2 turns
+token_diminishing_checks = 2      # consecutive low-delta turns before flagging
+tool_thrash_circuit_breaker = 8   # (reserved for future tool thrash escalation)
+stream_idle_timeout_ms = 30000    # kills hung streams after 30s
+```
