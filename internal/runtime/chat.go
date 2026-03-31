@@ -21,6 +21,7 @@ import (
 	"forge/internal/codexusage"
 	"forge/internal/config"
 	"forge/internal/copilot"
+	"forge/internal/hooks"
 	"forge/internal/llm"
 	"forge/internal/mcp"
 	"forge/internal/memory"
@@ -781,43 +782,173 @@ func applySuggestedSkillOverlay(session *reactruntime.Session, input string, loa
 	if session == nil {
 		return
 	}
-	nudge := suggestedSkillNudge(input, loadedSkills, state)
-	if strings.TrimSpace(nudge) == "" {
-		session.ClearHookOverlay("suggested_skill")
-		return
-	}
-	session.SetHookOverlay(reactruntime.HookOverlay{
-		Key:        "suggested_skill",
-		Content:    nudge,
-		Priority:   reactruntime.HookPriorityNormal,
-		Provenance: "runtime",
-	})
+	registry := newChatHookRegistry()
+	session.SetHookOutput(chatPromptHookOutput(context.Background(), session, registry, chatPromptHookPayload{
+		SuggestedSkillNudge: suggestedSkillNudge(input, loadedSkills, state),
+	}, "suggested_skill"))
 }
 
 func applyGuardianOverlay(session *reactruntime.Session, event reactruntime.GuardianEvent) {
 	if session == nil {
 		return
 	}
-	switch event.Decision {
+	registry := newChatHookRegistry()
+	session.SetHookOutput(chatPromptHookOutput(context.Background(), session, registry, chatPromptHookPayload{
+		GuardianEvent: &event,
+	}, "guardian_warning"))
+}
+
+type chatPromptHookPayload struct {
+	SuggestedSkillNudge string
+	GuardianEvent       *reactruntime.GuardianEvent
+}
+
+func newChatHookRegistry() *hooks.Registry {
+	registry := hooks.NewRegistry()
+	registry.Register(hooks.PointPromptContext, "suggested_skill", suggestedSkillPromptHook)
+	registry.Register(hooks.PointPromptContext, "guardian_warning", guardianWarningPromptHook)
+	return registry
+}
+
+func suggestedSkillPromptHook(_ context.Context, event hooks.Event) []hooks.Result {
+	payload, ok := event.Transient.(chatPromptHookPayload)
+	if !ok {
+		return nil
+	}
+	nudge := strings.TrimSpace(payload.SuggestedSkillNudge)
+	if nudge == "" {
+		return nil
+	}
+	return []hooks.Result{hooks.OverlayResult{
+		Key:        "suggested_skill",
+		Content:    nudge,
+		Priority:   hooks.PriorityNormal,
+		Provenance: "runtime",
+	}}
+}
+
+func guardianWarningPromptHook(_ context.Context, event hooks.Event) []hooks.Result {
+	payload, ok := event.Transient.(chatPromptHookPayload)
+	if !ok || payload.GuardianEvent == nil {
+		return nil
+	}
+	switch payload.GuardianEvent.Decision {
 	case tools.GuardianWarn, tools.GuardianBlock:
-		reason := strings.TrimSpace(event.Reason)
+		reason := strings.TrimSpace(payload.GuardianEvent.Reason)
 		if reason == "" {
 			reason = "approval action needs extra scrutiny"
 		}
-		summary := strings.TrimSpace(event.Action.Summary)
-		content := "Guardian " + strings.ToLower(string(event.Decision)) + ": " + reason
-		if summary != "" {
+		content := "Guardian " + strings.ToLower(string(payload.GuardianEvent.Decision)) + ": " + reason
+		if summary := strings.TrimSpace(payload.GuardianEvent.Action.Summary); summary != "" {
 			content += "\nAction: " + summary
 		}
-		session.SetHookOverlay(reactruntime.HookOverlay{
+		return []hooks.Result{hooks.OverlayResult{
 			Key:        "guardian_warning",
 			Content:    content,
-			Priority:   reactruntime.HookPriorityHigh,
+			Priority:   hooks.PriorityHigh,
 			Provenance: "runtime",
-		})
+		}}
 	default:
-		session.ClearHookOverlay("guardian_warning")
+		return nil
 	}
+}
+
+func chatPromptHookOutput(ctx context.Context, session *reactruntime.Session, registry *hooks.Registry, payload chatPromptHookPayload, ownedKeys ...string) hooks.ExecutionOutput {
+	base, snapshot := currentChatPromptHookOutput(session)
+	base.Overlays = filterChatHookOverlays(base.Overlays, ownedKeys...)
+	if registry == nil {
+		return base
+	}
+	runtime := registry.Dispatch(ctx, hooks.Event{
+		Point:     hooks.PointPromptContext,
+		Snapshot:  snapshot,
+		Transient: payload,
+	})
+	return mergeChatHookOutput(base, runtime)
+}
+
+func currentChatPromptHookOutput(session *reactruntime.Session) (hooks.ExecutionOutput, reactruntime.SessionSnapshot) {
+	if session == nil {
+		return hooks.ExecutionOutput{}, reactruntime.SessionSnapshot{}
+	}
+	snapshot := session.Snapshot()
+	if snapshot.HookOutputSet {
+		return cloneChatHookOutput(snapshot.HookOutput), snapshot
+	}
+	output := hooks.ExecutionOutput{}
+	if len(snapshot.HookOverlays) > 0 {
+		output.Overlays = append([]hooks.OverlayResult(nil), snapshot.HookOverlays...)
+	}
+	if note := strings.TrimSpace(snapshot.RuntimeNote); note != "" {
+		output.Note = &hooks.NoteResult{Message: note}
+	}
+	return output, snapshot
+}
+
+func filterChatHookOverlays(overlays []hooks.OverlayResult, ownedKeys ...string) []hooks.OverlayResult {
+	if len(overlays) == 0 {
+		return nil
+	}
+	if len(ownedKeys) == 0 {
+		return append([]hooks.OverlayResult(nil), overlays...)
+	}
+	owned := make(map[string]struct{}, len(ownedKeys))
+	for _, key := range ownedKeys {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		owned[strings.ToLower(key)] = struct{}{}
+	}
+	filtered := make([]hooks.OverlayResult, 0, len(overlays))
+	for _, overlay := range overlays {
+		if _, ok := owned[strings.ToLower(strings.TrimSpace(overlay.Key))]; ok {
+			continue
+		}
+		filtered = append(filtered, overlay)
+	}
+	return filtered
+}
+
+func mergeChatHookOutput(base, runtime hooks.ExecutionOutput) hooks.ExecutionOutput {
+	merged := hooks.ExecutionOutput{
+		Overlays: append([]hooks.OverlayResult(nil), base.Overlays...),
+		Failures: append(append([]hooks.Failure(nil), base.Failures...), runtime.Failures...),
+	}
+	if base.Note != nil {
+		note := *base.Note
+		merged.Note = &note
+	}
+	if runtime.Note != nil && (merged.Note == nil || runtime.Note.Priority > merged.Note.Priority) {
+		note := *runtime.Note
+		merged.Note = &note
+	}
+	if base.Block != nil {
+		block := *base.Block
+		merged.Block = &block
+	}
+	if runtime.Block != nil {
+		block := *runtime.Block
+		merged.Block = &block
+	}
+	merged.Overlays = append(merged.Overlays, runtime.Overlays...)
+	return merged
+}
+
+func cloneChatHookOutput(output hooks.ExecutionOutput) hooks.ExecutionOutput {
+	cloned := hooks.ExecutionOutput{
+		Overlays: append([]hooks.OverlayResult(nil), output.Overlays...),
+		Failures: append([]hooks.Failure(nil), output.Failures...),
+	}
+	if output.Note != nil {
+		note := *output.Note
+		cloned.Note = &note
+	}
+	if output.Block != nil {
+		block := *output.Block
+		cloned.Block = &block
+	}
+	return cloned
 }
 
 func detectTaskStateFromInput(input string) (reactruntime.TaskState, bool) {
