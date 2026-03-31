@@ -1,12 +1,10 @@
-default: help
-
 help:
     @just --list
 
 build:
     go build -o ./bin/forge ./cmd/forge
 
-run: build
+run:
     ./bin/forge
 
 test:
