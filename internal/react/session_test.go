@@ -3,6 +3,7 @@ package react
 import (
 	"testing"
 
+	"forge/internal/hooks"
 	"forge/internal/llm"
 )
 
@@ -217,6 +218,12 @@ func TestSessionSetHookOverlayUpsertsByKey(t *testing.T) {
 	if got[0].Content != "second" || got[0].Priority != HookPriorityHigh {
 		t.Fatalf("hook overlays = %#v", got)
 	}
+	if len(s.Snapshot().HookOutput.Overlays) != 1 {
+		t.Fatalf("hook output overlays = %#v", s.Snapshot().HookOutput.Overlays)
+	}
+	if s.Snapshot().HookOutput.Overlays[0].Content != "second" {
+		t.Fatalf("hook output overlays = %#v", s.Snapshot().HookOutput.Overlays)
+	}
 }
 
 func TestSessionClearHookOverlayRemovesMatchingKey(t *testing.T) {
@@ -231,6 +238,40 @@ func TestSessionClearHookOverlayRemovesMatchingKey(t *testing.T) {
 	got := s.Snapshot().HookOverlays
 	if len(got) != 1 || got[0].Key != "plan_blocker" {
 		t.Fatalf("hook overlays = %#v", got)
+	}
+	if got := s.Snapshot().HookOutput.Overlays; len(got) != 1 || got[0].Key != "plan_blocker" {
+		t.Fatalf("hook output overlays = %#v", got)
+	}
+}
+
+func TestSessionSetHookOutputStoresNormalizedHookState(t *testing.T) {
+	s := NewSession()
+	s.SetHookOutput(hooks.ExecutionOutput{
+		Overlays: []hooks.OverlayResult{{
+			Key:        "suggested_skill",
+			Content:    "Use the TDD workflow before editing runtime behavior.",
+			Priority:   hooks.PriorityHigh,
+			Provenance: "runtime",
+		}},
+		Note: &hooks.NoteResult{
+			Message:    "Runtime note from normalized hook output.",
+			Priority:   hooks.PriorityNormal,
+			Provenance: "runtime",
+		},
+	})
+
+	snap := s.Snapshot()
+	if len(snap.HookOutput.Overlays) != 1 {
+		t.Fatalf("hook output overlays = %#v", snap.HookOutput.Overlays)
+	}
+	if snap.HookOutput.Note == nil || snap.HookOutput.Note.Message != "Runtime note from normalized hook output." {
+		t.Fatalf("hook output note = %#v", snap.HookOutput.Note)
+	}
+	if len(snap.HookOverlays) != 1 || snap.HookOverlays[0].Key != "suggested_skill" {
+		t.Fatalf("hook overlays = %#v", snap.HookOverlays)
+	}
+	if snap.RuntimeNote != "Runtime note from normalized hook output." {
+		t.Fatalf("runtime note = %q", snap.RuntimeNote)
 	}
 }
 

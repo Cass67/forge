@@ -92,6 +92,7 @@ type SessionSnapshot struct {
 	CompactedTurns    int
 	CompactionSummary string
 	MemorySummary     string
+	HookOutput        hooks.ExecutionOutput
 	HookOverlays      []hooks.Overlay
 	RuntimeNote       string
 	Mode              Mode
@@ -111,6 +112,7 @@ type Session struct {
 	compactedTurns    int
 	compactionSummary string
 	memorySummary     string
+	hookOutput        hooks.ExecutionOutput
 	hookOverlays      []hooks.Overlay
 	runtimeNote       string
 	mode              Mode
@@ -238,6 +240,7 @@ func (s *Session) Snapshot() SessionSnapshot {
 		CompactedTurns:    s.compactedTurns,
 		CompactionSummary: s.compactionSummary,
 		MemorySummary:     s.memorySummary,
+		HookOutput:        cloneHookOutput(s.hookOutput),
 		HookOverlays:      append([]hooks.Overlay(nil), s.hookOverlays...),
 		RuntimeNote:       s.runtimeNote,
 		Mode:              s.mode,
@@ -262,6 +265,7 @@ func (s *Session) Clear() {
 	s.compactedTurns = 0
 	s.compactionSummary = ""
 	s.memorySummary = ""
+	s.hookOutput = hooks.ExecutionOutput{}
 	s.hookOverlays = nil
 	s.runtimeNote = ""
 	s.mode = ModeChat
@@ -277,7 +281,17 @@ func (s *Session) SetRuntimeNote(text string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.runtimeNote = strings.TrimSpace(text)
+	text = strings.TrimSpace(text)
+	if text == "" {
+		s.hookOutput.Note = nil
+		s.syncLegacyHookStateLocked()
+		return
+	}
+	if s.hookOutput.Note == nil {
+		s.hookOutput.Note = &hooks.NoteResult{}
+	}
+	s.hookOutput.Note.Message = text
+	s.syncLegacyHookStateLocked()
 }
 
 func (s *Session) SetMemorySummary(text string) {
@@ -295,7 +309,8 @@ func (s *Session) SetHookOverlays(overlays []hooks.Overlay) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.hookOverlays = append([]hooks.Overlay(nil), overlays...)
+	s.hookOutput.Overlays = append([]hooks.OverlayResult(nil), overlays...)
+	s.syncLegacyHookStateLocked()
 }
 
 func (s *Session) SetHookOverlay(overlay hooks.Overlay) {
@@ -308,13 +323,15 @@ func (s *Session) SetHookOverlay(overlay hooks.Overlay) {
 	if key == "" {
 		return
 	}
-	for i := range s.hookOverlays {
-		if strings.EqualFold(strings.TrimSpace(s.hookOverlays[i].Key), key) {
-			s.hookOverlays[i] = overlay
+	for i := range s.hookOutput.Overlays {
+		if strings.EqualFold(strings.TrimSpace(s.hookOutput.Overlays[i].Key), key) {
+			s.hookOutput.Overlays[i] = overlay
+			s.syncLegacyHookStateLocked()
 			return
 		}
 	}
-	s.hookOverlays = append(s.hookOverlays, overlay)
+	s.hookOutput.Overlays = append(s.hookOutput.Overlays, overlay)
+	s.syncLegacyHookStateLocked()
 }
 
 func (s *Session) ClearHookOverlay(key string) {
@@ -327,14 +344,25 @@ func (s *Session) ClearHookOverlay(key string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	filtered := s.hookOverlays[:0]
-	for _, overlay := range s.hookOverlays {
+	filtered := s.hookOutput.Overlays[:0]
+	for _, overlay := range s.hookOutput.Overlays {
 		if strings.EqualFold(strings.TrimSpace(overlay.Key), key) {
 			continue
 		}
 		filtered = append(filtered, overlay)
 	}
-	s.hookOverlays = append([]hooks.Overlay(nil), filtered...)
+	s.hookOutput.Overlays = append([]hooks.OverlayResult(nil), filtered...)
+	s.syncLegacyHookStateLocked()
+}
+
+func (s *Session) SetHookOutput(output hooks.ExecutionOutput) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hookOutput = cloneHookOutput(output)
+	s.syncLegacyHookStateLocked()
 }
 
 func (s *Session) SetMode(mode Mode) {
@@ -438,6 +466,31 @@ func clonePlanState(state *PlanState) *PlanState {
 		Steps:       append([]PlanStep(nil), state.Steps...),
 	}
 	return &cloned
+}
+
+func cloneHookOutput(output hooks.ExecutionOutput) hooks.ExecutionOutput {
+	cloned := hooks.ExecutionOutput{
+		Overlays: append([]hooks.OverlayResult(nil), output.Overlays...),
+		Failures: append([]hooks.Failure(nil), output.Failures...),
+	}
+	if output.Note != nil {
+		note := *output.Note
+		cloned.Note = &note
+	}
+	if output.Block != nil {
+		block := *output.Block
+		cloned.Block = &block
+	}
+	return cloned
+}
+
+func (s *Session) syncLegacyHookStateLocked() {
+	s.hookOverlays = append([]hooks.Overlay(nil), s.hookOutput.Overlays...)
+	if s.hookOutput.Note == nil {
+		s.runtimeNote = ""
+		return
+	}
+	s.runtimeNote = strings.TrimSpace(s.hookOutput.Note.Message)
 }
 
 func (s *Session) QueuePendingInput(text string) {
