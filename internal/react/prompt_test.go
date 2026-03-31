@@ -225,6 +225,7 @@ func TestBuildMessages_IncludesHookOverlayAsSystemMessage(t *testing.T) {
 
 func TestBuildMessages_UsesNormalizedHookOutputWithoutDuplicatingVisibleNote(t *testing.T) {
 	snap := SessionSnapshot{
+		HookOutputSet: true,
 		HookOutput: hooks.ExecutionOutput{
 			Overlays: []hooks.OverlayResult{{
 				Key:        "reminder",
@@ -267,6 +268,31 @@ func TestBuildMessages_UsesNormalizedHookOutputWithoutDuplicatingVisibleNote(t *
 	}
 	if noteCount != 1 {
 		t.Fatalf("runtime note count = %d, messages = %#v", noteCount, msgs)
+	}
+}
+
+func TestBuildMessages_TypedHookOutputCanAuthoritativelyClearLegacyPromptState(t *testing.T) {
+	snap := SessionSnapshot{
+		HookOutputSet: true,
+		HookOutput:    hooks.ExecutionOutput{},
+		HookOverlays: []HookOverlay{{
+			Key:        "stale_overlay",
+			Content:    "stale legacy overlay",
+			Priority:   HookPriorityHigh,
+			Provenance: "runtime",
+		}},
+		RuntimeNote: "stale legacy note",
+		History:     []llm.Message{{Role: llm.RoleUser, Content: "keep going"}},
+	}
+
+	msgs := BuildMessages("sys", snap)
+	for _, msg := range msgs {
+		if msg.Role != llm.RoleSystem {
+			continue
+		}
+		if strings.Contains(msg.Content, "stale legacy overlay") || strings.Contains(msg.Content, "stale legacy note") {
+			t.Fatalf("stale legacy prompt state leaked into messages: %#v", msgs)
+		}
 	}
 }
 

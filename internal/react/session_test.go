@@ -275,6 +275,33 @@ func TestSessionSetHookOutputStoresNormalizedHookState(t *testing.T) {
 	}
 }
 
+func TestSessionSetRuntimeNoteReplacesTypedNoteMetadata(t *testing.T) {
+	s := NewSession()
+	s.SetHookOutput(hooks.ExecutionOutput{
+		Note: &hooks.NoteResult{
+			Message:    "old typed note",
+			Priority:   hooks.PriorityLow,
+			Provenance: "typed-handler",
+		},
+	})
+
+	s.SetRuntimeNote("legacy runtime note")
+
+	snap := s.Snapshot()
+	if snap.HookOutput.Note == nil {
+		t.Fatal("expected hook output note")
+	}
+	if snap.HookOutput.Note.Message != "legacy runtime note" {
+		t.Fatalf("hook output note = %#v", snap.HookOutput.Note)
+	}
+	if snap.HookOutput.Note.Priority != hooks.PriorityHigh {
+		t.Fatalf("hook output note priority = %v", snap.HookOutput.Note.Priority)
+	}
+	if snap.HookOutput.Note.Provenance != "runtime" {
+		t.Fatalf("hook output note provenance = %q", snap.HookOutput.Note.Provenance)
+	}
+}
+
 func TestSessionDefaultsToChatModeAndTracksTaskMode(t *testing.T) {
 	s := NewSession()
 	if got := s.Snapshot().Mode; got != ModeChat {
