@@ -52,6 +52,7 @@ func TestGlobIgnoreDirs(t *testing.T) {
 
 func TestGlobPathEscape(t *testing.T) {
 	dir := t.TempDir()
+	// glob now allows reading outside the workdir (read-only access)
 	tool := NewGlob(dir, nil)
 	result, err := tool.Execute(context.Background(), map[string]any{
 		"pattern": "*.go",
@@ -60,8 +61,9 @@ func TestGlobPathEscape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result, "escapes") {
-		t.Errorf("expected path escape error, got: %s", result)
+	// /etc typically has no .go files, so we expect "no matches found"
+	if !strings.Contains(result, "no matches") {
+		t.Errorf("expected 'no matches' for /etc, got: %s", result)
 	}
 }
 

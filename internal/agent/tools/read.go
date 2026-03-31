@@ -20,7 +20,7 @@ func NewReadFile(workDir string) Tool {
 		AutoApprove: true,
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			path, _ := args["path"].(string)
-			resolved, err := ResolvePath(workDir, path)
+			resolved, err := ResolvePathAllowEscape(workDir, path)
 			if err != nil {
 				return "", err
 			}

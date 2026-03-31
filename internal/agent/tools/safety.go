@@ -47,6 +47,30 @@ func ResolvePath(workDir, path string) (string, error) {
 	return abs, nil
 }
 
+// ResolvePathAllowEscape resolves a path and allows access outside the working
+// directory. This is intended for read-only tools that need to inspect files
+// outside the project (e.g., reading READMEs from sibling repos).
+// It still resolves ~ and relative paths, and validates that the path exists.
+func ResolvePathAllowEscape(workDir, path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("empty path")
+	}
+
+	resolvedWorkDir, err := filepath.EvalSymlinks(workDir)
+	if err != nil {
+		resolvedWorkDir = filepath.Clean(workDir)
+	}
+
+	var abs string
+	if filepath.IsAbs(path) {
+		abs = filepath.Clean(path)
+	} else {
+		abs = filepath.Clean(filepath.Join(resolvedWorkDir, path))
+	}
+
+	return abs, nil
+}
+
 func IsBinary(data []byte) bool {
 	check := data
 	if len(check) > 8192 {

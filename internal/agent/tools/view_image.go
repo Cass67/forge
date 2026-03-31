@@ -24,7 +24,7 @@ func NewViewImage(workDir string) Tool {
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			_ = ctx
 			path, _ := args["path"].(string)
-			resolved, err := ResolvePath(workDir, path)
+			resolved, err := ResolvePathAllowEscape(workDir, path)
 			if err != nil {
 				return "", err
 			}

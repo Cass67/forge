@@ -29,7 +29,7 @@ func NewCodeSearch(workDir string) Tool {
 			if strings.TrimSpace(basePath) == "" {
 				basePath = "."
 			}
-			resolved, err := ResolvePath(workDir, basePath)
+			resolved, err := ResolvePathAllowEscape(workDir, basePath)
 			if err != nil {
 				return "", err
 			}
