@@ -1510,3 +1510,85 @@ func TestLsFilesUnmergedRecognizedAsConflictCheck(t *testing.T) {
 		t.Fatal("non-empty ls-files -u output should set unmergedFiles")
 	}
 }
+
+func TestRunnerGitWorkflowOverlayAppearsOnUnmergedFiles(t *testing.T) {
+	driver := &captureMessagesDriver{response: "I see unmerged files."}
+	r := NewRunner(Config{Driver: driver})
+
+	r.updateGitWorkflowForCommand("git status --porcelain", "UU README.md")
+	r.syncRuntimeNote()
+
+	if err := r.Run(context.Background(), "help me resolve conflicts"); err != nil {
+		t.Fatal(err)
+	}
+
+	var gitMsg string
+	for _, msg := range driver.lastMessages {
+		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "[hook:runtime]") && strings.Contains(msg.Content, "Git merge workflow active") {
+			gitMsg = msg.Content
+			break
+		}
+	}
+	if gitMsg == "" {
+		t.Fatalf("expected git_workflow hook overlay in messages: %#v", driver.lastMessages)
+	}
+	if !strings.Contains(gitMsg, "git_merge_status") {
+		t.Fatalf("git workflow overlay = %q", gitMsg)
+	}
+}
+
+func TestRunnerGitWorkflowOverlayShiftsAfterConflictResolution(t *testing.T) {
+	driver := &captureMessagesDriver{response: "Conflicts resolved, ready to commit."}
+	r := NewRunner(Config{Driver: driver})
+
+	// Conflict appears.
+	r.updateGitWorkflowForCommand("git status --porcelain", "UU README.md")
+	r.syncRuntimeNote()
+
+	// Conflicts are staged/resolved — porcelain no longer shows UU lines, but merge is still active.
+	r.updateGitWorkflowForCommand("git status --porcelain", "M  README.md")
+	r.syncRuntimeNote()
+
+	if err := r.Run(context.Background(), "commit the resolution"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Merge is still active so the overlay should still be present, but with the
+	// shorter "inspect current merge state" guidance rather than the conflict-resolution message.
+	var gitMsg string
+	for _, msg := range driver.lastMessages {
+		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Git merge workflow active") {
+			gitMsg = msg.Content
+			break
+		}
+	}
+	if gitMsg == "" {
+		t.Fatal("expected git_workflow overlay to remain while merge is still active after conflict resolution")
+	}
+	if strings.Contains(gitMsg, "Resolve each conflicted file") {
+		t.Fatalf("expected shorter merge-active message, got: %q", gitMsg)
+	}
+}
+
+func TestRunnerGitWorkflowOverlayClearsOnSuccessfulCommit(t *testing.T) {
+	driver := &captureMessagesDriver{response: "Committed."}
+	r := NewRunner(Config{Driver: driver})
+
+	// Start a merge workflow.
+	r.updateGitWorkflowForCommand("git status --porcelain", "UU README.md")
+	r.syncRuntimeNote()
+
+	// Successful commit clears all git workflow state.
+	r.updateGitWorkflowForCommitResult("[main abc1234] merge: resolved README conflict\n 2 files changed, 3 insertions(+), 1 deletion(-)")
+	r.syncRuntimeNote()
+
+	if err := r.Run(context.Background(), "good, what next"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, msg := range driver.lastMessages {
+		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Git merge workflow active") {
+			t.Fatalf("git_workflow overlay should be gone after successful commit, but found: %q", msg.Content)
+		}
+	}
+}
