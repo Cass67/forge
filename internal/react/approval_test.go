@@ -43,6 +43,13 @@ func TestApprovalGateRuleForbidsCommand(t *testing.T) {
 	if prompted {
 		t.Fatal("forbidden rule should not prompt")
 	}
+	updates := gate.ApprovalUpdates()
+	if len(updates) != 1 {
+		t.Fatalf("update count = %d, want 1", len(updates))
+	}
+	if updates[0].Decision != ApprovalDecisionForbidden || updates[0].Source != ApprovalDecisionSourceRule {
+		t.Fatalf("forbidden rule update = %#v", updates[0])
+	}
 }
 
 func TestApprovalGateUnlessTrustedSkipsPromptForKnownSafe(t *testing.T) {
@@ -76,6 +83,47 @@ func TestApprovalGateUnlessTrustedSkipsPromptForKnownSafe(t *testing.T) {
 	}
 	if updates[0].Decision != ApprovalDecisionAllow || updates[0].Source != ApprovalDecisionSourceTrusted {
 		t.Fatalf("trusted approval update = %#v", updates[0])
+	}
+}
+
+func TestApprovalGateUnlessTrustedPromptsWhenGuardianWarnsTrustedCommand(t *testing.T) {
+	promptCalls := 0
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy:    ApprovalUnlessTrusted,
+		SandboxPolicy:    SandboxWorkspaceWrite,
+		KnownSafeCommand: []string{"git status"},
+	}, func(action tools.Action) (bool, error) {
+		promptCalls++
+		return true, nil
+	}, nil)
+	gate.SetGuardianReviewer(func(transcript string, action tools.Action) tools.GuardianReview {
+		return tools.GuardianReview{
+			Decision: tools.GuardianWarn,
+			Reason:   "needs context",
+		}
+	})
+
+	approved, err := gate.Approve(tools.Action{
+		Tool:    "run_command",
+		Summary: "git status --short",
+		Detail:  "git status --short",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !approved {
+		t.Fatal("expected warned trusted command to prompt and approve")
+	}
+	if promptCalls != 1 {
+		t.Fatalf("prompt calls = %d, want 1", promptCalls)
+	}
+
+	updates := gate.ApprovalUpdates()
+	if len(updates) != 1 {
+		t.Fatalf("update count = %d, want 1", len(updates))
+	}
+	if updates[0].Decision != ApprovalDecisionPrompt || updates[0].Source != ApprovalDecisionSourceGuardian {
+		t.Fatalf("guardian-warn trusted update = %#v", updates[0])
 	}
 }
 
@@ -166,6 +214,13 @@ func TestApprovalGateGuardianBlocksDestructiveAction(t *testing.T) {
 	}
 	if prompted {
 		t.Fatal("guardian block should happen before prompt")
+	}
+	updates := gate.ApprovalUpdates()
+	if len(updates) != 1 {
+		t.Fatalf("update count = %d, want 1", len(updates))
+	}
+	if updates[0].Decision != ApprovalDecisionForbidden || updates[0].Source != ApprovalDecisionSourceGuardian {
+		t.Fatalf("guardian block update = %#v", updates[0])
 	}
 }
 
@@ -292,6 +347,13 @@ func TestApprovalGateReadOnlySandboxCanBeOverriddenOnFailure(t *testing.T) {
 	}
 	if promptCalls != 1 {
 		t.Fatalf("prompt calls = %d, want 1", promptCalls)
+	}
+	updates := gate.ApprovalUpdates()
+	if len(updates) != 1 {
+		t.Fatalf("update count = %d, want 1", len(updates))
+	}
+	if updates[0].Decision != ApprovalDecisionPrompt || updates[0].Source != ApprovalDecisionSourceSandbox {
+		t.Fatalf("sandbox escalation update = %#v", updates[0])
 	}
 }
 
