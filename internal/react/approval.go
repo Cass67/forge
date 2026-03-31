@@ -30,7 +30,10 @@ const (
 type ApprovalRule struct {
 	Tool          string
 	CommandPrefix []string
+	Command       string
 	Decision      RuleDecision
+	matcher       shellRule
+	hasMatcher    bool
 }
 
 type ApprovalConfig struct {
@@ -53,6 +56,7 @@ type ApprovalGate struct {
 	guardian        func(string, tools.Action) tools.GuardianReview
 	guardianContext func() string
 	guardianObserve func(GuardianEvent)
+	updates         []ApprovalUpdate
 	progress        func(string)
 	now             func() time.Time
 	originalBranch  string
@@ -100,6 +104,19 @@ func (g *ApprovalGate) SetGuardianObserver(observer func(GuardianEvent)) {
 	}
 }
 
+func (g *ApprovalGate) ApprovalUpdates() []ApprovalUpdate {
+	if g == nil || len(g.updates) == 0 {
+		return nil
+	}
+	return append([]ApprovalUpdate(nil), g.updates...)
+}
+
+func (g *ApprovalGate) recordApprovalUpdate(update ApprovalUpdate) {
+	if g != nil {
+		g.updates = append(g.updates, update)
+	}
+}
+
 func CompactGuardianContext(snapshot SessionSnapshot) string {
 	var parts []string
 	if mode := strings.TrimSpace(string(snapshot.Mode)); mode != "" {
@@ -142,6 +159,7 @@ func (g *ApprovalGate) Approve(action tools.Action) (bool, error) {
 	if action.Tool == "" {
 		return false, fmt.Errorf("approval action tool is required")
 	}
+	evaluationAction := action
 
 	mutating := actionMutates(action)
 	if mutating {
@@ -153,12 +171,14 @@ func (g *ApprovalGate) Approve(action tools.Action) (bool, error) {
 	sandboxAllowed := g.cfg.SandboxPolicy.Allows(action)
 	if !sandboxAllowed {
 		if g.cfg.DefaultPolicy != ApprovalOnFailure {
+			g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionForbidden, ApprovalDecisionSourceSandbox, approvalUpdateDetail(action)))
 			return false, nil
 		}
+		detail := approvalUpdateDetail(action)
 		overrideAction := action
 		overrideAction.Summary = firstNonEmpty(overrideAction.Summary, overrideAction.Tool)
 		overrideAction.Summary = "sandbox denied: " + overrideAction.Summary
-		return g.prompt(overrideAction)
+		return g.promptWithRecordedOutcome(ApprovalDecisionSourceSandbox, detail, overrideAction)
 	}
 
 	guardianWarn := false
@@ -175,6 +195,7 @@ func (g *ApprovalGate) Approve(action tools.Action) (bool, error) {
 		})
 		switch review.Decision {
 		case tools.GuardianBlock:
+			g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionForbidden, ApprovalDecisionSourceGuardian, strings.TrimSpace(review.Reason)))
 			if g.progress != nil && strings.TrimSpace(review.Reason) != "" {
 				g.progress("guardian blocked approval: " + strings.TrimSpace(review.Reason))
 			}
@@ -190,17 +211,19 @@ func (g *ApprovalGate) Approve(action tools.Action) (bool, error) {
 		}
 	}
 
-	if decision, matched := g.ruleDecision(action); matched {
+	if decision, matched := g.ruleDecision(evaluationAction); matched {
 		switch decision {
 		case DecisionAllow:
 			if guardianWarn {
-				return g.prompt(action)
+				return g.promptWithRecordedOutcome(ApprovalDecisionSourceGuardian, approvalUpdateDetail(evaluationAction), action)
 			}
+			g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionAllow, ApprovalDecisionSourceRule, approvalUpdateDetail(evaluationAction)))
 			return true, nil
 		case DecisionForbidden:
+			g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionForbidden, ApprovalDecisionSourceRule, approvalUpdateDetail(evaluationAction)))
 			return false, nil
 		case DecisionPrompt:
-			return g.prompt(action)
+			return g.promptWithRecordedOutcome(ApprovalDecisionSourceRule, approvalUpdateDetail(evaluationAction), action)
 		default:
 			return false, fmt.Errorf("unknown approval rule decision %q", decision)
 		}
@@ -209,27 +232,53 @@ func (g *ApprovalGate) Approve(action tools.Action) (bool, error) {
 	switch g.cfg.DefaultPolicy {
 	case ApprovalNever:
 		if guardianWarn {
-			return g.prompt(action)
+			return g.promptWithRecordedOutcome(ApprovalDecisionSourceGuardian, approvalUpdateDetail(evaluationAction), action)
 		}
+		g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionAllow, ApprovalDecisionSourcePolicy, approvalUpdateDetail(evaluationAction)))
 		return true, nil
 	case ApprovalOnFailure:
 		if guardianWarn {
-			return g.prompt(action)
+			return g.promptWithRecordedOutcome(ApprovalDecisionSourceGuardian, approvalUpdateDetail(evaluationAction), action)
 		}
+		g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionAllow, ApprovalDecisionSourcePolicy, approvalUpdateDetail(evaluationAction)))
 		return true, nil
 	case ApprovalOnRequest:
 		if guardianWarn || actionNeedsPrompt(action) {
-			return g.prompt(action)
+			source := ApprovalDecisionSourcePolicy
+			if guardianWarn {
+				source = ApprovalDecisionSourceGuardian
+			}
+			return g.promptWithRecordedOutcome(source, approvalUpdateDetail(evaluationAction), action)
 		}
+		g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionAllow, ApprovalDecisionSourcePolicy, approvalUpdateDetail(evaluationAction)))
 		return true, nil
 	case ApprovalUnlessTrusted:
-		if !guardianWarn && actionTrusted(action, g.cfg.KnownSafeCommand) {
+		if !guardianWarn && actionTrusted(evaluationAction, g.cfg.KnownSafeCommand) {
+			g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionAllow, ApprovalDecisionSourceTrusted, approvalUpdateDetail(evaluationAction)))
 			return true, nil
 		}
-		return g.prompt(action)
+		source := ApprovalDecisionSourcePolicy
+		if guardianWarn {
+			source = ApprovalDecisionSourceGuardian
+		}
+		return g.promptWithRecordedOutcome(source, approvalUpdateDetail(evaluationAction), action)
 	default:
 		return false, fmt.Errorf("unknown approval policy %q", g.cfg.DefaultPolicy)
 	}
+}
+
+func (g *ApprovalGate) promptWithRecordedOutcome(source ApprovalDecisionSource, detail string, action tools.Action) (bool, error) {
+	g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionPrompt, source, detail))
+	approved, err := g.prompt(action)
+	if err != nil {
+		return false, err
+	}
+	finalDecision := ApprovalDecisionForbidden
+	if approved {
+		finalDecision = ApprovalDecisionAllow
+	}
+	g.recordApprovalUpdate(NewApprovalUpdate(finalDecision, ApprovalDecisionSourceUser, detail))
+	return approved, nil
 }
 
 func (g *ApprovalGate) emitGuardianEvent(event GuardianEvent) {
@@ -257,16 +306,41 @@ func (g *ApprovalGate) ruleDecision(action tools.Action) (RuleDecision, bool) {
 		if strings.TrimSpace(rule.Tool) != "" && !strings.EqualFold(strings.TrimSpace(rule.Tool), action.Tool) {
 			continue
 		}
-		if len(rule.CommandPrefix) > 0 {
-			summaryTokens := strings.Fields(strings.ToLower(action.Summary))
-			prefixTokens := lowerTokens(rule.CommandPrefix)
-			if !tokenPrefixMatch(summaryTokens, prefixTokens) {
-				continue
-			}
+		matcher, ok := rule.shellMatcher()
+		if ok && !matcher.matches(action.Summary) {
+			continue
+		}
+		if !ok && rule.hasExplicitMatcher() {
+			continue
 		}
 		return rule.Decision, true
 	}
 	return "", false
+}
+
+func (r ApprovalRule) shellMatcher() (shellRule, bool) {
+	if r.hasMatcher {
+		return r.matcher, true
+	}
+	if strings.TrimSpace(r.Command) != "" {
+		matcher, err := parseShellRule(r.Command)
+		if err != nil {
+			return shellRule{}, false
+		}
+		return matcher, true
+	}
+	if len(r.CommandPrefix) > 0 {
+		matcher, err := parseShellRulePrefix(r.CommandPrefix)
+		if err != nil {
+			return shellRule{}, false
+		}
+		return matcher, true
+	}
+	return shellRule{}, false
+}
+
+func (r ApprovalRule) hasExplicitMatcher() bool {
+	return r.hasMatcher || strings.TrimSpace(r.Command) != "" || len(r.CommandPrefix) > 0
 }
 
 func actionNeedsPrompt(action tools.Action) bool {
@@ -284,14 +358,7 @@ func actionTrusted(action tools.Action, knownSafe []string) bool {
 	if action.Tool != "run_command" {
 		return false
 	}
-	commandTokens := strings.Fields(strings.ToLower(action.Summary))
-	for _, rawPrefix := range knownSafe {
-		prefixTokens := strings.Fields(strings.ToLower(strings.TrimSpace(rawPrefix)))
-		if tokenPrefixMatch(commandTokens, prefixTokens) {
-			return true
-		}
-	}
-	return false
+	return matchesAnyShellRulePrefix(action.Summary, knownSafe)
 }
 
 func actionMutates(action tools.Action) bool {
@@ -440,29 +507,6 @@ func branchSlug(input string) string {
 		}
 	}
 	return strings.Trim(b.String(), "-")
-}
-
-func lowerTokens(values []string) []string {
-	out := make([]string, 0, len(values))
-	for _, v := range values {
-		v = strings.ToLower(strings.TrimSpace(v))
-		if v != "" {
-			out = append(out, v)
-		}
-	}
-	return out
-}
-
-func tokenPrefixMatch(tokens []string, prefix []string) bool {
-	if len(prefix) == 0 || len(tokens) < len(prefix) {
-		return false
-	}
-	for i := range prefix {
-		if tokens[i] != prefix[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func isProtectedBranch(branch string) bool {
