@@ -7,11 +7,19 @@ import (
 	"unicode"
 )
 
+type shellRuleKind int
+
+const (
+	shellRuleExact shellRuleKind = iota
+	shellRulePrefix
+	shellRuleWildcard
+)
+
 type shellRule struct {
-	raw      string
-	tokens   []string
-	regex    *regexp.Regexp
-	wildcard bool
+	raw    string
+	tokens []string
+	kind   shellRuleKind
+	regex  *regexp.Regexp
 }
 
 func parseShellRule(pattern string) (shellRule, error) {
@@ -28,29 +36,41 @@ func parseShellRule(pattern string) (shellRule, error) {
 	rule := shellRule{
 		raw:    pattern,
 		tokens: tokens,
+		kind:   shellRuleExact,
 	}
 	if hasWildcard, regex, err := compileShellPattern(pattern); err != nil {
 		return shellRule{}, err
 	} else if hasWildcard {
-		rule.wildcard = true
+		rule.kind = shellRuleWildcard
 		rule.regex = regex
 	}
 	return rule, nil
 }
 
-func parseShellRuleTokens(tokens []string) (shellRule, error) {
+func parseShellRulePrefix(tokens []string) (shellRule, error) {
 	cleaned := make([]string, 0, len(tokens))
 	for _, token := range tokens {
 		if trimmed := strings.TrimSpace(token); trimmed != "" {
 			cleaned = append(cleaned, trimmed)
 		}
 	}
-	return parseShellRule(strings.Join(cleaned, " "))
+	if len(cleaned) == 0 {
+		return shellRule{}, fmt.Errorf("shell rule is empty")
+	}
+	return shellRule{
+		raw:    strings.ToLower(strings.Join(cleaned, " ")),
+		tokens: cleaned,
+		kind:   shellRulePrefix,
+	}, nil
 }
 
-func matchesAnyShellRule(summary string, patterns []string) bool {
+func matchesAnyShellRulePrefix(summary string, patterns []string) bool {
 	for _, pattern := range patterns {
-		rule, err := parseShellRule(pattern)
+		tokens, err := splitShellWords(pattern)
+		if err != nil {
+			continue
+		}
+		rule, err := parseShellRulePrefix(tokens)
 		if err != nil {
 			continue
 		}
@@ -66,7 +86,7 @@ func (r shellRule) matches(summary string) bool {
 	if summary == "" {
 		return false
 	}
-	if r.wildcard && r.regex != nil {
+	if r.kind == shellRuleWildcard && r.regex != nil {
 		return r.regex.MatchString(summary)
 	}
 
@@ -82,7 +102,7 @@ func (r shellRule) matches(summary string) bool {
 			return false
 		}
 	}
-	return true
+	return r.kind == shellRulePrefix || len(summaryTokens) == len(r.tokens)
 }
 
 func splitShellWords(input string) ([]string, error) {
