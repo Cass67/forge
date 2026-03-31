@@ -1,11 +1,11 @@
 package output_test
 
 import (
+	"forge/internal/output"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
-	"forge/internal/output"
 )
 
 func TestSnapshot(t *testing.T) {

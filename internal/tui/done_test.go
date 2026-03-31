@@ -2,9 +2,10 @@ package tui_test
 
 import (
 	"forge/internal/tui"
-	tea "github.com/charmbracelet/bubbletea"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestDoneQuit(t *testing.T) {

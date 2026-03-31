@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"forge/internal/llm"
+
 	tea "github.com/charmbracelet/bubbletea"
 )
 

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"forge/internal/tui"
+
 	tea "github.com/charmbracelet/bubbletea"
 )
 

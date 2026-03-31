@@ -20,4 +20,3 @@ func (p SandboxPolicy) Allows(action tools.Action) bool {
 		return false
 	}
 }
-
