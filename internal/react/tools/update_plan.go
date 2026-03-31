@@ -40,13 +40,17 @@ func NewUpdatePlan(session planToolSession) agenttools.Tool {
 			for i := range steps {
 				steps[i].Step = strings.TrimSpace(steps[i].Step)
 				steps[i].Status = normalizePlanStatus(steps[i].Status)
+				steps[i].Blocker = strings.TrimSpace(steps[i].Blocker)
 				if steps[i].Step == "" {
 					return "", fmt.Errorf("plan step %d is missing step text", i+1)
 				}
 				switch steps[i].Status {
-				case "pending", "in_progress", "completed":
+				case "pending", "in_progress", "blocked", "completed":
 				default:
 					return "", fmt.Errorf("plan step %d has invalid status %q", i+1, steps[i].Status)
+				}
+				if steps[i].Status == "blocked" && steps[i].Blocker == "" {
+					return "", fmt.Errorf("plan step %d is blocked but missing blocker text", i+1)
 				}
 			}
 			var normErr error
@@ -79,6 +83,8 @@ func normalizePlanStatus(s string) string {
 		return "completed"
 	case "started", "running", "active", "doing", "wip", "in_progress_step":
 		return "in_progress"
+	case "blocked_on", "paused", "waiting_on_blocker":
+		return "blocked"
 	case "todo", "not_started", "queued", "waiting":
 		return "pending"
 	}
@@ -86,29 +92,29 @@ func normalizePlanStatus(s string) string {
 }
 
 // normalizePlanSteps enforces the one-in_progress rule by auto-promoting
-// the first pending step when no in_progress step is present. It rejects
-// plans with multiple in_progress steps.
+// the first pending step when no active step is present. It rejects
+// plans with multiple active steps. Active means in_progress or blocked.
 func normalizePlanSteps(steps []react.PlanStep) ([]react.PlanStep, error) {
 	if len(steps) == 0 {
 		return nil, fmt.Errorf("at least one plan step is required")
 	}
-	inProgress := 0
+	active := 0
 	firstPending := -1
 	for i, step := range steps {
 		switch step.Status {
-		case "in_progress":
-			inProgress++
+		case "in_progress", "blocked":
+			active++
 		case "pending":
 			if firstPending < 0 {
 				firstPending = i
 			}
 		}
 	}
-	if inProgress > 1 {
-		return nil, fmt.Errorf("plan must have exactly one in_progress step while work remains")
+	if active > 1 {
+		return nil, fmt.Errorf("plan must have exactly one active step while work remains")
 	}
-	// Auto-promote the first pending step when none is in_progress yet.
-	if inProgress == 0 && firstPending >= 0 {
+	// Auto-promote the first pending step when no active step exists yet.
+	if active == 0 && firstPending >= 0 {
 		out := append([]react.PlanStep(nil), steps...)
 		out[firstPending].Status = "in_progress"
 		return out, nil

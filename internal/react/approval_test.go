@@ -98,6 +98,92 @@ func TestApprovalGateOnRequestPromptsForMutations(t *testing.T) {
 	}
 }
 
+func TestApprovalGateGuardianBlocksDestructiveAction(t *testing.T) {
+	prompted := false
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy: ApprovalNever,
+		SandboxPolicy: SandboxWorkspaceWrite,
+	}, func(action tools.Action) (bool, error) {
+		prompted = true
+		return true, nil
+	}, nil)
+	gate.SetGuardianReviewer(func(transcript string, action tools.Action) tools.GuardianReview {
+		return tools.ReviewApprovalAction(transcript, action)
+	})
+	gate.SetGuardianContext(func() string { return "task: clean artifacts" })
+
+	approved, err := gate.Approve(tools.Action{
+		Tool:    "run_command",
+		Summary: "rm -rf /",
+		Detail:  "rm -rf /",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved {
+		t.Fatal("expected guardian to block destructive action")
+	}
+	if prompted {
+		t.Fatal("guardian block should happen before prompt")
+	}
+}
+
+func TestApprovalGateGuardianWarningForcesPrompt(t *testing.T) {
+	promptCalls := 0
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy: ApprovalNever,
+		SandboxPolicy: SandboxWorkspaceWrite,
+	}, func(action tools.Action) (bool, error) {
+		promptCalls++
+		if !strings.Contains(action.Summary, "[guardian]") {
+			t.Fatalf("prompt summary = %q", action.Summary)
+		}
+		return true, nil
+	}, nil)
+	gate.SetGuardianReviewer(func(transcript string, action tools.Action) tools.GuardianReview {
+		return tools.ReviewApprovalAction(transcript, action)
+	})
+	gate.SetGuardianContext(func() string { return "" })
+
+	approved, err := gate.Approve(tools.Action{
+		Tool:    "run_command",
+		Summary: "git merge feature/runtime",
+		Detail:  "git merge feature/runtime",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !approved {
+		t.Fatal("expected prompt approval to allow warned action")
+	}
+	if promptCalls != 1 {
+		t.Fatalf("prompt calls = %d, want 1", promptCalls)
+	}
+}
+
+func TestCompactGuardianContextIncludesTaskAndPlanState(t *testing.T) {
+	snapshot := SessionSnapshot{
+		LastInput: "implement the runtime change",
+		Mode:      ModeImplement,
+		TaskState: &TaskState{
+			Objective: "implement the runtime change",
+			Operation: "implement",
+		},
+		PlanState: &PlanState{
+			Steps: []PlanStep{
+				{Step: "Patch runtime", Status: "blocked", Blocker: "need user confirmation"},
+			},
+		},
+	}
+
+	context := CompactGuardianContext(snapshot)
+	for _, want := range []string{"mode=implement", "operation=implement", "objective=implement the runtime change", "active_step=Patch runtime", "blocker=need user confirmation"} {
+		if !strings.Contains(context, want) {
+			t.Fatalf("guardian context missing %q: %q", want, context)
+		}
+	}
+}
+
 func TestApprovalGateReadOnlySandboxCanBeOverriddenOnFailure(t *testing.T) {
 	promptCalls := 0
 	gate := NewApprovalGate("", ApprovalConfig{

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"forge/internal/agent/promptcomposer"
+	"forge/internal/hooks"
 	"forge/internal/llm"
 )
 
@@ -17,24 +19,73 @@ func BuildMessages(systemPrompt string, snapshot SessionSnapshot) []llm.Message 
 	var messages []llm.Message
 
 	systemPrompt = strings.TrimSpace(systemPrompt)
-	if systemPrompt != "" {
-		messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: systemPrompt})
-	}
-
+	systemOverlays := make([]promptcomposer.Overlay, 0, 4)
 	if summary := compactionContext(snapshot); summary != "" {
-		messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: summary})
+		systemOverlays = append(systemOverlays, promptcomposer.Overlay{
+			Key:      "compaction",
+			Priority: promptcomposer.PriorityHigh,
+			Content:  summary,
+		})
+	}
+	if summary := strings.TrimSpace(snapshot.MemorySummary); summary != "" {
+		systemOverlays = append(systemOverlays, promptcomposer.Overlay{
+			Key:      "memory_summary",
+			Priority: promptcomposer.PriorityNormal,
+			Content:  "Memory summary:\n" + summary,
+		})
+	}
+	systemOverlays = append(systemOverlays, hooks.ToPromptOverlays(snapshot.HookOverlays)...)
+	if mode := strings.TrimSpace(string(snapshot.Mode)); mode != "" {
+		systemOverlays = append(systemOverlays, promptcomposer.Overlay{
+			Key:      "mode",
+			Priority: promptcomposer.PriorityHigh,
+			Content:  "Current mode: " + mode,
+		})
 	}
 	if note := strings.TrimSpace(snapshot.RuntimeNote); note != "" {
-		messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: note})
+		systemOverlays = append(systemOverlays, promptcomposer.Overlay{
+			Key:      "runtime_note",
+			Priority: promptcomposer.PriorityHigh,
+			Content:  note,
+		})
 	}
 	if snapshot.Interrupted {
-		messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: "The previous turn was interrupted by the user. Any commands or tools from that turn may have partially executed; verify current state before continuing and do not assume unfinished work completed cleanly."})
+		systemOverlays = append(systemOverlays, promptcomposer.Overlay{
+			Key:      "interrupted",
+			Priority: promptcomposer.PriorityHigh,
+			Content:  "The previous turn was interrupted by the user. Any commands or tools from that turn may have partially executed; verify current state before continuing and do not assume unfinished work completed cleanly.",
+		})
 	}
 	if task := taskStateContext(snapshot); task != "" {
-		messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: task})
+		systemOverlays = append(systemOverlays, promptcomposer.Overlay{
+			Key:      "task_state",
+			Priority: promptcomposer.PriorityHigh,
+			Content:  task,
+		})
 	}
 	if plan := planStateContext(snapshot); plan != "" {
-		messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: plan})
+		systemOverlays = append(systemOverlays, promptcomposer.Overlay{
+			Key:      "plan_state",
+			Priority: promptcomposer.PriorityNormal,
+			Content:  plan,
+		})
+	}
+
+	if systemPrompt != "" {
+		composed := promptcomposer.Compose(promptcomposer.StaticInput{
+			Identity: systemPrompt,
+		}, systemOverlays)
+		for _, part := range strings.Split(composed, "\n\n") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: part})
+		}
+	} else {
+		for _, overlay := range systemOverlays {
+			messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: overlay.Content})
+		}
 	}
 
 	for _, msg := range snapshot.History {
@@ -92,7 +143,7 @@ func taskStateContext(snapshot SessionSnapshot) string {
 		parts = append(parts, "Required verification: "+requiredVerification)
 	}
 	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "plan") {
-		parts = append(parts, "Planning guidance: gather only enough repo evidence to support the plan, avoid exhaustive repo-wide searches, and once the next actionable plan is clear, stop exploring and synthesize it. Use update_plan for multi-step plans and leave unresolved details as open questions instead of continuing broad research.")
+		parts = append(parts, "Planning guidance: gather only enough repo evidence to support the plan, avoid exhaustive repo-wide searches, and once the next actionable plan is clear, stop exploring and synthesize it. Use enter_plan_mode for explicit planning workflows, use update_plan to capture the steps, and use ask_user_question for focused choices or clarifications instead of continuing broad research.")
 	}
 	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "analysis") {
 		parts = append(parts, "Analysis guidance: gather enough source-grounded evidence to support the answer, avoid repetitive repo-wide searching once the pattern is clear, and summarize findings or recommendations instead of continuing low-yield exploration.")
@@ -101,10 +152,13 @@ func taskStateContext(snapshot SessionSnapshot) string {
 		parts = append(parts, "Inspection guidance: your first action should be a repo read/search tool call, not prose. Inspect the relevant files or symbols before answering, and keep the answer bounded to what the evidence actually shows.")
 	}
 	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "implement") {
-		parts = append(parts, "Implementation guidance: do not start with planning prose. First inspect the relevant code with repo tools, then make the change with edit tools, and only claim completion after relevant verification. If you need interactive or long-running terminal work such as dev servers, watchers, REPLs, or TUIs, use exec_session_start instead of run_command.")
+		parts = append(parts, "Implementation guidance: do not start with planning prose. First inspect the relevant code with repo tools, then make the change with edit tools, and only claim completion after relevant verification. If repeated searches on the same file are not resolving the insertion point, read that file directly instead of trying more search patterns. If you need interactive or long-running terminal work such as dev servers, watchers, REPLs, or TUIs, use exec_session_start instead of run_command.")
 	}
 	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "validate") {
 		parts = append(parts, "Validation guidance: run the relevant tests or checks before you say the work is verified. If no verification ran, say that clearly instead of implying success.")
+	}
+	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "review") {
+		parts = append(parts, "Review guidance: lead with findings before summary. Prioritize bugs, regressions, risky assumptions, and missing tests, ordered by severity, and keep each finding grounded in specific repo evidence.")
 	}
 	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "preview") {
 		parts = append(parts, "Preview guidance: prefer preview_server_ensure, preview_server_status, artifact_write, artifact_read, and file edit tools. Do not launch an ad-hoc local webserver with shell commands when preview tools can serve the page directly.")
