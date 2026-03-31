@@ -12,6 +12,8 @@ func ResolvePath(workDir, path string) (string, error) {
 		return "", fmt.Errorf("empty path")
 	}
 
+	path = expandTilde(path)
+
 	resolvedWorkDir, err := filepath.EvalSymlinks(workDir)
 	if err != nil {
 		resolvedWorkDir = filepath.Clean(workDir)
@@ -50,11 +52,12 @@ func ResolvePath(workDir, path string) (string, error) {
 // ResolvePathAllowEscape resolves a path and allows access outside the working
 // directory. This is intended for read-only tools that need to inspect files
 // outside the project (e.g., reading READMEs from sibling repos).
-// It still resolves ~ and relative paths, and validates that the path exists.
 func ResolvePathAllowEscape(workDir, path string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("empty path")
 	}
+
+	path = expandTilde(path)
 
 	resolvedWorkDir, err := filepath.EvalSymlinks(workDir)
 	if err != nil {
@@ -69,6 +72,24 @@ func ResolvePathAllowEscape(workDir, path string) (string, error) {
 	}
 
 	return abs, nil
+}
+
+// expandTilde replaces a leading ~ or ~/ with the user's home directory.
+func expandTilde(path string) string {
+	if path == "~" {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			return home
+		}
+		return path
+	}
+	if len(path) >= 2 && path[:2] == "~/" {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			return filepath.Join(home, path[2:])
+		}
+	}
+	return path
 }
 
 func IsBinary(data []byte) bool {
