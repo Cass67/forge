@@ -22,6 +22,7 @@ type Config struct {
 	Progress        func(string)
 	MaxSessionTurns int
 	CompletionCheck func(SessionSnapshot, string) error
+	TurnComplete    func(SessionSnapshot)
 }
 
 type Runner struct {
@@ -34,8 +35,10 @@ type Runner struct {
 	maxSessionTurns    int
 	gitWorkflow        gitWorkflowState
 	planWorkflow       planWorkflowState
+	searchWorkflow     sameFileSearchWorkflowState
 	validationWorkflow validationWorkflowState
 	completionCheck    func(SessionSnapshot, string) error
+	turnComplete       func(SessionSnapshot)
 }
 
 const interruptedTurnRuntimeNote = "Previous turn was interrupted. Re-check any partially completed tool or command state before continuing."
@@ -68,8 +71,16 @@ type validationWorkflowState struct {
 	cmd    string
 }
 
+type sameFileSearchWorkflowState struct {
+	toolName string
+	path     string
+	streak   int
+	nudged   bool
+}
+
 const planExplorationBudget = 10
 const analysisExplorationBudget = 15
+const sameFileSearchThrashThreshold = 5
 
 func NewRunner(cfg Config) *Runner {
 	session := cfg.Session
@@ -89,12 +100,13 @@ func NewRunner(cfg Config) *Runner {
 		progress:        cfg.Progress,
 		maxSessionTurns: maxSessionTurns(cfg.MaxSessionTurns),
 		completionCheck: cfg.CompletionCheck,
+		turnComplete:    cfg.TurnComplete,
 	}
 	if snap := session.Snapshot(); snap.TaskState != nil && isSynthesisGuardOperation(snap.TaskState.Operation) {
 		runner.planWorkflow.active = true
 		runner.planWorkflow.mode = strings.ToLower(strings.TrimSpace(snap.TaskState.Operation))
-		runner.syncRuntimeNote()
 	}
+	runner.syncRuntimeNote()
 	return runner
 }
 
@@ -147,6 +159,7 @@ func (r *Runner) ClearHistory() {
 	}
 	r.gitWorkflow = gitWorkflowState{}
 	r.planWorkflow = planWorkflowState{}
+	r.searchWorkflow = sameFileSearchWorkflowState{}
 	r.validationWorkflow = validationWorkflowState{}
 	r.session.Clear()
 }
@@ -336,10 +349,18 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 	}
 	r.session.AppendAssistantMessage(finalText)
 	r.session.CompleteTurn(turn, finalText, nil, nil)
+	r.notifyTurnComplete()
 	if r.renderer != nil && visibleEmitted < len(finalText) {
 		r.renderer.AgentText(finalText[visibleEmitted:])
 	}
 	return nil, nil
+}
+
+func (r *Runner) notifyTurnComplete() {
+	if r == nil || r.session == nil || r.turnComplete == nil {
+		return
+	}
+	r.turnComplete(r.session.Snapshot())
 }
 
 // executeNativeToolCalls executes a batch of native tool calls and appends results
@@ -374,6 +395,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 			}
 			r.session.AppendNativeToolResult(call.ID, blocked)
 			r.updatePlanWorkflow(call.Name, args, "", true)
+			r.updateSameFileSearchWorkflow(call.Name, args, true)
 			continue
 		}
 
@@ -404,6 +426,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 		r.session.AppendNativeToolResult(call.ID, result)
 		r.updateGitWorkflow(call.Name, args, result)
 		r.updatePlanWorkflow(call.Name, args, result, false)
+		r.updateSameFileSearchWorkflow(call.Name, args, false)
 		r.updateValidationWorkflow(call.Name, args, result)
 	}
 	return nil
@@ -569,17 +592,83 @@ func (r *Runner) syncRuntimeNote() {
 	if r == nil || r.session == nil {
 		return
 	}
-	notes := make([]string, 0, 3)
+	notes := make([]string, 0, 4)
+	if note := strings.TrimSpace(r.modeRuntimeNote()); note != "" {
+		notes = append(notes, note)
+	}
 	if note := strings.TrimSpace(r.planWorkflow.runtimeNote()); note != "" {
 		notes = append(notes, note)
 	}
 	if note := strings.TrimSpace(r.gitWorkflow.runtimeNote()); note != "" {
 		notes = append(notes, note)
 	}
+	if note := strings.TrimSpace(r.searchWorkflow.runtimeNote()); note != "" {
+		notes = append(notes, note)
+	}
 	if note := strings.TrimSpace(r.validationWorkflow.runtimeNote()); note != "" {
 		notes = append(notes, note)
 	}
 	r.session.SetRuntimeNote(strings.Join(notes, "\n\n"))
+}
+
+func (r *Runner) modeRuntimeNote() string {
+	if r == nil || r.session == nil {
+		return ""
+	}
+	snap := r.session.Snapshot()
+	switch snap.Mode {
+	case ModeReview:
+		return "Review workflow active. Lead with findings before summary, keep findings grounded in repo evidence, and call out regressions, risks, or missing tests explicitly."
+	case ModePlan:
+		if blocker := currentPlanBlocker(snap.PlanState); blocker != "" {
+			return "Current plan is blocked: " + blocker + ". Resolve the blocker directly if you can, otherwise use ask_user_question to get the missing decision before continuing broad work."
+		}
+		return ""
+	default:
+		return ""
+	}
+}
+
+func currentPlanBlocker(state *PlanState) string {
+	if state == nil {
+		return ""
+	}
+	if step, ok := state.BlockedStep(); ok {
+		if blocker := strings.TrimSpace(step.Blocker); blocker != "" {
+			return blocker
+		}
+		return strings.TrimSpace(step.Step)
+	}
+	return ""
+}
+
+func (r *Runner) updateSameFileSearchWorkflow(toolName string, args map[string]any, blocked bool) {
+	if blocked {
+		r.syncRuntimeNote()
+		return
+	}
+	path := strings.TrimSpace(stringArg(args, "path"))
+	switch toolName {
+	case "code_search", "search":
+		if path == "" {
+			r.searchWorkflow = sameFileSearchWorkflowState{}
+			r.syncRuntimeNote()
+			return
+		}
+		if r.searchWorkflow.toolName == toolName && r.searchWorkflow.path == path {
+			r.searchWorkflow.streak++
+		} else {
+			r.searchWorkflow = sameFileSearchWorkflowState{
+				toolName: toolName,
+				path:     path,
+				streak:   1,
+			}
+		}
+		r.searchWorkflow.nudged = r.searchWorkflow.streak >= sameFileSearchThrashThreshold
+	default:
+		r.searchWorkflow = sameFileSearchWorkflowState{}
+	}
+	r.syncRuntimeNote()
 }
 
 func (r *Runner) updatePlanWorkflow(toolName string, args map[string]any, _ string, blocked bool) {
@@ -791,6 +880,13 @@ func (s validationWorkflowState) runtimeNote() string {
 		return ""
 	}
 	return "Last validation failed: " + s.cmd + " — fix the reported errors before finishing."
+}
+
+func (s sameFileSearchWorkflowState) runtimeNote() string {
+	if !s.nudged || s.path == "" {
+		return ""
+	}
+	return "Search thrash guidance: you have repeatedly searched the same file without switching to a direct read. Stop trying more patterns on " + s.path + ". Read that file now, inspect the relevant function or block directly, then continue editing."
 }
 
 func isExplorationToolCall(toolName string, args map[string]any) bool {

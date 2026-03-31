@@ -319,6 +319,19 @@ func TestDetectTaskStateFromInputClassifiesImplementationWork(t *testing.T) {
 	}
 }
 
+func TestDetectTaskStateFromInputClassifiesReviewWork(t *testing.T) {
+	state, ok := detectTaskStateFromInput("review this repo and tell me what i need to change")
+	if !ok {
+		t.Fatal("expected task state")
+	}
+	if state.Operation != "review" {
+		t.Fatalf("operation = %q", state.Operation)
+	}
+	if !strings.Contains(state.RequiredVerification, "findings first") {
+		t.Fatalf("required verification = %q", state.RequiredVerification)
+	}
+}
+
 func TestResolveChatRuntimeModeReadsEnv(t *testing.T) {
 	t.Setenv("FORGE_CHAT_RUNTIME", "")
 	if got := resolveChatRuntimeMode(); got != chatRuntimeReact {
@@ -495,6 +508,83 @@ func TestRunChatTurnSeedsAnalysisTaskState(t *testing.T) {
 	}
 	if !strings.Contains(reactRunner.taskState.RequiredVerification, "source-grounded") {
 		t.Fatalf("required verification = %q", reactRunner.taskState.RequiredVerification)
+	}
+}
+
+func TestRunChatTurnSeedsReviewTaskState(t *testing.T) {
+	reactRunner := &stubChatTurnRunner{}
+	input := "review this repo and tell me what i need to change"
+	if err := runChatTurn(context.Background(), reactRunner, input); err != nil {
+		t.Fatal(err)
+	}
+	if reactRunner.taskState == nil {
+		t.Fatal("expected task state to be seeded")
+	}
+	if reactRunner.taskState.Operation != "review" {
+		t.Fatalf("operation = %q", reactRunner.taskState.Operation)
+	}
+	if !strings.Contains(reactRunner.taskState.RequiredVerification, "findings first") {
+		t.Fatalf("required verification = %q", reactRunner.taskState.RequiredVerification)
+	}
+}
+
+func TestSuggestedSkillNudgePrefersModeAwareSkill(t *testing.T) {
+	loaded := []skills.Skill{
+		{Name: "brainstorming"},
+		{Name: "test-driven-development"},
+	}
+	state := chatstate.New()
+
+	got := suggestedSkillNudge("please implement the runtime change", loaded, state)
+	if !strings.Contains(got, "test-driven-development") {
+		t.Fatalf("nudge = %q", got)
+	}
+}
+
+func TestSuggestedSkillNudgeSkipsActiveSkill(t *testing.T) {
+	loaded := []skills.Skill{
+		{Name: "brainstorming"},
+	}
+	state := chatstate.New()
+	state.ActivateSkill("brainstorming")
+
+	if got := suggestedSkillNudge("plan this change", loaded, state); got != "" {
+		t.Fatalf("nudge = %q, want empty", got)
+	}
+}
+
+func TestApplySuggestedSkillOverlayAddsHookOverlay(t *testing.T) {
+	session := reactruntime.NewSession()
+	loaded := []skills.Skill{
+		{Name: "test-driven-development"},
+	}
+	state := chatstate.New()
+
+	applySuggestedSkillOverlay(session, "please implement the runtime change", loaded, state)
+
+	snap := session.Snapshot()
+	if len(snap.HookOverlays) != 1 {
+		t.Fatalf("hook overlays = %#v", snap.HookOverlays)
+	}
+	if !strings.Contains(snap.HookOverlays[0].Content, "/test-driven-development") {
+		t.Fatalf("hook overlay = %#v", snap.HookOverlays[0])
+	}
+}
+
+func TestApplySuggestedSkillOverlayClearsWhenNoSuggestion(t *testing.T) {
+	session := reactruntime.NewSession()
+	session.SetHookOverlays([]reactruntime.HookOverlay{{
+		Key:        "suggested_skill",
+		Content:    "old",
+		Priority:   reactruntime.HookPriorityNormal,
+		Provenance: "runtime",
+	}})
+	state := chatstate.New()
+
+	applySuggestedSkillOverlay(session, "describe this repo", nil, state)
+
+	if got := session.Snapshot().HookOverlays; len(got) != 0 {
+		t.Fatalf("hook overlays = %#v", got)
 	}
 }
 
@@ -747,6 +837,188 @@ func TestValidateTaskCompletionAllowsVerifiedPreviewURL(t *testing.T) {
 	}
 }
 
+func TestValidateTaskCompletionRejectsValidateModeAnswerWithoutValidationEvidence(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "run the relevant checks and tell me if this is good",
+		Mode:      reactruntime.ModeValidate,
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "run the relevant checks and tell me if this is good"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"internal/runtime/chat.go"}`}}},
+			{Role: llm.RoleTool, ToolCallID: "c1", Content: "ok"},
+		},
+	}
+
+	err := validateTaskCompletion(t.TempDir(), snapshot, "I checked the relevant code paths and did not find obvious issues.")
+	if err == nil {
+		t.Fatal("expected retryable completion rejection")
+	}
+
+	var retryable *reactruntime.RetryableCompletionError
+	if !errors.As(err, &retryable) {
+		t.Fatalf("expected retryable completion error, got %T: %v", err, err)
+	}
+	if !strings.Contains(retryable.Prompt, "validate mode") {
+		t.Fatalf("retry prompt = %q", retryable.Prompt)
+	}
+	if !strings.Contains(retryable.Prompt, "Run the relevant tests or checks first") {
+		t.Fatalf("retry prompt = %q", retryable.Prompt)
+	}
+}
+
+func TestValidateTaskCompletionRejectsPlanModeAnswerWithoutActionablePlan(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "write a plan for removing dead code",
+		Mode:      reactruntime.ModePlan,
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "write a plan for removing dead code"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"internal/runtime/chat.go"}`}}},
+			{Role: llm.RoleTool, ToolCallID: "c1", Content: "ok"},
+		},
+	}
+
+	err := validateTaskCompletion(t.TempDir(), snapshot, "I inspected the runtime flow and found a few cleanup areas.")
+	if err == nil {
+		t.Fatal("expected retryable completion rejection")
+	}
+
+	var retryable *reactruntime.RetryableCompletionError
+	if !errors.As(err, &retryable) {
+		t.Fatalf("expected retryable completion error, got %T: %v", err, err)
+	}
+	if !strings.Contains(retryable.Prompt, "plan mode") {
+		t.Fatalf("retry prompt = %q", retryable.Prompt)
+	}
+	if !strings.Contains(retryable.Prompt, "actionable plan") {
+		t.Fatalf("retry prompt = %q", retryable.Prompt)
+	}
+}
+
+func TestValidateTaskCompletionAllowsPlanModeAnswerWithActionableSteps(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "write a plan for removing dead code",
+		Mode:      reactruntime.ModePlan,
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "write a plan for removing dead code"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"internal/runtime/chat.go"}`}}},
+			{Role: llm.RoleTool, ToolCallID: "c1", Content: "ok"},
+		},
+	}
+
+	finalText := strings.Join([]string{
+		"1. Identify the remaining dead-code entrypoints and confirm each caller path.",
+		"2. Remove the unused branches in small edits and keep the public interfaces stable.",
+		"3. Run the focused test suite and summarize any cleanup follow-ups that remain.",
+	}, "\n")
+
+	if err := validateTaskCompletion(t.TempDir(), snapshot, finalText); err != nil {
+		t.Fatalf("unexpected err = %v", err)
+	}
+}
+
+func TestValidateTaskCompletionRejectsReviewModeAnswerWithoutFindings(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "review this repo and tell me what i need to change",
+		Mode:      reactruntime.ModeReview,
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "review this repo and tell me what i need to change"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"internal/runtime/chat.go"}`}}},
+			{Role: llm.RoleTool, ToolCallID: "c1", Content: "ok"},
+		},
+	}
+
+	err := validateTaskCompletion(t.TempDir(), snapshot, "The repo generally looks solid. I would focus on a few cleanup opportunities next.")
+	if err == nil {
+		t.Fatal("expected retryable completion rejection")
+	}
+
+	var retryable *reactruntime.RetryableCompletionError
+	if !errors.As(err, &retryable) {
+		t.Fatalf("expected retryable completion error, got %T: %v", err, err)
+	}
+	if !strings.Contains(retryable.Prompt, "review mode") {
+		t.Fatalf("retry prompt = %q", retryable.Prompt)
+	}
+	if !strings.Contains(retryable.Prompt, "findings first") {
+		t.Fatalf("retry prompt = %q", retryable.Prompt)
+	}
+}
+
+func TestValidateTaskCompletionAllowsReviewModeAnswerWithFindings(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "review this repo and tell me what i need to change",
+		Mode:      reactruntime.ModeReview,
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "review this repo and tell me what i need to change"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"internal/runtime/chat.go"}`}}},
+			{Role: llm.RoleTool, ToolCallID: "c1", Content: "ok"},
+		},
+	}
+
+	finalText := strings.Join([]string{
+		"- Finding: `detectTaskStateFromInput` still overlaps generic analysis and review routing in one function, which increases classifier drift risk as more modes are added.",
+		"- Finding: completion enforcement now spans several mode heuristics in one file, so the next mode should probably extract shared helpers before this turns into another monolith.",
+		"Summary: the current direction is good, but review-specific runtime steering should move into the loop next.",
+	}, "\n")
+
+	if err := validateTaskCompletion(t.TempDir(), snapshot, finalText); err != nil {
+		t.Fatalf("unexpected err = %v", err)
+	}
+}
+
+func TestValidateTaskCompletionRejectsImplementationCompletionWithActivePlanStep(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "implement the runtime change",
+		Mode:      reactruntime.ModeImplement,
+		PlanState: &reactruntime.PlanState{
+			Steps: []reactruntime.PlanStep{
+				{Step: "Patch runtime", Status: "in_progress"},
+				{Step: "Run verification", Status: "pending"},
+			},
+		},
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "implement the runtime change"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "c1", Name: "edit_file", ArgsJSON: `{"path":"internal/runtime/chat.go"}`}}},
+			{Role: llm.RoleTool, ToolCallID: "c1", Content: "ok"},
+		},
+	}
+
+	err := validateTaskCompletion(t.TempDir(), snapshot, "Done. I updated the runtime flow.")
+	if err == nil {
+		t.Fatal("expected retryable completion rejection")
+	}
+
+	var retryable *reactruntime.RetryableCompletionError
+	if !errors.As(err, &retryable) {
+		t.Fatalf("expected retryable completion error, got %T: %v", err, err)
+	}
+	if !strings.Contains(retryable.Prompt, "current plan still has active work") {
+		t.Fatalf("retry prompt = %q", retryable.Prompt)
+	}
+}
+
+func TestValidateTaskCompletionAllowsImplementationStatusUpdateWhenPlanIsBlocked(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "implement the runtime change",
+		Mode:      reactruntime.ModeImplement,
+		PlanState: &reactruntime.PlanState{
+			Steps: []reactruntime.PlanStep{
+				{Step: "Get approval for prompt behavior", Status: "blocked", Blocker: "need user decision on default mode behavior"},
+				{Step: "Patch runtime", Status: "pending"},
+			},
+		},
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "implement the runtime change"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"internal/runtime/chat.go"}`}}},
+			{Role: llm.RoleTool, ToolCallID: "c1", Content: "ok"},
+		},
+	}
+
+	finalText := "Blocked on the current plan: I still need the user to decide whether rich workflow scaffolding should be on by default before I continue editing."
+	if err := validateTaskCompletion(t.TempDir(), snapshot, finalText); err != nil {
+		t.Fatalf("unexpected err = %v", err)
+	}
+}
+
 func TestRegisterReactDelegationToolsAddsSpawnAndWait(t *testing.T) {
 	reg := tools.NewRegistry()
 	cfg := &config.Config{}
@@ -798,7 +1070,7 @@ func TestRegisterToolsAddsCodexStyleEditingAndPlanningTools(t *testing.T) {
 	workDir := t.TempDir()
 
 	_, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), agent.YoloApproval(), nil, nil)
-	for _, name := range []string{"apply_patch", "update_plan", "tool_help", "view_image", "code_search", "lsp_definition", "lsp_references", "lsp_hover", "lsp_document_symbols"} {
+	for _, name := range []string{"apply_patch", "update_plan", "enter_plan_mode", "exit_plan_mode", "ask_user_question", "tool_help", "view_image", "code_search", "lsp_definition", "lsp_references", "lsp_hover", "lsp_document_symbols"} {
 		if _, ok := reg.Get(name); !ok {
 			t.Fatalf("%s tool not registered", name)
 		}

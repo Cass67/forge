@@ -5,12 +5,32 @@ import (
 	"strings"
 	"sync"
 
+	"forge/internal/hooks"
 	"forge/internal/llm"
 )
 
 type TurnToolCall struct {
 	Name string
 }
+
+type Mode string
+
+type HookOverlay = hooks.Overlay
+type HookPriority = hooks.Priority
+
+const (
+	ModeChat      Mode = "chat"
+	ModeInspect   Mode = "inspect"
+	ModePlan      Mode = "plan"
+	ModeImplement Mode = "implement"
+	ModeValidate  Mode = "validate"
+	ModeReview    Mode = "review"
+	ModePreview   Mode = "preview"
+
+	HookPriorityLow    HookPriority = hooks.PriorityLow
+	HookPriorityNormal HookPriority = hooks.PriorityNormal
+	HookPriorityHigh   HookPriority = hooks.PriorityHigh
+)
 
 type TaskState struct {
 	Objective            string
@@ -21,13 +41,38 @@ type TaskState struct {
 }
 
 type PlanStep struct {
-	Step   string `json:"step"`
-	Status string `json:"status"`
+	Step    string `json:"step"`
+	Status  string `json:"status"`
+	Blocker string `json:"blocker,omitempty"`
 }
 
 type PlanState struct {
 	Explanation string     `json:"explanation,omitempty"`
 	Steps       []PlanStep `json:"steps"`
+}
+
+func (s PlanState) ActiveStep() (PlanStep, bool) {
+	for _, step := range s.Steps {
+		switch strings.ToLower(strings.TrimSpace(step.Status)) {
+		case "in_progress", "blocked":
+			return step, true
+		}
+	}
+	return PlanStep{}, false
+}
+
+func (s PlanState) HasActiveStep() bool {
+	_, ok := s.ActiveStep()
+	return ok
+}
+
+func (s PlanState) BlockedStep() (PlanStep, bool) {
+	for _, step := range s.Steps {
+		if strings.EqualFold(strings.TrimSpace(step.Status), "blocked") {
+			return step, true
+		}
+	}
+	return PlanStep{}, false
 }
 
 type TurnRecord struct {
@@ -46,7 +91,10 @@ type SessionSnapshot struct {
 	Turns             []TurnRecord
 	CompactedTurns    int
 	CompactionSummary string
+	MemorySummary     string
+	HookOverlays      []hooks.Overlay
 	RuntimeNote       string
+	Mode              Mode
 	TaskState         *TaskState
 	PlanState         *PlanState
 	PendingInput      []string
@@ -62,7 +110,10 @@ type Session struct {
 	turns             []TurnRecord
 	compactedTurns    int
 	compactionSummary string
+	memorySummary     string
+	hookOverlays      []hooks.Overlay
 	runtimeNote       string
+	mode              Mode
 	taskState         *TaskState
 	planState         *PlanState
 	pendingInput      []string
@@ -70,7 +121,7 @@ type Session struct {
 }
 
 func NewSession() *Session {
-	return &Session{}
+	return &Session{mode: ModeChat}
 }
 
 func (s *Session) RecordInput(input string) int {
@@ -186,7 +237,10 @@ func (s *Session) Snapshot() SessionSnapshot {
 		Turns:             append([]TurnRecord(nil), s.turns...),
 		CompactedTurns:    s.compactedTurns,
 		CompactionSummary: s.compactionSummary,
+		MemorySummary:     s.memorySummary,
+		HookOverlays:      append([]hooks.Overlay(nil), s.hookOverlays...),
 		RuntimeNote:       s.runtimeNote,
+		Mode:              s.mode,
 		TaskState:         cloneTaskState(s.taskState),
 		PlanState:         clonePlanState(s.planState),
 		PendingInput:      append([]string(nil), s.pendingInput...),
@@ -207,7 +261,10 @@ func (s *Session) Clear() {
 	s.turns = nil
 	s.compactedTurns = 0
 	s.compactionSummary = ""
+	s.memorySummary = ""
+	s.hookOverlays = nil
 	s.runtimeNote = ""
+	s.mode = ModeChat
 	s.taskState = nil
 	s.planState = nil
 	s.pendingInput = nil
@@ -221,6 +278,43 @@ func (s *Session) SetRuntimeNote(text string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.runtimeNote = strings.TrimSpace(text)
+}
+
+func (s *Session) SetMemorySummary(text string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.memorySummary = strings.TrimSpace(text)
+}
+
+func (s *Session) SetHookOverlays(overlays []hooks.Overlay) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hookOverlays = append([]hooks.Overlay(nil), overlays...)
+}
+
+func (s *Session) SetMode(mode Mode) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mode = normalizeMode(mode)
+	s.mode = mode
+}
+
+func normalizeMode(mode Mode) Mode {
+	switch mode {
+	case ModeInspect, ModePlan, ModeImplement, ModeValidate, ModeReview, ModePreview:
+		return mode
+	default:
+		return ModeChat
+	}
 }
 
 func (s *Session) SetTaskState(state TaskState) {
@@ -241,6 +335,26 @@ func (s *Session) SetTaskState(state TaskState) {
 		Operation:            strings.TrimSpace(state.Operation),
 		SourceRef:            strings.TrimSpace(state.SourceRef),
 		TargetBranch:         strings.TrimSpace(state.TargetBranch),
+	}
+	s.mode = modeFromOperation(state.Operation)
+}
+
+func modeFromOperation(operation string) Mode {
+	switch strings.ToLower(strings.TrimSpace(operation)) {
+	case "inspect":
+		return ModeInspect
+	case "plan":
+		return ModePlan
+	case "implement":
+		return ModeImplement
+	case "validate":
+		return ModeValidate
+	case "review":
+		return ModeReview
+	case "preview":
+		return ModePreview
+	default:
+		return ModeChat
 	}
 }
 
@@ -268,8 +382,9 @@ func (s *Session) SetPlanState(state PlanState) {
 	}
 	for _, step := range state.Steps {
 		cloned.Steps = append(cloned.Steps, PlanStep{
-			Step:   strings.TrimSpace(step.Step),
-			Status: strings.TrimSpace(step.Status),
+			Step:    strings.TrimSpace(step.Step),
+			Status:  strings.TrimSpace(step.Status),
+			Blocker: strings.TrimSpace(step.Blocker),
 		})
 	}
 	s.planState = &cloned
@@ -334,7 +449,11 @@ func FormatPlanState(state PlanState) string {
 	}
 	parts = append(parts, "Plan:")
 	for _, step := range state.Steps {
-		parts = append(parts, fmt.Sprintf("- [%s] %s", strings.TrimSpace(step.Status), strings.TrimSpace(step.Step)))
+		line := fmt.Sprintf("- [%s] %s", strings.TrimSpace(step.Status), strings.TrimSpace(step.Step))
+		if blocker := strings.TrimSpace(step.Blocker); blocker != "" {
+			line += " (blocker: " + blocker + ")"
+		}
+		parts = append(parts, line)
 	}
 	return strings.Join(parts, "\n")
 }

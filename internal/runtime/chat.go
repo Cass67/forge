@@ -23,6 +23,7 @@ import (
 	"forge/internal/copilot"
 	"forge/internal/llm"
 	"forge/internal/mcp"
+	"forge/internal/memory"
 	"forge/internal/modelcatalog"
 	reactruntime "forge/internal/react"
 	reacttools "forge/internal/react/tools"
@@ -39,6 +40,7 @@ var (
 	mergeIntoBranchRE  = regexp.MustCompile(`(?i)\bmerge\s+(?:the\s+)?(.+?)\s+into\s+([a-zA-Z0-9._/\-]+)\b`)
 	branchMentionRE    = regexp.MustCompile(`(?i)\b(?:look at|inspect|check|review|take a look at)\s+(?:the\s+)?([a-zA-Z0-9._/\-]+)\s+branch\b`)
 	planRequestRE      = regexp.MustCompile(`(?i)\b(?:write|make|create|draft|prepare)\b.*\b(?:implementation\s+)?plan\b|\b(?:implementation\s+)?plan\b.*\b(?:for|to)\b`)
+	reviewRequestRE    = regexp.MustCompile(`(?i)\breview\b.*\b(repo|repository|code|codebase|branch|changes?|diff|pr|pull request)\b|\b(code|repo|repository|branch|changes?|diff|pr|pull request)\b.*\breview\b`)
 	analysisRequestRE  = regexp.MustCompile(`(?i)\b(audit|analy[sz]e|diagnose|investigate|research|compare|review|explain)\b.*\b(repo|repository|codebase|app|behavior|issue|problem|dead code|cleanup)\b`)
 	previewRequestRE   = regexp.MustCompile(`(?i)\b(preview|web ?page|themes?_preview\.html|mock up|show me|show on (?:the )?screen|show on web)\b`)
 	validateRequestRE  = regexp.MustCompile(`(?i)\b(test|tests|verify|validated?|check|checks|pass|passes|build)\b`)
@@ -223,6 +225,9 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 	reg.Register(tools.NewViewImage(workDir))
 	reg.Register(tools.NewToolHelp(reg))
 	reg.Register(reacttools.NewUpdatePlan(session))
+	reg.Register(reacttools.NewEnterPlanMode(session))
+	reg.Register(reacttools.NewExitPlanMode(session))
+	reg.Register(reacttools.NewAskUserQuestion())
 	if mcpManager.HasServers() {
 		reg.Register(tools.NewListMCPResources(mcpManager))
 		reg.Register(tools.NewListMCPResourceTemplates(mcpManager))
@@ -257,10 +262,17 @@ func RunChatLive(setup *ChatSetup) {
 		}()
 	}
 	evRenderer := agent.NewEventRenderer(renderCh)
+	session := reactruntime.NewSession()
 
 	var approve tools.ApprovalFunc
 	gate := reactruntime.NewApprovalGate(setup.WorkDir, reactruntime.LoadApprovalConfig(setup.Config), nil, func(text string) {
 		evRenderer.Info(text)
+	})
+	gate.SetGuardianReviewer(func(transcript string, action tools.Action) tools.GuardianReview {
+		return tools.ReviewApprovalAction(transcript, action)
+	})
+	gate.SetGuardianContext(func() string {
+		return reactruntime.CompactGuardianContext(session.Snapshot())
 	})
 	if setup.Yolo {
 		approve = agent.YoloApproval()
@@ -272,7 +284,6 @@ func RunChatLive(setup *ChatSetup) {
 	defer gate.Restore()
 
 	reg := tools.NewRegistry()
-	session := reactruntime.NewSession()
 	previewRuntime, mcpManager := registerTools(reg, setup.WorkDir, setup.Config, session, approve, evRenderer.Info, func(status tools.ExecSessionStatus) {
 		payload, err := json.Marshal(status)
 		if err != nil {
@@ -290,6 +301,8 @@ func RunChatLive(setup *ChatSetup) {
 	baseReg := reg.Filter(nil)
 	loadedSkills := skills.Load(setup.WorkDir)
 	state := chatstate.New()
+	memPipeline := memory.Pipeline{MaxRecords: 12}
+	memState := memory.State{}
 	reactRunner := reactruntime.NewRunner(reactruntime.Config{
 		Driver:          setup.Driver,
 		Tools:           reg,
@@ -299,6 +312,12 @@ func RunChatLive(setup *ChatSetup) {
 		MaxSessionTurns: chatMaxTurns(setup),
 		CompletionCheck: func(snapshot reactruntime.SessionSnapshot, finalText string) error {
 			return validateTaskCompletion(setup.WorkDir, snapshot, finalText)
+		},
+		TurnComplete: func(snapshot reactruntime.SessionSnapshot) {
+			if next, ok := memPipeline.Process(memState, snapshot); ok {
+				memState = next
+				session.SetMemorySummary(next.Summary)
+			}
 		},
 		Progress: func(text string) {
 			evRenderer.Info(text)
@@ -327,6 +346,10 @@ func RunChatLive(setup *ChatSetup) {
 			running = true
 			if setup != nil && setup.debugRec != nil {
 				setup.debugRec.logInput("user", msg)
+			}
+			applySuggestedSkillOverlay(session, msg, loadedSkills, state)
+			if nudge := suggestedSkillNudge(msg, loadedSkills, state); nudge != "" {
+				evRenderer.Info(nudge)
 			}
 			go func(runMsg string) {
 				err := runChatTurn(ctx, reactRunner, runMsg)
@@ -493,6 +516,7 @@ func providerOptionsFromBootstrap(backends []bootstrap.ProviderBackend) []tui.Pr
 }
 
 func RunChatConsole(setup *ChatSetup) {
+	session := reactruntime.NewSession()
 	var approve tools.ApprovalFunc
 	if setup.Yolo {
 		approve = agent.YoloApproval()
@@ -502,13 +526,19 @@ func RunChatConsole(setup *ChatSetup) {
 	gate := reactruntime.NewApprovalGate(setup.WorkDir, reactruntime.LoadApprovalConfig(setup.Config), approve, func(text string) {
 		_, _ = fmt.Fprintln(os.Stdout, text)
 	})
+	gate.SetGuardianReviewer(func(transcript string, action tools.Action) tools.GuardianReview {
+		return tools.ReviewApprovalAction(transcript, action)
+	})
+	gate.SetGuardianContext(func() string {
+		return reactruntime.CompactGuardianContext(session.Snapshot())
+	})
 	approve = gate.Approve
 	defer gate.Restore()
 
 	reg := tools.NewRegistry()
 	renderer := agent.NewRenderer(os.Stdout, 80, true)
 	forcePromptApprove := approve
-	previewRuntime, mcpManager := registerTools(reg, setup.WorkDir, setup.Config, reactruntime.NewSession(), approve, renderer.Info, func(status tools.ExecSessionStatus) {
+	previewRuntime, mcpManager := registerTools(reg, setup.WorkDir, setup.Config, session, approve, renderer.Info, func(status tools.ExecSessionStatus) {
 		payload, err := json.Marshal(status)
 		if err != nil {
 			renderer.Info(fmt.Sprintf("command session %d changed state", status.SessionID))
@@ -525,13 +555,21 @@ func RunChatConsole(setup *ChatSetup) {
 	baseReg := reg.Filter(nil)
 	loadedSkills := skills.Load(setup.WorkDir)
 	state := chatstate.New()
+	memPipeline := memory.Pipeline{MaxRecords: 12}
+	memState := memory.State{}
 	reactRunner := reactruntime.NewRunner(reactruntime.Config{
 		Driver:          setup.Driver,
 		Tools:           reg,
 		Renderer:        renderer,
 		SystemPrompt:    func() string { return agent.BuildNativeSystemPrompt(setup.WorkDir) },
-		Session:         reactruntime.NewSession(),
+		Session:         session,
 		MaxSessionTurns: chatMaxTurns(setup),
+		TurnComplete: func(snapshot reactruntime.SessionSnapshot) {
+			if next, ok := memPipeline.Process(memState, snapshot); ok {
+				memState = next
+				session.SetMemorySummary(next.Summary)
+			}
+		},
 		Progress: func(text string) {
 			renderer.Info(text)
 		},
@@ -578,6 +616,10 @@ func RunChatConsole(setup *ChatSetup) {
 			if handled {
 				continue
 			}
+		}
+		applySuggestedSkillOverlay(session, input, loadedSkills, state)
+		if nudge := suggestedSkillNudge(input, loadedSkills, state); nudge != "" {
+			renderer.Info(nudge)
 		}
 		err := runChatTurn(ctx, reactRunner, input)
 		if err != nil {
@@ -674,6 +716,44 @@ func runChatTurn(ctx context.Context, reactRunner chatTurnRunner, input string) 
 	return reactRunner.Run(ctx, input)
 }
 
+func suggestedSkillNudge(input string, loadedSkills []skills.Skill, state *chatstate.State) string {
+	if len(loadedSkills) == 0 || strings.TrimSpace(input) == "" {
+		return ""
+	}
+	active := map[string]bool{}
+	if state != nil {
+		for _, name := range state.ActiveSkills() {
+			active[name] = true
+		}
+	}
+	mode := ""
+	if task, ok := detectTaskStateFromInput(input); ok {
+		mode = task.Operation
+	}
+	suggestion, ok := skills.Suggest(loadedSkills, mode, input, active)
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("suggested skill: /%s (%s)", suggestion.Name, suggestion.Reason)
+}
+
+func applySuggestedSkillOverlay(session *reactruntime.Session, input string, loadedSkills []skills.Skill, state *chatstate.State) {
+	if session == nil {
+		return
+	}
+	nudge := suggestedSkillNudge(input, loadedSkills, state)
+	if strings.TrimSpace(nudge) == "" {
+		session.SetHookOverlays(nil)
+		return
+	}
+	session.SetHookOverlays([]reactruntime.HookOverlay{{
+		Key:        "suggested_skill",
+		Content:    nudge,
+		Priority:   reactruntime.HookPriorityNormal,
+		Provenance: "runtime",
+	}})
+}
+
 func detectTaskStateFromInput(input string) (reactruntime.TaskState, bool) {
 	text := strings.TrimSpace(input)
 	if text == "" {
@@ -684,6 +764,13 @@ func detectTaskStateFromInput(input string) (reactruntime.TaskState, bool) {
 			Objective:            text,
 			Operation:            "plan",
 			RequiredVerification: "produce a concise plan grounded in enough repo evidence; stop researching once the next actionable plan can be written",
+		}, true
+	}
+	if reviewRequestRE.MatchString(text) {
+		return reactruntime.TaskState{
+			Objective:            text,
+			Operation:            "review",
+			RequiredVerification: "produce source-grounded findings first, ordered by severity, and keep the summary secondary to the actual review issues",
 		}, true
 	}
 	if analysisRequestRE.MatchString(text) {

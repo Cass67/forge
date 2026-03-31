@@ -13,6 +13,7 @@ import (
 var (
 	intentNarrationPattern = regexp.MustCompile(`(?i)\b(i['’]ll|let me|first[, ]+i['’]ll|then[, ]+i['’]ll|next[, ]+i['’]ll)\b`)
 	blockedClaimPattern    = regexp.MustCompile(`(?i)\b(blocked|unable to access|unable to inspect|produced no output|tooling.*(?:failed|unavailable)|can't access the repo|cannot access the repo)\b`)
+	completionClaimPattern = regexp.MustCompile(`(?i)\b(done|complete|completed|finished|all set)\b`)
 	inspectionClaimPattern = regexp.MustCompile(`(?i)\b(inspect(?:ed)?|review(?:ed)?|read|searched|located|analy[sz]ed|looked at|checked)\b`)
 	// changeClaimPattern matches first-person change claims ("I fixed X", "we added X") and
 	// sentence-leading past-tense claims ("Fixed the bug", "Updated the file").
@@ -22,6 +23,8 @@ var (
 	validationClaimPattern   = regexp.MustCompile(`(?i)\b(tested|validated|checks pass|tests pass|build passes|lint passes|compiled|verified (?:it|the fix|the change|the changes|it works|they work|working))\b`)
 	repoGroundedInputPattern = regexp.MustCompile(`(?i)\b(repo|repository|code|codebase|project|worktree|branch|file|files|app|theme|tui|ui|test|tests|fix|implement|update|change|edit|style)\b`)
 	validationCmdPattern     = regexp.MustCompile(`(?i)\b(go test|pytest|npm test|pnpm test|yarn test|cargo test|go build|cargo check|npm run build|pnpm build|yarn build|golangci-lint|go vet)\b`)
+	actionablePlanPattern    = regexp.MustCompile(`(?m)^\s*(?:[-*]|\d+\.)\s+\S+`)
+	reviewFindingPattern     = regexp.MustCompile(`(?im)^\s*(?:[-*]|\d+\.)\s+(?:\[[Pp]\d\]\s+)?finding:`)
 )
 
 type turnEvidence struct {
@@ -56,7 +59,7 @@ func enforceCompletionEvidence(snapshot reactruntime.SessionSnapshot, finalText 
 			buildIntentNarrationRetryPrompt(evidence, priorEvidence),
 		)
 	}
-	if blockedClaimPattern.MatchString(finalText) && !evidence.hasToolErr {
+	if blockedClaimPattern.MatchString(finalText) && !evidence.hasToolErr && !currentPlanIsBlocked(snapshot.PlanState) {
 		return reactruntime.NewRetryableCompletionError(
 			"non-compliant completion: claimed tool blockage without a real tool error",
 			"Do not claim tooling failure unless a tool actually failed in this turn. Continue with tools or report the real tool error.",
@@ -80,7 +83,113 @@ func enforceCompletionEvidence(snapshot reactruntime.SessionSnapshot, finalText 
 			"Your answer claims verification, but no validation command ran. Run the relevant tests or checks first, then answer with the result.",
 		)
 	}
+	if requiresActionablePlan(snapshot) && !hasActionablePlan(snapshot, evidence, priorEvidence, finalText) {
+		return reactruntime.NewRetryableCompletionError(
+			"non-compliant completion: plan mode finished without an actionable plan",
+			"This turn is in plan mode. Stop summarizing findings and provide an actionable plan now. Use update_plan or return a concrete step list with clear next actions.",
+		)
+	}
+	if requiresReviewFindings(snapshot) && !looksLikeReviewFindings(finalText) {
+		return reactruntime.NewRetryableCompletionError(
+			"non-compliant completion: review mode finished without findings",
+			"This turn is in review mode. Report findings first, ordered by severity when possible, and keep the summary secondary to the actual review issues.",
+		)
+	}
+	if claimsCompletionWhilePlanStillActive(snapshot, finalText) {
+		return reactruntime.NewRetryableCompletionError(
+			"non-compliant completion: claimed completion while plan still has active work",
+			"The current plan still has active work. Finish the remaining in_progress step, explicitly report the blocker, or update the plan state before claiming completion.",
+		)
+	}
+	if requiresValidationEvidence(snapshot) && !evidence.hasCheck && !priorEvidence.hasCheck {
+		return reactruntime.NewRetryableCompletionError(
+			"non-compliant completion: validate mode finished without verification evidence",
+			"This turn is in validate mode. Run the relevant tests or checks first, then answer with the concrete validation result.",
+		)
+	}
 	return nil
+}
+
+func requiresValidationEvidence(snapshot reactruntime.SessionSnapshot) bool {
+	if snapshot.Mode == reactruntime.ModeValidate {
+		return true
+	}
+	if snapshot.TaskState == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "validate")
+}
+
+func requiresActionablePlan(snapshot reactruntime.SessionSnapshot) bool {
+	if snapshot.Mode == reactruntime.ModePlan {
+		return true
+	}
+	if snapshot.TaskState == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "plan")
+}
+
+func requiresReviewFindings(snapshot reactruntime.SessionSnapshot) bool {
+	if snapshot.Mode == reactruntime.ModeReview {
+		return true
+	}
+	if snapshot.TaskState == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "review")
+}
+
+func hasActionablePlan(snapshot reactruntime.SessionSnapshot, evidence, priorEvidence turnEvidence, finalText string) bool {
+	if snapshot.PlanState != nil && len(snapshot.PlanState.Steps) > 0 {
+		return true
+	}
+	if hasToolCallNamed(evidence.toolCalls, "update_plan") || hasToolCallNamed(priorEvidence.toolCalls, "update_plan") {
+		return true
+	}
+	return looksLikeActionablePlan(finalText)
+}
+
+func hasToolCallNamed(calls []llm.NativeToolCall, name string) bool {
+	for _, call := range calls {
+		if strings.EqualFold(strings.TrimSpace(call.Name), name) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeActionablePlan(finalText string) bool {
+	return len(actionablePlanPattern.FindAllString(finalText, -1)) >= 2
+}
+
+func looksLikeReviewFindings(finalText string) bool {
+	return len(reviewFindingPattern.FindAllString(finalText, -1)) >= 1
+}
+
+func claimsCompletionWhilePlanStillActive(snapshot reactruntime.SessionSnapshot, finalText string) bool {
+	if snapshot.Mode != reactruntime.ModeImplement {
+		return false
+	}
+	if !completionClaimPattern.MatchString(finalText) || blockedClaimPattern.MatchString(finalText) {
+		return false
+	}
+	return currentPlanHasActiveWork(snapshot.PlanState)
+}
+
+func currentPlanHasActiveWork(state *reactruntime.PlanState) bool {
+	if state == nil {
+		return false
+	}
+	return state.HasActiveStep()
+}
+
+func currentPlanIsBlocked(state *reactruntime.PlanState) bool {
+	if state == nil {
+		return false
+	}
+	_, ok := state.BlockedStep()
+	return ok
 }
 
 // currentTurnStartIndex returns the index after the last real user message.
