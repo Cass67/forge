@@ -17,6 +17,7 @@ import (
 	"forge/internal/auth"
 	"forge/internal/chatstate"
 	"forge/internal/config"
+	"forge/internal/hooks"
 	"forge/internal/llm"
 	"forge/internal/mcp"
 	reactruntime "forge/internal/react"
@@ -553,6 +554,59 @@ func TestSuggestedSkillNudgeSkipsActiveSkill(t *testing.T) {
 	}
 }
 
+func TestChatSuggestedSkillHookProducesOverlay(t *testing.T) {
+	results := suggestedSkillPromptHook(context.Background(), hooks.Event{
+		Point: hooks.PointPromptContext,
+		Transient: chatPromptHookPayload{
+			SuggestedSkillNudge: "suggested skill: /test-driven-development (implementation request matched)",
+		},
+	})
+
+	if len(results) != 1 {
+		t.Fatalf("results = %#v", results)
+	}
+	overlay, ok := results[0].(hooks.OverlayResult)
+	if !ok {
+		t.Fatalf("result type = %T, want hooks.OverlayResult", results[0])
+	}
+	if overlay.Key != "suggested_skill" {
+		t.Fatalf("overlay key = %q", overlay.Key)
+	}
+	if !strings.Contains(overlay.Content, "/test-driven-development") {
+		t.Fatalf("overlay content = %q", overlay.Content)
+	}
+}
+
+func TestChatGuardianWarningHookProducesOverlay(t *testing.T) {
+	results := guardianWarningPromptHook(context.Background(), hooks.Event{
+		Point: hooks.PointPromptContext,
+		Transient: chatPromptHookPayload{
+			GuardianEvent: &reactruntime.GuardianEvent{
+				Decision: tools.GuardianWarn,
+				Reason:   "high-impact command has no compact task context",
+				Action: tools.Action{
+					Tool:    "run_command",
+					Summary: "git merge feature/runtime",
+				},
+			},
+		},
+	})
+
+	if len(results) != 1 {
+		t.Fatalf("results = %#v", results)
+	}
+	overlay, ok := results[0].(hooks.OverlayResult)
+	if !ok {
+		t.Fatalf("result type = %T, want hooks.OverlayResult", results[0])
+	}
+	if overlay.Key != "guardian_warning" {
+		t.Fatalf("overlay key = %q", overlay.Key)
+	}
+	if !strings.Contains(overlay.Content, "high-impact command") {
+		t.Fatalf("overlay content = %q", overlay.Content)
+	}
+}
+
 func TestApplySuggestedSkillOverlayAddsHookOverlay(t *testing.T) {
 	session := reactruntime.NewSession()
 	loaded := []skills.Skill{
@@ -563,11 +617,14 @@ func TestApplySuggestedSkillOverlayAddsHookOverlay(t *testing.T) {
 	applySuggestedSkillOverlay(session, "please implement the runtime change", loaded, state)
 
 	snap := session.Snapshot()
-	if len(snap.HookOverlays) != 1 {
-		t.Fatalf("hook overlays = %#v", snap.HookOverlays)
+	if !snap.HookOutputSet {
+		t.Fatal("expected normalized hook output to be set")
 	}
-	if !strings.Contains(snap.HookOverlays[0].Content, "/test-driven-development") {
-		t.Fatalf("hook overlay = %#v", snap.HookOverlays[0])
+	if len(snap.HookOutput.Overlays) != 1 {
+		t.Fatalf("hook output overlays = %#v", snap.HookOutput.Overlays)
+	}
+	if !strings.Contains(snap.HookOutput.Overlays[0].Content, "/test-driven-development") {
+		t.Fatalf("hook output overlay = %#v", snap.HookOutput.Overlays[0])
 	}
 }
 
@@ -583,8 +640,12 @@ func TestApplySuggestedSkillOverlayClearsWhenNoSuggestion(t *testing.T) {
 
 	applySuggestedSkillOverlay(session, "describe this repo", nil, state)
 
-	if got := session.Snapshot().HookOverlays; len(got) != 0 {
-		t.Fatalf("hook overlays = %#v", got)
+	snap := session.Snapshot()
+	if !snap.HookOutputSet {
+		t.Fatal("expected normalized hook output to stay authoritative")
+	}
+	if got := snap.HookOutput.Overlays; len(got) != 0 {
+		t.Fatalf("hook output overlays = %#v", got)
 	}
 }
 
@@ -600,12 +661,16 @@ func TestApplyGuardianOverlayAddsWarningHook(t *testing.T) {
 		},
 	})
 
-	got := session.Snapshot().HookOverlays
+	snap := session.Snapshot()
+	if !snap.HookOutputSet {
+		t.Fatal("expected normalized hook output to be set")
+	}
+	got := snap.HookOutput.Overlays
 	if len(got) != 1 {
-		t.Fatalf("hook overlays = %#v", got)
+		t.Fatalf("hook output overlays = %#v", got)
 	}
 	if got[0].Key != "guardian_warning" || !strings.Contains(got[0].Content, "high-impact command") {
-		t.Fatalf("hook overlays = %#v", got)
+		t.Fatalf("hook output overlays = %#v", got)
 	}
 }
 
@@ -620,8 +685,12 @@ func TestApplyGuardianOverlayClearsOnAllow(t *testing.T) {
 
 	applyGuardianOverlay(session, reactruntime.GuardianEvent{Decision: tools.GuardianAllow})
 
-	if got := session.Snapshot().HookOverlays; len(got) != 0 {
-		t.Fatalf("hook overlays = %#v", got)
+	snap := session.Snapshot()
+	if !snap.HookOutputSet {
+		t.Fatal("expected normalized hook output to stay authoritative")
+	}
+	if got := snap.HookOutput.Overlays; len(got) != 0 {
+		t.Fatalf("hook output overlays = %#v", got)
 	}
 }
 
