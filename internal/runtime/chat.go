@@ -107,11 +107,12 @@ func BuildChatSetup(cfg *config.Config, tokens any, modelOverride, workDir strin
 		if err != nil {
 			return nil
 		}
-		return llm.NewRetryDriver(d,
+		return llm.NewRetryDriverWithIdleTimeout(d,
 			effectiveCfg.Retry.MaxAttempts,
 			time.Duration(effectiveCfg.Retry.InitialWait)*time.Millisecond,
 			time.Duration(effectiveCfg.Retry.MaxWait)*time.Millisecond,
 			time.Duration(effectiveCfg.Retry.Timeout)*time.Second,
+			time.Duration(effectiveCfg.Resilience.StreamIdleTimeoutMS)*time.Millisecond,
 		)
 	}
 
@@ -325,6 +326,8 @@ func RunChatLive(setup *ChatSetup) {
 		Progress: func(text string) {
 			evRenderer.Info(text)
 		},
+		CompactionMaxFailures: setup.Config.Resilience.CompactionMaxFailures,
+		Interactive:           true,
 	})
 	registerReactDelegationTools(reg, setup, baseReg, approve)
 
@@ -599,6 +602,8 @@ func RunChatConsole(setup *ChatSetup) {
 		Progress: func(text string) {
 			renderer.Info(text)
 		},
+		CompactionMaxFailures: setup.Config.Resilience.CompactionMaxFailures,
+		Interactive:           true,
 	})
 	registerReactDelegationTools(reg, setup, baseReg, approve)
 
@@ -676,8 +681,10 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 			SystemPrompt: func() string {
 				return agent.BuildNativeSystemPrompt(setup.WorkDir) + "\n\n" + reactDelegationSystemSuffix(role)
 			},
-			Session:         reactruntime.NewSession(),
-			MaxSessionTurns: setup.Config.Chat.MaxTurns,
+			Session:               reactruntime.NewSession(),
+			MaxSessionTurns:       setup.Config.Chat.MaxTurns,
+			CompactionMaxFailures: setup.Config.Resilience.CompactionMaxFailures,
+			Interactive:           false,
 		})
 		if err := childRunner.Run(ctx, task); err != nil {
 			return "", err

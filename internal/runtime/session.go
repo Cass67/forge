@@ -65,11 +65,12 @@ func StartSession(ctx context.Context, cfg *config.Config, tokens *auth.Tokens, 
 		}
 
 		wrapRetry := func(d llm.Driver) llm.Driver {
-			return llm.NewRetryDriver(d,
+			return llm.NewRetryDriverWithIdleTimeout(d,
 				cfg.Retry.MaxAttempts,
 				time.Duration(cfg.Retry.InitialWait)*time.Millisecond,
 				time.Duration(cfg.Retry.MaxWait)*time.Millisecond,
 				time.Duration(cfg.Retry.Timeout)*time.Second,
+				time.Duration(cfg.Resilience.StreamIdleTimeoutMS)*time.Millisecond,
 			)
 		}
 		writerDriver = wrapRetry(writerDriver)
