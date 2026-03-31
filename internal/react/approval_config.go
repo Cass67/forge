@@ -26,11 +26,33 @@ func LoadApprovalConfig(cfg *config.Config) ApprovalConfig {
 		if decision == "" {
 			continue
 		}
-		out.Rules = append(out.Rules, ApprovalRule{
-			Tool:          strings.TrimSpace(rule.Tool),
-			CommandPrefix: nonEmptyStrings(rule.CommandPrefix),
-			Decision:      decision,
-		})
+		approvalRule := ApprovalRule{
+			Tool:     strings.TrimSpace(rule.Tool),
+			Decision: decision,
+		}
+		switch {
+		case len(rule.CommandPrefix) > 0:
+			prefix := nonEmptyStrings(rule.CommandPrefix)
+			matcher, err := parseShellRulePrefix(prefix)
+			if err != nil {
+				continue
+			}
+			approvalRule.CommandPrefix = prefix
+			approvalRule.matcher = matcher
+			approvalRule.hasMatcher = true
+		case strings.TrimSpace(rule.Command) != "":
+			command := strings.TrimSpace(rule.Command)
+			matcher, err := parseShellRule(command)
+			if err != nil {
+				continue
+			}
+			approvalRule.Command = command
+			approvalRule.matcher = matcher
+			approvalRule.hasMatcher = true
+		default:
+			continue
+		}
+		out.Rules = append(out.Rules, approvalRule)
 	}
 	return normalizeApprovalConfig(out)
 }

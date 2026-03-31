@@ -30,7 +30,10 @@ const (
 type ApprovalRule struct {
 	Tool          string
 	CommandPrefix []string
+	Command       string
 	Decision      RuleDecision
+	matcher       shellRule
+	hasMatcher    bool
 }
 
 type ApprovalConfig struct {
@@ -295,15 +298,34 @@ func (g *ApprovalGate) ruleDecision(action tools.Action) (RuleDecision, bool) {
 		if strings.TrimSpace(rule.Tool) != "" && !strings.EqualFold(strings.TrimSpace(rule.Tool), action.Tool) {
 			continue
 		}
-		if len(rule.CommandPrefix) > 0 {
-			matcher, err := parseShellRulePrefix(rule.CommandPrefix)
-			if err != nil || !matcher.matches(action.Summary) {
-				continue
-			}
+		matcher, ok := rule.shellMatcher()
+		if !ok || !matcher.matches(action.Summary) {
+			continue
 		}
 		return rule.Decision, true
 	}
 	return "", false
+}
+
+func (r ApprovalRule) shellMatcher() (shellRule, bool) {
+	if r.hasMatcher {
+		return r.matcher, true
+	}
+	if strings.TrimSpace(r.Command) != "" {
+		matcher, err := parseShellRule(r.Command)
+		if err != nil {
+			return shellRule{}, false
+		}
+		return matcher, true
+	}
+	if len(r.CommandPrefix) > 0 {
+		matcher, err := parseShellRulePrefix(r.CommandPrefix)
+		if err != nil {
+			return shellRule{}, false
+		}
+		return matcher, true
+	}
+	return shellRule{}, false
 }
 
 func actionNeedsPrompt(action tools.Action) bool {
