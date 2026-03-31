@@ -215,6 +215,36 @@ decision = "forbidden"
 	}
 }
 
+func TestLoadApprovalConfigSectionSupportsCommandRules(t *testing.T) {
+	toml := `
+[approval]
+
+[[approval.rules]]
+tool = "run_command"
+command = "git status --short"
+decision = "allow"
+
+[[approval.rules]]
+tool = "run_command"
+command = "git * status"
+decision = "prompt"
+`
+	path := writeTemp(t, toml)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Approval.Rules) != 2 {
+		t.Fatalf("rules = %d, want 2", len(cfg.Approval.Rules))
+	}
+	if got := cfg.Approval.Rules[0].Command; got != "git status --short" {
+		t.Fatalf("rules[0].Command = %q", got)
+	}
+	if got := cfg.Approval.Rules[1].Command; got != "git * status" {
+		t.Fatalf("rules[1].Command = %q", got)
+	}
+}
+
 func TestChatModel(t *testing.T) {
 	cfg, _ := config.Load("/nonexistent/path.toml")
 	if got := cfg.ChatModel(); got != "" {

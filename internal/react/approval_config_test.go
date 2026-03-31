@@ -17,6 +17,16 @@ func TestLoadApprovalConfigFromConfig(t *testing.T) {
 			CommandPrefix: []string{"git", "push"},
 			Decision:      "forbidden",
 		},
+		{
+			Tool:     "run_command",
+			Command:  "git status --short",
+			Decision: "allow",
+		},
+		{
+			Tool:     "run_command",
+			Command:  "git * status",
+			Decision: "prompt",
+		},
 	}
 
 	got := LoadApprovalConfig(cfg)
@@ -29,11 +39,20 @@ func TestLoadApprovalConfigFromConfig(t *testing.T) {
 	if len(got.KnownSafeCommand) != 2 {
 		t.Fatalf("KnownSafeCommand = %d, want 2", len(got.KnownSafeCommand))
 	}
-	if len(got.Rules) != 1 {
-		t.Fatalf("Rules = %d, want 1", len(got.Rules))
+	if len(got.Rules) != 3 {
+		t.Fatalf("Rules = %d, want 3", len(got.Rules))
 	}
 	if got.Rules[0].Decision != DecisionForbidden {
 		t.Fatalf("Decision = %q", got.Rules[0].Decision)
+	}
+	if got.Rules[0].CommandPrefix[0] != "git" || got.Rules[0].CommandPrefix[1] != "push" {
+		t.Fatalf("CommandPrefix = %#v", got.Rules[0].CommandPrefix)
+	}
+	if got.Rules[1].Command != "git status --short" {
+		t.Fatalf("Rules[1].Command = %q", got.Rules[1].Command)
+	}
+	if got.Rules[2].Command != "git * status" {
+		t.Fatalf("Rules[2].Command = %q", got.Rules[2].Command)
 	}
 }
 
