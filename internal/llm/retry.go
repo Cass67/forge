@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"forge/internal/resilience/errors"
 )
 
 var (
@@ -26,23 +28,29 @@ var (
 )
 
 type RetryDriver struct {
-	inner       Driver
-	maxAttempts int
-	initialWait time.Duration
-	maxWait     time.Duration
-	timeout     time.Duration
+	inner             Driver
+	maxAttempts       int
+	initialWait       time.Duration
+	maxWait           time.Duration
+	timeout           time.Duration
+	streamIdleTimeout time.Duration
 }
 
 func NewRetryDriver(inner Driver, maxAttempts int, initialWait, maxWait, timeout time.Duration) *RetryDriver {
+	return NewRetryDriverWithIdleTimeout(inner, maxAttempts, initialWait, maxWait, timeout, 0)
+}
+
+func NewRetryDriverWithIdleTimeout(inner Driver, maxAttempts int, initialWait, maxWait, timeout, streamIdleTimeout time.Duration) *RetryDriver {
 	if maxAttempts < 1 {
 		maxAttempts = 1
 	}
 	return &RetryDriver{
-		inner:       inner,
-		maxAttempts: maxAttempts,
-		initialWait: initialWait,
-		maxWait:     maxWait,
-		timeout:     timeout,
+		inner:             inner,
+		maxAttempts:       maxAttempts,
+		initialWait:       initialWait,
+		maxWait:           maxWait,
+		timeout:           timeout,
+		streamIdleTimeout: streamIdleTimeout,
 	}
 }
 
@@ -84,7 +92,7 @@ func (d *RetryDriver) Stream(ctx context.Context, messages []Message, out chan<-
 	var lastErr error
 	for attempt := 0; attempt < d.maxAttempts; attempt++ {
 		if attempt > 0 {
-			wait := d.backoff(attempt)
+			wait := d.backoff(attempt, lastErr)
 			if err := retrySleep(ctx, wait); err != nil {
 				return err
 			}
@@ -110,7 +118,7 @@ func (d *RetryDriver) Stream(ctx context.Context, messages []Message, out chan<-
 			case out <- tok:
 			case <-ctx.Done():
 				for range internal {
-				} // drain so inner goroutine can finish
+				}
 				<-errCh
 				return ctx.Err()
 			}
@@ -123,10 +131,10 @@ func (d *RetryDriver) Stream(ctx context.Context, messages []Message, out chan<-
 		if isRateLimited(lastErr) {
 			rememberRateLimit(d.Name())
 		}
-		if !isRetryable(lastErr) {
+		fe := errors.ClassifyError(lastErr)
+		if !fe.Retryable {
 			return lastErr
 		}
-		// Tokens were already forwarded downstream; retrying would corrupt state.
 		if emittedAny {
 			return lastErr
 		}
@@ -134,8 +142,6 @@ func (d *RetryDriver) Stream(ctx context.Context, messages []Message, out chan<-
 	return fmt.Errorf("all %d attempts failed: %w", d.maxAttempts, lastErr)
 }
 
-// StreamWithTools implements NativeToolCaller by forwarding to the inner driver
-// if it also implements NativeToolCaller. Applies the same retry logic as Stream.
 func (d *RetryDriver) StreamWithTools(ctx context.Context, messages []Message, tools []ToolDef, out chan<- Token) error {
 	caller, ok := d.inner.(NativeToolCaller)
 	if !ok {
@@ -151,7 +157,7 @@ func (d *RetryDriver) StreamWithTools(ctx context.Context, messages []Message, t
 	var lastErr error
 	for attempt := 0; attempt < d.maxAttempts; attempt++ {
 		if attempt > 0 {
-			wait := d.backoff(attempt)
+			wait := d.backoff(attempt, lastErr)
 			if err := retrySleep(ctx, wait); err != nil {
 				return err
 			}
@@ -177,7 +183,7 @@ func (d *RetryDriver) StreamWithTools(ctx context.Context, messages []Message, t
 			case out <- tok:
 			case <-ctx.Done():
 				for range internal {
-				} // drain so inner goroutine can finish
+				}
 				<-errCh
 				return ctx.Err()
 			}
@@ -190,10 +196,10 @@ func (d *RetryDriver) StreamWithTools(ctx context.Context, messages []Message, t
 		if isRateLimited(lastErr) {
 			rememberRateLimit(d.Name())
 		}
-		if !isRetryable(lastErr) {
+		fe := errors.ClassifyError(lastErr)
+		if !fe.Retryable {
 			return lastErr
 		}
-		// Tokens were already forwarded downstream; retrying would corrupt state.
 		if emittedAny {
 			return lastErr
 		}
@@ -201,45 +207,23 @@ func (d *RetryDriver) StreamWithTools(ctx context.Context, messages []Message, t
 	return fmt.Errorf("all %d attempts failed: %w", d.maxAttempts, lastErr)
 }
 
-func (d *RetryDriver) backoff(attempt int) time.Duration {
+func (d *RetryDriver) backoff(attempt int, lastErr error) time.Duration {
+	if lastErr != nil {
+		if delay, ok := errors.ParseRetryAfterDelay(lastErr.Error()); ok {
+			dur := time.Duration(delay * float64(time.Second))
+			if dur > d.maxWait {
+				dur = d.maxWait
+			}
+			return dur
+		}
+	}
+
 	base := float64(d.initialWait) * math.Pow(2, float64(attempt-1))
 	if base > float64(d.maxWait) {
 		base = float64(d.maxWait)
 	}
 	jitter := base * (0.5 + rand.Float64()*0.5)
 	return time.Duration(jitter)
-}
-
-func isRetryable(err error) bool {
-	if err == nil {
-		return false
-	}
-	if err == context.Canceled {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	for _, s := range []string{
-		"400 bad request",
-		"404 not found",
-		"410 gone",
-		"401",
-		"403",
-		"invalid_api_key",
-		"authentication",
-		"insufficient_quota",
-		"quota exceeded",
-		"billing",
-		"context_length_exceeded",
-		"maximum context length",
-		"not a valid model id",
-		"no endpoints available matching your guardrail restrictions",
-		"data policy",
-	} {
-		if strings.Contains(msg, s) {
-			return false
-		}
-	}
-	return true
 }
 
 func isRateLimited(err error) bool {
