@@ -649,6 +649,51 @@ func TestApplySuggestedSkillOverlayClearsWhenNoSuggestion(t *testing.T) {
 	}
 }
 
+func TestApplySuggestedSkillOverlayPreservesOtherPromptOverlays(t *testing.T) {
+	session := reactruntime.NewSession()
+	session.SetHookOutput(hooks.ExecutionOutput{
+		Overlays: []hooks.OverlayResult{
+			{
+				Key:        "guardian_warning",
+				Content:    "guardian warning",
+				Priority:   hooks.PriorityHigh,
+				Provenance: "runtime",
+			},
+			{
+				Key:        "git_workflow",
+				Content:    "loop-owned overlay",
+				Priority:   hooks.PriorityHigh,
+				Provenance: "runtime",
+			},
+		},
+		Failures: []hooks.Failure{{Handler: "stale"}},
+		Block:    &hooks.BlockResult{Message: "stale block"},
+	})
+	state := chatstate.New()
+
+	applySuggestedSkillOverlay(session, "please implement the runtime change", []skills.Skill{{Name: "test-driven-development"}}, state)
+
+	snap := session.Snapshot()
+	if got := snap.HookOutput.Block; got != nil {
+		t.Fatalf("expected prompt-only merge to clear stale block, got %#v", got)
+	}
+	if got := snap.HookOutput.Failures; len(got) != 0 {
+		t.Fatalf("expected prompt-only merge to clear stale failures, got %#v", got)
+	}
+	if got := len(snap.HookOutput.Overlays); got != 3 {
+		t.Fatalf("hook output overlays = %#v", snap.HookOutput.Overlays)
+	}
+	if !containsHookOverlay(snap.HookOutput.Overlays, "guardian_warning", "guardian warning") {
+		t.Fatalf("hook output overlays = %#v", snap.HookOutput.Overlays)
+	}
+	if !containsHookOverlay(snap.HookOutput.Overlays, "git_workflow", "loop-owned overlay") {
+		t.Fatalf("hook output overlays = %#v", snap.HookOutput.Overlays)
+	}
+	if !containsHookOverlay(snap.HookOutput.Overlays, "suggested_skill", "/test-driven-development") {
+		t.Fatalf("hook output overlays = %#v", snap.HookOutput.Overlays)
+	}
+}
+
 func TestApplyGuardianOverlayAddsWarningHook(t *testing.T) {
 	session := reactruntime.NewSession()
 
@@ -692,6 +737,57 @@ func TestApplyGuardianOverlayClearsOnAllow(t *testing.T) {
 	if got := snap.HookOutput.Overlays; len(got) != 0 {
 		t.Fatalf("hook output overlays = %#v", got)
 	}
+}
+
+func TestApplyGuardianOverlayClearsOwnedKeyButPreservesOthers(t *testing.T) {
+	session := reactruntime.NewSession()
+	session.SetHookOutput(hooks.ExecutionOutput{
+		Overlays: []hooks.OverlayResult{
+			{
+				Key:        "suggested_skill",
+				Content:    "suggested skill: /brainstorming (planning work benefits from explicit design before implementation)",
+				Priority:   hooks.PriorityNormal,
+				Provenance: "runtime",
+			},
+			{
+				Key:        "guardian_warning",
+				Content:    "old guardian warning",
+				Priority:   hooks.PriorityHigh,
+				Provenance: "runtime",
+			},
+			{
+				Key:        "git_workflow",
+				Content:    "loop-owned overlay",
+				Priority:   hooks.PriorityHigh,
+				Provenance: "runtime",
+			},
+		},
+	})
+
+	applyGuardianOverlay(session, reactruntime.GuardianEvent{Decision: tools.GuardianAllow})
+
+	snap := session.Snapshot()
+	if got := len(snap.HookOutput.Overlays); got != 2 {
+		t.Fatalf("hook output overlays = %#v", snap.HookOutput.Overlays)
+	}
+	if !containsHookOverlay(snap.HookOutput.Overlays, "suggested_skill", "/brainstorming") {
+		t.Fatalf("hook output overlays = %#v", snap.HookOutput.Overlays)
+	}
+	if !containsHookOverlay(snap.HookOutput.Overlays, "git_workflow", "loop-owned overlay") {
+		t.Fatalf("hook output overlays = %#v", snap.HookOutput.Overlays)
+	}
+	if containsHookOverlay(snap.HookOutput.Overlays, "guardian_warning", "old guardian warning") {
+		t.Fatalf("guardian warning should have been cleared: %#v", snap.HookOutput.Overlays)
+	}
+}
+
+func containsHookOverlay(overlays []hooks.OverlayResult, key, content string) bool {
+	for _, overlay := range overlays {
+		if overlay.Key == key && strings.Contains(overlay.Content, content) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestChatMaxTurnsUsesConfigValue(t *testing.T) {
