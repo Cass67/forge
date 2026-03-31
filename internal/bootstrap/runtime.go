@@ -662,6 +662,9 @@ func BuildCompatProviders(cfg *config.Config, tokens *auth.Tokens) []CompatProvi
 		},
 	}
 
+	// Register openrouter with modelcatalog so it can use models.dev catalog data
+	modelcatalog.RegisterCustomProviderSource("openrouter", "https://models.dev/api.json", nil, cfg.OpenRouterKey)
+
 	customDefs, _ := LoadCustomCompatProviders(fsutil.ForgeConfigDir())
 	for _, def := range customDefs {
 		RegisterCustomProviderName(def.ID)

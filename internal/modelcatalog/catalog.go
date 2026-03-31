@@ -3,8 +3,8 @@
 package modelcatalog
 
 import (
-	_ "embed"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -414,8 +414,11 @@ func refreshCustomProviderCache(providerID string) (customProviderCache, bool) {
 	if !ok || strings.TrimSpace(source.URL) == "" || source.KeyFn == nil {
 		return customProviderCache{}, false
 	}
+
+	isModelsDev := strings.Contains(source.URL, "models.dev/api.json")
+
 	apiKey := strings.TrimSpace(source.KeyFn())
-	if apiKey == "" {
+	if !isModelsDev && apiKey == "" {
 		return customProviderCache{}, false
 	}
 
@@ -426,7 +429,9 @@ func refreshCustomProviderCache(providerID string) (customProviderCache, bool) {
 	if err != nil {
 		return customProviderCache{}, false
 	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	if !isModelsDev && apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
 	req.Header.Set("Accept", "application/json")
 	for k, v := range source.Headers {
 		req.Header.Set(k, v)
@@ -445,12 +450,42 @@ func refreshCustomProviderCache(providerID string) (customProviderCache, bool) {
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return customProviderCache{}, false
 	}
+
+	if isModelsDev {
+		return parseModelsDevPayload(providerID, raw)
+	}
+
 	provider, ok := parseCustomProviderPayload(providerID, raw)
 	if !ok {
 		return customProviderCache{}, false
 	}
 	writeCustomProviderCache(providerID, provider)
 	return provider, true
+}
+
+func parseModelsDevPayload(providerID string, raw json.RawMessage) (customProviderCache, bool) {
+	var provider struct {
+		Models map[string]modelEntry `json:"models"`
+	}
+	if err := json.Unmarshal(raw, &provider); err != nil {
+		return customProviderCache{}, false
+	}
+	if len(provider.Models) == 0 {
+		return customProviderCache{}, false
+	}
+	models := make(map[string]modelEntry, len(provider.Models))
+	order := make([]string, 0, len(provider.Models))
+	for id, entry := range provider.Models {
+		if entry.ToolCall {
+			models[id] = entry
+			order = append(order, id)
+		}
+	}
+	if len(models) == 0 {
+		return customProviderCache{}, false
+	}
+	sort.Strings(order)
+	return customProviderCache{Order: order, Models: models, Routes: map[string]CustomProviderRoute{}}, true
 }
 
 func writeCustomProviderCache(providerID string, provider customProviderCache) {
@@ -469,19 +504,19 @@ func writeCustomProviderCache(providerID string, provider customProviderCache) {
 }
 
 type customProviderPayload struct {
-	Data   []customProviderItem   `json:"data"`
-	Models map[string]modelEntry  `json:"models"`
+	Data   []customProviderItem  `json:"data"`
+	Models map[string]modelEntry `json:"models"`
 }
 
 type customProviderItem struct {
-	Key       string                 `json:"key"`
-	ID        string                 `json:"id"`
-	Model     string                 `json:"model"`
-	ModelName string                 `json:"model_name"`
-	Reasoning *bool                  `json:"reasoning"`
-	Temperature *bool                `json:"temperature"`
-	ToolCall  *bool                  `json:"tool_call"`
-	Limit     struct {
+	Key         string `json:"key"`
+	ID          string `json:"id"`
+	Model       string `json:"model"`
+	ModelName   string `json:"model_name"`
+	Reasoning   *bool  `json:"reasoning"`
+	Temperature *bool  `json:"temperature"`
+	ToolCall    *bool  `json:"tool_call"`
+	Limit       struct {
 		Context int `json:"context"`
 		Output  int `json:"output"`
 	} `json:"limit"`
@@ -490,25 +525,25 @@ type customProviderItem struct {
 }
 
 type customProviderModelInfo struct {
-	Key                          string `json:"key"`
-	Mode                         string `json:"mode"`
+	Key                          string   `json:"key"`
+	Mode                         string   `json:"mode"`
 	SupportedAPIList             []string `json:"supported_api_list"`
-	IsReasoningModel             *bool `json:"is_reasoning_model"`
-	Reasoning                    *bool `json:"reasoning"`
-	SupportsReasoning            *bool `json:"supports_reasoning"`
-	SupportsReasoningEffort      *bool `json:"supports_reasoning_effort"`
-	Temperature                  *bool `json:"temperature"`
-	SupportsTemperature          *bool `json:"supports_temperature"`
-	ToolCall                     *bool `json:"tool_call"`
-	SupportsFunctionCalling      *bool `json:"supports_function_calling"`
-	SupportsParallelFunctionCall *bool `json:"supports_parallel_function_calling"`
-	SupportsResponses            *bool `json:"supports_responses"`
-	SupportsResponsesAPI         *bool `json:"supports_responses_api"`
-	WireAPI                      string `json:"wire_api"`
-	ContextWindow                int   `json:"context_window"`
-	MaxInputTokens               int   `json:"max_input_tokens"`
-	MaxOutputTokens              int   `json:"max_output_tokens"`
-	MaxTokens                    int   `json:"max_tokens"`
+	IsReasoningModel             *bool    `json:"is_reasoning_model"`
+	Reasoning                    *bool    `json:"reasoning"`
+	SupportsReasoning            *bool    `json:"supports_reasoning"`
+	SupportsReasoningEffort      *bool    `json:"supports_reasoning_effort"`
+	Temperature                  *bool    `json:"temperature"`
+	SupportsTemperature          *bool    `json:"supports_temperature"`
+	ToolCall                     *bool    `json:"tool_call"`
+	SupportsFunctionCalling      *bool    `json:"supports_function_calling"`
+	SupportsParallelFunctionCall *bool    `json:"supports_parallel_function_calling"`
+	SupportsResponses            *bool    `json:"supports_responses"`
+	SupportsResponsesAPI         *bool    `json:"supports_responses_api"`
+	WireAPI                      string   `json:"wire_api"`
+	ContextWindow                int      `json:"context_window"`
+	MaxInputTokens               int      `json:"max_input_tokens"`
+	MaxOutputTokens              int      `json:"max_output_tokens"`
+	MaxTokens                    int      `json:"max_tokens"`
 }
 
 type customProviderLiteLLMParams struct {
