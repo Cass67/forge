@@ -14,14 +14,9 @@ const (
 	PriorityHigh
 )
 
-type Overlay struct {
-	Key        string
-	Content    string
-	Priority   Priority
-	Provenance string
-}
+type Overlay = OverlayResult
 
-func ToPromptOverlays(overlays []Overlay) []promptcomposer.Overlay {
+func ToPromptOverlays(overlays []OverlayResult) []promptcomposer.Overlay {
 	out := make([]promptcomposer.Overlay, 0, len(overlays))
 	for _, overlay := range overlays {
 		content := strings.TrimSpace(overlay.Content)

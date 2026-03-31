@@ -7,7 +7,7 @@ import (
 )
 
 func TestToPromptOverlaysPreservesPriorityAndProvenance(t *testing.T) {
-	got := ToPromptOverlays([]Overlay{
+	got := ToPromptOverlays([]OverlayResult{
 		{
 			Key:        "plan_blocker",
 			Content:    "Resolve the blocker before continuing broad work.",
