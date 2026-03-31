@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Turn Forge's overlay-only hook plumbing into a typed, runtime-owned hook engine that can inject overlays, emit notes, and block actions deterministically.
+**Goal:** Turn Forge's overlay-only hook plumbing into a typed, runtime-owned hook engine that can inject overlays, emit a single normalized runtime note, and block actions deterministically.
 
 **Architecture:** Build the hook engine under `internal/hooks`, keep registration internal/runtime-owned, and adapt existing overlay-producing runtime paths to emit typed hook results instead of mutating session overlays directly. Preserve current prompt behavior by keeping normalized overlay output as the bridge into `internal/react/prompt`.
 
@@ -25,7 +25,7 @@
 - Modify: `internal/hooks/runtime_test.go`
   Responsibility: result-to-overlay regression coverage.
 - Modify: `internal/react/session.go`
-  Responsibility: store normalized hook outputs with minimal API churn.
+  Responsibility: store normalized hook outputs with minimal API churn, including single-note normalization.
 - Modify: `internal/react/session_test.go`
   Responsibility: session hook-output storage regressions.
 - Modify: `internal/react/prompt.go`
@@ -33,9 +33,9 @@
 - Modify: `internal/react/prompt_test.go`
   Responsibility: ensure hook-generated overlays/notes still land in system messages.
 - Modify: `internal/react/loop.go`
-  Responsibility: execute runtime-owned hook handlers for prompt-context/runtime guidance.
+  Responsibility: execute runtime-owned hook handlers for prompt-context/runtime guidance and route the current pre-tool block seam through `BlockResult`.
 - Modify: `internal/react/loop_test.go`
-  Responsibility: verify blocked-plan/review/search/git guidance now arrives through hooks.
+  Responsibility: verify blocked-plan/review/search/git guidance now arrives through hooks and that the existing blocked tool seam is hook-driven.
 - Modify: `internal/runtime/chat.go`
   Responsibility: route suggested-skill and guardian-warning behavior through hooks.
 - Modify: `internal/runtime/chat_test.go`
@@ -57,6 +57,7 @@ Add tests covering:
 - block short-circuiting
 - panic containment
 - overlay-result conversion into prompt overlays
+- note normalization winner rules
 
 Run: `go test ./internal/hooks -run 'Test(HookRuntime|ToPromptOverlays)'`
 Expected: FAIL because the typed runtime does not exist yet.
@@ -70,6 +71,7 @@ Add hook types for:
 - execution output
 
 Keep the types small, explicit, and internal-runtime friendly.
+Define payload ownership explicitly: caller-owned registries pass transient point-specific payload structs instead of forcing runner/chat-private state into the session snapshot.
 
 - [ ] **Step 3: Implement the dispatcher**
 
@@ -78,6 +80,7 @@ Add registry/dispatcher behavior with:
 - deterministic execution order
 - short-circuit on block
 - panic recovery into contained output
+- note normalization to one visible runtime note
 
 Do not add config or plugin loading in this phase.
 
@@ -110,7 +113,7 @@ git commit -m "hooks: add typed runtime dispatcher"
 Add tests covering:
 - storing normalized hook output on session state
 - preserving existing prompt-visible overlay behavior
-- note output reaching prompt/runtime surfaces as designed
+- note output collapsing to one deterministic visible runtime note
 
 Run: `go test ./internal/react -run 'Test(Session|BuildMessages).*Hook'`
 Expected: FAIL because session/prompt still only understand raw overlay plumbing.
@@ -120,10 +123,12 @@ Expected: FAIL because session/prompt still only understand raw overlay plumbing
 Update session state so typed hook execution output can be stored and snapshotted without broad unrelated churn.
 
 Prefer additive state changes over removing every overlay helper immediately.
+For notes, keep the phase-3 contract narrow: normalized hook output writes at most one visible runtime note into the existing `RuntimeNote` field.
 
 - [ ] **Step 3: Update prompt composition**
 
 Modify prompt building so it consumes normalized hook output and still emits the same prompt overlay content for existing runtime guidance.
+Do not add a multi-note prompt surface in this phase.
 
 - [ ] **Step 4: Verify the session/prompt slice**
 
@@ -149,6 +154,7 @@ Add or refactor tests so they prove runtime guidance comes from hook execution r
 - review guidance
 - blocked plan guidance
 - synthesis/validation/search/git/repeat guidance
+- the current blocked commit/tool path via `blockedToolResult`
 
 Run: `go test ./internal/react -run 'TestRunner.*(Hook|Overlay|BlockedPlan)'`
 Expected: FAIL because loop code still mutates overlays directly.
@@ -156,6 +162,10 @@ Expected: FAIL because loop code still mutates overlays directly.
 - [ ] **Step 2: Implement runtime-owned loop handlers**
 
 Register internal handlers for the relevant hook point(s) and replace direct `SetHookOverlay` / `ClearHookOverlay` calls with hook execution + normalized output updates.
+
+Construct the loop-owned registry inside `internal/react.Runner`, and pass transient runner-owned payload structs into hook execution so handlers can read workflow state without stuffing those internals into `SessionSnapshot`.
+
+Route the current pre-tool block seam through `before_tool` hook execution so a `BlockResult` can replace the existing inline `blockedToolResult` decision path.
 
 Keep behavior deterministic and preserve existing visible guidance text where practical.
 
@@ -190,6 +200,7 @@ Expected: FAIL because chat runtime still writes overlays directly.
 - [ ] **Step 2: Implement chat/runtime hook integration**
 
 Replace direct session overlay mutation in chat runtime code with typed hook execution/output updates while keeping current visible behavior aligned.
+Construct the chat-owned registry at the call site and pass transient chat payloads into the relevant hook point instead of widening session storage.
 
 - [ ] **Step 3: Verify the chat slice**
 
@@ -238,8 +249,11 @@ git commit -m "chore: polish phase-3 typed hooks"
 ## Notes For The Implementer
 
 - Keep registration internal/runtime-owned in phase 3.
+- Construct registries at the runtime call sites that own the transient state; do not centralize them by forcing private runner/chat workflow state into `SessionSnapshot`.
 - Do not add a user-configured or remote hook surface yet.
 - Preserve current prompt-visible guidance behavior where feasible.
 - Prefer normalized hook output over direct session mutation from many call sites.
 - Keep hook result types narrow: overlay, note, block.
+- `NoteResult` normalizes to a single visible runtime note in this phase.
+- `BlockResult` must power at least one real runtime seam, starting with the existing pre-tool blocked-tool path.
 - Failures must degrade safely and be test-covered.
