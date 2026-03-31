@@ -119,11 +119,14 @@ func TestApprovalGateUnlessTrustedPromptsWhenGuardianWarnsTrustedCommand(t *test
 	}
 
 	updates := gate.ApprovalUpdates()
-	if len(updates) != 1 {
-		t.Fatalf("update count = %d, want 1", len(updates))
+	if len(updates) != 2 {
+		t.Fatalf("update count = %d, want 2", len(updates))
 	}
 	if updates[0].Decision != ApprovalDecisionPrompt || updates[0].Source != ApprovalDecisionSourceGuardian {
-		t.Fatalf("guardian-warn trusted update = %#v", updates[0])
+		t.Fatalf("guardian-warn trusted prompt update = %#v", updates[0])
+	}
+	if updates[1].Decision != ApprovalDecisionAllow || updates[1].Source != ApprovalDecisionSourceUser {
+		t.Fatalf("guardian-warn trusted result update = %#v", updates[1])
 	}
 }
 
@@ -179,11 +182,14 @@ func TestApprovalGateOnRequestPromptsForMutations(t *testing.T) {
 		t.Fatalf("prompt calls = %d, want 1", promptCalls)
 	}
 	updates := gate.ApprovalUpdates()
-	if len(updates) != 1 {
-		t.Fatalf("update count = %d, want 1", len(updates))
+	if len(updates) != 2 {
+		t.Fatalf("update count = %d, want 2", len(updates))
 	}
 	if updates[0].Decision != ApprovalDecisionPrompt || updates[0].Source != ApprovalDecisionSourcePolicy {
-		t.Fatalf("prompt approval update = %#v", updates[0])
+		t.Fatalf("prompt request update = %#v", updates[0])
+	}
+	if updates[1].Decision != ApprovalDecisionAllow || updates[1].Source != ApprovalDecisionSourceUser {
+		t.Fatalf("prompt result update = %#v", updates[1])
 	}
 }
 
@@ -264,11 +270,61 @@ func TestApprovalGateGuardianWarningForcesPrompt(t *testing.T) {
 		t.Fatalf("guardian event = %#v", event)
 	}
 	updates := gate.ApprovalUpdates()
+	if len(updates) != 2 {
+		t.Fatalf("update count = %d, want 2", len(updates))
+	}
+	if updates[0].Decision != ApprovalDecisionPrompt || updates[0].Source != ApprovalDecisionSourceGuardian {
+		t.Fatalf("guardian warning prompt update = %#v", updates[0])
+	}
+	if updates[1].Decision != ApprovalDecisionAllow || updates[1].Source != ApprovalDecisionSourceUser {
+		t.Fatalf("guardian warning result update = %#v", updates[1])
+	}
+}
+
+func TestApprovalGateGuardianWarningDoesNotBypassForbiddenCommandRule(t *testing.T) {
+	promptCalls := 0
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy: ApprovalNever,
+		SandboxPolicy: SandboxWorkspaceWrite,
+		Rules: []ApprovalRule{
+			{
+				Tool:     "run_command",
+				Command:  "git push *",
+				Decision: DecisionForbidden,
+			},
+		},
+	}, func(action tools.Action) (bool, error) {
+		promptCalls++
+		return true, nil
+	}, nil)
+	gate.SetGuardianReviewer(func(transcript string, action tools.Action) tools.GuardianReview {
+		return tools.GuardianReview{
+			Decision: tools.GuardianWarn,
+			Reason:   "double-check remote target",
+		}
+	})
+
+	approved, err := gate.Approve(tools.Action{
+		Tool:    "run_command",
+		Summary: "git push origin",
+		Detail:  "git push origin",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved {
+		t.Fatal("expected forbidden command rule to win even after guardian warning")
+	}
+	if promptCalls != 0 {
+		t.Fatalf("prompt calls = %d, want 0", promptCalls)
+	}
+
+	updates := gate.ApprovalUpdates()
 	if len(updates) != 1 {
 		t.Fatalf("update count = %d, want 1", len(updates))
 	}
-	if updates[0].Decision != ApprovalDecisionPrompt {
-		t.Fatalf("guardian warning update = %#v", updates[0])
+	if updates[0].Decision != ApprovalDecisionForbidden || updates[0].Source != ApprovalDecisionSourceRule {
+		t.Fatalf("forbidden rule update = %#v", updates[0])
 	}
 }
 
@@ -349,11 +405,14 @@ func TestApprovalGateReadOnlySandboxCanBeOverriddenOnFailure(t *testing.T) {
 		t.Fatalf("prompt calls = %d, want 1", promptCalls)
 	}
 	updates := gate.ApprovalUpdates()
-	if len(updates) != 1 {
-		t.Fatalf("update count = %d, want 1", len(updates))
+	if len(updates) != 2 {
+		t.Fatalf("update count = %d, want 2", len(updates))
 	}
 	if updates[0].Decision != ApprovalDecisionPrompt || updates[0].Source != ApprovalDecisionSourceSandbox {
-		t.Fatalf("sandbox escalation update = %#v", updates[0])
+		t.Fatalf("sandbox escalation prompt update = %#v", updates[0])
+	}
+	if updates[1].Decision != ApprovalDecisionAllow || updates[1].Source != ApprovalDecisionSourceUser {
+		t.Fatalf("sandbox escalation result update = %#v", updates[1])
 	}
 }
 
