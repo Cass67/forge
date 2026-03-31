@@ -1,3 +1,5 @@
+// Package circuit implements a thread-safe circuit breaker that trips after
+// N consecutive failures and recovers via a cooldown-based half-open probe.
 package circuit
 
 import (
@@ -83,9 +85,13 @@ func (b *Breaker) RecordSuccess() {
 }
 
 // RecordFailure records a failed operation. Trips the circuit if threshold exceeded.
+// Failures are ignored while the breaker is already open (prevents cooldown extension).
 func (b *Breaker) RecordFailure() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.state == StateOpen {
+		return
+	}
 	b.failures++
 	b.lastFailure = time.Now()
 	if b.failures >= b.maxFailures {
@@ -93,10 +99,15 @@ func (b *Breaker) RecordFailure() {
 	}
 }
 
-// State returns the current state of the breaker.
+// State returns the effective current state of the breaker.
+// If the breaker is open but the cooldown has elapsed, it reports half-open
+// (matching what Allow() would do).
 func (b *Breaker) State() State {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.state == StateOpen && time.Since(b.lastFailure) > b.cooldown {
+		return StateHalfOpen
+	}
 	return b.state
 }
 
