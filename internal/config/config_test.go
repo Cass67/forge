@@ -177,7 +177,7 @@ func TestChatConfigDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadApprovalConfigSection(t *testing.T) {
+func TestLoadApprovalConfigSectionApprovalRules(t *testing.T) {
 	toml := `
 [approval]
 default_policy = "unless_trusted"
@@ -215,7 +215,7 @@ decision = "forbidden"
 	}
 }
 
-func TestLoadApprovalConfigSectionSupportsCommandRules(t *testing.T) {
+func TestLoadApprovalConfigSectionApprovalSupportsCommandRules(t *testing.T) {
 	toml := `
 [approval]
 
