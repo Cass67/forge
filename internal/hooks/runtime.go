@@ -1,6 +1,9 @@
 package hooks
 
-import "context"
+import (
+	"context"
+	"strings"
+)
 
 type Handler func(context.Context, Event) []Result
 
@@ -22,6 +25,9 @@ func NewRegistry() *Registry {
 func (r *Registry) Register(point Point, name string, handler Handler) {
 	if r == nil || handler == nil {
 		return
+	}
+	if r.handlers == nil {
+		r.handlers = make(map[Point][]registeredHandler)
 	}
 	r.handlers[point] = append(r.handlers[point], registeredHandler{
 		name:    name,
@@ -96,10 +102,12 @@ func normalizeHandlerResults(results []Result) (*BlockResult, []OverlayResult, *
 				note = &candidate
 			}
 		case BlockResult:
-			block := value
-			return &block, nil, nil
+			if hasBlockMessage(value) {
+				block := value
+				return &block, nil, nil
+			}
 		case *BlockResult:
-			if value != nil {
+			if value != nil && hasBlockMessage(*value) {
 				block := *value
 				return &block, nil, nil
 			}
@@ -117,4 +125,8 @@ func shouldReplaceNote(current, candidate *NoteResult) bool {
 		return true
 	}
 	return candidate.Priority > current.Priority
+}
+
+func hasBlockMessage(block BlockResult) bool {
+	return strings.TrimSpace(block.Message) != ""
 }

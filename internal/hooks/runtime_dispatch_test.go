@@ -44,6 +44,22 @@ func TestHookRuntimeDispatchUsesRegistrationOrder(t *testing.T) {
 	}
 }
 
+func TestHookRuntimeRegisterSupportsZeroValueRegistry(t *testing.T) {
+	var registry Registry
+
+	registry.Register(PointPromptContext, "handler", func(_ context.Context, _ Event) []Result {
+		return []Result{OverlayResult{Key: "overlay", Content: "content"}}
+	})
+
+	output := registry.Dispatch(context.Background(), Event{Point: PointPromptContext})
+	if got, want := len(output.Overlays), 1; got != want {
+		t.Fatalf("overlay count = %d, want %d", got, want)
+	}
+	if output.Overlays[0].Key != "overlay" {
+		t.Fatalf("overlays = %#v", output.Overlays)
+	}
+}
+
 func TestHookRuntimeDispatchStopsAfterBlock(t *testing.T) {
 	registry := NewRegistry()
 	calledAfterBlock := false
@@ -77,6 +93,34 @@ func TestHookRuntimeDispatchStopsAfterBlock(t *testing.T) {
 		t.Fatalf("overlay count = %d, want %d", got, want)
 	}
 	if output.Overlays[0].Key != "before" {
+		t.Fatalf("overlays = %#v", output.Overlays)
+	}
+}
+
+func TestHookRuntimeDispatchIgnoresBlankBlockResults(t *testing.T) {
+	registry := NewRegistry()
+	calledAfterBlankBlock := false
+
+	registry.Register(PointBeforeTool, "blank-block", func(_ context.Context, _ Event) []Result {
+		return []Result{BlockResult{}}
+	})
+	registry.Register(PointBeforeTool, "after", func(_ context.Context, _ Event) []Result {
+		calledAfterBlankBlock = true
+		return []Result{OverlayResult{Key: "after", Content: "still runs"}}
+	})
+
+	output := registry.Dispatch(context.Background(), Event{Point: PointBeforeTool})
+
+	if output.Block != nil {
+		t.Fatalf("unexpected block = %#v", output.Block)
+	}
+	if !calledAfterBlankBlock {
+		t.Fatal("blank block should not stop later handlers")
+	}
+	if got, want := len(output.Overlays), 1; got != want {
+		t.Fatalf("overlay count = %d, want %d", got, want)
+	}
+	if output.Overlays[0].Key != "after" {
 		t.Fatalf("overlays = %#v", output.Overlays)
 	}
 }
