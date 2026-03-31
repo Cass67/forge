@@ -177,7 +177,7 @@ func TestChatConfigDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadApprovalConfigSection(t *testing.T) {
+func TestLoadApprovalConfigSectionApprovalRules(t *testing.T) {
 	toml := `
 [approval]
 default_policy = "unless_trusted"
@@ -212,6 +212,36 @@ decision = "forbidden"
 	}
 	if rule.Decision != "forbidden" {
 		t.Fatalf("rule.Decision = %q", rule.Decision)
+	}
+}
+
+func TestLoadApprovalConfigSectionApprovalSupportsCommandRules(t *testing.T) {
+	toml := `
+[approval]
+
+[[approval.rules]]
+tool = "run_command"
+command = "git status --short"
+decision = "allow"
+
+[[approval.rules]]
+tool = "run_command"
+command = "git * status"
+decision = "prompt"
+`
+	path := writeTemp(t, toml)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Approval.Rules) != 2 {
+		t.Fatalf("rules = %d, want 2", len(cfg.Approval.Rules))
+	}
+	if got := cfg.Approval.Rules[0].Command; got != "git status --short" {
+		t.Fatalf("rules[0].Command = %q", got)
+	}
+	if got := cfg.Approval.Rules[1].Command; got != "git * status" {
+		t.Fatalf("rules[1].Command = %q", got)
 	}
 }
 

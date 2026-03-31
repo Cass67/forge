@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 type ValidationIssue struct {
@@ -78,6 +79,30 @@ func (c *Config) Validate() []ValidationIssue {
 		}
 	}
 	for i, rule := range c.Approval.Rules {
+		ruleField := fmt.Sprintf("approval.rules[%d]", i)
+		hasPrefix := len(rule.CommandPrefix) > 0
+		hasCommand := strings.TrimSpace(rule.Command) != ""
+		if hasPrefix && hasCommand {
+			add(ruleField, "must set exactly one of command_prefix or command")
+		}
+		if hasPrefix {
+			nonEmptyTokens := 0
+			for _, token := range rule.CommandPrefix {
+				if strings.TrimSpace(token) == "" {
+					add(ruleField+".command_prefix", "must not contain empty tokens")
+					continue
+				}
+				nonEmptyTokens++
+			}
+			if nonEmptyTokens == 0 {
+				add(ruleField+".command_prefix", "must not be empty")
+			}
+		}
+		if hasCommand {
+			if err := validateShellCommandRule(rule.Command); err != nil {
+				add(ruleField+".command", err.Error())
+			}
+		}
 		if strings.TrimSpace(rule.Decision) == "" {
 			add(fmt.Sprintf("approval.rules[%d].decision", i), "must not be empty")
 		} else {
@@ -98,4 +123,45 @@ func (c *Config) Validate() []ValidationIssue {
 	}
 
 	return issues
+}
+
+func validateShellCommandRule(pattern string) error {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return fmt.Errorf("must not be empty")
+	}
+
+	tokenCount := 0
+	inToken := false
+	escaped := false
+	for _, r := range pattern {
+		switch {
+		case escaped:
+			escaped = false
+			if !inToken {
+				tokenCount++
+				inToken = true
+			}
+		case r == '\\':
+			escaped = true
+			if !inToken {
+				tokenCount++
+				inToken = true
+			}
+		case unicode.IsSpace(r):
+			inToken = false
+		default:
+			if !inToken {
+				tokenCount++
+				inToken = true
+			}
+		}
+	}
+	if escaped {
+		return fmt.Errorf("shell rule ends with escape")
+	}
+	if tokenCount == 0 {
+		return fmt.Errorf("must not be empty")
+	}
+	return nil
 }
