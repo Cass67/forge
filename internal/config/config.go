@@ -101,6 +101,7 @@ type ChatConfig struct {
 type ApprovalRuleConfig struct {
 	Tool          string   `toml:"tool"`
 	CommandPrefix []string `toml:"command_prefix"`
+	Command       string   `toml:"command"`
 	Decision      string   `toml:"decision"`
 }
 
