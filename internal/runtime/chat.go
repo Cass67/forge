@@ -913,7 +913,7 @@ func filterChatHookOverlays(overlays []hooks.OverlayResult, ownedKeys ...string)
 func mergeChatHookOutput(base, runtime hooks.ExecutionOutput) hooks.ExecutionOutput {
 	merged := hooks.ExecutionOutput{
 		Overlays: append([]hooks.OverlayResult(nil), base.Overlays...),
-		Failures: append(append([]hooks.Failure(nil), base.Failures...), runtime.Failures...),
+		Failures: append([]hooks.Failure(nil), runtime.Failures...),
 	}
 	if base.Note != nil {
 		note := *base.Note
@@ -922,14 +922,6 @@ func mergeChatHookOutput(base, runtime hooks.ExecutionOutput) hooks.ExecutionOut
 	if runtime.Note != nil && (merged.Note == nil || runtime.Note.Priority > merged.Note.Priority) {
 		note := *runtime.Note
 		merged.Note = &note
-	}
-	if base.Block != nil {
-		block := *base.Block
-		merged.Block = &block
-	}
-	if runtime.Block != nil {
-		block := *runtime.Block
-		merged.Block = &block
 	}
 	merged.Overlays = append(merged.Overlays, runtime.Overlays...)
 	return merged
