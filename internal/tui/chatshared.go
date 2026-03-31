@@ -50,6 +50,10 @@ type ChatLiveConfig struct {
 	// to the TUI. The arguments map to SelectNudge(mode, taskOp, suggestedSkill).
 	// When nil, nudges are not pushed from the runtime.
 	NotifyNudge func(mode, taskOp, suggestedSkill string)
+	// NotifyNudgeSink, if non-nil, is written by the bubbletea layer after it
+	// wraps NotifyNudge with p.Send. The runtime goroutine reads through this
+	// pointer so its own nudge calls also reach the TUI program.
+	NotifyNudgeSink *func(string, string, string)
 }
 
 type ProviderOption struct {
