@@ -35,11 +35,11 @@ func BuildMessages(systemPrompt string, snapshot SessionSnapshot) []llm.Message 
 		})
 	}
 	systemOverlays = append(systemOverlays, hooks.ToPromptOverlays(snapshot.HookOverlays)...)
-	if mode := strings.TrimSpace(string(snapshot.Mode)); mode != "" {
+	if mode := snapshot.Mode; mode != "" && mode != ModeChat {
 		systemOverlays = append(systemOverlays, promptcomposer.Overlay{
 			Key:      "mode",
 			Priority: promptcomposer.PriorityHigh,
-			Content:  "Current mode: " + mode,
+			Content:  "Current mode: " + strings.TrimSpace(string(mode)),
 		})
 	}
 	if note := strings.TrimSpace(snapshot.RuntimeNote); note != "" {
