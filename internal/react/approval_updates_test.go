@@ -135,6 +135,43 @@ func TestApprovalDecisionRecordsSandboxDeniedPromptEscalation(t *testing.T) {
 	}
 }
 
+func TestApprovalDecisionRecordsSandboxForbiddenOutcome(t *testing.T) {
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy: ApprovalNever,
+		SandboxPolicy: SandboxReadOnly,
+	}, func(action tools.Action) (bool, error) {
+		t.Fatal("prompt should not be called for sandbox-forbidden action")
+		return false, nil
+	}, nil)
+
+	approved, err := gate.Approve(tools.Action{
+		Tool:    "write_file",
+		Summary: "write internal/app.go",
+		Detail:  "new file",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved {
+		t.Fatal("expected sandbox-forbidden action to be rejected")
+	}
+
+	updates := gate.ApprovalUpdates()
+	if len(updates) != 1 {
+		t.Fatalf("update count = %d, want 1", len(updates))
+	}
+	got := updates[0]
+	if got.Decision != ApprovalDecisionForbidden {
+		t.Fatalf("decision = %q, want %q", got.Decision, ApprovalDecisionForbidden)
+	}
+	if got.Source != ApprovalDecisionSourceSandbox {
+		t.Fatalf("source = %q, want %q", got.Source, ApprovalDecisionSourceSandbox)
+	}
+	if !strings.Contains(got.Reason, "sandbox denied") {
+		t.Fatalf("reason = %q, want sandbox denial wording", got.Reason)
+	}
+}
+
 func TestApprovalDecisionRecordsTrustedCommandAutoApproval(t *testing.T) {
 	promptCalls := 0
 	gate := NewApprovalGate("", ApprovalConfig{
@@ -174,6 +211,54 @@ func TestApprovalDecisionRecordsTrustedCommandAutoApproval(t *testing.T) {
 	}
 	if !strings.Contains(got.Reason, "trusted command auto-approved") {
 		t.Fatalf("reason = %q, want trusted auto-approval wording", got.Reason)
+	}
+}
+
+func TestApprovalDecisionRecordsGuardianWarnForTrustedCommand(t *testing.T) {
+	promptCalls := 0
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy:    ApprovalUnlessTrusted,
+		SandboxPolicy:    SandboxWorkspaceWrite,
+		KnownSafeCommand: []string{"git status"},
+	}, func(action tools.Action) (bool, error) {
+		promptCalls++
+		return true, nil
+	}, nil)
+	gate.SetGuardianReviewer(func(transcript string, action tools.Action) tools.GuardianReview {
+		return tools.GuardianReview{
+			Decision: tools.GuardianWarn,
+			Reason:   "needs context",
+		}
+	})
+
+	approved, err := gate.Approve(tools.Action{
+		Tool:    "run_command",
+		Summary: "git status --short",
+		Detail:  "git status --short",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !approved {
+		t.Fatal("expected warned trusted command to prompt and approve")
+	}
+	if promptCalls != 1 {
+		t.Fatalf("prompt calls = %d, want 1", promptCalls)
+	}
+
+	updates := gate.ApprovalUpdates()
+	if len(updates) != 1 {
+		t.Fatalf("update count = %d, want 1", len(updates))
+	}
+	got := updates[0]
+	if got.Decision != ApprovalDecisionPrompt {
+		t.Fatalf("decision = %q, want %q", got.Decision, ApprovalDecisionPrompt)
+	}
+	if got.Source != ApprovalDecisionSourceGuardian {
+		t.Fatalf("source = %q, want %q", got.Source, ApprovalDecisionSourceGuardian)
+	}
+	if !strings.Contains(got.Reason, "guardian warning required prompt") {
+		t.Fatalf("reason = %q, want guardian warning wording", got.Reason)
 	}
 }
 
@@ -219,6 +304,20 @@ func TestApprovalDecisionReasonFormatting(t *testing.T) {
 			source:   ApprovalDecisionSourceTrusted,
 			detail:   "git status --short",
 			want:     "trusted command auto-approved: git status --short",
+		},
+		{
+			name:     "guardian forbid",
+			decision: ApprovalDecisionForbidden,
+			source:   ApprovalDecisionSourceGuardian,
+			detail:   "action looks destructive and should not be auto-approved",
+			want:     "guardian blocked: action looks destructive and should not be auto-approved",
+		},
+		{
+			name:     "policy allow",
+			decision: ApprovalDecisionAllow,
+			source:   ApprovalDecisionSourcePolicy,
+			detail:   "write foo.txt",
+			want:     "policy allowed: write foo.txt",
 		},
 	}
 

@@ -259,7 +259,11 @@ func (g *ApprovalGate) Approve(action tools.Action) (bool, error) {
 			g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionAllow, ApprovalDecisionSourceTrusted, approvalUpdateDetail(action)))
 			return true, nil
 		}
-		g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionPrompt, ApprovalDecisionSourcePolicy, approvalUpdateDetail(action)))
+		source := ApprovalDecisionSourcePolicy
+		if guardianWarn {
+			source = ApprovalDecisionSourceGuardian
+		}
+		g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionPrompt, source, approvalUpdateDetail(action)))
 		return g.prompt(action)
 	default:
 		return false, fmt.Errorf("unknown approval policy %q", g.cfg.DefaultPolicy)
