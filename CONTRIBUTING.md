@@ -38,6 +38,8 @@ just build
 just test
 ```
 
+These recipes require `just` to be installed and available on your `PATH`.
+
 For hook-compatible development, install the tools listed in [LOCAL_TOOLING.md](/Users/cass/git/forge/LOCAL_TOOLING.md).
 
 Recommended:
