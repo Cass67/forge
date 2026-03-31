@@ -87,6 +87,7 @@ Do this without importing the full `cci` permission stack or classifier system.
 ### Proposed Changes
 
 - Introduce a small internal matcher for exact, prefix, and wildcard shell rules.
+- Introduce a compact permission-change record or diff shape so approval outcomes and rule updates are explicit, auditable, and session-persistable rather than implicit side effects.
 - Rework approval explanations so Forge can say:
   - which rule matched
   - which sandbox policy blocked the action
@@ -119,8 +120,11 @@ Borrow `cci`'s notion of typed lifecycle hooks, but start with a bounded Forge v
 - Define an initial set of hook points around the current chat/runtime flow, such as:
   - session start
   - session end
+  - permission request
   - before tool use
   - after tool use
+  - pre-compact
+  - post-compact
   - turn complete
 - Define a bounded hook result model:
   - prompt overlay injection
