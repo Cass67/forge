@@ -55,7 +55,7 @@ Run the legacy writer/auditor pipeline:
 Start in the repository you want Forge to work on:
 
 ```bash
-forge -C /path/to/repo
+./bin/forge -C /path/to/repo
 ```
 
 Inside chat you can:
