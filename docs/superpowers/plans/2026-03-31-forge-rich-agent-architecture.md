@@ -353,10 +353,31 @@
   - `agentNudgeMsg` handler: badge update, flash-on-arrival, no-overwrite of existing flash
   - `buildStatusLine1` badge inclusion and omission
 
-### Next Slice
+### 2026-03-31 Checkpoint 21 (Task 10: Integration hardening)
 
-- Task 10: Integration hardening — run the full `./internal/...` suite, add end-to-end behavior tests, and update spec/plan with any implementation-driven adjustments.
-- Keep the implementation log in this file current as each slice lands.
+- Full `./internal/...` suite green with 0 failures across all 32 packages.
+- Added 5 end-to-end behavior integration tests in `internal/runtime/chat_test.go`:
+  - `TestLightweightChatPathStaysDirect` — simple questions must not seed task state
+  - `TestBehaviorStackDoesNotCorruptBasePromptAssembly` — memory + hook overlay + task state coexist; base system prompt is first and all layers appear exactly once
+  - `TestSuggestedSkillNudgeReachesNotifyCallback` — skill matching produces a nudge string usable by the NotifyNudge callback
+  - `TestMemoryAndSkillOverlaysCoexistInPromptAssembly` — memory and skill overlays each appear exactly once in assembled messages
+  - `TestTuiSelectNudgeIntegratesWithRuntime` — `tui.SelectNudge` and `detectTaskStateFromInput` stay in sync: plan op → NudgePlanMode, validate op → NudgeVerification, implement op → NudgeNone
+- All 10 tasks from the implementation plan are now complete.
+
+## Implementation Complete
+
+All 10 tasks from the program structure are delivered:
+
+1. ✅ Prompt platform — composable sections in `internal/agent/promptcomposer`
+2. ✅ Tool contracts — `enter_plan_mode`, `exit_plan_mode`, `ask_user_question`, strengthened `update_plan`
+3. ✅ Plan mode + structured questioning — explicit session modes, mode-aware completion enforcement
+4. ✅ Task-state overhaul — `blocked` steps, single-active-step rule, plan state helpers
+5. ✅ Approval guardian — `internal/agent/tools/guardian_review.go`, keyed guardian_warning overlay
+6. ✅ Memory pipeline — `internal/memory` with extraction, redaction, consolidation, session injection
+7. ✅ Skills policy engine — `internal/skills/policy.go` with mode-aware and heuristic suggestion
+8. ✅ Hooks/overlays — `internal/hooks/overlays.go`, keyed `SetHookOverlay`/`ClearHookOverlay` with 7 runtime-owned overlays
+9. ✅ UX nudges — `internal/tui/nudges.go`, `NudgeSuggestion`, `SelectNudge`, status header mode badge, `agentNudgeMsg`, `NotifyNudge` callback
+10. ✅ Integration hardening — full suite green, end-to-end behavior tests added
 
 ## Program Structure
 
