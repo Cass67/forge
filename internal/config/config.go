@@ -68,6 +68,14 @@ type Retry struct {
 	Timeout     int `toml:"timeout_seconds"`
 }
 
+type Resilience struct {
+	CompactionMaxFailures     int `toml:"compaction_max_failures"`
+	TokenDiminishingThreshold int `toml:"token_diminishing_threshold"`
+	TokenDiminishingChecks    int `toml:"token_diminishing_checks"`
+	ToolThrashCircuitBreaker  int `toml:"tool_thrash_circuit_breaker"`
+	StreamIdleTimeoutMS       int `toml:"stream_idle_timeout_ms"`
+}
+
 type Git struct {
 	Enabled    bool `toml:"enabled"`
 	AutoCommit bool `toml:"auto_commit"`
@@ -122,6 +130,7 @@ type Config struct {
 	Copilot          Copilot                    `toml:"copilot"`
 	Log              Log                        `toml:"log"`
 	Retry            Retry                      `toml:"retry"`
+	Resilience       Resilience                 `toml:"resilience"`
 	Git              Git                        `toml:"git"`
 	Chat             ChatConfig                 `toml:"chat"`
 	Approval         ApprovalConfig             `toml:"approval"`
@@ -239,6 +248,11 @@ func setDefaults(c *Config) {
 	c.Retry.InitialWait = 1000
 	c.Retry.MaxWait = 30000
 	c.Retry.Timeout = 300
+	c.Resilience.CompactionMaxFailures = 3
+	c.Resilience.TokenDiminishingThreshold = 500
+	c.Resilience.TokenDiminishingChecks = 2
+	c.Resilience.ToolThrashCircuitBreaker = 8
+	c.Resilience.StreamIdleTimeoutMS = 30000
 	c.Git.AutoCommit = true
 	c.Chat.MaxTurns = 50
 	c.Chat.CommandTimeout = 60
