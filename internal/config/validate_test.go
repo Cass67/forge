@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestValidate_DefaultConfigHasNoIssues(t *testing.T) {
 	var cfg Config
@@ -29,4 +32,63 @@ func TestValidate_InvalidFields(t *testing.T) {
 	if len(issues) < 8 {
 		t.Fatalf("expected multiple validation issues, got %v", issues)
 	}
+}
+
+func TestValidate_ApprovalRulesRequireExactlyOneMatcherShape(t *testing.T) {
+	var cfg Config
+	setDefaults(&cfg)
+	cfg.Approval.Rules = []ApprovalRuleConfig{
+		{
+			Tool:          "run_command",
+			CommandPrefix: []string{"git", "push"},
+			Command:       "git push",
+			Decision:      "forbidden",
+		},
+		{
+			Tool:     "run_command",
+			Decision: "allow",
+		},
+	}
+
+	issues := cfg.Validate()
+	if !hasIssueContaining(issues, "approval.rules[0]", "exactly one of command_prefix or command") {
+		t.Fatalf("expected exclusive matcher issue for rule 0, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "approval.rules[1]", "exactly one of command_prefix or command") {
+		t.Fatalf("expected exclusive matcher issue for rule 1, got %v", issues)
+	}
+}
+
+func TestValidate_ApprovalRulesRejectMalformedMatchers(t *testing.T) {
+	var cfg Config
+	setDefaults(&cfg)
+	cfg.Approval.Rules = []ApprovalRuleConfig{
+		{
+			Tool:          "run_command",
+			CommandPrefix: []string{" ", "\t"},
+			Decision:      "allow",
+		},
+		{
+			Tool:     "run_command",
+			Command:  `git \`,
+			Decision: "prompt",
+		},
+	}
+
+	issues := cfg.Validate()
+	if !hasIssueContaining(issues, "approval.rules[0].command_prefix", "must not be empty") {
+		t.Fatalf("expected empty command_prefix issue, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "approval.rules[1].command", "ends with escape") {
+		t.Fatalf("expected malformed command issue, got %v", issues)
+	}
+}
+
+func hasIssueContaining(issues []ValidationIssue, field, substring string) bool {
+	for _, issue := range issues {
+		if issue.Field == field && strings.Contains(issue.Message, substring) {
+			return true
+		}
+	}
+	return false
 }
