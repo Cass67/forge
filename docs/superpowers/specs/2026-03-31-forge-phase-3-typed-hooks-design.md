@@ -94,6 +94,13 @@ Each hook invocation should receive a typed event containing:
 
 This should stay value-oriented and read-only from the hook handler's perspective. Handlers should not mutate session state directly.
 
+The point-specific payload should be transient and caller-owned. In phase 3, the registry should be constructed by the caller that owns the relevant ephemeral state:
+
+- `internal/react.Runner` builds and invokes hook registries for loop-owned hook points
+- `internal/runtime/chat.go` builds and invokes hook registries for chat-owned hook points
+
+That allows handlers to receive runner/chat-local payload structs for `prompt_context`, `before_tool`, and related points without forcing private workflow state into `SessionSnapshot`.
+
 ### Hook Result
 
 Handlers should return a bounded list of results. The engine should support:
@@ -101,11 +108,20 @@ Handlers should return a bounded list of results. The engine should support:
 - `OverlayResult`
   - converted into prompt overlays
 - `NoteResult`
-  - converted into a runtime note or surfaced for UI/runtime use
+  - converted into a single normalized runtime note for this phase
 - `BlockResult`
   - indicates the current action/step should not proceed
 
 Each result should carry provenance and priority where relevant so existing prompt composition stays stable.
+
+For phase 3, `NoteResult` must have explicit normalization rules:
+
+- session-visible note storage stays a single `RuntimeNote` string
+- hook execution may return multiple notes, but normalization collapses them to one visible note
+- the winning note is the highest-priority note; ties resolve by handler execution order
+- notes are surfaced through the existing runtime-note path, not through an additional list-shaped session field yet
+
+This keeps note behavior deterministic and avoids widening the session model before there is a concrete UI need for multi-note display.
 
 ### Registration
 
@@ -156,6 +172,7 @@ Short term:
 
 - keep `HookOverlays` on `SessionSnapshot`
 - populate them from hook execution output
+- keep `RuntimeNote` as the single normalized note sink
 - avoid broad session API churn in the same phase
 
 This lets phase 3 land without rewriting all prompt composition behavior at once.
@@ -182,6 +199,18 @@ These should move behind runtime-owned hook handlers registered at the relevant 
 
 The prompt builder should not need to know which specific runtime subsystem produced an overlay; it should only consume normalized results.
 
+### 5. Wire One Real Block Seam
+
+Phase 3 should not leave block support as dispatcher-only theory. It should route one real control-flow seam through `BlockResult`.
+
+The narrowest concrete seam is pre-tool blocking in the ReAct loop:
+
+- execute `before_tool` hooks before tool execution
+- if a handler returns a `BlockResult`, skip tool execution and surface the block text as the tool result
+- preserve the current `blockedToolResult` behavior by moving that decision behind a runtime-owned pre-tool hook handler first
+
+This gives phase 3 one real block-capable integration without trying to hook every approval/control path in the same phase.
+
 ## Recommended File Shape
 
 - Create `internal/hooks/runtime.go`
@@ -193,11 +222,11 @@ The prompt builder should not need to know which specific runtime subsystem prod
 - Modify `internal/hooks/overlays.go`
   Responsibility: convert overlay results into promptcomposer overlays.
 - Modify `internal/react/session.go`
-  Responsibility: store normalized hook output with minimal API churn.
+  Responsibility: store normalized hook output with minimal API churn, including single-note normalization.
 - Modify `internal/react/prompt.go`
   Responsibility: consume hook-produced overlays/notes cleanly.
 - Modify `internal/react/loop.go`
-  Responsibility: execute runtime-owned hooks instead of directly mutating session overlays.
+  Responsibility: execute runtime-owned hooks instead of directly mutating session overlays, and route the existing pre-tool block seam through hook results.
 - Modify `internal/runtime/chat.go`
   Responsibility: route skill suggestions and guardian feedback through typed hooks.
 
@@ -221,14 +250,17 @@ Phase 3 should add:
 - unit tests for block short-circuiting
 - unit tests for panic/error containment
 - prompt tests proving hook overlay output still reaches the system prompt correctly
+- tests proving note normalization is deterministic
+- tests proving the existing blocked tool path now flows through `BlockResult`
 - runtime tests proving current guidance overlays are reproduced through hooks
 
 ## Acceptance Criteria
 
 - Forge has a typed hook runtime under `internal/hooks`.
 - Hook handlers are registered and executed internally in deterministic order.
-- Hook output can inject overlays, emit notes, and block execution.
+- Hook output can inject overlays, emit a single normalized runtime note, and block execution.
 - Existing runtime guidance behavior is routed through the hook engine instead of ad hoc overlay mutation.
+- At least one real runtime control-flow seam uses `BlockResult`.
 - Hook failures are contained and covered by tests.
 
 ## Recommendation
