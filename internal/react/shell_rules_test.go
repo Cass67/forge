@@ -1,0 +1,56 @@
+package react
+
+import "testing"
+
+func TestShellRuleExactMatch(t *testing.T) {
+	rule, err := parseShellRule("git status --short")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rule.matches("git status --short") {
+		t.Fatal("expected exact command match")
+	}
+}
+
+func TestShellRuleTokenPrefixMatch(t *testing.T) {
+	rule, err := parseShellRule("git status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rule.matches("git status --short") {
+		t.Fatal("expected token-prefix match")
+	}
+}
+
+func TestShellRuleWildcardMatch(t *testing.T) {
+	rule, err := parseShellRule("git * status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rule.matches("git commit status") {
+		t.Fatal("expected wildcard match")
+	}
+}
+
+func TestShellRuleEscapedWildcardLiteral(t *testing.T) {
+	rule, err := parseShellRule(`git \* status`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rule.matches("git * status") {
+		t.Fatal("expected escaped wildcard to match literal *")
+	}
+	if rule.matches("git commit status") {
+		t.Fatal("escaped wildcard should not act as a glob")
+	}
+}
+
+func TestShellRuleMismatch(t *testing.T) {
+	rule, err := parseShellRule("git push")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rule.matches("git pull") {
+		t.Fatal("expected mismatch")
+	}
+}
