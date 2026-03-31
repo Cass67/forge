@@ -10,9 +10,7 @@ run:
 test:
     go test ./...
 
-check:
-    go build ./...
-    go test ./...
+check: build test
 
 test-pkg PKG:
     go test {{PKG}}
