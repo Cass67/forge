@@ -277,7 +277,7 @@ func AvailableModels(cfg *config.Config, tokens *auth.Tokens) []string {
 				out = append(out, qualifyCompatibleModelList(p.Name, customModels)...)
 				continue
 			}
-			if useLiveCompatModelDiscovery() {
+			if useLiveCompatModelDiscovery(cfg) {
 				out = append(out, discoverCompatModels(p.BaseURL, p.KeyFn(), p.Name, p.Models, p.IsModel)...)
 			} else {
 				out = append(out, qualifyCompatibleModelList(p.Name, p.Models)...)
@@ -290,13 +290,23 @@ func AvailableModels(cfg *config.Config, tokens *auth.Tokens) []string {
 	return sortModelsByHealth(uniqueStrings(out))
 }
 
-func useLiveCompatModelDiscovery() bool {
+func useLiveCompatModelDiscoveryEnv() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("FORGE_ENABLE_LIVE_COMPAT_MODELS"))) {
 	case "1", "true", "yes", "on":
 		return true
 	default:
 		return false
 	}
+}
+
+// useLiveCompatModelDiscovery returns true when live model discovery is enabled,
+// either via config.toml [section] or the FORGE_ENABLE_LIVE_COMPAT_MODELS env var.
+// The config file takes precedence.
+func useLiveCompatModelDiscovery(cfg *config.Config) bool {
+	if cfg != nil && cfg.LiveCompatModels {
+		return true
+	}
+	return useLiveCompatModelDiscoveryEnv()
 }
 
 func SupportedProviderBackends(cfg *config.Config, tokens *auth.Tokens) []ProviderBackend {

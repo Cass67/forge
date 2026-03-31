@@ -114,18 +114,19 @@ type MCPServerConfig struct {
 }
 
 type Config struct {
-	Models     Models                     `toml:"models"`
-	Session    Session                    `toml:"session"`
-	Keys       Keys                       `toml:"keys"`
-	Passes     Passes                     `toml:"passes"`
-	Pipeline   []PipelinePass             `toml:"pipeline"`
-	Copilot    Copilot                    `toml:"copilot"`
-	Log        Log                        `toml:"log"`
-	Retry      Retry                      `toml:"retry"`
-	Git        Git                        `toml:"git"`
-	Chat       ChatConfig                 `toml:"chat"`
-	Approval   ApprovalConfig             `toml:"approval"`
-	MCPServers map[string]MCPServerConfig `toml:"mcp_servers"`
+	Models           Models                     `toml:"models"`
+	Session          Session                    `toml:"session"`
+	Keys             Keys                       `toml:"keys"`
+	Passes           Passes                     `toml:"passes"`
+	Pipeline         []PipelinePass             `toml:"pipeline"`
+	Copilot          Copilot                    `toml:"copilot"`
+	Log              Log                        `toml:"log"`
+	Retry            Retry                      `toml:"retry"`
+	Git              Git                        `toml:"git"`
+	Chat             ChatConfig                 `toml:"chat"`
+	Approval         ApprovalConfig             `toml:"approval"`
+	MCPServers       map[string]MCPServerConfig `toml:"mcp_servers"`
+	LiveCompatModels bool                       `toml:"live_compat_models"`
 }
 
 // defaultCopilotClientID is the bundled GitHub OAuth App client ID used for
@@ -243,6 +244,7 @@ func setDefaults(c *Config) {
 	c.Chat.CommandTimeout = 60
 	c.Chat.IgnoreDirs = []string{".git", "node_modules", "__pycache__", ".venv", "vendor"}
 	c.Chat.AutoSkills = "suggest"
+	c.LiveCompatModels = true
 	c.Approval.DefaultPolicy = "on_request"
 	c.Approval.SandboxPolicy = "workspace_write"
 	c.Approval.KnownSafePrefixes = []string{
