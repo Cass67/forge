@@ -16,12 +16,12 @@ func TestShellRuleExactMatch(t *testing.T) {
 }
 
 func TestShellRuleTokenPrefixMatch(t *testing.T) {
-	rule, err := parseShellRulePrefix([]string{"git", "status"})
+	rule, err := parseShellRulePrefix([]string{"Git", "STATUS"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !rule.matches("git status --short") {
-		t.Fatal("expected token-prefix match")
+		t.Fatal("expected token-prefix match to ignore case")
 	}
 }
 
