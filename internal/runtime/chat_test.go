@@ -588,6 +588,43 @@ func TestApplySuggestedSkillOverlayClearsWhenNoSuggestion(t *testing.T) {
 	}
 }
 
+func TestApplyGuardianOverlayAddsWarningHook(t *testing.T) {
+	session := reactruntime.NewSession()
+
+	applyGuardianOverlay(session, reactruntime.GuardianEvent{
+		Decision: tools.GuardianWarn,
+		Reason:   "high-impact command has no compact task context",
+		Action: tools.Action{
+			Tool:    "run_command",
+			Summary: "git merge feature/runtime",
+		},
+	})
+
+	got := session.Snapshot().HookOverlays
+	if len(got) != 1 {
+		t.Fatalf("hook overlays = %#v", got)
+	}
+	if got[0].Key != "guardian_warning" || !strings.Contains(got[0].Content, "high-impact command") {
+		t.Fatalf("hook overlays = %#v", got)
+	}
+}
+
+func TestApplyGuardianOverlayClearsOnAllow(t *testing.T) {
+	session := reactruntime.NewSession()
+	session.SetHookOverlay(reactruntime.HookOverlay{
+		Key:        "guardian_warning",
+		Content:    "old warning",
+		Priority:   reactruntime.HookPriorityHigh,
+		Provenance: "runtime",
+	})
+
+	applyGuardianOverlay(session, reactruntime.GuardianEvent{Decision: tools.GuardianAllow})
+
+	if got := session.Snapshot().HookOverlays; len(got) != 0 {
+		t.Fatalf("hook overlays = %#v", got)
+	}
+}
+
 func TestChatMaxTurnsUsesConfigValue(t *testing.T) {
 	setup := &ChatSetup{Config: &config.Config{}}
 	setup.Config.Chat.MaxTurns = 64

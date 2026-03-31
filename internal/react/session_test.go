@@ -195,6 +195,45 @@ func TestSessionQueuesAndDrainsPendingInput(t *testing.T) {
 	}
 }
 
+func TestSessionSetHookOverlayUpsertsByKey(t *testing.T) {
+	s := NewSession()
+	s.SetHookOverlay(HookOverlay{
+		Key:        "suggested_skill",
+		Content:    "first",
+		Priority:   HookPriorityNormal,
+		Provenance: "runtime",
+	})
+	s.SetHookOverlay(HookOverlay{
+		Key:        "suggested_skill",
+		Content:    "second",
+		Priority:   HookPriorityHigh,
+		Provenance: "runtime",
+	})
+
+	got := s.Snapshot().HookOverlays
+	if len(got) != 1 {
+		t.Fatalf("hook overlays = %#v", got)
+	}
+	if got[0].Content != "second" || got[0].Priority != HookPriorityHigh {
+		t.Fatalf("hook overlays = %#v", got)
+	}
+}
+
+func TestSessionClearHookOverlayRemovesMatchingKey(t *testing.T) {
+	s := NewSession()
+	s.SetHookOverlays([]HookOverlay{
+		{Key: "suggested_skill", Content: "first"},
+		{Key: "plan_blocker", Content: "second"},
+	})
+
+	s.ClearHookOverlay("suggested_skill")
+
+	got := s.Snapshot().HookOverlays
+	if len(got) != 1 || got[0].Key != "plan_blocker" {
+		t.Fatalf("hook overlays = %#v", got)
+	}
+}
+
 func TestSessionDefaultsToChatModeAndTracksTaskMode(t *testing.T) {
 	s := NewSession()
 	if got := s.Snapshot().Mode; got != ModeChat {

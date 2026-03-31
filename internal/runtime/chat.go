@@ -274,6 +274,9 @@ func RunChatLive(setup *ChatSetup) {
 	gate.SetGuardianContext(func() string {
 		return reactruntime.CompactGuardianContext(session.Snapshot())
 	})
+	gate.SetGuardianObserver(func(event reactruntime.GuardianEvent) {
+		applyGuardianOverlay(session, event)
+	})
 	if setup.Yolo {
 		approve = agent.YoloApproval()
 	} else {
@@ -532,6 +535,9 @@ func RunChatConsole(setup *ChatSetup) {
 	gate.SetGuardianContext(func() string {
 		return reactruntime.CompactGuardianContext(session.Snapshot())
 	})
+	gate.SetGuardianObserver(func(event reactruntime.GuardianEvent) {
+		applyGuardianOverlay(session, event)
+	})
 	approve = gate.Approve
 	defer gate.Restore()
 
@@ -743,15 +749,41 @@ func applySuggestedSkillOverlay(session *reactruntime.Session, input string, loa
 	}
 	nudge := suggestedSkillNudge(input, loadedSkills, state)
 	if strings.TrimSpace(nudge) == "" {
-		session.SetHookOverlays(nil)
+		session.ClearHookOverlay("suggested_skill")
 		return
 	}
-	session.SetHookOverlays([]reactruntime.HookOverlay{{
+	session.SetHookOverlay(reactruntime.HookOverlay{
 		Key:        "suggested_skill",
 		Content:    nudge,
 		Priority:   reactruntime.HookPriorityNormal,
 		Provenance: "runtime",
-	}})
+	})
+}
+
+func applyGuardianOverlay(session *reactruntime.Session, event reactruntime.GuardianEvent) {
+	if session == nil {
+		return
+	}
+	switch event.Decision {
+	case tools.GuardianWarn, tools.GuardianBlock:
+		reason := strings.TrimSpace(event.Reason)
+		if reason == "" {
+			reason = "approval action needs extra scrutiny"
+		}
+		summary := strings.TrimSpace(event.Action.Summary)
+		content := "Guardian " + strings.ToLower(string(event.Decision)) + ": " + reason
+		if summary != "" {
+			content += "\nAction: " + summary
+		}
+		session.SetHookOverlay(reactruntime.HookOverlay{
+			Key:        "guardian_warning",
+			Content:    content,
+			Priority:   reactruntime.HookPriorityHigh,
+			Provenance: "runtime",
+		})
+	default:
+		session.ClearHookOverlay("guardian_warning")
+	}
 }
 
 func detectTaskStateFromInput(input string) (reactruntime.TaskState, bool) {
