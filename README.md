@@ -35,13 +35,13 @@ Forge is not a hosted SaaS or remote coding sandbox. It is a native local tool t
 Build locally:
 
 ```bash
-go build -o ./bin/forge ./cmd/forge
+just build
 ```
 
 Run chat in the current repository:
 
 ```bash
-./bin/forge
+just run
 ```
 
 Run the legacy writer/auditor pipeline:
@@ -56,7 +56,7 @@ Start in the repository you want Forge to work on:
 
 ```bash
 cd /path/to/repo
-./bin/forge
+just run
 ```
 
 Inside chat you can:
@@ -73,6 +73,8 @@ explain how auth is wired in this repo
 fix the failing Claude model picker test
 search for where model routing chooses chatgpt vs openai
 ```
+
+`just build` runs the underlying `go build -o ./bin/forge ./cmd/forge` command if you want the lower-level equivalent.
 
 ## Configuration
 

@@ -34,8 +34,8 @@ Important top-level areas:
 Minimum:
 
 ```bash
-go build ./...
-go test ./...
+just build
+just test
 ```
 
 For hook-compatible development, install the tools listed in [LOCAL_TOOLING.md](/Users/cass/git/forge/LOCAL_TOOLING.md).
@@ -43,9 +43,13 @@ For hook-compatible development, install the tools listed in [LOCAL_TOOLING.md](
 Recommended:
 
 ```bash
-go build -o ./bin/forge ./cmd/forge
-go test ./...
+just check
 ```
+
+The raw Go equivalents remain available when you need to see the underlying commands:
+
+- `go build -o ./bin/forge ./cmd/forge`
+- `go test ./...`
 
 ## Pre-Commit Hooks
 
@@ -66,6 +70,8 @@ Important checks include:
 
 If your commit fails, read the hook output directly. The most common issues are formatting drift, lint failures, or missing local tooling.
 
+For a hook-compatible local check before committing, run `just pre-commit`.
+
 ## Recommended Workflow
 
 For code changes:
@@ -74,8 +80,8 @@ For code changes:
 2. add or update tests before changing behavior
 3. keep changes scoped to one concern
 4. run targeted tests
-5. run `go build ./...`
-6. run `go test ./...`
+5. run `just build`
+6. run `just test`
 
 Practical rule:
 
@@ -171,16 +177,15 @@ Prefer targeted tests while iterating, then run the full suite before committing
 Examples:
 
 ```bash
-go test ./internal/agent -run TestAgentRunDoesNotRetryShortFinalAnswer
-go test ./internal/bootstrap -run TestCanonicalAnthropicModel
-go test ./internal/tui -run TestChatModelModelsOverlayLeadingDigitStartsSearch
+just test-pkg ./internal/agent -run TestAgentRunDoesNotRetryShortFinalAnswer
+just test-pkg ./internal/bootstrap -run TestCanonicalAnthropicModel
+just test-pkg ./internal/tui -run TestChatModelModelsOverlayLeadingDigitStartsSearch
 ```
 
 Final verification:
 
 ```bash
-go build ./...
-go test ./...
+just check
 ```
 
 If a bug reproduces only in chat mode, prefer adding a focused regression test near:
