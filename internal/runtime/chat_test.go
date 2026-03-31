@@ -1203,6 +1203,150 @@ func TestRegisterReactDelegationToolsDoesNotUseLegacyRoleModelMapping(t *testing
 	}
 }
 
+// ── Integration hardening (Task 10) ──────────────────────────────────────────
+
+// TestLightweightChatPathStaysDirect verifies that a simple conversational
+// question does not accumulate task state, plan mode, or complex overlays.
+func TestLightweightChatPathStaysDirect(t *testing.T) {
+	reactRunner := &stubChatTurnRunner{}
+	input := "what time is it"
+	if err := runChatTurn(context.Background(), reactRunner, input); err != nil {
+		t.Fatal(err)
+	}
+	// Simple question should not seed task state.
+	if reactRunner.taskState != nil {
+		t.Fatalf("expected no task state for simple question, got %+v", *reactRunner.taskState)
+	}
+}
+
+// TestBehaviorStackDoesNotCorruptBasePromptAssembly verifies that memory summaries,
+// hook overlays, and task state can all coexist in one session without corrupting
+// the base system prompt or each other.
+func TestBehaviorStackDoesNotCorruptBasePromptAssembly(t *testing.T) {
+	session := reactruntime.NewSession()
+
+	// Inject a memory summary.
+	session.SetMemorySummary("important context: project uses ruff for linting")
+
+	// Inject a hook overlay.
+	session.SetHookOverlay(reactruntime.HookOverlay{
+		Key:        "test_overlay",
+		Content:    "test hook overlay content",
+		Priority:   reactruntime.HookPriorityNormal,
+		Provenance: "test",
+	})
+
+	// Set task state.
+	session.SetTaskState(reactruntime.TaskState{
+		Objective: "refactor the auth module",
+		Operation: "implement",
+	})
+
+	msgs := session.Messages("base system prompt")
+
+	// Base system prompt must be first.
+	if len(msgs) == 0 || msgs[0].Role != "system" || msgs[0].Content != "base system prompt" {
+		t.Fatalf("base system prompt not first, got: %+v", msgs)
+	}
+
+	// Verify memory, overlay, and task state each appear somewhere.
+	var hasMemory, hasOverlay, hasTask bool
+	for _, msg := range msgs {
+		if strings.Contains(msg.Content, "Memory summary") {
+			hasMemory = true
+		}
+		if strings.Contains(msg.Content, "test hook overlay content") {
+			hasOverlay = true
+		}
+		if strings.Contains(msg.Content, "refactor the auth module") {
+			hasTask = true
+		}
+	}
+	if !hasMemory {
+		t.Error("memory summary not found in messages")
+	}
+	if !hasOverlay {
+		t.Error("hook overlay not found in messages")
+	}
+	if !hasTask {
+		t.Error("task state not found in messages")
+	}
+}
+
+// TestSuggestedSkillNudgeReachesNotifyCallback verifies that when a skill is
+// loaded and matches the input heuristic, suggestedSkillNudge returns a non-empty
+// nudge that could be forwarded to tui.NotifyNudge.
+func TestSuggestedSkillNudgeReachesNotifyCallback(t *testing.T) {
+	// "brainstorming" is auto-detected when input contains "plan", "design", etc.
+	loaded := []skills.Skill{
+		{Name: "brainstorming", Description: "structured planning"},
+	}
+	state := chatstate.New()
+	nudge := suggestedSkillNudge("make a plan for this feature", loaded, state)
+	if nudge == "" {
+		t.Fatal("expected non-empty nudge for matching skill")
+	}
+	if !strings.Contains(nudge, "brainstorming") {
+		t.Fatalf("nudge should mention the skill name, got %q", nudge)
+	}
+}
+
+// TestMemoryAndSkillOverlaysCoexistInPromptAssembly verifies that both a memory
+// summary overlay and a skill hook overlay can appear together in the assembled
+// messages without one displacing the other.
+func TestMemoryAndSkillOverlaysCoexistInPromptAssembly(t *testing.T) {
+	session := reactruntime.NewSession()
+	session.SetMemorySummary("last session: worked on auth module")
+	session.SetHookOverlay(reactruntime.HookOverlay{
+		Key:        "suggested_skill",
+		Content:    "suggested skill: /code-review (change set looks reviewable)",
+		Priority:   reactruntime.HookPriorityNormal,
+		Provenance: "runtime",
+	})
+
+	msgs := session.Messages("system")
+
+	var memCount, skillCount int
+	for _, msg := range msgs {
+		if strings.Contains(msg.Content, "Memory summary") {
+			memCount++
+		}
+		if strings.Contains(msg.Content, "suggested skill") {
+			skillCount++
+		}
+	}
+	if memCount != 1 {
+		t.Errorf("expected exactly 1 memory message, got %d", memCount)
+	}
+	if skillCount != 1 {
+		t.Errorf("expected exactly 1 skill overlay message, got %d", skillCount)
+	}
+}
+
+// TestTuiSelectNudgeIntegratesWithRuntime verifies that the tui.SelectNudge
+// function produces expected nudge kinds for the operation types that
+// detectTaskStateFromInput emits, so the two subsystems stay in sync.
+func TestTuiSelectNudgeIntegratesWithRuntime(t *testing.T) {
+	cases := []struct {
+		input    string
+		wantKind tui.NudgeKind
+	}{
+		{"write a plan for improving test coverage", tui.NudgePlanMode},
+		{"validate that the tests pass for this repo", tui.NudgeVerification},
+		{"implement the new auth handler", tui.NudgeNone}, // implement task op → no plan/verify nudge
+	}
+	for _, tc := range cases {
+		state, ok := detectTaskStateFromInput(tc.input)
+		if !ok {
+			t.Fatalf("no task state detected for %q", tc.input)
+		}
+		nudge := tui.SelectNudge("chat", state.Operation, "")
+		if nudge.Kind != tc.wantKind {
+			t.Errorf("SelectNudge(%q, %q) kind = %q, want %q", "chat", state.Operation, nudge.Kind, tc.wantKind)
+		}
+	}
+}
+
 type stubChatTurnRunner struct {
 	calls        int
 	input        string
