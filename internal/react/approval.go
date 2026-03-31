@@ -258,7 +258,7 @@ func (g *ApprovalGate) ruleDecision(action tools.Action) (RuleDecision, bool) {
 			continue
 		}
 		if len(rule.CommandPrefix) > 0 {
-			matcher, err := parseShellRuleTokens(rule.CommandPrefix)
+			matcher, err := parseShellRulePrefix(rule.CommandPrefix)
 			if err != nil || !matcher.matches(action.Summary) {
 				continue
 			}
@@ -283,7 +283,7 @@ func actionTrusted(action tools.Action, knownSafe []string) bool {
 	if action.Tool != "run_command" {
 		return false
 	}
-	return matchesAnyShellRule(action.Summary, knownSafe)
+	return matchesAnyShellRulePrefix(action.Summary, knownSafe)
 }
 
 func actionMutates(action tools.Action) bool {

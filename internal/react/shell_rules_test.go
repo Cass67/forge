@@ -10,10 +10,13 @@ func TestShellRuleExactMatch(t *testing.T) {
 	if !rule.matches("git status --short") {
 		t.Fatal("expected exact command match")
 	}
+	if rule.matches("git status --short --porcelain") {
+		t.Fatal("exact command should not match trailing extra args")
+	}
 }
 
 func TestShellRuleTokenPrefixMatch(t *testing.T) {
-	rule, err := parseShellRule("git status")
+	rule, err := parseShellRulePrefix([]string{"git", "status"})
 	if err != nil {
 		t.Fatal(err)
 	}
