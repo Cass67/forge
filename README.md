@@ -2,10 +2,10 @@
 
 Forge is a terminal-first coding agent for local repositories.
 
-It has two primary modes:
+It has one primary mode and one legacy compatibility mode:
 
-- `forge`: an interactive coding loop with one visible `forge` assistant, host-owned tool/preview workflows, provider switching, approvals, and bounded hidden workers when the harness decides they help
-- `forge make`: the legacy writer/auditor pipeline for generating or iterating on code with batch-style passes
+- `forge`: the primary interactive coding loop with a host-owned runtime, typed runtime hooks, provider switching, approvals, preview workflows, exec sessions, and bounded hidden worker delegation when the runtime decides it helps
+- `forge make`: a legacy writer/auditor pipeline retained for batch-style passes and compatibility workflows
 
 Forge is designed to run against your local working tree, use multiple model providers, and keep the user in control of destructive actions.
 
@@ -16,7 +16,7 @@ Forge is optimized for local software work:
 - inspect and edit files in the current repository
 - run commands, tests, and git queries
 - switch models and providers without leaving the chat session
-- keep one coherent transcript while the harness optionally uses hidden reader/editor/verifier/researcher workers behind the scenes
+- keep one coherent transcript while the runtime can optionally use hidden reader/editor/verifier/researcher workers behind the scenes
 - run a separate legacy writer/auditor pipeline for iterative or prompt-driven code generation
 
 Forge is not a hosted SaaS or remote coding sandbox. It is a native local tool that acts on the repository you launch it in.
@@ -25,9 +25,10 @@ Forge is not a hosted SaaS or remote coding sandbox. It is a native local tool t
 
 - local coding agent with file, search, git, command, and web tools
 - provider-aware model routing across ChatGPT, Claude.ai, OpenAI, Anthropic, Copilot, and OpenAI-compatible backends
-- kernel-owned local/strict-local/worker orchestration with hidden bounded workers and host-managed skill context
-- live chat TUI with model picker, provider picker, approvals, recent activity, quiet progress updates, and runtime stats
-- pass-based improvement pipeline for correctness, refactor, security, and production-readiness work
+- host-owned React runtime with task/mode state, typed hook overlays, bounded memory summaries, and completion enforcement
+- live chat TUI with model picker, provider picker, approvals, nudges, recent activity, quiet progress updates, and runtime stats
+- command exec sessions for long-running terminal work without blocking the visible chat loop
+- legacy pass-based improvement pipeline for correctness, refactor, security, and production-readiness work
 - session artifacts, summaries, audit logs, and usage tracking
 
 ## Quick Start
@@ -65,7 +66,7 @@ Inside chat you can:
 - type a normal request, such as `fix the failing test in auth.go`
 - switch models with the model picker
 - switch providers or log in through the provider picker
-- use `/trace` under `forge -d` when you need the advanced harness trace
+- use `/trace` under `forge -d` when you need the advanced runtime trace
 
 Common examples:
 
@@ -211,7 +212,7 @@ forge skills
 
 Useful command families:
 
-- `forge`: local interactive coding loop
+- `forge`: primary local interactive coding loop
 - `forge make`: legacy writer/auditor/summarizer pipeline
 - `forge perf`: session usage and throughput reporting
 - `forge status`: auth and provider status snapshot
@@ -233,11 +234,14 @@ Chat mode is interactive and works directly against the current working tree.
 flowchart LR
     CLI["cmd/forge/main.go"] --> Bootstrap["internal/bootstrap"]
     Bootstrap --> Runtime["internal/runtime/chat.go"]
-    Runtime --> Agent["internal/agent"]
+    Runtime --> React["internal/react"]
+    React --> Hooks["internal/hooks"]
+    React --> Memory["internal/memory"]
     Runtime --> TUI["internal/tui"]
+    Runtime --> Tools["internal/agent/tools"]
+    Runtime --> Agent["internal/agent"]
     Bootstrap --> Drivers["internal/llm/drivers"]
-    Agent --> Tools["internal/agent/tools"]
-    Agent --> Drivers
+    React --> Drivers
     Drivers --> Providers["Provider APIs / Subscription Backends"]
 ```
 
@@ -253,3 +257,4 @@ flowchart LR
 
 - Forge does not currently produce one native binary that runs unchanged on every OS. Build one binary per target OS/architecture pair.
 - `forge` currently uses the Bubble Tea chat frontend through [internal/tui/chatmodel.go](internal/tui/chatmodel.go).
+- `forge make` remains supported, but it is legacy compatibility surface rather than the main architectural direction.

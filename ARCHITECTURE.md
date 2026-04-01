@@ -1,6 +1,6 @@
 # Forge Architecture
 
-This document explains how Forge works today at the code level: entrypoints, runtime composition, model/provider routing, the harness kernel, hidden-worker execution, the TUI event flow, and the pass-based session runner.
+This document explains how Forge works today at the code level: entrypoints, runtime composition, model/provider routing, the host-owned chat runtime, the TUI event flow, and the legacy pass-based session runner.
 
 ## System Overview
 
@@ -14,10 +14,13 @@ flowchart TD
     Bootstrap --> Auth["internal/auth + provider auth packages"]
     Bootstrap --> Drivers["internal/llm/drivers"]
 
+    RuntimeChat --> React["internal/react"]
+    React --> Hooks["internal/hooks"]
+    React --> Memory["internal/memory"]
     RuntimeChat --> Agent["internal/agent"]
+    RuntimeChat --> Tools["internal/agent/tools"]
     RuntimeChat --> TUI["internal/tui"]
-    Agent --> Tools["internal/agent/tools"]
-    Agent --> Drivers
+    React --> Drivers
 
     RuntimeSession --> SessionRunner["internal/session/runner.go"]
     SessionRunner --> Drivers
@@ -31,7 +34,7 @@ Forge has two distinct execution models:
 1. Chat mode
    - interactive
    - acts directly on the current working tree
-   - centered around the harness kernel, one visible `forge` assistant, and optional hidden bounded workers
+   - centered around a host-owned React runner, one visible `forge` assistant, typed runtime hooks, approvals, and optional bounded hidden workers
 2. Improvement pipeline
    - batch-oriented
    - runs a sequence of writer/auditor/summarizer passes
@@ -59,21 +62,29 @@ The core package boundaries are:
 - [internal/bootstrap/runtime.go](./internal/bootstrap/runtime.go)
   - config/auth loading, provider/model discovery, driver construction
 - [internal/runtime/chat.go](./internal/runtime/chat.go)
-  - chat-mode assembly and event loop wiring
-- [internal/harness/](./internal/harness)
-  - request classification, session carry-forward, planner/policy logic, strict-local routing, worker orchestration, and trace recording
+  - chat-mode assembly, approvals, tool registration, runtime wiring, and live/console entrypoints
+- [internal/react/loop.go](./internal/react/loop.go)
+  - host-owned turn runner, workflow state, completion checks, tool execution loop, and delegation hooks
+- [internal/react/session.go](./internal/react/session.go)
+  - session snapshot/state model for history, task state, plan state, hook output, pending input, interruption, and memory summary
+- [internal/react/prompt.go](./internal/react/prompt.go)
+  - prompt assembly from system prompt, overlays, task/plan state, memory summary, and compacted history
+- [internal/hooks/](./internal/hooks)
+  - typed runtime hook registry, dispatch, overlay/note/block normalization
+- [internal/memory/](./internal/memory)
+  - bounded retained-context extraction, redaction, consolidation, and prompt-summary generation
 - [internal/agent/agent.go](./internal/agent/agent.go)
-  - underlying tool-using execution loop used by local, strict-local, and worker executors
+  - shared prompting, rendering, and lower-level agent helpers still used by runtime surfaces
 - [internal/agent/subagent.go](./internal/agent/subagent.go)
   - legacy delegated sub-agent execution retained for compatibility paths
 - [internal/agent/roles.go](./internal/agent/roles.go)
   - legacy visible-role definitions and tool restrictions used only by compatibility paths
 - [internal/agent/tools/](./internal/agent/tools)
-  - tool implementations and tool registry
+  - tool implementations, preview/runtime helpers, git tools, web tools, and exec-session management
 - [internal/tui/](./internal/tui)
   - startup UI, chat UI, post-run screens, overlays, message rendering
 - [internal/session/runner.go](./internal/session/runner.go)
-  - pass-based pipeline orchestration
+  - legacy pass-based pipeline orchestration
 - [internal/llm/](./internal/llm)
   - driver interface, event types, retry wrapper, usage tracking
 - [internal/llm/drivers/](./internal/llm/drivers)
@@ -90,18 +101,19 @@ The CLI starts in [cmd/forge/main.go](./cmd/forge/main.go).
 There are two important top-level flows:
 
 - default chat flow via `forge`
-  - builds a chat session and launches the live chat runtime
+  - builds a chat session and launches the host-owned live chat runtime
 - legacy writer/auditor flow via `forge make`
   - starts the older writer/auditor pipeline UI or batch pipeline entrypoint depending on arguments
 
-Even though the repository still contains multiple UI layers, the current chat runtime path is:
+The current chat runtime path is:
 
 1. `runChat(...)`
 2. `runtime.BuildChatSetup(...)`
 3. `runtime.RunChatLive(setup)`
-4. `tui.RunChatLive(...)`
-5. `tui.RunChatLiveBubbleTea(...)`
-6. `ChatModel`
+4. create `react.Session`, approvals, tools, preview runtime, exec-session manager, memory pipeline, and `react.Runner`
+5. `tui.RunChatLive(...)`
+6. `tui.RunChatLiveBubbleTea(...)`
+7. `ChatModel`
 
 That last point matters: the current live chat surface is the Bubble Tea model in [internal/tui/chatmodel.go](./internal/tui/chatmodel.go).
 
@@ -113,21 +125,23 @@ sequenceDiagram
     participant CLI as cmd/forge
     participant Bootstrap
     participant Runtime as runtime/chat.go
-    participant Agent
+    participant React as internal/react
+    participant Tools as tool registry
     participant Driver
     participant TUI
 
     User->>CLI: forge
     CLI->>Bootstrap: load config/tokens/models
     CLI->>Runtime: BuildChatSetup + RunChatLive
-    Runtime->>Agent: construct top-level agent
+    Runtime->>React: construct session + runner
     Runtime->>TUI: start chat program
     User->>TUI: submit prompt
     TUI->>Runtime: inputCh <- prompt
-    Runtime->>Agent: Run(ctx, prompt)
-    Agent->>Driver: Stream(messages)
-    Driver-->>Agent: streamed tokens / tool-call text
-    Agent-->>TUI: llm.Event stream via EventRenderer
+    Runtime->>React: Run(ctx, prompt)
+    React->>Driver: Stream(messages)
+    Driver-->>React: streamed tokens / native tool calls
+    React->>Tools: execute approved tool calls
+    React-->>TUI: llm.Event stream via EventRenderer
 ```
 
 ## Configuration And State
@@ -226,6 +240,16 @@ The OpenAI-family drivers live in [internal/llm/drivers/openai.go](./internal/ll
 
 Chat setup is assembled in [internal/runtime/chat.go](./internal/runtime/chat.go).
 
+The runtime owns:
+
+- approval gating and guardian review
+- tool registration
+- preview runtime and MCP integration
+- exec-session lifecycle reporting
+- suggested-skill and guardian overlays
+- bounded memory retention updates after each turn
+- delegation tool registration for hidden worker-style follow-up tasks
+
 The provider picker in [internal/tui/chatmodel.go](./internal/tui/chatmodel.go) stays generic for these providers. Unknown non-interactive provider ids are treated as API-key providers, and their credentials flow through the dynamic token helpers in [internal/tui/chatshared.go](./internal/tui/chatshared.go).
 
 ### Tool registration
@@ -235,54 +259,78 @@ The provider picker in [internal/tui/chatmodel.go](./internal/tui/chatmodel.go) 
 - `read_file`
 - `write_file`
 - `edit_file`
+- `apply_patch`
+- `artifact_write`
+- `artifact_read`
+- `preview_server_ensure`
+- `preview_server_status`
 - `list_dir`
 - `search`
+- `code_search`
+- `lsp_definition`
+- `lsp_references`
+- `lsp_hover`
+- `lsp_document_symbols`
 - `run_command`
+- `exec_session_start`
+- `exec_session_status`
+- `exec_session_write`
+- `exec_session_resize`
+- `exec_session_stop`
+- `command_status`
+- `command_write_stdin`
 - `think`
 - `glob`
 - `git_status`
 - `git_diff`
 - `git_log`
+- `git_branch_state`
+- `git_merge_status`
 - `git_commit`
+- `view_image`
 - `web_fetch`
 - `web_search`
 - `tool_help`
+- plan-mode tools such as `update_plan`, `enter_plan_mode`, and `exit_plan_mode`
 
 Some tools are prompt-hidden and are only exposed through `tool_help`.
 
 This is one of the mechanisms Forge uses to reduce prompt bloat without giving up capability.
 
-## Agent Loop
+## React Turn Loop
 
-The main execution engine is [internal/agent/agent.go](./internal/agent/agent.go).
+The main chat execution engine is [internal/react/loop.go](./internal/react/loop.go).
 
-At a high level, `Agent.Run(...)` does this:
+At a high level, `Runner.Run(...)` does this:
 
 1. append the user message to local history
-2. rebuild the request with:
-   - system prompt
-   - accumulated local history
-3. stream the provider response
-4. filter visible text from tool-call wrappers
-5. parse tool calls from the full raw response
-6. if there are tool calls:
-   - execute them
-   - append compact tool-result history
-   - continue to the next turn
-7. if there are no tool calls:
-   - treat the response as final
-   - stop unless it is an actual action preamble
+2. compact history when needed
+3. build prompt messages from:
+   - base system prompt
+   - typed hook overlays
+   - task/plan state
+   - memory summary
+   - prior history/tool results
+4. stream the provider response
+5. execute approved tool calls through the registered toolset
+6. update workflow state such as validation/search/git/repeat guidance
+7. run completion checks before accepting the final answer
+8. record post-turn memory summary updates and prompt-visible runtime state
 
 ## System Prompt and History
 
-The system prompt built by [internal/agent/system.go](./internal/agent/system.go) instructs the model to emit tool invocations in a strict wrapper:
+The base system prompt is built by [internal/agent/system.go](./internal/agent/system.go), but the full per-turn prompt assembly happens in [internal/react/prompt.go](./internal/react/prompt.go).
 
-- tool calls are serialized into a JSON-like wrapper
-- the model must not reveal hidden tool internals
+Prompt assembly layers in:
 
-Forge keeps a local message history and periodically compacts it using the token-budget logic in [internal/agent/agent.go](./internal/agent/agent.go).
+- compacted conversation summaries
+- bounded memory summaries from [internal/memory/](./internal/memory)
+- typed runtime hook overlays from [internal/hooks/](./internal/hooks)
+- task state and plan state
+- interruption guidance
+- tool results and prior history
 
-Chat mode now defaults to a kernel-owned control plane in [internal/runtime/chat.go](./internal/runtime/chat.go) and [internal/harness/](./internal/harness).
+Forge keeps local message history in [internal/react/session.go](./internal/react/session.go) and compacts it through the React runtime’s session-budget logic.
 
 ## UI and Frontends
 
@@ -292,11 +340,22 @@ The active chat UI entrypoint is [internal/tui/chatshared.go](./internal/tui/cha
 - [internal/tui/chatshared.go](./internal/tui/chatshared.go)
 - [internal/tui/chatlive_bubbletea.go](./internal/tui/chatlive_bubbletea.go)
 - [internal/tui/chatmsg.go](./internal/tui/chatmsg.go)
+- [internal/tui/nudges.go](./internal/tui/nudges.go)
 - [internal/tui/errors.go](./internal/tui/errors.go)
+
+The active UI now surfaces:
+
+- approvals
+- quiet progress updates
+- mode badges and nudges
+- command-session lifecycle updates
+- recent activity and runtime stats
 
 ## Session / Pipeline Runner
 
 The non-chat session runner starts in [internal/runtime/session.go](./internal/runtime/session.go) and delegates orchestration to [internal/session/runner.go](./internal/session/runner.go).
+
+This is the legacy `forge make` path. It remains supported, but it is not the main architectural direction of the repository.
 
 ## Auth Flows
 
@@ -328,6 +387,9 @@ Chat mode operates in-place but still tracks:
 - session stats
 - provider diagnostics
 - model/request mode hints
+- bounded retained memory summaries
+- typed runtime guidance overlays
+- command-session state changes
 
 The event model in [internal/llm/types.go](./internal/llm/types.go) is the shared transport between runtime and UI.
 
@@ -335,8 +397,9 @@ The event model in [internal/llm/types.go](./internal/llm/types.go) is the share
 
 There are a few architectural seams worth knowing about:
 
-- the repository still contains multiple UI layers and older docs that describe previous frontend choices
+- the repository still contains a legacy pipeline surface (`forge make`) alongside the primary chat/runtime path
 - chat mode and pipeline mode share drivers and some config, but their orchestration models are intentionally different
+- prompt-visible behavior is increasingly host-owned via `internal/react`, `internal/hooks`, and `internal/memory`, but some older compatibility surfaces still exist
 - provider routing is centralized, which is convenient, but it means model/provider/auth changes often touch one high-leverage file: [internal/bootstrap/runtime.go](./internal/bootstrap/runtime.go)
 
 If you change runtime behavior, re-check:
@@ -345,7 +408,7 @@ If you change runtime behavior, re-check:
 - model picker labels
 - chat request mode reporting
 - TUI error rendering
-- agent retry behavior
+- completion checks, hook overlays, and memory-summary prompt assembly
 
 ## Reading Order For New Contributors
 
@@ -354,8 +417,10 @@ If you are new to the codebase, the fastest useful reading order is:
 1. [cmd/forge/main.go](./cmd/forge/main.go)
 2. [internal/bootstrap/runtime.go](./internal/bootstrap/runtime.go)
 3. [internal/runtime/chat.go](./internal/runtime/chat.go)
-4. [internal/agent/agent.go](./internal/agent/agent.go)
-5. [internal/tui/chatmodel.go](./internal/tui/chatmodel.go)
-6. [internal/session/runner.go](./internal/session/runner.go)
+4. [internal/react/loop.go](./internal/react/loop.go)
+5. [internal/react/session.go](./internal/react/session.go)
+6. [internal/react/prompt.go](./internal/react/prompt.go)
+7. [internal/tui/chatmodel.go](./internal/tui/chatmodel.go)
+8. [internal/session/runner.go](./internal/session/runner.go)
 
 That path gives you the current control flow before you dive into provider-specific or UI-specific details.
