@@ -113,7 +113,7 @@ The host may still annotate or route those instructions internally, but the user
 
 ### Split-Pane Layout
 
-The live team UI should revive the original side-by-side concept, but on the modern Bubble Tea chat shell rather than the old pipeline app.
+The live team UI should use the original side-by-side concept, built on the modern Bubble Tea chat shell.
 
 Recommended layout:
 
@@ -147,9 +147,7 @@ The first-class `forge team` experience should reuse modern Forge UI/runtime aff
 
 ## Core Principle
 
-Do not make the old `internal/session` batch runner the primary engine for this mode.
-
-That runner can remain as legacy compatibility surface if needed, but first-class `forge team` should sit on a host-owned live runtime.
+The primary engine for this mode should be a host-owned live runtime.
 
 ## Recommended Shape
 
@@ -271,7 +269,7 @@ In v1 this can still be implemented as one bounded host-owned memory summary wit
 
 ## UI Architecture
 
-The split-pane team mode should be built on the modern Bubble Tea shell, not by promoting the old pipeline app wholesale.
+The split-pane team mode should be built on the modern Bubble Tea shell.
 
 Recommended approach:
 
@@ -280,7 +278,7 @@ Recommended approach:
 - introduce structured per-role panes
 - reuse approval overlays and command-session surfaces
 
-Do not force the old pipeline-specific screens to become the main shell.
+Do not force pipeline-specific screens to become the main shell.
 
 ## Rollout Strategy
 
@@ -329,4 +327,4 @@ Build first-class `forge team` as a new live team mode on top of the modern runt
 - live in-place workspace execution
 - first-class new-project bootstrap
 
-That gives Forge a real “create/audit team” mode without dragging the main product back onto the old batch runner architecture.
+That gives Forge a real “create/audit team” mode on a runtime designed for live collaboration.

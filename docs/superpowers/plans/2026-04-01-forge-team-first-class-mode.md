@@ -35,7 +35,7 @@
 - Modify: `internal/tui/chatmodel.go`
   Responsibility: extract/reuse shared chrome helpers where practical.
 - Modify: `internal/tui/input.go`
-  Responsibility: reshape startup input for team mode or replace legacy writer/auditor startup assumptions.
+  Responsibility: reshape startup input for team mode and remove writer/auditor startup assumptions that no longer fit.
 - Modify: `internal/tui/input_test.go`
   Responsibility: new shared-composer/team-start regressions.
 - Modify: `internal/runtime/chat.go`
@@ -51,7 +51,7 @@
 - Modify: `README.md`
   Responsibility: document first-class `forge team` mode once it ships.
 - Modify: `ARCHITECTURE.md`
-  Responsibility: describe the new team runtime and reclassify the legacy pipeline.
+  Responsibility: describe the new team runtime and document it as a first-class product surface.
 
 ## Task 1: Introduce Team Runtime Types And Host-Owned Protocol
 
@@ -121,7 +121,7 @@ Add tests covering:
 - the new runtime reuses approvals and shared tool assembly
 
 Run: `go test ./cmd/forge ./internal/runtime -run 'Test(Make|Team)'`
-Expected: FAIL because `forge team` does not exist yet and team startup still points at legacy/runtime gaps.
+Expected: FAIL because `forge team` does not exist yet and team startup/runtime support is missing.
 
 - [ ] **Step 2: Extract reusable runtime wiring**
 
@@ -238,7 +238,7 @@ Build a dedicated `TeamModel` that:
 
 - [ ] **Step 3: Integrate the UI entrypoint**
 
-Update `chatshared.go` and startup flow so `forge team` launches the new team-mode UI, not the old pipeline app shell.
+Update `chatshared.go` and startup flow so `forge team` launches the new team-mode UI.
 
 - [ ] **Step 4: Verify the slice**
 
