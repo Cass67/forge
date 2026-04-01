@@ -25,6 +25,10 @@ func dedupeRecords(records []Record) []Record {
 	seen := make(map[string]struct{}, len(records))
 	out := make([]Record, 0, len(records))
 	for _, record := range records {
+		record = normalizeRecord(record)
+		if record.Objective == "" && record.Summary == "" {
+			continue
+		}
 		key := record.Mode + "\x00" + record.Objective + "\x00" + record.Summary
 		if _, ok := seen[key]; ok {
 			continue
@@ -45,7 +49,14 @@ func summarizeRecords(records []Record) string {
 		if summary == "" {
 			continue
 		}
-		lines = append(lines, "- "+summary)
+		lines = append(lines, "- "+clipText(summary, maxSummaryLine-2))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func normalizeRecord(record Record) Record {
+	record.Mode = normalizeMemoryText(record.Mode)
+	record.Objective = clipText(RedactText(normalizeMemoryText(record.Objective)), maxObjectiveLen)
+	record.Summary = clipText(RedactText(normalizeMemoryText(record.Summary)), maxRecordLen)
+	return record
 }
