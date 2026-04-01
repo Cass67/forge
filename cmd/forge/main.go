@@ -1211,21 +1211,21 @@ Chat flags:
   --debug-file PATH Write debug log to PATH (default: temp dir forge-chat-debug-<timestamp>.jsonl)
   -C PATH           Set working directory (default: cwd)
 
-Interactive session keys:
+Legacy pipeline UI keys:
   tab         Switch between writer/auditor model selection
   left/right  Cycle models
   ^T          Toggle interactive mode (feedback between passes)
   enter       Start session
   ^C          Quit
 
-Live view keys:
+Legacy pipeline live view keys:
   left/right  Focus writer/auditor pane
   up/down     Scroll focused pane
   m           Toggle manual step-through mode
   space/enter Advance (in manual mode)
   q/esc       Abort session (Esc twice when idle)
 
-Done screen keys:
+Legacy pipeline done screen keys:
   o           Open output directory
   r           Review files
   f           Fix (start new session with same code)
