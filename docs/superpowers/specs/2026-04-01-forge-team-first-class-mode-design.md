@@ -1,8 +1,8 @@
-# Forge Make First-Class Team Mode Design
+# Forge Team First-Class Mode Design
 
 ## Summary
 
-`forge make` should stop being treated as a legacy batch pipeline and become a first-class live team mode in Forge.
+`forge team` should be the first-class live team mode in Forge.
 
 The new mode should preserve the original creator/auditor "pong" idea, but rebuild it on Forge's modern host-owned runtime:
 
@@ -20,11 +20,11 @@ The same mode should also support a common bootstrap workflow:
 3. scaffold the app
 4. continue in the same workspace with the live team
 
-This is a product-level redesign of `forge make`, not a small cleanup of the old pass runner.
+This is a product-level addition of `forge team`.
 
 ## Goals
 
-1. Promote `forge make` to a first-class Forge surface.
+1. Promote `forge team` to a first-class Forge surface.
 2. Make it feel as modern and reliable as the chat runtime.
 3. Keep the original creator/auditor collaboration pattern visible.
 4. Support both existing repos and brand-new project bootstraps.
@@ -39,7 +39,7 @@ This is a product-level redesign of `forge make`, not a small cleanup of the old
 
 ## Product Model
 
-`forge make` becomes a dedicated live team mode.
+`forge team` becomes a dedicated live team mode.
 
 It is distinct from normal `forge` chat, but it should reuse the same runtime-quality primitives wherever possible.
 
@@ -133,7 +133,7 @@ Examples:
 
 ### Modern Chrome To Reuse
 
-The first-class `forge make` experience should reuse modern Forge UI/runtime affordances where possible:
+The first-class `forge team` experience should reuse modern Forge UI/runtime affordances where possible:
 
 - approvals
 - runtime status
@@ -149,7 +149,7 @@ The first-class `forge make` experience should reuse modern Forge UI/runtime aff
 
 Do not make the old `internal/session` batch runner the primary engine for this mode.
 
-That runner can remain as legacy compatibility surface if needed, but first-class `forge make` should sit on a host-owned live runtime.
+That runner can remain as legacy compatibility surface if needed, but first-class `forge team` should sit on a host-owned live runtime.
 
 ## Recommended Shape
 
@@ -208,7 +208,7 @@ The team mode should also support bootstrapping a new workspace.
 
 Example flow:
 
-1. user runs `forge make` and says “create me a React app here”
+1. user runs `forge team` and says “create me a React app here”
 2. Forge asks for or confirms target directory
 3. Forge creates the directory
 4. Forge optionally initializes git
@@ -282,28 +282,24 @@ Recommended approach:
 
 Do not force the old pipeline-specific screens to become the main shell.
 
-## Migration Strategy
+## Rollout Strategy
 
-### Phase 1: Parallel First-Class Team Runtime
+### Phase 1: Build The First-Class Team Runtime
 
-- keep existing legacy `forge make` implementation available temporarily
-- add a new team-mode implementation behind the same command or behind a controlled flag/config while stabilizing
+- add `forge team` as a dedicated runtime surface
 - validate the new experience with real repo and bootstrap flows
 
-### Phase 2: Make The New Team Runtime Default
+### Phase 2: Harden The Team Experience
 
-- switch `forge make` to the new live team implementation by default
-- keep legacy implementation only as an explicit fallback if still needed
-
-### Phase 3: Deprecate Legacy Batch Runner
-
-- remove or quarantine old legacy UI/runner paths once feature parity and user confidence are strong enough
+- refine split-pane behavior
+- tighten role routing and checkpoint behavior
+- improve workspace bootstrap and preview ergonomics
 
 ## Risks
 
 ### Reusing The Old Pipeline Too Much
 
-If the old `internal/session` runner remains the main engine, the mode will still inherit the old pipeline’s limitations and never feel truly first-class.
+If the runtime is built on older batch assumptions instead of host-owned live orchestration, the mode will inherit the wrong constraints and never feel truly first-class.
 
 ### Too Much Agent Chatter
 
@@ -325,7 +321,7 @@ The mitigation is to make bootstrap an explicit host-owned phase rather than an 
 
 ## Recommendation
 
-Build first-class `forge make` as a new live team mode on top of the modern runtime foundations, with:
+Build first-class `forge team` as a new live team mode on top of the modern runtime foundations, with:
 
 - shared composer
 - creator/auditor split-pane loop
