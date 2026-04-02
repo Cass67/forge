@@ -46,7 +46,7 @@ var (
 	previewRequestRE   = regexp.MustCompile(`(?i)\b(preview|web ?page|themes?_preview\.html|mock up|show me|show on (?:the )?screen|show on web)\b`)
 	validateRequestRE  = regexp.MustCompile(`(?i)\b(test|tests|verify|validated?|check|checks|pass|passes|build)\b`)
 	implementRequestRE = regexp.MustCompile(`(?i)\b(fix|implement|change|update|add|create|build|redesign|theme|refactor|patch)\b`)
-	inspectRequestRE   = regexp.MustCompile(`(?i)\b(inspect|look at|take a look|review|tell me about|what do you think|anything i need change|research)\b`)
+	inspectRequestRE   = regexp.MustCompile(`(?i)\b(inspect|look at|take a look|review|tell+\s+me\s+about|describe|what do you think|anything i need change|research)\b|\bwhat(?:'s|s| is)\s+this(?:\s+(?:repo|repository|project|codebase|folder|directory|working directory))?\s+all\s+about\b|\bwhat(?:'s|s| is)\s+this\s+(?:repo|repository|project|codebase|folder|directory|working directory)\s+about\b`)
 	newChatMCPManager  = func() *mcp.Manager { return mcp.NewManager() }
 )
 
@@ -948,21 +948,22 @@ func detectTaskStateFromInput(input string) (reactruntime.TaskState, bool) {
 	if text == "" {
 		return reactruntime.TaskState{}, false
 	}
-	if planRequestRE.MatchString(text) {
+	normalized := normalizedIntentText(text)
+	if planRequestRE.MatchString(normalized) {
 		return reactruntime.TaskState{
 			Objective:            text,
 			Operation:            "plan",
 			RequiredVerification: "produce a concise plan grounded in enough repo evidence; stop researching once the next actionable plan can be written",
 		}, true
 	}
-	if reviewRequestRE.MatchString(text) {
+	if reviewRequestRE.MatchString(normalized) {
 		return reactruntime.TaskState{
 			Objective:            text,
 			Operation:            "review",
 			RequiredVerification: "produce source-grounded findings first, ordered by severity, and keep the summary secondary to the actual review issues",
 		}, true
 	}
-	if analysisRequestRE.MatchString(text) {
+	if analysisRequestRE.MatchString(normalized) {
 		return reactruntime.TaskState{
 			Objective:            text,
 			Operation:            "analysis",
@@ -988,28 +989,28 @@ func detectTaskStateFromInput(input string) (reactruntime.TaskState, bool) {
 			}, true
 		}
 	}
-	if previewRequestRE.MatchString(text) {
+	if previewRequestRE.MatchString(normalized) {
 		return reactruntime.TaskState{
 			Objective:            text,
 			Operation:            "preview",
 			RequiredVerification: "use preview or artifact tools, verify the preview URL or visible result, and do not rely on an ad-hoc shell webserver",
 		}, true
 	}
-	if validateRequestRE.MatchString(text) && repoGroundedInputPattern.MatchString(text) {
+	if validateRequestRE.MatchString(normalized) && isRepoGroundedText(normalized) {
 		return reactruntime.TaskState{
 			Objective:            text,
 			Operation:            "validate",
 			RequiredVerification: "run the relevant tests or checks before claiming the work is verified",
 		}, true
 	}
-	if implementRequestRE.MatchString(text) && repoGroundedInputPattern.MatchString(text) {
+	if implementRequestRE.MatchString(normalized) && isRepoGroundedText(normalized) {
 		return reactruntime.TaskState{
 			Objective:            text,
 			Operation:            "implement",
 			RequiredVerification: "inspect the relevant code, make the change with edit tools, and run the relevant verification before claiming completion",
 		}, true
 	}
-	if inspectRequestRE.MatchString(text) && repoGroundedInputPattern.MatchString(text) {
+	if (inspectRequestRE.MatchString(normalized) || isWorkspaceOverviewRequest(normalized)) && isRepoGroundedText(normalized) {
 		return reactruntime.TaskState{
 			Objective:            text,
 			Operation:            "inspect",
@@ -1017,6 +1018,87 @@ func detectTaskStateFromInput(input string) (reactruntime.TaskState, bool) {
 		}, true
 	}
 	return reactruntime.TaskState{}, false
+}
+
+func normalizedIntentText(input string) string {
+	text := strings.ToLower(strings.TrimSpace(input))
+	if text == "" {
+		return ""
+	}
+	text = strings.NewReplacer("’", "'", "“", "\"", "”", "\"").Replace(text)
+	text = collapseRepeatedLetters(text)
+	return strings.Join(strings.Fields(text), " ")
+}
+
+func collapseRepeatedLetters(text string) string {
+	if text == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(text))
+	var prev rune
+	repeatCount := 0
+	for _, r := range text {
+		if r == prev && r >= 'a' && r <= 'z' {
+			repeatCount++
+			if repeatCount >= 2 {
+				continue
+			}
+		} else {
+			repeatCount = 0
+		}
+		b.WriteRune(r)
+		prev = r
+	}
+	return b.String()
+}
+
+func isRepoGroundedText(input string) bool {
+	text := normalizedIntentText(input)
+	if text == "" {
+		return false
+	}
+	if repoGroundedInputPattern.MatchString(text) {
+		return true
+	}
+	return containsAnyPhrase(text,
+		"this folder", "this directory", "this working directory", "working directory",
+		"current directory", "this workspace", "this worktree", "this repo",
+		"this repository", "this project", "this codebase", "in here", "here",
+	) || isWorkspaceOverviewRequest(text)
+}
+
+func isWorkspaceOverviewRequest(input string) bool {
+	text := normalizedIntentText(input)
+	if text == "" {
+		return false
+	}
+	if containsAnyPhrase(text,
+		"what's this all about", "whats this all about", "what is this all about",
+		"what's in here", "whats in here", "what is in here",
+	) {
+		return true
+	}
+	hasSubject := containsAnyPhrase(text,
+		"repo", "repository", "project", "codebase", "folder", "directory",
+		"working directory", "workspace", "worktree", "here",
+	)
+	if !hasSubject {
+		return false
+	}
+	return containsAnyPhrase(text,
+		"tell me about", "describe", "explain", "summarize", "summary", "overview", "scan",
+		"what's this", "whats this", "what is this",
+	)
+}
+
+func containsAnyPhrase(text string, phrases ...string) bool {
+	for _, phrase := range phrases {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func isMergePronoun(value string) bool {

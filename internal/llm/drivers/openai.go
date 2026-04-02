@@ -228,6 +228,10 @@ func (d *OpenAIDriver) streamChatCompletions(ctx context.Context, messages []llm
 }
 
 func (d *OpenAIDriver) chatCompletionParams(messages []llm.Message) openai.ChatCompletionNewParams {
+	return d.chatCompletionParamsWithTools(messages, llm.NativeToolOptions{})
+}
+
+func (d *OpenAIDriver) chatCompletionParamsWithTools(messages []llm.Message, opts llm.NativeToolOptions) openai.ChatCompletionNewParams {
 	params := openai.ChatCompletionNewParams{
 		Model:    shared.ChatModel(d.apiModel),
 		Messages: toOpenAIMessages(messages),
@@ -249,6 +253,11 @@ func (d *OpenAIDriver) chatCompletionParams(messages []llm.Message) openai.ChatC
 	}
 	if d.providerLabel == "openrouter" {
 		params.PromptCacheKey = openai.String(responsePromptCacheKey(d.apiModel, chatPromptCacheSeed(messages)))
+	}
+	if opts.RequireToolCall {
+		params.ToolChoice = openai.ChatCompletionToolChoiceOptionUnionParam{
+			OfAuto: openai.Opt(string(openai.ChatCompletionToolChoiceOptionAutoRequired)),
+		}
 	}
 	return params
 }
@@ -790,12 +799,16 @@ func repairToolCallArgsJSON(raw string) string {
 // the chat completions `tools` parameter and emits NativeToolCall tokens after
 // accumulating all streaming deltas.
 func (d *OpenAIDriver) StreamWithTools(ctx context.Context, messages []llm.Message, tools []llm.ToolDef, out chan<- llm.Token) error {
+	return d.StreamWithToolsOptions(ctx, messages, tools, llm.NativeToolOptions{}, out)
+}
+
+func (d *OpenAIDriver) StreamWithToolsOptions(ctx context.Context, messages []llm.Message, tools []llm.ToolDef, opts llm.NativeToolOptions, out chan<- llm.Token) error {
 	defer close(out)
 	if d.useResponsesAPI() {
 		return d.streamResponses(ctx, messages, out)
 	}
 
-	params := d.chatCompletionParams(messages)
+	params := d.chatCompletionParamsWithTools(messages, opts)
 	if len(tools) > 0 {
 		params.Tools = toolDefsToOpenAI(tools)
 	}

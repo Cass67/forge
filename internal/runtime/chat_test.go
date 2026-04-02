@@ -333,6 +333,59 @@ func TestDetectTaskStateFromInputClassifiesReviewWork(t *testing.T) {
 	}
 }
 
+func TestDetectTaskStateFromInputClassifiesRepoOverviewWork(t *testing.T) {
+	state, ok := detectTaskStateFromInput("whats this repo all about")
+	if !ok {
+		t.Fatal("expected task state")
+	}
+	if state.Operation != "inspect" {
+		t.Fatalf("operation = %q", state.Operation)
+	}
+	if !strings.Contains(state.RequiredVerification, "read/search tools") {
+		t.Fatalf("required verification = %q", state.RequiredVerification)
+	}
+}
+
+func TestDetectTaskStateFromInputClassifiesFolderOverviewWork(t *testing.T) {
+	state, ok := detectTaskStateFromInput("telll me about this folder")
+	if !ok {
+		t.Fatal("expected task state")
+	}
+	if state.Operation != "inspect" {
+		t.Fatalf("operation = %q", state.Operation)
+	}
+	if !strings.Contains(state.RequiredVerification, "read/search tools") {
+		t.Fatalf("required verification = %q", state.RequiredVerification)
+	}
+}
+
+func TestNormalizedIntentTextCollapsesRepeatedLetters(t *testing.T) {
+	got := normalizedIntentText("telll   me about this folder")
+	if got != "tell me about this folder" {
+		t.Fatalf("normalized text = %q", got)
+	}
+}
+
+func TestDetectTaskStateFromInputClassifiesWhatsInHere(t *testing.T) {
+	state, ok := detectTaskStateFromInput("what's in here")
+	if !ok {
+		t.Fatal("expected task state")
+	}
+	if state.Operation != "inspect" {
+		t.Fatalf("operation = %q", state.Operation)
+	}
+}
+
+func TestDetectTaskStateFromInputClassifiesScanThisFolder(t *testing.T) {
+	state, ok := detectTaskStateFromInput("scan this folder")
+	if !ok {
+		t.Fatal("expected task state")
+	}
+	if state.Operation != "inspect" {
+		t.Fatalf("operation = %q", state.Operation)
+	}
+}
+
 func TestResolveChatRuntimeModeReadsEnv(t *testing.T) {
 	t.Setenv("FORGE_CHAT_RUNTIME", "")
 	if got := resolveChatRuntimeMode(); got != chatRuntimeReact {
@@ -525,6 +578,40 @@ func TestRunChatTurnSeedsReviewTaskState(t *testing.T) {
 		t.Fatalf("operation = %q", reactRunner.taskState.Operation)
 	}
 	if !strings.Contains(reactRunner.taskState.RequiredVerification, "findings first") {
+		t.Fatalf("required verification = %q", reactRunner.taskState.RequiredVerification)
+	}
+}
+
+func TestRunChatTurnSeedsInspectTaskStateForRepoOverview(t *testing.T) {
+	reactRunner := &stubChatTurnRunner{}
+	input := "whats this repo all about"
+	if err := runChatTurn(context.Background(), reactRunner, input); err != nil {
+		t.Fatal(err)
+	}
+	if reactRunner.taskState == nil {
+		t.Fatal("expected task state to be seeded")
+	}
+	if reactRunner.taskState.Operation != "inspect" {
+		t.Fatalf("operation = %q", reactRunner.taskState.Operation)
+	}
+	if !strings.Contains(reactRunner.taskState.RequiredVerification, "read/search tools") {
+		t.Fatalf("required verification = %q", reactRunner.taskState.RequiredVerification)
+	}
+}
+
+func TestRunChatTurnSeedsInspectTaskStateForFolderOverview(t *testing.T) {
+	reactRunner := &stubChatTurnRunner{}
+	input := "describe this directory"
+	if err := runChatTurn(context.Background(), reactRunner, input); err != nil {
+		t.Fatal(err)
+	}
+	if reactRunner.taskState == nil {
+		t.Fatal("expected task state to be seeded")
+	}
+	if reactRunner.taskState.Operation != "inspect" {
+		t.Fatalf("operation = %q", reactRunner.taskState.Operation)
+	}
+	if !strings.Contains(reactRunner.taskState.RequiredVerification, "read/search tools") {
 		t.Fatalf("required verification = %q", reactRunner.taskState.RequiredVerification)
 	}
 }
@@ -882,6 +969,65 @@ func TestValidateTaskCompletionRejectsRepoGroundedAnswerWithoutToolUse(t *testin
 	}
 }
 
+func TestValidateTaskCompletionAllowsCasualGreetingWithoutToolUse(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "hello",
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "hello"},
+		},
+	}
+
+	finalText := "Hi! How can I help with your project today? I can read/modify code, run tests, debug failures, implement features, and update configs. Let me know the task and any constraints or priorities."
+	if err := validateTaskCompletion(t.TempDir(), snapshot, finalText); err != nil {
+		t.Fatalf("unexpected err = %v", err)
+	}
+}
+
+func TestValidateTaskCompletionAllowsCasualGreetingWithIllGetStartedWithoutToolUse(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "hi",
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "hi"},
+		},
+	}
+
+	finalText := "Hi! How can I help you today? If you’ve got a task in this repo—bug to fix, test to run, feature to add—tell me what you’d like done and I’ll get started."
+	if err := validateTaskCompletion(t.TempDir(), snapshot, finalText); err != nil {
+		t.Fatalf("unexpected err = %v", err)
+	}
+}
+
+func TestValidateTaskCompletionAllowsCapabilityStatementWithoutInspectionClaim(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "whats this all about",
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "whats this all about"},
+		},
+	}
+
+	finalText := "I’m a coding agent wired into your project directory. I can inspect files, run commands/tests, and make focused changes per your requests."
+	if err := validateTaskCompletion(t.TempDir(), snapshot, finalText); err != nil {
+		t.Fatalf("unexpected err = %v", err)
+	}
+}
+
+func TestValidateTaskCompletionRejectsFirstPersonReadClaimWithoutRepoReads(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "hello",
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "hello"},
+		},
+	}
+
+	err := validateTaskCompletion(t.TempDir(), snapshot, "I read the relevant files and found the runtime entrypoint in internal/runtime/chat.go.")
+	if err == nil {
+		t.Fatal("expected completion rejection")
+	}
+	if !strings.Contains(err.Error(), "claimed inspection without repo reads") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestValidateTaskCompletionRejectsBlockedClaimWithoutToolError(t *testing.T) {
 	snapshot := reactruntime.SessionSnapshot{
 		LastInput: "research the best tui themes for this app",
@@ -901,6 +1047,218 @@ func TestValidateTaskCompletionRejectsBlockedClaimWithoutToolError(t *testing.T)
 	}
 }
 
+func TestValidateTaskCompletionRejectsNoEvidenceClaimAfterRepoReads(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "tell me about this repo",
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "tell me about this repo"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{
+				{ID: "c1", Name: "list_dir", ArgsJSON: `{"path":"."}`},
+				{ID: "c2", Name: "read_file", ArgsJSON: `{"path":"README.md"}`},
+			}},
+			{Role: llm.RoleTool, ToolCallID: "c1", Content: "README.md\ninternal\ncmd"},
+			{Role: llm.RoleTool, ToolCallID: "c2", Content: "Forge is a terminal-first coding agent."},
+		},
+	}
+
+	err := validateTaskCompletion(t.TempDir(), snapshot, "I wasn’t able to inspect the repository contents due to tool-call issues in this session, so I don’t have evidence about what’s inside the repo and won’t speculate.")
+	if err == nil {
+		t.Fatal("expected contradiction rejection")
+	}
+	if !strings.Contains(err.Error(), "contradicted gathered repo evidence") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestValidateTaskCompletionRejectsUnavailableEvidenceClaimAfterRepoReads(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "tell me about this repo",
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "tell me about this repo"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{
+				{ID: "c1", Name: "list_dir", ArgsJSON: `{"path":"."}`},
+				{ID: "c2", Name: "read_file", ArgsJSON: `{"path":"README.md"}`},
+			}},
+			{Role: llm.RoleTool, ToolCallID: "c1", Content: "README.md\ninternal\ncmd"},
+			{Role: llm.RoleTool, ToolCallID: "c2", Content: "Forge is a terminal-first coding agent for local repositories."},
+		},
+	}
+
+	finalText := "- I attempted to inspect ./ (list_dir(.)) and ./README.md (read_file(README.md)), but their outputs are not available in this session, so I don’t have concrete evidence to summarize without guessing.\n- The repository appears to be named \"forge\", but specifics cannot be confirmed without the actual README.md content and root listing.\n- Please share the contents of README.md so I can provide an accurate summary."
+	err := validateTaskCompletion(t.TempDir(), snapshot, finalText)
+	if err == nil {
+		t.Fatal("expected contradiction rejection")
+	}
+	if !strings.Contains(err.Error(), "contradicted gathered repo evidence") {
+		t.Fatalf("err = %v", err)
+	}
+
+	var retryable *reactruntime.RetryableCompletionError
+	if !errors.As(err, &retryable) {
+		t.Fatalf("expected retryable completion error, got %T: %v", err, err)
+	}
+	if !strings.Contains(retryable.Prompt, "tool outputs are already visible") {
+		t.Fatalf("retry prompt = %q", retryable.Prompt)
+	}
+	for _, want := range []string{"README.md", "cmd", "internal"} {
+		if !strings.Contains(retryable.Prompt, want) {
+			t.Fatalf("retry prompt missing %q: %q", want, retryable.Prompt)
+		}
+	}
+}
+
+func TestValidateTaskCompletionRejectsInvisibleContentClaimAfterRepoReads(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "tell me about this repo",
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "tell me about this repo"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{
+				{ID: "c1", Name: "list_dir", ArgsJSON: `{"path":"."}`},
+				{ID: "c2", Name: "read_file", ArgsJSON: `{"path":"README.md"}`},
+			}},
+			{Role: llm.RoleTool, ToolCallID: "c1", Content: "README.md\ninternal\ncmd"},
+			{Role: llm.RoleTool, ToolCallID: "c2", Content: "Forge is a terminal-first coding agent for local repositories."},
+		},
+	}
+
+	finalText := "- I inspected the repository root (.) with list_dir(.) and opened README.md via read_file(README.md), but the actual contents were not returned in this session, so I cannot provide a concrete summary without fabricating details.\n- Because README.md wasn’t visible, I can’t reliably state the repo’s purpose, setup, or usage guidance; and without the root listing output, I can’t cite key files, languages, or directory structure.\n- To keep this accurate and evidence-based, I’m not inferring beyond those two inspected paths: . and README.md."
+	err := validateTaskCompletion(t.TempDir(), snapshot, finalText)
+	if err == nil {
+		t.Fatal("expected contradiction rejection")
+	}
+	if !strings.Contains(err.Error(), "contradicted gathered repo evidence") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestValidateTaskCompletionRejectsGenericRepoSummaryWithoutConcreteAnchors(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "tell me about this repo",
+		Mode:      reactruntime.ModeInspect,
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "tell me about this repo"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{
+				{ID: "c1", Name: "list_dir", ArgsJSON: `{"path":"."}`},
+				{ID: "c2", Name: "read_file", ArgsJSON: `{"path":"README.md"}`},
+			}},
+			{Role: llm.RoleTool, ToolCallID: "c1", Content: "README.md\ncmd/\ndocs/\ngo.mod\ninternal/"},
+			{Role: llm.RoleTool, ToolCallID: "c2", Content: "Forge is a terminal-first coding agent for local repositories.\n- forge make: a legacy writer/auditor pipeline."},
+		},
+	}
+
+	finalText := "Here’s a concise overview based on the top-level materials and README:\n- Name and purpose: A repository named forge that provides a coding automation workflow.\n- Core capabilities: inspection, editing, execution, and validation.\n- Guiding principles: minimal changes, precise searches, and verification."
+	err := validateTaskCompletion(t.TempDir(), snapshot, finalText)
+	if err == nil {
+		t.Fatal("expected generic-summary rejection")
+	}
+	if !strings.Contains(err.Error(), "answer omitted concrete repo anchors") {
+		t.Fatalf("err = %v", err)
+	}
+
+	var retryable *reactruntime.RetryableCompletionError
+	if !errors.As(err, &retryable) {
+		t.Fatalf("expected retryable completion error, got %T: %v", err, err)
+	}
+	for _, want := range []string{"README.md", "go.mod", "cmd/", "internal/"} {
+		if !strings.Contains(retryable.Prompt, want) {
+			t.Fatalf("retry prompt missing %q: %q", want, retryable.Prompt)
+		}
+	}
+	if strings.Contains(retryable.Prompt, ".codex") {
+		t.Fatalf("retry prompt should prefer meaningful repo anchors, got %q", retryable.Prompt)
+	}
+}
+
+func TestValidateTaskCompletionRejectsAnalysisRepoSummaryWithoutConcreteAnchors(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "explain this repo and tell me what needs fixing",
+		TaskState: &reactruntime.TaskState{Operation: "analysis"},
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "explain this repo and tell me what needs fixing"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{
+				{ID: "c1", Name: "list_dir", ArgsJSON: `{"path":"."}`},
+				{ID: "c2", Name: "read_file", ArgsJSON: `{"path":"README.md"}`},
+			}},
+			{Role: llm.RoleTool, ToolCallID: "c1", Content: ".codex\n.gitignore\n.golangci.yml\n.ignore\nREADME.md\ncmd/\ndocs/\ngo.mod\ninternal/"},
+			{Role: llm.RoleTool, ToolCallID: "c2", Content: "Forge is a terminal-first coding agent for local repositories.\n- forge make: a legacy writer/auditor pipeline."},
+		},
+	}
+
+	finalText := strings.Join([]string{
+		"- Root listing (list_dir(.)): only README.md present; no src/, pyproject.toml/package.json, tests/, or CI config files in the top level.",
+		"- Read README.md: a behavioral spec for a coding agent \"forge\".",
+		"- Conclusion: solid operating contract, but spec-only.",
+	}, "\n")
+
+	err := validateTaskCompletion(t.TempDir(), snapshot, finalText)
+	if err == nil {
+		t.Fatal("expected generic-analysis rejection")
+	}
+	if !strings.Contains(err.Error(), "answer omitted concrete repo anchors") {
+		t.Fatalf("err = %v", err)
+	}
+
+	var retryable *reactruntime.RetryableCompletionError
+	if !errors.As(err, &retryable) {
+		t.Fatalf("expected retryable completion error, got %T: %v", err, err)
+	}
+	for _, want := range []string{"README.md", "go.mod", "cmd/", "internal/"} {
+		if !strings.Contains(retryable.Prompt, want) {
+			t.Fatalf("retry prompt missing %q: %q", want, retryable.Prompt)
+		}
+	}
+	if strings.Contains(retryable.Prompt, ".codex") {
+		t.Fatalf("retry prompt should not lead with hidden dotfiles: %q", retryable.Prompt)
+	}
+}
+
+func TestValidateTaskCompletionRejectsRepoSummaryThatOnlyUsesGenericDocsWording(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "tell me about this repo",
+		Mode:      reactruntime.ModeInspect,
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "tell me about this repo"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{
+				{ID: "c1", Name: "list_dir", ArgsJSON: `{"path":"."}`},
+				{ID: "c2", Name: "read_file", ArgsJSON: `{"path":"README.md"}`},
+			}},
+			{Role: llm.RoleTool, ToolCallID: "c1", Content: ".codex\n.gitignore\nREADME.md\ncmd/\ndocs/\ngo.mod\ninternal/"},
+			{Role: llm.RoleTool, ToolCallID: "c2", Content: "Forge is a terminal-first coding agent for local repositories."},
+		},
+	}
+
+	finalText := strings.Join([]string{
+		"- Top-level layout: Inspected the repo root (.) via directory listing to see the project’s top-level structure and confirm the presence of core files.",
+		"- Primary docs: Read README.md (path: README.md) as the main source of truth for the project’s purpose, setup, and usage.",
+		"- Scope and usage: According to README.md, the repo explains what the project is for, how to install its dependencies, how to run it, and how to work with it during development.",
+		"- Contribution/dev notes: README.md also outlines conventions and instructions relevant to contributors (e.g., how to run or verify things locally).",
+	}, "\n")
+
+	err := validateTaskCompletion(t.TempDir(), snapshot, finalText)
+	if err == nil {
+		t.Fatal("expected generic-summary rejection")
+	}
+	if !strings.Contains(err.Error(), "answer omitted concrete repo anchors") {
+		t.Fatalf("err = %v", err)
+	}
+
+	var retryable *reactruntime.RetryableCompletionError
+	if !errors.As(err, &retryable) {
+		t.Fatalf("expected retryable completion error, got %T: %v", err, err)
+	}
+	if !strings.Contains(retryable.Prompt, "only cited README.md") {
+		t.Fatalf("retry prompt = %q", retryable.Prompt)
+	}
+	if !strings.Contains(retryable.Prompt, "\".\" or \"repo root\" do not count") {
+		t.Fatalf("retry prompt = %q", retryable.Prompt)
+	}
+	for _, want := range []string{"go.mod", "cmd/", "internal/"} {
+		if !strings.Contains(retryable.Prompt, want) {
+			t.Fatalf("retry prompt missing %q: %q", want, retryable.Prompt)
+		}
+	}
+}
+
 func TestValidateTaskCompletionAllowsRepoGroundedAnswerWithReadEvidence(t *testing.T) {
 	snapshot := reactruntime.SessionSnapshot{
 		LastInput: "inspect the theme setup in this app",
@@ -912,6 +1270,27 @@ func TestValidateTaskCompletionAllowsRepoGroundedAnswerWithReadEvidence(t *testi
 	}
 
 	if err := validateTaskCompletion(t.TempDir(), snapshot, "I inspected the theme definitions and found the palette entries in chattheme.go."); err != nil {
+		t.Fatalf("unexpected err = %v", err)
+	}
+}
+
+func TestValidateTaskCompletionAllowsRepoSummaryWithConcreteAnchors(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "tell me about this repo",
+		Mode:      reactruntime.ModeInspect,
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "tell me about this repo"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{
+				{ID: "c1", Name: "list_dir", ArgsJSON: `{"path":"."}`},
+				{ID: "c2", Name: "read_file", ArgsJSON: `{"path":"README.md"}`},
+			}},
+			{Role: llm.RoleTool, ToolCallID: "c1", Content: "README.md\ncmd/\ndocs/\ngo.mod\ninternal/"},
+			{Role: llm.RoleTool, ToolCallID: "c2", Content: "Forge is a terminal-first coding agent for local repositories.\n- forge make: a legacy writer/auditor pipeline.\n- provider-aware model routing across multiple backends."},
+		},
+	}
+
+	finalText := "- README.md describes Forge as a terminal-first coding agent for local repositories.\n- The repo root includes cmd/, docs/, internal/, and go.mod.\n- README.md also calls out forge make as a retained legacy writer/auditor pipeline and provider-aware model routing."
+	if err := validateTaskCompletion(t.TempDir(), snapshot, finalText); err != nil {
 		t.Fatalf("unexpected err = %v", err)
 	}
 }
@@ -1128,7 +1507,7 @@ func TestValidateTaskCompletionRejectsReviewModeAnswerWithoutFindings(t *testing
 		},
 	}
 
-	err := validateTaskCompletion(t.TempDir(), snapshot, "The repo generally looks solid. I would focus on a few cleanup opportunities next.")
+	err := validateTaskCompletion(t.TempDir(), snapshot, "The repo generally looks solid based on internal/runtime/chat.go. I would focus on a few cleanup opportunities next.")
 	if err == nil {
 		t.Fatal("expected retryable completion rejection")
 	}
@@ -1157,8 +1536,8 @@ func TestValidateTaskCompletionAllowsReviewModeAnswerWithFindings(t *testing.T) 
 	}
 
 	finalText := strings.Join([]string{
-		"- Finding: `detectTaskStateFromInput` still overlaps generic analysis and review routing in one function, which increases classifier drift risk as more modes are added.",
-		"- Finding: completion enforcement now spans several mode heuristics in one file, so the next mode should probably extract shared helpers before this turns into another monolith.",
+		"- Finding: [internal/runtime/chat.go] still overlaps generic analysis and review routing in one function, which increases classifier drift risk as more modes are added.",
+		"- Finding: [internal/runtime/chat.go] and [internal/runtime/completion_enforcement.go] now share several mode heuristics, so the next mode should probably extract shared helpers before this turns into another monolith.",
 		"Summary: the current direction is good, but review-specific runtime steering should move into the loop next.",
 	}, "\n")
 
