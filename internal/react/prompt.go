@@ -162,7 +162,7 @@ func taskStateContext(snapshot SessionSnapshot) string {
 		parts = append(parts, "Analysis guidance: gather enough source-grounded evidence to support the answer, avoid repetitive repo-wide searching once the pattern is clear, and summarize findings or recommendations instead of continuing low-yield exploration.")
 	}
 	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "inspect") {
-		parts = append(parts, "Inspection guidance: your first action should be a repo read/search tool call, not prose. Inspect the relevant files or symbols before answering, and keep the answer bounded to what the evidence actually shows.")
+		parts = append(parts, "Inspection guidance: keep the answer bounded to what the inspected repo evidence actually shows.")
 	}
 	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "implement") {
 		parts = append(parts, "Implementation guidance: do not start with planning prose. First inspect the relevant code with repo tools, then make the change with edit tools, and only claim completion after relevant verification. If repeated searches on the same file are not resolving the insertion point, read that file directly instead of trying more search patterns. If you need interactive or long-running terminal work such as dev servers, watchers, REPLs, or TUIs, use exec_session_start instead of run_command.")

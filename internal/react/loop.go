@@ -45,6 +45,7 @@ type Runner struct {
 	validationWorkflow    validationWorkflowState
 	repeatWorkflow        repeatToolCallState
 	legacyXMLAnswerOnly   bool
+	pendingRetryPrompt    string
 	completionCheck       func(SessionSnapshot, string) error
 	turnComplete          func(SessionSnapshot)
 }
@@ -162,6 +163,7 @@ func (r *Runner) Run(ctx context.Context, input string) error {
 	}
 	turn := r.session.RecordInput(prompt)
 	r.legacyXMLAnswerOnly = false
+	r.pendingRetryPrompt = ""
 	if r.progress != nil {
 		r.progress(fmt.Sprintf("react runtime: executing turn %d", turn))
 	}
@@ -216,6 +218,7 @@ func (r *Runner) ClearHistory() {
 	r.validationWorkflow = validationWorkflowState{}
 	r.repeatWorkflow = repeatToolCallState{}
 	r.legacyXMLAnswerOnly = false
+	r.pendingRetryPrompt = ""
 	r.session.Clear()
 }
 
@@ -336,7 +339,7 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 			if errors.As(err, &retryable) && completionRetries < maxCompletionRetriesPerTurn {
 				completionRetries++
 				if prompt := strings.TrimSpace(retryable.Prompt); prompt != "" {
-					r.session.AppendUserMessage(prompt)
+					r.pendingRetryPrompt = prompt
 				}
 				if r.progress != nil {
 					r.progress("react runtime: retrying after non-compliant completion")
@@ -368,6 +371,9 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 // Returns non-nil calls when the model requested tool executions.
 func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.NativeToolCaller, toolDefs []llm.ToolDef) ([]llm.NativeToolCall, error) {
 	messages := r.session.Messages(r.currentSystemPrompt())
+	if prompt := strings.TrimSpace(r.pendingRetryPrompt); prompt != "" {
+		messages = injectSystemMessageBeforeHistory(messages, "Runtime correction for the previous attempt:\n"+prompt)
+	}
 	opts := llm.NativeToolOptions{}
 	if snap := r.session.Snapshot(); taskRequiresFirstToolAction(snap) {
 		opts.RequireToolCall = true
@@ -408,6 +414,7 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 	}
 
 	if len(toolCalls) > 0 {
+		r.pendingRetryPrompt = ""
 		r.session.AppendAssistantWithToolCalls(toolCalls)
 		return toolCalls, nil
 	}
@@ -417,6 +424,7 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 	if finalText == "" {
 		return nil, fmt.Errorf("react runtime: empty native response")
 	}
+	r.pendingRetryPrompt = ""
 	if legacyCall, ok := parseLegacyXMLToolCall(finalText); ok {
 		if r.legacyXMLAnswerOnly {
 			return nil, NewRetryableCompletionError(
@@ -505,7 +513,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 				r.renderer.ToolResult(call.Name, msg, "", true)
 			}
 			r.session.AppendNativeToolResult(call.ID, "blocked: "+msg)
-			r.session.AppendUserMessage(msg)
+			r.pendingRetryPrompt = msg
 			continue
 		}
 		tool, ok := r.tools.Get(call.Name)
@@ -573,10 +581,29 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 		r.updateValidationWorkflow(call.Name, args, result)
 		r.updateRepeatToolCallWorkflow(call.Name, args, result)
 		if isLegacyXMLCall(call) {
-			r.session.AppendUserMessage(legacyXMLContinuationPrompt(call, result))
+			r.pendingRetryPrompt = legacyXMLContinuationPrompt(call, result)
 		}
 	}
 	return nil
+}
+
+func injectSystemMessageBeforeHistory(messages []llm.Message, content string) []llm.Message {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return messages
+	}
+	insertAt := len(messages)
+	for i, msg := range messages {
+		if msg.Role != llm.RoleSystem {
+			insertAt = i
+			break
+		}
+	}
+	injected := llm.Message{Role: llm.RoleSystem, Content: content}
+	messages = append(messages, llm.Message{})
+	copy(messages[insertAt+1:], messages[insertAt:])
+	messages[insertAt] = injected
+	return messages
 }
 
 func (r *Runner) currentSystemPrompt() string {
@@ -803,7 +830,7 @@ func inspectFirstActionPromptHook(_ context.Context, event hooks.Event) []hooks.
 	}
 	return []hooks.Result{hooks.OverlayResult{
 		Key:        "inspect_first_action",
-		Content:    "Repo inspection workflow active. Your first assistant response for this turn must be one or more repo read/search tool calls only. Do not send plain-text preamble before the first tool call. If the user did not name a specific file, start with list_dir on the repo root or read_file on README.md, then continue from that evidence.",
+		Content:    "Repo inspection workflow active. Start with a repo read/search tool call instead of prose. For a general overview, list_dir(.) or read_file(README.md) is usually enough to begin.",
 		Priority:   hooks.PriorityHigh,
 		Provenance: "runtime",
 	}}

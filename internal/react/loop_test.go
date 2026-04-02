@@ -307,7 +307,12 @@ func TestRunnerRejectsFinalAnswerWhenCompletionCheckFails(t *testing.T) {
 }
 
 func TestRunnerRetriesRetryableCompletionFailureOnce(t *testing.T) {
-	driver := &nativeScriptedDriver{responses: []string{"I'll inspect the repo first.", "Inspected the repo and found the theme entrypoints."}}
+	driver := &nativeSequenceDriver{
+		steps: [][]llm.Token{
+			{{Text: "I'll inspect the repo first."}},
+			{{Text: "Inspected the repo and found the theme entrypoints."}},
+		},
+	}
 	session := NewSession()
 	renderer := &recordingRenderer{}
 	r := NewRunner(Config{
@@ -332,11 +337,21 @@ func TestRunnerRetriesRetryableCompletionFailureOnce(t *testing.T) {
 		t.Fatalf("driver calls = %d, want 2", driver.callCount)
 	}
 	snap := session.Snapshot()
-	if len(snap.History) != 3 {
+	if len(snap.History) != 2 {
 		t.Fatalf("history = %#v", snap.History)
 	}
-	if snap.History[1].Role != llm.RoleUser || !strings.Contains(snap.History[1].Content, "You have not inspected") {
-		t.Fatalf("history retry prompt = %#v", snap.History)
+	if len(driver.allMsgs) < 2 {
+		t.Fatalf("driver messages = %#v", driver.allMsgs)
+	}
+	foundRetryPrompt := false
+	for _, msg := range driver.allMsgs[1] {
+		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "You have not inspected") {
+			foundRetryPrompt = true
+			break
+		}
+	}
+	if !foundRetryPrompt {
+		t.Fatalf("hidden retry prompt missing from second request: %#v", driver.allMsgs[1])
 	}
 	if got := snap.Turns[0].FinalResponse; got != "Inspected the repo and found the theme entrypoints." {
 		t.Fatalf("final response = %q", got)
@@ -417,19 +432,27 @@ func TestRunnerInspectTurnRequiresRepoReadBeforePlainTextCompletion(t *testing.T
 		t.Fatalf("driver calls = %d, want 3", driver.callCount)
 	}
 	snap := session.Snapshot()
-	if len(snap.History) < 4 {
+	if len(snap.History) < 3 {
 		t.Fatalf("history = %#v", snap.History)
 	}
-	foundRetryPrompt := false
 	for _, msg := range snap.History {
-		if msg.Role == llm.RoleUser && (strings.Contains(msg.Content, "Your next assistant message must be one or more tool calls only") ||
+		if msg.Role == llm.RoleUser && (strings.Contains(msg.Content, "Start with a repo read/search tool call instead of prose") ||
 			strings.Contains(msg.Content, "emit exactly one legacy XML tool call")) {
-			foundRetryPrompt = true
-			break
+			t.Fatalf("retry prompt should not be appended as user history: %#v", snap.History)
+		}
+	}
+	foundRetryPrompt := false
+	if len(driver.allMsgs) >= 2 {
+		for _, msg := range driver.allMsgs[1] {
+			if msg.Role == llm.RoleSystem && (strings.Contains(msg.Content, "Start with a repo read/search tool call instead of prose") ||
+				strings.Contains(msg.Content, "emit exactly one legacy XML tool call")) {
+				foundRetryPrompt = true
+				break
+			}
 		}
 	}
 	if !foundRetryPrompt {
-		t.Fatalf("retry prompt missing from history: %#v", snap.History)
+		t.Fatalf("hidden retry prompt missing from second request: %#v", driver.allMsgs)
 	}
 	if got := snap.Turns[0].FinalResponse; got != "Forge is a coding agent for working in the local project directory." {
 		t.Fatalf("final response = %q", got)
@@ -498,12 +521,20 @@ func TestRunnerAnalysisTurnRequiresRepoReadBeforePlainTextCompletion(t *testing.
 	for _, msg := range session.Snapshot().History {
 		if msg.Role == llm.RoleUser && (strings.Contains(msg.Content, "Repo tools are available in this session") ||
 			strings.Contains(msg.Content, "emit exactly one legacy XML tool call")) {
-			foundRetryPrompt = true
-			break
+			t.Fatalf("retry prompt should not be appended as user history: %#v", session.Snapshot().History)
+		}
+	}
+	if len(driver.allMsgs) >= 2 {
+		for _, msg := range driver.allMsgs[1] {
+			if msg.Role == llm.RoleSystem && (strings.Contains(msg.Content, "Repo tools are available in this session") ||
+				strings.Contains(msg.Content, "emit exactly one legacy XML tool call")) {
+				foundRetryPrompt = true
+				break
+			}
 		}
 	}
 	if !foundRetryPrompt {
-		t.Fatalf("expected repo-tool retry prompt, history=%#v", session.Snapshot().History)
+		t.Fatalf("expected hidden repo-tool retry prompt, allMsgs=%#v", driver.allMsgs)
 	}
 	if got := session.Snapshot().Turns[0].FinalResponse; got == "" {
 		t.Fatal("expected final response after tool evidence")
@@ -702,7 +733,7 @@ func TestRunnerPromptHookOutputIncludesRuntimeGuidance(t *testing.T) {
 
 		output := r.promptHookOutput(context.Background())
 
-		if got := hookOverlayContent(output, "inspect_first_action"); !strings.Contains(got, "first assistant response for this turn must be one or more repo read/search tool calls only") {
+		if got := hookOverlayContent(output, "inspect_first_action"); !strings.Contains(got, "Start with a repo read/search tool call instead of prose") {
 			t.Fatalf("inspect_first_action = %q", got)
 		}
 	})
@@ -1286,6 +1317,7 @@ func TestRunnerFallsBackToLegacyXMLToolCallWhenNativeProviderIgnoresTools(t *tes
 
 type nativeXMLRepeatDriver struct {
 	callCount int
+	allMsgs   [][]llm.Message
 }
 
 func (d *nativeXMLRepeatDriver) Name() string { return "native-xml-repeat-driver" }
@@ -1295,9 +1327,10 @@ func (d *nativeXMLRepeatDriver) Stream(_ context.Context, _ []llm.Message, out c
 	return errors.New("Stream should not be called on a NativeToolCaller driver")
 }
 
-func (d *nativeXMLRepeatDriver) StreamWithTools(_ context.Context, _ []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
+func (d *nativeXMLRepeatDriver) StreamWithTools(_ context.Context, msgs []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
 	defer close(out)
 	d.callCount++
+	d.allMsgs = append(d.allMsgs, append([]llm.Message(nil), msgs...))
 	switch d.callCount {
 	case 1:
 		out <- llm.Token{Text: "I need tool access before I can inspect the repository."}
@@ -1342,20 +1375,31 @@ func TestRunnerBlocksRepeatedLegacyXMLToolCall(t *testing.T) {
 	if got := r.LastResponse(); got != "Final answer from the existing repo evidence." {
 		t.Fatalf("last response = %q", got)
 	}
-	foundRepeatBlock := false
 	for _, msg := range session.Snapshot().History {
 		if msg.Role == llm.RoleUser && strings.Contains(msg.Content, "Do not repeat the same XML list_dir call") && strings.Contains(msg.Content, "plain text only") {
-			foundRepeatBlock = true
+			t.Fatalf("repeated-call prompt should not be appended as user history: %#v", session.Snapshot().History)
+		}
+	}
+	foundRepeatBlock := false
+	for _, msgs := range driver.allMsgs {
+		for _, msg := range msgs {
+			if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Do not repeat the same XML list_dir call") && strings.Contains(msg.Content, "plain text only") {
+				foundRepeatBlock = true
+				break
+			}
+		}
+		if foundRepeatBlock {
 			break
 		}
 	}
 	if !foundRepeatBlock {
-		t.Fatalf("expected repeated-call block prompt in history: %#v", session.Snapshot().History)
+		t.Fatalf("expected hidden repeated-call block prompt, allMsgs=%#v", driver.allMsgs)
 	}
 }
 
 type nativeXMLAnswerOnlyDriver struct {
 	callCount int
+	allMsgs   [][]llm.Message
 }
 
 func (d *nativeXMLAnswerOnlyDriver) Name() string { return "native-xml-answer-only-driver" }
@@ -1368,6 +1412,7 @@ func (d *nativeXMLAnswerOnlyDriver) Stream(_ context.Context, _ []llm.Message, o
 func (d *nativeXMLAnswerOnlyDriver) StreamWithTools(_ context.Context, msgs []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
 	defer close(out)
 	d.callCount++
+	d.allMsgs = append(d.allMsgs, append([]llm.Message(nil), msgs...))
 	switch d.callCount {
 	case 1:
 		out <- llm.Token{Text: "I need tool access before I can inspect the repository."}
@@ -1380,15 +1425,15 @@ func (d *nativeXMLAnswerOnlyDriver) StreamWithTools(_ context.Context, msgs []ll
 	case 5:
 		out <- llm.Token{Text: "<tool_call>\n{\"name\":\"read_file\",\"args\":{\"path\":\"README.md\"}}\n</tool_call>"}
 	case 6:
-		lastUser := ""
-		for i := len(msgs) - 1; i >= 0; i-- {
-			if msgs[i].Role == llm.RoleUser {
-				lastUser = msgs[i].Content
+		foundAnswerOnlyPrompt := false
+		for _, msg := range msgs {
+			if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "answer-only mode") {
+				foundAnswerOnlyPrompt = true
 				break
 			}
 		}
-		if !strings.Contains(lastUser, "answer-only mode") {
-			return fmt.Errorf("expected answer-only retry prompt, got %q", lastUser)
+		if !foundAnswerOnlyPrompt {
+			return fmt.Errorf("expected hidden answer-only retry prompt, got %#v", msgs)
 		}
 		out <- llm.Token{Text: "Forge is a terminal-first coding agent for local repositories with an interactive chat runtime plus a legacy make pipeline."}
 	default:
@@ -1444,15 +1489,25 @@ func TestRunnerEscalatesRepeatedLegacyXMLCallToAnswerOnlyMode(t *testing.T) {
 	if got := r.LastResponse(); !strings.Contains(got, "terminal-first coding agent") {
 		t.Fatalf("last response = %q", got)
 	}
-	foundAnswerOnlyPrompt := false
 	for _, msg := range session.Snapshot().History {
 		if msg.Role == llm.RoleUser && strings.Contains(msg.Content, "answer-only mode") {
-			foundAnswerOnlyPrompt = true
+			t.Fatalf("answer-only retry prompt should not be appended as user history: %#v", session.Snapshot().History)
+		}
+	}
+	foundAnswerOnlyPrompt := false
+	for _, msgs := range driver.allMsgs {
+		for _, msg := range msgs {
+			if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "answer-only mode") {
+				foundAnswerOnlyPrompt = true
+				break
+			}
+		}
+		if foundAnswerOnlyPrompt {
 			break
 		}
 	}
 	if !foundAnswerOnlyPrompt {
-		t.Fatalf("expected answer-only retry prompt in history: %#v", session.Snapshot().History)
+		t.Fatalf("expected hidden answer-only retry prompt, allMsgs=%#v", driver.allMsgs)
 	}
 }
 
