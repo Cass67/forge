@@ -297,7 +297,11 @@ func (d *OpenAIDriver) chatCompletionsFallback(ctx context.Context, messages []l
 }
 
 func (d *OpenAIDriver) streamResponses(ctx context.Context, messages []llm.Message, out chan<- llm.Token) error {
-	params, err := d.responsesParams(ctx, messages)
+	return d.streamResponsesWithTools(ctx, messages, nil, llm.NativeToolOptions{}, out)
+}
+
+func (d *OpenAIDriver) streamResponsesWithTools(ctx context.Context, messages []llm.Message, tools []llm.ToolDef, opts llm.NativeToolOptions, out chan<- llm.Token) error {
+	params, err := d.responsesParamsWithTools(ctx, messages, tools, opts)
 	if err != nil {
 		return err
 	}
@@ -307,6 +311,8 @@ func (d *OpenAIDriver) streamResponses(ctx context.Context, messages []llm.Messa
 
 	stream := d.client.Responses.NewStreaming(ctx, params.params)
 	var responseID string
+	var outputChars int
+	var completedOutput []responses.ResponseOutputItemUnion
 	for stream.Next() {
 		evt := stream.Current()
 		if quota := copilot.ExtractQuotaJSON(evt.RawJSON()); quota != nil {
@@ -322,6 +328,7 @@ func (d *OpenAIDriver) streamResponses(ctx context.Context, messages []llm.Messa
 			if event.Delta == "" {
 				continue
 			}
+			outputChars += len(event.Delta)
 			select {
 			case out <- llm.Token{Text: event.Delta}:
 			case <-ctx.Done():
@@ -329,6 +336,7 @@ func (d *OpenAIDriver) streamResponses(ctx context.Context, messages []llm.Messa
 			}
 		case responses.ResponseCompletedEvent:
 			responseID = event.Response.ID
+			completedOutput = append([]responses.ResponseOutputItemUnion(nil), event.Response.Output...)
 			usage := llm.Usage{}
 			if event.Response.Usage.InputTokens > 0 || event.Response.Usage.OutputTokens > 0 {
 				usage.InputTokens = int(event.Response.Usage.InputTokens)
@@ -352,12 +360,20 @@ func (d *OpenAIDriver) streamResponses(ctx context.Context, messages []llm.Messa
 	if err := stream.Err(); err != nil {
 		return d.wrapStreamError("responses", err)
 	}
+	if err := emitResponsesFunctionCalls(ctx, out, completedOutput); err != nil {
+		return err
+	}
 	if responseID != "" && d.shouldPersistResponsesState() {
 		d.mu.Lock()
 		d.prevResponseID = responseID
 		d.lastMessages = append([]llm.Message(nil), messages...)
 		d.mu.Unlock()
 	}
+	d.mu.Lock()
+	if d.lastUsage.OutputTokens == 0 && outputChars > 0 {
+		d.lastUsage.OutputTokens = (outputChars + 3) / 4
+	}
+	d.mu.Unlock()
 	return nil
 }
 
@@ -367,6 +383,10 @@ type responseParamsResult struct {
 }
 
 func (d *OpenAIDriver) responsesParams(ctx context.Context, messages []llm.Message) (responseParamsResult, error) {
+	return d.responsesParamsWithTools(ctx, messages, nil, llm.NativeToolOptions{})
+}
+
+func (d *OpenAIDriver) responsesParamsWithTools(ctx context.Context, messages []llm.Message, tools []llm.ToolDef, opts llm.NativeToolOptions) (responseParamsResult, error) {
 	instructions, inputMessages, previousResponseID, requestMode, err := d.responsesRequestState(ctx, messages)
 	if err != nil {
 		return responseParamsResult{}, err
@@ -395,6 +415,14 @@ func (d *OpenAIDriver) responsesParams(ctx context.Context, messages []llm.Messa
 	}
 	if d.params.Temperature >= 0 && d.modelSupportsTemperature() {
 		params.Temperature = openai.Float(d.params.Temperature)
+	}
+	if len(tools) > 0 {
+		params.Tools = toolDefsToResponses(tools)
+		if opts.RequireToolCall {
+			params.ToolChoice = responses.ResponseNewParamsToolChoiceUnion{
+				OfToolChoiceMode: openai.Opt(responses.ToolChoiceOptionsRequired),
+			}
+		}
 	}
 	return responseParamsResult{params: params, requestMode: requestMode}, nil
 }
@@ -655,25 +683,7 @@ func (d *OpenAIDriver) shouldFallbackAfterEmptyStream() bool {
 func toolDefsToOpenAI(defs []llm.ToolDef) []openai.ChatCompletionToolParam {
 	tools := make([]openai.ChatCompletionToolParam, 0, len(defs))
 	for _, d := range defs {
-		properties := make(map[string]any, len(d.Parameters))
-		required := make([]string, 0)
-		for _, p := range d.Parameters {
-			prop := map[string]any{"type": p.Type}
-			if p.Description != "" {
-				prop["description"] = p.Description
-			}
-			properties[p.Name] = prop
-			if p.Required {
-				required = append(required, p.Name)
-			}
-		}
-		schema := map[string]any{
-			"type":       "object",
-			"properties": properties,
-		}
-		if len(required) > 0 {
-			schema["required"] = required
-		}
+		schema := toolDefSchema(d)
 		tools = append(tools, openai.ChatCompletionToolParam{
 			Function: shared.FunctionDefinitionParam{
 				Name:        d.Name,
@@ -683,6 +693,45 @@ func toolDefsToOpenAI(defs []llm.ToolDef) []openai.ChatCompletionToolParam {
 		})
 	}
 	return tools
+}
+
+func toolDefsToResponses(defs []llm.ToolDef) []responses.ToolUnionParam {
+	tools := make([]responses.ToolUnionParam, 0, len(defs))
+	for _, d := range defs {
+		schema := toolDefSchema(d)
+		tools = append(tools, responses.ToolUnionParam{
+			OfFunction: &responses.FunctionToolParam{
+				Name:        d.Name,
+				Description: param.NewOpt(d.Description),
+				Parameters:  schema,
+				Strict:      openai.Bool(true),
+			},
+		})
+	}
+	return tools
+}
+
+func toolDefSchema(def llm.ToolDef) map[string]any {
+	properties := make(map[string]any, len(def.Parameters))
+	required := make([]string, 0)
+	for _, p := range def.Parameters {
+		prop := map[string]any{"type": p.Type}
+		if p.Description != "" {
+			prop["description"] = p.Description
+		}
+		properties[p.Name] = prop
+		if p.Required {
+			required = append(required, p.Name)
+		}
+	}
+	schema := map[string]any{
+		"type":       "object",
+		"properties": properties,
+	}
+	if len(required) > 0 {
+		schema["required"] = required
+	}
+	return schema
 }
 
 // driverAppendMissingJSONClosers appends missing closing braces/brackets to raw JSON.
@@ -805,7 +854,7 @@ func (d *OpenAIDriver) StreamWithTools(ctx context.Context, messages []llm.Messa
 func (d *OpenAIDriver) StreamWithToolsOptions(ctx context.Context, messages []llm.Message, tools []llm.ToolDef, opts llm.NativeToolOptions, out chan<- llm.Token) error {
 	defer close(out)
 	if d.useResponsesAPI() {
-		return d.streamResponses(ctx, messages, out)
+		return d.streamResponsesWithTools(ctx, messages, tools, opts, out)
 	}
 
 	params := d.chatCompletionParamsWithTools(messages, opts)
@@ -907,11 +956,55 @@ func toResponseInput(msgs []llm.Message) []responses.ResponseInputItemUnionParam
 			out = append(out, responses.ResponseInputItemParamOfMessage(m.Content, responses.EasyInputMessageRoleSystem))
 		case llm.RoleUser:
 			out = append(out, responses.ResponseInputItemParamOfMessage(m.Content, responses.EasyInputMessageRoleUser))
+		case llm.RoleTool:
+			if strings.TrimSpace(m.ToolCallID) == "" {
+				continue
+			}
+			out = append(out, responses.ResponseInputItemParamOfFunctionCallOutput(m.ToolCallID, m.Content))
 		case llm.RoleAssistant:
-			out = append(out, responses.ResponseInputItemParamOfMessage(m.Content, responses.EasyInputMessageRoleAssistant))
+			if strings.TrimSpace(m.Content) != "" {
+				out = append(out, responses.ResponseInputItemParamOfMessage(m.Content, responses.EasyInputMessageRoleAssistant))
+			}
+			for _, tc := range m.ToolCalls {
+				id := strings.TrimSpace(tc.ID)
+				if id == "" {
+					continue
+				}
+				out = append(out, responses.ResponseInputItemParamOfFunctionCall(tc.ArgsJSON, id, tc.Name))
+			}
 		}
 	}
 	return out
+}
+
+func emitResponsesFunctionCalls(ctx context.Context, out chan<- llm.Token, items []responses.ResponseOutputItemUnion) error {
+	for i, item := range items {
+		call, ok := item.AsAny().(responses.ResponseFunctionToolCall)
+		if !ok {
+			continue
+		}
+		name := strings.TrimSpace(call.Name)
+		if name == "" {
+			continue
+		}
+		id := strings.TrimSpace(call.CallID)
+		if id == "" {
+			id = strings.TrimSpace(call.ID)
+		}
+		if id == "" {
+			id = fmt.Sprintf("call_%d", i)
+		}
+		argsJSON := repairToolCallArgsJSON(call.Arguments)
+		if argsJSON == "" {
+			argsJSON = "{}"
+		}
+		select {
+		case out <- llm.Token{ToolCall: &llm.NativeToolCall{ID: id, Name: name, ArgsJSON: argsJSON}}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
 }
 
 func debugCopilotQuota(source, model string, quota *llm.CopilotQuota, raw string) {

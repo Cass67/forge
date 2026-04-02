@@ -732,6 +732,145 @@ func TestToolDefsToOpenAIShape(t *testing.T) {
 	}
 }
 
+func TestStreamWithToolsResponsesSendsToolsAndEmitsToolCalls(t *testing.T) {
+	t.Parallel()
+
+	type requestTool struct {
+		Type        string `json:"type"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Strict      *bool  `json:"strict"`
+		Parameters  struct {
+			Type       string                    `json:"type"`
+			Required   []string                  `json:"required"`
+			Properties map[string]map[string]any `json:"properties"`
+		} `json:"parameters"`
+	}
+	type requestBody struct {
+		Model      string          `json:"model"`
+		ToolChoice json.RawMessage `json:"tool_choice"`
+		Tools      []requestTool   `json:"tools"`
+	}
+
+	var body requestBody
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/responses"; got != want {
+			t.Fatalf("path = %q, want %q", got, want)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"sequence_number\":1,\"response\":{\"id\":\"resp_test\",\"object\":\"response\",\"created_at\":1,\"model\":\"gpt-5.4\",\"output\":[{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_list_dir\",\"name\":\"list_dir\",\"arguments\":\"{\\\"path\\\":\\\".\\\"}\"}],\"usage\":{\"input_tokens\":12,\"output_tokens\":3}}}\n\n"))
+	}))
+	defer srv.Close()
+
+	d := NewCustomCompatProvider("mycorp", "sk-test", srv.URL, "mycorp/gpt-5.4", "gpt-5.4", true, nil)
+	tools := []llm.ToolDef{
+		{
+			Name:        "list_dir",
+			Description: "List a directory",
+			Parameters: []llm.ToolParam{
+				{Name: "path", Type: "string", Description: "directory path", Required: true},
+			},
+		},
+	}
+	out := make(chan llm.Token, 8)
+	if err := d.StreamWithToolsOptions(
+		context.Background(),
+		[]llm.Message{{Role: llm.RoleUser, Content: "inspect the repo"}},
+		tools,
+		llm.NativeToolOptions{RequireToolCall: true},
+		out,
+	); err != nil {
+		t.Fatalf("StreamWithToolsOptions() error = %v", err)
+	}
+
+	var toks []llm.Token
+	for tok := range out {
+		toks = append(toks, tok)
+	}
+
+	if got, want := body.Model, "gpt-5.4"; got != want {
+		t.Fatalf("model = %q, want %q", got, want)
+	}
+	if got, want := strings.TrimSpace(string(body.ToolChoice)), "\"required\""; got != want {
+		t.Fatalf("tool_choice = %q, want %q", got, want)
+	}
+	if len(body.Tools) != 1 {
+		t.Fatalf("tools = %#v, want 1 tool", body.Tools)
+	}
+	if got, want := body.Tools[0].Type, "function"; got != want {
+		t.Fatalf("tool type = %q, want %q", got, want)
+	}
+	if body.Tools[0].Strict == nil || !*body.Tools[0].Strict {
+		t.Fatalf("strict = %#v, want true", body.Tools[0].Strict)
+	}
+	if got, want := body.Tools[0].Name, "list_dir"; got != want {
+		t.Fatalf("tool name = %q, want %q", got, want)
+	}
+	if got, want := body.Tools[0].Parameters.Type, "object"; got != want {
+		t.Fatalf("tool parameters.type = %q, want %q", got, want)
+	}
+	if len(body.Tools[0].Parameters.Required) != 1 || body.Tools[0].Parameters.Required[0] != "path" {
+		t.Fatalf("tool required = %#v, want [path]", body.Tools[0].Parameters.Required)
+	}
+	if got := body.Tools[0].Parameters.Properties["path"]["description"]; got != "directory path" {
+		t.Fatalf("tool path description = %#v, want %q", got, "directory path")
+	}
+	if len(toks) != 1 || toks[0].ToolCall == nil {
+		t.Fatalf("tokens = %#v, want one tool call token", toks)
+	}
+	if got, want := toks[0].ToolCall.ID, "call_list_dir"; got != want {
+		t.Fatalf("tool call id = %q, want %q", got, want)
+	}
+	if got, want := toks[0].ToolCall.Name, "list_dir"; got != want {
+		t.Fatalf("tool call name = %q, want %q", got, want)
+	}
+	if got, want := toks[0].ToolCall.ArgsJSON, `{"path":"."}`; got != want {
+		t.Fatalf("tool call args = %q, want %q", got, want)
+	}
+}
+
+func TestToResponseInputPreservesNativeToolHistory(t *testing.T) {
+	msgs := []llm.Message{
+		{Role: llm.RoleUser, Content: "inspect the repo"},
+		{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{
+			{ID: "call_list_dir", Name: "list_dir", ArgsJSON: `{"path":"."}`},
+		}},
+		{Role: llm.RoleTool, ToolCallID: "call_list_dir", Content: "README.md\ninternal"},
+	}
+
+	out := toResponseInput(msgs)
+	if len(out) != 3 {
+		t.Fatalf("want 3 input items, got %d", len(out))
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	s := string(b)
+	if !strings.Contains(s, `"type":"function_call"`) {
+		t.Fatalf("expected function_call in %s", s)
+	}
+	if !strings.Contains(s, `"call_id":"call_list_dir"`) {
+		t.Fatalf("expected call_id in %s", s)
+	}
+	if !strings.Contains(s, `"name":"list_dir"`) {
+		t.Fatalf("expected function name in %s", s)
+	}
+	if !strings.Contains(s, `"type":"function_call_output"`) {
+		t.Fatalf("expected function_call_output in %s", s)
+	}
+	var items []map[string]any
+	if err := json.Unmarshal(b, &items); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if got, ok := items[2]["output"].(string); !ok || got != "README.md\ninternal" {
+		t.Fatalf("tool output = %#v, want %q", items[2]["output"], "README.md\ninternal")
+	}
+}
+
 func TestRepairToolCallArgsJSON(t *testing.T) {
 	tests := []struct {
 		name     string
