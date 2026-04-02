@@ -325,7 +325,7 @@ func RunChatLive(setup *ChatSetup) {
 			}
 		},
 		Progress: func(text string) {
-			evRenderer.Info(text)
+			evRenderer.Progress(text)
 		},
 		CompactionMaxFailures: setup.Config.Resilience.CompactionMaxFailures,
 		Interactive:           true,
@@ -601,7 +601,7 @@ func RunChatConsole(setup *ChatSetup) {
 			}
 		},
 		Progress: func(text string) {
-			renderer.Info(text)
+			renderer.Progress(text)
 		},
 		CompactionMaxFailures: setup.Config.Resilience.CompactionMaxFailures,
 		Interactive:           true,
