@@ -41,6 +41,7 @@ func (d *debugMockDriver) ResetConversation() { d.reset = true }
 type debugNativeToolDriver struct {
 	lastMessages []llm.Message
 	lastTools    []llm.ToolDef
+	lastOpts     []llm.NativeToolOptions
 }
 
 func (d *debugNativeToolDriver) Name() string { return "debug-native-tool" }
@@ -51,9 +52,14 @@ func (d *debugNativeToolDriver) Stream(_ context.Context, _ []llm.Message, out c
 }
 
 func (d *debugNativeToolDriver) StreamWithTools(_ context.Context, messages []llm.Message, tools []llm.ToolDef, out chan<- llm.Token) error {
+	return d.StreamWithToolsOptions(context.Background(), messages, tools, llm.NativeToolOptions{}, out)
+}
+
+func (d *debugNativeToolDriver) StreamWithToolsOptions(_ context.Context, messages []llm.Message, tools []llm.ToolDef, opts llm.NativeToolOptions, out chan<- llm.Token) error {
 	defer close(out)
 	d.lastMessages = append([]llm.Message(nil), messages...)
 	d.lastTools = append([]llm.ToolDef(nil), tools...)
+	d.lastOpts = append(d.lastOpts, opts)
 	out <- llm.Token{ToolCall: &llm.NativeToolCall{
 		ID:       "call_1",
 		Name:     "run_command",
@@ -141,14 +147,46 @@ func TestEnableChatDebugLogsNativeToolCalls(t *testing.T) {
 	}
 
 	lines := readDebugLines(t, path)
-	var entry map[string]any
-	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &entry); err != nil {
-		t.Fatal(err)
+	var requestEntry map[string]any
+	for _, line := range lines {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatal(err)
+		}
+		if entry["msg"] == "llm.request" {
+			requestEntry = entry
+			break
+		}
 	}
-	fields, _ := entry["fields"].(map[string]any)
+	if requestEntry == nil {
+		t.Fatalf("expected llm.request entry, got %v", lines)
+	}
+	fields, _ := requestEntry["fields"].(map[string]any)
 	toolCalls, _ := fields["tool_calls"].([]any)
+	if got := fields["tool_count"]; got != float64(1) {
+		t.Fatalf("tool_count = %#v, want 1", got)
+	}
+	if got := fields["tool_choice_required"]; got != false {
+		t.Fatalf("tool_choice_required = %#v, want false", got)
+	}
+	var responseEntry map[string]any
+	for i := len(lines) - 1; i >= 0; i-- {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(lines[i]), &entry); err != nil {
+			t.Fatal(err)
+		}
+		if entry["msg"] == "llm.response" {
+			responseEntry = entry
+			break
+		}
+	}
+	if responseEntry == nil {
+		t.Fatalf("expected llm.response entry, got %v", lines)
+	}
+	responseFields, _ := responseEntry["fields"].(map[string]any)
+	toolCalls, _ = responseFields["tool_calls"].([]any)
 	if len(toolCalls) != 1 {
-		t.Fatalf("tool_calls = %#v, want one native tool call", fields["tool_calls"])
+		t.Fatalf("tool_calls = %#v, want one native tool call", responseFields["tool_calls"])
 	}
 	first, _ := toolCalls[0].(map[string]any)
 	if got := first["name"]; got != "run_command" {
@@ -156,6 +194,44 @@ func TestEnableChatDebugLogsNativeToolCalls(t *testing.T) {
 	}
 	if got := first["args_json"]; got != `{"command":"git status --short"}` {
 		t.Fatalf("tool call args_json = %#v", got)
+	}
+}
+
+func TestEnableChatDebugLogsRequiredToolChoiceMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chat-debug.jsonl")
+	inner := &debugNativeToolDriver{}
+	setup := &ChatSetup{
+		ChatModel: "openai/gpt-5",
+		WorkDir:   t.TempDir(),
+		Driver:    inner,
+	}
+
+	if _, err := EnableChatDebug(setup, path); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs := []llm.Message{{Role: llm.RoleUser, Content: "inspect repo"}}
+	tools := []llm.ToolDef{{Name: "list_dir", Description: "list a directory"}}
+	out := make(chan llm.Token, 4)
+	errCh := make(chan error, 1)
+	go func() {
+		native := setup.Driver.(llm.NativeToolCallerWithOptions)
+		errCh <- native.StreamWithToolsOptions(context.Background(), msgs, tools, llm.NativeToolOptions{RequireToolCall: true}, out)
+	}()
+	for range out {
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+
+	lines := readDebugLines(t, path)
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(lines[1]), &entry); err != nil {
+		t.Fatal(err)
+	}
+	fields, _ := entry["fields"].(map[string]any)
+	if got := fields["tool_choice_required"]; got != true {
+		t.Fatalf("tool_choice_required = %#v, want true", got)
 	}
 }
 
