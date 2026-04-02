@@ -45,7 +45,7 @@ func New(out io.Writer, level Level) *Logger {
 
 // NewFileLogger creates a logger that appends to a file, creating it if needed.
 func NewFileLogger(path string, level Level) (*Logger, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, err
 	}

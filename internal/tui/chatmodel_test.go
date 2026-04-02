@@ -108,6 +108,31 @@ func TestChatModelHandlesTokenEvent(t *testing.T) {
 	}
 }
 
+func TestChatModelRetryClearsPendingAssistantDraft(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventToken, Text: "First draft"})
+	m = updated.(ChatModel)
+	if len(m.messages) != 1 || m.messages[0].Kind != MsgAgent {
+		t.Fatalf("expected agent draft, got %#v", m.messages)
+	}
+
+	updated, _ = m.Update(llm.Event{Kind: llm.EventRetry, Text: "Revising answer..."})
+	m = updated.(ChatModel)
+
+	if len(m.messages) != 1 || m.messages[0].Kind != MsgWorking {
+		t.Fatalf("expected working retry message, got %#v", m.messages)
+	}
+	if strings.Contains(m.messages[0].Content, "First draft") {
+		t.Fatalf("expected pending draft to be cleared, got %#v", m.messages)
+	}
+	if len(m.records) != 0 {
+		t.Fatalf("expected retry message to remain live-only until finalized, got %#v", m.records)
+	}
+}
+
 func TestChatModelSuppressesRawToolMarkupToken(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 80
@@ -697,6 +722,23 @@ func TestChatModelDoneFinalizesAssistantRecordBeforeProgressNote(t *testing.T) {
 	}
 	if m.records[1].Kind != RecordSystem {
 		t.Fatalf("finalized progress note after done = %#v", m.records[1])
+	}
+}
+
+func TestChatModelToolCallFinalizesAssistantPreambleRecord(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	m.AppendToLastAgentLabeled("I'll inspect the README first.", "forge")
+	updated, _ := m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "read_file", Text: "README.md"})
+	m = updated.(ChatModel)
+
+	if len(m.records) == 0 || m.records[0].Kind != RecordAssistant {
+		t.Fatalf("records = %#v", m.records)
+	}
+	if !m.records[0].Final {
+		t.Fatalf("assistant preamble should be finalized once tool execution starts: %#v", m.records[0])
 	}
 }
 

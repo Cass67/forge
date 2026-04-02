@@ -69,6 +69,8 @@ func TestBuildNativeSystemPromptIncludesRicherCodexStyleContract(t *testing.T) {
 
 	for _, want := range []string{
 		"If the next step requires tools, emit the tool call directly",
+		"one short natural preamble",
+		"A brief user-visible sentence before a cluster of related tool calls is good",
 		"High-quality plans",
 		"Low-quality plans",
 		"exactly one in_progress step",
@@ -76,8 +78,10 @@ func TestBuildNativeSystemPromptIncludesRicherCodexStyleContract(t *testing.T) {
 		"ask_user_question",
 		"Prefer rg or rg --files",
 		"Use git log or git blame",
+		"Avoid shotgun alternation patterns",
 		"When approval is non-interactive",
 		"When approval is interactive",
+		"brief natural-language preamble paired with tool calls is allowed",
 		"Final answers should be concise",
 	} {
 		if !strings.Contains(prompt, want) {
