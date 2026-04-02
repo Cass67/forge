@@ -159,15 +159,30 @@ func (d *chatDebugDriver) Stream(ctx context.Context, messages []llm.Message, ou
 }
 
 func (d *chatDebugDriver) StreamWithTools(ctx context.Context, messages []llm.Message, tools []llm.ToolDef, out chan<- llm.Token) error {
+	return d.StreamWithToolsOptions(ctx, messages, tools, llm.NativeToolOptions{}, out)
+}
+
+func (d *chatDebugDriver) StreamWithToolsOptions(ctx context.Context, messages []llm.Message, tools []llm.ToolDef, opts llm.NativeToolOptions, out chan<- llm.Token) error {
 	inner, ok := d.inner.(llm.NativeToolCaller)
 	if !ok {
 		close(out)
 		return fmt.Errorf("chatDebugDriver: inner driver %q does not support native tool calling", d.inner.Name())
 	}
+	var advanced llm.NativeToolCallerWithOptions
+	if caller, ok := d.inner.(llm.NativeToolCallerWithOptions); ok {
+		advanced = caller
+	}
 	if d.rec != nil {
+		toolNames := make([]string, 0, len(tools))
+		for _, tool := range tools {
+			toolNames = append(toolNames, tool.Name)
+		}
 		fields := map[string]any{
-			"driver":   d.inner.Name(),
-			"messages": messages,
+			"driver":               d.inner.Name(),
+			"messages":             messages,
+			"tool_count":           len(tools),
+			"tool_names":           toolNames,
+			"tool_choice_required": opts.RequireToolCall,
 		}
 		if taskState := taskStateFromMessages(messages); len(taskState) > 0 {
 			fields["task_state"] = taskState
@@ -178,6 +193,10 @@ func (d *chatDebugDriver) StreamWithTools(ctx context.Context, messages []llm.Me
 	internal := make(chan llm.Token, 64)
 	errCh := make(chan error, 1)
 	go func() {
+		if advanced != nil {
+			errCh <- advanced.StreamWithToolsOptions(ctx, messages, tools, opts, internal)
+			return
+		}
 		errCh <- inner.StreamWithTools(ctx, messages, tools, internal)
 	}()
 

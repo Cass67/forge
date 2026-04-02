@@ -3,7 +3,9 @@ package runtime
 import (
 	"encoding/json"
 	"fmt"
+	"path"
 	"regexp"
+	"sort"
 	"strings"
 
 	"forge/internal/llm"
@@ -11,17 +13,19 @@ import (
 )
 
 var (
-	intentNarrationPattern = regexp.MustCompile(`(?i)\b(i['’]ll|let me|first[, ]+i['’]ll|then[, ]+i['’]ll|next[, ]+i['’]ll)\b`)
-	blockedClaimPattern    = regexp.MustCompile(`(?i)\b(blocked|unable to access|unable to inspect|produced no output|tooling.*(?:failed|unavailable)|can't access the repo|cannot access the repo)\b`)
-	completionClaimPattern = regexp.MustCompile(`(?i)\b(done|complete|completed|finished|all set)\b`)
-	inspectionClaimPattern = regexp.MustCompile(`(?i)\b(inspect(?:ed)?|review(?:ed)?|read|searched|located|analy[sz]ed|looked at|checked)\b`)
+	intentNarrationPattern       = regexp.MustCompile(`(?i)\b(i['’]ll|first[, ]+i['’]ll|then[, ]+i['’]ll|next[, ]+i['’]ll|let me (?:inspect|check|read|search|look(?:\s+at)?|open|review|run|list|find|trace|debug|fix|implement|update|edit|verify))\b`)
+	toolBlockedClaimPattern      = regexp.MustCompile(`(?i)\b(blocked because .*tools?|unable to access|unable to inspect|wasn['’]t able to inspect|produced no output|tool(?:-|\s*)call issues|tooling.*(?:failed|unavailable)|can['’]?t access the repo|cannot access the repo)\b`)
+	repoInspectionFailurePattern = regexp.MustCompile(`(?i)\b(unable to access|unable to inspect|wasn['’]t able to inspect|tool(?:-|\s*)call issues|can['’]?t access the repo|cannot access the repo)\b`)
+	noEvidenceClaimPattern       = regexp.MustCompile(`(?i)\b(don['’]t have (?:concrete )?evidence|do not have (?:concrete )?evidence|no repository contents were retrieved|no repo contents were retrieved|no files were inspected|couldn['’]t inspect|could not inspect|tool results? .* (?:aren['’]t visible|are not visible|not visible|not available)|outputs? .* (?:aren['’]t visible|are not visible|not visible|not available)|actual contents? .* not returned|readme(?:\.md)? .* (?:wasn['’]t visible|not visible|not returned)|root listing output .* (?:wasn['’]t visible|not visible|not returned)|can['’]t see what['’]s actually in (?:the )?repo|cannot see what['’]s actually in (?:the )?repo|cannot provide a concrete summary|can['’]t reliably state|not inferring beyond)\b`)
+	completionClaimPattern       = regexp.MustCompile(`(?i)\b(done|complete|completed|finished|all set)\b`)
+	inspectionClaimPattern       = regexp.MustCompile(`(?im)(?:(?:^|[.!?]\s+)\s*|(?:i|we)(?:['’]ve)?\s+)(inspected|reviewed|searched|located|analy[sz]ed|looked at|checked|read)\b`)
 	// changeClaimPattern matches first-person change claims ("I fixed X", "we added X") and
 	// sentence-leading past-tense claims ("Fixed the bug", "Updated the file").
 	// Requires a first-person subject or sentence start to avoid false positives like
 	// "X is implemented in Y" where the model is describing existing code, not claiming edits.
 	changeClaimPattern       = regexp.MustCompile("(?im)(?:(?:^|[.!?]\\s+)\\s*|(?:i|we)(?:[''`]ve)?\\s+)(fixed|updated|changed|implemented|added|wired|patched|refactored|edited)\\b")
 	validationClaimPattern   = regexp.MustCompile(`(?i)\b(tested|validated|checks pass|tests pass|build passes|lint passes|compiled|verified (?:it|the fix|the change|the changes|it works|they work|working))\b`)
-	repoGroundedInputPattern = regexp.MustCompile(`(?i)\b(repo|repository|code|codebase|project|worktree|branch|file|files|app|theme|tui|ui|test|tests|fix|implement|update|change|edit|style)\b`)
+	repoGroundedInputPattern = regexp.MustCompile(`(?i)\b(repo|repository|code|codebase|project|worktree|working directory|folder|directory|branch|file|files|app|theme|tui|ui|test|tests|fix|implement|update|change|edit|style)\b`)
 	validationCmdPattern     = regexp.MustCompile(`(?i)\b(go test|pytest|npm test|pnpm test|yarn test|cargo test|go build|cargo check|npm run build|pnpm build|yarn build|golangci-lint|go vet)\b`)
 	actionablePlanPattern    = regexp.MustCompile(`(?m)^\s*(?:[-*]|\d+\.)\s+\S+`)
 	reviewFindingPattern     = regexp.MustCompile(`(?im)^\s*(?:[-*]|\d+\.)\s+(?:\[[Pp]\d\]\s+)?finding:`)
@@ -35,6 +39,11 @@ type turnEvidence struct {
 	hasToolErr bool
 }
 
+type repoEvidenceAnchor struct {
+	canonical string
+	variants  []string
+}
+
 func enforceCompletionEvidence(snapshot reactruntime.SessionSnapshot, finalText string) error {
 	input := strings.TrimSpace(snapshot.LastInput)
 	finalText = strings.TrimSpace(finalText)
@@ -45,7 +54,11 @@ func enforceCompletionEvidence(snapshot reactruntime.SessionSnapshot, finalText 
 	start := currentTurnStartIndex(snapshot.History)
 	evidence := collectEvidence(snapshot.History[start:])
 	priorEvidence := collectEvidence(snapshot.History[:start])
-	repoGrounded := repoGroundedInputPattern.MatchString(input) || repoGroundedInputPattern.MatchString(finalText)
+	// Only treat the turn as repo-grounded based on the user's request.
+	// Assistant phrasing like "I can read files" should not force tool use
+	// for an otherwise casual greeting. Assistant-side repo claims are still
+	// enforced by the inspection/change/validation checks below.
+	repoGrounded := repoGroundedInputPattern.MatchString(input)
 
 	if repoGrounded && len(evidence.toolCalls) == 0 && !priorEvidence.hasAnyRepoEvidence() {
 		return reactruntime.NewRetryableCompletionError(
@@ -53,13 +66,21 @@ func enforceCompletionEvidence(snapshot reactruntime.SessionSnapshot, finalText 
 			"You have not inspected the repository yet. Use repo tools first, then answer with concrete evidence instead of narrating intent.",
 		)
 	}
-	if intentNarrationPattern.MatchString(finalText) && len(evidence.toolCalls) == 0 {
+	if intentNarrationPattern.MatchString(finalText) && len(evidence.toolCalls) == 0 &&
+		(repoGrounded || snapshot.TaskState != nil || priorEvidence.hasAnyRepoEvidence()) {
 		return reactruntime.NewRetryableCompletionError(
 			"non-compliant completion: intent narration without action",
 			buildIntentNarrationRetryPrompt(evidence, priorEvidence),
 		)
 	}
-	if blockedClaimPattern.MatchString(finalText) && !evidence.hasToolErr && !currentPlanIsBlocked(snapshot.PlanState) {
+	if combined := combineEvidence(priorEvidence, evidence); combined.hasAnyRepoEvidence() &&
+		(repoInspectionFailurePattern.MatchString(finalText) || noEvidenceClaimPattern.MatchString(finalText)) {
+		return reactruntime.NewRetryableCompletionError(
+			"non-compliant completion: contradicted gathered repo evidence",
+			buildEvidenceAlreadyVisiblePrompt(snapshot.History, combined.toolCalls),
+		)
+	}
+	if toolBlockedClaimPattern.MatchString(finalText) && !evidence.hasToolErr && !currentPlanIsBlocked(snapshot.PlanState) {
 		return reactruntime.NewRetryableCompletionError(
 			"non-compliant completion: claimed tool blockage without a real tool error",
 			"Do not claim tooling failure unless a tool actually failed in this turn. Continue with tools or report the real tool error.",
@@ -82,6 +103,15 @@ func enforceCompletionEvidence(snapshot reactruntime.SessionSnapshot, finalText 
 			"non-compliant completion: claimed validation without verification evidence",
 			"Your answer claims verification, but no validation command ran. Run the relevant tests or checks first, then answer with the result.",
 		)
+	}
+	if anchors, required := requiredRepoAnchorEvidence(snapshot, snapshot.History, repoGrounded, combineEvidence(priorEvidence, evidence)); required > 0 {
+		matched, missing := partitionRepoEvidenceAnchors(finalText, anchors)
+		if len(matched) < required {
+			return reactruntime.NewRetryableCompletionError(
+				"non-compliant completion: answer omitted concrete repo anchors",
+				buildRepoAnchorRetryPrompt(required, matched, missing),
+			)
+		}
 	}
 	if requiresActionablePlan(snapshot) && !hasActionablePlan(snapshot, evidence, priorEvidence, finalText) {
 		return reactruntime.NewRetryableCompletionError(
@@ -176,7 +206,7 @@ func claimsCompletionWhilePlanStillActive(snapshot reactruntime.SessionSnapshot,
 	if snapshot.Mode != reactruntime.ModeImplement {
 		return false
 	}
-	if !completionClaimPattern.MatchString(finalText) || blockedClaimPattern.MatchString(finalText) {
+	if !completionClaimPattern.MatchString(finalText) || currentPlanIsBlocked(snapshot.PlanState) {
 		return false
 	}
 	return currentPlanHasActiveWork(snapshot.PlanState)
@@ -267,7 +297,7 @@ func buildIntentNarrationRetryPrompt(evidence, priorEvidence turnEvidence) strin
 	combined := combineEvidence(priorEvidence, evidence)
 	summary := summarizeToolCalls(combined.toolCalls)
 	if summary == "" {
-		return "Do the work now. Use tools to inspect the repository and only answer after you have concrete evidence."
+		return "Use repo tools now. Your next assistant message must be one or more tool calls only, with no plain-text preamble before the first tool call. After tool results arrive, answer from that evidence."
 	}
 	return fmt.Sprintf(
 		"You already gathered repo evidence in this session: %s. Do not narrate next steps. Answer directly from that evidence in 3-6 concrete bullets, cite the files, paths, or symbols you inspected, and only mention verification if you actually ran it.",
@@ -327,4 +357,284 @@ func summarizeToolCall(call llm.NativeToolCall) string {
 		}
 	}
 	return name
+}
+
+func requiredRepoAnchorEvidence(snapshot reactruntime.SessionSnapshot, history []llm.Message, repoGrounded bool, evidence turnEvidence) ([]repoEvidenceAnchor, int) {
+	if !repoGrounded || !evidence.hasRead || !requiresConcreteInspectAnchors(snapshot) {
+		return nil, 0
+	}
+	anchors := collectRepoEvidenceAnchors(history)
+	if len(anchors) == 0 {
+		return nil, 0
+	}
+	required := 1
+	if len(anchors) >= 2 {
+		required = 2
+	}
+	return anchors, required
+}
+
+func requiresConcreteInspectAnchors(snapshot reactruntime.SessionSnapshot) bool {
+	if snapshot.Mode == reactruntime.ModeInspect || snapshot.Mode == reactruntime.ModeReview {
+		return true
+	}
+	if snapshot.TaskState == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(snapshot.TaskState.Operation)) {
+	case "inspect", "review", "analysis":
+		return true
+	default:
+		return false
+	}
+}
+
+func collectRepoEvidenceAnchors(history []llm.Message) []repoEvidenceAnchor {
+	callByID := make(map[string]llm.NativeToolCall)
+	var anchors []repoEvidenceAnchor
+	seen := map[string]struct{}{}
+	addAnchor := func(canonical string, variants ...string) {
+		canonical = strings.TrimSpace(canonical)
+		if canonical == "" || canonical == "." || canonical == "/" {
+			return
+		}
+		if _, ok := seen[canonical]; ok {
+			return
+		}
+		normalized := normalizeAnchorVariants(append([]string{canonical}, variants...))
+		if len(normalized) == 0 {
+			return
+		}
+		seen[canonical] = struct{}{}
+		anchors = append(anchors, repoEvidenceAnchor{canonical: canonical, variants: normalized})
+	}
+
+	for _, msg := range history {
+		switch msg.Role {
+		case llm.RoleAssistant:
+			for _, call := range msg.ToolCalls {
+				callByID[call.ID] = call
+				addAnchorsFromToolCall(call, addAnchor)
+			}
+		case llm.RoleTool:
+			call, ok := callByID[msg.ToolCallID]
+			if !ok {
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(call.Name), "list_dir") {
+				addAnchorsFromListDirResult(msg.Content, addAnchor)
+			}
+		}
+	}
+	return anchors
+}
+
+func addAnchorsFromToolCall(call llm.NativeToolCall, add func(string, ...string)) {
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(call.ArgsJSON), &payload); err != nil {
+		return
+	}
+	switch strings.TrimSpace(call.Name) {
+	case "read_file", "edit_file", "write_file", "artifact_read", "artifact_write", "glob":
+		addPathAnchor(fmt.Sprint(payload["path"]), add)
+	case "lsp_definition", "lsp_references", "lsp_hover", "lsp_document_symbols":
+		addPathAnchor(fmt.Sprint(payload["path"]), add)
+	}
+}
+
+func addAnchorsFromListDirResult(result string, add func(string, ...string)) {
+	var candidates []string
+	seen := map[string]struct{}{}
+	for _, line := range strings.Split(result, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "...") || strings.HasPrefix(strings.ToLower(line), "error:") || strings.HasPrefix(strings.ToLower(line), "blocked:") {
+			continue
+		}
+		lower := strings.ToLower(line)
+		if _, ok := seen[lower]; ok {
+			continue
+		}
+		seen[lower] = struct{}{}
+		candidates = append(candidates, line)
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return repoAnchorPriority(candidates[i]) > repoAnchorPriority(candidates[j])
+	})
+	for idx, candidate := range candidates {
+		if idx >= 8 {
+			return
+		}
+		addPathAnchor(candidate, add)
+	}
+}
+
+func repoAnchorPriority(raw string) int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return -100
+	}
+	trimmed := strings.TrimSuffix(raw, "/")
+	base := strings.ToLower(path.Base(trimmed))
+	score := 50
+
+	if strings.HasPrefix(raw, ".") || strings.HasPrefix(base, ".") {
+		score -= 40
+	}
+
+	switch base {
+	case "readme", "readme.md":
+		score += 100
+	case "go.mod", "package.json", "pyproject.toml", "cargo.toml", "pom.xml", "build.gradle", "build.gradle.kts", "composer.json", "gemfile", "justfile":
+		score += 90
+	case "cmd", "internal", "src", "pkg", "lib", "app", "server", "client":
+		score += 80
+	case "docs", "test", "tests":
+		score += 75
+	case "architecture.md", "build.md", "contributing.md", "local_tooling.md", "makefile":
+		score += 70
+	case "go.sum":
+		score += 55
+	}
+
+	if strings.HasSuffix(raw, "/") {
+		score += 5
+	}
+
+	return score
+}
+
+func addPathAnchor(raw string, add func(string, ...string)) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "." || raw == "/" || raw == "<nil>" {
+		return
+	}
+	trimmed := strings.TrimSuffix(raw, "/")
+	base := path.Base(trimmed)
+	var variants []string
+	if raw != trimmed {
+		variants = append(variants, raw)
+		if includeBareDirectoryVariant(base) {
+			variants = append(variants, trimmed)
+		}
+		add(raw, variants...)
+		return
+	}
+	if trimmed != "" {
+		variants = append(variants, trimmed)
+	}
+	if base != "" && base != "." && base != trimmed {
+		variants = append(variants, base)
+	}
+	ext := path.Ext(base)
+	if ext != "" {
+		stem := strings.TrimSuffix(base, ext)
+		if stem != "" && stem != base && allowStemVariant(base, stem) {
+			variants = append(variants, stem)
+		}
+	}
+	add(raw, variants...)
+}
+
+func includeBareDirectoryVariant(base string) bool {
+	switch strings.ToLower(strings.TrimSpace(base)) {
+	case "app", "bin", "build", "cmd", "doc", "docs", "lib", "pkg", "src", "test", "tests":
+		return false
+	default:
+		return true
+	}
+}
+
+func allowStemVariant(base, stem string) bool {
+	base = strings.ToLower(strings.TrimSpace(base))
+	stem = strings.ToLower(strings.TrimSpace(stem))
+	return base == "readme.md" && stem == "readme"
+}
+
+func normalizeAnchorVariants(values []string) []string {
+	seen := map[string]struct{}{}
+	var variants []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || value == "." || value == "/" {
+			continue
+		}
+		lower := strings.ToLower(value)
+		if _, ok := seen[lower]; ok {
+			continue
+		}
+		seen[lower] = struct{}{}
+		variants = append(variants, lower)
+	}
+	return variants
+}
+
+func partitionRepoEvidenceAnchors(finalText string, anchors []repoEvidenceAnchor) ([]repoEvidenceAnchor, []repoEvidenceAnchor) {
+	lower := strings.ToLower(finalText)
+	var matched []repoEvidenceAnchor
+	var missing []repoEvidenceAnchor
+	for _, anchor := range anchors {
+		found := false
+		for _, variant := range anchor.variants {
+			if variant != "" && strings.Contains(lower, variant) {
+				found = true
+				break
+			}
+		}
+		if found {
+			matched = append(matched, anchor)
+			continue
+		}
+		missing = append(missing, anchor)
+	}
+	return matched, missing
+}
+
+func buildRepoAnchorRetryPrompt(required int, matched, missing []repoEvidenceAnchor) string {
+	if len(matched) == 0 {
+		return fmt.Sprintf(
+			"Your answer is too generic for the repo evidence you already gathered. Cite at least %d concrete inspected file or path references such as %s, and summarize only what those specific paths show. If a path was only seen in list_dir(.), it is valid to say it is present at the repo root; do not invent file contents. \".\" or \"repo root\" do not count as concrete repo anchors.",
+			required,
+			summarizeRepoEvidenceAnchors(missing, required+2),
+		)
+	}
+	needed := required - len(matched)
+	if needed < 1 {
+		needed = 1
+	}
+	return fmt.Sprintf(
+		"Your last answer only cited %s. \".\" or \"repo root\" do not count as concrete repo anchors. Cite at least %d additional inspected file or path references such as %s. If a path was only seen in list_dir(.), it is valid to say it is present at the repo root; do not invent file contents. Summarize only what those specific paths show.",
+		summarizeRepoEvidenceAnchors(matched, len(matched)),
+		needed,
+		summarizeRepoEvidenceAnchors(missing, needed+2),
+	)
+}
+
+func buildEvidenceAlreadyVisiblePrompt(history []llm.Message, calls []llm.NativeToolCall) string {
+	anchors := collectRepoEvidenceAnchors(history)
+	anchorExamples := summarizeRepoEvidenceAnchors(anchors, 4)
+	return fmt.Sprintf(
+		"You already gathered repo evidence in this session: %s. The tool outputs are already visible in this conversation. Do not claim you could not inspect the repository, that the outputs are missing, or that you need them pasted again. Answer directly from the evidence you already have, citing concrete paths such as %s. If a path was only seen in list_dir(.), it is valid to say it is present at the repo root; do not invent file contents. \".\" or \"repo root\" do not count as concrete repo anchors.",
+		summarizeToolCalls(calls),
+		anchorExamples,
+	)
+}
+
+func summarizeRepoEvidenceAnchors(anchors []repoEvidenceAnchor, limit int) string {
+	if len(anchors) == 0 || limit <= 0 {
+		return "the inspected repo paths"
+	}
+	var parts []string
+	for _, anchor := range anchors {
+		if anchor.canonical == "" {
+			continue
+		}
+		parts = append(parts, anchor.canonical)
+		if len(parts) >= limit {
+			break
+		}
+	}
+	if len(parts) == 0 {
+		return "the inspected repo paths"
+	}
+	return strings.Join(parts, ", ")
 }

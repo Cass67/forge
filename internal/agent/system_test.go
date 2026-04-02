@@ -68,7 +68,7 @@ func TestBuildNativeSystemPromptIncludesRicherCodexStyleContract(t *testing.T) {
 	prompt := BuildNativeSystemPrompt("/home/user/project")
 
 	for _, want := range []string{
-		"Before making tool calls, send a brief progress update",
+		"If the next step requires tools, emit the tool call directly",
 		"High-quality plans",
 		"Low-quality plans",
 		"exactly one in_progress step",
@@ -83,5 +83,8 @@ func TestBuildNativeSystemPromptIncludesRicherCodexStyleContract(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}
+	}
+	if strings.Contains(prompt, "Before making tool calls, send a brief progress update") {
+		t.Fatalf("prompt still contains stale pre-tool progress instruction:\n%s", prompt)
 	}
 }

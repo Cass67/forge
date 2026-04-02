@@ -94,6 +94,17 @@ type NativeToolCaller interface {
 	StreamWithTools(ctx context.Context, messages []Message, tools []ToolDef, out chan<- Token) error
 }
 
+// NativeToolOptions carries per-request controls for provider-native tool calling.
+type NativeToolOptions struct {
+	RequireToolCall bool
+}
+
+// NativeToolCallerWithOptions is an optional extension for drivers that support
+// per-request native tool-calling controls such as forcing a tool call before prose.
+type NativeToolCallerWithOptions interface {
+	StreamWithToolsOptions(ctx context.Context, messages []Message, tools []ToolDef, opts NativeToolOptions, out chan<- Token) error
+}
+
 type EventKind string
 
 const (

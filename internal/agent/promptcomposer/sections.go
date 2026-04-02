@@ -25,9 +25,9 @@ func identitySection(workDir string) string {
 func responsivenessSection() string {
 	return strings.Join([]string{
 		"## Responsiveness",
-		"- Before making tool calls, send a brief progress update about the next concrete action.",
+		"- If the next step requires tools, emit the tool call directly instead of sending a standalone progress message first.",
 		"- Group related actions into one short preamble instead of narrating every small read.",
-		"- Keep progress updates concise and focused on what changed and what comes next.",
+		"- Keep progress updates concise and focused on what changed and what comes next. Use them between tool turns or after evidence-gathering, not as a substitute for tool use.",
 	}, "\n")
 }
 
