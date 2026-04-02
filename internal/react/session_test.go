@@ -38,6 +38,26 @@ func TestAppendAssistantWithToolCalls(t *testing.T) {
 	}
 }
 
+func TestAppendAssistantToolTurnPreservesPreamble(t *testing.T) {
+	s := NewSession()
+	s.RecordInput("check the repo")
+	s.AppendAssistantToolTurn("I'll inspect the README first.", []llm.NativeToolCall{
+		{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"README.md"}`},
+	})
+
+	snap := s.Snapshot()
+	if len(snap.History) != 2 {
+		t.Fatalf("want 2 history entries, got %d", len(snap.History))
+	}
+	last := snap.History[1]
+	if got, want := last.Content, "I'll inspect the README first."; got != want {
+		t.Fatalf("content = %q, want %q", got, want)
+	}
+	if len(last.ToolCalls) != 1 || last.ToolCalls[0].Name != "read_file" {
+		t.Fatalf("tool calls = %#v", last.ToolCalls)
+	}
+}
+
 func TestAppendNativeToolResult(t *testing.T) {
 	s := NewSession()
 	s.RecordInput("run ls")
@@ -320,5 +340,17 @@ func TestSessionDefaultsToChatModeAndTracksTaskMode(t *testing.T) {
 	s.SetMode(ModeImplement)
 	if got := s.Snapshot().Mode; got != ModeImplement {
 		t.Fatalf("mode after explicit set = %q, want %q", got, ModeImplement)
+	}
+}
+
+func TestSessionMapsOverviewOperationToInspectMode(t *testing.T) {
+	s := NewSession()
+	s.SetTaskState(TaskState{
+		Objective:            "tell me about this repo",
+		Operation:            "overview",
+		RequiredVerification: "give a brief overview",
+	})
+	if got := s.Snapshot().Mode; got != ModeInspect {
+		t.Fatalf("mode after overview task state = %q, want %q", got, ModeInspect)
 	}
 }

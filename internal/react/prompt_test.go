@@ -103,6 +103,44 @@ func TestBuildMessages_LargeToolResultTruncated(t *testing.T) {
 	}
 }
 
+func TestBuildMessages_LargeToolCallArgsTruncated(t *testing.T) {
+	largeContent := strings.Repeat("<div>preview</div>\n", 500)
+	snap := SessionSnapshot{
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "show me a preview"},
+			{
+				Role: llm.RoleAssistant,
+				ToolCalls: []llm.NativeToolCall{{
+					ID:       "c1",
+					Name:     "artifact_write",
+					ArgsJSON: fmt.Sprintf(`{"path":"artifacts/theme-preview/index.html","content":%q}`, largeContent),
+				}},
+			},
+			{Role: llm.RoleTool, ToolCallID: "c1", Content: `{"handle":"artifact-1","path":"artifacts/theme-preview/index.html"}`},
+		},
+	}
+
+	msgs := BuildMessages("sys", snap)
+	if len(msgs) < 3 {
+		t.Fatalf("messages = %#v", msgs)
+	}
+	if got := msgs[2].ToolCalls; len(got) != 1 {
+		t.Fatalf("tool calls = %#v", got)
+	}
+	if strings.Contains(msgs[2].ToolCalls[0].ArgsJSON, largeContent[:32]) {
+		t.Fatalf("expected large tool-call content to be compacted, got %q", msgs[2].ToolCalls[0].ArgsJSON)
+	}
+	if !strings.Contains(msgs[2].ToolCalls[0].ArgsJSON, "artifacts/theme-preview/index.html") {
+		t.Fatalf("expected path to remain visible, got %q", msgs[2].ToolCalls[0].ArgsJSON)
+	}
+	if !strings.Contains(msgs[2].ToolCalls[0].ArgsJSON, "omitted 9500 chars") {
+		t.Fatalf("expected compacted placeholder, got %q", msgs[2].ToolCalls[0].ArgsJSON)
+	}
+	if !strings.Contains(snap.History[1].ToolCalls[0].ArgsJSON, "<div>preview</div>") {
+		t.Fatal("original snapshot tool-call args must not be mutated by BuildMessages")
+	}
+}
+
 func TestBuildMessages_IncludesRuntimeNoteAsSystemMessage(t *testing.T) {
 	snap := SessionSnapshot{
 		RuntimeNote: "Git merge workflow active. Resolve unmerged files before retrying commit.",
@@ -184,18 +222,46 @@ func TestBuildMessages_IncludesPlanStateAsSystemMessage(t *testing.T) {
 func TestBuildMessages_IncludesMemorySummaryAsSystemMessage(t *testing.T) {
 	snap := SessionSnapshot{
 		MemorySummary: "Previously learned: the runtime branch-switch guard should stay local-first.",
-		History:       []llm.Message{{Role: llm.RoleUser, Content: "keep going"}},
+		TaskState: &TaskState{
+			Objective:            "keep the branch-switch guard local-first",
+			Operation:            "implement",
+			RequiredVerification: "verify the runtime guard stays local-first",
+		},
+		History: []llm.Message{{Role: llm.RoleUser, Content: "keep going"}},
 	}
 
 	msgs := BuildMessages("sys", snap)
-	if len(msgs) < 3 {
-		t.Fatalf("messages = %#v", msgs)
+	found := false
+	for _, msg := range msgs {
+		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Memory summary:") {
+			if !strings.Contains(msg.Content, "runtime branch-switch guard") {
+				t.Fatalf("memory content = %q", msg.Content)
+			}
+			found = true
+			break
+		}
 	}
-	if msgs[1].Role != llm.RoleSystem || !strings.Contains(msgs[1].Content, "Memory summary:") {
-		t.Fatalf("memory message = %#v", msgs[1])
+	if !found {
+		t.Fatalf("memory summary not found in messages: %#v", msgs)
 	}
-	if !strings.Contains(msgs[1].Content, "runtime branch-switch guard") {
-		t.Fatalf("memory content = %q", msgs[1].Content)
+}
+
+func TestBuildMessages_OmitsMemorySummaryForShortPlainChat(t *testing.T) {
+	snap := SessionSnapshot{
+		Mode:          ModeChat,
+		MemorySummary: "Previously learned: the runtime branch-switch guard should stay local-first.",
+		History:       []llm.Message{{Role: llm.RoleUser, Content: "keep going"}},
+		Turns: []TurnRecord{
+			{Number: 1, Input: "first"},
+			{Number: 2, Input: "second"},
+		},
+	}
+
+	msgs := BuildMessages("sys", snap)
+	for _, msg := range msgs {
+		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Memory summary:") {
+			t.Fatalf("unexpected memory summary in short plain chat: %#v", msgs)
+		}
 	}
 }
 
@@ -352,6 +418,28 @@ func TestBuildMessages_IncludesPlanTaskGuidance(t *testing.T) {
 	}
 }
 
+func TestBuildMessages_IncludesOverviewTaskGuidance(t *testing.T) {
+	snap := SessionSnapshot{
+		TaskState: &TaskState{
+			Objective:            "tell me about this repo",
+			Operation:            "overview",
+			RequiredVerification: "inspect the repository with read/search tools before answering. For a casual repo overview, usually inspect the repo root and one high-signal file such as README.md, then give a brief overview grounded only in that evidence",
+		},
+		History: []llm.Message{{Role: llm.RoleUser, Content: "tell me about this repo"}},
+	}
+
+	msgs := BuildMessages("sys", snap)
+	if len(msgs) < 3 {
+		t.Fatalf("messages = %#v", msgs)
+	}
+	if !strings.Contains(msgs[1].Content, "Overview guidance") {
+		t.Fatalf("task state missing overview guidance: %q", msgs[1].Content)
+	}
+	if !strings.Contains(msgs[1].Content, "stop exploring") {
+		t.Fatalf("task state missing stop-exploring guidance: %q", msgs[1].Content)
+	}
+}
+
 func TestBuildMessages_IncludesAnalysisTaskGuidance(t *testing.T) {
 	snap := SessionSnapshot{
 		TaskState: &TaskState{
@@ -418,6 +506,9 @@ func TestBuildMessages_IncludesPreviewTaskGuidance(t *testing.T) {
 	}
 	if !strings.Contains(msgs[1].Content, "Preview guidance") {
 		t.Fatalf("task state missing preview guidance: %q", msgs[1].Content)
+	}
+	if !strings.Contains(msgs[1].Content, "After 1-3 high-signal reads") {
+		t.Fatalf("task state missing preview pacing guidance: %q", msgs[1].Content)
 	}
 	if !strings.Contains(msgs[1].Content, "Do not launch an ad-hoc local webserver") {
 		t.Fatalf("task state missing preview routing guidance: %q", msgs[1].Content)

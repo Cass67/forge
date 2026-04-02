@@ -338,7 +338,7 @@ func TestDetectTaskStateFromInputClassifiesRepoOverviewWork(t *testing.T) {
 	if !ok {
 		t.Fatal("expected task state")
 	}
-	if state.Operation != "inspect" {
+	if state.Operation != "overview" {
 		t.Fatalf("operation = %q", state.Operation)
 	}
 	if !strings.Contains(state.RequiredVerification, "read/search tools") {
@@ -351,7 +351,7 @@ func TestDetectTaskStateFromInputClassifiesFolderOverviewWork(t *testing.T) {
 	if !ok {
 		t.Fatal("expected task state")
 	}
-	if state.Operation != "inspect" {
+	if state.Operation != "overview" {
 		t.Fatalf("operation = %q", state.Operation)
 	}
 	if !strings.Contains(state.RequiredVerification, "read/search tools") {
@@ -371,7 +371,7 @@ func TestDetectTaskStateFromInputClassifiesWhatsInHere(t *testing.T) {
 	if !ok {
 		t.Fatal("expected task state")
 	}
-	if state.Operation != "inspect" {
+	if state.Operation != "overview" {
 		t.Fatalf("operation = %q", state.Operation)
 	}
 }
@@ -381,8 +381,18 @@ func TestDetectTaskStateFromInputClassifiesScanThisFolder(t *testing.T) {
 	if !ok {
 		t.Fatal("expected task state")
 	}
-	if state.Operation != "inspect" {
+	if state.Operation != "overview" {
 		t.Fatalf("operation = %q", state.Operation)
+	}
+}
+
+func TestDetectTaskStateFromInputKeepsCritiquePromptOutOfOverviewMode(t *testing.T) {
+	state, ok := detectTaskStateFromInput("tell me about this repo and tell me what i need to improve upon")
+	if !ok {
+		t.Fatal("expected task state")
+	}
+	if state.Operation == "overview" {
+		t.Fatalf("operation = %q, want a broader inspection path", state.Operation)
 	}
 }
 
@@ -582,7 +592,7 @@ func TestRunChatTurnSeedsReviewTaskState(t *testing.T) {
 	}
 }
 
-func TestRunChatTurnSeedsInspectTaskStateForRepoOverview(t *testing.T) {
+func TestRunChatTurnSeedsOverviewTaskStateForRepoOverview(t *testing.T) {
 	reactRunner := &stubChatTurnRunner{}
 	input := "whats this repo all about"
 	if err := runChatTurn(context.Background(), reactRunner, input); err != nil {
@@ -591,15 +601,15 @@ func TestRunChatTurnSeedsInspectTaskStateForRepoOverview(t *testing.T) {
 	if reactRunner.taskState == nil {
 		t.Fatal("expected task state to be seeded")
 	}
-	if reactRunner.taskState.Operation != "inspect" {
+	if reactRunner.taskState.Operation != "overview" {
 		t.Fatalf("operation = %q", reactRunner.taskState.Operation)
 	}
-	if !strings.Contains(reactRunner.taskState.RequiredVerification, "read/search tools") {
+	if !strings.Contains(reactRunner.taskState.RequiredVerification, "brief overview") {
 		t.Fatalf("required verification = %q", reactRunner.taskState.RequiredVerification)
 	}
 }
 
-func TestRunChatTurnSeedsInspectTaskStateForFolderOverview(t *testing.T) {
+func TestRunChatTurnSeedsOverviewTaskStateForFolderOverview(t *testing.T) {
 	reactRunner := &stubChatTurnRunner{}
 	input := "describe this directory"
 	if err := runChatTurn(context.Background(), reactRunner, input); err != nil {
@@ -608,10 +618,10 @@ func TestRunChatTurnSeedsInspectTaskStateForFolderOverview(t *testing.T) {
 	if reactRunner.taskState == nil {
 		t.Fatal("expected task state to be seeded")
 	}
-	if reactRunner.taskState.Operation != "inspect" {
+	if reactRunner.taskState.Operation != "overview" {
 		t.Fatalf("operation = %q", reactRunner.taskState.Operation)
 	}
-	if !strings.Contains(reactRunner.taskState.RequiredVerification, "read/search tools") {
+	if !strings.Contains(reactRunner.taskState.RequiredVerification, "brief overview") {
 		t.Fatalf("required verification = %q", reactRunner.taskState.RequiredVerification)
 	}
 }
@@ -1135,6 +1145,7 @@ func TestValidateTaskCompletionRejectsGenericRepoSummaryWithoutConcreteAnchors(t
 	snapshot := reactruntime.SessionSnapshot{
 		LastInput: "tell me about this repo",
 		Mode:      reactruntime.ModeInspect,
+		TaskState: &reactruntime.TaskState{Operation: "overview"},
 		History: []llm.Message{
 			{Role: llm.RoleUser, Content: "tell me about this repo"},
 			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{
@@ -1216,6 +1227,7 @@ func TestValidateTaskCompletionRejectsRepoSummaryThatOnlyUsesGenericDocsWording(
 	snapshot := reactruntime.SessionSnapshot{
 		LastInput: "tell me about this repo",
 		Mode:      reactruntime.ModeInspect,
+		TaskState: &reactruntime.TaskState{Operation: "overview"},
 		History: []llm.Message{
 			{Role: llm.RoleUser, Content: "tell me about this repo"},
 			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{
@@ -1278,6 +1290,7 @@ func TestValidateTaskCompletionAllowsRepoSummaryWithConcreteAnchors(t *testing.T
 	snapshot := reactruntime.SessionSnapshot{
 		LastInput: "tell me about this repo",
 		Mode:      reactruntime.ModeInspect,
+		TaskState: &reactruntime.TaskState{Operation: "overview"},
 		History: []llm.Message{
 			{Role: llm.RoleUser, Content: "tell me about this repo"},
 			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{
@@ -1292,6 +1305,49 @@ func TestValidateTaskCompletionAllowsRepoSummaryWithConcreteAnchors(t *testing.T
 	finalText := "- README.md describes Forge as a terminal-first coding agent for local repositories.\n- The repo root includes cmd/, docs/, internal/, and go.mod.\n- README.md also calls out forge make as a retained legacy writer/auditor pipeline and provider-aware model routing."
 	if err := validateTaskCompletion(t.TempDir(), snapshot, finalText); err != nil {
 		t.Fatalf("unexpected err = %v", err)
+	}
+}
+
+func TestValidateTaskCompletionRejectsExhaustiveRepoOverview(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "tell me about this repo",
+		Mode:      reactruntime.ModeInspect,
+		TaskState: &reactruntime.TaskState{Operation: "overview"},
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "tell me about this repo"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{
+				{ID: "c1", Name: "list_dir", ArgsJSON: `{"path":"."}`},
+				{ID: "c2", Name: "read_file", ArgsJSON: `{"path":"README.md"}`},
+			}},
+			{Role: llm.RoleTool, ToolCallID: "c1", Content: "README.md\nARCHITECTURE.md\nBUILD.md\ncmd/\ndocs/\ngo.mod\ninternal/\njustfile"},
+			{Role: llm.RoleTool, ToolCallID: "c2", Content: "Forge is a terminal-first coding agent for local repositories.\n- forge make: a legacy writer/auditor pipeline.\n- provider-aware model routing across multiple backends."},
+		},
+	}
+
+	finalText := strings.Join([]string{
+		"- README.md describes Forge as a terminal-first coding agent for local repositories.",
+		"- The repo root includes cmd/, docs/, internal/, go.mod, BUILD.md, ARCHITECTURE.md, and justfile.",
+		"- ARCHITECTURE.md documents the runtime and package layout in more depth.",
+		"- BUILD.md covers build flows and platform-specific details.",
+		"- docs/ contains additional design notes and UI writeups.",
+		"- cmd/ and internal/ show a structured Go application with CLI entrypoints and internal packages.",
+		"- Taken together, README.md, ARCHITECTURE.md, BUILD.md, docs/, cmd/, internal/, and go.mod support a much larger architecture and tooling narrative than a casual repo overview usually needs.",
+	}, "\n")
+
+	err := validateTaskCompletion(t.TempDir(), snapshot, finalText)
+	if err == nil {
+		t.Fatal("expected exhaustive-overview rejection")
+	}
+	if !strings.Contains(err.Error(), "too exhaustive") {
+		t.Fatalf("err = %v", err)
+	}
+
+	var retryable *reactruntime.RetryableCompletionError
+	if !errors.As(err, &retryable) {
+		t.Fatalf("expected retryable completion error, got %T: %v", err, err)
+	}
+	if !strings.Contains(retryable.Prompt, "2-4 concrete bullets") {
+		t.Fatalf("retry prompt = %q", retryable.Prompt)
 	}
 }
 
@@ -1348,6 +1404,24 @@ func TestValidateTaskCompletionBuildsEvidenceAwareRetryPromptForIntentNarration(
 	}
 	if !strings.Contains(retryable.Prompt, "Do not narrate next steps") {
 		t.Fatalf("retry prompt = %q", retryable.Prompt)
+	}
+}
+
+func TestValidateTaskCompletionAllowsCasualWhyFollowUpAfterRepoEvidence(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "why?",
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "inspect the runtime"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"internal/runtime/chat.go"}`}}},
+			{Role: llm.RoleTool, ToolCallID: "c1", Content: "runtime source"},
+			{Role: llm.RoleAssistant, Content: "The current flow mixes repo inspection and chat orchestration in one path."},
+			{Role: llm.RoleUser, Content: "why?"},
+		},
+	}
+
+	finalText := "I'll explain the main issue: the runtime keeps too much policy and orchestration in one place, which makes follow-up behavior harder to keep predictable."
+	if err := validateTaskCompletion(t.TempDir(), snapshot, finalText); err != nil {
+		t.Fatalf("unexpected err = %v", err)
 	}
 }
 
@@ -1418,6 +1492,39 @@ func TestValidateTaskCompletionAllowsVerifiedPreviewURL(t *testing.T) {
 	}
 }
 
+func TestValidateTaskCompletionRejectsPreviewAnswerWithoutVerifiedPreviewEvidence(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "show me 3 theme ideas and start a preview",
+		Mode:      reactruntime.ModePreview,
+		TaskState: &reactruntime.TaskState{Operation: "preview"},
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "show me 3 theme ideas and start a preview"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{
+				{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"internal/tui/chattheme.go"}`},
+				{ID: "c2", Name: "artifact_write", ArgsJSON: `{"path":"artifacts/theme-preview/index.html","content":"<html></html>"}`},
+			}},
+			{Role: llm.RoleTool, ToolCallID: "c1", Content: "theme source"},
+			{Role: llm.RoleTool, ToolCallID: "c2", Content: `{"handle":"artifact-1","path":"artifacts/theme-preview/index.html"}`},
+		},
+	}
+
+	err := validateTaskCompletion(t.TempDir(), snapshot, "I created three preview ideas and wrote the mockup page.")
+	if err == nil {
+		t.Fatal("expected preview verification rejection")
+	}
+	if !strings.Contains(err.Error(), "preview mode finished without verified preview evidence") {
+		t.Fatalf("err = %v", err)
+	}
+
+	var retryable *reactruntime.RetryableCompletionError
+	if !errors.As(err, &retryable) {
+		t.Fatalf("expected retryable completion error, got %T: %v", err, err)
+	}
+	if !strings.Contains(retryable.Prompt, "Call preview_server_ensure now") {
+		t.Fatalf("retry prompt = %q", retryable.Prompt)
+	}
+}
+
 func TestValidateTaskCompletionRejectsValidateModeAnswerWithoutValidationEvidence(t *testing.T) {
 	snapshot := reactruntime.SessionSnapshot{
 		LastInput: "run the relevant checks and tell me if this is good",
@@ -1430,6 +1537,34 @@ func TestValidateTaskCompletionRejectsValidateModeAnswerWithoutValidationEvidenc
 	}
 
 	err := validateTaskCompletion(t.TempDir(), snapshot, "I checked the relevant code paths and did not find obvious issues.")
+	if err == nil {
+		t.Fatal("expected retryable completion rejection")
+	}
+
+	var retryable *reactruntime.RetryableCompletionError
+	if !errors.As(err, &retryable) {
+		t.Fatalf("expected retryable completion error, got %T: %v", err, err)
+	}
+	if !strings.Contains(retryable.Prompt, "validate mode") {
+		t.Fatalf("retry prompt = %q", retryable.Prompt)
+	}
+	if !strings.Contains(retryable.Prompt, "Run the relevant tests or checks first") {
+		t.Fatalf("retry prompt = %q", retryable.Prompt)
+	}
+}
+
+func TestValidateTaskCompletionRejectsValidateModeAnswerAfterGitStatusOnly(t *testing.T) {
+	snapshot := reactruntime.SessionSnapshot{
+		LastInput: "check the repository out and tell me if there are anything to change",
+		Mode:      reactruntime.ModeValidate,
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "check the repository out and tell me if there are anything to change"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "c1", Name: "git_status", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "c1", Content: "working tree clean"},
+		},
+	}
+
+	err := validateTaskCompletion(t.TempDir(), snapshot, "I checked the repository and it looks generally healthy.")
 	if err == nil {
 		t.Fatal("expected retryable completion rejection")
 	}
@@ -1763,6 +1898,23 @@ func TestLightweightChatPathStaysDirect(t *testing.T) {
 	}
 }
 
+func TestRunChatTurnClearsStaleTaskStateForDetachedChat(t *testing.T) {
+	reactRunner := &stubChatTurnRunner{
+		taskState: &reactruntime.TaskState{
+			Objective:            "inspect repo",
+			Operation:            "inspect",
+			RequiredVerification: "inspect the repository with read/search tools before answering",
+		},
+	}
+
+	if err := runChatTurn(context.Background(), reactRunner, "why is the battery handover failing"); err != nil {
+		t.Fatal(err)
+	}
+	if reactRunner.taskState != nil {
+		t.Fatalf("expected detached chat input to clear stale task state, got %+v", *reactRunner.taskState)
+	}
+}
+
 // TestBehaviorStackDoesNotCorruptBasePromptAssembly verifies that memory summaries,
 // hook overlays, and task state can all coexist in one session without corrupting
 // the base system prompt or each other.
@@ -1841,6 +1993,10 @@ func TestSuggestedSkillNudgeReachesNotifyCallback(t *testing.T) {
 func TestMemoryAndSkillOverlaysCoexistInPromptAssembly(t *testing.T) {
 	session := reactruntime.NewSession()
 	session.SetMemorySummary("last session: worked on auth module")
+	session.SetTaskState(reactruntime.TaskState{
+		Objective: "inspect the auth module",
+		Operation: "inspect",
+	})
 	session.SetHookOverlay(reactruntime.HookOverlay{
 		Key:        "suggested_skill",
 		Content:    "suggested skill: /code-review (change set looks reviewable)",
@@ -1912,6 +2068,10 @@ func (s *stubChatTurnRunner) EmitResponse(text string) {
 }
 
 func (s *stubChatTurnRunner) SetTaskState(state reactruntime.TaskState) {
+	if strings.TrimSpace(state.Objective) == "" && strings.TrimSpace(state.RequiredVerification) == "" {
+		s.taskState = nil
+		return
+	}
 	s.taskState = &state
 }
 
@@ -1948,6 +2108,10 @@ func (s *stubChatSessionControl) EmitResponse(text string) {
 }
 
 func (s *stubChatSessionControl) SetTaskState(state reactruntime.TaskState) {
+	if strings.TrimSpace(state.Objective) == "" && strings.TrimSpace(state.RequiredVerification) == "" {
+		s.taskState = nil
+		return
+	}
 	s.taskState = &state
 }
 

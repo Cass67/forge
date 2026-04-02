@@ -35,7 +35,7 @@ func EnableChatDebug(setup *ChatSetup, path string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
 		return "", err
 	}
-	f, err := os.OpenFile(resolved, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	f, err := os.OpenFile(resolved, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return "", err
 	}
@@ -87,8 +87,9 @@ func (r *chatDebugRecorder) logInput(kind, text string) {
 		return
 	}
 	r.log.Debug("chat.input", map[string]any{
-		"kind": kind,
-		"text": text,
+		"kind":  kind,
+		"chars": len(text),
+		"lines": lineCount(text),
 	})
 }
 
@@ -96,19 +97,30 @@ func (r *chatDebugRecorder) logEvent(ev llm.Event) {
 	if r == nil || r.log == nil {
 		return
 	}
-	r.log.Debug("chat.event", map[string]any{
+	fields := map[string]any{
 		"kind":      ev.Kind,
 		"agent":     ev.Agent,
 		"sub_agent": ev.SubAgent,
-		"text":      ev.Text,
-		"content":   ev.Content,
 		"is_error":  ev.IsError,
-		"duration":  ev.Duration.String(),
-		"usage": map[string]any{
+	}
+	if strings.TrimSpace(ev.Text) != "" {
+		fields["text_chars"] = len(ev.Text)
+		fields["text_lines"] = lineCount(ev.Text)
+	}
+	if strings.TrimSpace(ev.Content) != "" {
+		fields["content_chars"] = len(ev.Content)
+		fields["content_lines"] = lineCount(ev.Content)
+	}
+	if ev.Duration > 0 {
+		fields["duration"] = ev.Duration.String()
+	}
+	if ev.Usage.InputTokens > 0 || ev.Usage.OutputTokens > 0 {
+		fields["usage"] = map[string]any{
 			"input_tokens":  ev.Usage.InputTokens,
 			"output_tokens": ev.Usage.OutputTokens,
-		},
-	})
+		}
+	}
+	r.log.Debug("chat.event", fields)
 }
 
 func (r *chatDebugRecorder) wrapDriver(inner llm.Driver) llm.Driver {
@@ -123,8 +135,9 @@ func (d *chatDebugDriver) Name() string { return d.inner.Name() }
 func (d *chatDebugDriver) Stream(ctx context.Context, messages []llm.Message, out chan<- llm.Token) error {
 	if d.rec != nil {
 		fields := map[string]any{
-			"driver":   d.inner.Name(),
-			"messages": messages,
+			"driver":           d.inner.Name(),
+			"message_count":    len(messages),
+			"messages_summary": summarizeDebugMessages(messages),
 		}
 		if taskState := taskStateFromMessages(messages); len(taskState) > 0 {
 			fields["task_state"] = taskState
@@ -146,8 +159,9 @@ func (d *chatDebugDriver) Stream(ctx context.Context, messages []llm.Message, ou
 	err := <-errCh
 	if d.rec != nil {
 		fields := map[string]any{
-			"driver":   d.inner.Name(),
-			"response": response.String(),
+			"driver":         d.inner.Name(),
+			"response_chars": response.Len(),
+			"response_lines": lineCount(response.String()),
 		}
 		if err != nil {
 			fields["error"] = err.Error()
@@ -179,7 +193,8 @@ func (d *chatDebugDriver) StreamWithToolsOptions(ctx context.Context, messages [
 		}
 		fields := map[string]any{
 			"driver":               d.inner.Name(),
-			"messages":             messages,
+			"message_count":        len(messages),
+			"messages_summary":     summarizeDebugMessages(messages),
 			"tool_count":           len(tools),
 			"tool_names":           toolNames,
 			"tool_choice_required": opts.RequireToolCall,
@@ -206,9 +221,9 @@ func (d *chatDebugDriver) StreamWithToolsOptions(ctx context.Context, messages [
 		response.WriteString(tok.Text)
 		if tok.ToolCall != nil {
 			toolCalls = append(toolCalls, map[string]string{
-				"id":        tok.ToolCall.ID,
-				"name":      tok.ToolCall.Name,
-				"args_json": tok.ToolCall.ArgsJSON,
+				"id":         tok.ToolCall.ID,
+				"name":       tok.ToolCall.Name,
+				"args_chars": fmt.Sprintf("%d", len(tok.ToolCall.ArgsJSON)),
 			})
 		}
 		out <- tok
@@ -216,8 +231,9 @@ func (d *chatDebugDriver) StreamWithToolsOptions(ctx context.Context, messages [
 	err := <-errCh
 	if d.rec != nil {
 		fields := map[string]any{
-			"driver":   d.inner.Name(),
-			"response": response.String(),
+			"driver":         d.inner.Name(),
+			"response_chars": response.Len(),
+			"response_lines": lineCount(response.String()),
 		}
 		if len(toolCalls) > 0 {
 			fields["tool_calls"] = toolCalls
@@ -283,4 +299,47 @@ func taskStateFromMessages(messages []llm.Message) map[string]any {
 		return nil
 	}
 	return state
+}
+
+func summarizeDebugMessages(messages []llm.Message) []map[string]any {
+	summary := make([]map[string]any, 0, len(messages))
+	for _, msg := range messages {
+		entry := map[string]any{
+			"role": string(msg.Role),
+		}
+		if strings.TrimSpace(msg.Content) != "" {
+			entry["chars"] = len(msg.Content)
+			entry["lines"] = lineCount(msg.Content)
+		}
+		if len(msg.ToolCalls) > 0 {
+			entry["tool_calls"] = summarizeDebugToolCalls(msg.ToolCalls)
+		}
+		if strings.TrimSpace(msg.ToolCallID) != "" {
+			entry["tool_call_id"] = msg.ToolCallID
+		}
+		summary = append(summary, entry)
+	}
+	return summary
+}
+
+func summarizeDebugToolCalls(calls []llm.NativeToolCall) []map[string]any {
+	summary := make([]map[string]any, 0, len(calls))
+	for _, call := range calls {
+		entry := map[string]any{
+			"id":   call.ID,
+			"name": call.Name,
+		}
+		if strings.TrimSpace(call.ArgsJSON) != "" {
+			entry["args_chars"] = len(call.ArgsJSON)
+		}
+		summary = append(summary, entry)
+	}
+	return summary
+}
+
+func lineCount(text string) int {
+	if text == "" {
+		return 0
+	}
+	return strings.Count(text, "\n") + 1
 }

@@ -112,9 +112,14 @@ func TestEnableChatDebugWrapsDriverAndLogsRequestResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, want := range []string{"chat.debug.enabled", "llm.request", "llm.response", "hello world"} {
+	for _, want := range []string{"chat.debug.enabled", "llm.request", "llm.response", "message_count", "response_chars"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("debug log missing %q: %s", want, text)
+		}
+	}
+	for _, forbidden := range []string{`"Content":"hi"`, "hello world"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("debug log should not contain raw prompt/response content %q: %s", forbidden, text)
 		}
 	}
 }
@@ -162,7 +167,6 @@ func TestEnableChatDebugLogsNativeToolCalls(t *testing.T) {
 		t.Fatalf("expected llm.request entry, got %v", lines)
 	}
 	fields, _ := requestEntry["fields"].(map[string]any)
-	toolCalls, _ := fields["tool_calls"].([]any)
 	if got := fields["tool_count"]; got != float64(1) {
 		t.Fatalf("tool_count = %#v, want 1", got)
 	}
@@ -184,7 +188,7 @@ func TestEnableChatDebugLogsNativeToolCalls(t *testing.T) {
 		t.Fatalf("expected llm.response entry, got %v", lines)
 	}
 	responseFields, _ := responseEntry["fields"].(map[string]any)
-	toolCalls, _ = responseFields["tool_calls"].([]any)
+	toolCalls, _ := responseFields["tool_calls"].([]any)
 	if len(toolCalls) != 1 {
 		t.Fatalf("tool_calls = %#v, want one native tool call", responseFields["tool_calls"])
 	}
@@ -192,8 +196,8 @@ func TestEnableChatDebugLogsNativeToolCalls(t *testing.T) {
 	if got := first["name"]; got != "run_command" {
 		t.Fatalf("tool call name = %#v, want run_command", got)
 	}
-	if got := first["args_json"]; got != `{"command":"git status --short"}` {
-		t.Fatalf("tool call args_json = %#v", got)
+	if got := first["args_chars"]; got != "32" {
+		t.Fatalf("tool call args_chars = %#v, want 32", got)
 	}
 }
 
@@ -232,6 +236,37 @@ func TestEnableChatDebugLogsRequiredToolChoiceMetadata(t *testing.T) {
 	fields, _ := entry["fields"].(map[string]any)
 	if got := fields["tool_choice_required"]; got != true {
 		t.Fatalf("tool_choice_required = %#v, want true", got)
+	}
+}
+
+func TestEnableChatDebugForwardsRequiredToolChoiceThroughRetryDriver(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chat-debug.jsonl")
+	inner := &debugNativeToolDriver{}
+	setup := &ChatSetup{
+		ChatModel: "openai/gpt-5",
+		WorkDir:   t.TempDir(),
+		Driver:    llm.NewRetryDriver(inner, 1, 0, 0, 0),
+	}
+
+	if _, err := EnableChatDebug(setup, path); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs := []llm.Message{{Role: llm.RoleUser, Content: "inspect repo"}}
+	tools := []llm.ToolDef{{Name: "list_dir", Description: "list a directory"}}
+	out := make(chan llm.Token, 4)
+	errCh := make(chan error, 1)
+	go func() {
+		native := setup.Driver.(llm.NativeToolCallerWithOptions)
+		errCh <- native.StreamWithToolsOptions(context.Background(), msgs, tools, llm.NativeToolOptions{RequireToolCall: true}, out)
+	}()
+	for range out {
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	if len(inner.lastOpts) != 1 || !inner.lastOpts[0].RequireToolCall {
+		t.Fatalf("inner.lastOpts = %#v, want RequireToolCall=true", inner.lastOpts)
 	}
 }
 
@@ -341,6 +376,10 @@ func TestChatDebugRecorderLogsEventsAndInputs(t *testing.T) {
 	}
 	if last["msg"] != "chat.event" {
 		t.Fatalf("last msg = %#v", last)
+	}
+	fields, _ := last["fields"].(map[string]any)
+	if _, ok := fields["text"]; ok {
+		t.Fatalf("chat event should not expose raw text fields: %#v", fields)
 	}
 }
 

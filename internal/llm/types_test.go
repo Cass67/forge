@@ -57,6 +57,7 @@ func TestMessageAssistantWithToolCalls(t *testing.T) {
 func TestEventKindConstants(t *testing.T) {
 	kinds := []llm.EventKind{
 		llm.EventToken,
+		llm.EventRetry,
 		llm.EventRoundEnd,
 		llm.EventPassEnd,
 		llm.EventError,

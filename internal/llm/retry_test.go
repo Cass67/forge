@@ -314,6 +314,7 @@ func TestRetryDelegatesConversationResetter(t *testing.T) {
 
 type nativeInnerDriver struct {
 	callCount int
+	lastOpts  []llm.NativeToolOptions
 }
 
 func (d *nativeInnerDriver) Name() string { return "native" }
@@ -322,8 +323,12 @@ func (d *nativeInnerDriver) Stream(_ context.Context, _ []llm.Message, out chan<
 	return nil
 }
 func (d *nativeInnerDriver) StreamWithTools(_ context.Context, _ []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
+	return d.StreamWithToolsOptions(context.Background(), nil, nil, llm.NativeToolOptions{}, out)
+}
+func (d *nativeInnerDriver) StreamWithToolsOptions(_ context.Context, _ []llm.Message, _ []llm.ToolDef, opts llm.NativeToolOptions, out chan<- llm.Token) error {
 	defer close(out)
 	d.callCount++
+	d.lastOpts = append(d.lastOpts, opts)
 	out <- llm.Token{ToolCall: &llm.NativeToolCall{ID: "c1", Name: "git_status", ArgsJSON: "{}"}}
 	return nil
 }
@@ -383,6 +388,26 @@ func TestRetryDriverForwardsNativeToolCaller(t *testing.T) {
 	}
 	if inner.callCount != 1 {
 		t.Fatalf("inner callCount = %d, want 1", inner.callCount)
+	}
+}
+
+func TestRetryDriverForwardsNativeToolOptions(t *testing.T) {
+	inner := &nativeInnerDriver{}
+	retry := llm.NewRetryDriver(inner, 1, 0, 0, 0)
+
+	caller, ok := any(retry).(llm.NativeToolCallerWithOptions)
+	if !ok {
+		t.Fatal("RetryDriver should implement NativeToolCallerWithOptions when inner driver does")
+	}
+	out := make(chan llm.Token, 4)
+	err := caller.StreamWithToolsOptions(context.Background(), nil, nil, llm.NativeToolOptions{RequireToolCall: true}, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range out {
+	}
+	if len(inner.lastOpts) != 1 || !inner.lastOpts[0].RequireToolCall {
+		t.Fatalf("inner.lastOpts = %#v, want RequireToolCall=true", inner.lastOpts)
 	}
 }
 

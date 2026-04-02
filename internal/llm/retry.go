@@ -143,11 +143,16 @@ func (d *RetryDriver) Stream(ctx context.Context, messages []Message, out chan<-
 }
 
 func (d *RetryDriver) StreamWithTools(ctx context.Context, messages []Message, tools []ToolDef, out chan<- Token) error {
+	return d.StreamWithToolsOptions(ctx, messages, tools, NativeToolOptions{}, out)
+}
+
+func (d *RetryDriver) StreamWithToolsOptions(ctx context.Context, messages []Message, tools []ToolDef, opts NativeToolOptions, out chan<- Token) error {
 	caller, ok := d.inner.(NativeToolCaller)
 	if !ok {
 		close(out)
 		return fmt.Errorf("inner driver %q does not support native tool calling", d.inner.Name())
 	}
+	advanced, _ := d.inner.(NativeToolCallerWithOptions)
 	defer close(out)
 
 	if err := waitForRateLimitCooldown(ctx, d.Name()); err != nil {
@@ -173,6 +178,10 @@ func (d *RetryDriver) StreamWithTools(ctx context.Context, messages []Message, t
 		internal := make(chan Token, 64)
 		errCh := make(chan error, 1)
 		go func() {
+			if advanced != nil {
+				errCh <- advanced.StreamWithToolsOptions(callCtx, messages, tools, opts, internal)
+				return
+			}
 			errCh <- caller.StreamWithTools(callCtx, messages, tools, internal)
 		}()
 
