@@ -190,11 +190,18 @@ func (s *Session) AppendUserMessage(text string) {
 // AppendAssistantWithToolCalls records an assistant message that contains native
 // tool calls (may have empty text content). Used by the native tool calling path.
 func (s *Session) AppendAssistantWithToolCalls(calls []llm.NativeToolCall) {
+	s.AppendAssistantToolTurn("", calls)
+}
+
+// AppendAssistantToolTurn records an assistant message that may include both a
+// short natural-language preamble and native tool calls.
+func (s *Session) AppendAssistantToolTurn(text string, calls []llm.NativeToolCall) {
 	if s == nil || len(calls) == 0 {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	text = strings.TrimSpace(text)
 	if len(s.turns) > 0 {
 		last := &s.turns[len(s.turns)-1]
 		last.ToolCalls = make([]TurnToolCall, 0, len(calls))
@@ -203,6 +210,7 @@ func (s *Session) AppendAssistantWithToolCalls(calls []llm.NativeToolCall) {
 		}
 	}
 	s.history = append(s.history, llm.Message{
+		Content:   text,
 		Role:      llm.RoleAssistant,
 		ToolCalls: append([]llm.NativeToolCall(nil), calls...),
 	})
@@ -404,6 +412,7 @@ func (s *Session) SetTaskState(state TaskState) {
 	requiredVerification := strings.TrimSpace(state.RequiredVerification)
 	if objective == "" && requiredVerification == "" {
 		s.taskState = nil
+		s.mode = ModeChat
 		return
 	}
 	s.taskState = &TaskState{
@@ -418,7 +427,7 @@ func (s *Session) SetTaskState(state TaskState) {
 
 func modeFromOperation(operation string) Mode {
 	switch strings.ToLower(strings.TrimSpace(operation)) {
-	case "inspect":
+	case "overview", "inspect":
 		return ModeInspect
 	case "plan":
 		return ModePlan

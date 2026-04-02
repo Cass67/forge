@@ -21,6 +21,12 @@ type RenderTarget interface {
 	Info(msg string)
 }
 
+// RetryNotifier is optionally implemented by renderers that can explicitly
+// retract or reset a provisional assistant draft before the next attempt.
+type RetryNotifier interface {
+	Retry(msg string)
+}
+
 type Renderer struct {
 	out    io.Writer
 	width  int
@@ -101,6 +107,14 @@ func (r *Renderer) Info(msg string) {
 		{Text: " ● " + msg, Style: format.StyleDim},
 	}}
 	fmt.Fprintln(r.out, format.LineToANSI(line, r.colors))
+}
+
+func (r *Renderer) Retry(msg string) {
+	if strings.TrimSpace(msg) == "" {
+		return
+	}
+	fmt.Fprintln(r.out)
+	r.Info(msg)
 }
 
 func (r *Renderer) Progress(msg string) {

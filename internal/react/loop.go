@@ -44,7 +44,6 @@ type Runner struct {
 	searchWorkflow        sameFileSearchWorkflowState
 	validationWorkflow    validationWorkflowState
 	repeatWorkflow        repeatToolCallState
-	legacyXMLAnswerOnly   bool
 	pendingRetryPrompt    string
 	completionCheck       func(SessionSnapshot, string) error
 	turnComplete          func(SessionSnapshot)
@@ -93,12 +92,15 @@ type repeatToolCallState struct {
 
 const planExplorationBudget = 10
 const analysisExplorationBudget = 15
+const previewExplorationBudget = 4
 const sameFileSearchThrashThreshold = 5
 const repeatToolCallThreshold = 6
 const maxCompletionRetriesPerTurn = 3
+const retryNoticeText = "Revising answer..."
 
 var loopHookOverlayKeys = map[string]struct{}{
 	"review_guidance":    {},
+	"preview_workflow":   {},
 	"plan_blocker":       {},
 	"synthesis_guidance": {},
 	"validation_failure": {},
@@ -162,11 +164,7 @@ func (r *Runner) Run(ctx context.Context, input string) error {
 		return nil
 	}
 	turn := r.session.RecordInput(prompt)
-	r.legacyXMLAnswerOnly = false
 	r.pendingRetryPrompt = ""
-	if r.progress != nil {
-		r.progress(fmt.Sprintf("react runtime: executing turn %d", turn))
-	}
 	if CompactSessionHistory(r.session, r.maxSessionTurns) {
 		if r.progress != nil {
 			r.progress("react runtime: compacted session context")
@@ -217,7 +215,6 @@ func (r *Runner) ClearHistory() {
 	r.searchWorkflow = sameFileSearchWorkflowState{}
 	r.validationWorkflow = validationWorkflowState{}
 	r.repeatWorkflow = repeatToolCallState{}
-	r.legacyXMLAnswerOnly = false
 	r.pendingRetryPrompt = ""
 	r.session.Clear()
 }
@@ -291,13 +288,6 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 	defer r.emitStats(start)
 
 	nativeCaller, isNative := r.driver.(llm.NativeToolCaller)
-	if !isNative {
-		err := fmt.Errorf("react runtime: driver %q does not support native tool calling", r.driver.Name())
-		r.session.CompleteTurn(turn, "", nil, err)
-		return err
-	}
-
-	toolDefs := r.tools.ToLLMToolDefs()
 
 	emptyRetried := false
 	completionRetries := 0
@@ -328,6 +318,21 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 		if r.applyPendingInput() {
 			r.syncRuntimeNote()
 		}
+		snap := r.session.Snapshot()
+		toolDefs := r.selectToolDefs(snap)
+		if taskRequiresToolAction(snap) && len(toolDefs) == 0 {
+			if !isNative {
+				err := fmt.Errorf("react runtime: driver %q does not support native tool calling", r.driver.Name())
+				r.session.CompleteTurn(turn, "", nil, err)
+				return err
+			}
+			toolDefs = r.tools.ToLLMToolDefs()
+		}
+		if len(toolDefs) > 0 && !isNative {
+			err := fmt.Errorf("react runtime: driver %q does not support native tool calling", r.driver.Name())
+			r.session.CompleteTurn(turn, "", nil, err)
+			return err
+		}
 		calls, err := r.streamNativeTurn(ctx, turn, nativeCaller, toolDefs)
 		if err != nil {
 			if !emptyRetried && strings.Contains(err.Error(), "empty native response") {
@@ -341,9 +346,7 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 				if prompt := strings.TrimSpace(retryable.Prompt); prompt != "" {
 					r.pendingRetryPrompt = prompt
 				}
-				if r.progress != nil {
-					r.progress("react runtime: retrying after non-compliant completion")
-				}
+				r.emitRetryNotice(retryNoticeText)
 				continue
 			}
 			r.session.CompleteTurn(turn, "", nil, err)
@@ -375,8 +378,11 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 		messages = injectSystemMessageBeforeHistory(messages, "Runtime correction for the previous attempt:\n"+prompt)
 	}
 	opts := llm.NativeToolOptions{}
-	if snap := r.session.Snapshot(); taskRequiresFirstToolAction(snap) {
+	if snap := r.session.Snapshot(); taskRequiresToolAction(snap) {
 		opts.RequireToolCall = true
+	}
+	if len(toolDefs) == 0 && !opts.RequireToolCall {
+		return r.streamPlainTurn(ctx, turn, messages)
 	}
 	out := make(chan llm.Token, 64)
 	streamCtx, cancel := context.WithCancel(ctx)
@@ -393,7 +399,7 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 	var textBuf strings.Builder
 	var toolCalls []llm.NativeToolCall
 	visibleEmitted := 0
-	streamVisible := r.completionCheck == nil
+	streamVisible := r.renderer != nil
 
 	for tok := range out {
 		if tok.ToolCall != nil {
@@ -415,7 +421,11 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 
 	if len(toolCalls) > 0 {
 		r.pendingRetryPrompt = ""
-		r.session.AppendAssistantWithToolCalls(toolCalls)
+		preamble := strings.TrimSpace(textBuf.String())
+		r.session.AppendAssistantToolTurn(preamble, toolCalls)
+		if preamble != "" && r.renderer != nil && visibleEmitted < len(preamble) {
+			r.renderer.AgentText(preamble[visibleEmitted:])
+		}
 		return toolCalls, nil
 	}
 
@@ -425,25 +435,71 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 		return nil, fmt.Errorf("react runtime: empty native response")
 	}
 	r.pendingRetryPrompt = ""
-	if legacyCall, ok := parseLegacyXMLToolCall(finalText); ok {
-		if r.legacyXMLAnswerOnly {
-			return nil, NewRetryableCompletionError(
-				"react runtime: legacy XML fallback is in answer-only mode",
-				legacyXMLAnswerOnlyPrompt(),
-			)
-		}
-		legacyCall.ID = fmt.Sprintf("legacy_xml_call_%d", len(r.session.Snapshot().History)+1)
-		r.session.AppendAssistantWithToolCalls([]llm.NativeToolCall{legacyCall})
-		return []llm.NativeToolCall{legacyCall}, nil
+	if looksLikeLegacyXMLToolCall(finalText) {
+		return nil, NewRetryableCompletionError(
+			"react runtime: provider returned deprecated XML tool-call markup",
+			nativeToolCallRetryPrompt(r.session.Snapshot()),
+		)
 	}
-	if snap := r.session.Snapshot(); taskRequiresFirstToolAction(snap) {
+	if snap := r.session.Snapshot(); taskRequiresToolAction(snap) {
 		retryPrompt := firstToolActionRetryPrompt(snap)
 		if opts.RequireToolCall {
-			retryPrompt = legacyXMLToolCallRetryPrompt(snap)
+			retryPrompt = nativeToolCallRetryPrompt(snap)
 		}
 		return nil, NewRetryableCompletionError(
 			"react runtime: task requires tool evidence before prose",
 			retryPrompt,
+		)
+	}
+	if r.completionCheck != nil {
+		if err := r.completionCheck(r.session.Snapshot(), finalText); err != nil {
+			return nil, err
+		}
+	}
+	r.session.AppendAssistantMessage(finalText)
+	r.session.CompleteTurn(turn, finalText, nil, nil)
+	r.notifyTurnComplete()
+	if r.renderer != nil && visibleEmitted < len(finalText) {
+		r.renderer.AgentText(finalText[visibleEmitted:])
+	}
+	return nil, nil
+}
+
+func (r *Runner) streamPlainTurn(ctx context.Context, turn int, messages []llm.Message) ([]llm.NativeToolCall, error) {
+	out := make(chan llm.Token, 64)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- r.driver.Stream(ctx, messages, out)
+	}()
+
+	var textBuf strings.Builder
+	visibleEmitted := 0
+	streamVisible := r.renderer != nil
+
+	for tok := range out {
+		if tok.Text == "" {
+			continue
+		}
+		textBuf.WriteString(tok.Text)
+		current := textBuf.String()
+		if streamVisible && r.renderer != nil && len(current) > visibleEmitted {
+			r.renderer.AgentToken(current[visibleEmitted:])
+			visibleEmitted = len(current)
+		}
+	}
+	if err := <-errCh; err != nil {
+		return nil, err
+	}
+
+	finalText := strings.TrimSpace(textBuf.String())
+	if finalText == "" {
+		return nil, fmt.Errorf("react runtime: empty native response")
+	}
+	r.pendingRetryPrompt = ""
+	if looksLikeLegacyXMLToolCall(finalText) {
+		return nil, NewRetryableCompletionError(
+			"react runtime: provider returned deprecated XML tool-call markup",
+			nativeToolCallRetryPrompt(r.session.Snapshot()),
 		)
 	}
 	if r.completionCheck != nil {
@@ -502,20 +558,27 @@ func (r *Runner) notifyTurnComplete() {
 	r.turnComplete(r.session.Snapshot())
 }
 
+func (r *Runner) emitRetryNotice(msg string) {
+	if r == nil {
+		return
+	}
+	msg = strings.TrimSpace(msg)
+	if msg == "" {
+		return
+	}
+	if notifier, ok := r.renderer.(agent.RetryNotifier); ok {
+		notifier.Retry(msg)
+		return
+	}
+	if r.progress != nil {
+		r.progress(msg)
+	}
+}
+
 // executeNativeToolCalls executes a batch of native tool calls and appends results
 // to the session. On unknown tool or execution error the call is recorded as a failed result and the loop aborts.
 func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []llm.NativeToolCall) error {
 	for _, call := range calls {
-		if isLegacyXMLCall(call) && r.isRepeatedLegacyXMLCall(call) {
-			r.legacyXMLAnswerOnly = true
-			msg := legacyXMLRepeatedCallPrompt(call)
-			if r.renderer != nil {
-				r.renderer.ToolResult(call.Name, msg, "", true)
-			}
-			r.session.AppendNativeToolResult(call.ID, "blocked: "+msg)
-			r.pendingRetryPrompt = msg
-			continue
-		}
 		tool, ok := r.tools.Get(call.Name)
 		if !ok {
 			errMsg := fmt.Sprintf("error: unknown tool %q", call.Name)
@@ -580,9 +643,6 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 		r.updateSameFileSearchWorkflow(call.Name, args, false)
 		r.updateValidationWorkflow(call.Name, args, result)
 		r.updateRepeatToolCallWorkflow(call.Name, args, result)
-		if isLegacyXMLCall(call) {
-			r.pendingRetryPrompt = legacyXMLContinuationPrompt(call, result)
-		}
 	}
 	return nil
 }
@@ -663,6 +723,220 @@ func truncateToolResult(result string) string {
 		return strings.Join(lines[:20], "\n") + fmt.Sprintf("\n... (%d more lines)", len(lines)-20)
 	}
 	return result
+}
+
+var (
+	readOnlyToolNames = []string{
+		"read_file", "list_dir", "search", "code_search", "glob", "view_image",
+		"lsp_definition", "lsp_references", "lsp_hover", "lsp_document_symbols",
+	}
+	writeToolNames   = []string{"write_file", "edit_file", "apply_patch"}
+	commandToolNames = []string{
+		"run_command", "exec_session_start", "exec_session_status", "exec_session_write",
+		"exec_session_resize", "exec_session_stop", "command_status", "command_write_stdin",
+	}
+	gitReadToolNames  = []string{"git_status", "git_diff", "git_log", "git_branch_state", "git_merge_status"}
+	previewToolNames  = []string{"artifact_write", "artifact_read", "preview_server_ensure", "preview_server_status"}
+	planningToolNames = []string{"think", "update_plan", "enter_plan_mode", "exit_plan_mode", "ask_user_question"}
+	webToolNames      = []string{"web_fetch", "web_search"}
+	delegateToolNames = []string{"spawn_agent", "wait_agent"}
+)
+
+func (r *Runner) selectToolDefs(snapshot SessionSnapshot) []llm.ToolDef {
+	if r == nil || r.tools == nil {
+		return nil
+	}
+	allowed := allowedToolNamesForSnapshot(snapshot)
+	if len(allowed) == 0 {
+		return nil
+	}
+	return r.tools.Filter(allowed).ToLLMToolDefs()
+}
+
+func allowedToolNamesForSnapshot(snapshot SessionSnapshot) []string {
+	text := normalizeToolIntentText(snapshot.LastInput)
+	repoContext := inputSuggestsRepoContext(text)
+	allowed := make(map[string]struct{})
+
+	add := func(names ...string) {
+		for _, name := range names {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			allowed[name] = struct{}{}
+		}
+	}
+	addAll := func(groups ...[]string) {
+		for _, group := range groups {
+			add(group...)
+		}
+	}
+
+	operation := ""
+	if snapshot.TaskState != nil {
+		operation = strings.ToLower(strings.TrimSpace(snapshot.TaskState.Operation))
+	}
+
+	switch operation {
+	case "overview":
+		addAll(readOnlyToolNames, gitReadToolNames, planningToolNames)
+	case "inspect", "analysis", "review", "plan":
+		addAll(readOnlyToolNames, gitReadToolNames, planningToolNames)
+		if inputSuggestsCommandWork(text) {
+			addAll(commandToolNames)
+		}
+		if inputSuggestsWebResearch(text) {
+			addAll(webToolNames)
+		}
+	case "implement":
+		addAll(readOnlyToolNames, writeToolNames, gitReadToolNames, commandToolNames, planningToolNames)
+		if inputSuggestsPreviewWork(text) {
+			addAll(previewToolNames)
+		}
+	case "validate":
+		addAll(readOnlyToolNames, gitReadToolNames, commandToolNames, planningToolNames)
+	case "preview":
+		addAll(readOnlyToolNames, writeToolNames, previewToolNames, planningToolNames)
+	case "merge":
+		addAll(readOnlyToolNames, writeToolNames, gitReadToolNames, commandToolNames, planningToolNames)
+		add("git_commit")
+	default:
+		if inputSuggestsPreviewWork(text) {
+			addAll(readOnlyToolNames, writeToolNames, previewToolNames)
+		}
+		if inputSuggestsFileInspection(text) {
+			addAll(readOnlyToolNames)
+			if repoContext {
+				addAll(gitReadToolNames)
+			}
+		}
+		if inputSuggestsFileWrites(text) {
+			addAll(writeToolNames)
+		}
+		if inputSuggestsCommandWork(text) {
+			addAll(commandToolNames)
+		}
+		if inputSuggestsWebResearch(text) {
+			addAll(webToolNames)
+		}
+		if inputSuggestsGitCommit(text) {
+			addAll(gitReadToolNames)
+			add("git_commit")
+		}
+	}
+
+	if inputSuggestsDelegation(text) {
+		addAll(delegateToolNames)
+	}
+	if inputSuggestsGitCommit(text) {
+		add("git_commit")
+	}
+	if len(allowed) > 0 {
+		add("tool_help")
+	}
+
+	names := make([]string, 0, len(allowed))
+	for name := range allowed {
+		names = append(names, name)
+	}
+	return names
+}
+
+func normalizeToolIntentText(text string) string {
+	text = strings.ToLower(strings.TrimSpace(text))
+	if text == "" {
+		return ""
+	}
+	return strings.Join(strings.Fields(text), " ")
+}
+
+func inputSuggestsPreviewWork(text string) bool {
+	return containsToolPhrase(text,
+		"preview", "mock up", "mockup", "web page", "webpage", "landing page",
+		"show in browser", "show me in browser", "html preview",
+	)
+}
+
+func inputSuggestsFileInspection(text string) bool {
+	if text == "" {
+		return false
+	}
+	if inputMentionsPathLikeText(text) {
+		return true
+	}
+	return containsToolPhrase(text,
+		"read ", "open ", "inspect ", "examine ", "check ", "look at ", "show ",
+		"file", "files", "log", "logs", "trace", "debug", "readme", "config", "output", "image",
+		"repo", "repository", "project", "codebase", "workspace", "directory", "folder",
+	)
+}
+
+func inputSuggestsRepoContext(text string) bool {
+	return containsToolPhrase(text, "repo", "repository", "project", "codebase", "workspace")
+}
+
+func inputSuggestsFileWrites(text string) bool {
+	if !containsToolPhrase(text,
+		"write ", "save ", "create ", "update ", "edit ", "patch ", "append ",
+		"rewrite ", "modify ",
+	) {
+		return false
+	}
+	return inputMentionsPathLikeText(text) || containsToolPhrase(text,
+		" file", " files", "markdown", ".md", "to a file", "into a file",
+		"readme", "config", "artifact", "html",
+	)
+}
+
+func inputSuggestsCommandWork(text string) bool {
+	return containsToolPhrase(text,
+		"run ", "command", "shell", "terminal", "test", "tests", "build", "lint",
+		"install", "compile", "benchmark", "start server", "restart server",
+		"dev server", "keep it running", "terminal session",
+	)
+}
+
+func inputSuggestsWebResearch(text string) bool {
+	if inputSuggestsPreviewWork(text) {
+		return false
+	}
+	return containsToolPhrase(text,
+		"latest", "look up", "lookup", "search the web", "browse", "online",
+		"internet", "website", "url", "fetch", "news",
+	)
+}
+
+func inputSuggestsGitCommit(text string) bool {
+	return containsToolPhrase(text,
+		"git commit", "commit it", "commit this", "create a commit",
+		"make a commit", "commit the changes",
+	)
+}
+
+func inputSuggestsDelegation(text string) bool {
+	return containsToolPhrase(text,
+		"sub-agent", "sub agent", "delegate", "parallel agent", "spawn agent",
+	)
+}
+
+func inputMentionsPathLikeText(text string) bool {
+	if strings.Contains(text, "/") || strings.Contains(text, "\\") {
+		return true
+	}
+	return containsToolPhrase(text,
+		".go", ".md", ".txt", ".log", ".json", ".yaml", ".yml", ".toml",
+		".png", ".jpg", ".jpeg", ".gif", ".svg",
+	)
+}
+
+func containsToolPhrase(text string, phrases ...string) bool {
+	for _, phrase := range phrases {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func maxSessionTurns(value int) int {
@@ -809,12 +1083,14 @@ func newLoopHookRegistry() *hooks.Registry {
 	registry := hooks.NewRegistry()
 	registry.Register(hooks.PointPromptContext, "inspect_first_action", inspectFirstActionPromptHook)
 	registry.Register(hooks.PointPromptContext, "review_guidance", reviewPromptHook)
+	registry.Register(hooks.PointPromptContext, "preview_workflow", previewWorkflowPromptHook)
 	registry.Register(hooks.PointPromptContext, "plan_blocker", blockedPlanPromptHook)
 	registry.Register(hooks.PointPromptContext, "synthesis_guidance", synthesisPromptHook)
 	registry.Register(hooks.PointPromptContext, "validation_failure", validationPromptHook)
 	registry.Register(hooks.PointPromptContext, "search_thrash", searchThrashPromptHook)
 	registry.Register(hooks.PointPromptContext, "git_workflow", gitWorkflowPromptHook)
 	registry.Register(hooks.PointPromptContext, "repeat_loop", repeatLoopPromptHook)
+	registry.Register(hooks.PointBeforeTool, "search_pattern_guard", beforeToolSearchPatternGuardHook)
 	registry.Register(hooks.PointBeforeTool, "git_commit_blocker", beforeToolGitCommitBlockHook)
 	return registry
 }
@@ -826,11 +1102,23 @@ func inspectFirstActionPromptHook(_ context.Context, event hooks.Event) []hooks.
 	}
 	snap, ok := event.Snapshot.(SessionSnapshot)
 	if ok && snapshotHasRepoReadEvidence(snap) {
-		return nil
+		if !isRepoOverviewTask(snap) {
+			return nil
+		}
+		return []hooks.Result{hooks.OverlayResult{
+			Key:        "inspect_first_action",
+			Content:    "Repo overview workflow active. If you already have the repo root listing and one high-signal file such as README.md, stop exploring and answer briefly in 2-4 bullets or a short paragraph. Keep it conversational and do not turn it into a full repo audit.",
+			Priority:   hooks.PriorityHigh,
+			Provenance: "runtime",
+		}}
+	}
+	content := "Repo inspection workflow active. Start with a repo read/search tool call instead of prose. For a general overview, list_dir(.) or read_file(README.md) is usually enough to begin."
+	if ok && isRepoOverviewTask(snap) {
+		content = "Repo overview workflow active. Start with a repo read/search tool call rather than a standalone progress update. A short natural sentence before the tool call is fine. Usually list_dir(.) plus README.md or one other high-signal file is enough; once you have that, stop exploring and answer briefly."
 	}
 	return []hooks.Result{hooks.OverlayResult{
 		Key:        "inspect_first_action",
-		Content:    "Repo inspection workflow active. Start with a repo read/search tool call instead of prose. For a general overview, list_dir(.) or read_file(README.md) is usually enough to begin.",
+		Content:    content,
 		Priority:   hooks.PriorityHigh,
 		Provenance: "runtime",
 	}}
@@ -844,6 +1132,38 @@ func reviewPromptHook(_ context.Context, event hooks.Event) []hooks.Result {
 	return []hooks.Result{hooks.OverlayResult{
 		Key:        "review_guidance",
 		Content:    "Review workflow active. Lead with findings before summary, keep findings grounded in repo evidence, and call out regressions, risks, or missing tests explicitly.",
+		Priority:   hooks.PriorityHigh,
+		Provenance: "runtime",
+	}}
+}
+
+func previewWorkflowPromptHook(_ context.Context, event hooks.Event) []hooks.Result {
+	payload, ok := event.Transient.(promptHookPayload)
+	if !ok || payload.Mode != ModePreview {
+		return nil
+	}
+	snap, ok := event.Snapshot.(SessionSnapshot)
+	if !ok || snapshotHasPreviewVerificationEvidence(snap) {
+		return nil
+	}
+
+	var content string
+	switch {
+	case snapshotHasWriteEvidence(snap):
+		content = "Preview workflow active. The preview content is already written. Call preview_server_ensure now, then answer with the verified URL."
+	case payload.PlanWorkflow.active && strings.EqualFold(payload.PlanWorkflow.mode, "preview") && payload.PlanWorkflow.synthesisRequired:
+		content = "Preview workflow active. You have enough repo evidence for the mockup. Stop exploring. Write the preview artifact or target file now, then call preview_server_ensure and answer with the verified URL. If the user asked for multiple concepts, present them together on one preview page instead of researching more."
+	case !snapshotHasAnyToolEvidence(snap):
+		content = "Preview workflow active. Start with the most likely directory or named file from the request rather than a repo-wide survey. Prefer list_dir on the likely folder, read_file on the candidate file, or code_search with one literal identifier. Avoid shotgun alternation searches like foo|bar|baz."
+	case snapshotHasRepoReadEvidence(snap):
+		content = "Preview workflow active. Keep research tight: after 1-3 high-signal reads, stop exploring, write the mockup artifact or target file, and call preview_server_ensure."
+	default:
+		return nil
+	}
+
+	return []hooks.Result{hooks.OverlayResult{
+		Key:        "preview_workflow",
+		Content:    content,
 		Priority:   hooks.PriorityHigh,
 		Provenance: "runtime",
 	}}
@@ -867,15 +1187,26 @@ func snapshotHasRepoReadEvidence(snapshot SessionSnapshot) bool {
 	return false
 }
 
-func taskRequiresFirstToolAction(snapshot SessionSnapshot) bool {
+func isRepoOverviewTask(snapshot SessionSnapshot) bool {
+	if snapshot.TaskState == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "overview")
+}
+
+func taskRequiresToolAction(snapshot SessionSnapshot) bool {
 	if snapshot.TaskState == nil {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(snapshot.TaskState.Operation)) {
-	case "inspect", "analysis", "review":
+	case "overview", "inspect", "analysis", "review":
 		return !snapshotHasRepoReadEvidence(snapshot)
-	case "implement", "validate", "preview", "merge":
+	case "validate":
+		return !snapshotHasValidationEvidence(snapshot)
+	case "implement", "merge":
 		return !snapshotHasAnyToolEvidence(snapshot)
+	case "preview":
+		return !snapshotHasPreviewVerificationEvidence(snapshot)
 	default:
 		return false
 	}
@@ -895,82 +1226,112 @@ func snapshotHasAnyToolEvidence(snapshot SessionSnapshot) bool {
 	return false
 }
 
-func firstToolActionRetryPrompt(snapshot SessionSnapshot) string {
-	if snapshot.TaskState == nil {
-		return "Use tools now. Your next assistant message must be one or more tool calls only, with no plain-text preamble before the first tool call."
+func snapshotHasValidationEvidence(snapshot SessionSnapshot) bool {
+	for _, msg := range snapshot.History {
+		if msg.Role != llm.RoleAssistant {
+			continue
+		}
+		for _, call := range msg.ToolCalls {
+			if isValidationToolCall(call) {
+				return true
+			}
+		}
 	}
-	switch strings.ToLower(strings.TrimSpace(snapshot.TaskState.Operation)) {
-	case "inspect", "analysis", "review":
-		return "Repo tools are available in this session. Use repo read/search tools now. Your next assistant message must be one or more tool calls only, with no plain-text preamble before the first tool call."
-	case "implement":
-		return "Use repo tools now. Inspect the relevant code first, then continue. Your next assistant message must be one or more tool calls only, with no plain-text preamble before the first tool call."
-	case "validate":
-		return "Use tools now. Run the relevant checks or inspect the relevant code before answering. Your next assistant message must be one or more tool calls only, with no plain-text preamble before the first tool call."
-	case "preview":
-		return "Use preview or repo tools now. Your next assistant message must be one or more tool calls only, with no plain-text preamble before the first tool call."
-	case "merge":
-		return "Use git or repo tools now. Your next assistant message must be one or more tool calls only, with no plain-text preamble before the first tool call."
-	default:
-		return "Use tools now. Your next assistant message must be one or more tool calls only, with no plain-text preamble before the first tool call."
-	}
+	return false
 }
 
-func legacyXMLToolCallRetryPrompt(snapshot SessionSnapshot) string {
-	example := "<tool_call>\n{\"name\":\"list_dir\",\"args\":{\"path\":\".\"}}\n</tool_call>"
-	switch strings.ToLower(strings.TrimSpace(snapshot.TaskState.Operation)) {
-	case "implement", "validate":
-		example = "<tool_call>\n{\"name\":\"read_file\",\"args\":{\"path\":\"README.md\"}}\n</tool_call>"
-	case "preview":
-		example = "<tool_call>\n{\"name\":\"preview_server_status\",\"args\":{}}\n</tool_call>"
-	case "merge":
-		example = "<tool_call>\n{\"name\":\"git_status\",\"args\":{}}\n</tool_call>"
+func snapshotHasWriteEvidence(snapshot SessionSnapshot) bool {
+	for _, msg := range snapshot.History {
+		if msg.Role != llm.RoleAssistant {
+			continue
+		}
+		for _, call := range msg.ToolCalls {
+			switch strings.TrimSpace(call.Name) {
+			case "edit_file", "write_file", "apply_patch", "artifact_write":
+				return true
+			}
+		}
 	}
-	return "Native tool calling did not succeed on this provider. On your next response, emit exactly one legacy XML tool call and nothing else. Use this exact wrapper format:\n\n" + example + "\n\nIf a different repo tool is more appropriate, use that tool name and args in the same XML wrapper. Do not add prose before or after the tool call."
+	return false
 }
 
-func isLegacyXMLCall(call llm.NativeToolCall) bool {
-	return strings.HasPrefix(strings.TrimSpace(call.ID), "legacy_xml_call_")
+func snapshotHasPreviewVerificationEvidence(snapshot SessionSnapshot) bool {
+	previewCalls := map[string]struct{}{}
+	for _, msg := range snapshot.History {
+		switch msg.Role {
+		case llm.RoleAssistant:
+			for _, call := range msg.ToolCalls {
+				switch strings.TrimSpace(call.Name) {
+				case "preview_server_ensure", "preview_server_status":
+					previewCalls[call.ID] = struct{}{}
+				}
+			}
+		case llm.RoleTool:
+			if _, ok := previewCalls[msg.ToolCallID]; !ok {
+				continue
+			}
+			if previewVerificationResultLooksLive(msg.Content) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
-func (r *Runner) isRepeatedLegacyXMLCall(call llm.NativeToolCall) bool {
-	if r == nil {
+func previewVerificationResultLooksLive(result string) bool {
+	lower := strings.ToLower(strings.TrimSpace(result))
+	if lower == "" {
 		return false
 	}
-	var args map[string]any
+	if !strings.Contains(lower, "http://127.0.0.1:") && !strings.Contains(lower, `"url"`) {
+		return false
+	}
+	return strings.Contains(lower, `"status":"live"`) || strings.Contains(lower, `"status":"running"`)
+}
+
+func isValidationToolCall(call llm.NativeToolCall) bool {
+	if strings.TrimSpace(call.Name) != "run_command" {
+		return false
+	}
+	var args struct {
+		Command string `json:"command"`
+	}
 	if err := json.Unmarshal([]byte(call.ArgsJSON), &args); err != nil {
 		return false
 	}
-	target := repeatToolCallTarget(strings.TrimSpace(call.Name), args)
-	if target == "" {
-		return false
-	}
-	key := strings.TrimSpace(call.Name) + ":" + target
-	lastKey := r.repeatWorkflow.lastToolName + ":" + r.repeatWorkflow.lastTarget
-	return key == lastKey && r.repeatWorkflow.streak >= 1
+	return isValidationCommand(strings.ToLower(strings.TrimSpace(args.Command)))
 }
 
-func legacyXMLContinuationPrompt(call llm.NativeToolCall, result string) string {
-	prompt := "Legacy XML fallback is still active for this turn because this provider did not return native tool calls. The last XML tool call succeeded. Do not repeat the same tool call. Use the tool result above. If you need one more step, emit exactly one XML tool call for a different tool. If you already have enough evidence, answer normally in plain text."
-	if strings.TrimSpace(call.Name) == "list_dir" && strings.Contains(result, "README.md") {
-		prompt += "\n\nA good next step is:\n<tool_call>\n{\"name\":\"read_file\",\"args\":{\"path\":\"README.md\"}}\n</tool_call>"
+func firstToolActionRetryPrompt(snapshot SessionSnapshot) string {
+	const preambleAllowed = " A single brief sentence before the tool calls is fine, but the same message must include the tool calls. Do not send a progress-only message without acting."
+	if snapshot.TaskState == nil {
+		return "Use tools now. Your next assistant message must include one or more tool calls." + preambleAllowed
 	}
-	return prompt
-}
-
-func legacyXMLRepeatedCallPrompt(call llm.NativeToolCall) string {
-	name := strings.TrimSpace(call.Name)
-	switch name {
-	case "list_dir":
-		return "Do not repeat the same XML list_dir call. You already have the repo root listing. Your next response must be plain text only. Use the evidence you already have and answer now. Do not emit any more XML tool calls in this turn."
-	case "read_file":
-		return "Do not repeat the same XML read_file call. You already have that file content. Your next response must be plain text only. Use the evidence you already have and answer now. Do not emit any more XML tool calls in this turn."
+	switch strings.ToLower(strings.TrimSpace(snapshot.TaskState.Operation)) {
+	case "overview":
+		return "Repo overview workflow active. Use repo read/search tools now." + preambleAllowed + " Usually the repo root listing plus README.md is enough before you answer briefly."
+	case "inspect", "analysis", "review":
+		return "Repo tools are available in this session. Use repo read/search tools now." + preambleAllowed
+	case "implement":
+		return "Use repo tools now. Inspect the relevant code first, then continue." + preambleAllowed
+	case "validate":
+		return "Use tools now. This turn is in validate mode, so run the relevant tests or checks before answering. If you need to discover the right command first, use repo tools and keep going until a real validation command has run." + preambleAllowed
+	case "preview":
+		return "Preview workflow active. Use preview or repo tools now." + preambleAllowed + " Start with the likeliest directory or named file, avoid broad alternation searches, and once you have enough context write the artifact and call preview_server_ensure."
+	case "merge":
+		return "Use git or repo tools now." + preambleAllowed
 	default:
-		return "Do not repeat the same XML tool call. Your next response must be plain text only. Use the evidence you already have and answer now. Do not emit any more XML tool calls in this turn."
+		return "Use tools now. Your next assistant message must include one or more tool calls." + preambleAllowed
 	}
 }
 
-func legacyXMLAnswerOnlyPrompt() string {
-	return "Legacy XML fallback is now in answer-only mode for this turn. Do not emit any tool call or XML wrapper. Respond in plain text only using the repo evidence already gathered in this session."
+func nativeToolCallRetryPrompt(snapshot SessionSnapshot) string {
+	return firstToolActionRetryPrompt(snapshot) + " Use the provider's native tool-calling interface only. Do not emit prose, XML, or example markup in place of a tool call."
+}
+
+func looksLikeLegacyXMLToolCall(text string) bool {
+	_, ok := parseLegacyXMLToolCall(text)
+	return ok
 }
 
 func blockedPlanPromptHook(_ context.Context, event hooks.Event) []hooks.Result {
@@ -1071,6 +1432,21 @@ func repeatLoopPromptHook(_ context.Context, event hooks.Event) []hooks.Result {
 		Key:        "repeat_loop",
 		Content:    content,
 		Priority:   hooks.PriorityHigh,
+		Provenance: "runtime",
+	}}
+}
+
+func beforeToolSearchPatternGuardHook(_ context.Context, event hooks.Event) []hooks.Result {
+	payload, ok := event.Transient.(beforeToolHookPayload)
+	if !ok || payload.ToolName != "search" {
+		return nil
+	}
+	pattern := strings.TrimSpace(stringArg(payload.Args, "pattern"))
+	if !looksLikeShotgunAlternationSearch(pattern) {
+		return nil
+	}
+	return []hooks.Result{hooks.BlockResult{
+		Message:    "blocked: avoid shotgun alternation regex searches like foo|bar|baz. Search one likely term at a time, use code_search for a literal identifier, or list_dir/read_file on the likely path instead.",
 		Provenance: "runtime",
 	}}
 }
@@ -1225,6 +1601,8 @@ func (s planWorkflowState) overlayContent() string {
 	switch s.mode {
 	case "analysis":
 		return "Analysis guidance: you have enough evidence to answer. Avoid exhaustive repo-wide searches, stop exploring and summarize findings or recommendations now. Put any uncertainty into open questions instead of doing more low-yield research."
+	case "preview":
+		return ""
 	default:
 		return "Planning task guidance: you have enough evidence to write the plan. Avoid exhaustive repo-wide searches, stop exploring and synthesize the next actionable plan now. Use update_plan to capture the steps, and put any uncertainty into open questions instead of doing more broad research."
 	}
@@ -1364,12 +1742,13 @@ func (r *Runner) updateValidationWorkflow(toolName string, args map[string]any, 
 
 func isValidationCommand(command string) bool {
 	for _, prefix := range []string{
-		"go test", "go build",
+		"go test", "go build", "go vet",
 		"npm test", "npm run build",
 		"bun test", "bun run build",
-		"yarn test",
-		"pnpm test",
-		"pytest", "cargo test", "cargo build",
+		"yarn test", "yarn build",
+		"pnpm test", "pnpm build",
+		"pytest", "cargo test", "cargo build", "cargo check",
+		"golangci-lint",
 	} {
 		if strings.HasPrefix(command, prefix) {
 			return true
@@ -1435,8 +1814,10 @@ func repeatToolCallTarget(toolName string, args map[string]any) string {
 		return strings.TrimSpace(stringArg(args, "path"))
 	case "list_dir":
 		return strings.TrimSpace(stringArg(args, "path"))
-	case "code_search", "search":
+	case "code_search":
 		return strings.TrimSpace(stringArg(args, "query"))
+	case "search":
+		return strings.TrimSpace(stringArg(args, "pattern"))
 	case "run_command":
 		return strings.TrimSpace(stringArg(args, "command"))
 	case "glob":
@@ -1477,7 +1858,7 @@ func allowsPlanSynthesis(toolName string) bool {
 
 func isSynthesisGuardOperation(operation string) bool {
 	switch strings.ToLower(strings.TrimSpace(operation)) {
-	case "plan", "analysis":
+	case "plan", "analysis", "preview":
 		return true
 	default:
 		return false
@@ -1488,9 +1869,26 @@ func synthesisGuardBudget(mode string) int {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "analysis":
 		return analysisExplorationBudget
+	case "preview":
+		return previewExplorationBudget
 	default:
 		return planExplorationBudget
 	}
+}
+
+func looksLikeShotgunAlternationSearch(pattern string) bool {
+	pattern = strings.TrimSpace(pattern)
+	if len(pattern) < 24 || strings.Count(pattern, "|") < 2 {
+		return false
+	}
+	parts := strings.Split(pattern, "|")
+	nonEmpty := 0
+	for _, part := range parts {
+		if strings.TrimSpace(part) != "" {
+			nonEmpty++
+		}
+	}
+	return nonEmpty >= 3
 }
 
 func isReadOnlyCommand(command string) bool {

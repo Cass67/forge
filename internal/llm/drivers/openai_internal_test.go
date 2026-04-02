@@ -832,6 +832,86 @@ func TestStreamWithToolsResponsesSendsToolsAndEmitsToolCalls(t *testing.T) {
 	}
 }
 
+func TestCustomCompatProviderFallsBackFromResponsesToolsToChatCompletions(t *testing.T) {
+	t.Parallel()
+
+	type chatRequestBody struct {
+		Model      string            `json:"model"`
+		ToolChoice json.RawMessage   `json:"tool_choice"`
+		Tools      []json.RawMessage `json:"tools"`
+	}
+
+	var paths []string
+	var chatBody chatRequestBody
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/responses":
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"responses tools unsupported"}}`))
+		case "/chat/completions":
+			if err := json.NewDecoder(r.Body).Decode(&chatBody); err != nil {
+				t.Fatalf("decode chat body: %v", err)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_list_dir\",\"type\":\"function\",\"function\":{\"name\":\"list_dir\",\"arguments\":\"{\\\"path\\\":\\\".\\\"}\"}}]},\"finish_reason\":null}]}\n\n"))
+			_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	d := NewCustomCompatProvider("oca", "sk-test", srv.URL, "oca/gpt-5.4", "gpt-5.4", true, nil)
+	tools := []llm.ToolDef{
+		{
+			Name:        "list_dir",
+			Description: "List a directory",
+			Parameters: []llm.ToolParam{
+				{Name: "path", Type: "string", Description: "directory path", Required: true},
+			},
+		},
+	}
+	out := make(chan llm.Token, 8)
+	if err := d.StreamWithToolsOptions(
+		context.Background(),
+		[]llm.Message{{Role: llm.RoleUser, Content: "inspect the repo"}},
+		tools,
+		llm.NativeToolOptions{RequireToolCall: true},
+		out,
+	); err != nil {
+		t.Fatalf("StreamWithToolsOptions() error = %v", err)
+	}
+
+	var toks []llm.Token
+	for tok := range out {
+		toks = append(toks, tok)
+	}
+
+	if len(paths) != 2 || paths[0] != "/responses" || paths[1] != "/chat/completions" {
+		t.Fatalf("paths = %#v, want [/responses /chat/completions]", paths)
+	}
+	if got, want := chatBody.Model, "gpt-5.4"; got != want {
+		t.Fatalf("chat model = %q, want %q", got, want)
+	}
+	if got, want := strings.TrimSpace(string(chatBody.ToolChoice)), "\"required\""; got != want {
+		t.Fatalf("chat tool_choice = %q, want %q", got, want)
+	}
+	if len(chatBody.Tools) != 1 {
+		t.Fatalf("chat tools = %d, want 1", len(chatBody.Tools))
+	}
+	if len(toks) != 1 || toks[0].ToolCall == nil {
+		t.Fatalf("tokens = %#v, want one tool call token", toks)
+	}
+	if got, want := toks[0].ToolCall.ID, "call_list_dir"; got != want {
+		t.Fatalf("tool call id = %q, want %q", got, want)
+	}
+	if got, want := toks[0].ToolCall.Name, "list_dir"; got != want {
+		t.Fatalf("tool call name = %q, want %q", got, want)
+	}
+}
+
 func TestToResponseInputPreservesNativeToolHistory(t *testing.T) {
 	msgs := []llm.Message{
 		{Role: llm.RoleUser, Content: "inspect the repo"},

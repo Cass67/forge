@@ -634,6 +634,48 @@ func (m *ChatModel) markLastAssistantRecordFinal() {
 	}
 }
 
+func (m *ChatModel) discardPendingAssistantMessage() {
+	hasPendingAssistant := false
+	for i := len(m.records) - 1; i >= 0; i-- {
+		if m.records[i].Kind != RecordAssistant {
+			continue
+		}
+		if m.records[i].Final {
+			return
+		}
+		hasPendingAssistant = true
+		break
+	}
+	if !hasPendingAssistant {
+		return
+	}
+	for i := len(m.messages) - 1; i >= 0; i-- {
+		if m.messages[i].Kind != MsgAgent {
+			continue
+		}
+		m.messages = append(m.messages[:i], m.messages[i+1:]...)
+		if m.recentActivityIndex > i {
+			m.recentActivityIndex--
+		}
+		m.rebuildTranscriptStateFromMessages()
+		m.lastCodeBlock = latestAgentCodeBlock(m.messages)
+		m.refreshViewport()
+		return
+	}
+}
+
+func latestAgentCodeBlock(messages []ChatMessage) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Kind != MsgAgent {
+			continue
+		}
+		if block := latestFencedCodeBlock(messages[i].Content); block != "" {
+			return block
+		}
+	}
+	return ""
+}
+
 func (m *ChatModel) finalizeLiveProgressRecord() {
 	record, ok := m.liveProgress.Finalize()
 	if !ok {
@@ -1411,7 +1453,15 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		if token := sanitizeAssistantTokenForDisplay(ev.Text); token != "" {
 			m.AppendToLastAgentLabeled(token, ev.Agent)
 		}
+	case llm.EventRetry:
+		m.discardPendingAssistantMessage()
+		if msg := strings.TrimSpace(ev.Text); msg != "" {
+			m.AddWorkingMessage(msg)
+		}
 	case llm.EventToolCall:
+		if ev.Agent != "runtime" {
+			m.markLastAssistantRecordFinal()
+		}
 		if ev.Agent == "runtime" {
 			m.AddWorkingMessage(ev.Text)
 			return m, nil

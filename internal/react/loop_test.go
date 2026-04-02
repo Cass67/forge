@@ -24,8 +24,13 @@ type nativeScriptedDriver struct {
 func (d *nativeScriptedDriver) Name() string { return "native-scripted" }
 
 func (d *nativeScriptedDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
-	close(out)
-	return errors.New("Stream should not be called on a NativeToolCaller driver")
+	defer close(out)
+	if d.callCount >= len(d.responses) {
+		return errors.New("no scripted response")
+	}
+	out <- llm.Token{Text: d.responses[d.callCount]}
+	d.callCount++
+	return nil
 }
 
 func (d *nativeScriptedDriver) StreamWithTools(_ context.Context, _ []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
@@ -45,9 +50,11 @@ type captureMessagesDriver struct {
 
 func (d *captureMessagesDriver) Name() string { return "capture-messages" }
 
-func (d *captureMessagesDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
-	close(out)
-	return errors.New("Stream should not be called on a NativeToolCaller driver")
+func (d *captureMessagesDriver) Stream(_ context.Context, msgs []llm.Message, out chan<- llm.Token) error {
+	defer close(out)
+	d.lastMessages = append([]llm.Message(nil), msgs...)
+	out <- llm.Token{Text: d.response}
+	return nil
 }
 
 func (d *captureMessagesDriver) StreamWithTools(_ context.Context, msgs []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
@@ -57,8 +64,8 @@ func (d *captureMessagesDriver) StreamWithTools(_ context.Context, msgs []llm.Me
 	return nil
 }
 
-// scriptedDriver is a plain Driver (no NativeToolCaller) used to test that
-// a non-native driver causes the runner to return an error.
+// scriptedDriver is a plain Driver (no NativeToolCaller) used to test the
+// plain-stream path and the error path when tool calling is required.
 type scriptedDriver struct {
 	responses []string
 	callCount int
@@ -90,6 +97,7 @@ type recordingRenderer struct {
 	mu         sync.Mutex
 	tokenTexts []string
 	fullTexts  []string
+	retryTexts []string
 }
 
 func (r *recordingRenderer) AgentToken(text string) {
@@ -102,6 +110,12 @@ func (r *recordingRenderer) AgentText(text string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.fullTexts = append(r.fullTexts, text)
+}
+
+func (r *recordingRenderer) Retry(text string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.retryTexts = append(r.retryTexts, text)
 }
 
 func (r *recordingRenderer) ToolCall(string, string)                 {}
@@ -124,13 +138,9 @@ func (d *errorDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.
 func TestRunnerRunInvokesDriverAndProgress(t *testing.T) {
 	driver := &nativeScriptedDriver{responses: []string{"repo overview"}}
 	session := NewSession()
-	var progress string
 	r := NewRunner(Config{
 		Driver:  driver,
 		Session: session,
-		Progress: func(text string) {
-			progress = text
-		},
 	})
 
 	if err := r.Run(context.Background(), "  inspect this file  "); err != nil {
@@ -138,9 +148,6 @@ func TestRunnerRunInvokesDriverAndProgress(t *testing.T) {
 	}
 	if driver.callCount != 1 {
 		t.Fatalf("calls = %d, want 1", driver.callCount)
-	}
-	if progress == "" {
-		t.Fatal("expected progress callback")
 	}
 	snap := session.Snapshot()
 	if snap.Turn != 1 {
@@ -238,6 +245,7 @@ func TestRunnerTurnCompleteHookCanFeedMemorySummaryIntoNextTurn(t *testing.T) {
 	}
 
 	r.SetDriver(driver)
+	session.SetMode(ModeInspect)
 	if err := r.Run(context.Background(), "keep going"); err != nil {
 		t.Fatal(err)
 	}
@@ -358,11 +366,17 @@ func TestRunnerRetriesRetryableCompletionFailureOnce(t *testing.T) {
 	}
 	renderer.mu.Lock()
 	defer renderer.mu.Unlock()
-	if len(renderer.tokenTexts) != 0 {
-		t.Fatalf("expected buffered final answer rendering, got tokens %#v", renderer.tokenTexts)
+	if len(renderer.retryTexts) != 1 || renderer.retryTexts[0] != retryNoticeText {
+		t.Fatalf("retry texts = %#v", renderer.retryTexts)
 	}
-	if len(renderer.fullTexts) != 1 || renderer.fullTexts[0] != "Inspected the repo and found the theme entrypoints." {
-		t.Fatalf("full texts = %#v", renderer.fullTexts)
+	if got, want := renderer.tokenTexts, []string{
+		"I'll inspect the repo first.",
+		"Inspected the repo and found the theme entrypoints.",
+	}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("token texts = %#v", got)
+	}
+	if len(renderer.fullTexts) != 0 {
+		t.Fatalf("expected no duplicate full-text render, got %#v", renderer.fullTexts)
 	}
 }
 
@@ -407,8 +421,8 @@ func TestRunnerInspectTurnRequiresRepoReadBeforePlainTextCompletion(t *testing.T
 	session := NewSession()
 	session.SetTaskState(TaskState{
 		Objective:            "whats this repo all about",
-		Operation:            "inspect",
-		RequiredVerification: "inspect the repository with read/search tools before answering",
+		Operation:            "overview",
+		RequiredVerification: "inspect the repository with read/search tools before answering. For a casual repo overview, usually inspect the repo root and one high-signal file such as README.md, then give a brief overview grounded only in that evidence",
 	})
 	reg := agenttools.NewRegistry()
 	reg.Register(agenttools.Tool{
@@ -436,7 +450,7 @@ func TestRunnerInspectTurnRequiresRepoReadBeforePlainTextCompletion(t *testing.T
 		t.Fatalf("history = %#v", snap.History)
 	}
 	for _, msg := range snap.History {
-		if msg.Role == llm.RoleUser && (strings.Contains(msg.Content, "Start with a repo read/search tool call instead of prose") ||
+		if msg.Role == llm.RoleUser && (strings.Contains(msg.Content, "Repo overview workflow active. Use repo read/search tools now.") ||
 			strings.Contains(msg.Content, "emit exactly one legacy XML tool call")) {
 			t.Fatalf("retry prompt should not be appended as user history: %#v", snap.History)
 		}
@@ -444,7 +458,7 @@ func TestRunnerInspectTurnRequiresRepoReadBeforePlainTextCompletion(t *testing.T
 	foundRetryPrompt := false
 	if len(driver.allMsgs) >= 2 {
 		for _, msg := range driver.allMsgs[1] {
-			if msg.Role == llm.RoleSystem && (strings.Contains(msg.Content, "Start with a repo read/search tool call instead of prose") ||
+			if msg.Role == llm.RoleSystem && (strings.Contains(msg.Content, "Repo overview workflow active. Use repo read/search tools now.") ||
 				strings.Contains(msg.Content, "emit exactly one legacy XML tool call")) {
 				foundRetryPrompt = true
 				break
@@ -468,8 +482,8 @@ func TestRunnerInspectTurnFailsAfterSecondPlainTextAttemptWithoutRepoRead(t *tes
 	session := NewSession()
 	session.SetTaskState(TaskState{
 		Objective:            "whats this repo all about",
-		Operation:            "inspect",
-		RequiredVerification: "inspect the repository with read/search tools before answering",
+		Operation:            "overview",
+		RequiredVerification: "inspect the repository with read/search tools before answering. For a casual repo overview, usually inspect the repo root and one high-signal file such as README.md, then give a brief overview grounded only in that evidence",
 	})
 	r := NewRunner(Config{Driver: driver, Session: session})
 
@@ -538,6 +552,77 @@ func TestRunnerAnalysisTurnRequiresRepoReadBeforePlainTextCompletion(t *testing.
 	}
 	if got := session.Snapshot().Turns[0].FinalResponse; got == "" {
 		t.Fatal("expected final response after tool evidence")
+	}
+}
+
+func TestRunnerPreviewTurnRequiresVerifiedPreviewBeforePlainTextCompletion(t *testing.T) {
+	driver := &nativeSequenceDriver{
+		steps: [][]llm.Token{
+			{{ToolCall: &llm.NativeToolCall{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"internal/tui/chattheme.go"}`}}},
+			{{Text: "I found a few preview ideas and can summarize them now."}},
+			{{ToolCall: &llm.NativeToolCall{ID: "c2", Name: "preview_server_ensure", ArgsJSON: `{"path":"artifacts/theme-preview/index.html"}`}}},
+			{{Text: "The preview is live and verified at http://127.0.0.1:4123/index.html."}},
+		},
+	}
+	session := NewSession()
+	session.SetTaskState(TaskState{
+		Objective:            "show me 3 theme ideas and start a preview",
+		Operation:            "preview",
+		RequiredVerification: "use preview or artifact tools, verify the preview URL or visible result, and do not rely on an ad-hoc shell webserver",
+	})
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "read_file",
+		Description: "read file",
+		Parameters:  []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}},
+		AutoApprove: true,
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			if got := strings.TrimSpace(stringArg(args, "path")); got != "internal/tui/chattheme.go" {
+				t.Fatalf("path = %q", got)
+			}
+			return "theme source", nil
+		},
+	})
+	reg.Register(agenttools.Tool{
+		Name:        "preview_server_ensure",
+		Description: "start preview",
+		Parameters:  []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}},
+		AutoApprove: true,
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			if got := strings.TrimSpace(stringArg(args, "path")); got != "artifacts/theme-preview/index.html" {
+				t.Fatalf("path = %q", got)
+			}
+			return `{"status":"running","url":"http://127.0.0.1:4123/index.html"}`, nil
+		},
+	})
+
+	r := NewRunner(Config{Driver: driver, Session: session, Tools: reg})
+	if err := r.Run(context.Background(), "show me 3 theme ideas and start a preview"); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.LastResponse(); !strings.Contains(got, "http://127.0.0.1:4123/index.html") {
+		t.Fatalf("final response = %q", got)
+	}
+	if len(driver.lastOpts) < 4 {
+		t.Fatalf("opts = %#v", driver.lastOpts)
+	}
+	if !driver.lastOpts[0].RequireToolCall || !driver.lastOpts[1].RequireToolCall || !driver.lastOpts[2].RequireToolCall {
+		t.Fatalf("expected preview turn to keep requiring tool calls until the preview is live, opts=%#v", driver.lastOpts)
+	}
+	if driver.lastOpts[3].RequireToolCall {
+		t.Fatalf("expected final request to allow prose after preview verification, opts=%#v", driver.lastOpts)
+	}
+	foundRetryPrompt := false
+	if len(driver.allMsgs) >= 3 {
+		for _, msg := range driver.allMsgs[2] {
+			if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "call preview_server_ensure") {
+				foundRetryPrompt = true
+				break
+			}
+		}
+	}
+	if !foundRetryPrompt {
+		t.Fatalf("expected preview retry prompt after read-only step, allMsgs=%#v", driver.allMsgs)
 	}
 }
 
@@ -726,14 +811,14 @@ func TestRunnerPromptHookOutputIncludesRuntimeGuidance(t *testing.T) {
 		session := NewSession()
 		session.SetTaskState(TaskState{
 			Objective:            "whats this repo all about",
-			Operation:            "inspect",
-			RequiredVerification: "inspect the repository with read/search tools before answering",
+			Operation:            "overview",
+			RequiredVerification: "inspect the repository with read/search tools before answering. For a casual repo overview, usually inspect the repo root and one high-signal file such as README.md, then give a brief overview grounded only in that evidence",
 		})
 		r := NewRunner(Config{Session: session})
 
 		output := r.promptHookOutput(context.Background())
 
-		if got := hookOverlayContent(output, "inspect_first_action"); !strings.Contains(got, "Start with a repo read/search tool call instead of prose") {
+		if got := hookOverlayContent(output, "inspect_first_action"); !strings.Contains(got, "short natural sentence before the tool call is fine") {
 			t.Fatalf("inspect_first_action = %q", got)
 		}
 	})
@@ -741,11 +826,11 @@ func TestRunnerPromptHookOutputIncludesRuntimeGuidance(t *testing.T) {
 	t.Run("inspect first action guidance clears after read evidence", func(t *testing.T) {
 		session := NewSession()
 		session.SetTaskState(TaskState{
-			Objective:            "whats this repo all about",
+			Objective:            "inspect the theme setup",
 			Operation:            "inspect",
 			RequiredVerification: "inspect the repository with read/search tools before answering",
 		})
-		session.RecordInput("whats this repo all about")
+		session.RecordInput("inspect the theme setup")
 		session.AppendAssistantWithToolCalls([]llm.NativeToolCall{{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"README.md"}`}})
 		session.AppendNativeToolResult("c1", "forge readme")
 		r := NewRunner(Config{Session: session})
@@ -754,6 +839,65 @@ func TestRunnerPromptHookOutputIncludesRuntimeGuidance(t *testing.T) {
 
 		if got := hookOverlayContent(output, "inspect_first_action"); got != "" {
 			t.Fatalf("inspect_first_action should be cleared after read evidence, got %q", got)
+		}
+	})
+
+	t.Run("repo overview guidance flips to synthesis after read evidence", func(t *testing.T) {
+		session := NewSession()
+		session.SetTaskState(TaskState{
+			Objective:            "whats this repo all about",
+			Operation:            "overview",
+			RequiredVerification: "inspect the repository with read/search tools before answering. For a casual repo overview, usually inspect the repo root and one high-signal file such as README.md, then give a brief overview grounded only in that evidence",
+		})
+		session.RecordInput("whats this repo all about")
+		session.AppendAssistantWithToolCalls([]llm.NativeToolCall{{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"README.md"}`}})
+		session.AppendNativeToolResult("c1", "forge readme")
+		r := NewRunner(Config{Session: session})
+
+		output := r.promptHookOutput(context.Background())
+
+		if got := hookOverlayContent(output, "inspect_first_action"); !strings.Contains(got, "stop exploring and answer briefly") {
+			t.Fatalf("inspect_first_action = %q", got)
+		}
+	})
+
+	t.Run("preview first action guidance", func(t *testing.T) {
+		session := NewSession()
+		session.SetTaskState(TaskState{
+			Objective:            "show me 3 theme ideas and start a preview",
+			Operation:            "preview",
+			RequiredVerification: "use preview or artifact tools, verify the preview URL or visible result, and do not rely on an ad-hoc shell webserver",
+		})
+		r := NewRunner(Config{Session: session})
+
+		output := r.promptHookOutput(context.Background())
+
+		if got := hookOverlayContent(output, "preview_workflow"); !strings.Contains(got, "most likely directory or named file") {
+			t.Fatalf("preview_workflow = %q", got)
+		}
+	})
+
+	t.Run("preview guidance flips to build after exploration budget", func(t *testing.T) {
+		session := NewSession()
+		session.SetTaskState(TaskState{
+			Objective:            "show me 3 theme ideas and start a preview",
+			Operation:            "preview",
+			RequiredVerification: "use preview or artifact tools, verify the preview URL or visible result, and do not rely on an ad-hoc shell webserver",
+		})
+		session.RecordInput("show me 3 theme ideas and start a preview")
+		session.AppendAssistantWithToolCalls([]llm.NativeToolCall{{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"internal/tui/chattheme.go"}`}})
+		session.AppendNativeToolResult("c1", "theme source")
+		r := NewRunner(Config{Session: session})
+		r.planWorkflow = planWorkflowState{
+			mode:              "preview",
+			active:            true,
+			synthesisRequired: true,
+		}
+
+		output := r.promptHookOutput(context.Background())
+
+		if got := hookOverlayContent(output, "preview_workflow"); !strings.Contains(got, "Stop exploring. Write the preview artifact") {
+			t.Fatalf("preview_workflow = %q", got)
 		}
 	})
 
@@ -845,6 +989,19 @@ func TestRunnerPromptHookOutputIncludesRuntimeGuidance(t *testing.T) {
 }
 
 func TestRunnerBeforeToolHookBlocksCommitWorkflow(t *testing.T) {
+	t.Run("shotgun alternation search", func(t *testing.T) {
+		r := NewRunner(Config{})
+
+		output := r.beforeToolHookOutput(context.Background(), "search", map[string]any{
+			"pattern": "tui|theming|theme|terminal ui|tailwind|colors|palette|config|styles|css|scss",
+			"path":    ".",
+		})
+
+		if output.Block == nil || !strings.Contains(output.Block.Message, "avoid shotgun alternation regex searches") {
+			t.Fatalf("block = %#v", output.Block)
+		}
+	})
+
 	t.Run("unmerged conflicts", func(t *testing.T) {
 		r := NewRunner(Config{})
 		r.gitWorkflow.unmergedFiles = true
@@ -941,15 +1098,33 @@ func TestRunnerRejectsBranchTargetMismatch(t *testing.T) {
 
 func TestRunnerReturnsErrorForNonNativeDriver(t *testing.T) {
 	// A plain scriptedDriver does NOT implement NativeToolCaller.
-	// The runner must return an error — no XML fallback.
+	// The runner must return an error when the turn requires tools.
 	driver := &scriptedDriver{responses: []string{"some response"}}
-	r := NewRunner(Config{Driver: driver})
-	err := r.Run(context.Background(), "check")
+	session := NewSession()
+	session.SetTaskState(TaskState{
+		Objective:            "whats this repo all about",
+		Operation:            "overview",
+		RequiredVerification: "inspect the repository with read/search tools before answering",
+	})
+	r := NewRunner(Config{Driver: driver, Session: session})
+	err := r.Run(context.Background(), "whats this repo all about")
 	if err == nil {
 		t.Fatal("expected error for non-NativeToolCaller driver")
 	}
 	if !strings.Contains(err.Error(), "does not support native tool calling") {
 		t.Fatalf("error = %v, want mention of native tool calling", err)
+	}
+}
+
+func TestRunnerAllowsPlainChatWithoutNativeToolCaller(t *testing.T) {
+	driver := &scriptedDriver{responses: []string{"plain answer"}}
+	r := NewRunner(Config{Driver: driver})
+
+	if err := r.Run(context.Background(), "hello there"); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.LastResponse(); got != "plain answer" {
+		t.Fatalf("last response = %q, want plain answer", got)
 	}
 }
 
@@ -984,6 +1159,30 @@ func (d *nativeToolCallDriver) StreamWithToolsOptions(_ context.Context, msgs []
 		out <- llm.Token{ToolCall: &llm.NativeToolCall{ID: "c1", Name: "git_status", ArgsJSON: `{}`}}
 	default:
 		out <- llm.Token{Text: "No changes detected."}
+	}
+	return nil
+}
+
+type nativeToolCallWithPreambleDriver struct {
+	callCount int
+}
+
+func (d *nativeToolCallWithPreambleDriver) Name() string { return "native-tool-driver-with-preamble" }
+
+func (d *nativeToolCallWithPreambleDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	close(out)
+	return errors.New("Stream should not be called on a NativeToolCaller driver")
+}
+
+func (d *nativeToolCallWithPreambleDriver) StreamWithTools(_ context.Context, _ []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
+	defer close(out)
+	d.callCount++
+	switch d.callCount {
+	case 1:
+		out <- llm.Token{Text: "I'll inspect the README first."}
+		out <- llm.Token{ToolCall: &llm.NativeToolCall{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"README.md"}`}}
+	default:
+		out <- llm.Token{Text: "The repo is a terminal-first coding agent."}
 	}
 	return nil
 }
@@ -1032,6 +1231,52 @@ func TestRunnerNativeToolCallingPath(t *testing.T) {
 		if roles[i] != r {
 			t.Fatalf("history[%d] role = %q, want %q", i, roles[i], r)
 		}
+	}
+}
+
+func TestRunnerPreservesAssistantPreambleOnToolTurn(t *testing.T) {
+	driver := &nativeToolCallWithPreambleDriver{}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "read_file",
+		Description: "read file",
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return "Forge is a terminal-first coding agent.", nil
+		},
+	})
+	session := NewSession()
+	rec := &recordingRenderer{}
+	r := NewRunner(Config{
+		Driver:   driver,
+		Tools:    reg,
+		Session:  session,
+		Renderer: rec,
+		CompletionCheck: func(_ SessionSnapshot, _ string) error {
+			return nil
+		},
+	})
+
+	if err := r.Run(context.Background(), "tell me about this repo"); err != nil {
+		t.Fatal(err)
+	}
+
+	snap := session.Snapshot()
+	if len(snap.History) < 2 {
+		t.Fatalf("history = %#v", snap.History)
+	}
+	firstAssistant := snap.History[1]
+	if got, want := firstAssistant.Content, "I'll inspect the README first."; got != want {
+		t.Fatalf("assistant preamble = %q, want %q", got, want)
+	}
+	if len(firstAssistant.ToolCalls) != 1 || firstAssistant.ToolCalls[0].Name != "read_file" {
+		t.Fatalf("assistant tool calls = %#v", firstAssistant.ToolCalls)
+	}
+	if len(rec.tokenTexts) == 0 || rec.tokenTexts[0] != "I'll inspect the README first." {
+		t.Fatalf("renderer tokenTexts = %#v", rec.tokenTexts)
+	}
+	if len(rec.fullTexts) != 0 {
+		t.Fatalf("renderer fullTexts = %#v", rec.fullTexts)
 	}
 }
 
@@ -1123,15 +1368,22 @@ func TestRunnerNativePathUsesSystemPrompt(t *testing.T) {
 		Execute: func(_ context.Context, _ map[string]any) (string, error) { return "ok", nil },
 	})
 	promptCalled := false
+	session := NewSession()
+	session.SetTaskState(TaskState{
+		Objective:            "whats this repo all about",
+		Operation:            "overview",
+		RequiredVerification: "inspect the repository with read/search tools before answering",
+	})
 	r := NewRunner(Config{
-		Driver: driver,
-		Tools:  reg,
+		Driver:  driver,
+		Tools:   reg,
+		Session: session,
 		SystemPrompt: func() string {
 			promptCalled = true
 			return "native-prompt"
 		},
 	})
-	_ = r.Run(context.Background(), "check")
+	_ = r.Run(context.Background(), "whats this repo all about")
 	if !promptCalled {
 		t.Fatal("system prompt should be called")
 	}
@@ -1179,8 +1431,8 @@ func TestRunnerFirstActionTurnsRequireProviderToolCall(t *testing.T) {
 	session := NewSession()
 	session.SetTaskState(TaskState{
 		Objective:            "whats this repo all about",
-		Operation:            "inspect",
-		RequiredVerification: "inspect the repository with read/search tools before answering, then summarize only what the evidence supports",
+		Operation:            "overview",
+		RequiredVerification: "inspect the repository with read/search tools before answering. For a casual repo overview, usually inspect the repo root and one high-signal file such as README.md, then give a brief overview grounded only in that evidence",
 	})
 
 	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
@@ -1195,6 +1447,24 @@ func TestRunnerFirstActionTurnsRequireProviderToolCall(t *testing.T) {
 	}
 	if driver.lastOpts[1].RequireToolCall {
 		t.Fatalf("second call opts = %#v, want RequireToolCall=false after repo evidence", driver.lastOpts[1])
+	}
+}
+
+func TestFirstToolActionRetryPromptAllowsBriefPreamble(t *testing.T) {
+	snap := SessionSnapshot{
+		TaskState: &TaskState{
+			Objective:            "whats this repo all about",
+			Operation:            "overview",
+			RequiredVerification: "inspect the repository with read/search tools before answering. For a casual repo overview, usually inspect the repo root and one high-signal file such as README.md, then give a brief overview grounded only in that evidence",
+		},
+	}
+
+	got := firstToolActionRetryPrompt(snap)
+	if strings.Contains(got, "no plain-text preamble") {
+		t.Fatalf("retry prompt should allow a brief preamble, got %q", got)
+	}
+	if !strings.Contains(got, "single brief sentence before the tool calls is fine") {
+		t.Fatalf("retry prompt = %q", got)
 	}
 }
 
@@ -1238,8 +1508,12 @@ type nativeChunkedDriver struct {
 func (d *nativeChunkedDriver) Name() string { return "native-chunked" }
 
 func (d *nativeChunkedDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
-	close(out)
-	return errors.New("Stream should not be called")
+	defer close(out)
+	d.callCount++
+	for _, chunk := range d.chunks {
+		out <- llm.Token{Text: chunk}
+	}
+	return nil
 }
 
 func (d *nativeChunkedDriver) StreamWithTools(_ context.Context, _ []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
@@ -1251,33 +1525,12 @@ func (d *nativeChunkedDriver) StreamWithTools(_ context.Context, _ []llm.Message
 	return nil
 }
 
-type nativeXMLFallbackDriver struct {
-	callCount int
-}
-
-func (d *nativeXMLFallbackDriver) Name() string { return "native-xml-fallback-driver" }
-
-func (d *nativeXMLFallbackDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
-	close(out)
-	return errors.New("Stream should not be called on a NativeToolCaller driver")
-}
-
-func (d *nativeXMLFallbackDriver) StreamWithTools(_ context.Context, _ []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
-	defer close(out)
-	d.callCount++
-	switch d.callCount {
-	case 1:
-		out <- llm.Token{Text: "I need access to repo tools before I can inspect the repository."}
-	case 2:
-		out <- llm.Token{Text: "<tool_call>\n{\"name\":\"list_dir\",\"args\":{\"path\":\".\"}}\n</tool_call>"}
-	default:
-		out <- llm.Token{Text: "Repo summary from actual tool evidence."}
+func TestRunnerRejectsLegacyXMLToolCallMarkupFromNativeProvider(t *testing.T) {
+	responses := make([]string, maxCompletionRetriesPerTurn+1)
+	for i := range responses {
+		responses[i] = "<tool_call>\n{\"name\":\"list_dir\",\"args\":{\"path\":\".\"}}\n</tool_call>"
 	}
-	return nil
-}
-
-func TestRunnerFallsBackToLegacyXMLToolCallWhenNativeProviderIgnoresTools(t *testing.T) {
-	driver := &nativeXMLFallbackDriver{}
+	driver := &nativeScriptedDriver{responses: responses}
 	reg := agenttools.NewRegistry()
 	called := false
 	reg.Register(agenttools.Tool{
@@ -1285,229 +1538,99 @@ func TestRunnerFallsBackToLegacyXMLToolCallWhenNativeProviderIgnoresTools(t *tes
 		Description: "list a directory",
 		Parameters:  []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}},
 		AutoApprove: true,
-		Execute: func(_ context.Context, args map[string]any) (string, error) {
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
 			called = true
-			if got := fmt.Sprint(args["path"]); got != "." {
-				t.Fatalf("path = %q, want .", got)
-			}
 			return "README.md\ninternal/", nil
 		},
 	})
 	session := NewSession()
 	session.SetTaskState(TaskState{
 		Objective:            "whats this repo all about",
-		Operation:            "inspect",
-		RequiredVerification: "inspect the repository with read/search tools before answering, then summarize only what the evidence supports",
+		Operation:            "overview",
+		RequiredVerification: "inspect the repository with read/search tools before answering. For a casual repo overview, usually inspect the repo root and one high-signal file such as README.md, then give a brief overview grounded only in that evidence",
 	})
 	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
 
-	if err := r.Run(context.Background(), "whats this repo all about"); err != nil {
-		t.Fatal(err)
+	err := r.Run(context.Background(), "whats this repo all about")
+	if err == nil {
+		t.Fatal("expected runner error when provider emits legacy XML markup")
 	}
-	if !called {
-		t.Fatal("expected list_dir tool to run via XML fallback")
+	if !strings.Contains(err.Error(), "deprecated XML tool-call markup") {
+		t.Fatalf("err = %v", err)
 	}
-	if driver.callCount != 3 {
-		t.Fatalf("driver calls = %d, want 3", driver.callCount)
-	}
-	if got := r.LastResponse(); got != "Repo summary from actual tool evidence." {
-		t.Fatalf("last response = %q", got)
+	if called {
+		t.Fatal("legacy XML markup should not execute a tool")
 	}
 }
 
-type nativeXMLRepeatDriver struct {
-	callCount int
-	allMsgs   [][]llm.Message
-}
-
-func (d *nativeXMLRepeatDriver) Name() string { return "native-xml-repeat-driver" }
-
-func (d *nativeXMLRepeatDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
-	close(out)
-	return errors.New("Stream should not be called on a NativeToolCaller driver")
-}
-
-func (d *nativeXMLRepeatDriver) StreamWithTools(_ context.Context, msgs []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
-	defer close(out)
-	d.callCount++
-	d.allMsgs = append(d.allMsgs, append([]llm.Message(nil), msgs...))
-	switch d.callCount {
-	case 1:
-		out <- llm.Token{Text: "I need tool access before I can inspect the repository."}
-	case 2:
-		out <- llm.Token{Text: "<tool_call>\n{\"name\":\"list_dir\",\"args\":{\"path\":\".\"}}\n</tool_call>"}
-	case 3:
-		out <- llm.Token{Text: "<tool_call>\n{\"name\":\"list_dir\",\"args\":{\"path\":\".\"}}\n</tool_call>"}
-	default:
-		out <- llm.Token{Text: "Final answer from the existing repo evidence."}
-	}
-	return nil
-}
-
-func TestRunnerBlocksRepeatedLegacyXMLToolCall(t *testing.T) {
-	driver := &nativeXMLRepeatDriver{}
-	reg := agenttools.NewRegistry()
-	execCount := 0
-	reg.Register(agenttools.Tool{
-		Name:        "list_dir",
-		Description: "list a directory",
-		Parameters:  []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}},
-		AutoApprove: true,
-		Execute: func(_ context.Context, args map[string]any) (string, error) {
-			execCount++
-			return "README.md\ninternal/", nil
+func TestRunnerValidateTurnRequiresChecksBeforePlainTextCompletion(t *testing.T) {
+	driver := &nativeSequenceDriver{
+		steps: [][]llm.Token{
+			{{ToolCall: &llm.NativeToolCall{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"README.md"}`}}},
+			{{Text: "I need to run the tests before I can verify anything."}},
+			{{ToolCall: &llm.NativeToolCall{ID: "c2", Name: "run_command", ArgsJSON: `{"command":"go test ./..."}`}}},
+			{{Text: "go test ./... passed for the repo."}},
 		},
-	})
-	session := NewSession()
-	session.SetTaskState(TaskState{
-		Objective:            "tell me about this repo",
-		Operation:            "inspect",
-		RequiredVerification: "inspect the repository with read/search tools before answering, then summarize only what the evidence supports",
-	})
-	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
-
-	if err := r.Run(context.Background(), "tell me about this repo"); err != nil {
-		t.Fatal(err)
 	}
-	if execCount != 1 {
-		t.Fatalf("legacy XML repeated call should not re-execute; execCount = %d", execCount)
-	}
-	if got := r.LastResponse(); got != "Final answer from the existing repo evidence." {
-		t.Fatalf("last response = %q", got)
-	}
-	for _, msg := range session.Snapshot().History {
-		if msg.Role == llm.RoleUser && strings.Contains(msg.Content, "Do not repeat the same XML list_dir call") && strings.Contains(msg.Content, "plain text only") {
-			t.Fatalf("repeated-call prompt should not be appended as user history: %#v", session.Snapshot().History)
-		}
-	}
-	foundRepeatBlock := false
-	for _, msgs := range driver.allMsgs {
-		for _, msg := range msgs {
-			if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Do not repeat the same XML list_dir call") && strings.Contains(msg.Content, "plain text only") {
-				foundRepeatBlock = true
-				break
-			}
-		}
-		if foundRepeatBlock {
-			break
-		}
-	}
-	if !foundRepeatBlock {
-		t.Fatalf("expected hidden repeated-call block prompt, allMsgs=%#v", driver.allMsgs)
-	}
-}
-
-type nativeXMLAnswerOnlyDriver struct {
-	callCount int
-	allMsgs   [][]llm.Message
-}
-
-func (d *nativeXMLAnswerOnlyDriver) Name() string { return "native-xml-answer-only-driver" }
-
-func (d *nativeXMLAnswerOnlyDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
-	close(out)
-	return errors.New("Stream should not be called on a NativeToolCaller driver")
-}
-
-func (d *nativeXMLAnswerOnlyDriver) StreamWithTools(_ context.Context, msgs []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
-	defer close(out)
-	d.callCount++
-	d.allMsgs = append(d.allMsgs, append([]llm.Message(nil), msgs...))
-	switch d.callCount {
-	case 1:
-		out <- llm.Token{Text: "I need tool access before I can inspect the repository."}
-	case 2:
-		out <- llm.Token{Text: "<tool_call>\n{\"name\":\"list_dir\",\"args\":{\"path\":\".\"}}\n</tool_call>"}
-	case 3:
-		out <- llm.Token{Text: "<tool_call>\n{\"name\":\"read_file\",\"args\":{\"path\":\"README.md\"}}\n</tool_call>"}
-	case 4:
-		out <- llm.Token{Text: "<tool_call>\n{\"name\":\"read_file\",\"args\":{\"path\":\"README.md\"}}\n</tool_call>"}
-	case 5:
-		out <- llm.Token{Text: "<tool_call>\n{\"name\":\"read_file\",\"args\":{\"path\":\"README.md\"}}\n</tool_call>"}
-	case 6:
-		foundAnswerOnlyPrompt := false
-		for _, msg := range msgs {
-			if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "answer-only mode") {
-				foundAnswerOnlyPrompt = true
-				break
-			}
-		}
-		if !foundAnswerOnlyPrompt {
-			return fmt.Errorf("expected hidden answer-only retry prompt, got %#v", msgs)
-		}
-		out <- llm.Token{Text: "Forge is a terminal-first coding agent for local repositories with an interactive chat runtime plus a legacy make pipeline."}
-	default:
-		return fmt.Errorf("unexpected call %d", d.callCount)
-	}
-	return nil
-}
-
-func TestRunnerEscalatesRepeatedLegacyXMLCallToAnswerOnlyMode(t *testing.T) {
-	driver := &nativeXMLAnswerOnlyDriver{}
 	reg := agenttools.NewRegistry()
-	execCount := 0
-	reg.Register(agenttools.Tool{
-		Name:        "list_dir",
-		Description: "list a directory",
-		Parameters:  []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}},
-		AutoApprove: true,
-		Execute: func(_ context.Context, args map[string]any) (string, error) {
-			execCount++
-			if got := fmt.Sprint(args["path"]); got != "." {
-				t.Fatalf("path = %q, want .", got)
-			}
-			return "README.md\ninternal/", nil
-		},
-	})
 	reg.Register(agenttools.Tool{
 		Name:        "read_file",
 		Description: "read a file",
 		Parameters:  []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}},
 		AutoApprove: true,
 		Execute: func(_ context.Context, args map[string]any) (string, error) {
-			execCount++
 			if got := fmt.Sprint(args["path"]); got != "README.md" {
 				t.Fatalf("path = %q, want README.md", got)
 			}
 			return "Forge is a terminal-first coding agent for local repositories.", nil
 		},
 	})
+	reg.Register(agenttools.Tool{
+		Name:        "run_command",
+		Description: "run shell command",
+		Parameters:  []agenttools.ParameterDef{{Name: "command", Type: "string", Required: true}},
+		AutoApprove: true,
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			if got := fmt.Sprint(args["command"]); got != "go test ./..." {
+				t.Fatalf("command = %q, want go test ./...", got)
+			}
+			return "ok  forge/internal/react\nexit 0", nil
+		},
+	})
 	session := NewSession()
 	session.SetTaskState(TaskState{
-		Objective:            "tell me about this repo",
-		Operation:            "inspect",
-		RequiredVerification: "inspect the repository with read/search tools before answering, then summarize only what the evidence supports",
+		Objective:            "check the repository out and tell me if there are anything to change",
+		Operation:            "validate",
+		RequiredVerification: "run the relevant tests or checks before claiming the work is verified",
 	})
 	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
 
-	if err := r.Run(context.Background(), "tell me about this repo"); err != nil {
+	if err := r.Run(context.Background(), "check the repository out and tell me if there are anything to change"); err != nil {
 		t.Fatal(err)
 	}
-	if execCount != 2 {
-		t.Fatalf("expected exactly two tool executions before answer-only mode, execCount = %d", execCount)
+	if len(driver.lastOpts) != 4 {
+		t.Fatalf("driver option calls = %d, want 4", len(driver.lastOpts))
 	}
-	if got := r.LastResponse(); !strings.Contains(got, "terminal-first coding agent") {
-		t.Fatalf("last response = %q", got)
+	if !driver.lastOpts[0].RequireToolCall || !driver.lastOpts[1].RequireToolCall || !driver.lastOpts[2].RequireToolCall {
+		t.Fatalf("expected tool-call requirement to persist until checks run, got %#v", driver.lastOpts)
 	}
-	for _, msg := range session.Snapshot().History {
-		if msg.Role == llm.RoleUser && strings.Contains(msg.Content, "answer-only mode") {
-			t.Fatalf("answer-only retry prompt should not be appended as user history: %#v", session.Snapshot().History)
-		}
+	if driver.lastOpts[3].RequireToolCall {
+		t.Fatalf("final call opts = %#v, want RequireToolCall=false after validation ran", driver.lastOpts[3])
 	}
-	foundAnswerOnlyPrompt := false
-	for _, msgs := range driver.allMsgs {
-		for _, msg := range msgs {
-			if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "answer-only mode") {
-				foundAnswerOnlyPrompt = true
+	foundRetryPrompt := false
+	if len(driver.allMsgs) >= 3 {
+		for _, msg := range driver.allMsgs[2] {
+			if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "This turn is in validate mode") && strings.Contains(msg.Content, "native tool-calling interface only") {
+				foundRetryPrompt = true
 				break
 			}
 		}
-		if foundAnswerOnlyPrompt {
-			break
-		}
 	}
-	if !foundAnswerOnlyPrompt {
-		t.Fatalf("expected hidden answer-only retry prompt, allMsgs=%#v", driver.allMsgs)
+	if !foundRetryPrompt {
+		t.Fatalf("expected validate retry prompt after read-only step, allMsgs=%#v", driver.allMsgs)
+	}
+	if got := r.LastResponse(); got != "go test ./... passed for the repo." {
+		t.Fatalf("last response = %q", got)
 	}
 }
 
@@ -1543,12 +1666,19 @@ func TestRunnerSystemPromptIsPassedToDriver(t *testing.T) {
 		Name: "git_status", AutoApprove: true,
 		Execute: func(_ context.Context, _ map[string]any) (string, error) { return "ok", nil },
 	})
+	session := NewSession()
+	session.SetTaskState(TaskState{
+		Objective:            "whats this repo all about",
+		Operation:            "overview",
+		RequiredVerification: "inspect the repository with read/search tools before answering",
+	})
 	r := NewRunner(Config{
 		Driver:       driver,
 		Tools:        reg,
+		Session:      session,
 		SystemPrompt: func() string { return "  my system prompt  " },
 	})
-	_ = r.Run(context.Background(), "check")
+	_ = r.Run(context.Background(), "whats this repo all about")
 	foundPrompt := false
 	for _, msg := range driver.lastMsgs {
 		if msg.Role == llm.RoleSystem && msg.Content == "my system prompt" {
@@ -1587,13 +1717,18 @@ func TestRunnerNativePathHandlesMalformedArgsJSON(t *testing.T) {
 		Execute:     func(_ context.Context, _ map[string]any) (string, error) { return "ok", nil },
 	})
 	session := NewSession()
+	session.SetTaskState(TaskState{
+		Objective:            "whats this repo all about",
+		Operation:            "overview",
+		RequiredVerification: "inspect the repository with read/search tools before answering",
+	})
 	r := NewRunner(Config{
 		Driver:  driver,
 		Tools:   reg,
 		Session: session,
 	})
 
-	err := r.Run(context.Background(), "check")
+	err := r.Run(context.Background(), "whats this repo all about")
 	if err == nil {
 		t.Fatal("expected error for malformed args JSON")
 	}
@@ -1614,18 +1749,35 @@ type nativeSequenceDriver struct {
 	steps     [][]llm.Token
 	callCount int
 	allMsgs   [][]llm.Message
+	lastOpts  []llm.NativeToolOptions
 }
 
 func (d *nativeSequenceDriver) Name() string { return "native-sequence" }
 
-func (d *nativeSequenceDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
-	close(out)
-	return errors.New("Stream should not be called on a NativeToolCaller driver")
-}
-
-func (d *nativeSequenceDriver) StreamWithTools(_ context.Context, msgs []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
+func (d *nativeSequenceDriver) Stream(_ context.Context, msgs []llm.Message, out chan<- llm.Token) error {
 	defer close(out)
 	d.allMsgs = append(d.allMsgs, append([]llm.Message(nil), msgs...))
+	if d.callCount >= len(d.steps) {
+		return errors.New("no scripted step")
+	}
+	for _, tok := range d.steps[d.callCount] {
+		if tok.ToolCall != nil {
+			return errors.New("Stream cannot emit tool calls")
+		}
+		out <- tok
+	}
+	d.callCount++
+	return nil
+}
+
+func (d *nativeSequenceDriver) StreamWithTools(_ context.Context, msgs []llm.Message, tools []llm.ToolDef, out chan<- llm.Token) error {
+	return d.StreamWithToolsOptions(context.Background(), msgs, tools, llm.NativeToolOptions{}, out)
+}
+
+func (d *nativeSequenceDriver) StreamWithToolsOptions(_ context.Context, msgs []llm.Message, _ []llm.ToolDef, opts llm.NativeToolOptions, out chan<- llm.Token) error {
+	defer close(out)
+	d.allMsgs = append(d.allMsgs, append([]llm.Message(nil), msgs...))
+	d.lastOpts = append(d.lastOpts, opts)
 	if d.callCount >= len(d.steps) {
 		return errors.New("no scripted step")
 	}
@@ -1661,6 +1813,13 @@ func TestRunnerBlocksCommitWhileMergeConflictsRemain(t *testing.T) {
 		},
 	})
 	session := NewSession()
+	session.SetTaskState(TaskState{
+		Objective:            "merge feature/go-rewrite into main",
+		Operation:            "merge",
+		RequiredVerification: "verify branch main contains the resulting HEAD commit",
+		SourceRef:            "feature/go-rewrite",
+		TargetBranch:         "main",
+	})
 	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
 
 	if err := r.Run(context.Background(), "merge the branch"); err != nil {
@@ -1714,6 +1873,13 @@ func TestRunnerRequiresMutationBeforeRetryingFailedCommit(t *testing.T) {
 		},
 	})
 	session := NewSession()
+	session.SetTaskState(TaskState{
+		Objective:            "merge feature/go-rewrite into main",
+		Operation:            "merge",
+		RequiredVerification: "verify branch main contains the resulting HEAD commit",
+		SourceRef:            "feature/go-rewrite",
+		TargetBranch:         "main",
+	})
 	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
 
 	if err := r.Run(context.Background(), "finish the merge"); err != nil {
@@ -1925,6 +2091,12 @@ func TestRunnerNudgesOnRepeatedSameFileCodeSearch(t *testing.T) {
 	}
 }
 
+func TestRepeatToolCallTargetUsesSearchPattern(t *testing.T) {
+	if got := repeatToolCallTarget("search", map[string]any{"pattern": "theme"}); got != "theme" {
+		t.Fatalf("search target = %q", got)
+	}
+}
+
 func TestRunnerClearHistoryResetsSessionState(t *testing.T) {
 	r := NewRunner(Config{
 		Driver:       &nativeScriptedDriver{responses: []string{"done"}},
@@ -2089,7 +2261,7 @@ func TestRunnerNonValidationCommandSkipsValidationTracking(t *testing.T) {
 	})
 	rec := &toolResultCapture{}
 	r := NewRunner(Config{Driver: driver, Tools: reg, Renderer: rec})
-	if err := r.Run(context.Background(), "list files"); err != nil {
+	if err := r.Run(context.Background(), "run ls -la"); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range rec.calls {

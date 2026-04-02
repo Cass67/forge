@@ -46,7 +46,7 @@ var (
 	previewRequestRE   = regexp.MustCompile(`(?i)\b(preview|web ?page|themes?_preview\.html|mock up|show me|show on (?:the )?screen|show on web)\b`)
 	validateRequestRE  = regexp.MustCompile(`(?i)\b(test|tests|verify|validated?|check|checks|pass|passes|build)\b`)
 	implementRequestRE = regexp.MustCompile(`(?i)\b(fix|implement|change|update|add|create|build|redesign|theme|refactor|patch)\b`)
-	inspectRequestRE   = regexp.MustCompile(`(?i)\b(inspect|look at|take a look|review|tell+\s+me\s+about|describe|what do you think|anything i need change|research)\b|\bwhat(?:'s|s| is)\s+this(?:\s+(?:repo|repository|project|codebase|folder|directory|working directory))?\s+all\s+about\b|\bwhat(?:'s|s| is)\s+this\s+(?:repo|repository|project|codebase|folder|directory|working directory)\s+about\b`)
+	inspectRequestRE   = regexp.MustCompile(`(?i)\b(inspect|look at|take a look|review|tell+\s+me\s+about|talk\s+about|describe|what do you think|anything i need change|research)\b|\bwhat(?:'s|s| is)\s+this(?:\s+(?:repo|repository|project|codebase|folder|directory|working directory))?\s+all\s+about\b|\bwhat(?:'s|s| is)\s+this\s+(?:repo|repository|project|codebase|folder|directory|working directory)\s+about\b`)
 	newChatMCPManager  = func() *mcp.Manager { return mcp.NewManager() }
 )
 
@@ -309,10 +309,13 @@ func RunChatLive(setup *ChatSetup) {
 	memPipeline := memory.Pipeline{MaxRecords: 12}
 	memState := memory.State{}
 	reactRunner := reactruntime.NewRunner(reactruntime.Config{
-		Driver:          setup.Driver,
-		Tools:           reg,
-		Renderer:        evRenderer,
-		SystemPrompt:    func() string { return agent.BuildNativeSystemPrompt(setup.WorkDir) },
+		Driver:   setup.Driver,
+		Tools:    reg,
+		Renderer: evRenderer,
+		SystemPrompt: func() string {
+			snap := session.Snapshot()
+			return agent.BuildNativeSystemPromptForMode(setup.WorkDir, string(snap.Mode), snap.TaskState != nil)
+		},
 		Session:         session,
 		MaxSessionTurns: chatMaxTurns(setup),
 		CompletionCheck: func(snapshot reactruntime.SessionSnapshot, finalText string) error {
@@ -588,10 +591,13 @@ func RunChatConsole(setup *ChatSetup) {
 	memPipeline := memory.Pipeline{MaxRecords: 12}
 	memState := memory.State{}
 	reactRunner := reactruntime.NewRunner(reactruntime.Config{
-		Driver:          setup.Driver,
-		Tools:           reg,
-		Renderer:        renderer,
-		SystemPrompt:    func() string { return agent.BuildNativeSystemPrompt(setup.WorkDir) },
+		Driver:   setup.Driver,
+		Tools:    reg,
+		Renderer: renderer,
+		SystemPrompt: func() string {
+			snap := session.Snapshot()
+			return agent.BuildNativeSystemPromptForMode(setup.WorkDir, string(snap.Mode), snap.TaskState != nil)
+		},
 		Session:         session,
 		MaxSessionTurns: chatMaxTurns(setup),
 		TurnComplete: func(snapshot reactruntime.SessionSnapshot) {
@@ -746,6 +752,8 @@ func runChatTurn(ctx context.Context, reactRunner chatTurnRunner, input string) 
 	}
 	if state, ok := detectTaskStateFromInput(input); ok {
 		reactRunner.SetTaskState(state)
+	} else if shouldResetTaskStateForInput(input) {
+		reactRunner.SetTaskState(reactruntime.TaskState{})
 	}
 	return reactRunner.Run(ctx, input)
 }
@@ -1010,7 +1018,14 @@ func detectTaskStateFromInput(input string) (reactruntime.TaskState, bool) {
 			RequiredVerification: "inspect the relevant code, make the change with edit tools, and run the relevant verification before claiming completion",
 		}, true
 	}
-	if (inspectRequestRE.MatchString(normalized) || isWorkspaceOverviewRequest(normalized)) && isRepoGroundedText(normalized) {
+	if isWorkspaceOverviewRequest(normalized) && isRepoGroundedText(normalized) {
+		return reactruntime.TaskState{
+			Objective:            text,
+			Operation:            "overview",
+			RequiredVerification: "inspect the repository with read/search tools before answering. For a casual repo overview, usually inspect the repo root and one high-signal file such as README.md, then give a brief overview grounded only in that evidence",
+		}, true
+	}
+	if inspectRequestRE.MatchString(normalized) && isRepoGroundedText(normalized) {
 		return reactruntime.TaskState{
 			Objective:            text,
 			Operation:            "inspect",
@@ -1028,6 +1043,36 @@ func normalizedIntentText(input string) string {
 	text = strings.NewReplacer("’", "'", "“", "\"", "”", "\"").Replace(text)
 	text = collapseRepeatedLetters(text)
 	return strings.Join(strings.Fields(text), " ")
+}
+
+func shouldResetTaskStateForInput(input string) bool {
+	text := normalizedIntentText(input)
+	if text == "" || looksLikeWorkspaceScopedInput(text) || looksLikeRepoFollowUp(text) {
+		return false
+	}
+	return true
+}
+
+func looksLikeWorkspaceScopedInput(text string) bool {
+	return containsAnyPhrase(text,
+		"repo", "repository", "project", "codebase", "workspace", "worktree",
+		"working directory", "current directory", "this directory", "this folder",
+		"this repo", "this project", "this codebase", "branch", "diff",
+		"pull request", "in here",
+	)
+}
+
+func looksLikeRepoFollowUp(text string) bool {
+	return containsAnyPhrase(text,
+		"do it", "fix it", "apply it", "apply that", "commit it", "merge it",
+		"test it", "build it", "validate it", "finish it", "continue with it",
+		"go ahead", "ship it", "run the tests", "run tests", "rerun tests",
+		"run the build", "run build", "keep going", "same problem", "same issue",
+		"same again", "still broken", "still broke", "still the same",
+		"what do you think", "tell me what you think", "anything i need change",
+		"what should i change", "what should i improve", "clean this up",
+		"write me a script", "script to clean",
+	)
 }
 
 func collapseRepeatedLetters(text string) string {
@@ -1071,6 +1116,17 @@ func isRepoGroundedText(input string) bool {
 func isWorkspaceOverviewRequest(input string) bool {
 	text := normalizedIntentText(input)
 	if text == "" {
+		return false
+	}
+	if containsAnyPhrase(text,
+		"need to improve", "need to change", "need changing", "improve upon",
+		"what i need to improve", "what i need to change",
+		"what i should improve", "what i should change",
+		"what should i improve", "what should i change",
+		"what should improve", "what should change",
+		"what needs fixing", "what needs work", "what needs changing", "what needs to change",
+		"what to improve", "what to change", "what to fix",
+	) {
 		return false
 	}
 	if containsAnyPhrase(text,

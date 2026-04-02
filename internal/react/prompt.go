@@ -27,7 +27,8 @@ func BuildMessages(systemPrompt string, snapshot SessionSnapshot) []llm.Message 
 			Content:  summary,
 		})
 	}
-	if summary := strings.TrimSpace(snapshot.MemorySummary); summary != "" {
+	if shouldIncludeMemorySummary(snapshot) {
+		summary := strings.TrimSpace(snapshot.MemorySummary)
 		systemOverlays = append(systemOverlays, promptcomposer.Overlay{
 			Key:      "memory_summary",
 			Priority: promptcomposer.PriorityNormal,
@@ -116,7 +117,7 @@ func BuildMessages(systemPrompt string, snapshot SessionSnapshot) []llm.Message 
 		messages = append(messages, llm.Message{Role: msg.Role, Content: content})
 	}
 
-	return truncateToolResults(messages, toolResultMaxLines)
+	return truncateToolResults(truncateAssistantToolCalls(messages), toolResultMaxLines)
 }
 
 func compactionContext(snapshot SessionSnapshot) string {
@@ -130,6 +131,22 @@ func compactionContext(snapshot SessionSnapshot) string {
 	return fmt.Sprintf("Earlier conversation summary (%d compacted turns): %s", snapshot.CompactedTurns, summary)
 }
 
+func shouldIncludeMemorySummary(snapshot SessionSnapshot) bool {
+	if strings.TrimSpace(snapshot.MemorySummary) == "" {
+		return false
+	}
+	if snapshot.CompactedTurns > 0 {
+		return true
+	}
+	if snapshot.TaskState != nil {
+		return true
+	}
+	if snapshot.Mode != ModeChat {
+		return true
+	}
+	return len(snapshot.Turns) >= 4
+}
+
 func taskStateContext(snapshot SessionSnapshot) string {
 	if snapshot.TaskState == nil {
 		return ""
@@ -140,10 +157,11 @@ func taskStateContext(snapshot SessionSnapshot) string {
 		return ""
 	}
 	parts := make([]string, 0, 2)
+	operation := strings.TrimSpace(snapshot.TaskState.Operation)
 	if objective != "" {
 		parts = append(parts, "Task objective: "+objective)
 	}
-	if operation := strings.TrimSpace(snapshot.TaskState.Operation); operation != "" {
+	if operation != "" {
 		parts = append(parts, "Task operation: "+operation)
 	}
 	if sourceRef := strings.TrimSpace(snapshot.TaskState.SourceRef); sourceRef != "" {
@@ -155,28 +173,31 @@ func taskStateContext(snapshot SessionSnapshot) string {
 	if requiredVerification != "" {
 		parts = append(parts, "Required verification: "+requiredVerification)
 	}
-	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "plan") {
+	if strings.EqualFold(operation, "plan") {
 		parts = append(parts, "Planning guidance: gather only enough repo evidence to support the plan, avoid exhaustive repo-wide searches, and once the next actionable plan is clear, stop exploring and synthesize it. Use enter_plan_mode for explicit planning workflows, use update_plan to capture the steps, and use ask_user_question for focused choices or clarifications instead of continuing broad research.")
 	}
-	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "analysis") {
+	if strings.EqualFold(operation, "analysis") {
 		parts = append(parts, "Analysis guidance: gather enough source-grounded evidence to support the answer, avoid repetitive repo-wide searching once the pattern is clear, and summarize findings or recommendations instead of continuing low-yield exploration.")
 	}
-	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "inspect") {
+	if strings.EqualFold(operation, "overview") {
+		parts = append(parts, "Overview guidance: gather only enough repo evidence to orient the user, usually the repo root listing plus README.md or one other high-signal file. After that, stop exploring and give a brief, conversational overview grounded in those paths rather than a full repo audit.")
+	}
+	if strings.EqualFold(operation, "inspect") {
 		parts = append(parts, "Inspection guidance: keep the answer bounded to what the inspected repo evidence actually shows.")
 	}
-	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "implement") {
+	if strings.EqualFold(operation, "implement") {
 		parts = append(parts, "Implementation guidance: do not start with planning prose. First inspect the relevant code with repo tools, then make the change with edit tools, and only claim completion after relevant verification. If repeated searches on the same file are not resolving the insertion point, read that file directly instead of trying more search patterns. If you need interactive or long-running terminal work such as dev servers, watchers, REPLs, or TUIs, use exec_session_start instead of run_command.")
 	}
-	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "validate") {
+	if strings.EqualFold(operation, "validate") {
 		parts = append(parts, "Validation guidance: run the relevant tests or checks before you say the work is verified. If no verification ran, say that clearly instead of implying success.")
 	}
-	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "review") {
+	if strings.EqualFold(operation, "review") {
 		parts = append(parts, "Review guidance: lead with findings before summary. Prioritize bugs, regressions, risky assumptions, and missing tests, ordered by severity, and keep each finding grounded in specific repo evidence.")
 	}
-	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "preview") {
-		parts = append(parts, "Preview guidance: prefer preview_server_ensure, preview_server_status, artifact_write, artifact_read, and file edit tools. Do not launch an ad-hoc local webserver with shell commands when preview tools can serve the page directly.")
+	if strings.EqualFold(operation, "preview") {
+		parts = append(parts, "Preview guidance: prefer preview_server_ensure, preview_server_status, artifact_write, artifact_read, and file edit tools. Start from the most likely directory or named file the request implies; prefer one literal code_search or a direct list_dir/read_file on that area instead of broad regex searches like foo|bar|baz. After 1-3 high-signal reads, stop exploring, build the mockup, call preview_server_ensure, and answer with the verified URL. Do not launch an ad-hoc local webserver with shell commands when preview tools can serve the page directly.")
 	}
-	if strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "merge") && strings.TrimSpace(snapshot.TaskState.TargetBranch) != "" {
+	if strings.EqualFold(operation, "merge") && strings.TrimSpace(snapshot.TaskState.TargetBranch) != "" {
 		parts = append(parts, "Merge guidance: use git_merge_status for unresolved conflicts and conflict previews, and use git_branch_state with the target branch before claiming the merge is complete. Prefer these tools over repeated raw git log or graph commands.")
 	}
 	return strings.Join(parts, "\n")

@@ -358,6 +358,12 @@ func (d *OpenAIDriver) streamResponsesWithTools(ctx context.Context, messages []
 		}
 	}
 	if err := stream.Err(); err != nil {
+		if d.shouldFallbackResponsesToolsToChat(err, len(tools) > 0, outputChars, len(completedOutput), responseID) {
+			d.mu.Lock()
+			d.lastRequestMode = params.requestMode + " -> chat.completions native tools fallback"
+			d.mu.Unlock()
+			return d.streamChatCompletionsWithTools(ctx, messages, tools, opts, out)
+		}
 		return d.wrapStreamError("responses", err)
 	}
 	if err := emitResponsesFunctionCalls(ctx, out, completedOutput); err != nil {
@@ -711,6 +717,15 @@ func toolDefsToResponses(defs []llm.ToolDef) []responses.ToolUnionParam {
 	return tools
 }
 
+func providerSupportsResponseFunctionTools(providerLabel string) bool {
+	switch strings.TrimSpace(strings.ToLower(providerLabel)) {
+	case "openai", "chatgpt":
+		return true
+	default:
+		return false
+	}
+}
+
 func toolDefSchema(def llm.ToolDef) map[string]any {
 	properties := make(map[string]any, len(def.Parameters))
 	required := make([]string, 0)
@@ -856,7 +871,10 @@ func (d *OpenAIDriver) StreamWithToolsOptions(ctx context.Context, messages []ll
 	if d.useResponsesAPI() {
 		return d.streamResponsesWithTools(ctx, messages, tools, opts, out)
 	}
+	return d.streamChatCompletionsWithTools(ctx, messages, tools, opts, out)
+}
 
+func (d *OpenAIDriver) streamChatCompletionsWithTools(ctx context.Context, messages []llm.Message, tools []llm.ToolDef, opts llm.NativeToolOptions, out chan<- llm.Token) error {
 	params := d.chatCompletionParamsWithTools(messages, opts)
 	if len(tools) > 0 {
 		params.Tools = toolDefsToOpenAI(tools)
@@ -946,6 +964,36 @@ func (d *OpenAIDriver) StreamWithToolsOptions(ctx context.Context, messages []ll
 	}
 	d.mu.Unlock()
 	return nil
+}
+
+func (d *OpenAIDriver) shouldFallbackResponsesToolsToChat(err error, hasTools bool, outputChars, outputItems int, responseID string) bool {
+	if err == nil || !hasTools {
+		return false
+	}
+	if providerSupportsResponseFunctionTools(d.providerLabel) {
+		return false
+	}
+	if outputChars > 0 || outputItems > 0 || strings.TrimSpace(responseID) != "" {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	switch {
+	case strings.Contains(msg, "400"),
+		strings.Contains(msg, "404"),
+		strings.Contains(msg, "405"),
+		strings.Contains(msg, "422"),
+		strings.Contains(msg, "500"),
+		strings.Contains(msg, "501"),
+		strings.Contains(msg, "502"),
+		strings.Contains(msg, "503"),
+		strings.Contains(msg, "504"),
+		strings.Contains(msg, "bad gateway"),
+		strings.Contains(msg, "unsupported"),
+		strings.Contains(msg, "not implemented"):
+		return true
+	default:
+		return false
+	}
 }
 
 func toResponseInput(msgs []llm.Message) []responses.ResponseInputItemUnionParam {

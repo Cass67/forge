@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"strings"
+
 	"forge/internal/agent/promptcomposer"
 )
 
@@ -9,4 +11,11 @@ import (
 // tools parameter. XML format instructions are not included.
 func BuildNativeSystemPrompt(workDir string) string {
 	return promptcomposer.Compose(promptcomposer.ForgeCorePrompt(workDir), nil)
+}
+
+func BuildNativeSystemPromptForMode(workDir, mode string, taskActive bool) string {
+	if strings.EqualFold(strings.TrimSpace(mode), "chat") && !taskActive {
+		return promptcomposer.Compose(promptcomposer.ForgeChatPrompt(workDir), nil)
+	}
+	return BuildNativeSystemPrompt(workDir)
 }

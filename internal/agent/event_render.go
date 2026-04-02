@@ -41,6 +41,10 @@ func (r *EventRenderer) AgentText(text string) {
 	r.events <- llm.Event{Kind: llm.EventToken, Agent: r.label, Text: text}
 }
 
+func (r *EventRenderer) Retry(msg string) {
+	r.events <- llm.Event{Kind: llm.EventRetry, Agent: r.label, Text: msg}
+}
+
 func (r *EventRenderer) ToolCall(name, summary string) {
 	r.events <- llm.Event{Kind: llm.EventToolCall, Agent: name, Text: summary}
 	if progress := progressLine(r.label, name, summary); progress != "" {

@@ -89,7 +89,7 @@ type RequestModeReporter interface {
 
 // NativeToolCaller is optionally implemented by drivers that support provider-native
 // structured tool calling. When implemented, the react runner uses this path instead
-// of prompt-level XML tool calling.
+// of any text-based tool-call shim.
 type NativeToolCaller interface {
 	StreamWithTools(ctx context.Context, messages []Message, tools []ToolDef, out chan<- Token) error
 }
@@ -109,6 +109,7 @@ type EventKind string
 
 const (
 	EventToken           EventKind = "token"
+	EventRetry           EventKind = "retry"
 	EventRoundStart      EventKind = "round_start"
 	EventRoundEnd        EventKind = "round_end"
 	EventPassStart       EventKind = "pass_start"

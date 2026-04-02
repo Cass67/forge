@@ -26,7 +26,7 @@ var (
 	changeClaimPattern       = regexp.MustCompile("(?im)(?:(?:^|[.!?]\\s+)\\s*|(?:i|we)(?:[''`]ve)?\\s+)(fixed|updated|changed|implemented|added|wired|patched|refactored|edited)\\b")
 	validationClaimPattern   = regexp.MustCompile(`(?i)\b(tested|validated|checks pass|tests pass|build passes|lint passes|compiled|verified (?:it|the fix|the change|the changes|it works|they work|working))\b`)
 	repoGroundedInputPattern = regexp.MustCompile(`(?i)\b(repo|repository|code|codebase|project|worktree|working directory|folder|directory|branch|file|files|app|theme|tui|ui|test|tests|fix|implement|update|change|edit|style)\b`)
-	validationCmdPattern     = regexp.MustCompile(`(?i)\b(go test|pytest|npm test|pnpm test|yarn test|cargo test|go build|cargo check|npm run build|pnpm build|yarn build|golangci-lint|go vet)\b`)
+	validationCmdPattern     = regexp.MustCompile(`(?i)\b(go test|go build|go vet|pytest|cargo test|cargo build|cargo check|npm test|npm run build|pnpm test|pnpm build|yarn test|yarn build|bun test|bun run build|golangci-lint)\b`)
 	actionablePlanPattern    = regexp.MustCompile(`(?m)^\s*(?:[-*]|\d+\.)\s+\S+`)
 	reviewFindingPattern     = regexp.MustCompile(`(?im)^\s*(?:[-*]|\d+\.)\s+(?:\[[Pp]\d\]\s+)?finding:`)
 )
@@ -58,7 +58,8 @@ func enforceCompletionEvidence(snapshot reactruntime.SessionSnapshot, finalText 
 	// Assistant phrasing like "I can read files" should not force tool use
 	// for an otherwise casual greeting. Assistant-side repo claims are still
 	// enforced by the inspection/change/validation checks below.
-	repoGrounded := repoGroundedInputPattern.MatchString(input)
+	repoGrounded := isRepoGroundedText(input)
+	guardedTurn := shouldEnforceRepoGroundedCompletion(snapshot, evidence, priorEvidence)
 
 	if repoGrounded && len(evidence.toolCalls) == 0 && !priorEvidence.hasAnyRepoEvidence() {
 		return reactruntime.NewRetryableCompletionError(
@@ -66,21 +67,20 @@ func enforceCompletionEvidence(snapshot reactruntime.SessionSnapshot, finalText 
 			"You have not inspected the repository yet. Use repo tools first, then answer with concrete evidence instead of narrating intent.",
 		)
 	}
-	if intentNarrationPattern.MatchString(finalText) && len(evidence.toolCalls) == 0 &&
-		(repoGrounded || snapshot.TaskState != nil || priorEvidence.hasAnyRepoEvidence()) {
+	if intentNarrationPattern.MatchString(finalText) && len(evidence.toolCalls) == 0 && guardedTurn {
 		return reactruntime.NewRetryableCompletionError(
 			"non-compliant completion: intent narration without action",
-			buildIntentNarrationRetryPrompt(evidence, priorEvidence),
+			buildIntentNarrationRetryPrompt(snapshot, evidence, priorEvidence),
 		)
 	}
-	if combined := combineEvidence(priorEvidence, evidence); combined.hasAnyRepoEvidence() &&
+	if combined := combineEvidence(priorEvidence, evidence); combined.hasAnyRepoEvidence() && guardedTurn &&
 		(repoInspectionFailurePattern.MatchString(finalText) || noEvidenceClaimPattern.MatchString(finalText)) {
 		return reactruntime.NewRetryableCompletionError(
 			"non-compliant completion: contradicted gathered repo evidence",
 			buildEvidenceAlreadyVisiblePrompt(snapshot.History, combined.toolCalls),
 		)
 	}
-	if toolBlockedClaimPattern.MatchString(finalText) && !evidence.hasToolErr && !currentPlanIsBlocked(snapshot.PlanState) {
+	if toolBlockedClaimPattern.MatchString(finalText) && guardedTurn && !evidence.hasToolErr && !currentPlanIsBlocked(snapshot.PlanState) {
 		return reactruntime.NewRetryableCompletionError(
 			"non-compliant completion: claimed tool blockage without a real tool error",
 			"Do not claim tooling failure unless a tool actually failed in this turn. Continue with tools or report the real tool error.",
@@ -104,14 +104,26 @@ func enforceCompletionEvidence(snapshot reactruntime.SessionSnapshot, finalText 
 			"Your answer claims verification, but no validation command ran. Run the relevant tests or checks first, then answer with the result.",
 		)
 	}
+	if requiresPreviewVerification(snapshot) && !hasPreviewVerificationEvidence(snapshot.History) {
+		return reactruntime.NewRetryableCompletionError(
+			"non-compliant completion: preview mode finished without verified preview evidence",
+			buildPreviewVerificationRetryPrompt(snapshot, evidence, priorEvidence),
+		)
+	}
 	if anchors, required := requiredRepoAnchorEvidence(snapshot, snapshot.History, repoGrounded, combineEvidence(priorEvidence, evidence)); required > 0 {
 		matched, missing := partitionRepoEvidenceAnchors(finalText, anchors)
 		if len(matched) < required {
 			return reactruntime.NewRetryableCompletionError(
 				"non-compliant completion: answer omitted concrete repo anchors",
-				buildRepoAnchorRetryPrompt(required, matched, missing),
+				buildRepoAnchorRetryPrompt(snapshot, required, matched, missing),
 			)
 		}
+	}
+	if requiresBriefRepoOverview(snapshot) && !looksLikeBriefRepoOverview(finalText) {
+		return reactruntime.NewRetryableCompletionError(
+			"non-compliant completion: repo overview answer was too exhaustive",
+			buildBriefRepoOverviewRetryPrompt(snapshot.History, combineEvidence(priorEvidence, evidence).toolCalls),
+		)
 	}
 	if requiresActionablePlan(snapshot) && !hasActionablePlan(snapshot, evidence, priorEvidence, finalText) {
 		return reactruntime.NewRetryableCompletionError(
@@ -138,6 +150,27 @@ func enforceCompletionEvidence(snapshot reactruntime.SessionSnapshot, finalText 
 		)
 	}
 	return nil
+}
+
+func shouldEnforceRepoGroundedCompletion(snapshot reactruntime.SessionSnapshot, evidence, priorEvidence turnEvidence) bool {
+	if snapshot.TaskState != nil {
+		return true
+	}
+	switch snapshot.Mode {
+	case reactruntime.ModeInspect, reactruntime.ModePlan, reactruntime.ModeImplement, reactruntime.ModeValidate, reactruntime.ModeReview, reactruntime.ModePreview:
+		return true
+	}
+	if len(evidence.toolCalls) > 0 {
+		return true
+	}
+	input := normalizedIntentText(snapshot.LastInput)
+	if input == "" {
+		return false
+	}
+	if isRepoGroundedText(input) {
+		return true
+	}
+	return priorEvidence.hasAnyRepoEvidence() && looksLikeRepoFollowUp(input)
 }
 
 func requiresValidationEvidence(snapshot reactruntime.SessionSnapshot) bool {
@@ -168,6 +201,16 @@ func requiresReviewFindings(snapshot reactruntime.SessionSnapshot) bool {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "review")
+}
+
+func requiresPreviewVerification(snapshot reactruntime.SessionSnapshot) bool {
+	if snapshot.Mode == reactruntime.ModePreview {
+		return true
+	}
+	if snapshot.TaskState == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "preview")
 }
 
 func hasActionablePlan(snapshot reactruntime.SessionSnapshot, evidence, priorEvidence turnEvidence, finalText string) bool {
@@ -281,9 +324,6 @@ func updateEvidenceForToolCall(ev *turnEvidence, call llm.NativeToolCall) {
 			ev.hasCheck = true
 		}
 	}
-	if name == "git_diff" || name == "git_status" {
-		ev.hasCheck = true
-	}
 }
 
 func validateGeneralTaskCompletion(snapshot reactruntime.SessionSnapshot, finalText string) error {
@@ -293,16 +333,37 @@ func validateGeneralTaskCompletion(snapshot reactruntime.SessionSnapshot, finalT
 	return nil
 }
 
-func buildIntentNarrationRetryPrompt(evidence, priorEvidence turnEvidence) string {
+func buildIntentNarrationRetryPrompt(snapshot reactruntime.SessionSnapshot, evidence, priorEvidence turnEvidence) string {
 	combined := combineEvidence(priorEvidence, evidence)
 	summary := summarizeToolCalls(combined.toolCalls)
 	if summary == "" {
-		return "Use repo tools now. Your next assistant message must be one or more tool calls only, with no plain-text preamble before the first tool call. After tool results arrive, answer from that evidence."
+		return "Use repo tools now. Your next assistant message must include one or more tool calls. A single brief sentence before the tool calls is fine, but the same message must include the tool calls. After tool results arrive, answer from that evidence."
+	}
+	if requiresBriefRepoOverview(snapshot) {
+		return fmt.Sprintf(
+			"You already gathered repo evidence in this session: %s. Do not narrate next steps. Answer directly from that evidence with one short paragraph or 2-4 concrete bullets, cite the main inspected paths, and stop there unless the user asks for more detail.",
+			summary,
+		)
 	}
 	return fmt.Sprintf(
-		"You already gathered repo evidence in this session: %s. Do not narrate next steps. Answer directly from that evidence in 3-6 concrete bullets, cite the files, paths, or symbols you inspected, and only mention verification if you actually ran it.",
+		"You already gathered repo evidence in this session: %s. Do not narrate next steps. Answer directly from that evidence in 3-6 concrete bullets or a short paragraph, cite the files, paths, or symbols you inspected, and only mention verification if you actually ran it.",
 		summary,
 	)
+}
+
+func buildPreviewVerificationRetryPrompt(snapshot reactruntime.SessionSnapshot, evidence, priorEvidence turnEvidence) string {
+	combined := combineEvidence(priorEvidence, evidence)
+	switch {
+	case hasPreviewWriteEvidence(snapshot.History):
+		return "This turn is in preview mode and the preview content is already written. Call preview_server_ensure now, then answer with the verified preview URL."
+	case combined.hasRead:
+		return fmt.Sprintf(
+			"This turn is in preview mode and you already gathered enough context: %s. Stop researching, create or update the preview content, call preview_server_ensure, and answer with the verified preview URL.",
+			summarizeToolCalls(combined.toolCalls),
+		)
+	default:
+		return "This turn is in preview mode. Create or update the preview content, call preview_server_ensure, and answer with the verified preview URL."
+	}
 }
 
 func combineEvidence(a, b turnEvidence) turnEvidence {
@@ -360,7 +421,7 @@ func summarizeToolCall(call llm.NativeToolCall) string {
 }
 
 func requiredRepoAnchorEvidence(snapshot reactruntime.SessionSnapshot, history []llm.Message, repoGrounded bool, evidence turnEvidence) ([]repoEvidenceAnchor, int) {
-	if !repoGrounded || !evidence.hasRead || !requiresConcreteInspectAnchors(snapshot) {
+	if (!repoGrounded && !requiresBriefRepoOverview(snapshot)) || !evidence.hasRead || !requiresConcreteInspectAnchors(snapshot) {
 		return nil, 0
 	}
 	anchors := collectRepoEvidenceAnchors(history)
@@ -382,11 +443,87 @@ func requiresConcreteInspectAnchors(snapshot reactruntime.SessionSnapshot) bool 
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(snapshot.TaskState.Operation)) {
-	case "inspect", "review", "analysis":
+	case "overview", "inspect", "review", "analysis":
 		return true
 	default:
 		return false
 	}
+}
+
+func requiresBriefRepoOverview(snapshot reactruntime.SessionSnapshot) bool {
+	if snapshot.TaskState != nil && strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "overview") {
+		return true
+	}
+	return isWorkspaceOverviewRequest(snapshot.LastInput)
+}
+
+func looksLikeBriefRepoOverview(finalText string) bool {
+	if strings.TrimSpace(finalText) == "" {
+		return false
+	}
+	if len(actionablePlanPattern.FindAllString(finalText, -1)) > 5 {
+		return false
+	}
+	if len(finalText) > 1400 {
+		return false
+	}
+	nonEmptyLines := 0
+	for _, line := range strings.Split(finalText, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		nonEmptyLines++
+	}
+	return nonEmptyLines <= 9
+}
+
+func hasPreviewVerificationEvidence(history []llm.Message) bool {
+	callByID := make(map[string]struct{})
+	for _, msg := range history {
+		switch msg.Role {
+		case llm.RoleAssistant:
+			for _, call := range msg.ToolCalls {
+				switch strings.TrimSpace(call.Name) {
+				case "preview_server_ensure", "preview_server_status":
+					callByID[call.ID] = struct{}{}
+				}
+			}
+		case llm.RoleTool:
+			if _, ok := callByID[msg.ToolCallID]; !ok {
+				continue
+			}
+			if previewToolResultLooksVerified(msg.Content) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func previewToolResultLooksVerified(result string) bool {
+	lower := strings.ToLower(strings.TrimSpace(result))
+	if lower == "" {
+		return false
+	}
+	if !strings.Contains(lower, "http://127.0.0.1:") && !strings.Contains(lower, `"url"`) {
+		return false
+	}
+	return strings.Contains(lower, `"status":"live"`) || strings.Contains(lower, `"status":"running"`)
+}
+
+func hasPreviewWriteEvidence(history []llm.Message) bool {
+	for _, msg := range history {
+		if msg.Role != llm.RoleAssistant {
+			continue
+		}
+		for _, call := range msg.ToolCalls {
+			switch strings.TrimSpace(call.Name) {
+			case "edit_file", "write_file", "apply_patch", "artifact_write":
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func collectRepoEvidenceAnchors(history []llm.Message) []repoEvidenceAnchor {
@@ -589,12 +726,17 @@ func partitionRepoEvidenceAnchors(finalText string, anchors []repoEvidenceAnchor
 	return matched, missing
 }
 
-func buildRepoAnchorRetryPrompt(required int, matched, missing []repoEvidenceAnchor) string {
+func buildRepoAnchorRetryPrompt(snapshot reactruntime.SessionSnapshot, required int, matched, missing []repoEvidenceAnchor) string {
+	styleInstruction := "Summarize only what those specific paths show."
+	if requiresBriefRepoOverview(snapshot) {
+		styleInstruction = "Keep the overview brief: use 2-4 concrete bullets or a short paragraph, and summarize only what those specific paths show."
+	}
 	if len(matched) == 0 {
 		return fmt.Sprintf(
-			"Your answer is too generic for the repo evidence you already gathered. Cite at least %d concrete inspected file or path references such as %s, and summarize only what those specific paths show. If a path was only seen in list_dir(.), it is valid to say it is present at the repo root; do not invent file contents. \".\" or \"repo root\" do not count as concrete repo anchors.",
+			"Your answer is too generic for the repo evidence you already gathered. Cite at least %d concrete inspected file or path references such as %s. If a path was only seen in list_dir(.), it is valid to say it is present at the repo root; do not invent file contents. \".\" or \"repo root\" do not count as concrete repo anchors. %s",
 			required,
 			summarizeRepoEvidenceAnchors(missing, required+2),
+			styleInstruction,
 		)
 	}
 	needed := required - len(matched)
@@ -602,10 +744,22 @@ func buildRepoAnchorRetryPrompt(required int, matched, missing []repoEvidenceAnc
 		needed = 1
 	}
 	return fmt.Sprintf(
-		"Your last answer only cited %s. \".\" or \"repo root\" do not count as concrete repo anchors. Cite at least %d additional inspected file or path references such as %s. If a path was only seen in list_dir(.), it is valid to say it is present at the repo root; do not invent file contents. Summarize only what those specific paths show.",
+		"Your last answer only cited %s. \".\" or \"repo root\" do not count as concrete repo anchors. Cite at least %d additional inspected file or path references such as %s. If a path was only seen in list_dir(.), it is valid to say it is present at the repo root; do not invent file contents. %s",
 		summarizeRepoEvidenceAnchors(matched, len(matched)),
 		needed,
 		summarizeRepoEvidenceAnchors(missing, needed+2),
+		styleInstruction,
+	)
+}
+
+func buildBriefRepoOverviewRetryPrompt(history []llm.Message, calls []llm.NativeToolCall) string {
+	summary := summarizeToolCalls(calls)
+	if summary == "" {
+		summary = "the repo evidence you already gathered"
+	}
+	return fmt.Sprintf(
+		"This is a casual repo-overview turn. You already gathered enough evidence: %s. Stop exploring and answer briefly: either one short paragraph or 2-4 concrete bullets. Anchor the overview to the main inspected paths and do not expand into a full architecture or tooling report unless the user asks.",
+		summary,
 	)
 }
 
