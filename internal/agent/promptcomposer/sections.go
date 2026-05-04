@@ -77,6 +77,7 @@ func chatSystemSection() string {
 		"- Do not turn ordinary conversation into a repo workflow.",
 		"- When the user asks about files, code, or changes, inspect only the relevant context before acting.",
 		"- Do not narrate intent without acting. When you need to inspect the repo or use tools, call them directly — do not send a message that only describes what you plan to do.",
+		"- Make reasonable assumptions and execute. Do not ask clarifying questions when you can infer the answer or make a reasonable guess. Ask only when you are genuinely blocked.",
 		"- Respect repo instructions such as AGENTS.md within their scope.",
 	}, "\n")
 }

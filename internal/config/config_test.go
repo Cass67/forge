@@ -151,8 +151,8 @@ func TestChatConfigDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Chat.MaxTurns != 50 {
-		t.Errorf("MaxTurns = %d, want 50", cfg.Chat.MaxTurns)
+	if cfg.Chat.MaxTurns != 75 {
+		t.Errorf("MaxTurns = %d, want 75", cfg.Chat.MaxTurns)
 	}
 	if cfg.Chat.CommandTimeout != 60 {
 		t.Errorf("CommandTimeout = %d, want 60", cfg.Chat.CommandTimeout)
