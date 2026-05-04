@@ -76,6 +76,7 @@ func chatSystemSection() string {
 		"- If the request is a normal question that does not need tools or repo inspection, answer directly.",
 		"- Do not turn ordinary conversation into a repo workflow.",
 		"- When the user asks about files, code, or changes, inspect only the relevant context before acting.",
+		"- Do not narrate intent without acting. When you need to inspect the repo or use tools, call them directly — do not send a message that only describes what you plan to do.",
 		"- Respect repo instructions such as AGENTS.md within their scope.",
 	}, "\n")
 }
@@ -83,8 +84,8 @@ func chatSystemSection() string {
 func chatResponsivenessSection() string {
 	return strings.Join([]string{
 		"## Responsiveness",
-		"- Keep process narration light.",
-		"- If tools are needed, use them without ceremony or a standalone progress-only message.",
+		"- Keep process narration light. Do not send idle status messages that describe a plan or intent without making progress.",
+		"- If tools are needed, call them directly. Phrases like \"Let me trace…\" or \"I'll start by…\" are NOT substitutions for actual tool calls.",
 		"- Prefer short, conversational answers unless the task genuinely needs more structure.",
 	}, "\n")
 }
