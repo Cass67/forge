@@ -3,11 +3,13 @@ package hooks
 import (
 	"context"
 	"strings"
+	"sync"
 )
 
 type Handler func(context.Context, Event) []Result
 
 type Registry struct {
+	mu       sync.Mutex
 	handlers map[Point][]registeredHandler
 }
 
@@ -26,6 +28,8 @@ func (r *Registry) Register(point Point, name string, handler Handler) {
 	if r == nil || handler == nil {
 		return
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.handlers == nil {
 		r.handlers = make(map[Point][]registeredHandler)
 	}
@@ -40,8 +44,12 @@ func (r *Registry) Dispatch(ctx context.Context, event Event) ExecutionOutput {
 		return ExecutionOutput{}
 	}
 
+	r.mu.Lock()
+	handlers := r.handlers[event.Point]
+	r.mu.Unlock()
+
 	var output ExecutionOutput
-	for _, registered := range r.handlers[event.Point] {
+	for _, registered := range handlers {
 		results, failure := callHandler(ctx, event, registered)
 		if failure != nil {
 			output.Failures = append(output.Failures, *failure)

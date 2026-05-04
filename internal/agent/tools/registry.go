@@ -207,6 +207,26 @@ func (r *Registry) hiddenToolNamesLocked() []string {
 	return names
 }
 
+func (r *Registry) lookupVisible(query string) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	query = strings.TrimSpace(strings.ToLower(query))
+	if query == "" {
+		return nil
+	}
+	var matches []string
+	for _, name := range r.order {
+		tool := r.tools[name]
+		if tool.PromptVisibility == PromptHidden && !r.disclosed[name] {
+			continue
+		}
+		if strings.Contains(strings.ToLower(name), query) {
+			matches = append(matches, name)
+		}
+	}
+	return matches
+}
+
 func (r *Registry) describeTools(tools []Tool, detailed bool, singleToolTurns bool) string {
 	var sb strings.Builder
 	sb.WriteString("You have access to the following tools:\n\n")

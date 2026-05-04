@@ -154,7 +154,15 @@ func (d *chatDebugDriver) Stream(ctx context.Context, messages []llm.Message, ou
 	var response strings.Builder
 	for tok := range internal {
 		response.WriteString(tok.Text)
-		out <- tok
+		select {
+		case out <- tok:
+		case <-ctx.Done():
+			for range internal {
+			}
+			<-errCh
+			close(out)
+			return ctx.Err()
+		}
 	}
 	err := <-errCh
 	if d.rec != nil {
@@ -226,7 +234,15 @@ func (d *chatDebugDriver) StreamWithToolsOptions(ctx context.Context, messages [
 				"args_chars": fmt.Sprintf("%d", len(tok.ToolCall.ArgsJSON)),
 			})
 		}
-		out <- tok
+		select {
+		case out <- tok:
+		case <-ctx.Done():
+			for range internal {
+			}
+			<-errCh
+			close(out)
+			return ctx.Err()
+		}
 	}
 	err := <-errCh
 	if d.rec != nil {

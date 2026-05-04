@@ -112,10 +112,21 @@ func (d *RetryDriver) Stream(ctx context.Context, messages []Message, out chan<-
 		}()
 
 		var emittedAny bool
-		for tok := range internal {
-			emittedAny = true
+		for {
 			select {
-			case out <- tok:
+			case tok, ok := <-internal:
+				if !ok {
+					goto done
+				}
+				emittedAny = true
+				select {
+				case out <- tok:
+				case <-ctx.Done():
+					for range internal {
+					}
+					<-errCh
+					return ctx.Err()
+				}
 			case <-ctx.Done():
 				for range internal {
 				}
@@ -123,6 +134,7 @@ func (d *RetryDriver) Stream(ctx context.Context, messages []Message, out chan<-
 				return ctx.Err()
 			}
 		}
+	done:
 
 		lastErr = <-errCh
 		if lastErr == nil {
@@ -186,10 +198,21 @@ func (d *RetryDriver) StreamWithToolsOptions(ctx context.Context, messages []Mes
 		}()
 
 		var emittedAny bool
-		for tok := range internal {
-			emittedAny = true
+		for {
 			select {
-			case out <- tok:
+			case tok, ok := <-internal:
+				if !ok {
+					goto done
+				}
+				emittedAny = true
+				select {
+				case out <- tok:
+				case <-ctx.Done():
+					for range internal {
+					}
+					<-errCh
+					return ctx.Err()
+				}
 			case <-ctx.Done():
 				for range internal {
 				}
@@ -197,6 +220,7 @@ func (d *RetryDriver) StreamWithToolsOptions(ctx context.Context, messages []Mes
 				return ctx.Err()
 			}
 		}
+	done:
 
 		lastErr = <-errCh
 		if lastErr == nil {
