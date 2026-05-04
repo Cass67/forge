@@ -2334,6 +2334,10 @@ func (m ChatModel) submitSkillInput(s skills.Skill, turnLabel, msg string) (tea.
 	if m.state != nil {
 		m.state.ActivateSkill(s.Name)
 	}
+	m.AddMessage(ChatMessage{
+		Kind:    MsgStatus,
+		Content: fmt.Sprintf("skill activated: %s", s.Name),
+	})
 	stamp := time.Now().Format("15:04:05")
 	m.AddMessage(ChatMessage{
 		Kind:    MsgForge,
