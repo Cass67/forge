@@ -91,7 +91,6 @@ type PipelinePass struct {
 type ChatConfig struct {
 	Model          string   `toml:"model"`
 	LastModel      string   `toml:"last_model"`
-	MaxTurns       int      `toml:"max_turns"`
 	CommandTimeout int      `toml:"command_timeout"`
 	Yolo           bool     `toml:"yolo"`
 	IgnoreDirs     []string `toml:"ignore_dirs"`
@@ -255,7 +254,6 @@ func setDefaults(c *Config) {
 	c.Resilience.ToolThrashCircuitBreaker = 8
 	c.Resilience.StreamIdleTimeoutMS = 30000
 	c.Git.AutoCommit = true
-	c.Chat.MaxTurns = 75
 	c.Chat.CommandTimeout = 60
 	c.Chat.IgnoreDirs = []string{".git", "node_modules", "__pycache__", ".venv", "vendor"}
 	c.Chat.AutoSkills = "suggest"

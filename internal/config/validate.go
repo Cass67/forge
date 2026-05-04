@@ -51,9 +51,6 @@ func (c *Config) Validate() []ValidationIssue {
 	if c.Retry.Timeout < 1 {
 		add("retry.timeout_seconds", "must be at least 1")
 	}
-	if c.Chat.MaxTurns < 1 {
-		add("chat.max_turns", "must be at least 1")
-	}
 	if c.Chat.CommandTimeout < 1 {
 		add("chat.command_timeout", "must be at least 1")
 	}
