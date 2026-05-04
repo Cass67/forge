@@ -308,8 +308,7 @@ func RunChatLive(setup *ChatSetup) {
 			snap := session.Snapshot()
 			return agent.BuildNativeSystemPromptForMode(setup.WorkDir, string(snap.Mode), snap.TaskState != nil)
 		},
-		Session:         session,
-		MaxSessionTurns: chatMaxTurns(setup),
+		Session: session,
 		TurnComplete: func(snapshot reactruntime.SessionSnapshot) {
 			if next, ok := memPipeline.Process(memState, snapshot); ok {
 				memState = next
@@ -603,8 +602,7 @@ func RunChatConsole(setup *ChatSetup) {
 			}
 			return base
 		},
-		Session:         session,
-		MaxSessionTurns: chatMaxTurns(setup),
+		Session: session,
 		TurnComplete: func(snapshot reactruntime.SessionSnapshot) {
 			if next, ok := memPipeline.Process(memState, snapshot); ok {
 				memState = next
@@ -720,7 +718,6 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 				return agent.BuildNativeSystemPromptForMode(setup.WorkDir, "", false)
 			},
 			Session:               reactruntime.NewSession(),
-			MaxSessionTurns:       setup.Config.Chat.MaxTurns,
 			CompactionMaxFailures: setup.Config.Resilience.CompactionMaxFailures,
 			Interactive:           false,
 		})
@@ -752,13 +749,6 @@ func reactDelegationSystemSuffix(role string) string {
 
 func resolveChatRuntimeMode() chatRuntimeMode {
 	return chatRuntimeReact
-}
-
-func chatMaxTurns(setup *ChatSetup) int {
-	if setup == nil || setup.Config == nil || setup.Config.Chat.MaxTurns < 1 {
-		return 30
-	}
-	return setup.Config.Chat.MaxTurns
 }
 
 type chatTurnRunner interface {

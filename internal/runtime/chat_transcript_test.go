@@ -56,7 +56,6 @@ func (d *noCallTranscriptDriver) StreamWithTools(ctx context.Context, msgs []llm
 
 func TestChatTranscriptPromptBoundaryResponseIsVisible(t *testing.T) {
 	cfg := &config.Config{}
-	cfg.Chat.MaxTurns = 8
 
 	driver := &noCallTranscriptDriver{}
 	setup := &ChatSetup{
@@ -85,7 +84,6 @@ func TestChatTranscriptWritesJSONLWhenRequested(t *testing.T) {
 	t.Setenv("FORGE_TRANSCRIPT_LOG_PATH", logPath)
 
 	cfg := &config.Config{}
-	cfg.Chat.MaxTurns = 8
 
 	driver := &noCallTranscriptDriver{}
 	setup := &ChatSetup{
@@ -133,7 +131,6 @@ func TestChatTranscriptWritesJSONLWhenRequested(t *testing.T) {
 func TestChatTranscriptDirectoryConversationStaysUsefulAcrossTurns(t *testing.T) {
 	workDir := writeTranscriptFixtureRepo(t)
 	cfg := &config.Config{}
-	cfg.Chat.MaxTurns = 8
 
 	driver := &scriptedTranscriptDriver{}
 	setup := &ChatSetup{
@@ -176,7 +173,6 @@ func TestChatTranscriptRepoReviewCorpusStaysUsefulAcrossFollowUp(t *testing.T) {
 		t.Run(prompt, func(t *testing.T) {
 			workDir := writeTranscriptFixtureRepo(t)
 			cfg := &config.Config{}
-			cfg.Chat.MaxTurns = 8
 
 			driver := &scriptedTranscriptDriver{}
 			setup := &ChatSetup{
@@ -209,7 +205,6 @@ func TestChatTranscriptRepoReviewCorpusStaysUsefulAcrossFollowUp(t *testing.T) {
 func TestChatTranscriptRepoReviewConversationEndsWithVisiblePromptBoundaryRefusal(t *testing.T) {
 	workDir := writeTranscriptFixtureRepo(t)
 	cfg := &config.Config{}
-	cfg.Chat.MaxTurns = 8
 
 	driver := &scriptedTranscriptDriver{}
 	setup := &ChatSetup{
@@ -245,7 +240,6 @@ func TestChatTranscriptRepoReviewConversationEndsWithVisiblePromptBoundaryRefusa
 func TestChatTranscriptRoutesInteractiveShellWorkThroughExecSession(t *testing.T) {
 	workDir := writeTranscriptFixtureRepo(t)
 	cfg := &config.Config{}
-	cfg.Chat.MaxTurns = 8
 
 	driver := &scriptedTranscriptDriver{}
 	setup := &ChatSetup{
@@ -291,7 +285,6 @@ func TestChatTranscriptRoutesInteractiveShellWorkThroughExecSession(t *testing.T
 func TestChatTranscriptRepoReviewPlanningFollowUpStaysGrounded(t *testing.T) {
 	workDir := writeTranscriptFixtureRepo(t)
 	cfg := &config.Config{}
-	cfg.Chat.MaxTurns = 8
 
 	driver := &scriptedTranscriptDriver{}
 	setup := &ChatSetup{
@@ -322,7 +315,6 @@ func TestChatTranscriptRepoReviewPlanningFollowUpStaysGrounded(t *testing.T) {
 func TestChatTranscriptPreviewConversationStaysUsefulAcrossTurns(t *testing.T) {
 	workDir := writeTranscriptFixtureRepo(t)
 	cfg := &config.Config{}
-	cfg.Chat.MaxTurns = 10
 
 	driver := &scriptedTranscriptDriver{}
 	setup := &ChatSetup{
@@ -358,7 +350,6 @@ func TestChatTranscriptPreviewConversationStaysUsefulAcrossTurns(t *testing.T) {
 func TestChatTranscriptPreviewDesignConversationStaysOnVisiblePath(t *testing.T) {
 	workDir := writeTranscriptFixtureRepo(t)
 	cfg := &config.Config{}
-	cfg.Chat.MaxTurns = 20
 
 	driver := &scriptedTranscriptDriver{}
 	setup := &ChatSetup{
@@ -409,7 +400,6 @@ func TestChatTranscriptPreviewDesignConversationStaysOnVisiblePath(t *testing.T)
 func TestChatTranscriptPreviewHarnessSurvivesFiftyTurns(t *testing.T) {
 	workDir := writeTranscriptFixtureRepo(t)
 	cfg := &config.Config{}
-	cfg.Chat.MaxTurns = 20
 
 	driver := &scriptedTranscriptDriver{}
 	setup := &ChatSetup{

@@ -70,11 +70,19 @@ func TestCompactSessionHistorySummarizesToolsAndErrors(t *testing.T) {
 func TestRunnerRunEmitsCompactionProgress(t *testing.T) {
 	driver := &nativeScriptedDriver{responses: []string{"done 1", "done 2", "done 3"}}
 	var progress []string
+	session := NewSession()
+	// Simulate a session that has already run many turns so compaction
+	// threshold checking fires via the else-if branch (compactionMaxFailures > 0
+	// and Turn > 50).
+	_ = session.RecordInput("first")
+	for i := 0; i < 60; i++ {
+		_ = session.RecordInput("padding")
+	}
 	r := NewRunner(Config{
-		Driver:          driver,
-		Session:         NewSession(),
-		Progress:        func(text string) { progress = append(progress, text) },
-		MaxSessionTurns: 2,
+		Driver:                driver,
+		Session:               session,
+		Progress:              func(text string) { progress = append(progress, text) },
+		CompactionMaxFailures: 1,
 	})
 
 	if err := r.Run(context.Background(), "first"); err != nil {
@@ -89,7 +97,7 @@ func TestRunnerRunEmitsCompactionProgress(t *testing.T) {
 
 	found := false
 	for _, msg := range progress {
-		if strings.Contains(strings.ToLower(msg), "compacted session context") {
+		if strings.Contains(strings.ToLower(msg), "compaction circuit breaker") {
 			found = true
 			break
 		}

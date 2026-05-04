@@ -664,21 +664,10 @@ func containsHookOverlay(overlays []hooks.OverlayResult, key, content string) bo
 	return false
 }
 
-func TestChatMaxTurnsUsesConfigValue(t *testing.T) {
-	setup := &ChatSetup{Config: &config.Config{}}
-	setup.Config.Chat.MaxTurns = 64
-	if got := chatMaxTurns(setup); got != 64 {
-		t.Fatalf("chatMaxTurns = %d, want 64", got)
-	}
-	if got := chatMaxTurns(nil); got != 20 {
-		t.Fatalf("chatMaxTurns(nil) = %d, want 20", got)
-	}
-}
-
 func TestRunChatTurnCompletesComplexVisiblePreviewTurn(t *testing.T) {
 	workDir := writeTranscriptFixtureRepo(t)
 	cfg := &config.Config{}
-	cfg.Chat.MaxTurns = 20
+
 	approve := agent.YoloApproval()
 
 	reg := tools.NewRegistry()
@@ -691,12 +680,11 @@ func TestRunChatTurnCompletesComplexVisiblePreviewTurn(t *testing.T) {
 	driver := &scriptedTranscriptDriver{}
 	renderer := agent.NewRenderer(io.Discard, 80, false)
 	reactRunner := reactruntime.NewRunner(reactruntime.Config{
-		Driver:          driver,
-		Tools:           reg,
-		Renderer:        renderer,
-		SystemPrompt:    func() string { return agent.BuildNativeSystemPrompt(workDir) },
-		Session:         reactruntime.NewSession(),
-		MaxSessionTurns: 20,
+		Driver:       driver,
+		Tools:        reg,
+		Renderer:     renderer,
+		SystemPrompt: func() string { return agent.BuildNativeSystemPrompt(workDir) },
+		Session:      reactruntime.NewSession(),
 	})
 	registerReactDelegationTools(reg, &ChatSetup{Config: cfg, WorkDir: workDir, Driver: driver}, baseReg, approve)
 
