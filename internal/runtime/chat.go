@@ -756,7 +756,7 @@ func resolveChatRuntimeMode() chatRuntimeMode {
 
 func chatMaxTurns(setup *ChatSetup) int {
 	if setup == nil || setup.Config == nil || setup.Config.Chat.MaxTurns < 1 {
-		return 20
+		return 30
 	}
 	return setup.Config.Chat.MaxTurns
 }
