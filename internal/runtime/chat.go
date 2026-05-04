@@ -9,8 +9,9 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"forge/internal/agent"
@@ -33,21 +34,12 @@ import (
 )
 
 var (
-	loadChatConfig     = bootstrap.LoadConfig
-	loadChatTokens     = bootstrap.LoadTokens
-	saveLastChatModel  = config.SaveChatLastModel
-	defaultConfigPath  = config.DefaultPath
-	runChatLiveUI      = tui.RunChatLive
-	mergeIntoBranchRE  = regexp.MustCompile(`(?i)\bmerge\s+(?:the\s+)?(.+?)\s+into\s+([a-zA-Z0-9._/\-]+)\b`)
-	branchMentionRE    = regexp.MustCompile(`(?i)\b(?:look at|inspect|check|review|take a look at)\s+(?:the\s+)?([a-zA-Z0-9._/\-]+)\s+branch\b`)
-	planRequestRE      = regexp.MustCompile(`(?i)\b(?:write|make|create|draft|prepare)\b.*\b(?:implementation\s+)?plan\b|\b(?:implementation\s+)?plan\b.*\b(?:for|to)\b`)
-	reviewRequestRE    = regexp.MustCompile(`(?i)\breview\b.*\b(repo|repository|code|codebase|branch|changes?|diff|pr|pull request)\b|\b(code|repo|repository|branch|changes?|diff|pr|pull request)\b.*\breview\b`)
-	analysisRequestRE  = regexp.MustCompile(`(?i)\b(audit|analy[sz]e|diagnose|investigate|research|compare|review|explain)\b.*\b(repo|repository|codebase|app|behavior|issue|problem|dead code|cleanup)\b`)
-	previewRequestRE   = regexp.MustCompile(`(?i)\b(preview|web ?page|themes?_preview\.html|mock up|show me|show on (?:the )?screen|show on web)\b`)
-	validateRequestRE  = regexp.MustCompile(`(?i)\b(test|tests|verify|validated?|check|checks|pass|passes|build)\b`)
-	implementRequestRE = regexp.MustCompile(`(?i)\b(fix|implement|change|update|add|create|build|redesign|theme|refactor|patch)\b`)
-	inspectRequestRE   = regexp.MustCompile(`(?i)\b(inspect|look at|take a look|review|tell+\s+me\s+about|talk\s+about|describe|what do you think|anything i need change|research)\b|\bwhat(?:'s|s| is)\s+this(?:\s+(?:repo|repository|project|codebase|folder|directory|working directory))?\s+all\s+about\b|\bwhat(?:'s|s| is)\s+this\s+(?:repo|repository|project|codebase|folder|directory|working directory)\s+about\b`)
-	newChatMCPManager  = func() *mcp.Manager { return mcp.NewManager() }
+	loadChatConfig    = bootstrap.LoadConfig
+	loadChatTokens    = bootstrap.LoadTokens
+	saveLastChatModel = config.SaveChatLastModel
+	defaultConfigPath = config.DefaultPath
+	runChatLiveUI     = tui.RunChatLive
+	newChatMCPManager = func() *mcp.Manager { return mcp.NewManager() }
 )
 
 type chatRuntimeMode string
@@ -318,9 +310,6 @@ func RunChatLive(setup *ChatSetup) {
 		},
 		Session:         session,
 		MaxSessionTurns: chatMaxTurns(setup),
-		CompletionCheck: func(snapshot reactruntime.SessionSnapshot, finalText string) error {
-			return validateTaskCompletion(setup.WorkDir, snapshot, finalText)
-		},
 		TurnComplete: func(snapshot reactruntime.SessionSnapshot) {
 			if next, ok := memPipeline.Process(memState, snapshot); ok {
 				memState = next
@@ -341,12 +330,16 @@ func RunChatLive(setup *ChatSetup) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	var turnCancel atomic.Value
+
 	// nudgeForwarder routes nudge calls from the goroutine to liveCfg.NotifyNudge.
 	// It is populated once liveCfg is built (below), before the first user input
 	// arrives. The goroutine captures it by reference so it sees the final value.
 	var nudgeForwarder func(mode, taskOp, suggestedSkill string)
+	var wg sync.WaitGroup
 
 	go func() {
+		defer wg.Wait()
 		var running bool
 		runOutcome := func(err error) string {
 			if err != nil {
@@ -362,11 +355,6 @@ func RunChatLive(setup *ChatSetup) {
 			if setup != nil && setup.debugRec != nil {
 				setup.debugRec.logInput("user", msg)
 			}
-			if taskState, ok := detectTaskStateFromInput(msg); ok {
-				if nudgeForwarder != nil {
-					nudgeForwarder(taskState.Operation, taskState.Operation, "")
-				}
-			}
 			applySuggestedSkillOverlay(session, msg, loadedSkills, state)
 			if nudge, skillName := suggestedSkillNudgeWithName(msg, loadedSkills, state); nudge != "" {
 				evRenderer.Info(nudge)
@@ -374,8 +362,16 @@ func RunChatLive(setup *ChatSetup) {
 					nudgeForwarder("", "", skillName)
 				}
 			}
+			turnCtx, tc := context.WithCancel(ctx)
+			turnCancel.Store(tc)
+			wg.Add(1)
 			go func(runMsg string) {
-				err := runChatTurn(ctx, reactRunner, runMsg)
+				defer wg.Done()
+				err := runChatTurn(turnCtx, reactRunner, runMsg)
+				if turnCtx.Err() != nil {
+					inputCh <- "__turn_failed__"
+					return
+				}
 				inputCh <- runOutcome(err)
 			}(msg)
 		}
@@ -397,14 +393,18 @@ func RunChatLive(setup *ChatSetup) {
 				}
 				if running {
 					reactRunner.MarkInterrupted()
-					cancel()
-					ctx, cancel = context.WithCancel(context.Background())
+					if tc, ok := turnCancel.Load().(context.CancelFunc); ok {
+						tc()
+					}
+					_ = reactRunner.DiscardPendingInput()
+					running = false
 					evRenderer.Info("turn canceled")
 				}
 			case "__turn_done__":
 				evRenderer.TurnDone()
 				running = false
 			case "__turn_failed__":
+				evRenderer.TurnDone()
 				running = false
 			default:
 				if running {
@@ -596,7 +596,11 @@ func RunChatConsole(setup *ChatSetup) {
 		Renderer: renderer,
 		SystemPrompt: func() string {
 			snap := session.Snapshot()
-			return agent.BuildNativeSystemPromptForMode(setup.WorkDir, string(snap.Mode), snap.TaskState != nil)
+			base := agent.BuildNativeSystemPromptForMode(setup.WorkDir, string(snap.Mode), snap.TaskState != nil)
+			if skillText := skills.Describe(loadedSkills); skillText != "" {
+				base += "\n\n" + skillText
+			}
+			return base
 		},
 		Session:         session,
 		MaxSessionTurns: chatMaxTurns(setup),
@@ -621,23 +625,40 @@ func RunChatConsole(setup *ChatSetup) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	var turnCancel atomic.Value
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt)
+	pendingShutdown := make(chan struct{})
 	go func() {
 		count := 0
 		for range sigCh {
 			count++
 			if count >= 2 {
-				fmt.Println("\ninterrupted")
-				os.Exit(0)
+				select {
+				case <-pendingShutdown:
+				default:
+					close(pendingShutdown)
+				}
+				return
 			}
 			cancel()
-			ctx, cancel = context.WithCancel(context.Background())
+			nctx, nc := context.WithCancel(context.Background())
+			ctx, cancel = nctx, nc
+			if tc, ok := turnCancel.Load().(context.CancelFunc); ok {
+				tc()
+			}
 		}
 	}()
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
+		select {
+		case <-pendingShutdown:
+			fmt.Println("\ninterrupted")
+			return
+		default:
+		}
 		renderer.Prompt()
 		if !scanner.Scan() {
 			break
@@ -659,7 +680,9 @@ func RunChatConsole(setup *ChatSetup) {
 		if nudge := suggestedSkillNudge(input, loadedSkills, state); nudge != "" {
 			renderer.Info(nudge)
 		}
-		err := runChatTurn(ctx, reactRunner, input)
+		turnCtx, tc := context.WithCancel(ctx)
+		turnCancel.Store(tc)
+		err := runChatTurn(turnCtx, reactRunner, input)
 		if err != nil {
 			renderer.Error(err.Error())
 		}
@@ -686,7 +709,7 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 			Tools:    childTools,
 			Renderer: agent.NewSilentRenderer(nil),
 			SystemPrompt: func() string {
-				return agent.BuildNativeSystemPrompt(setup.WorkDir) + "\n\n" + reactDelegationSystemSuffix(role)
+				return agent.BuildNativeSystemPromptForMode(setup.WorkDir, "", false)
 			},
 			Session:               reactruntime.NewSession(),
 			MaxSessionTurns:       setup.Config.Chat.MaxTurns,
@@ -735,6 +758,7 @@ type chatTurnRunner interface {
 	EmitResponse(string)
 	SetTaskState(reactruntime.TaskState)
 	QueuePendingInput(string)
+	DiscardPendingInput() []string
 	MarkInterrupted()
 }
 
@@ -750,9 +774,7 @@ func runChatTurn(ctx context.Context, reactRunner chatTurnRunner, input string) 
 	if reactRunner == nil {
 		return fmt.Errorf("chat react runner is nil")
 	}
-	if state, ok := detectTaskStateFromInput(input); ok {
-		reactRunner.SetTaskState(state)
-	} else if shouldResetTaskStateForInput(input) {
+	if shouldResetTaskStateForInput(input) {
 		reactRunner.SetTaskState(reactruntime.TaskState{})
 	}
 	return reactRunner.Run(ctx, input)
@@ -775,11 +797,7 @@ func suggestedSkillNudgeWithName(input string, loadedSkills []skills.Skill, stat
 			active[name] = true
 		}
 	}
-	mode := ""
-	if task, ok := detectTaskStateFromInput(input); ok {
-		mode = task.Operation
-	}
-	suggestion, ok := skills.Suggest(loadedSkills, mode, input, active)
+	suggestion, ok := skills.Suggest(loadedSkills, "", input, active)
 	if !ok {
 		return "", ""
 	}
@@ -951,90 +969,6 @@ func cloneChatHookOutput(output hooks.ExecutionOutput) hooks.ExecutionOutput {
 	return cloned
 }
 
-func detectTaskStateFromInput(input string) (reactruntime.TaskState, bool) {
-	text := strings.TrimSpace(input)
-	if text == "" {
-		return reactruntime.TaskState{}, false
-	}
-	normalized := normalizedIntentText(text)
-	if planRequestRE.MatchString(normalized) {
-		return reactruntime.TaskState{
-			Objective:            text,
-			Operation:            "plan",
-			RequiredVerification: "produce a concise plan grounded in enough repo evidence; stop researching once the next actionable plan can be written",
-		}, true
-	}
-	if reviewRequestRE.MatchString(normalized) {
-		return reactruntime.TaskState{
-			Objective:            text,
-			Operation:            "review",
-			RequiredVerification: "produce source-grounded findings first, ordered by severity, and keep the summary secondary to the actual review issues",
-		}, true
-	}
-	if analysisRequestRE.MatchString(normalized) {
-		return reactruntime.TaskState{
-			Objective:            text,
-			Operation:            "analysis",
-			RequiredVerification: "produce source-grounded findings and stop once the answer or cleanup recommendation can be written",
-		}, true
-	}
-	match := mergeIntoBranchRE.FindStringSubmatch(text)
-	if len(match) == 3 {
-		sourceRef := strings.TrimSpace(match[1])
-		targetBranch := strings.TrimSpace(match[2])
-		if isMergePronoun(sourceRef) {
-			if mentioned := detectMentionedBranch(text); mentioned != "" {
-				sourceRef = mentioned
-			}
-		}
-		if sourceRef != "" && targetBranch != "" {
-			return reactruntime.TaskState{
-				Objective:            text,
-				Operation:            "merge",
-				SourceRef:            sourceRef,
-				TargetBranch:         targetBranch,
-				RequiredVerification: fmt.Sprintf("verify branch %s contains the resulting HEAD commit", targetBranch),
-			}, true
-		}
-	}
-	if previewRequestRE.MatchString(normalized) {
-		return reactruntime.TaskState{
-			Objective:            text,
-			Operation:            "preview",
-			RequiredVerification: "use preview or artifact tools, verify the preview URL or visible result, and do not rely on an ad-hoc shell webserver",
-		}, true
-	}
-	if validateRequestRE.MatchString(normalized) && isRepoGroundedText(normalized) {
-		return reactruntime.TaskState{
-			Objective:            text,
-			Operation:            "validate",
-			RequiredVerification: "run the relevant tests or checks before claiming the work is verified",
-		}, true
-	}
-	if implementRequestRE.MatchString(normalized) && isRepoGroundedText(normalized) {
-		return reactruntime.TaskState{
-			Objective:            text,
-			Operation:            "implement",
-			RequiredVerification: "inspect the relevant code, make the change with edit tools, and run the relevant verification before claiming completion",
-		}, true
-	}
-	if isWorkspaceOverviewRequest(normalized) && isRepoGroundedText(normalized) {
-		return reactruntime.TaskState{
-			Objective:            text,
-			Operation:            "overview",
-			RequiredVerification: "inspect the repository with read/search tools before answering. For a casual repo overview, usually inspect the repo root and one high-signal file such as README.md, then give a brief overview grounded only in that evidence",
-		}, true
-	}
-	if inspectRequestRE.MatchString(normalized) && isRepoGroundedText(normalized) {
-		return reactruntime.TaskState{
-			Objective:            text,
-			Operation:            "inspect",
-			RequiredVerification: "inspect the repository with read/search tools before answering, then summarize only what the evidence supports",
-		}, true
-	}
-	return reactruntime.TaskState{}, false
-}
-
 func normalizedIntentText(input string) string {
 	text := strings.ToLower(strings.TrimSpace(input))
 	if text == "" {
@@ -1098,56 +1032,6 @@ func collapseRepeatedLetters(text string) string {
 	return b.String()
 }
 
-func isRepoGroundedText(input string) bool {
-	text := normalizedIntentText(input)
-	if text == "" {
-		return false
-	}
-	if repoGroundedInputPattern.MatchString(text) {
-		return true
-	}
-	return containsAnyPhrase(text,
-		"this folder", "this directory", "this working directory", "working directory",
-		"current directory", "this workspace", "this worktree", "this repo",
-		"this repository", "this project", "this codebase", "in here", "here",
-	) || isWorkspaceOverviewRequest(text)
-}
-
-func isWorkspaceOverviewRequest(input string) bool {
-	text := normalizedIntentText(input)
-	if text == "" {
-		return false
-	}
-	if containsAnyPhrase(text,
-		"need to improve", "need to change", "need changing", "improve upon",
-		"what i need to improve", "what i need to change",
-		"what i should improve", "what i should change",
-		"what should i improve", "what should i change",
-		"what should improve", "what should change",
-		"what needs fixing", "what needs work", "what needs changing", "what needs to change",
-		"what to improve", "what to change", "what to fix",
-	) {
-		return false
-	}
-	if containsAnyPhrase(text,
-		"what's this all about", "whats this all about", "what is this all about",
-		"what's in here", "whats in here", "what is in here",
-	) {
-		return true
-	}
-	hasSubject := containsAnyPhrase(text,
-		"repo", "repository", "project", "codebase", "folder", "directory",
-		"working directory", "workspace", "worktree", "here",
-	)
-	if !hasSubject {
-		return false
-	}
-	return containsAnyPhrase(text,
-		"tell me about", "describe", "explain", "summarize", "summary", "overview", "scan",
-		"what's this", "whats this", "what is this",
-	)
-}
-
 func containsAnyPhrase(text string, phrases ...string) bool {
 	for _, phrase := range phrases {
 		if strings.Contains(text, phrase) {
@@ -1155,44 +1039,6 @@ func containsAnyPhrase(text string, phrases ...string) bool {
 		}
 	}
 	return false
-}
-
-func isMergePronoun(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "it", "this", "that", "them":
-		return true
-	default:
-		return false
-	}
-}
-
-func detectMentionedBranch(text string) string {
-	match := branchMentionRE.FindStringSubmatch(strings.TrimSpace(text))
-	if len(match) != 2 {
-		return ""
-	}
-	return strings.TrimSpace(match[1])
-}
-
-func validateTaskCompletion(workDir string, snapshot reactruntime.SessionSnapshot, finalText string) error {
-	if err := validateGeneralTaskCompletion(snapshot, finalText); err != nil {
-		return err
-	}
-	if snapshot.TaskState == nil {
-		return nil
-	}
-	task := snapshot.TaskState
-	if strings.ToLower(strings.TrimSpace(task.Operation)) != "merge" || strings.TrimSpace(task.TargetBranch) == "" {
-		return nil
-	}
-	contains, err := gitBranchContainsHead(workDir, task.TargetBranch)
-	if err != nil {
-		return err
-	}
-	if !contains {
-		return fmt.Errorf("task incomplete: target branch %s does not contain HEAD; switch to %s and fast-forward or merge the resolved HEAD into it, then verify with git_branch_state", task.TargetBranch, task.TargetBranch)
-	}
-	return nil
 }
 
 func gitBranchContainsHead(workDir, branch string) (bool, error) {
