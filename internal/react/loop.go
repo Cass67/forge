@@ -924,7 +924,7 @@ func containsToolPhrase(text string, phrases ...string) bool {
 
 func maxSessionTurns(value int) int {
 	if value < 1 {
-		return 50
+		return 75
 	}
 	return value
 }
