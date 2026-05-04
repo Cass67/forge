@@ -67,6 +67,7 @@ type planWorkflowState struct {
 	active             bool
 	explorationBatches int
 	synthesisRequired  bool
+	synthesisEscalated bool
 }
 
 type validationWorkflowState struct {
@@ -1487,6 +1488,7 @@ func (r *Runner) updatePlanWorkflow(toolName string, args map[string]any, _ stri
 		// update_plan or think: reset exploration counter so the model can keep working
 		r.planWorkflow.explorationBatches = 0
 		r.planWorkflow.synthesisRequired = false
+		r.planWorkflow.synthesisEscalated = false
 		r.syncRuntimeNote()
 		return
 	}
@@ -1494,11 +1496,16 @@ func (r *Runner) updatePlanWorkflow(toolName string, args map[string]any, _ stri
 		// write mutation: the model made progress — reset exploration state
 		r.planWorkflow.explorationBatches = 0
 		r.planWorkflow.synthesisRequired = false
+		r.planWorkflow.synthesisEscalated = false
 		r.syncRuntimeNote()
 		return
 	}
 	r.planWorkflow.explorationBatches++
-	if r.planWorkflow.explorationBatches >= synthesisGuardBudget(r.planWorkflow.mode) {
+	budget := synthesisGuardBudget(r.planWorkflow.mode)
+	if r.planWorkflow.explorationBatches >= budget*2 {
+		r.planWorkflow.synthesisEscalated = true
+	}
+	if r.planWorkflow.explorationBatches >= budget {
 		r.planWorkflow.synthesisRequired = true
 	}
 	r.syncRuntimeNote()
@@ -1507,6 +1514,9 @@ func (r *Runner) updatePlanWorkflow(toolName string, args map[string]any, _ stri
 func (s planWorkflowState) overlayContent() string {
 	if !s.active || !s.synthesisRequired {
 		return ""
+	}
+	if s.synthesisEscalated {
+		return "URGENT: you have explored far too much without acting. Stop all exploration immediately. You must either make an edit, run a command, or provide a concrete text answer RIGHT NOW in this exact message. No more reading, searching, or listing."
 	}
 	switch s.mode {
 	case "analysis":
