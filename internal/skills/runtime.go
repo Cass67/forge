@@ -86,23 +86,8 @@ func resolveAutoSkill(loaded []Skill, input string) (Skill, bool) {
 		if strings.Contains(lower, name) {
 			return s, true
 		}
-		switch name {
-		case "brainstorming":
-			if containsAny(lower, "plan", "planning", "brainstorm", "design", "architecture", "approach", "review", "code review", "audit") {
-				return s, true
-			}
-		case "systematic-debugging":
-			if containsAny(lower, "debug", "bug", "failing", "failure", "regression", "investigate", "root cause", "broken") {
-				return s, true
-			}
-		case "test-driven-development", "tdd":
-			if containsAny(lower, "implement", "implementation", "develop", "development", "build", "feature", "refactor", "add tests", "write tests") {
-				return s, true
-			}
-		default:
-			if desc != "" && strings.Contains(lower, desc) {
-				return s, true
-			}
+		if desc != "" && strings.Contains(lower, desc) {
+			return s, true
 		}
 	}
 	return Skill{}, false

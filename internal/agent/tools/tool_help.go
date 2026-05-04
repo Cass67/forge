@@ -25,7 +25,7 @@ func NewToolHelp(reg *Registry) Tool {
 			if len(revealed) == 0 {
 				alreadyVisible := reg.lookupVisible(query)
 				if len(alreadyVisible) > 0 {
-					return fmt.Sprintf("The requested tools are already available in this session. Call them directly: %s", strings.Join(alreadyVisible, ", ")), nil
+					return fmt.Sprintf("The requested tools are already available. Use them directly:\n\n%s", reg.DescribeNamedTools(alreadyVisible)), nil
 				}
 				hidden := reg.hiddenToolNames()
 				if len(hidden) == 0 {

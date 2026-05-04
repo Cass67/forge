@@ -58,12 +58,12 @@ func TestRuntimeResolveAutoMatchesDetectAuto(t *testing.T) {
 	}
 
 	rt := NewRuntime(loaded)
-	gotRuntime, ok := rt.ResolveAuto("please implement this feature safely")
-	if !ok || gotRuntime.Name != "test-driven-development" {
+	gotRuntime, ok := rt.ResolveAuto("use brainstorming to plan first")
+	if !ok || gotRuntime.Name != "brainstorming" {
 		t.Fatalf("ResolveAuto() = %#v ok=%v", gotRuntime, ok)
 	}
 
-	gotWrapper, ok := DetectAuto(loaded, "please implement this feature safely")
+	gotWrapper, ok := DetectAuto(loaded, "use brainstorming to plan first")
 	if !ok || gotWrapper.Name != gotRuntime.Name {
 		t.Fatalf("DetectAuto() = %#v ok=%v, want %q", gotWrapper, ok, gotRuntime.Name)
 	}
