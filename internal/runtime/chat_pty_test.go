@@ -73,7 +73,6 @@ func TestChatPTYHelperProcess(t *testing.T) {
 		t.Fatalf("os.MkdirTemp: %v", err)
 	}
 	cfg := &config.Config{}
-	cfg.Chat.MaxTurns = 4
 
 	setup := &ChatSetup{
 		Config:    cfg,

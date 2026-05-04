@@ -603,7 +603,6 @@ func testConfig() *config.Config {
 	cfg.Retry.InitialWait = 1000
 	cfg.Retry.MaxWait = 30000
 	cfg.Retry.Timeout = 300
-	cfg.Chat.MaxTurns = 50
 	cfg.Chat.CommandTimeout = 60
 	cfg.Log.Level = "info"
 	cfg.Models.WriterParams.Temperature = -1

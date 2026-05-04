@@ -21,7 +21,6 @@ type Config struct {
 	SystemPrompt          func() string
 	Session               *Session
 	Progress              func(string)
-	MaxSessionTurns       int
 	TurnComplete          func(SessionSnapshot)
 	CompactionMaxFailures int
 	Interactive           bool
@@ -35,7 +34,6 @@ type Runner struct {
 	session               *Session
 	hooks                 *hooks.Registry
 	progress              func(string)
-	maxSessionTurns       int
 	compactionFailures    int
 	compactionMaxFailures int
 	gitWorkflow           gitWorkflowState
@@ -98,6 +96,7 @@ const overviewExplorationBudget = 6
 const reviewExplorationBudget = 10
 const validateExplorationBudget = 6
 const chatExplorationBudget = 8
+const maxLoopSafetySteps = 200
 const sameFileSearchThrashThreshold = 5
 const repeatToolCallThreshold = 6
 const maxCompletionRetriesPerTurn = 3
@@ -147,7 +146,6 @@ func NewRunner(cfg Config) *Runner {
 		session:               session,
 		hooks:                 newLoopHookRegistry(),
 		progress:              cfg.Progress,
-		maxSessionTurns:       maxSessionTurns(cfg.MaxSessionTurns),
 		compactionMaxFailures: cfg.CompactionMaxFailures,
 		turnComplete:          cfg.TurnComplete,
 	}
@@ -172,12 +170,9 @@ func (r *Runner) Run(ctx context.Context, input string) error {
 	}
 	turn := r.session.RecordInput(prompt)
 	r.pendingRetryPrompt = ""
-	if CompactSessionHistory(r.session, r.maxSessionTurns) {
-		if r.progress != nil {
-			r.progress("react runtime: compacted session context")
-		}
-		r.compactionFailures = 0
-	} else if r.compactionMaxFailures > 0 && r.session.Snapshot().Turn > r.maxSessionTurns/2 {
+	if CompactSessionHistory(r.session, 75) {
+		r.compactionFailures++
+	} else if r.compactionMaxFailures > 0 && r.session.Snapshot().Turn > 50 {
 		r.compactionFailures++
 		if r.compactionFailures >= r.compactionMaxFailures {
 			if r.progress != nil {
@@ -305,30 +300,7 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 
 	emptyRetried := false
 	completionRetries := 0
-	budgetWarnAt := r.maxSessionTurns * 2 / 3
-	budgetWarnSent := false
-	budgetEnforced := false
-	for step := 0; step < r.maxSessionTurns; step++ {
-		if !budgetWarnSent && step >= budgetWarnAt {
-			budgetWarnSent = true
-			remaining := r.maxSessionTurns - step
-			r.session.AppendUserMessage(fmt.Sprintf(
-				"[budget] %d steps remaining. Stop gathering context. Complete any pending edits, run verification, and deliver your final answer.",
-				remaining,
-			))
-		}
-		if budgetWarnSent && !budgetEnforced && r.repeatWorkflow.streak >= repeatToolCallThreshold {
-			budgetEnforced = true
-			r.session.AppendUserMessage(
-				"[budget] You are repeating the same actions without making progress. This is your final step: synthesize what you have found and deliver your answer now. Do not call any more tools.",
-			)
-		}
-		if budgetWarnSent && !budgetEnforced && r.repeatWorkflow.streak >= repeatToolCallThreshold {
-			budgetEnforced = true
-			r.session.AppendUserMessage(
-				"[budget] You are repeating the same actions without making progress. This is your final step: synthesize what you have found and deliver your answer now. Do not call any more tools.",
-			)
-		}
+	for step := 0; step < maxLoopSafetySteps; step++ {
 		if r.applyPendingInput() {
 			r.syncRuntimeNote()
 		}
@@ -370,7 +342,7 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 		}
 	}
 
-	err := fmt.Errorf("react runtime: max steps (%d) exceeded", r.maxSessionTurns)
+	err := fmt.Errorf("react runtime: safety step limit (%d) exceeded", maxLoopSafetySteps)
 	r.session.CompleteTurn(turn, "", nil, err)
 	return err
 }
@@ -920,13 +892,6 @@ func containsToolPhrase(text string, phrases ...string) bool {
 		}
 	}
 	return false
-}
-
-func maxSessionTurns(value int) int {
-	if value < 1 {
-		return 75
-	}
-	return value
 }
 
 func (r *Runner) blockedToolResult(toolName string, args map[string]any) string {

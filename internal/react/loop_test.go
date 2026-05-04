@@ -1420,8 +1420,8 @@ func TestRunnerNudgesOnExcessivePlanExploration(t *testing.T) {
 		Operation:            "plan",
 		RequiredVerification: "produce a concise plan grounded in enough repo evidence",
 	})
-	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session, MaxSessionTurns: explorations + 5})
 
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
 	if err := r.Run(context.Background(), "write a cleanup plan"); err != nil {
 		t.Fatal(err)
 	}
@@ -1484,8 +1484,8 @@ func TestRunnerNudgesOnExcessiveAnalysisExploration(t *testing.T) {
 		Operation:            "analysis",
 		RequiredVerification: "produce source-grounded findings and stop when the answer can be written",
 	})
-	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session, MaxSessionTurns: explorations + 5})
 
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
 	if err := r.Run(context.Background(), "audit the repo"); err != nil {
 		t.Fatal(err)
 	}
@@ -1549,8 +1549,8 @@ func TestRunnerNudgesOnRepeatedSameFileCodeSearch(t *testing.T) {
 		Operation:            "implement",
 		RequiredVerification: "inspect the relevant code, make the change with edit tools, and run the relevant verification before claiming completion",
 	})
-	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session, MaxSessionTurns: repeatedSearches + 5})
 
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
 	if err := r.Run(context.Background(), "add the panel"); err != nil {
 		t.Fatal(err)
 	}
