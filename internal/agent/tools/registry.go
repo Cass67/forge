@@ -214,14 +214,31 @@ func (r *Registry) lookupVisible(query string) []string {
 	if query == "" {
 		return nil
 	}
+	terms := strings.Fields(query)
 	var matches []string
 	for _, name := range r.order {
 		tool := r.tools[name]
 		if tool.PromptVisibility == PromptHidden && !r.disclosed[name] {
 			continue
 		}
-		if strings.Contains(strings.ToLower(name), query) {
-			matches = append(matches, name)
+		lowerName := strings.ToLower(name)
+		for _, term := range terms {
+			if len(term) > 2 && strings.Contains(lowerName, term) {
+				matches = append(matches, name)
+				break
+			}
+		}
+	}
+	if len(matches) == 0 {
+		// Fallback: match the full query as a single substring
+		for _, name := range r.order {
+			tool := r.tools[name]
+			if tool.PromptVisibility == PromptHidden && !r.disclosed[name] {
+				continue
+			}
+			if strings.Contains(strings.ToLower(name), query) {
+				matches = append(matches, name)
+			}
 		}
 	}
 	return matches
