@@ -519,6 +519,7 @@ func RunChatLive(setup *ChatSetup) {
 		ApprovalCh:      evRenderer.ApprovalChan(),
 		ResponseCh:      evRenderer.ResponseChan(),
 		Skills:          loadedSkills,
+		AutoSkillsMode:  setup.Config.Chat.AutoSkills,
 		State:           state,
 		CopilotClientID: setup.Config.CopilotClientID(),
 	}
@@ -674,6 +675,12 @@ func RunChatConsole(setup *ChatSetup) {
 			handled := handleChatSlashCommand(input, renderer, loadedSkills, state, reactRunner, setup)
 			if handled {
 				continue
+			}
+		}
+		if setup.Config.Chat.AutoSkills == skills.AutoSkillsAuto {
+			if s, ok := skills.DetectAuto(loadedSkills, input); ok {
+				state.ActivateSkill(s.Name)
+				input = skills.SkillMessageWithUserInput(s, input)
 			}
 		}
 		applySuggestedSkillOverlay(session, input, loadedSkills, state)
