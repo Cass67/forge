@@ -680,6 +680,7 @@ func RunChatConsole(setup *ChatSetup) {
 		if setup.Config.Chat.AutoSkills == skills.AutoSkillsAuto {
 			if s, ok := skills.DetectAuto(loadedSkills, input); ok {
 				state.ActivateSkill(s.Name)
+				renderer.Info(fmt.Sprintf("skill activated: %s", s.Name))
 				input = skills.SkillMessageWithUserInput(s, input)
 			}
 		}
