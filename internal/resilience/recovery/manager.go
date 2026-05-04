@@ -82,6 +82,14 @@ func (m *Manager) HasGuard(name string) bool {
 }
 
 // CompactionBreaker returns the compaction circuit breaker.
+// This is exposed for testing; prefer RecordCompactionFailure for production use.
 func (m *Manager) CompactionBreaker() *circuit.Breaker {
 	return m.compactionBreaker
+}
+
+// RecordCompactionFailure records a failure on the compaction circuit breaker.
+func (m *Manager) RecordCompactionFailure() {
+	if m.compactionBreaker != nil {
+		m.compactionBreaker.RecordFailure()
+	}
 }

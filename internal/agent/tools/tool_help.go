@@ -23,6 +23,10 @@ func NewToolHelp(reg *Registry) Tool {
 			}
 			revealed := reg.RevealMatchingTools(query)
 			if len(revealed) == 0 {
+				alreadyVisible := reg.lookupVisible(query)
+				if len(alreadyVisible) > 0 {
+					return fmt.Sprintf("The requested tools are already available in this session. Call them directly: %s", strings.Join(alreadyVisible, ", ")), nil
+				}
 				hidden := reg.hiddenToolNames()
 				if len(hidden) == 0 {
 					return "No additional hidden tools are available.", nil

@@ -22,7 +22,6 @@ type Config struct {
 	Session               *Session
 	Progress              func(string)
 	MaxSessionTurns       int
-	CompletionCheck       func(SessionSnapshot, string) error
 	TurnComplete          func(SessionSnapshot)
 	CompactionMaxFailures int
 	Interactive           bool
@@ -45,7 +44,6 @@ type Runner struct {
 	validationWorkflow    validationWorkflowState
 	repeatWorkflow        repeatToolCallState
 	pendingRetryPrompt    string
-	completionCheck       func(SessionSnapshot, string) error
 	turnComplete          func(SessionSnapshot)
 }
 
@@ -93,6 +91,11 @@ type repeatToolCallState struct {
 const planExplorationBudget = 10
 const analysisExplorationBudget = 15
 const previewExplorationBudget = 4
+const implementExplorationBudget = 12
+const inspectExplorationBudget = 8
+const overviewExplorationBudget = 6
+const reviewExplorationBudget = 10
+const validateExplorationBudget = 6
 const sameFileSearchThrashThreshold = 5
 const repeatToolCallThreshold = 6
 const maxCompletionRetriesPerTurn = 3
@@ -144,7 +147,6 @@ func NewRunner(cfg Config) *Runner {
 		progress:              cfg.Progress,
 		maxSessionTurns:       maxSessionTurns(cfg.MaxSessionTurns),
 		compactionMaxFailures: cfg.CompactionMaxFailures,
-		completionCheck:       cfg.CompletionCheck,
 		turnComplete:          cfg.TurnComplete,
 	}
 	if snap := session.Snapshot(); snap.TaskState != nil && isSynthesisGuardOperation(snap.TaskState.Operation) {
@@ -231,6 +233,13 @@ func (r *Runner) QueuePendingInput(text string) {
 		return
 	}
 	r.session.QueuePendingInput(text)
+}
+
+func (r *Runner) DiscardPendingInput() []string {
+	if r == nil || r.session == nil {
+		return nil
+	}
+	return r.session.TakePendingInput()
 }
 
 func (r *Runner) MarkInterrupted() {
@@ -320,14 +329,6 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 		}
 		snap := r.session.Snapshot()
 		toolDefs := r.selectToolDefs(snap)
-		if taskRequiresToolAction(snap) && len(toolDefs) == 0 {
-			if !isNative {
-				err := fmt.Errorf("react runtime: driver %q does not support native tool calling", r.driver.Name())
-				r.session.CompleteTurn(turn, "", nil, err)
-				return err
-			}
-			toolDefs = r.tools.ToLLMToolDefs()
-		}
 		if len(toolDefs) > 0 && !isNative {
 			err := fmt.Errorf("react runtime: driver %q does not support native tool calling", r.driver.Name())
 			r.session.CompleteTurn(turn, "", nil, err)
@@ -378,10 +379,7 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 		messages = injectSystemMessageBeforeHistory(messages, "Runtime correction for the previous attempt:\n"+prompt)
 	}
 	opts := llm.NativeToolOptions{}
-	if snap := r.session.Snapshot(); taskRequiresToolAction(snap) {
-		opts.RequireToolCall = true
-	}
-	if len(toolDefs) == 0 && !opts.RequireToolCall {
+	if len(toolDefs) == 0 {
 		return r.streamPlainTurn(ctx, turn, messages)
 	}
 	out := make(chan llm.Token, 64)
@@ -438,23 +436,8 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 	if looksLikeLegacyXMLToolCall(finalText) {
 		return nil, NewRetryableCompletionError(
 			"react runtime: provider returned deprecated XML tool-call markup",
-			nativeToolCallRetryPrompt(r.session.Snapshot()),
+			"Use the provider's native tool-calling interface only. Do not emit prose, XML, or example markup in place of a tool call.",
 		)
-	}
-	if snap := r.session.Snapshot(); taskRequiresToolAction(snap) {
-		retryPrompt := firstToolActionRetryPrompt(snap)
-		if opts.RequireToolCall {
-			retryPrompt = nativeToolCallRetryPrompt(snap)
-		}
-		return nil, NewRetryableCompletionError(
-			"react runtime: task requires tool evidence before prose",
-			retryPrompt,
-		)
-	}
-	if r.completionCheck != nil {
-		if err := r.completionCheck(r.session.Snapshot(), finalText); err != nil {
-			return nil, err
-		}
 	}
 	r.session.AppendAssistantMessage(finalText)
 	r.session.CompleteTurn(turn, finalText, nil, nil)
@@ -499,13 +482,8 @@ func (r *Runner) streamPlainTurn(ctx context.Context, turn int, messages []llm.M
 	if looksLikeLegacyXMLToolCall(finalText) {
 		return nil, NewRetryableCompletionError(
 			"react runtime: provider returned deprecated XML tool-call markup",
-			nativeToolCallRetryPrompt(r.session.Snapshot()),
+			"Use the provider's native tool-calling interface only. Do not emit prose, XML, or example markup in place of a tool call.",
 		)
-	}
-	if r.completionCheck != nil {
-		if err := r.completionCheck(r.session.Snapshot(), finalText); err != nil {
-			return nil, err
-		}
 	}
 	r.session.AppendAssistantMessage(finalText)
 	r.session.CompleteTurn(turn, finalText, nil, nil)
@@ -782,7 +760,7 @@ func allowedToolNamesForSnapshot(snapshot SessionSnapshot) []string {
 	case "overview":
 		addAll(readOnlyToolNames, gitReadToolNames, planningToolNames)
 	case "inspect", "analysis", "review", "plan":
-		addAll(readOnlyToolNames, gitReadToolNames, planningToolNames)
+		addAll(readOnlyToolNames, writeToolNames, gitReadToolNames, planningToolNames)
 		if inputSuggestsCommandWork(text) {
 			addAll(commandToolNames)
 		}
@@ -1194,24 +1172,6 @@ func isRepoOverviewTask(snapshot SessionSnapshot) bool {
 	return strings.EqualFold(strings.TrimSpace(snapshot.TaskState.Operation), "overview")
 }
 
-func taskRequiresToolAction(snapshot SessionSnapshot) bool {
-	if snapshot.TaskState == nil {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(snapshot.TaskState.Operation)) {
-	case "overview", "inspect", "analysis", "review":
-		return !snapshotHasRepoReadEvidence(snapshot)
-	case "validate":
-		return !snapshotHasValidationEvidence(snapshot)
-	case "implement", "merge":
-		return !snapshotHasAnyToolEvidence(snapshot)
-	case "preview":
-		return !snapshotHasPreviewVerificationEvidence(snapshot)
-	default:
-		return false
-	}
-}
-
 func snapshotHasAnyToolEvidence(snapshot SessionSnapshot) bool {
 	for _, msg := range snapshot.History {
 		switch msg.Role {
@@ -1221,20 +1181,6 @@ func snapshotHasAnyToolEvidence(snapshot SessionSnapshot) bool {
 			}
 		case llm.RoleTool:
 			return true
-		}
-	}
-	return false
-}
-
-func snapshotHasValidationEvidence(snapshot SessionSnapshot) bool {
-	for _, msg := range snapshot.History {
-		if msg.Role != llm.RoleAssistant {
-			continue
-		}
-		for _, call := range msg.ToolCalls {
-			if isValidationToolCall(call) {
-				return true
-			}
 		}
 	}
 	return false
@@ -1287,46 +1233,6 @@ func previewVerificationResultLooksLive(result string) bool {
 		return false
 	}
 	return strings.Contains(lower, `"status":"live"`) || strings.Contains(lower, `"status":"running"`)
-}
-
-func isValidationToolCall(call llm.NativeToolCall) bool {
-	if strings.TrimSpace(call.Name) != "run_command" {
-		return false
-	}
-	var args struct {
-		Command string `json:"command"`
-	}
-	if err := json.Unmarshal([]byte(call.ArgsJSON), &args); err != nil {
-		return false
-	}
-	return isValidationCommand(strings.ToLower(strings.TrimSpace(args.Command)))
-}
-
-func firstToolActionRetryPrompt(snapshot SessionSnapshot) string {
-	const preambleAllowed = " A single brief sentence before the tool calls is fine, but the same message must include the tool calls. Do not send a progress-only message without acting."
-	if snapshot.TaskState == nil {
-		return "Use tools now. Your next assistant message must include one or more tool calls." + preambleAllowed
-	}
-	switch strings.ToLower(strings.TrimSpace(snapshot.TaskState.Operation)) {
-	case "overview":
-		return "Repo overview workflow active. Use repo read/search tools now." + preambleAllowed + " Usually the repo root listing plus README.md is enough before you answer briefly."
-	case "inspect", "analysis", "review":
-		return "Repo tools are available in this session. Use repo read/search tools now." + preambleAllowed
-	case "implement":
-		return "Use repo tools now. Inspect the relevant code first, then continue." + preambleAllowed
-	case "validate":
-		return "Use tools now. This turn is in validate mode, so run the relevant tests or checks before answering. If you need to discover the right command first, use repo tools and keep going until a real validation command has run." + preambleAllowed
-	case "preview":
-		return "Preview workflow active. Use preview or repo tools now." + preambleAllowed + " Start with the likeliest directory or named file, avoid broad alternation searches, and once you have enough context write the artifact and call preview_server_ensure."
-	case "merge":
-		return "Use git or repo tools now." + preambleAllowed
-	default:
-		return "Use tools now. Your next assistant message must include one or more tool calls." + preambleAllowed
-	}
-}
-
-func nativeToolCallRetryPrompt(snapshot SessionSnapshot) string {
-	return firstToolActionRetryPrompt(snapshot) + " Use the provider's native tool-calling interface only. Do not emit prose, XML, or example markup in place of a tool call."
 }
 
 func looksLikeLegacyXMLToolCall(text string) bool {
@@ -1603,6 +1509,16 @@ func (s planWorkflowState) overlayContent() string {
 		return "Analysis guidance: you have enough evidence to answer. Avoid exhaustive repo-wide searches, stop exploring and summarize findings or recommendations now. Put any uncertainty into open questions instead of doing more low-yield research."
 	case "preview":
 		return ""
+	case "implement":
+		return "Implementation guidance: you have gathered enough context. Stop exploring and either make an edit with the edit tools or provide a concrete text summary of what you found and what needs to change."
+	case "inspect":
+		return "Inspection guidance: you have gathered enough evidence. Stop searching and provide a concise summary grounded in the paths you already inspected."
+	case "overview":
+		return "Overview guidance: you have enough context. Stop exploring and give a brief, conversational overview grounded in the paths you already inspected."
+	case "review":
+		return "Review guidance: you have enough evidence. Stop searching and deliver your findings first, ordered by severity, with specific references to the code you inspected."
+	case "validate":
+		return "Validation guidance: you have enough context. Stop exploring and run the relevant verification command, or summarize what you found if no verification is needed."
 	default:
 		return "Planning task guidance: you have enough evidence to write the plan. Avoid exhaustive repo-wide searches, stop exploring and synthesize the next actionable plan now. Use update_plan to capture the steps, and put any uncertainty into open questions instead of doing more broad research."
 	}
@@ -1858,7 +1774,7 @@ func allowsPlanSynthesis(toolName string) bool {
 
 func isSynthesisGuardOperation(operation string) bool {
 	switch strings.ToLower(strings.TrimSpace(operation)) {
-	case "plan", "analysis", "preview":
+	case "plan", "analysis", "preview", "implement", "inspect", "overview", "review", "validate":
 		return true
 	default:
 		return false
@@ -1871,6 +1787,16 @@ func synthesisGuardBudget(mode string) int {
 		return analysisExplorationBudget
 	case "preview":
 		return previewExplorationBudget
+	case "implement":
+		return implementExplorationBudget
+	case "inspect":
+		return inspectExplorationBudget
+	case "overview":
+		return overviewExplorationBudget
+	case "review":
+		return reviewExplorationBudget
+	case "validate":
+		return validateExplorationBudget
 	default:
 		return planExplorationBudget
 	}

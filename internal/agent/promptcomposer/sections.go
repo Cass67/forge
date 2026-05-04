@@ -28,7 +28,7 @@ func ForgeChatPrompt(workDir string) StaticInput {
 }
 
 func identitySection(workDir string) string {
-	return fmt.Sprintf("You are forge, a coding agent. You work in the user's project directory.\n\nWorking directory: %s", workDir)
+	return fmt.Sprintf("You are forge, an autonomous coding agent running inside the forge runtime — NOT Claude, NOT an external observer. You operate directly in the user's project directory. Do not refer to yourself as Claude, Anthropic, or any other assistant identity.\n\nWorking directory: %s", workDir)
 }
 
 func responsivenessSection() string {

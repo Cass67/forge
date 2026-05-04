@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	agenttools "forge/internal/agent/tools"
@@ -24,9 +25,16 @@ func NewWaitAgent(pool *react.AgentPool) agenttools.Tool {
 				return "", fmt.Errorf("agent pool unavailable")
 			}
 			id, _ := args["id"].(string)
+			if strings.TrimSpace(id) == "" {
+				return "", fmt.Errorf("wait_agent requires a non-empty child agent id")
+			}
 			timeout := 30 * time.Second
-			if value, ok := args["timeout_seconds"].(float64); ok && value > 0 {
-				timeout = time.Duration(int(value)) * time.Second
+			if value, ok := args["timeout_seconds"].(float64); ok {
+				if value <= 0 {
+					timeout = 30 * time.Second
+				} else {
+					timeout = time.Duration(int(value)) * time.Second
+				}
 			}
 			result, err := pool.Wait(ctx, id, timeout)
 			if err != nil {
