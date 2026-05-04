@@ -96,6 +96,7 @@ const inspectExplorationBudget = 8
 const overviewExplorationBudget = 6
 const reviewExplorationBudget = 10
 const validateExplorationBudget = 6
+const chatExplorationBudget = 12
 const sameFileSearchThrashThreshold = 5
 const repeatToolCallThreshold = 6
 const maxCompletionRetriesPerTurn = 3
@@ -152,6 +153,9 @@ func NewRunner(cfg Config) *Runner {
 	if snap := session.Snapshot(); snap.TaskState != nil && isSynthesisGuardOperation(snap.TaskState.Operation) {
 		runner.planWorkflow.active = true
 		runner.planWorkflow.mode = strings.ToLower(strings.TrimSpace(snap.TaskState.Operation))
+	} else {
+		runner.planWorkflow.active = true
+		runner.planWorkflow.mode = "chat"
 	}
 	runner.syncRuntimeNote()
 	return runner
@@ -1519,6 +1523,8 @@ func (s planWorkflowState) overlayContent() string {
 		return "Review guidance: you have enough evidence. Stop searching and deliver your findings first, ordered by severity, with specific references to the code you inspected."
 	case "validate":
 		return "Validation guidance: you have enough context. Stop exploring and run the relevant verification command, or summarize what you found if no verification is needed."
+	case "chat":
+		return "Guidance: you have gathered enough context. Stop exploring and either act (edit, run, write) or provide a concrete answer grounded in what you already inspected."
 	default:
 		return "Planning task guidance: you have enough evidence to write the plan. Avoid exhaustive repo-wide searches, stop exploring and synthesize the next actionable plan now. Use update_plan to capture the steps, and put any uncertainty into open questions instead of doing more broad research."
 	}
@@ -1797,6 +1803,8 @@ func synthesisGuardBudget(mode string) int {
 		return reviewExplorationBudget
 	case "validate":
 		return validateExplorationBudget
+	case "chat":
+		return chatExplorationBudget
 	default:
 		return planExplorationBudget
 	}
