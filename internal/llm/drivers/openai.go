@@ -218,6 +218,7 @@ func (d *OpenAIDriver) streamChatCompletions(ctx context.Context, messages []llm
 	params := d.chatCompletionParams(messages)
 
 	var outputChars int
+	var reasoningChars int
 	stream := d.client.Chat.Completions.NewStreaming(ctx, params)
 	for stream.Next() {
 		chunk := stream.Current()
@@ -235,6 +236,14 @@ func (d *OpenAIDriver) streamChatCompletions(ctx context.Context, messages []llm
 			d.mu.Unlock()
 		}
 		for _, choice := range chunk.Choices {
+			if rc := extractReasoningContent(chunk.RawJSON()); rc != "" {
+				reasoningChars += len(rc)
+				select {
+				case out <- llm.Token{ReasoningContent: rc}:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
 			text := choice.Delta.Content
 			if text == "" {
 				continue
@@ -801,13 +810,48 @@ func toOpenAIMessages(msgs []llm.Message) []openai.ChatCompletionMessageParamUni
 					},
 					ToolCalls: calls,
 				}
+				if m.ReasoningContent != "" {
+					assistantMsg.SetExtraFields(map[string]any{"reasoning_content": m.ReasoningContent})
+				}
 				out = append(out, openai.ChatCompletionMessageParamUnion{OfAssistant: &assistantMsg})
 			} else {
-				out = append(out, openai.AssistantMessage(m.Content))
+				if m.ReasoningContent != "" {
+					amsg := openai.ChatCompletionAssistantMessageParam{
+						Content: openai.ChatCompletionAssistantMessageParamContentUnion{
+							OfString: param.NewOpt(m.Content),
+						},
+					}
+					amsg.SetExtraFields(map[string]any{"reasoning_content": m.ReasoningContent})
+					out = append(out, openai.ChatCompletionMessageParamUnion{OfAssistant: &amsg})
+				} else {
+					out = append(out, openai.AssistantMessage(m.Content))
+				}
 			}
 		}
 	}
 	return out
+}
+
+func extractReasoningContent(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	var chunk struct {
+		Choices []struct {
+			Delta struct {
+				ReasoningContent string `json:"reasoning_content"`
+			} `json:"delta"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(raw), &chunk); err != nil {
+		return ""
+	}
+	for _, ch := range chunk.Choices {
+		if ch.Delta.ReasoningContent != "" {
+			return ch.Delta.ReasoningContent
+		}
+	}
+	return ""
 }
 
 func (d *OpenAIDriver) shouldFallbackAfterEmptyStream() bool {
@@ -1027,6 +1071,13 @@ func (d *OpenAIDriver) streamChatCompletionsWithTools(ctx context.Context, messa
 			d.mu.Unlock()
 		}
 		for _, choice := range chunk.Choices {
+			if rc := extractReasoningContent(chunk.RawJSON()); rc != "" {
+				select {
+				case out <- llm.Token{ReasoningContent: rc}:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
 			if text := choice.Delta.Content; text != "" {
 				outputChars += len(text)
 				select {

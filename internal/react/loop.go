@@ -371,11 +371,16 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 	}()
 
 	var textBuf strings.Builder
+	var reasoningBuf strings.Builder
 	var toolCalls []llm.NativeToolCall
 	visibleEmitted := 0
 	streamVisible := r.renderer != nil
 
 	for tok := range out {
+		if tok.ReasoningContent != "" {
+			reasoningBuf.WriteString(tok.ReasoningContent)
+			continue
+		}
 		if tok.ToolCall != nil {
 			toolCalls = append(toolCalls, *tok.ToolCall)
 			continue
@@ -396,7 +401,11 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 	if len(toolCalls) > 0 {
 		r.pendingRetryPrompt = ""
 		preamble := strings.TrimSpace(textBuf.String())
+		reasoning := strings.TrimSpace(reasoningBuf.String())
 		r.session.AppendAssistantToolTurn(preamble, toolCalls)
+		if reasoning != "" {
+			r.session.SetLastAssistantReasoning(reasoning)
+		}
 		if preamble != "" && r.renderer != nil && visibleEmitted < len(preamble) {
 			r.renderer.AgentText(preamble[visibleEmitted:])
 		}
@@ -418,7 +427,11 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 			"Use the provider's native tool-calling interface only. Do not emit prose, XML, or example markup in place of a tool call.",
 		)
 	}
+	reasoning := strings.TrimSpace(reasoningBuf.String())
 	r.session.AppendAssistantMessage(finalText)
+	if reasoning != "" {
+		r.session.SetLastAssistantReasoning(reasoning)
+	}
 	r.session.CompleteTurn(turn, finalText, nil, nil)
 	r.notifyTurnComplete()
 	if r.renderer != nil && visibleEmitted < len(finalText) {
