@@ -464,6 +464,26 @@ func TestRunnerPromptHookOutputIncludesRuntimeGuidance(t *testing.T) {
 	t.Run("inspect first action guidance", func(t *testing.T) {
 		session := NewSession()
 		session.SetTaskState(TaskState{
+			Objective:            "inspect the image input flow",
+			Operation:            "inspect",
+			RequiredVerification: "inspect the repository with read/search tools before answering. For a casual repo overview, usually inspect the repo root and one high-signal file such as README.md, then give a brief overview grounded only in that evidence",
+		})
+		r := NewRunner(Config{Session: session})
+
+		output := r.promptHookOutput(context.Background())
+
+		got := hookOverlayContent(output, "inspect_first_action")
+		if !strings.Contains(got, "Start with a short natural sentence") {
+			t.Fatalf("inspect_first_action = %q", got)
+		}
+		if strings.Contains(got, "instead of prose") {
+			t.Fatalf("inspect_first_action = %q", got)
+		}
+	})
+
+	t.Run("overview first action guidance", func(t *testing.T) {
+		session := NewSession()
+		session.SetTaskState(TaskState{
 			Objective:            "whats this repo all about",
 			Operation:            "overview",
 			RequiredVerification: "inspect the repository with read/search tools before answering. For a casual repo overview, usually inspect the repo root and one high-signal file such as README.md, then give a brief overview grounded only in that evidence",
@@ -472,7 +492,7 @@ func TestRunnerPromptHookOutputIncludesRuntimeGuidance(t *testing.T) {
 
 		output := r.promptHookOutput(context.Background())
 
-		if got := hookOverlayContent(output, "inspect_first_action"); !strings.Contains(got, "short natural sentence before the tool call is fine") {
+		if got := hookOverlayContent(output, "inspect_first_action"); !strings.Contains(got, "Start with a short natural sentence") {
 			t.Fatalf("inspect_first_action = %q", got)
 		}
 	})
@@ -1629,6 +1649,44 @@ func TestRepeatToolCallTargetUsesSearchPattern(t *testing.T) {
 	if got := repeatToolCallTarget("search", map[string]any{"pattern": "theme"}); got != "theme" {
 		t.Fatalf("search target = %q", got)
 	}
+}
+
+func TestAllowedToolsForExplicitPushRequestIncludesCommandTools(t *testing.T) {
+	tools := allowedToolNamesForSnapshot(SessionSnapshot{LastInput: "push it"})
+
+	if !containsString(tools, "run_command") {
+		t.Fatalf("push request tools = %#v, want run_command", tools)
+	}
+	if !containsString(tools, "git_status") {
+		t.Fatalf("push request tools = %#v, want git_status", tools)
+	}
+}
+
+func TestAllowedToolsForPushVerificationIncludesGitTools(t *testing.T) {
+	tools := allowedToolNamesForSnapshot(SessionSnapshot{LastInput: "did you push?"})
+
+	if !containsString(tools, "git_status") {
+		t.Fatalf("push verification tools = %#v, want git_status", tools)
+	}
+}
+
+func TestAllowedToolsForPlainBugReportIncludesImplementationTools(t *testing.T) {
+	tools := allowedToolNamesForSnapshot(SessionSnapshot{LastInput: "when typing in the input pane the cursor sticks to the last letter"})
+
+	for _, want := range []string{"read_file", "search", "edit_file", "run_command"} {
+		if !containsString(tools, want) {
+			t.Fatalf("bug report tools = %#v, want %s", tools, want)
+		}
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRunnerClearHistoryResetsSessionState(t *testing.T) {
