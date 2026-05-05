@@ -578,10 +578,13 @@ func (s *Session) compact(keep int) bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.recentInputs) <= keep {
+	if len(s.recentInputs) <= keep && len(s.history) <= keep*10 {
 		return false
 	}
 	dropCount := len(s.recentInputs) - keep
+	if dropCount <= 0 {
+		dropCount = 0
+	}
 	droppedRecentInputs := append([]string(nil), s.recentInputs[:dropCount]...)
 	droppedTurns := append([]TurnRecord(nil), s.turns[:min(dropCount, len(s.turns))]...)
 	s.recentInputs = append([]string(nil), s.recentInputs[dropCount:]...)
