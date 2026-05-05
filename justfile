@@ -1,8 +1,10 @@
 help:
     @just --list
 
+commit := `git rev-parse --short HEAD`
+
 build:
-    go build -o ./bin/forge ./cmd/forge
+    go build -ldflags "-X forge/internal/version.Commit={{commit}}" -o ./bin/forge ./cmd/forge
 
 run:
     ./bin/forge
