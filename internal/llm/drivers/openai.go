@@ -491,7 +491,11 @@ func (d *OpenAIDriver) responsesParamsWithTools(ctx context.Context, messages []
 func (d *OpenAIDriver) responsesRequestState(ctx context.Context, messages []llm.Message) (instructions string, inputMessages []llm.Message, previousResponseID string, requestMode string, err error) {
 	instructions = responseInstructions(messages)
 	if d.providerRequiresStatelessResponses() {
-		return instructions, stripSystemMessages(messages), "", "responses full input (chatgpt stateless)", nil
+		if estimatedMessageTokens(messages) <= responseStateCompactionThreshold {
+			return instructions, stripSystemMessages(messages), "", "responses full input (chatgpt stateless)", nil
+		}
+		trimmed := trimStatelessConversation(messages)
+		return instructions, stripSystemMessages(trimmed), "", "responses trimmed input (chatgpt stateless)", nil
 	}
 	d.mu.Lock()
 	prevID := d.prevResponseID
@@ -610,8 +614,35 @@ func (d *OpenAIDriver) compactResponseState(ctx context.Context, prefix []llm.Me
 }
 
 func responsePromptCacheKey(model, instructions string) string {
-	sum := sha256.Sum256([]byte(model + "\n" + strings.TrimSpace(instructions)))
-	return "forge:" + model + ":" + hex.EncodeToString(sum[:8])
+	h := sha256.Sum256([]byte(model + "\x00" + instructions))
+	return hex.EncodeToString(h[:])
+}
+
+func trimStatelessConversation(messages []llm.Message) []llm.Message {
+	const maxNonSystem = 16
+	var system, nonSystem []llm.Message
+	for _, m := range messages {
+		if m.Role == llm.RoleSystem {
+			system = append(system, m)
+		} else {
+			nonSystem = append(nonSystem, m)
+		}
+	}
+	if len(nonSystem) <= maxNonSystem {
+		return messages
+	}
+	kept := nonSystem[len(nonSystem)-maxNonSystem:]
+	dropped := len(messages) - len(system) - len(kept)
+	result := make([]llm.Message, 0, len(system)+len(kept)+1)
+	result = append(result, system...)
+	if dropped > 0 {
+		result = append(result, llm.Message{
+			Role:    llm.RoleUser,
+			Content: fmt.Sprintf("[%d earlier messages trimmed to fit context budget]", dropped),
+		})
+	}
+	result = append(result, kept...)
+	return result
 }
 
 func chatPromptCacheSeed(messages []llm.Message) string {
