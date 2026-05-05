@@ -108,6 +108,55 @@ func TestChatModelHandlesTokenEvent(t *testing.T) {
 	}
 }
 
+func TestChatModelKeepsAssistantTextLiveDuringToolCalls(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventToken, Text: "I will trace the TUI event flow."})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "read_file", Text: "internal/tui/chatmodel.go"})
+	m = updated.(ChatModel)
+
+	if len(m.messages) == 0 {
+		t.Fatal("expected messages")
+	}
+	last := m.messages[len(m.messages)-1]
+	if last.Kind != MsgAgent || !strings.Contains(last.Content, "trace the TUI event flow") {
+		t.Fatalf("expected assistant text to remain live, got %#v", m.messages)
+	}
+	for _, msg := range m.messages {
+		if msg.Kind == MsgWorking && strings.Contains(msg.Content, "Reading chatmodel.go") {
+			t.Fatalf("tool call should not replace live assistant text with working status: %#v", m.messages)
+		}
+	}
+}
+
+func TestChatModelDoesNotPersistExplorationToolCallsAsStatusBullets(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	for _, ev := range []llm.Event{
+		{Kind: llm.EventToolCall, Agent: "list_dir", Text: "."},
+		{Kind: llm.EventToolCall, Agent: "read_file", Text: "AGENTS.md"},
+		{Kind: llm.EventToolCall, Agent: "glob", Text: "."},
+		{Kind: llm.EventToolCall, Agent: "code_search", Text: "internal"},
+	} {
+		updated, _ := m.Update(ev)
+		m = updated.(ChatModel)
+	}
+
+	for _, msg := range m.messages {
+		if msg.Kind == MsgStatus && strings.HasPrefix(strings.TrimSpace(msg.Content), "• ") {
+			t.Fatalf("exploration tool calls should stay out of main transcript bullets, got %#v", m.messages)
+		}
+	}
+	if len(m.messages) == 0 || m.messages[len(m.messages)-1].Kind != MsgWorking {
+		t.Fatalf("expected current live activity to remain available, got %#v", m.messages)
+	}
+}
+
 func TestChatModelRetryClearsPendingAssistantDraft(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 80
@@ -452,7 +501,7 @@ func TestChatModelToolCallEventWithoutAgentSkipsWorkingActivity(t *testing.T) {
 	}
 }
 
-func TestChatModelToolCallCheckpointsPreviousMilestone(t *testing.T) {
+func TestChatModelToolCallUpdatesCurrentMilestone(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 80
 	m.height = 24
@@ -462,21 +511,21 @@ func TestChatModelToolCallCheckpointsPreviousMilestone(t *testing.T) {
 	updated, _ = m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "read_file", Text: "AGENTS.md"})
 	m = updated.(ChatModel)
 
-	var sawWorking, sawReadmeCheckpoint bool
+	var sawWorking bool
 	for _, msg := range m.messages {
 		if msg.Kind == MsgWorking && strings.Contains(msg.Content, "Reading AGENTS.md") {
 			sawWorking = true
 		}
-		if msg.Kind == MsgStatus && strings.Contains(msg.Content, "• read_file") && strings.Contains(msg.Content, "README.md") {
-			sawReadmeCheckpoint = true
+		if msg.Kind == MsgStatus && strings.HasPrefix(strings.TrimSpace(msg.Content), "• ") {
+			t.Fatalf("exploration tool call should not persist status checkpoint, got %#v", m.messages)
 		}
 	}
-	if !sawWorking || !sawReadmeCheckpoint {
-		t.Fatalf("expected AGENTS working milestone plus README checkpoint, got %#v", m.messages)
+	if !sawWorking {
+		t.Fatalf("expected AGENTS working milestone, got %#v", m.messages)
 	}
 }
 
-func TestChatModelToolCallEmitsExploredCheckpoint(t *testing.T) {
+func TestChatModelExplorationToolCallStaysLiveOnly(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 80
 	m.height = 24
@@ -484,19 +533,36 @@ func TestChatModelToolCallEmitsExploredCheckpoint(t *testing.T) {
 	updated, _ := m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "read_file", Text: "README.md"})
 	m = updated.(ChatModel)
 
-	var sawCheckpoint bool
 	for _, msg := range m.messages {
-		if msg.Kind == MsgStatus && strings.Contains(msg.Content, "• read_file") && strings.Contains(msg.Content, "README.md") {
-			sawCheckpoint = true
-			break
+		if msg.Kind == MsgStatus && strings.HasPrefix(strings.TrimSpace(msg.Content), "• ") {
+			t.Fatalf("exploration tool call should not persist status checkpoint, got %#v", m.messages)
 		}
 	}
-	if !sawCheckpoint {
-		t.Fatalf("expected tool checkpoint in transcript, got %#v", m.messages)
+	if len(m.messages) != 1 || m.messages[0].Kind != MsgWorking || !strings.Contains(m.messages[0].Content, "Reading README.md") {
+		t.Fatalf("expected live working message only, got %#v", m.messages)
 	}
 }
 
-func TestChatModelToolCallCheckpointDedupesRepeatedSteps(t *testing.T) {
+func TestChatModelExplorationToolCallUsesSemanticLiveNarrative(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "code_search", Text: "internal/tui"})
+	m = updated.(ChatModel)
+
+	if len(m.messages) != 1 || m.messages[0].Kind != MsgWorking {
+		t.Fatalf("expected live working message only, got %#v", m.messages)
+	}
+	if !strings.Contains(m.messages[0].Content, "Searching code in internal/tui") {
+		t.Fatalf("expected semantic live narrative, got %#v", m.messages)
+	}
+	if strings.Contains(m.messages[0].Content, "code_search") || strings.Contains(m.messages[0].Content, "└ internal/tui") {
+		t.Fatalf("live narrative should not render raw tool tree: %#v", m.messages)
+	}
+}
+
+func TestChatModelExplorationToolCallDedupesRepeatedLiveSteps(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 80
 	m.height = 24
@@ -508,7 +574,7 @@ func TestChatModelToolCallCheckpointDedupesRepeatedSteps(t *testing.T) {
 
 	var count int
 	for _, msg := range m.messages {
-		if msg.Kind == MsgStatus && strings.Contains(msg.Content, "• read_file") && strings.Contains(msg.Content, "README.md") {
+		if strings.Contains(msg.Content, "Reading README.md") {
 			count++
 		}
 	}

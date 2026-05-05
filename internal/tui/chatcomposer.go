@@ -5,7 +5,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/reflow/wordwrap"
 )
 
 const (
@@ -308,24 +307,34 @@ func composerWrappedLines(text string, width int) []string {
 	rawLines := strings.Split(text, "\n")
 	out := make([]string, 0, len(rawLines))
 	for _, raw := range rawLines {
-		if strings.TrimSpace(raw) == "" {
-			out = append(out, raw)
-			continue
-		}
-		wrapped := wordwrap.String(raw, width)
-		for _, line := range strings.Split(wrapped, "\n") {
-			// Hard-break any line still wider than width (long unbroken words).
-			runes := []rune(line)
-			if len(runes) <= width {
-				out = append(out, line)
-				continue
-			}
-			for len(runes) > 0 {
-				take := min(width, len(runes))
-				out = append(out, string(runes[:take]))
-				runes = runes[take:]
-			}
-		}
+		out = append(out, composerWrapRawLine(raw, width)...)
 	}
 	return out
+}
+
+func composerWrapRawLine(raw string, width int) []string {
+	width = max(1, width)
+	if raw == "" {
+		return []string{""}
+	}
+
+	runes := []rune(raw)
+	lines := make([]string, 0, max(1, (len(runes)+width-1)/width))
+	for len(runes) > width {
+		breakAt := composerWrapBreak(runes, width)
+		lines = append(lines, string(runes[:breakAt]))
+		runes = runes[breakAt:]
+	}
+	lines = append(lines, string(runes))
+	return lines
+}
+
+func composerWrapBreak(runes []rune, width int) int {
+	limit := min(width, len(runes))
+	for i := limit - 1; i >= 0; i-- {
+		if runes[i] == ' ' || runes[i] == '\t' {
+			return i + 1
+		}
+	}
+	return limit
 }

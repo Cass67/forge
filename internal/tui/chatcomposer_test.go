@@ -202,10 +202,18 @@ func TestChatComposerRenderWrapsDraftWithoutDroppingText(t *testing.T) {
 
 	rendered := strippedLine(c.Render(lookupThemeForTest(t, "default"), 32))
 
-	for _, want := range []string{"there is no space", "between the", "first message"} {
+	for _, want := range []string{"there is no space", "between", "the header", "first", "message"} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("wrapped composer missing %q in:\n%s", want, rendered)
 		}
+	}
+}
+
+func TestChatComposerCursorPositionCountsTrailingSpaces(t *testing.T) {
+	line, col := composerCursorPosition("test     ", len([]rune("test     ")), 32)
+
+	if line != 0 || col != 9 {
+		t.Fatalf("cursor position = (%d, %d), want (0, 9)", line, col)
 	}
 }
 

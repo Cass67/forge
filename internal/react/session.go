@@ -86,6 +86,7 @@ type TurnRecord struct {
 type SessionSnapshot struct {
 	Turn              int
 	LastInput         string
+	InitialInput      string
 	RecentInputs      []string
 	History           []llm.Message
 	Turns             []TurnRecord
@@ -107,6 +108,7 @@ type Session struct {
 	mu                sync.Mutex
 	turn              int
 	lastInput         string
+	initialInput      string
 	recentInputs      []string
 	history           []llm.Message
 	turns             []TurnRecord
@@ -136,6 +138,9 @@ func (s *Session) RecordInput(input string) int {
 	defer s.mu.Unlock()
 	s.turn++
 	s.lastInput = input
+	if strings.TrimSpace(s.initialInput) == "" {
+		s.initialInput = strings.TrimSpace(input)
+	}
 	s.recentInputs = append(s.recentInputs, input)
 	s.history = append(s.history, llm.Message{Role: llm.RoleUser, Content: input})
 	s.turns = append(s.turns, TurnRecord{
@@ -258,6 +263,7 @@ func (s *Session) Snapshot() SessionSnapshot {
 	return SessionSnapshot{
 		Turn:              s.turn,
 		LastInput:         s.lastInput,
+		InitialInput:      s.initialInput,
 		RecentInputs:      append([]string(nil), s.recentInputs...),
 		History:           append([]llm.Message(nil), s.history...),
 		Turns:             append([]TurnRecord(nil), s.turns...),
@@ -284,6 +290,7 @@ func (s *Session) Clear() {
 	defer s.mu.Unlock()
 	s.turn = 0
 	s.lastInput = ""
+	s.initialInput = ""
 	s.recentInputs = nil
 	s.history = nil
 	s.turns = nil

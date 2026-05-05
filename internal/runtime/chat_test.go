@@ -907,6 +907,29 @@ func TestRunChatTurnClearsStaleTaskStateForDetachedChat(t *testing.T) {
 	}
 }
 
+func TestRunChatTurnPromotesActionFollowUpOutOfInspectState(t *testing.T) {
+	reactRunner := &stubChatTurnRunner{
+		taskState: &reactruntime.TaskState{
+			Objective:            "how do we implement image drag and drop",
+			Operation:            "inspect",
+			RequiredVerification: "inspect the repository with read/search tools before answering",
+		},
+	}
+
+	if err := runChatTurn(context.Background(), reactRunner, "do it"); err != nil {
+		t.Fatal(err)
+	}
+	if reactRunner.taskState == nil {
+		t.Fatal("expected action follow-up to keep task context")
+	}
+	if got := reactRunner.taskState.Operation; got != "implement" {
+		t.Fatalf("operation = %q, want implement", got)
+	}
+	if strings.Contains(strings.ToLower(reactRunner.taskState.RequiredVerification), "before answering") {
+		t.Fatalf("stale inspect verification persisted: %+v", *reactRunner.taskState)
+	}
+}
+
 // TestBehaviorStackDoesNotCorruptBasePromptAssembly verifies that memory summaries,
 // hook overlays, and task state can all coexist in one session without corrupting
 // the base system prompt or each other.
@@ -1045,6 +1068,14 @@ func (s *stubChatTurnRunner) SetTaskState(state reactruntime.TaskState) {
 		return
 	}
 	s.taskState = &state
+}
+
+func (s *stubChatTurnRunner) TaskState() *reactruntime.TaskState {
+	if s == nil || s.taskState == nil {
+		return nil
+	}
+	cloned := *s.taskState
+	return &cloned
 }
 
 func (s *stubChatTurnRunner) QueuePendingInput(text string) {
