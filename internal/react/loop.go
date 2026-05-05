@@ -170,8 +170,13 @@ func (r *Runner) Run(ctx context.Context, input string) error {
 	}
 	turn := r.session.RecordInput(prompt)
 	r.pendingRetryPrompt = ""
-	if CompactSessionHistory(r.session, 75) {
+	if CompactSessionHistory(r.session, 40) {
 		r.compactionFailures++
+		if r.compactionFailures >= r.compactionMaxFailures {
+			if r.progress != nil {
+				r.progress("react runtime: compaction circuit breaker tripped")
+			}
+		}
 	} else if r.compactionMaxFailures > 0 && r.session.Snapshot().Turn > 50 {
 		r.compactionFailures++
 		if r.compactionFailures >= r.compactionMaxFailures {

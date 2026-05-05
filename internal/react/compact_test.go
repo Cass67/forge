@@ -71,11 +71,9 @@ func TestRunnerRunEmitsCompactionProgress(t *testing.T) {
 	driver := &nativeScriptedDriver{responses: []string{"done 1", "done 2", "done 3"}}
 	var progress []string
 	session := NewSession()
-	// Simulate a session that has already run many turns so compaction
-	// threshold checking fires via the else-if branch (compactionMaxFailures > 0
-	// and Turn > 50).
-	_ = session.RecordInput("first")
-	for i := 0; i < 60; i++ {
+	// Pad so recentInputs exceeds the compaction threshold (40), triggering
+	// CompactSessionHistory to return true on the first run.
+	for i := 0; i < 40; i++ {
 		_ = session.RecordInput("padding")
 	}
 	r := NewRunner(Config{
