@@ -233,8 +233,32 @@ The core LLM abstractions live in [internal/llm/types.go](./internal/llm/types.g
 
 The OpenAI-family drivers live in [internal/llm/drivers/openai.go](./internal/llm/drivers/openai.go).
 
+- [internal/llm/drivers/openai_ws.go](./internal/llm/drivers/openai_ws.go)
 - [internal/llm/drivers/claude.go](./internal/llm/drivers/claude.go)
 - [internal/llm/drivers/claude_oauth.go](./internal/llm/drivers/claude_oauth.go)
+
+### Responses API vs Chat Completions
+
+The driver selects the API endpoint per request:
+
+- **gpt-5.x reasoning models** (gpt-5, gpt-5.4, gpt-5.5): always use the Responses API
+- **Other models**: prefer chat completions with native tools; fall back to Responses when supported
+- Reasoning models run in stateless/ZDR mode (`store: false`) on the ChatGPT provider, with `reasoning.encrypted_content` included for encrypted reasoning retention across turns
+
+### WebSocket Transport
+
+[internal/llm/drivers/openai_ws.go](./internal/llm/drivers/openai_ws.go) implements a WebSocket transport for the Responses API on the ChatGPT provider. The driver:
+
+- Opens a persistent `wss://` connection to `chatgpt.com/backend-api/codex/responses`
+- Sends `response.create` events over the WebSocket
+- On continuation: sends `previous_response_id` + only new input items (delta), not the full conversation history
+- Falls back to HTTP SSE on connection/auth failure (per-session sticky fallback)
+- Handles `previous_response_not_found` by retrying with full input
+- Processes streaming events: `response.output_text.delta`, `response.output_item.done`, `response.completed`, and reasoning events
+
+### Native Tool Calling
+
+The driver implements the `NativeToolCaller` interface. Tools are sent as structured function definitions (`strict: true`) via the Responses API `tools` parameter or chat completions `tools` parameter. The model returns structured function calls — not text-based `<tool_call>` XML parsing. The `ResponseOutputItemDoneEvent` captures function calls from streaming responses, including in ZDR mode where the completed event has no output items.
 
 ## Chat Runtime
 
