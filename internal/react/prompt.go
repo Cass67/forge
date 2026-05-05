@@ -117,7 +117,39 @@ func BuildMessages(systemPrompt string, snapshot SessionSnapshot) []llm.Message 
 		messages = append(messages, llm.Message{Role: msg.Role, Content: content})
 	}
 
-	return truncateToolResults(truncateAssistantToolCalls(messages), toolResultMaxLines)
+	return dropOrphanedToolCalls(truncateToolResults(truncateAssistantToolCalls(messages), toolResultMaxLines))
+}
+
+// dropOrphanedToolCalls removes assistant tool-call messages that lack a
+// corresponding tool result later in the sequence. Providers such as DeepSeek
+// reject requests containing assistant messages with dangling tool_calls.
+func dropOrphanedToolCalls(messages []llm.Message) []llm.Message {
+	if len(messages) == 0 {
+		return messages
+	}
+	seenResults := map[string]bool{}
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == llm.RoleTool {
+			seenResults[messages[i].ToolCallID] = true
+		}
+	}
+	filtered := make([]llm.Message, 0, len(messages))
+	for _, msg := range messages {
+		if msg.Role == llm.RoleAssistant && len(msg.ToolCalls) > 0 {
+			allPaired := true
+			for _, tc := range msg.ToolCalls {
+				if !seenResults[tc.ID] {
+					allPaired = false
+					break
+				}
+			}
+			if !allPaired {
+				continue
+			}
+		}
+		filtered = append(filtered, msg)
+	}
+	return filtered
 }
 
 func compactionContext(snapshot SessionSnapshot) string {
