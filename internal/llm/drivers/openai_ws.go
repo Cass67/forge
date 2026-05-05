@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"forge/internal/llm"
 
@@ -57,18 +58,23 @@ func (d *OpenAIDriver) wsEnsureConnection(ctx context.Context) (*websocket.Conn,
 		return d.wsConn, nil
 	}
 
-	headers, err := d.wsAuthHeaders(ctx)
+	authCtx, authCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer authCancel()
+	headers, err := d.wsAuthHeaders(authCtx)
 	if err != nil {
 		d.wsFallbackHTTP = true
 		return nil, fmt.Errorf("websocket auth: %w", err)
 	}
 
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, d.wsBaseURL, headers)
+	dialer := *websocket.DefaultDialer
+	dialer.HandshakeTimeout = 10 * time.Second
+	conn, _, err := dialer.DialContext(ctx, d.wsBaseURL, headers)
 	if err != nil {
 		d.wsFallbackHTTP = true
 		return nil, fmt.Errorf("websocket dial: %w", err)
 	}
 
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
 	d.wsConn = conn
 	d.wsLastRequestID = ""
 	return conn, nil
@@ -156,6 +162,7 @@ func (d *OpenAIDriver) wsSendAndRead(ctx context.Context, conn *websocket.Conn, 
 	}
 
 	d.wsMu.Lock()
+	_ = conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
 	err := conn.WriteJSON(req)
 	d.wsMu.Unlock()
 	if err != nil {
