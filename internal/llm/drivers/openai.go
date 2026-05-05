@@ -728,24 +728,20 @@ func providerSupportsResponseFunctionTools(providerLabel string) bool {
 
 func toolDefSchema(def llm.ToolDef) map[string]any {
 	properties := make(map[string]any, len(def.Parameters))
-	required := make([]string, 0)
+	required := make([]string, 0, len(def.Parameters))
 	for _, p := range def.Parameters {
 		prop := map[string]any{"type": p.Type}
 		if p.Description != "" {
 			prop["description"] = p.Description
 		}
 		properties[p.Name] = prop
-		if p.Required {
-			required = append(required, p.Name)
-		}
+		required = append(required, p.Name)
 	}
 	schema := map[string]any{
 		"type":                 "object",
 		"properties":           properties,
+		"required":             required,
 		"additionalProperties": false,
-	}
-	if len(required) > 0 {
-		schema["required"] = required
 	}
 	return schema
 }
