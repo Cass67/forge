@@ -130,11 +130,60 @@ func TestSessionMessagesIncludeCompactionSummaryContext(t *testing.T) {
 	if !strings.Contains(messages[1].Content, "outcome: answer 1") {
 		t.Fatalf("summary message missing semantic outcome detail: %q", messages[1].Content)
 	}
-	if messages[2].Role != llm.RoleUser || messages[2].Content != "prompt 2" {
-		t.Fatalf("remaining user message = %#v", messages[2])
+	foundAnchor := false
+	for _, msg := range messages {
+		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Initial user request: prompt 1") {
+			foundAnchor = true
+			if !strings.Contains(msg.Content, "Conversation recall only") {
+				t.Fatalf("initial request anchor missing recall-only scope: %q", msg.Content)
+			}
+		}
 	}
-	if messages[3].Role != llm.RoleAssistant || messages[3].Content != "answer 2" {
-		t.Fatalf("remaining assistant message = %#v", messages[3])
+	if !foundAnchor {
+		t.Fatalf("messages missing compacted initial request anchor: %#v", messages)
+	}
+	var dialogue []llm.Message
+	for _, msg := range messages {
+		if msg.Role != llm.RoleSystem {
+			dialogue = append(dialogue, msg)
+		}
+	}
+	if len(dialogue) != 2 {
+		t.Fatalf("remaining dialogue = %#v", dialogue)
+	}
+	if dialogue[0].Role != llm.RoleUser || dialogue[0].Content != "prompt 2" {
+		t.Fatalf("remaining user message = %#v", dialogue[0])
+	}
+	if dialogue[1].Role != llm.RoleAssistant || dialogue[1].Content != "answer 2" {
+		t.Fatalf("remaining assistant message = %#v", dialogue[1])
+	}
+}
+
+func TestSessionMessagesIncludeInitialRequestAnchorForLongHistory(t *testing.T) {
+	session := NewSession()
+	initial := "how do we implement dragging of images into this pane then actioning them"
+	turn := session.RecordInput(initial)
+	session.AppendAssistantMessage("I'll inspect the image input flow.")
+	session.CompleteTurn(turn, "I'll inspect the image input flow.", nil, nil)
+	for i := 0; i < 18; i++ {
+		session.AppendUserMessage(fmt.Sprintf("tool result chunk %d", i))
+	}
+
+	messages := session.Messages("system prompt")
+	found := false
+	for _, msg := range messages {
+		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Initial user request:") {
+			found = true
+			if !strings.Contains(msg.Content, "Conversation recall only") {
+				t.Fatalf("initial request anchor missing recall-only scope: %q", msg.Content)
+			}
+			if !strings.Contains(msg.Content, initial) {
+				t.Fatalf("initial request anchor = %q", msg.Content)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("messages missing initial request anchor: %#v", messages)
 	}
 }
 
@@ -561,7 +610,7 @@ func TestBuildMessages_IncludesImplementationTaskGuidance(t *testing.T) {
 	if !strings.Contains(msgs[1].Content, "Implementation guidance") {
 		t.Fatalf("task state missing implementation guidance: %q", msgs[1].Content)
 	}
-	if !strings.Contains(msgs[1].Content, "do not start with planning prose") {
+	if !strings.Contains(msgs[1].Content, "brief intent sentence") {
 		t.Fatalf("task state missing first action guidance: %q", msgs[1].Content)
 	}
 	if !strings.Contains(msgs[1].Content, "If repeated searches on the same file are not resolving the insertion point, read that file directly") {

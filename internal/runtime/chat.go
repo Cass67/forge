@@ -332,9 +332,14 @@ func RunChatLive(setup *ChatSetup) {
 	var turnCancel atomic.Value
 
 	// nudgeForwarder routes nudge calls from the goroutine to liveCfg.NotifyNudge.
-	// It is populated once liveCfg is built (below), before the first user input
-	// arrives. The goroutine captures it by reference so it sees the final value.
-	var nudgeForwarder func(mode, taskOp, suggestedSkill string)
+	// The bubbletea layer publishes its wrapped NotifyNudge into nudgeSink after
+	// creating the tea program, so goroutine calls also trigger p.Send.
+	var nudgeSink func(string, string, string)
+	nudgeForwarder := func(mode, taskOp, suggestedSkill string) {
+		if nudgeSink != nil {
+			nudgeSink(mode, taskOp, suggestedSkill)
+		}
+	}
 	var wg sync.WaitGroup
 
 	go func() {
@@ -528,7 +533,7 @@ func RunChatLive(setup *ChatSetup) {
 	// populated. The bubbletea layer wraps liveCfg.NotifyNudge with p.Send, so
 	// calls through nudgeForwarder also reach the TUI mode badge.
 	liveCfg.NotifyNudge = func(mode, taskOp, suggestedSkill string) { /* forwarded by bubbletea */ }
-	nudgeForwarder = liveCfg.NotifyNudge
+	liveCfg.NotifyNudgeSink = &nudgeSink
 	runChatLiveUI(eventsCh, liveCfg, inputCh, doneCh)
 }
 
@@ -755,6 +760,7 @@ type chatTurnRunner interface {
 	Run(context.Context, string) error
 	EmitResponse(string)
 	SetTaskState(reactruntime.TaskState)
+	TaskState() *reactruntime.TaskState
 	QueuePendingInput(string)
 	DiscardPendingInput() []string
 	MarkInterrupted()
@@ -772,7 +778,18 @@ func runChatTurn(ctx context.Context, reactRunner chatTurnRunner, input string) 
 	if reactRunner == nil {
 		return fmt.Errorf("chat react runner is nil")
 	}
-	if shouldResetTaskStateForInput(input) {
+	if shouldPromoteFollowUpToImplementation(input, reactRunner.TaskState()) {
+		current := reactRunner.TaskState()
+		next := reactruntime.TaskState{
+			Objective:            strings.TrimSpace(input),
+			Operation:            "implement",
+			RequiredVerification: "inspect the relevant code, make the change with edit tools, and run the relevant verification before claiming completion",
+		}
+		if current != nil && strings.TrimSpace(current.Objective) != "" {
+			next.Objective = strings.TrimSpace(current.Objective)
+		}
+		reactRunner.SetTaskState(next)
+	} else if shouldResetTaskStateForInput(input) {
 		reactRunner.SetTaskState(reactruntime.TaskState{})
 	}
 	return reactRunner.Run(ctx, input)
@@ -983,6 +1000,21 @@ func shouldResetTaskStateForInput(input string) bool {
 		return false
 	}
 	return true
+}
+
+func shouldPromoteFollowUpToImplementation(input string, state *reactruntime.TaskState) bool {
+	if state == nil {
+		return false
+	}
+	operation := strings.ToLower(strings.TrimSpace(state.Operation))
+	if operation != "inspect" && operation != "overview" && operation != "analysis" {
+		return false
+	}
+	text := normalizedIntentText(input)
+	return containsAnyPhrase(text,
+		"do it", "use what you need", "go ahead", "implement it", "build it",
+		"make the change", "make changes", "fix it", "apply it", "ship it",
+	)
 }
 
 func looksLikeWorkspaceScopedInput(text string) bool {

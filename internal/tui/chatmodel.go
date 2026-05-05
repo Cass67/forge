@@ -575,6 +575,10 @@ func (m *ChatModel) AppendToLastAgentLabeled(text, label string) {
 	m.viewportDirty = true
 }
 
+func (m ChatModel) hasLiveAssistantMessage() bool {
+	return len(m.messages) > 0 && m.messages[len(m.messages)-1].Kind == MsgAgent
+}
+
 func (m *ChatModel) appendTranscriptRecord(record TranscriptRecord) {
 	if len(record.Segments) == 0 {
 		return
@@ -1455,6 +1459,7 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 			m.AddWorkingMessage(msg)
 		}
 	case llm.EventToolCall:
+		assistantLive := m.hasLiveAssistantMessage()
 		if ev.Agent != "runtime" {
 			m.markLastAssistantRecordFinal()
 		}
@@ -1465,11 +1470,15 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		if strings.TrimSpace(ev.Agent) != "" {
 			m.lastToolSummary[strings.TrimSpace(ev.Agent)] = strings.TrimSpace(ev.Text)
 		}
-		if key, checkpoint := m.toolCallCheckpoint(ev); checkpoint != "" {
-			m.emitProgressCheckpoint(key, checkpoint)
-		}
-		if line := m.toolCallProgressLine(ev); line != "" {
-			m.UpdateRecentActivity("", line)
+		if !assistantLive {
+			if m.shouldPersistToolCallCheckpoint(ev) {
+				if key, checkpoint := m.toolCallCheckpoint(ev); checkpoint != "" {
+					m.emitProgressCheckpoint(key, checkpoint)
+				}
+			}
+			if line := m.toolCallProgressLine(ev); line != "" {
+				m.UpdateRecentActivity("", line)
+			}
 		}
 		if !m.debugEnabled {
 			return m, nil
@@ -1502,7 +1511,7 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		} else if ev.Text != "" {
 			m.lastToolResult = ev.Text
 		}
-		if key, checkpoint := m.toolResultCheckpoint(ev); checkpoint != "" {
+		if key, checkpoint := m.toolResultCheckpoint(ev); checkpoint != "" && !m.hasLiveAssistantMessage() {
 			m.emitProgressCheckpoint(key, checkpoint)
 		}
 		if m.debugEnabled {
@@ -2005,6 +2014,10 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.resetSlashCompletion()
 		return m, nil
+	case tea.KeyCtrlC:
+		if !m.busy && strings.TrimSpace(m.inputBuf) == "" {
+			return m, tea.Quit
+		}
 	case tea.KeyEnter:
 	case tea.KeyPgUp:
 		m.resetSlashCompletion()
@@ -4640,42 +4653,51 @@ func (m ChatModel) toolCallCheckpoint(ev llm.Event) (string, string) {
 			return "", ""
 		}
 		key := "tool:read:" + normalizeProgressComparable(label)
-		return key, formatCheckpointToolMessage(agent, label)
+		return key, formatCheckpointNarrative(m.toolCallProgressLine(ev), agent, label)
 	case "list_dir":
 		target := strings.Trim(strings.TrimSpace(summary), "\"'")
 		if target == "" || target == "." {
 			target = "workspace root"
 		}
 		key := "tool:list:" + normalizeProgressComparable(target)
-		return key, formatCheckpointToolMessage(agent, target)
+		return key, formatCheckpointNarrative(m.toolCallProgressLine(ev), agent, target)
 	case "glob":
 		pattern := strings.Trim(strings.TrimSpace(summary), "\"'")
 		if pattern == "" {
 			return "", ""
 		}
 		key := "tool:glob:" + normalizeProgressComparable(pattern)
-		return key, formatCheckpointToolMessage(agent, fmt.Sprintf("%q", pattern))
+		return key, formatCheckpointNarrative(m.toolCallProgressLine(ev), agent, fmt.Sprintf("%q", pattern))
 	case "search":
 		pattern := strings.Trim(strings.TrimSpace(summary), "\"'")
 		if pattern == "" {
 			return "", ""
 		}
 		key := "tool:search:" + normalizeProgressComparable(pattern)
-		return key, formatCheckpointToolMessage(agent, fmt.Sprintf("%q", pattern))
+		return key, formatCheckpointNarrative(m.toolCallProgressLine(ev), agent, fmt.Sprintf("%q", pattern))
 	case "code_search", "git_status", "git_log", "git_diff", "git_branch_state", "git_merge_status", "tool_help":
 		if summary == "" {
 			return "", ""
 		}
 		key := "tool:" + agent + ":" + normalizeProgressComparable(summary)
-		return key, formatCheckpointToolMessage(agent, summary)
+		return key, formatCheckpointNarrative(m.toolCallProgressLine(ev), agent, summary)
 	case "lsp_definition", "lsp_references", "lsp_hover", "lsp_document_symbols":
 		if summary == "" {
 			return "", ""
 		}
 		key := "tool:" + agent + ":" + normalizeProgressComparable(summary)
-		return key, formatCheckpointToolMessage(agent, summary)
+		return key, formatCheckpointNarrative(m.toolCallProgressLine(ev), agent, summary)
 	default:
 		return "", ""
+	}
+}
+
+func (m ChatModel) shouldPersistToolCallCheckpoint(ev llm.Event) bool {
+	switch strings.TrimSpace(ev.Agent) {
+	case "read_file", "artifact_read", "list_dir", "glob", "search", "code_search":
+		return false
+	default:
+		return true
 	}
 }
 
@@ -4791,6 +4813,14 @@ func formatCheckpointToolMessage(toolName, detail string) string {
 		return "• " + toolName
 	}
 	return "• " + toolName + "\n  └ " + detail
+}
+
+func formatCheckpointNarrative(narrative, toolName, detail string) string {
+	narrative = strings.TrimSpace(narrative)
+	if narrative != "" {
+		return "• " + narrative
+	}
+	return formatCheckpointToolMessage(toolName, detail)
 }
 
 func combineProgressNarrative(current, next string) string {
@@ -5058,6 +5088,11 @@ func (m ChatModel) toolCallProgressLine(ev llm.Event) string {
 			return "Finding relevant files"
 		}
 		return fmt.Sprintf("Finding files matching %s", summary)
+	case "code_search":
+		if summary == "" {
+			return "Searching code for relevant references"
+		}
+		return fmt.Sprintf("Searching code in %s", summary)
 	case "git_status":
 		return "Checking current git status"
 	case "git_log":

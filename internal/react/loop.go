@@ -271,6 +271,13 @@ func (r *Runner) SetTaskState(state TaskState) {
 	}
 }
 
+func (r *Runner) TaskState() *TaskState {
+	if r == nil || r.session == nil {
+		return nil
+	}
+	return r.session.Snapshot().TaskState
+}
+
 func formatTaskContextSummary(state TaskState) string {
 	var parts []string
 	if obj := strings.TrimSpace(state.Objective); obj != "" {
@@ -808,6 +815,15 @@ func allowedToolNamesForSnapshot(snapshot SessionSnapshot) []string {
 	if inputSuggestsDelegation(text) {
 		addAll(delegateToolNames)
 	}
+	if inputSuggestsBugFixWork(text) {
+		addAll(readOnlyToolNames, writeToolNames, commandToolNames, planningToolNames)
+	}
+	if inputSuggestsGitPush(text) {
+		addAll(gitReadToolNames, commandToolNames)
+	}
+	if inputAsksGitPushStatus(text) {
+		addAll(gitReadToolNames)
+	}
 	if inputSuggestsGitCommit(text) {
 		add("git_commit")
 	}
@@ -912,6 +928,28 @@ func inputSuggestsGitCommit(text string) bool {
 	return containsToolPhrase(text,
 		"git commit", "commit it", "commit this", "create a commit",
 		"make a commit", "commit the changes",
+	)
+}
+
+func inputSuggestsBugFixWork(text string) bool {
+	return containsToolPhrase(text,
+		"bug", "broken", "does not work", "doesn't work", "not working",
+		"fix this", "fix it", "patch this", "issue", "error", "failing",
+		"wrong", "regression", "cursor", "input pane", "input panel",
+	)
+}
+
+func inputSuggestsGitPush(text string) bool {
+	return containsToolPhrase(text,
+		"git push", "push it", "push this", "push main", "push to remote",
+		"push the branch", "push the changes", "publish local commits", "publish commits",
+	)
+}
+
+func inputAsksGitPushStatus(text string) bool {
+	return containsToolPhrase(text,
+		"did you push", "did it push", "is it pushed", "was it pushed",
+		"have you pushed", "has it been pushed",
 	)
 }
 
@@ -1106,9 +1144,9 @@ func inspectFirstActionPromptHook(_ context.Context, event hooks.Event) []hooks.
 			Provenance: "runtime",
 		}}
 	}
-	content := "Repo inspection workflow active. Start with a repo read/search tool call instead of prose. For a general overview, list_dir(.) or read_file(README.md) is usually enough to begin."
+	content := "Repo inspection workflow active. Start with a short natural sentence explaining what you are checking, then call the repo read/search tool. For a general overview, list_dir(.) or read_file(README.md) is usually enough to begin."
 	if ok && isRepoOverviewTask(snap) {
-		content = "Repo overview workflow active. Start with a repo read/search tool call rather than a standalone progress update. A short natural sentence before the tool call is fine. Usually list_dir(.) plus README.md or one other high-signal file is enough; once you have that, stop exploring and answer briefly."
+		content = "Repo overview workflow active. Start with a short natural sentence explaining what you are checking, then call the repo read/search tool. Usually list_dir(.) plus README.md or one other high-signal file is enough; once you have that, stop exploring and answer briefly."
 	}
 	return []hooks.Result{hooks.OverlayResult{
 		Key:        "inspect_first_action",

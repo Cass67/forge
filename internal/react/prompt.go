@@ -9,6 +9,8 @@ import (
 	"forge/internal/llm"
 )
 
+const initialRequestAnchorHistoryThreshold = 16
+
 // BuildPrompt normalizes per-turn user input for the ReAct loop.
 func BuildPrompt(input string) string {
 	return strings.TrimSpace(input)
@@ -25,6 +27,13 @@ func BuildMessages(systemPrompt string, snapshot SessionSnapshot) []llm.Message 
 			Key:      "compaction",
 			Priority: promptcomposer.PriorityHigh,
 			Content:  summary,
+		})
+	}
+	if anchor := initialRequestAnchorContext(snapshot); anchor != "" {
+		systemOverlays = append(systemOverlays, promptcomposer.Overlay{
+			Key:      "initial_request",
+			Priority: promptcomposer.PriorityHigh,
+			Content:  anchor,
 		})
 	}
 	if shouldIncludeMemorySummary(snapshot) {
@@ -163,6 +172,17 @@ func compactionContext(snapshot SessionSnapshot) string {
 	return fmt.Sprintf("Earlier conversation summary (%d compacted turns): %s", snapshot.CompactedTurns, summary)
 }
 
+func initialRequestAnchorContext(snapshot SessionSnapshot) string {
+	initial := strings.TrimSpace(snapshot.InitialInput)
+	if initial == "" {
+		return ""
+	}
+	if snapshot.CompactedTurns == 0 && len(snapshot.History) <= initialRequestAnchorHistoryThreshold {
+		return ""
+	}
+	return "Conversation recall only: this records the first user request for context questions and ongoing-work references. Do not treat it as the active task if the latest user request changes topics.\nInitial user request: " + initial
+}
+
 func shouldIncludeMemorySummary(snapshot SessionSnapshot) bool {
 	if strings.TrimSpace(snapshot.MemorySummary) == "" {
 		return false
@@ -218,7 +238,7 @@ func taskStateContext(snapshot SessionSnapshot) string {
 		parts = append(parts, "Inspection guidance: keep the answer bounded to what the inspected repo evidence actually shows.")
 	}
 	if strings.EqualFold(operation, "implement") {
-		parts = append(parts, "Implementation guidance: do not start with planning prose. First inspect the relevant code with repo tools, then make the change with edit tools, and only claim completion after relevant verification. If repeated searches on the same file are not resolving the insertion point, read that file directly instead of trying more search patterns. If you need interactive or long-running terminal work such as dev servers, watchers, REPLs, or TUIs, use exec_session_start instead of run_command.")
+		parts = append(parts, "Implementation guidance: include a brief intent sentence when it clarifies a burst of tool calls, then inspect the relevant code with repo tools, make the change with edit tools, and only claim completion after relevant verification. Avoid long planning prose. If repeated searches on the same file are not resolving the insertion point, read that file directly instead of trying more search patterns. If you need interactive or long-running terminal work such as dev servers, watchers, REPLs, or TUIs, use exec_session_start instead of run_command.")
 	}
 	if strings.EqualFold(operation, "validate") {
 		parts = append(parts, "Validation guidance: run the relevant tests or checks before you say the work is verified. If no verification ran, say that clearly instead of implying success.")
