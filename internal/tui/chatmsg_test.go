@@ -25,8 +25,8 @@ func TestChatMessageRenderUser(t *testing.T) {
 	if !strings.Contains(got, "hello world") {
 		t.Fatalf("render missing content: %s", got)
 	}
-	if !strings.Contains(strippedLine(got), "▌ You") {
-		t.Fatalf("expected accented user message header, got: %s", strippedLine(got))
+	if strings.Contains(strippedLine(got), "▌ You") {
+		t.Fatalf("expected user message header without rail, got: %s", strippedLine(got))
 	}
 }
 
@@ -43,12 +43,12 @@ func TestChatMessageRenderAgent(t *testing.T) {
 	if !strings.Contains(got, "I can help with that.") {
 		t.Fatalf("render missing content: %s", got)
 	}
-	if !strings.Contains(strippedLine(got), "▌ Forge") {
-		t.Fatalf("expected accented agent message header, got: %s", strippedLine(got))
+	if strings.Contains(strippedLine(got), "▌ Forge") {
+		t.Fatalf("expected agent message header without rail, got: %s", strippedLine(got))
 	}
 }
 
-func TestChatMessageRenderIndentsBodyUnderHeader(t *testing.T) {
+func TestChatMessageRenderDoesNotIndentBodyUnderHeader(t *testing.T) {
 	m := ChatMessage{
 		Kind:    MsgUser,
 		Header:  "You • 22:59:50",
@@ -60,11 +60,11 @@ func TestChatMessageRenderIndentsBodyUnderHeader(t *testing.T) {
 		t.Fatalf("expected header and body lines, got %q", got)
 	}
 	bodyLine := strippedLine(lines[1])
-	if !strings.HasPrefix(strings.TrimRight(bodyLine, " "), "  ") {
-		t.Fatalf("expected indented body line, got %q", bodyLine)
+	if strings.HasPrefix(bodyLine, "  ") {
+		t.Fatalf("expected unindented body line, got %q", bodyLine)
 	}
 	if !strings.Contains(bodyLine, "hello world") {
-		t.Fatalf("expected body content on indented line, got %q", bodyLine)
+		t.Fatalf("expected body content on body line, got %q", bodyLine)
 	}
 }
 
