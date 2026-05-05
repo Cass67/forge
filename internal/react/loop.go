@@ -815,6 +815,9 @@ func allowedToolNamesForSnapshot(snapshot SessionSnapshot) []string {
 	if inputSuggestsDelegation(text) {
 		addAll(delegateToolNames)
 	}
+	if inputSuggestsActionFollowUp(text) {
+		addAll(readOnlyToolNames, writeToolNames, gitReadToolNames, commandToolNames, planningToolNames)
+	}
 	if inputSuggestsBugFixWork(text) {
 		addAll(readOnlyToolNames, writeToolNames, commandToolNames, planningToolNames)
 	}
@@ -936,6 +939,13 @@ func inputSuggestsBugFixWork(text string) bool {
 		"bug", "broken", "does not work", "doesn't work", "not working",
 		"fix this", "fix it", "patch this", "issue", "error", "failing",
 		"wrong", "regression", "cursor", "input pane", "input panel",
+	)
+}
+
+func inputSuggestsActionFollowUp(text string) bool {
+	return containsToolPhrase(text,
+		"do it", "continue", "use what you need", "go ahead", "implement it", "build it",
+		"make the change", "make changes", "fix it", "apply it", "ship it", "finish it",
 	)
 }
 

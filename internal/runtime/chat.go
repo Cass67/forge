@@ -1011,10 +1011,7 @@ func shouldPromoteFollowUpToImplementation(input string, state *reactruntime.Tas
 		return false
 	}
 	text := normalizedIntentText(input)
-	return containsAnyPhrase(text,
-		"do it", "use what you need", "go ahead", "implement it", "build it",
-		"make the change", "make changes", "fix it", "apply it", "ship it",
-	)
+	return looksLikeActionFollowUp(text)
 }
 
 func looksLikeWorkspaceScopedInput(text string) bool {
@@ -1036,6 +1033,13 @@ func looksLikeRepoFollowUp(text string) bool {
 		"what do you think", "tell me what you think", "anything i need change",
 		"what should i change", "what should i improve", "clean this up",
 		"write me a script", "script to clean",
+	)
+}
+
+func looksLikeActionFollowUp(text string) bool {
+	return containsAnyPhrase(text,
+		"do it", "continue", "use what you need", "go ahead", "implement it", "build it",
+		"make the change", "make changes", "fix it", "apply it", "ship it", "finish it",
 	)
 }
 
