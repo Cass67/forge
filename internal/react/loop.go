@@ -792,6 +792,9 @@ func allowedToolNamesForSnapshot(snapshot SessionSnapshot) []string {
 	if inputSuggestsGitCommit(text) {
 		add("git_commit")
 	}
+	if historyIncludesToolHelp(snapshot) && len(allowed) > 0 {
+		addAll(writeToolNames, commandToolNames)
+	}
 	if len(allowed) > 0 {
 		add("tool_help")
 	}
@@ -801,6 +804,20 @@ func allowedToolNamesForSnapshot(snapshot SessionSnapshot) []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+func historyIncludesToolHelp(snapshot SessionSnapshot) bool {
+	for _, msg := range snapshot.History {
+		if msg.Role != llm.RoleAssistant {
+			continue
+		}
+		for _, tc := range msg.ToolCalls {
+			if tc.Name == "tool_help" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func normalizeToolIntentText(text string) string {

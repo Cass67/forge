@@ -1,4 +1,6 @@
-# Forge Multi-Agent Architecture
+# Forge Multi-Agent Architecture (Legacy)
+
+> **NOTE:** This document describes the legacy multi-agent design based on dispatch-centric orchestration (`internal/agent/agent.go`). The current chat runtime uses a React-based loop (`internal/react/loop.go`) where the model drives tool selection directly via native tool calling, rather than routing through a dispatch orchestrator. This document is retained for historical context and reference.
 
 Design spec for adding hierarchical agent delegation to forge chat mode.
 Inspired by [oh-my-openagent](https://github.com/code-yeongyu/oh-my-openagent) patterns,
