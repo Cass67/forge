@@ -30,6 +30,7 @@ type Tokens struct {
 	PerplexityAPIKey    string            `json:"perplexity_api_key,omitempty"`
 	DeepInfraAPIKey     string            `json:"deepinfra_api_key,omitempty"`
 	CerebrasAPIKey      string            `json:"cerebras_api_key,omitempty"`
+	OpenCodeAPIKey      string            `json:"opencode_api_key,omitempty"`
 	BraveAPIKey         string            `json:"brave_api_key,omitempty"`
 	ProviderAPIKeys     map[string]string `json:"provider_api_keys,omitempty"`
 }
@@ -163,6 +164,9 @@ func merge(dst, src *Tokens) *Tokens {
 	}
 	if src.CerebrasAPIKey != "" {
 		dst.CerebrasAPIKey = src.CerebrasAPIKey
+	}
+	if src.OpenCodeAPIKey != "" {
+		dst.OpenCodeAPIKey = src.OpenCodeAPIKey
 	}
 	if src.BraveAPIKey != "" {
 		dst.BraveAPIKey = src.BraveAPIKey

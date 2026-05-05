@@ -42,6 +42,7 @@ type Keys struct {
 	Perplexity string `toml:"perplexity"`
 	DeepInfra  string `toml:"deepinfra"`
 	Cerebras   string `toml:"cerebras"`
+	OpenCode   string `toml:"opencode"`
 	Brave      string `toml:"brave"`
 }
 
@@ -420,6 +421,17 @@ func (c *Config) CerebrasKey() string {
 	}
 	tokens, _ := auth.Load()
 	return strings.TrimSpace(tokens.CerebrasAPIKey)
+}
+
+func (c *Config) OpenCodeKey() string {
+	if v := strings.TrimSpace(os.Getenv("OPENCODE_API_KEY")); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(c.Keys.OpenCode); v != "" {
+		return v
+	}
+	tokens, _ := auth.Load()
+	return strings.TrimSpace(tokens.OpenCodeAPIKey)
 }
 
 func (c *Config) BraveKey() string {

@@ -656,6 +656,20 @@ func BuildCompatProviders(cfg *config.Config, tokens *auth.Tokens) []CompatProvi
 			},
 		},
 		{
+			Name:    "opencode-go",
+			Label:   "OpenCode Go",
+			BaseURL: "https://opencode.ai/zen/go/v1",
+			KeyFn:   cfg.OpenCodeKey,
+			IsModel: func(m string) bool { return false },
+			Models: []string{
+				"opencode-go/glm-5.1",
+				"opencode-go/kimi-k2.6",
+				"opencode-go/deepseek-v4-pro",
+				"opencode-go/mimo-v2.5-pro",
+				"opencode-go/mimo-v2-omni",
+			},
+		},
+		{
 			Name:    "openrouter",
 			BaseURL: "https://openrouter.ai/api/v1",
 			KeyFn:   cfg.OpenRouterKey,
