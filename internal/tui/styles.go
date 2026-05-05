@@ -11,4 +11,10 @@ var (
 	styleRed      = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff7b72"))
 	styleYellow   = lipgloss.NewStyle().Foreground(lipgloss.Color("#e3b341"))
 	styleBold     = lipgloss.NewStyle().Foreground(lipgloss.Color("#f0f6fc")).Bold(true)
+
+	// styleCursor renders the character under the cursor with reverse video.
+	styleCursor = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#0b0f17")).
+			Background(lipgloss.Color("#56d364")).
+			Bold(true)
 )
