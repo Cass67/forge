@@ -1119,6 +1119,55 @@ func TestRunnerRejectsLegacyXMLToolCallMarkupFromNativeProvider(t *testing.T) {
 	}
 }
 
+func TestRunnerRejectsSelfClosingXMLToolCallMarkupFromNativeProvider(t *testing.T) {
+	responses := make([]string, maxCompletionRetriesPerTurn+1)
+	for i := range responses {
+		responses[i] = `<tool_call name="shell.exec" arguments='{"cmd":"ls"}' />`
+	}
+	driver := &nativeScriptedDriver{responses: responses}
+	reg := agenttools.NewRegistry()
+	called := false
+	reg.Register(agenttools.Tool{
+		Name:        "shell.exec",
+		Description: "run a shell command",
+		Parameters:  []agenttools.ParameterDef{{Name: "cmd", Type: "string", Required: true}},
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			called = true
+			return "README.md", nil
+		},
+	})
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: NewSession()})
+
+	err := r.Run(context.Background(), "list files")
+	if err == nil {
+		t.Fatal("expected runner error when provider emits self-closing XML tool markup")
+	}
+	if !strings.Contains(err.Error(), "deprecated XML tool-call markup") {
+		t.Fatalf("err = %v", err)
+	}
+	if called {
+		t.Fatal("self-closing XML tool markup should not execute a tool")
+	}
+}
+
+func TestRunnerRejectsMalformedXMLToolCallMarkupFromNativeProvider(t *testing.T) {
+	responses := make([]string, maxCompletionRetriesPerTurn+1)
+	for i := range responses {
+		responses[i] = `<tool_call>{"cmd":"ls"}</tool_call>`
+	}
+	driver := &nativeScriptedDriver{responses: responses}
+	r := NewRunner(Config{Driver: driver, Tools: agenttools.NewRegistry(), Session: NewSession()})
+
+	err := r.Run(context.Background(), "testing")
+	if err == nil {
+		t.Fatal("expected runner error when provider emits malformed XML tool markup")
+	}
+	if !strings.Contains(err.Error(), "deprecated XML tool-call markup") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestRunnerSetDriverSwitchesSubsequentTurns(t *testing.T) {
 	first := &nativeScriptedDriver{responses: []string{"first answer"}}
 	second := &nativeScriptedDriver{responses: []string{"second answer"}}

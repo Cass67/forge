@@ -21,28 +21,28 @@ func TestDefaultChatViewSingleColumnLayout(t *testing.T) {
 	if !strings.Contains(view, "latest transcript line") {
 		t.Fatalf("expected transcript content in default view, got:\n%s", view)
 	}
-	if !strings.Contains(view, "Prompt") {
+	if !strings.Contains(view, "Ask Forge anything") {
 		t.Fatalf("expected composer at the bottom, got:\n%s", view)
 	}
 	if strings.Contains(view, "tool output should stay hidden") || strings.Contains(view, "Debug trace") {
 		t.Fatalf("default view leaked debug chrome: %s", view)
 	}
-	if !strings.ContainsAny(view, "╭╮╰╯") {
-		t.Fatalf("expected designed composer chrome in default view, got:\n%s", view)
+	if strings.ContainsAny(view, "╭╮╰╯│") {
+		t.Fatalf("default view should not use boxed composer chrome, got:\n%s", view)
 	}
 
 	lines := strings.Split(rawView, "\n")
 	promptLine := -1
 	for i, line := range lines {
-		if strings.Contains(strippedLine(line), "Prompt") {
+		if strings.Contains(strippedLine(line), "Ask Forge anything") {
 			promptLine = i
 		}
 	}
 	if promptLine <= 0 {
 		t.Fatalf("expected composer prompt line in:\n%s", view)
 	}
-	if !strings.Contains(strippedLine(lines[promptLine+1]), "Type a message or /help") {
-		t.Fatalf("expected composer body below prompt line in:\n%s", view)
+	if !strings.Contains(strippedLine(lines[promptLine-1]), "─") {
+		t.Fatalf("expected composer divider above prompt line in:\n%s", view)
 	}
 }
 
@@ -71,7 +71,7 @@ func TestDefaultChatViewShowsFlashAboveComposer(t *testing.T) {
 	flashLine := -1
 	for i, line := range lines {
 		stripped := strippedLine(line)
-		if strings.Contains(stripped, "Prompt") {
+		if strings.Contains(stripped, "Ask Forge anything") {
 			promptLine = i
 		}
 		if strings.Contains(stripped, "trace unavailable without -d") {
@@ -81,7 +81,7 @@ func TestDefaultChatViewShowsFlashAboveComposer(t *testing.T) {
 	if promptLine <= 0 || flashLine < 0 {
 		t.Fatalf("expected flash slot and composer, got:\n%s", strippedLine(view))
 	}
-	if flashLine != promptLine-1 {
+	if flashLine != promptLine-2 {
 		t.Fatalf("expected flash directly above composer, got flash line %d prompt line %d in:\n%s", flashLine, promptLine, strippedLine(view))
 	}
 }
