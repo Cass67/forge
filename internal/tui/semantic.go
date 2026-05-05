@@ -376,6 +376,9 @@ func trimStandaloneToken(token string) (string, string) {
 }
 
 func trimCommandToken(token string) (string, string) {
+	if strings.HasSuffix(token, "...") && len(token) > 3 {
+		return token, ""
+	}
 	core, trailing := trimStandaloneToken(token)
 	if strings.Contains(trailing, "|") || strings.Contains(trailing, "&") || strings.Contains(trailing, ";") {
 		return core, trailing
@@ -500,8 +503,8 @@ func isPathLike(token string) bool {
 		return false
 	case strings.Contains(token, "://"):
 		return false
-	case strings.HasSuffix(token, "..."):
-		return strings.HasPrefix(token, "./") || strings.HasPrefix(token, "../")
+	case strings.HasSuffix(token, "...") && len(token) > 3:
+		return strings.HasPrefix(token, "/") || strings.HasPrefix(token, "./") || strings.HasPrefix(token, "../") || strings.HasPrefix(token, "~/")
 	case strings.HasPrefix(token, "/"), strings.HasPrefix(token, "./"), strings.HasPrefix(token, "../"), strings.HasPrefix(token, "~/"):
 		return !hasTerminalPathPunctuation(token)
 	case isWindowsPath(token):
