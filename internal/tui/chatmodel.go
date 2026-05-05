@@ -868,13 +868,10 @@ func (m ChatModel) composer() ChatComposer {
 
 func (m ChatModel) inputHeight() int {
 	if m.pendingApproval != nil {
-		return 5
+		return strings.Count(m.pendingApproval.Summary, "\n") + 5
 	}
-	width := m.width
-	if width <= 0 {
-		width = 40
-	}
-	return m.composer().Height(width)
+	// Add 1 for the live progress slot which is always there but may be empty
+	return m.composer().Height(m.width) + 1 + 1 // Add 1 more for missing space?
 }
 
 func (m ChatModel) debugSurfaceActive() bool {
@@ -893,11 +890,6 @@ func (m ChatModel) debugDockHeight() int {
 }
 
 func (m ChatModel) composerGapHeight() int {
-	// Keep small terminals dense so transcript context stays visible, but add
-	// breathing room on standard/large screens between transcript and composer.
-	if m.height >= 18 {
-		return 2
-	}
 	return chatComposerGapHeight
 }
 
@@ -918,7 +910,7 @@ func (m *ChatModel) resizeChatViewport() {
 		return
 	}
 	m.chatViewport.Width = m.chatContentWidth()
-	bodyH := max(3, m.height-m.headerHeight()-chatPaneBorderHeight-m.composerGapHeight()-m.inputHeight()-chatStatusHeight-m.debugDockHeight())
+	bodyH := max(3, m.height-m.headerHeight()-m.inputHeight()-m.debugDockHeight())
 	if m.chatViewport.Height == bodyH {
 		return
 	}
@@ -4409,11 +4401,24 @@ func (m ChatModel) View() string {
 	chatTotalLines := len(strings.Split(m.chatVisible, "\n"))
 	if strings.TrimSpace(m.chatVisible) == "" {
 		empty := []string{
-			"Forge is ready.",
+			"  Welcome to Forge.",
+			"  Ready for your first request.",
 		}
 		chatLines = empty
 		chatTotalLines = len(empty)
 	}
+
+	// Ensure chat lines always matches chatBodyHeight
+	if len(chatLines) < chatBodyHeight {
+		padding := make([]string, chatBodyHeight-len(chatLines))
+		for i := range padding {
+			padding[i] = ""
+		}
+		chatLines = append(chatLines, padding...)
+	} else if len(chatLines) > chatBodyHeight {
+		chatLines = chatLines[:chatBodyHeight]
+	}
+
 	chatScrollbar := scrollbarColumn(chatTotalLines, m.chatViewport.Height, m.chatViewport.YOffset, chatBodyHeight)
 	chatBody := joinWithScrollbar(chatLines, chatScrollbar, chatContentWidth, chatBodyHeight)
 	chatPane := lipgloss.NewStyle().
@@ -4444,9 +4449,6 @@ func (m ChatModel) View() string {
 	parts := []string{header, chatPane}
 	if debugDock != "" {
 		parts = append(parts, debugDock)
-	}
-	if gap := m.renderComposerGap(theme); gap != "" {
-		parts = append(parts, gap)
 	}
 	if preview := m.renderPendingInputPreview(theme); preview != "" {
 		parts = append(parts, preview)
@@ -4537,21 +4539,13 @@ func (m ChatModel) renderPendingInputPreview(theme chatTheme) string {
 }
 
 func (m ChatModel) renderComposerGap(theme chatTheme) string {
-	gapLines := max(0, m.composerGapHeight()-1)
-	if gapLines == 0 {
+	if m.width <= 0 {
 		return ""
 	}
-	line := lipgloss.NewStyle().
+	return lipgloss.NewStyle().
 		Width(m.width).
-		Render("")
-	if gapLines == 1 {
-		return line
-	}
-	lines := make([]string, 0, gapLines)
-	for i := 0; i < gapLines; i++ {
-		lines = append(lines, line)
-	}
-	return strings.Join(lines, "\n")
+		Foreground(theme.TextDim).
+		Render(strings.Repeat(" ", m.width))
 }
 
 func (m ChatModel) renderTraceDock(theme chatTheme) string {

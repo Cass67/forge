@@ -1125,7 +1125,7 @@ func TestChatModelViewEmptyStateRemovesOldHelperCopy(t *testing.T) {
 	m.height = 24
 
 	view := strippedLine(m.View())
-	if !strings.Contains(view, "Forge is ready.") {
+	if !strings.Contains(view, "Welcome to Forge.") {
 		t.Fatalf("expected ready copy in empty state:\n%s", view)
 	}
 	for _, unwanted := range []string{
@@ -1133,7 +1133,7 @@ func TestChatModelViewEmptyStateRemovesOldHelperCopy(t *testing.T) {
 		"Use /help for commands, /find to search.",
 	} {
 		if strings.Contains(view, unwanted) {
-			t.Fatalf("empty state should omit %q:\n%s", unwanted, view)
+			t.Fatalf("empty view contains unwanted copy %q", unwanted)
 		}
 	}
 }
