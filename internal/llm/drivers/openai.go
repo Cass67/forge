@@ -631,7 +631,21 @@ func trimStatelessConversation(messages []llm.Message) []llm.Message {
 	if len(nonSystem) <= maxNonSystem {
 		return messages
 	}
-	kept := nonSystem[len(nonSystem)-maxNonSystem:]
+	// Walk backwards keeping at least maxNonSystem, expanding to include paired tool
+	// calls and tool results so the Responses API doesn't reject orphaned items.
+	keptStart := len(nonSystem) - maxNonSystem
+	pending := make(map[string]bool) // tool call IDs referenced by kept messages
+	for i := len(nonSystem) - 1; i >= keptStart; i-- {
+		addCallIDs(pending, nonSystem[i])
+	}
+	for i := keptStart - 1; i >= 0; i-- {
+		m := nonSystem[i]
+		if refersToPending(pending, m) {
+			keptStart = i
+			addCallIDs(pending, m)
+		}
+	}
+	kept := nonSystem[keptStart:]
 	dropped := len(messages) - len(system) - len(kept)
 	result := make([]llm.Message, 0, len(system)+len(kept)+1)
 	result = append(result, system...)
@@ -643,6 +657,35 @@ func trimStatelessConversation(messages []llm.Message) []llm.Message {
 	}
 	result = append(result, kept...)
 	return result
+}
+
+func addCallIDs(pending map[string]bool, m llm.Message) {
+	if m.Role == llm.RoleAssistant {
+		for _, tc := range m.ToolCalls {
+			if id := strings.TrimSpace(tc.ID); id != "" {
+				pending[id] = true
+			}
+		}
+	}
+	if m.Role == llm.RoleTool {
+		if id := strings.TrimSpace(m.ToolCallID); id != "" {
+			pending[id] = true
+		}
+	}
+}
+
+func refersToPending(pending map[string]bool, m llm.Message) bool {
+	if m.Role == llm.RoleAssistant {
+		for _, tc := range m.ToolCalls {
+			if pending[strings.TrimSpace(tc.ID)] {
+				return true
+			}
+		}
+	}
+	if m.Role == llm.RoleTool {
+		return pending[strings.TrimSpace(m.ToolCallID)]
+	}
+	return false
 }
 
 func chatPromptCacheSeed(messages []llm.Message) string {
