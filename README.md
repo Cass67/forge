@@ -193,6 +193,19 @@ Model picker entries are labeled with the resolved auth path, for example:
 - `claude-sonnet-4-6 [claude]`
 - `claude-sonnet-4-6 [anthropic]`
 
+### GPT-5.x Reasoning Models
+
+Forge treats `gpt-5`, `gpt-5.4`, and `gpt-5.5` as reasoning models. These models:
+
+- Use the Responses API (not chat completions) for both text and tool calling
+- Run in stateless Zero Data Retention mode (`store: false`) on the ChatGPT provider
+- Get a WebSocket transport (`wss://`) on the ChatGPT provider, with automatic HTTP fallback
+- Use `previous_response_id` chaining on WebSocket for delta-only message sends (avoiding full-history re-sends)
+- Include encrypted reasoning content for context continuity across turns
+- Do not support the `temperature` parameter
+
+See [docs/chatgpt-provider.md](./docs/chatgpt-provider.md) for full provider details.
+
 ## Commands
 
 Core commands:

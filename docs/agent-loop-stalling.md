@@ -1,4 +1,6 @@
-# Agent Loop Stalling Analysis
+# Agent Loop Stalling Analysis (Legacy)
+
+> **NOTE:** This document analyzes the legacy agent loop in `internal/agent/agent.go`. The current runtime uses `internal/react/loop.go` with native tool calling via the Responses API / chat completions `tools` parameter, rather than text-based `<tool_call>` parsing. Some observations about preamble detection and anti-narration prompts may still apply, but the specific code paths and loop structure have changed.
 
 ## Problem
 

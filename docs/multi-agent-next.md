@@ -1,4 +1,6 @@
-# Multi-Agent: Next Steps
+# Multi-Agent: Next Steps (Legacy)
+
+> **NOTE:** These follow-ups relate to the legacy dispatch-centric multi-agent design. The current runtime uses `internal/react/loop.go`.
 
 Tracked follow-up work that remains after the March 24 multi-agent pipeline rework.
 
