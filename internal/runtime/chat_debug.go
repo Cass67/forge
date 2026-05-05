@@ -10,6 +10,7 @@ import (
 
 	"forge/internal/llm"
 	"forge/internal/logger"
+	"forge/internal/version"
 )
 
 type chatDebugRecorder struct {
@@ -55,6 +56,7 @@ func EnableChatDebug(setup *ChatSetup, path string) (string, error) {
 		"surface_mode":   "debug",
 		"runtime_mode":   runtimeMode,
 		"agents_enabled": false,
+		"commit":         version.Commit,
 	})
 	if setup.Driver != nil {
 		setup.Driver = rec.wrapDriver(setup.Driver)
