@@ -39,18 +39,26 @@ type NativeToolCall struct {
 
 // Message is a single turn sent to an LLM.
 type Message struct {
-	Role       Role
-	Content    string
-	ToolCalls  []NativeToolCall // non-nil when Role==RoleAssistant and model made native tool calls
-	ToolCallID string           // non-empty when Role==RoleTool (result message)
+	Role             Role
+	Content          string
+	ReasoningContent string           // reasoning/thinking tokens that must be replayed (e.g. DeepSeek thinking mode)
+	ToolCalls        []NativeToolCall // non-nil when Role==RoleAssistant and model made native tool calls
+	ToolCallID       string           // non-empty when Role==RoleTool (result message)
 }
 
 // Token is a single streamed chunk from an LLM response.
 type Token struct {
-	Text     string
-	Done     bool
-	Err      error
-	ToolCall *NativeToolCall // non-nil when provider returns a native tool call via StreamWithTools
+	Text             string
+	Done             bool
+	Err              error
+	ToolCall         *NativeToolCall // non-nil when provider returns a native tool call via StreamWithTools
+	ReasoningContent string          // reasoning/thinking token text (DeepSeek, etc.)
+}
+
+// HasReasoning reports whether the message carries reasoning content that must
+// be replayed to the provider on subsequent turns.
+func (m Message) HasReasoning() bool {
+	return m.Role == RoleAssistant && m.ReasoningContent != ""
 }
 
 // Driver is the interface every LLM provider must implement.

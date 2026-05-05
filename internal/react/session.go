@@ -216,6 +216,20 @@ func (s *Session) AppendAssistantToolTurn(text string, calls []llm.NativeToolCal
 	})
 }
 
+func (s *Session) SetLastAssistantReasoning(reasoning string) {
+	if s == nil || reasoning == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := len(s.history) - 1; i >= 0; i-- {
+		if s.history[i].Role == llm.RoleAssistant {
+			s.history[i].ReasoningContent = reasoning
+			return
+		}
+	}
+}
+
 // AppendNativeToolResult records a tool execution result matched to a specific
 // tool call ID. Used by the native tool calling path.
 func (s *Session) AppendNativeToolResult(toolCallID, result string) {

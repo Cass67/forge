@@ -309,6 +309,8 @@ func setProviderToken(t *auth.Tokens, id, value string) {
 		t.DeepInfraAPIKey = value
 	case "cerebras":
 		t.CerebrasAPIKey = value
+	case "opencode", "opencode-go":
+		t.OpenCodeAPIKey = value
 	case "brave":
 		t.BraveAPIKey = value
 	default:
@@ -375,6 +377,8 @@ func providerHasStoredCredential(t *auth.Tokens, id string) bool {
 		return strings.TrimSpace(t.DeepInfraAPIKey) != ""
 	case "cerebras":
 		return strings.TrimSpace(t.CerebrasAPIKey) != ""
+	case "opencode", "opencode-go":
+		return strings.TrimSpace(t.OpenCodeAPIKey) != ""
 	case "brave":
 		return strings.TrimSpace(t.BraveAPIKey) != ""
 	default:
