@@ -17,6 +17,7 @@ import (
 	"forge/internal/llm"
 	"forge/internal/modelcatalog"
 
+	"github.com/gorilla/websocket"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/packages/param"
@@ -37,6 +38,13 @@ type OpenAIDriver struct {
 	lastMessages      []llm.Message
 	lastRequestMode   string
 	mu                sync.Mutex
+
+	wsConn          *websocket.Conn
+	wsMu            sync.Mutex
+	wsFallbackHTTP  bool
+	wsBaseURL       string
+	wsAuthManager   *chatgptauth.Manager // non-nil for ChatGPT provider
+	wsLastRequestID string
 }
 
 const (
@@ -60,6 +68,7 @@ func newOpenAI(apiKey, providerLabel, registryName, apiModel string, supportsRes
 	}
 	opts = append(opts, providerHeaders(providerLabel)...)
 	client := openai.NewClient(opts...)
+	wsURL := wsBaseURLFromHTTP(baseURL)
 	return &OpenAIDriver{
 		client:            &client,
 		providerLabel:     providerLabel,
@@ -67,6 +76,7 @@ func newOpenAI(apiKey, providerLabel, registryName, apiModel string, supportsRes
 		apiModel:          apiModel,
 		supportsResponses: supportsResponses,
 		params:            llm.Params{Temperature: -1},
+		wsBaseURL:         wsURL,
 	}
 }
 
@@ -134,7 +144,29 @@ func NewChatGPT(registryName, apiModel string) *OpenAIDriver {
 	if err != nil {
 		return nil
 	}
-	return newOpenAI("chatgpt-oauth", "chatgpt", registryName, apiModel, true, authMgr.BaseURL(), authMgr.HTTPClient())
+	d := newOpenAI("chatgpt-oauth", "chatgpt", registryName, apiModel, true, authMgr.BaseURL(), authMgr.HTTPClient())
+	d.wsAuthManager = authMgr
+	return d
+}
+
+func wsBaseURLFromHTTP(baseURL string) string {
+	b := strings.TrimSpace(baseURL)
+	if b == "" {
+		return ""
+	}
+	b = strings.TrimRight(b, "/")
+	b = strings.TrimPrefix(b, "https://")
+	b = strings.TrimPrefix(b, "http://")
+	return "wss://" + b + "/responses"
+}
+
+func (d *OpenAIDriver) Close() {
+	d.wsMu.Lock()
+	defer d.wsMu.Unlock()
+	if d.wsConn != nil {
+		_ = d.wsConn.Close()
+		d.wsConn = nil
+	}
 }
 
 func (d *OpenAIDriver) SetParams(p llm.Params) {
@@ -159,10 +191,17 @@ func (d *OpenAIDriver) LastRequestMode() string {
 
 func (d *OpenAIDriver) ResetConversation() {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	d.prevResponseID = ""
 	d.lastMessages = nil
 	d.lastRequestMode = ""
+	d.mu.Unlock()
+	d.wsMu.Lock()
+	d.wsLastRequestID = ""
+	if d.wsFallbackHTTP {
+		d.wsFallbackHTTP = false
+	}
+	d.wsMu.Unlock()
+	d.wsDisconnect()
 }
 
 func (d *OpenAIDriver) Stream(ctx context.Context, messages []llm.Message, out chan<- llm.Token) error {
@@ -301,6 +340,18 @@ func (d *OpenAIDriver) streamResponses(ctx context.Context, messages []llm.Messa
 }
 
 func (d *OpenAIDriver) streamResponsesWithTools(ctx context.Context, messages []llm.Message, tools []llm.ToolDef, opts llm.NativeToolOptions, out chan<- llm.Token) error {
+	if d.wsAvailable() && !d.wsFallbackHTTP {
+		err := d.wsStreamResponses(ctx, messages, tools, opts, out)
+		if err == nil {
+			d.mu.Lock()
+			d.lastMessages = append([]llm.Message(nil), messages...)
+			d.mu.Unlock()
+			return nil
+		}
+		d.wsFallbackHTTP = true
+		d.wsDisconnect()
+	}
+
 	params, err := d.responsesParamsWithTools(ctx, messages, tools, opts)
 	if err != nil {
 		return err
@@ -334,9 +385,13 @@ func (d *OpenAIDriver) streamResponsesWithTools(ctx context.Context, messages []
 			case <-ctx.Done():
 				return ctx.Err()
 			}
+		case responses.ResponseOutputItemDoneEvent:
+			completedOutput = append(completedOutput, event.Item)
 		case responses.ResponseCompletedEvent:
 			responseID = event.Response.ID
-			completedOutput = append([]responses.ResponseOutputItemUnion(nil), event.Response.Output...)
+			if len(event.Response.Output) > 0 {
+				completedOutput = append(completedOutput, event.Response.Output...)
+			}
 			usage := llm.Usage{}
 			if event.Response.Usage.InputTokens > 0 || event.Response.Usage.OutputTokens > 0 {
 				usage.InputTokens = int(event.Response.Usage.InputTokens)
@@ -1221,11 +1276,11 @@ func providerRequiresStatelessResponses(providerLabel, model string) bool {
 
 func isReasoningModel(model string) bool {
 	m := strings.ToLower(strings.TrimSpace(model))
-	// Only the exact gpt-5 alias and o-series are true reasoning models that
-	// require the Responses API. gpt-5.x variants (ChatGPT/Codex) and
-	// gpt-5-mini are regular chat models that work fine via chat completions.
+	if idx := strings.LastIndex(m, "/"); idx >= 0 {
+		m = m[idx+1:]
+	}
 	switch m {
-	case "gpt-5", "gpt5":
+	case "gpt-5", "gpt5", "gpt-5.4", "gpt5.4", "gpt-5.5", "gpt5.5":
 		return true
 	}
 	return strings.HasPrefix(m, "o1") ||
