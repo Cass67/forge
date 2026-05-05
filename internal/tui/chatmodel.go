@@ -174,6 +174,7 @@ const (
 )
 
 const chatPaneBorderHeight = 0
+const chatHeaderGapHeight = 1
 const chatComposerGapHeight = 1
 const chatStatusHeight = 0
 const chatDebugDockHeight = 8
@@ -500,16 +501,20 @@ func sanitizeAssistantTokenForDisplay(text string) string {
 	}
 	// Defense-in-depth: never render raw tool-call markup in the user-facing
 	// transcript pane.
-	lower := strings.ToLower(strings.TrimSpace(text))
-	if strings.Contains(lower, "<tool_call>") ||
-		strings.Contains(lower, "</tool_call>") ||
-		strings.Contains(lower, "<function_calls>") ||
-		strings.Contains(lower, "</function_calls>") ||
-		strings.Contains(lower, "<tool_calls>") ||
-		strings.Contains(lower, "</tool_calls>") {
+	if containsRawToolCallMarkup(text) {
 		return ""
 	}
 	return text
+}
+
+func containsRawToolCallMarkup(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	return strings.Contains(lower, "<tool_call") ||
+		strings.Contains(lower, "</tool_call") ||
+		strings.Contains(lower, "<function_calls") ||
+		strings.Contains(lower, "</function_calls") ||
+		strings.Contains(lower, "<tool_calls") ||
+		strings.Contains(lower, "</tool_calls")
 }
 
 func plainCopyText(text string) string {
@@ -868,10 +873,9 @@ func (m ChatModel) composer() ChatComposer {
 
 func (m ChatModel) inputHeight() int {
 	if m.pendingApproval != nil {
-		return strings.Count(m.pendingApproval.Summary, "\n") + 5
+		return strings.Count(m.pendingApproval.Summary, "\n") + 6
 	}
-	// Add 1 for the live progress slot which is always there but may be empty
-	return m.composer().Height(m.width) + 1 + 1 // Add 1 more for missing space?
+	return m.composer().Height(m.width) + 1
 }
 
 func (m ChatModel) debugSurfaceActive() bool {
@@ -910,7 +914,7 @@ func (m *ChatModel) resizeChatViewport() {
 		return
 	}
 	m.chatViewport.Width = m.chatContentWidth()
-	bodyH := max(3, m.height-m.headerHeight()-m.inputHeight()-m.debugDockHeight())
+	bodyH := max(3, m.height-m.headerHeight()-chatHeaderGapHeight-m.inputHeight()-m.debugDockHeight())
 	if m.chatViewport.Height == bodyH {
 		return
 	}
@@ -947,14 +951,14 @@ func (m ChatModel) mouseContext() chatLayoutMouseContext {
 	chatH := chatBodyHeight + chatPaneBorderHeight
 	ctx := chatLayoutMouseContext{
 		chatX:  0,
-		chatY:  headerH,
+		chatY:  headerH + chatHeaderGapHeight,
 		chatW:  chatPaneWidth,
 		chatH:  chatH,
-		inputY: headerH + chatH + m.debugDockHeight() + m.composerGapHeight(),
+		inputY: headerH + chatHeaderGapHeight + chatH + m.debugDockHeight() + m.composerGapHeight(),
 	}
 	if m.toolsVisible {
 		ctx.toolsX = chatPaneWidth
-		ctx.toolsY = headerH
+		ctx.toolsY = headerH + chatHeaderGapHeight
 		ctx.toolsW = max(0, m.width-chatPaneWidth)
 		ctx.toolsH = chatH
 	}
@@ -4446,7 +4450,8 @@ func (m ChatModel) View() string {
 		inputBox = m.composer().Render(theme, m.width)
 	}
 
-	parts := []string{header, chatPane}
+	headerGap := lipgloss.NewStyle().Width(m.width).Render("")
+	parts := []string{header, headerGap, chatPane}
 	if debugDock != "" {
 		parts = append(parts, debugDock)
 	}

@@ -149,6 +149,38 @@ func TestChatModelSuppressesRawToolMarkupToken(t *testing.T) {
 	}
 }
 
+func TestChatModelSuppressesSelfClosingRawToolMarkupToken(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{
+		Kind: llm.EventToken,
+		Text: `<tool_call name="shell.exec" arguments='{"cmd":"ls"}' />`,
+	})
+	m = updated.(ChatModel)
+
+	if len(m.messages) != 0 {
+		t.Fatalf("expected self-closing raw tool markup token to be suppressed, got %#v", m.messages)
+	}
+}
+
+func TestChatModelSuppressesMalformedRawToolMarkupToken(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{
+		Kind: llm.EventToken,
+		Text: `<tool_call>{"cmd":"ls"}</tool_call>`,
+	})
+	m = updated.(ChatModel)
+
+	if len(m.messages) != 0 {
+		t.Fatalf("expected malformed raw tool markup token to be suppressed, got %#v", m.messages)
+	}
+}
+
 func TestChatModelHandlesDoneEvent(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 80
@@ -1103,8 +1135,9 @@ func TestChatModelViewUsesRenderedHeaderHeightForLayout(t *testing.T) {
 	m = updated.(ChatModel)
 
 	wantHeaderHeight := strings.Count(renderStatusHeaderForHeight(m.theme(), m.statusSnapshot(), m.width, m.height), "\n") + 1
-	if got := m.mouseContext().chatY; got != wantHeaderHeight {
-		t.Fatalf("chatY = %d, want rendered header height %d", got, wantHeaderHeight)
+	wantChatY := wantHeaderHeight + chatHeaderGapHeight
+	if got := m.mouseContext().chatY; got != wantChatY {
+		t.Fatalf("chatY = %d, want rendered header height plus gap %d", got, wantChatY)
 	}
 }
 
@@ -3427,7 +3460,7 @@ func TestChatModelSubmitKeepsTranscriptVisibleAndClearsComposer(t *testing.T) {
 		t.Fatalf("expected same-cycle user echo in transcript, got:\n%s", got)
 	}
 	tail := strings.Join(strings.Split(got, "\n")[max(0, len(strings.Split(got, "\n"))-8):], "\n")
-	if !strings.Contains(tail, "Type a message or /help") {
+	if !strings.Contains(tail, "Ask Forge anything") {
 		t.Fatalf("expected empty composer placeholder after submit, got:\n%s", got)
 	}
 	if strings.Contains(tail, "> question should stay visible") {
@@ -3455,7 +3488,7 @@ func TestPromptEchoSubmitClearsComposerAndKeepsUserTurnVisible(t *testing.T) {
 	}
 	tailLines := strings.Split(view, "\n")
 	tail := strings.Join(tailLines[max(0, len(tailLines)-8):], "\n")
-	if !strings.Contains(tail, "Type a message or /help") {
+	if !strings.Contains(tail, "Ask Forge anything") {
 		t.Fatalf("expected empty composer placeholder after submit, got:\n%s", view)
 	}
 	if strings.Contains(tail, "> question should stay visible") {
@@ -3509,7 +3542,7 @@ func TestChatModelEnterWhileBusyQueuesSteering(t *testing.T) {
 	}
 }
 
-func TestChatModelViewUsesBoxedComposer(t *testing.T) {
+func TestChatModelViewUsesAiryComposer(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
 	m = updated.(ChatModel)
@@ -3520,11 +3553,36 @@ func TestChatModelViewUsesBoxedComposer(t *testing.T) {
 		lines = append(lines, strippedLine(line))
 	}
 	tail := strings.Join(lines[max(0, len(lines)-8):], "\n")
-	if !strings.ContainsAny(tail, "│╭╮╰╯") {
-		t.Fatalf("expected boxed composer, got:\n%s", tail)
+	if strings.ContainsAny(tail, "╭╮╰╯│") {
+		t.Fatalf("expected borderless composer, got:\n%s", tail)
 	}
-	if !strings.Contains(tail, "Prompt") || !strings.Contains(tail, "Type a message or /help") {
-		t.Fatalf("expected prompt label and placeholder, got:\n%s", tail)
+	if !strings.ContainsAny(tail, "─") {
+		t.Fatalf("expected subtle top divider, got:\n%s", tail)
+	}
+	if !strings.Contains(tail, "Ask Forge anything...") {
+		t.Fatalf("expected placeholder, got:\n%s", tail)
+	}
+}
+
+func TestChatModelViewAddsSpacerAfterHeaderBeforeFirstMessage(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 16})
+	m = updated.(ChatModel)
+	m.AddMessage(ChatMessage{Kind: MsgUser, Header: "You • 12:00:00", Content: "first message"})
+
+	lines := strings.Split(m.View(), "\n")
+	messageLine := -1
+	for i, line := range lines {
+		if strings.Contains(strippedLine(line), "You • 12:00:00") {
+			messageLine = i
+			break
+		}
+	}
+	if messageLine <= 0 {
+		t.Fatalf("expected first message in view:\n%s", strippedLine(m.View()))
+	}
+	if strings.TrimSpace(strippedLine(lines[messageLine-1])) != "" {
+		t.Fatalf("expected blank spacer above first message, got %q in:\n%s", strippedLine(lines[messageLine-1]), strippedLine(m.View()))
 	}
 }
 
@@ -3538,7 +3596,7 @@ func TestChatModelViewAddsSpacerBeforeComposer(t *testing.T) {
 	lines := strings.Split(view, "\n")
 	promptLine := -1
 	for i := len(lines) - 1; i >= 0; i-- {
-		if strings.Contains(strippedLine(lines[i]), "Prompt") {
+		if strings.Contains(strippedLine(lines[i]), "Ask Forge anything...") {
 			promptLine = i
 			break
 		}
@@ -3546,8 +3604,8 @@ func TestChatModelViewAddsSpacerBeforeComposer(t *testing.T) {
 	if promptLine <= 0 {
 		t.Fatalf("expected composer prompt line, got:\n%s", view)
 	}
-	if strings.TrimSpace(strippedLine(lines[promptLine-1])) != "" {
-		t.Fatalf("expected blank spacer before composer, got line %q in view:\n%s", strippedLine(lines[promptLine-1]), view)
+	if strings.TrimSpace(strippedLine(lines[promptLine-2])) != "" {
+		t.Fatalf("expected blank spacer before composer top divider, got line %q in view:\n%s", strippedLine(lines[promptLine-2]), view)
 	}
 }
 
@@ -3561,7 +3619,7 @@ func TestChatModelViewKeepsBlankSpacerBeforeComposer(t *testing.T) {
 	lines := strings.Split(view, "\n")
 	promptLine := -1
 	for i := len(lines) - 1; i >= 0; i-- {
-		if strings.Contains(strippedLine(lines[i]), "Prompt") {
+		if strings.Contains(strippedLine(lines[i]), "Ask Forge anything...") {
 			promptLine = i
 			break
 		}
@@ -3569,8 +3627,8 @@ func TestChatModelViewKeepsBlankSpacerBeforeComposer(t *testing.T) {
 	if promptLine <= 0 {
 		t.Fatalf("expected composer prompt line, got:\n%s", strippedLine(view))
 	}
-	if strings.TrimSpace(strippedLine(lines[promptLine-1])) != "" {
-		t.Fatalf("expected blank spacer before composer, got %q", strippedLine(lines[promptLine-1]))
+	if strings.TrimSpace(strippedLine(lines[promptLine-2])) != "" {
+		t.Fatalf("expected blank spacer before composer top divider, got %q", strippedLine(lines[promptLine-2]))
 	}
 }
 
@@ -3690,7 +3748,7 @@ func TestProgressSlotRendersAboveComposerWhileTranscriptShowsDetails(t *testing.
 	progressLine := -1
 	for i, line := range lines {
 		stripped := strippedLine(line)
-		if strings.Contains(stripped, "Prompt") {
+		if strings.Contains(stripped, "Ask Forge anything") {
 			promptLine = i
 		}
 		if strings.Contains(stripped, "reading app.go") {
@@ -3700,7 +3758,7 @@ func TestProgressSlotRendersAboveComposerWhileTranscriptShowsDetails(t *testing.
 	if promptLine <= 0 || progressLine < 0 {
 		t.Fatalf("expected progress slot and composer, got:\n%s", strippedLine(view))
 	}
-	if progressLine != promptLine-1 {
+	if progressLine != promptLine-2 {
 		t.Fatalf("expected live progress directly above composer, got progress line %d prompt line %d in:\n%s", progressLine, promptLine, strippedLine(view))
 	}
 }
@@ -3720,14 +3778,14 @@ func TestProgressSlotTruncatesLongMessageToSingleLine(t *testing.T) {
 	promptLine := -1
 	for i, line := range lines {
 		stripped := strippedLine(line)
-		if strings.Contains(stripped, "Prompt") {
+		if strings.Contains(stripped, "Ask Forge anything") {
 			promptLine = i
 		}
 	}
 	if promptLine <= 0 {
 		t.Fatalf("expected composer in view, got:\n%s", strippedLine(view))
 	}
-	progressLine := strings.TrimSpace(strippedLine(lines[promptLine-1]))
+	progressLine := strings.TrimSpace(strippedLine(lines[promptLine-2]))
 	if progressLine == "" || !strings.Contains(progressLine, "reading this path") {
 		t.Fatalf("expected truncated progress directly above composer, got line %q in:\n%s", progressLine, strippedLine(view))
 	}

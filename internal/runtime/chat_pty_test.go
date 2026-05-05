@@ -97,7 +97,7 @@ func TestDefaultChatDoesNotEnterAltScreen(t *testing.T) {
 		_ = ptmx.Close()
 	}()
 
-	waitForPTYOutput(t, capture, "Type a message or /help", 10*time.Second)
+	waitForPTYOutput(t, capture, "Ask Forge anything", 10*time.Second)
 	const prompt = "hello forge"
 	if _, err := ptmx.Write([]byte(prompt + "\r")); err != nil {
 		t.Fatalf("ptmx.Write: %v", err)
@@ -128,7 +128,7 @@ func TestDefaultChatDoesNotEnterAltScreenDuringBracketedPaste(t *testing.T) {
 		_ = ptmx.Close()
 	}()
 
-	waitForPTYOutput(t, capture, "Type a message or /help", 10*time.Second)
+	waitForPTYOutput(t, capture, "Ask Forge anything", 10*time.Second)
 	paste := "\x1b[200~pasted first line\npasted second line\x1b[201~"
 	if _, err := ptmx.Write([]byte(paste)); err != nil {
 		t.Fatalf("ptmx.Write paste: %v", err)
@@ -160,7 +160,7 @@ func TestDebugChatDoesNotEnterAltScreen(t *testing.T) {
 		_ = ptmx.Close()
 	}()
 
-	waitForPTYOutput(t, capture, "Type a message or /help", 10*time.Second)
+	waitForPTYOutput(t, capture, "Ask Forge anything", 10*time.Second)
 	initial := stripANSI(capture.String())
 	if !strings.Contains(initial, "test-model") || !strings.Contains(initial, "FORGE") {
 		t.Fatalf("expected shared debug header in initial output, got:\n%s", initial)
