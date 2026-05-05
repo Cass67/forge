@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	chatComposerMinBodyLines = 3
+	chatComposerMinBodyLines = 1
 	chatComposerMaxBodyLines = 7
 )
 
@@ -24,6 +24,12 @@ type ChatComposer struct {
 	cursor       int
 	minBodyLines int
 	maxBodyLines int
+}
+
+type composerVisibleLine struct {
+	text      string
+	cursorCol int
+	hasCursor bool
 }
 
 func NewChatComposer() ChatComposer {
@@ -88,9 +94,8 @@ func (c *ChatComposer) deleteBackward() {
 }
 
 func (c ChatComposer) Height(width int) int {
-	innerWidth := max(1, width-2)
-	// Add 1 for the prompt bar and 0 for the bottom bar since we don't have one anymore
-	return len(c.visibleLines(innerWidth)) + 1
+	bodyWidth := chatComposerBodyWidth(width)
+	return len(c.visibleBodyLineViews(bodyWidth)) + 1
 }
 
 func (c ChatComposer) visibleLines(width int) []string {
@@ -104,64 +109,69 @@ func (c ChatComposer) visibleLines(width int) []string {
 	return lines
 }
 
+func chatComposerBodyWidth(width int) int {
+	return max(1, width-3)
+}
+
 func (c ChatComposer) Render(theme chatTheme, width int) string {
 	if width <= 0 {
 		return ""
 	}
-	innerWidth := max(1, width-2)
-	bodyWidth := max(1, innerWidth-2)
-	bodyLines := c.visibleBodyLines(bodyWidth)
+	bodyWidth := chatComposerBodyWidth(width)
+	bodyLines := c.visibleBodyLineViews(bodyWidth)
 
 	hintText := "Enter send"
 	switch {
-	case innerWidth >= 48:
+	case width >= 50:
 		hintText = "Enter send • Alt+Enter newline"
-	case innerWidth >= 32:
+	case width >= 34:
 		hintText = "Enter send • newline"
 	}
-	if innerWidth >= 60 {
+	if width >= 62 {
 		hintText = "Enter send • Alt+Enter newline • Esc cancel"
 	}
 
-	topLabel := " Prompt "
-	topContent := fitCell(topLabel+hintText, innerWidth)
-	top := lipgloss.JoinHorizontal(
-		lipgloss.Left,
-		lipgloss.NewStyle().Foreground(theme.BorderFocus).Render("╭"),
-		lipgloss.NewStyle().Foreground(theme.TextDim).Bold(true).Render(topContent),
-		lipgloss.NewStyle().Foreground(theme.BorderFocus).Render("╮"),
-	)
-
-	out := make([]string, 0, len(bodyLines)+2)
-	out = append(out, top)
+	divider := lipgloss.NewStyle().
+		Foreground(theme.Border).
+		Render(strings.Repeat("─", width))
+	out := make([]string, 0, len(bodyLines)+1)
+	out = append(out, divider)
 
 	for i, line := range bodyLines {
-		prefix := "> "
-		if i > 0 {
+		var prefix string
+		var prefixStyle lipgloss.Style
+		empty := c.text == ""
+		if empty {
 			prefix = "  "
+			prefixStyle = lipgloss.NewStyle().Foreground(theme.TextDim)
+			if i == 0 {
+				line.text = " " + strings.TrimSpace("Ask Forge anything... ("+hintText+")")
+				line.hasCursor = true
+				line.cursorCol = 0
+			}
+		} else {
+			prefix = "┃ "
+			if i == 0 {
+				prefixStyle = lipgloss.NewStyle().Foreground(theme.AccentPrimary)
+			} else {
+				prefixStyle = lipgloss.NewStyle().Foreground(theme.Border)
+			}
 		}
-		text := fitCell(prefix+line, innerWidth)
-		bodyStyle := lipgloss.NewStyle().
-			Foreground(theme.Text).
-			Render(text)
-		if c.text == "" {
-			bodyStyle = lipgloss.NewStyle().
-				Foreground(theme.TextDim).
-				Render(text)
+
+		textStyle := lipgloss.NewStyle().Foreground(theme.Text)
+		if empty {
+			textStyle = lipgloss.NewStyle().Foreground(theme.TextDim)
 		}
-		row := lipgloss.JoinHorizontal(
+		body := renderComposerTextLine(line.text, bodyWidth, line.hasCursor, line.cursorCol, textStyle)
+
+		out = append(out, lipgloss.JoinHorizontal(
 			lipgloss.Left,
-			lipgloss.NewStyle().Foreground(theme.Border).Render("│"),
-			bodyStyle,
-			lipgloss.NewStyle().Foreground(theme.Border).Render("│"),
-		)
-		out = append(out, row)
+			lipgloss.NewStyle().Foreground(theme.AppBG).Render(" "),
+			prefixStyle.Render(prefix),
+			body,
+		))
 	}
 
-	bottom := lipgloss.NewStyle().
-		Foreground(theme.BorderFocus).
-		Render("╰" + strings.Repeat("─", innerWidth) + "╯")
-	out = append(out, bottom)
 	return strings.Join(out, "\n")
 }
 
@@ -221,40 +231,72 @@ func (c *ChatComposer) HandleKey(msg tea.KeyMsg, busy bool) ComposerAction {
 }
 
 func (c ChatComposer) visibleBodyLines(width int) []string {
+	views := c.visibleBodyLineViews(width)
+	lines := make([]string, 0, len(views))
+	for _, view := range views {
+		lines = append(lines, view.text)
+	}
+	return lines
+}
+
+func (c ChatComposer) visibleBodyLineViews(width int) []composerVisibleLine {
+	width = max(1, width)
 	minBodyLines := max(1, c.minBodyLines)
 	maxBodyLines := max(minBodyLines, c.maxBodyLines)
 
 	if c.text == "" {
-		lines := []string{"Type a message or /help"}
-		for len(lines) < minBodyLines {
-			lines = append(lines, "")
-		}
-		return lines
+		return []composerVisibleLine{{text: "Ask Forge anything...", hasCursor: true}}
 	}
 
 	wrapped := composerWrappedLines(c.text, width)
 	visibleCount := clamp(len(wrapped), minBodyLines, maxBodyLines)
-	cursorLine := composerCursorLine(c.text, c.cursor, width)
+	cursorLine, cursorCol := composerCursorPosition(c.text, c.cursor, width)
 	start := 0
 	if len(wrapped) > visibleCount {
 		start = clamp(cursorLine-visibleCount+1, 0, len(wrapped)-visibleCount)
 	}
 	end := min(len(wrapped), start+visibleCount)
-	lines := append([]string(nil), wrapped[start:end]...)
+	lines := make([]composerVisibleLine, 0, visibleCount)
+	for i, line := range wrapped[start:end] {
+		lineNo := start + i
+		lines = append(lines, composerVisibleLine{
+			text:      line,
+			cursorCol: cursorCol,
+			hasCursor: lineNo == cursorLine,
+		})
+	}
 	for len(lines) < visibleCount {
-		lines = append(lines, "")
+		lines = append(lines, composerVisibleLine{})
 	}
 	return lines
 }
 
 func composerCursorLine(text string, cursor, width int) int {
+	line, _ := composerCursorPosition(text, cursor, width)
+	return line
+}
+
+func composerCursorPosition(text string, cursor, width int) (int, int) {
 	runes := []rune(text)
 	cursor = clamp(cursor, 0, len(runes))
 	lines := composerWrappedLines(string(runes[:cursor]), width)
 	if len(lines) == 0 {
-		return 0
+		return 0, 0
 	}
-	return len(lines) - 1
+	return len(lines) - 1, len([]rune(lines[len(lines)-1]))
+}
+
+func renderComposerTextLine(text string, width int, hasCursor bool, cursorCol int, textStyle lipgloss.Style) string {
+	width = max(1, width)
+	runes := []rune(fitCell(text, width))
+	if !hasCursor {
+		return textStyle.Render(string(runes))
+	}
+	cursorCol = clamp(cursorCol, 0, width-1)
+	before := textStyle.Render(string(runes[:cursorCol]))
+	cursor := styleCursor.Render(string(runes[cursorCol]))
+	after := textStyle.Render(string(runes[cursorCol+1:]))
+	return before + cursor + after
 }
 
 func composerWrappedLines(text string, width int) []string {

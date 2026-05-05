@@ -850,7 +850,10 @@ func normalizeToolIntentText(text string) string {
 func inputSuggestsPreviewWork(text string) bool {
 	return containsToolPhrase(text,
 		"preview", "mock up", "mockup", "web page", "webpage", "landing page",
-		"show in browser", "show me in browser", "html preview",
+		"show in browser", "show me in browser", "html preview", "still up",
+		"pick 3 others", "pick three others", "no neon", "show me them on the screen",
+		"show it on the web page", "put that on the web page", "refresh the preview",
+		"open the preview again",
 	)
 }
 
@@ -865,6 +868,8 @@ func inputSuggestsFileInspection(text string) bool {
 		"read ", "open ", "inspect ", "examine ", "check ", "look at ", "show ",
 		"file", "files", "log", "logs", "trace", "debug", "readme", "config", "output", "image",
 		"repo", "repository", "project", "codebase", "workspace", "directory", "folder",
+		"what do you think", "tell me what you think", "anything i need change",
+		"anything i need to change", "improve", "improvement", "review",
 	)
 }
 
@@ -881,7 +886,7 @@ func inputSuggestsFileWrites(text string) bool {
 	}
 	return inputMentionsPathLikeText(text) || containsToolPhrase(text,
 		" file", " files", "markdown", ".md", "to a file", "into a file",
-		"readme", "config", "artifact", "html",
+		"readme", "config", "artifact", "html", "script",
 	)
 }
 
@@ -1253,7 +1258,17 @@ func looksLikeLegacyXMLToolCall(text string) bool {
 	if _, ok := parseXMLToolCallsWrapper(text); ok {
 		return true
 	}
-	return false
+	return containsXMLToolCallMarkup(text)
+}
+
+func containsXMLToolCallMarkup(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	return strings.Contains(lower, "<tool_call") ||
+		strings.Contains(lower, "</tool_call") ||
+		strings.Contains(lower, "<tool_calls") ||
+		strings.Contains(lower, "</tool_calls") ||
+		strings.Contains(lower, "<function_calls") ||
+		strings.Contains(lower, "</function_calls")
 }
 
 // parseXMLToolCallsWrapper detects the <tool_calls>...</tool_calls> XML wrapper
@@ -1283,7 +1298,24 @@ func parseXMLToolCallsWrapper(text string) (llm.NativeToolCall, bool) {
 func stripXMLToolCallMarkup(text string) string {
 	text = stripXMLBlock(text, "<tool_calls>", "</tool_calls>")
 	text = stripXMLBlock(text, "<tool_call>", "</tool_call>")
+	text = stripSelfClosingXMLTag(text, "<tool_call")
 	return strings.TrimSpace(text)
+}
+
+func stripSelfClosingXMLTag(text, open string) string {
+	for {
+		lower := strings.ToLower(text)
+		start := strings.Index(lower, open)
+		if start < 0 {
+			return text
+		}
+		end := strings.Index(lower[start:], "/>")
+		if end < 0 {
+			return text
+		}
+		end += start
+		text = strings.TrimSpace(text[:start] + text[end+len("/>"):])
+	}
 }
 
 func stripXMLBlock(text, open, close string) string {

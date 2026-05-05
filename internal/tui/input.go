@@ -112,6 +112,8 @@ func (m InputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.WriterIdx = (m.WriterIdx - 1 + len(m.WriterModels)) % len(m.WriterModels)
 		} else if m.ModelFocus == 1 && len(m.AuditorModels) > 0 {
 			m.AuditorIdx = (m.AuditorIdx - 1 + len(m.AuditorModels)) % len(m.AuditorModels)
+		} else if m.cursorPos > 0 {
+			m.cursorPos--
 		}
 
 	case "right":
@@ -119,6 +121,8 @@ func (m InputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.WriterIdx = (m.WriterIdx + 1) % len(m.WriterModels)
 		} else if m.ModelFocus == 1 && len(m.AuditorModels) > 0 {
 			m.AuditorIdx = (m.AuditorIdx + 1) % len(m.AuditorModels)
+		} else if m.cursorPos < len([]rune(m.Prompt)) {
+			m.cursorPos++
 		}
 
 	case "home":
@@ -143,8 +147,11 @@ func (m InputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case "backspace":
-		if len(m.Prompt) > 0 {
-			m.Prompt = m.Prompt[:len(m.Prompt)-1]
+		runes := []rune(m.Prompt)
+		if len(runes) > 0 && m.cursorPos > 0 {
+			cursorPos := clamp(m.cursorPos, 0, len(runes))
+			m.Prompt = string(append(runes[:cursorPos-1], runes[cursorPos:]...))
+			m.cursorPos = cursorPos - 1
 		}
 
 	default:
@@ -152,7 +159,10 @@ func (m InputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if ch == "ctrl+t" {
 			m.Interactive = !m.Interactive
 		} else if len(ch) == 1 {
-			m.Prompt += ch
+			runes := []rune(m.Prompt)
+			cursorPos := clamp(m.cursorPos, 0, len(runes))
+			m.Prompt = string(append(append(runes[:cursorPos:cursorPos], []rune(ch)...), runes[cursorPos:]...))
+			m.cursorPos = cursorPos + len([]rune(ch))
 		}
 	}
 

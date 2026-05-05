@@ -149,7 +149,7 @@ func TestChatComposerWhitespaceOnlyDraftRendersAsDraft(t *testing.T) {
 
 	rendered := strippedLine(c.Render(lookupThemeForTest(t, "default"), 24))
 
-	if strings.Contains(rendered, "Type a message or /help") {
+	if strings.Contains(rendered, "Ask Forge anything") {
 		t.Fatalf("expected whitespace draft to avoid placeholder, got %q", rendered)
 	}
 	if got := c.visibleBodyLines(22)[0]; got != "   " {
@@ -157,27 +157,54 @@ func TestChatComposerWhitespaceOnlyDraftRendersAsDraft(t *testing.T) {
 	}
 }
 
-func TestChatComposerRenderUsesBoxedShell(t *testing.T) {
+func TestChatComposerRenderUsesAiryDock(t *testing.T) {
 	c := NewChatComposer()
+	theme := chatTheme{Border: "12", TextDim: "8"}
+	rendered := c.Render(theme, 32)
 
-	rendered := strippedLine(c.Render(lookupThemeForTest(t, "default"), 32))
-
-	if !strings.ContainsAny(rendered, "╭╮╰╯│") {
-		t.Fatalf("expected boxed composer shell, got %q", rendered)
+	if strings.ContainsAny(rendered, "╭╮╰╯│") {
+		t.Fatalf("expected borderless composer dock, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "Prompt") || !strings.Contains(rendered, "Type a message or /help") {
-		t.Fatalf("expected prompt label and placeholder, got %q", rendered)
+	if !strings.Contains(rendered, "────────────────") {
+		t.Fatalf("expected subtle top divider, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Ask Forge anything") {
+		t.Fatalf("expected inviting placeholder, got %q", rendered)
 	}
 }
 
 func TestChatComposerRenderShowsControlHintsInTopBar(t *testing.T) {
 	c := NewChatComposer()
+	theme := chatTheme{Border: "12", TextDim: "8"}
+	rendered := c.Render(theme, 80)
 
-	rendered := strippedLine(c.Render(lookupThemeForTest(t, "default"), 64))
+	if !strings.Contains(rendered, "Esc cancel") {
+		t.Fatalf("expected composer hint \"Esc cancel\" in placeholder, got %q", rendered)
+	}
+}
 
-	for _, want := range []string{"Enter send", "Alt+Enter newline", "Esc cancel"} {
+func TestChatComposerRenderShowsWhiteCursor(t *testing.T) {
+	withTrueColorProfile(t)
+	c := NewChatComposer()
+	c.SetText("testing cursor")
+	c.SetCursor(4)
+
+	rendered := c.Render(lookupThemeForTest(t, "default"), 80)
+
+	if !strings.Contains(rendered, ansiBackgroundFragment(lipgloss.Color("#ffffff"))) {
+		t.Fatalf("expected white cursor in composer render, got %q", rendered)
+	}
+}
+
+func TestChatComposerRenderWrapsDraftWithoutDroppingText(t *testing.T) {
+	c := NewChatComposer()
+	c.SetText("there is no space between the header and the first message")
+
+	rendered := strippedLine(c.Render(lookupThemeForTest(t, "default"), 32))
+
+	for _, want := range []string{"there is no space", "between the", "first message"} {
 		if !strings.Contains(rendered, want) {
-			t.Fatalf("expected composer hint %q, got %q", want, rendered)
+			t.Fatalf("wrapped composer missing %q in:\n%s", want, rendered)
 		}
 	}
 }
@@ -206,8 +233,8 @@ func TestChatComposerRenderDoesNotPaintInlineBackgroundBlocks(t *testing.T) {
 func TestChatComposerVisibleLineBudget(t *testing.T) {
 	c := NewChatComposer()
 	c.InsertString("short")
-	if got := len(c.visibleLines(12)); got != 3 {
-		t.Fatalf("short composer height = %d, want 3", got)
+	if got := len(c.visibleLines(12)); got != 1 {
+		t.Fatalf("short composer height = %d, want 1", got)
 	}
 
 	c.SetText("1111111111222222222233333333334444444444")
