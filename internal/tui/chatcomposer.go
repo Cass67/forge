@@ -89,18 +89,16 @@ func (c *ChatComposer) deleteBackward() {
 
 func (c ChatComposer) Height(width int) int {
 	innerWidth := max(1, width-2)
+	// Add 1 for the prompt bar and 0 for the bottom bar since we don't have one anymore
 	return len(c.visibleLines(innerWidth)) + 1
 }
 
 func (c ChatComposer) visibleLines(width int) []string {
 	width = max(1, width)
-	lines := []string{fitCell("Prompt", width)}
+	lines := []string{}
 	bodyLines := c.visibleBodyLines(max(1, width-2))
-	for i, line := range bodyLines {
-		prefix := "> "
-		if i > 0 {
-			prefix = "  "
-		}
+	for _, line := range bodyLines {
+		prefix := "  "
 		lines = append(lines, fitCell(prefix+line, width))
 	}
 	return lines

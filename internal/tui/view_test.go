@@ -116,10 +116,15 @@ func TestDefaultChatViewEmptyStateOnlyShowsReadyCopy(t *testing.T) {
 	m.height = 24
 
 	view := strippedLine(m.View())
-	if !strings.Contains(view, "Forge is ready.") {
+	if !strings.Contains(view, "Welcome to Forge.") {
 		t.Fatalf("expected ready copy in default empty view:\n%s", view)
 	}
-	if strings.Contains(view, "Ask for a code change, bugfix, or investigation.") {
-		t.Fatalf("old helper line should be gone:\n%s", view)
+	for _, unwanted := range []string{
+		"Ask for a code change, bugfix, or investigation.",
+		"Use /help for commands, /find to search.",
+	} {
+		if strings.Contains(view, unwanted) {
+			t.Fatalf("empty default view contains unwanted copy %q", unwanted)
+		}
 	}
 }
