@@ -74,7 +74,7 @@ func (d *OpenAIDriver) wsEnsureConnection(ctx context.Context) (*websocket.Conn,
 		return nil, fmt.Errorf("websocket dial: %w", err)
 	}
 
-	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+	_ = conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 	d.wsConn = conn
 	d.wsLastRequestID = ""
 	return conn, nil
@@ -106,9 +106,13 @@ func (d *OpenAIDriver) wsStreamResponses(ctx context.Context, messages []llm.Mes
 		return err
 	}
 
-	err = d.wsSendAndRead(ctx, conn, messages, tools, out, true)
+	const wsTimeout = 120 * time.Second
+	streamCtx, cancel := context.WithTimeout(ctx, wsTimeout)
+	defer cancel()
+
+	err = d.wsSendAndRead(streamCtx, conn, messages, tools, out, true)
 	if err != nil && d.wsPrevNotFound(err) {
-		return d.wsSendAndRead(ctx, conn, messages, tools, out, false)
+		return d.wsSendAndRead(streamCtx, conn, messages, tools, out, false)
 	}
 	return err
 }
@@ -185,6 +189,7 @@ func (d *OpenAIDriver) wsReadEvents(ctx context.Context, conn *websocket.Conn, o
 	go func() {
 		defer close(readCh)
 		for {
+			_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 			var raw json.RawMessage
 			err := conn.ReadJSON(&raw)
 			if err != nil {

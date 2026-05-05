@@ -9,6 +9,88 @@ import (
 	"forge/internal/llm"
 )
 
+func TestDropOrphanedToolCallsRemovesUnpairedAssistant(t *testing.T) {
+	msgs := []llm.Message{
+		{Role: llm.RoleUser, Content: "hello"},
+		{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "orphan", Name: "read_file", ArgsJSON: "{}"}}},
+		{Role: llm.RoleUser, Content: "next turn"},
+	}
+	got := dropOrphanedToolCalls(msgs)
+	if len(got) != 2 {
+		t.Fatalf("want 2 messages after dropping orphan, got %d", len(got))
+	}
+	if got[0].Role != llm.RoleUser || got[0].Content != "hello" {
+		t.Fatal("first message should be user hello")
+	}
+	if got[1].Role != llm.RoleUser || got[1].Content != "next turn" {
+		t.Fatal("second message should be user next turn")
+	}
+}
+
+func TestDropOrphanedToolCallsPreservesPaired(t *testing.T) {
+	msgs := []llm.Message{
+		{Role: llm.RoleUser, Content: "hello"},
+		{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "c1", Name: "read_file", ArgsJSON: "{}"}}},
+		{Role: llm.RoleTool, ToolCallID: "c1", Content: "result"},
+		{Role: llm.RoleAssistant, Content: "done"},
+	}
+	got := dropOrphanedToolCalls(msgs)
+	if len(got) != 4 {
+		t.Fatalf("want 4 messages, got %d", len(got))
+	}
+}
+
+func TestDropOrphanedToolCallsPreservesMultipleCalls(t *testing.T) {
+	msgs := []llm.Message{
+		{Role: llm.RoleUser, Content: "hello"},
+		{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{
+			{ID: "c1", Name: "read_file", ArgsJSON: "{}"},
+			{ID: "c2", Name: "write_file", ArgsJSON: "{}"},
+		}},
+		{Role: llm.RoleTool, ToolCallID: "c1", Content: "result1"},
+		{Role: llm.RoleTool, ToolCallID: "c2", Content: "result2"},
+		{Role: llm.RoleAssistant, Content: "done"},
+	}
+	got := dropOrphanedToolCalls(msgs)
+	if len(got) != 5 {
+		t.Fatalf("want 5 messages, got %d", len(got))
+	}
+}
+
+func TestDropOrphanedToolCallsDropsPartiallyPaired(t *testing.T) {
+	msgs := []llm.Message{
+		{Role: llm.RoleUser, Content: "hello"},
+		{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{
+			{ID: "c1", Name: "read_file", ArgsJSON: "{}"},
+			{ID: "c2", Name: "write_file", ArgsJSON: "{}"},
+		}},
+		{Role: llm.RoleTool, ToolCallID: "c1", Content: "result1"},
+		// c2 missing — orphaned
+	}
+	got := dropOrphanedToolCalls(msgs)
+	if len(got) != 2 {
+		t.Fatalf("want 2 messages after dropping partially-paired assistant, got %d", len(got))
+	}
+	if got[0].Role != llm.RoleUser || got[0].Content != "hello" {
+		t.Fatal("first should be user hello")
+	}
+	if got[1].Role != llm.RoleTool || got[1].ToolCallID != "c1" {
+		t.Fatal("second should be tool result for c1")
+	}
+}
+
+func TestDropOrphanedToolCallsEmptyInput(t *testing.T) {
+	var msgs []llm.Message
+	got := dropOrphanedToolCalls(msgs)
+	if len(got) != 0 {
+		t.Fatal("empty input should return empty")
+	}
+	got2 := dropOrphanedToolCalls(nil)
+	if len(got2) != 0 {
+		t.Fatal("nil input should return nil")
+	}
+}
+
 func TestBuildPromptTrimsInput(t *testing.T) {
 	if got := BuildPrompt("  inspect repo  "); got != "inspect repo" {
 		t.Fatalf("BuildPrompt() = %q", got)
