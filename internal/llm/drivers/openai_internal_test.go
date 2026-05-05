@@ -24,12 +24,12 @@ func TestModelRequiresResponses(t *testing.T) {
 		{model: "o3-mini", want: true},
 		{model: "o4-mini", want: true},
 		// gpt-5.x variants (ChatGPT/Codex), gpt-5-mini etc. are chat models.
-		{model: "gpt-5.4", want: false},
+		{model: "gpt-5.4", want: true},
 		{model: "gpt-5-mini", want: false},
 		{model: "gpt5.1", want: false},
 		{model: "gpt5-mini", want: false},
 		{model: "gpt-4o", want: false},
-		{model: "openai/gpt-5.4", want: false},
+		{model: "openai/gpt-5.4", want: true},
 	}
 
 	for _, tt := range tests {
@@ -51,9 +51,9 @@ func TestUseResponsesAPI(t *testing.T) {
 			wantUsesResponses: true,
 		},
 		{
-			name:              "openai gpt-5.4 chat variant stays on chat completions",
+			name:              "openai gpt-5.4 uses responses (reasoning model)",
 			driver:            NewOpenAI("sk-test", "gpt-5.4"),
-			wantUsesResponses: false,
+			wantUsesResponses: true,
 		},
 		{
 			name:              "chatgpt gpt-5.4 uses responses",
@@ -103,8 +103,8 @@ func TestModelSupportsTemperature(t *testing.T) {
 	}{
 		{model: "gpt-4o", want: true},
 		{model: "gpt-4o-mini", want: true},
-		// gpt-5.x ChatGPT/Codex variants are chat models that support temperature.
-		{model: "gpt-5.4", want: true},
+		// gpt-5.4 is a reasoning model — no temperature.
+		{model: "gpt-5.4", want: false},
 		// Exact gpt-5 and o-series are reasoning models — no temperature.
 		{model: "gpt-5", want: false},
 		{model: "o1", want: false},
@@ -251,8 +251,8 @@ func TestResponsesRequestStateUsesFullInputForCustomResponsesProvider(t *testing
 func TestResponsesRequestStateUsesFullInputForChatGPTStatelessMode(t *testing.T) {
 	d := &OpenAIDriver{
 		providerLabel:     "chatgpt",
-		registryName:      "chatgpt/gpt-5.4",
-		apiModel:          "gpt-5.4",
+		registryName:      "chatgpt/gpt-5.3-codex",
+		apiModel:          "gpt-5.3-codex",
 		supportsResponses: true,
 	}
 	d.prevResponseID = "resp_123"
@@ -287,8 +287,8 @@ func TestResponsesRequestStateUsesFullInputForChatGPTStatelessMode(t *testing.T)
 func TestResponseParamsUseStatelessCodexDefaultsForChatGPT(t *testing.T) {
 	d := &OpenAIDriver{
 		providerLabel:     "chatgpt",
-		registryName:      "chatgpt/gpt-5.4",
-		apiModel:          "gpt-5.4",
+		registryName:      "chatgpt/gpt-5.3-codex",
+		apiModel:          "gpt-5.3-codex",
 		supportsResponses: true,
 	}
 	msgs := []llm.Message{

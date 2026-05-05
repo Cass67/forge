@@ -303,7 +303,6 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 
 	nativeCaller, isNative := r.driver.(llm.NativeToolCaller)
 
-	emptyRetried := false
 	completionRetries := 0
 	for step := 0; step < maxLoopSafetySteps; step++ {
 		if r.applyPendingInput() {
@@ -318,11 +317,6 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 		}
 		calls, err := r.streamNativeTurn(ctx, turn, nativeCaller, toolDefs)
 		if err != nil {
-			if !emptyRetried && strings.Contains(err.Error(), "empty native response") {
-				emptyRetried = true
-				r.session.AppendUserMessage("Please provide a response summarizing what you've done and what the result is.")
-				continue
-			}
 			var retryable *RetryableCompletionError
 			if errors.As(err, &retryable) && completionRetries < maxCompletionRetriesPerTurn {
 				completionRetries++
@@ -412,7 +406,10 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 	// Final text answer
 	finalText := strings.TrimSpace(textBuf.String())
 	if finalText == "" {
-		return nil, fmt.Errorf("react runtime: empty native response")
+		return nil, NewRetryableCompletionError(
+			"react runtime: empty native response",
+			"Your response was empty. Please provide a text response or use tool calls.",
+		)
 	}
 	r.pendingRetryPrompt = ""
 	if looksLikeLegacyXMLToolCall(finalText) {
@@ -458,7 +455,10 @@ func (r *Runner) streamPlainTurn(ctx context.Context, turn int, messages []llm.M
 
 	finalText := strings.TrimSpace(textBuf.String())
 	if finalText == "" {
-		return nil, fmt.Errorf("react runtime: empty native response")
+		return nil, NewRetryableCompletionError(
+			"react runtime: empty native response",
+			"Your response was empty. Please provide a text response or use tool calls.",
+		)
 	}
 	r.pendingRetryPrompt = ""
 	if looksLikeLegacyXMLToolCall(finalText) {
