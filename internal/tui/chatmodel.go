@@ -2165,12 +2165,11 @@ func (m ChatModel) trySubmitText(input string) (ChatModel, tea.Cmd, bool) {
 		}
 	}
 
-	// Required skill check
+	// Required skill check — show the nudge but always let the input through.
 	requiredSkill := skills.RequiredForInput(input)
-	if requiredSkill != "" && !m.state.SkillActivated(requiredSkill) && skills.NormalizeAutoMode(m.autoSkillsMode) != skills.AutoSkillsSuggest {
+	if requiredSkill != "" && !m.state.SkillActivated(requiredSkill) {
 		if _, ok := skills.Get(m.skills, requiredSkill); ok {
 			m.flash = fmt.Sprintf("required skill: /%s", requiredSkill)
-			return m, nil, false
 		}
 	}
 
