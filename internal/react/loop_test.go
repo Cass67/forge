@@ -1680,6 +1680,18 @@ func TestAllowedToolsForPlainBugReportIncludesImplementationTools(t *testing.T) 
 	}
 }
 
+func TestAllowedToolsForActionFollowUpIncludesWriteAndCommandTools(t *testing.T) {
+	for _, input := range []string{"do it", "continue", "use what you need"} {
+		tools := allowedToolNamesForSnapshot(SessionSnapshot{LastInput: input})
+
+		for _, want := range []string{"read_file", "edit_file", "write_file", "run_command", "git_status"} {
+			if !containsString(tools, want) {
+				t.Fatalf("%q tools = %#v, want %s", input, tools, want)
+			}
+		}
+	}
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
