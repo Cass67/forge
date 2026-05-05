@@ -740,8 +740,9 @@ func toolDefSchema(def llm.ToolDef) map[string]any {
 		}
 	}
 	schema := map[string]any{
-		"type":       "object",
-		"properties": properties,
+		"type":                 "object",
+		"properties":           properties,
+		"additionalProperties": false,
 	}
 	if len(required) > 0 {
 		schema["required"] = required

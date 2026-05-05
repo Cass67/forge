@@ -64,7 +64,7 @@ func RegisterCustomProviderName(name string) {
 
 func isProviderName(name string) bool {
 	switch name {
-	case "anthropic", "claude", "openai", "chatgpt", "copilot", "xai", "zai", "zai-coding-plan", "mistral", "perplexity", "cerebras", "groq", "nvidia", "together", "deepinfra", "openrouter":
+	case "anthropic", "claude", "openai", "chatgpt", "copilot", "xai", "zai", "zai-coding-plan", "mistral", "perplexity", "cerebras", "groq", "nvidia", "together", "deepinfra", "opencode-go", "openrouter":
 		return true
 	default:
 		customProviderMu.RLock()

@@ -61,15 +61,16 @@ func Preflight(cfg *config.Config, tokens *auth.Tokens, reg *llm.Registry) []Iss
 	}
 
 	compatEnvVars := map[string]string{
-		"groq":       "GROQ_API_KEY",
-		"mistral":    "MISTRAL_API_KEY",
-		"xai":        "XAI_API_KEY",
-		"nvidia":     "NVIDIA_API_KEY",
-		"openrouter": "OPENROUTER_API_KEY",
-		"together":   "TOGETHER_AI_API_KEY",
-		"perplexity": "PERPLEXITY_API_KEY",
-		"deepinfra":  "DEEPINFRA_API_KEY",
-		"cerebras":   "CEREBRAS_API_KEY",
+		"groq":        "GROQ_API_KEY",
+		"mistral":     "MISTRAL_API_KEY",
+		"xai":         "XAI_API_KEY",
+		"nvidia":      "NVIDIA_API_KEY",
+		"openrouter":  "OPENROUTER_API_KEY",
+		"together":    "TOGETHER_AI_API_KEY",
+		"perplexity":  "PERPLEXITY_API_KEY",
+		"deepinfra":   "DEEPINFRA_API_KEY",
+		"cerebras":    "CEREBRAS_API_KEY",
+		"opencode-go": "OPENCODE_API_KEY",
 	}
 	seen := map[string]bool{}
 	for _, m := range []string{cfg.Models.Writer, cfg.Models.Auditor, cfg.Models.Summarizer} {
