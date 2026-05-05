@@ -375,6 +375,7 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 	var toolCalls []llm.NativeToolCall
 	visibleEmitted := 0
 	streamVisible := r.renderer != nil
+	hasTools := len(toolDefs) > 0
 
 	for tok := range out {
 		if tok.ReasoningContent != "" {
@@ -385,8 +386,11 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 			toolCalls = append(toolCalls, *tok.ToolCall)
 			continue
 		}
-		if tok.Text != "" {
-			textBuf.WriteString(tok.Text)
+		if tok.Text == "" {
+			continue
+		}
+		textBuf.WriteString(tok.Text)
+		if !hasTools {
 			current := textBuf.String()
 			if streamVisible && r.renderer != nil && len(current) > visibleEmitted {
 				r.renderer.AgentToken(current[visibleEmitted:])
@@ -400,13 +404,15 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 
 	if len(toolCalls) > 0 {
 		r.pendingRetryPrompt = ""
-		preamble := strings.TrimSpace(textBuf.String())
+		preamble := stripXMLToolCallMarkup(strings.TrimSpace(textBuf.String()))
 		reasoning := strings.TrimSpace(reasoningBuf.String())
 		r.session.AppendAssistantToolTurn(preamble, toolCalls)
 		if reasoning != "" {
 			r.session.SetLastAssistantReasoning(reasoning)
 		}
-		if preamble != "" && r.renderer != nil && visibleEmitted < len(preamble) {
+		if streamVisible && r.renderer != nil && hasTools && preamble != "" {
+			r.renderer.AgentText(preamble)
+		} else if preamble != "" && r.renderer != nil && visibleEmitted < len(preamble) {
 			r.renderer.AgentText(preamble[visibleEmitted:])
 		}
 		return toolCalls, nil
@@ -1241,8 +1247,58 @@ func previewVerificationResultLooksLive(result string) bool {
 }
 
 func looksLikeLegacyXMLToolCall(text string) bool {
-	_, ok := parseLegacyXMLToolCall(text)
-	return ok
+	if _, ok := parseLegacyXMLToolCall(text); ok {
+		return true
+	}
+	if _, ok := parseXMLToolCallsWrapper(text); ok {
+		return true
+	}
+	return false
+}
+
+// parseXMLToolCallsWrapper detects the <tool_calls>...</tool_calls> XML wrapper
+// format used by some providers.
+func parseXMLToolCallsWrapper(text string) (llm.NativeToolCall, bool) {
+	const open = "<tool_calls>"
+	const close = "</tool_calls>"
+	start := strings.Index(text, open)
+	if start < 0 {
+		return llm.NativeToolCall{}, false
+	}
+	end := strings.LastIndex(text, close)
+	if end < 0 || end <= start {
+		return llm.NativeToolCall{}, false
+	}
+	inner := strings.TrimSpace(text[start+len(open) : end])
+	if inner == "" {
+		return llm.NativeToolCall{}, false
+	}
+	return llm.NativeToolCall{ID: "legacy_xml_wrapper_1", Name: "", ArgsJSON: "{}"}, true
+}
+
+// stripXMLToolCallMarkup removes <tool_calls>...</tool_calls> and
+// <tool_call>...</tool_call> XML markup from text. This prevents models
+// from leaking tool call syntax into the chat history and display when
+// they emit XML alongside native tool calls.
+func stripXMLToolCallMarkup(text string) string {
+	text = stripXMLBlock(text, "<tool_calls>", "</tool_calls>")
+	text = stripXMLBlock(text, "<tool_call>", "</tool_call>")
+	return strings.TrimSpace(text)
+}
+
+func stripXMLBlock(text, open, close string) string {
+	for {
+		start := strings.Index(text, open)
+		if start < 0 {
+			return text
+		}
+		end := strings.Index(text[start+len(open):], close)
+		if end < 0 {
+			return text
+		}
+		end += start + len(open)
+		text = strings.TrimSpace(text[:start] + text[end+len(close):])
+	}
 }
 
 func blockedPlanPromptHook(_ context.Context, event hooks.Event) []hooks.Result {

@@ -79,16 +79,22 @@ func resolveRequiredSkillName(input string) string {
 }
 
 func resolveAutoSkill(loaded []Skill, input string) (Skill, bool) {
-	lower := strings.ToLower(input)
-	for _, s := range loaded {
-		name := strings.ToLower(s.Name)
-		desc := strings.ToLower(s.Description)
-		if strings.Contains(lower, name) {
-			return s, true
+	// Use the same keyword heuristics as required-skill resolution instead of
+	// requiring the user to type the literal skill name.
+	name := resolveRequiredSkillName(input)
+	if name == "" {
+		// Fall back to literal name/description match for skills that don't
+		// have keyword-based heuristics (e.g. using-superpowers).
+		lower := strings.ToLower(input)
+		for _, s := range loaded {
+			if strings.Contains(lower, strings.ToLower(s.Name)) {
+				return s, true
+			}
+			if desc := strings.ToLower(s.Description); desc != "" && strings.Contains(lower, desc) {
+				return s, true
+			}
 		}
-		if desc != "" && strings.Contains(lower, desc) {
-			return s, true
-		}
+		return Skill{}, false
 	}
-	return Skill{}, false
+	return Get(loaded, name)
 }

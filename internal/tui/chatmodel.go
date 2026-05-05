@@ -2330,6 +2330,14 @@ func resolveModelName(models []string, input string) string {
 }
 
 func (m ChatModel) submitSkillInput(s skills.Skill, turnLabel, msg string) (tea.Model, tea.Cmd) {
+	if m.state != nil && m.state.SkillActivated(s.Name) {
+		m.flash = fmt.Sprintf("skill already active: %s", s.Name)
+		return m, nil
+	}
+	if m.busy {
+		m.flash = fmt.Sprintf("busy — skill %s queued", s.Name)
+		return m, nil
+	}
 	if m.state != nil {
 		m.state.ActivateSkill(s.Name)
 	}

@@ -877,10 +877,10 @@ func TestRunnerPreservesAssistantPreambleOnToolTurn(t *testing.T) {
 	if len(firstAssistant.ToolCalls) != 1 || firstAssistant.ToolCalls[0].Name != "read_file" {
 		t.Fatalf("assistant tool calls = %#v", firstAssistant.ToolCalls)
 	}
-	if len(rec.tokenTexts) == 0 || rec.tokenTexts[0] != "I'll inspect the README first." {
-		t.Fatalf("renderer tokenTexts = %#v", rec.tokenTexts)
+	if len(rec.tokenTexts) != 0 {
+		t.Fatalf("renderer tokenTexts = %#v, expected empty (buffered when tools present)", rec.tokenTexts)
 	}
-	if len(rec.fullTexts) != 0 {
+	if len(rec.fullTexts) == 0 || rec.fullTexts[0] != "I'll inspect the README first." {
 		t.Fatalf("renderer fullTexts = %#v", rec.fullTexts)
 	}
 }
