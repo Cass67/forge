@@ -33,12 +33,12 @@ func (m ChatMessage) accentColor(theme chatTheme) lipgloss.Color {
 		return theme.AccentPrimary
 	case MsgForge:
 		return theme.AccentSecondary
+	case MsgStatus, MsgWorking:
+		return theme.TextDim
 	case MsgPlan:
 		return theme.Warning
-	case MsgWorking:
-		return theme.TextDim
 	default:
-		return theme.Border
+		return theme.TextDim
 	}
 }
 
@@ -51,7 +51,7 @@ func (m ChatMessage) Render(width int, theme chatTheme) string {
 	if m.Kind == MsgStatus {
 		body := RenderSemanticPlain(strings.TrimSpace(m.Content), profileStatus, theme)
 		return lipgloss.NewStyle().
-			Foreground(theme.Text).
+			Foreground(theme.TextDim).
 			Width(width).
 			Render(body)
 	}
@@ -62,23 +62,22 @@ func (m ChatMessage) Render(width int, theme chatTheme) string {
 			Foreground(theme.TextDim).
 			Render("· ")
 		return lipgloss.NewStyle().
-			Foreground(theme.Text).
+			Foreground(theme.TextDim).
 			Width(width).
 			Render(prefix + body)
 	}
 
 	if m.Kind == MsgPlan {
-		headerColor := m.accentColor(theme)
 		header := strings.TrimSpace(m.Header)
 		if header == "" {
 			header = "Plan"
 		}
 		body := RenderSemanticPlain(strings.TrimSpace(m.Content), profileProse, theme)
 		blocks := []string{
-			renderMessageHeader(header, width, theme, headerColor),
+			renderMessageHeader(header, width, theme, m.accentColor(theme)),
 			lipgloss.NewStyle().
 				Width(width).
-				Render(indentRenderedBlock(body, "  ")),
+				Render(body),
 		}
 		return lipgloss.NewStyle().
 			Width(width).
@@ -93,10 +92,10 @@ func (m ChatMessage) Render(width int, theme chatTheme) string {
 		blocks = append(blocks, renderMessageHeader(header, width, theme, headerColor))
 	}
 	if strings.TrimSpace(content) != "" {
-		body := renderMessageContent(content, max(10, width-2), theme)
+		body := renderMessageContent(content, width, theme)
 		blocks = append(blocks, lipgloss.NewStyle().
 			Width(width).
-			Render(indentRenderedBlock(body, "  ")))
+			Render(body))
 	}
 	return lipgloss.NewStyle().
 		Width(width).
@@ -104,20 +103,15 @@ func (m ChatMessage) Render(width int, theme chatTheme) string {
 }
 
 func renderMessageHeader(header string, width int, theme chatTheme, accent lipgloss.Color) string {
-	rail := lipgloss.NewStyle().
-		Foreground(accent).
-		Bold(true).
-		Render("▌ ")
 	name, meta, found := strings.Cut(strings.TrimSpace(header), " • ")
 	if !found {
-		return rail + lipgloss.NewStyle().
+		return lipgloss.NewStyle().
 			Foreground(accent).
 			Bold(true).
 			Render(header)
 	}
 	return lipgloss.JoinHorizontal(
 		lipgloss.Left,
-		rail,
 		lipgloss.NewStyle().Foreground(accent).Bold(true).Render(strings.TrimSpace(name)),
 		lipgloss.NewStyle().Foreground(theme.Border).Render(" • "),
 		lipgloss.NewStyle().Foreground(theme.TextDim).Render(strings.TrimSpace(meta)),
