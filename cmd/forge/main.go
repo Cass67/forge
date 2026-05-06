@@ -343,7 +343,7 @@ func prepareOpenCodePluginCommand(id, source, moduleOverride string, noInstall b
 			return nil, err
 		}
 		if !noInstall {
-			if err := runPluginInstallCmdFn("npm", "install", "--silent", "--prefix", installDir, source); err != nil {
+			if err := runPluginInstallCmdFn("npm", "install", "--silent", "--ignore-scripts", "--prefix", installDir, source); err != nil {
 				return nil, err
 			}
 		}
@@ -407,7 +407,7 @@ func downloadPluginModule(source, destination string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("download failed with status %s", resp.Status)
 	}
@@ -529,7 +529,7 @@ func urlPath(source string) string {
 }
 
 func inferPluginID(source string) string {
-	name := source
+	var name string
 	if pkg := npmPackageName(source); pkg != "" {
 		name = pkg
 	} else if u, err := url.Parse(source); err == nil && u.Path != "" {
