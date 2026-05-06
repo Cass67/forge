@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1460,7 +1461,7 @@ func TestRunnerNudgesOnExcessivePlanExploration(t *testing.T) {
 	// a runtime hook overlay injected into the system prompt.
 	const explorations = planExplorationBudget + 1
 	steps := make([][]llm.Token, explorations+1)
-	for i := 0; i < explorations; i++ {
+	for i := range explorations {
 		steps[i] = []llm.Token{{ToolCall: &llm.NativeToolCall{
 			ID:       fmt.Sprintf("c%d", i+1),
 			Name:     "search",
@@ -1524,7 +1525,7 @@ func TestRunnerNudgesOnExcessiveAnalysisExploration(t *testing.T) {
 	// then a final text response. Tools must never be blocked — only nudged.
 	const explorations = analysisExplorationBudget + 1
 	steps := make([][]llm.Token, explorations+1)
-	for i := 0; i < explorations; i++ {
+	for i := range explorations {
 		steps[i] = []llm.Token{{ToolCall: &llm.NativeToolCall{
 			ID:       fmt.Sprintf("c%d", i+1),
 			Name:     "search",
@@ -1586,7 +1587,7 @@ func TestRunnerNudgesOnExcessiveAnalysisExploration(t *testing.T) {
 func TestRunnerNudgesOnRepeatedSameFileCodeSearch(t *testing.T) {
 	const repeatedSearches = sameFileSearchThrashThreshold + 1
 	steps := make([][]llm.Token, repeatedSearches+1)
-	for i := 0; i < repeatedSearches; i++ {
+	for i := range repeatedSearches {
 		steps[i] = []llm.Token{{ToolCall: &llm.NativeToolCall{
 			ID:       fmt.Sprintf("c%d", i+1),
 			Name:     "code_search",
@@ -1693,12 +1694,7 @@ func TestAllowedToolsForActionFollowUpIncludesWriteAndCommandTools(t *testing.T)
 }
 
 func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, want)
 }
 
 func TestRunnerClearHistoryResetsSessionState(t *testing.T) {
@@ -2038,5 +2034,102 @@ func TestRunnerGitWorkflowOverlayClearsOnSuccessfulCommit(t *testing.T) {
 		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Git merge workflow active") {
 			t.Fatalf("git_workflow overlay should be gone after successful commit, but found: %q", msg.Content)
 		}
+	}
+}
+
+func TestRunnerSelectsPluginToolForPluginOnlyInput(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "plugin__demo__search_docs",
+		Description: "search docs",
+		Parameters:  []agenttools.ParameterDef{{Name: "query", Type: "string", Required: true}},
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return "", nil
+		},
+	})
+	r := NewRunner(Config{Tools: reg})
+
+	ordinary := r.selectToolDefs(SessionSnapshot{LastInput: "hello there"})
+	if len(ordinary) != 0 {
+		t.Fatalf("ordinary chat should not expose plugin tools, got %#v", ordinary)
+	}
+	defs := r.selectToolDefs(SessionSnapshot{LastInput: "use the demo plugin to search docs"})
+	if len(defs) != 1 || defs[0].Name != "plugin__demo__search_docs" {
+		t.Fatalf("plugin-only input defs = %#v", defs)
+	}
+}
+
+func TestRunnerPluginPromptOverlayDoesNotDuplicate(t *testing.T) {
+	session := NewSession()
+	r := NewRunner(Config{
+		Session: session,
+		ConfigureHooks: func(registry *hooks.Registry) {
+			registry.Register(hooks.PointPromptContext, "plugin:demo", func(context.Context, hooks.Event) []hooks.Result {
+				return []hooks.Result{hooks.OverlayResult{
+					Key:        "plugin_demo_context",
+					Content:    "plugin prompt",
+					Priority:   hooks.PriorityHigh,
+					Provenance: "plugin:demo",
+				}}
+			})
+		},
+	})
+	r.syncRuntimeNote()
+	r.syncRuntimeNote()
+
+	count := 0
+	for _, overlay := range session.Snapshot().HookOutput.Overlays {
+		if overlay.Key == "plugin_demo_context" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("plugin overlay count = %d, overlays=%#v", count, session.Snapshot().HookOutput.Overlays)
+	}
+}
+
+func TestRunnerPreservesNonBlockingBeforeToolHookOutput(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "plugin__demo__echo",
+		Description: "echo",
+		Parameters:  []agenttools.ParameterDef{{Name: "message", Type: "string", Required: true}},
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			message, _ := args["message"].(string)
+			return message, nil
+		},
+	})
+	session := NewSession()
+	r := NewRunner(Config{
+		Tools:   reg,
+		Session: session,
+		ConfigureHooks: func(registry *hooks.Registry) {
+			registry.Register(hooks.PointBeforeTool, "plugin:demo:before", func(context.Context, hooks.Event) []hooks.Result {
+				return []hooks.Result{hooks.OverlayResult{
+					Key:        "plugin_demo_before",
+					Content:    "before hook note",
+					Priority:   hooks.PriorityHigh,
+					Provenance: "plugin:demo",
+				}}
+			})
+		},
+	})
+	turn := session.RecordInput("use the demo plugin")
+	if err := r.executeNativeToolCalls(context.Background(), turn, []llm.NativeToolCall{{
+		ID:       "c1",
+		Name:     "plugin__demo__echo",
+		ArgsJSON: `{"message":"hello"}`,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	found := false
+	for _, overlay := range session.Snapshot().HookOutput.Overlays {
+		if overlay.Key == "plugin_demo_before" && overlay.Content == "before hook note" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected before_tool overlay to persist, overlays=%#v", session.Snapshot().HookOutput.Overlays)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,6 +28,7 @@ import (
 	"forge/internal/mcp"
 	"forge/internal/memory"
 	"forge/internal/modelcatalog"
+	pluginruntime "forge/internal/plugins"
 	reactruntime "forge/internal/react"
 	reacttools "forge/internal/react/tools"
 	"forge/internal/skills"
@@ -242,6 +244,21 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 	return previewRuntime, mcpManager
 }
 
+func startChatPluginManager(cfg *config.Config, workDir string, notify func(string)) *pluginruntime.Manager {
+	if cfg == nil || len(cfg.Plugins) == 0 {
+		return nil
+	}
+	manager := pluginruntime.NewManager(workDir, cfg.Plugins)
+	if err := manager.Start(context.Background()); err != nil && notify != nil {
+		notify("plugin service: " + err.Error())
+	}
+	if !manager.HasPlugins() {
+		_ = manager.Close()
+		return nil
+	}
+	return manager
+}
+
 func RunChatLive(setup *ChatSetup) {
 	eventsCh := make(chan llm.Event, 256)
 	renderCh := chan<- llm.Event(eventsCh)
@@ -295,6 +312,11 @@ func RunChatLive(setup *ChatSetup) {
 	if mcpManager != nil {
 		defer func() { _ = mcpManager.Close() }()
 	}
+	pluginManager := startChatPluginManager(setup.Config, setup.WorkDir, evRenderer.Info)
+	if pluginManager != nil {
+		defer func() { _ = pluginManager.Close() }()
+		pluginManager.RegisterTools(reg, approve)
+	}
 	baseReg := reg.Filter(nil)
 	loadedSkills := skills.Load(setup.WorkDir)
 	state := chatstate.New()
@@ -317,6 +339,11 @@ func RunChatLive(setup *ChatSetup) {
 		},
 		Progress: func(text string) {
 			evRenderer.Progress(text)
+		},
+		ConfigureHooks: func(registry *hooks.Registry) {
+			if pluginManager != nil {
+				pluginManager.RegisterHooks(registry)
+			}
 		},
 		CompactionMaxFailures: setup.Config.Resilience.CompactionMaxFailures,
 		Interactive:           true,
@@ -610,6 +637,11 @@ func RunChatConsole(setup *ChatSetup) {
 	if mcpManager != nil {
 		defer func() { _ = mcpManager.Close() }()
 	}
+	pluginManager := startChatPluginManager(setup.Config, setup.WorkDir, renderer.Info)
+	if pluginManager != nil {
+		defer func() { _ = pluginManager.Close() }()
+		pluginManager.RegisterTools(reg, approve)
+	}
 	baseReg := reg.Filter(nil)
 	loadedSkills := skills.Load(setup.WorkDir)
 	state := chatstate.New()
@@ -636,6 +668,11 @@ func RunChatConsole(setup *ChatSetup) {
 		},
 		Progress: func(text string) {
 			renderer.Progress(text)
+		},
+		ConfigureHooks: func(registry *hooks.Registry) {
+			if pluginManager != nil {
+				pluginManager.RegisterHooks(registry)
+			}
 		},
 		CompactionMaxFailures: setup.Config.Resilience.CompactionMaxFailures,
 		Interactive:           true,
@@ -721,7 +758,7 @@ func RunChatConsole(setup *ChatSetup) {
 	fmt.Println()
 }
 
-func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg *tools.Registry, approve tools.ApprovalFunc) {
+func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg *tools.Registry, _ tools.ApprovalFunc) {
 	if reg == nil || setup == nil || baseReg == nil {
 		return
 	}
@@ -1249,12 +1286,7 @@ func handleChatSlashCommand(input string, renderer *agent.Renderer, loadedSkills
 }
 
 func ContainsModel(models []string, name string) bool {
-	for _, m := range models {
-		if m == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(models, name)
 }
 
 func PickModel(models []string) string {

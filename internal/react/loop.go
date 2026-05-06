@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ type Config struct {
 	Session               *Session
 	Progress              func(string)
 	TurnComplete          func(SessionSnapshot)
+	ConfigureHooks        func(*hooks.Registry)
 	CompactionMaxFailures int
 	Interactive           bool
 }
@@ -129,6 +131,13 @@ type beforeToolHookPayload struct {
 	GitWorkflow gitWorkflowState
 }
 
+type afterToolHookPayload struct {
+	ToolName string
+	Args     map[string]any
+	IsError  bool
+	Error    string
+}
+
 func NewRunner(cfg Config) *Runner {
 	session := cfg.Session
 	if session == nil {
@@ -138,13 +147,17 @@ func NewRunner(cfg Config) *Runner {
 	if reg == nil {
 		reg = agenttools.NewRegistry()
 	}
+	hookRegistry := newLoopHookRegistry()
+	if cfg.ConfigureHooks != nil {
+		cfg.ConfigureHooks(hookRegistry)
+	}
 	runner := &Runner{
 		driver:                cfg.Driver,
 		tools:                 reg,
 		renderer:              cfg.Renderer,
 		systemPrompt:          cfg.SystemPrompt,
 		session:               session,
-		hooks:                 newLoopHookRegistry(),
+		hooks:                 hookRegistry,
 		progress:              cfg.Progress,
 		compactionMaxFailures: cfg.CompactionMaxFailures,
 		turnComplete:          cfg.TurnComplete,
@@ -174,6 +187,7 @@ func (r *Runner) RunWithParts(ctx context.Context, input string, parts []llm.Mes
 	}
 	turn := r.session.RecordInputWithParts(prompt, parts)
 	r.pendingRetryPrompt = ""
+	r.syncRuntimeNote()
 	if CompactSessionHistory(r.session, 40) {
 		r.compactionFailures++
 		if r.compactionFailures >= r.compactionMaxFailures {
@@ -315,7 +329,7 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 	nativeCaller, isNative := r.driver.(llm.NativeToolCaller)
 
 	completionRetries := 0
-	for step := 0; step < maxLoopSafetySteps; step++ {
+	for range maxLoopSafetySteps {
 		if r.applyPendingInput() {
 			r.syncRuntimeNote()
 		}
@@ -509,16 +523,15 @@ func (r *Runner) streamPlainTurn(ctx context.Context, turn int, messages []llm.M
 func parseLegacyXMLToolCall(text string) (llm.NativeToolCall, bool) {
 	const open = "<tool_call>"
 	const close = "</tool_call>"
-	start := strings.Index(text, open)
-	if start < 0 {
+	_, rest, ok := strings.Cut(text, open)
+	if !ok {
 		return llm.NativeToolCall{}, false
 	}
-	rest := text[start+len(open):]
-	end := strings.Index(rest, close)
-	if end < 0 {
+	inner, _, ok := strings.Cut(rest, close)
+	if !ok {
 		return llm.NativeToolCall{}, false
 	}
-	inner := strings.TrimSpace(rest[:end])
+	inner = strings.TrimSpace(inner)
 	var parsed struct {
 		Name string          `json:"name"`
 		Args json.RawMessage `json:"args"`
@@ -614,6 +627,8 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 		}
 		if err != nil {
 			errResult := fmt.Sprintf("error: %v", err)
+			r.applyHookOutput(beforeTool)
+			r.applyHookOutput(r.afterToolHookOutput(ctx, call.Name, args, true, errResult))
 			if r.renderer != nil {
 				r.renderer.ToolResult(call.Name, errResult, diff, true)
 			}
@@ -633,6 +648,8 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 		r.updateSameFileSearchWorkflow(call.Name, args, false)
 		r.updateValidationWorkflow(call.Name, args, result)
 		r.updateRepeatToolCallWorkflow(call.Name, args, result)
+		r.applyHookOutput(beforeTool)
+		r.applyHookOutput(r.afterToolHookOutput(ctx, call.Name, args, false, ""))
 	}
 	return nil
 }
@@ -737,10 +754,63 @@ func (r *Runner) selectToolDefs(snapshot SessionSnapshot) []llm.ToolDef {
 		return nil
 	}
 	allowed := allowedToolNamesForSnapshot(snapshot)
-	if len(allowed) == 0 {
+	pluginNames := r.pluginToolNames()
+	if len(allowed) == 0 && !inputSuggestsPluginTool(snapshot.LastInput, pluginNames) {
 		return nil
 	}
+	allowed = append(allowed, pluginNames...)
 	return r.tools.Filter(allowed).ToLLMToolDefs()
+}
+
+func (r *Runner) pluginToolNames() []string {
+	if r == nil || r.tools == nil {
+		return nil
+	}
+	var names []string
+	for _, tool := range r.tools.All() {
+		if strings.HasPrefix(strings.TrimSpace(tool.Name), "plugin__") {
+			names = append(names, tool.Name)
+		}
+	}
+	return names
+}
+
+func inputSuggestsPluginTool(input string, pluginNames []string) bool {
+	if len(pluginNames) == 0 {
+		return false
+	}
+	text := normalizeToolIntentText(input)
+	if text == "" {
+		return false
+	}
+	if strings.Contains(text, "plugin") || strings.Contains(text, "plugin__") {
+		return true
+	}
+	for _, name := range pluginNames {
+		for _, token := range pluginIntentTokens(name) {
+			if token != "" && strings.Contains(text, token) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func pluginIntentTokens(namespacedName string) []string {
+	parts := strings.Split(strings.TrimSpace(namespacedName), "__")
+	if len(parts) != 3 || parts[0] != "plugin" {
+		return nil
+	}
+	return []string{
+		normalizePluginIntentToken(parts[1]),
+		normalizePluginIntentToken(parts[2]),
+		normalizePluginIntentToken(parts[1] + " " + parts[2]),
+	}
+}
+
+func normalizePluginIntentToken(token string) string {
+	token = strings.NewReplacer("_", " ", "-", " ").Replace(strings.ToLower(strings.TrimSpace(token)))
+	return strings.Join(strings.Fields(token), " ")
 }
 
 func allowedToolNamesForSnapshot(snapshot SessionSnapshot) []string {
@@ -1123,6 +1193,34 @@ func (r *Runner) beforeToolHookOutput(ctx context.Context, toolName string, args
 			GitWorkflow: r.gitWorkflow,
 		},
 	})
+}
+
+func (r *Runner) afterToolHookOutput(ctx context.Context, toolName string, args map[string]any, isError bool, errorText string) hooks.ExecutionOutput {
+	if r == nil || r.hooks == nil {
+		return hooks.ExecutionOutput{}
+	}
+	snap := SessionSnapshot{}
+	if r.session != nil {
+		snap = r.session.Snapshot()
+	}
+	return r.hooks.Dispatch(ctx, hooks.Event{
+		Point:    hooks.PointAfterTool,
+		Snapshot: snap,
+		Transient: afterToolHookPayload{
+			ToolName: strings.TrimSpace(toolName),
+			Args:     cloneArgs(args),
+			IsError:  isError,
+			Error:    strings.TrimSpace(errorText),
+		},
+	})
+}
+
+func (r *Runner) applyHookOutput(output hooks.ExecutionOutput) {
+	if r == nil || r.session == nil || !hasHookOutputContent(output) {
+		return
+	}
+	base := promptHookOutput(r.session.Snapshot())
+	r.session.SetHookOutput(mergePromptHookOutput(base, output))
 }
 
 func newLoopHookRegistry() *hooks.Registry {
@@ -1533,7 +1631,7 @@ func beforeToolGitCommitBlockHook(_ context.Context, event hooks.Event) []hooks.
 
 func mergePromptHookOutput(base, runtime hooks.ExecutionOutput) hooks.ExecutionOutput {
 	merged := hooks.ExecutionOutput{
-		Overlays: filterPromptHookOverlays(base.Overlays),
+		Overlays: filterPromptHookOverlays(base.Overlays, runtime.Overlays),
 		Failures: append([]hooks.Failure(nil), runtime.Failures...),
 	}
 	if base.Note != nil {
@@ -1548,15 +1646,30 @@ func mergePromptHookOutput(base, runtime hooks.ExecutionOutput) hooks.ExecutionO
 	return merged
 }
 
-func filterPromptHookOverlays(overlays []hooks.OverlayResult) []hooks.OverlayResult {
+func filterPromptHookOverlays(overlays []hooks.OverlayResult, runtimeOverlays []hooks.OverlayResult) []hooks.OverlayResult {
+	runtimePluginKeys := make(map[string]struct{}, len(runtimeOverlays))
+	for _, overlay := range runtimeOverlays {
+		if isPluginOverlay(overlay) {
+			runtimePluginKeys[strings.ToLower(strings.TrimSpace(overlay.Key))] = struct{}{}
+		}
+	}
 	filtered := make([]hooks.OverlayResult, 0, len(overlays))
 	for _, overlay := range overlays {
-		if _, ok := loopHookOverlayKeys[strings.TrimSpace(overlay.Key)]; ok {
+		key := strings.TrimSpace(overlay.Key)
+		if _, ok := loopHookOverlayKeys[key]; ok {
+			continue
+		}
+		if _, ok := runtimePluginKeys[strings.ToLower(key)]; ok {
 			continue
 		}
 		filtered = append(filtered, overlay)
 	}
 	return filtered
+}
+
+func isPluginOverlay(overlay hooks.OverlayResult) bool {
+	return strings.HasPrefix(strings.TrimSpace(overlay.Provenance), "plugin:") ||
+		strings.HasPrefix(strings.TrimSpace(overlay.Key), "plugin_")
 }
 
 func hasHookOutputContent(output hooks.ExecutionOutput) bool {
@@ -1568,9 +1681,7 @@ func cloneArgs(args map[string]any) map[string]any {
 		return nil
 	}
 	cloned := make(map[string]any, len(args))
-	for key, value := range args {
-		cloned[key] = value
-	}
+	maps.Copy(cloned, args)
 	return cloned
 }
 
@@ -1747,7 +1858,7 @@ func hasNonEmptyOutput(result string) bool {
 	if trimmed == "" || trimmed == "exit 0" {
 		return false
 	}
-	for _, line := range strings.Split(trimmed, "\n") {
+	for line := range strings.SplitSeq(trimmed, "\n") {
 		line = strings.TrimSpace(line)
 		if line != "" && !strings.HasPrefix(line, "exit ") {
 			return true
@@ -1761,7 +1872,7 @@ func hasNonEmptyOutput(result string) bool {
 // changes (e.g. "M  README.md") are not treated as conflicts.
 func hasPorcelainConflicts(result string) bool {
 	conflictPrefixes := []string{"UU ", "AA ", "DD ", "AU ", "UA ", "DU ", "UD "}
-	for _, line := range strings.Split(result, "\n") {
+	for line := range strings.SplitSeq(result, "\n") {
 		line = strings.TrimSpace(line)
 		for _, prefix := range conflictPrefixes {
 			if strings.HasPrefix(line, prefix) {
@@ -1859,7 +1970,7 @@ func (s sameFileSearchWorkflowState) overlayContent() string {
 	return "Search thrash guidance: you have repeatedly searched the same file without switching to a direct read. Stop trying more patterns on " + s.path + ". Read that file now, inspect the relevant function or block directly, then continue editing."
 }
 
-func (r *Runner) updateRepeatToolCallWorkflow(toolName string, args map[string]any, result string) {
+func (r *Runner) updateRepeatToolCallWorkflow(toolName string, args map[string]any, _ string) {
 	target := repeatToolCallTarget(toolName, args)
 	if target == "" {
 		r.repeatWorkflow = repeatToolCallState{}
