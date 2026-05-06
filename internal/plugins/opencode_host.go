@@ -172,9 +172,14 @@ function createCompatClient() {
         const pattern = params.pattern || "";
         if (!pattern) return { matches: [] };
         const dir = params.path ? path.resolve(cwd, params.path) : cwd;
-        const args = ["--no-heading", "--line-number", "-e", pattern];
-        if (params.fileTypes) args.push("--type", params.fileTypes);
-        const output = child_process.execSync("rg", args.concat([dir]), { cwd, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024, stdio: ["pipe", "pipe", "ignore"] });
+        let output;
+        try {
+          const args = ["--no-heading", "--line-number", "-e", pattern];
+          if (params.fileTypes) args.push("--type", params.fileTypes);
+          output = child_process.execSync("rg", args.concat([dir]), { cwd, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024, stdio: ["pipe", "pipe", "ignore"] });
+        } catch {
+          output = child_process.execSync("grep", ["-rn", pattern, dir], { cwd, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024, stdio: ["pipe", "pipe", "ignore"] });
+        }
         const lines = output.trim().split("\n").filter(Boolean);
         return { matches: lines.map(parseRgLine) };
       },
