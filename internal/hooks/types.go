@@ -12,6 +12,10 @@ const (
 	PointPostCompact       Point = "post_compact"
 	PointTurnComplete      Point = "turn_complete"
 	PointPromptContext     Point = "prompt_context"
+	PointChatMessage       Point = "chat_message"
+	PointChatParams        Point = "chat_params"
+	PointChatHeaders       Point = "chat_headers"
+	PointEvent             Point = "event"
 )
 
 type Event struct {

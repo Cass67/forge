@@ -283,6 +283,30 @@ async function callHook(params) {
     await instance["tool.execute.after"]({ tool: params.tool_name || "", sessionID: "forge-session", callID: "forge-call" }, output);
     return {};
   }
+  if (params.point === "chat_message" && typeof instance["chat.message"] === "function") {
+    await instance["chat.message"](params.event || {});
+    return {};
+  }
+  if (params.point === "chat_params" && typeof instance["chat.params"] === "function") {
+    await instance["chat.params"](params.event || {});
+    return {};
+  }
+  if (params.point === "chat_headers" && typeof instance["chat.headers"] === "function") {
+    await instance["chat.headers"](params.event || {});
+    return {};
+  }
+  if (params.point === "permission_request" && typeof instance["permission.ask"] === "function") {
+    const output = {};
+    await instance["permission.ask"](params.event || {}, output);
+    if (output.block) {
+      return { block: { message: output.block.message || output.block || "Blocked by plugin" } };
+    }
+    return {};
+  }
+  if (params.point === "event" && typeof instance["event"] === "function") {
+    await instance["event"](params.event || {});
+    return {};
+  }
   return {};
 }
 
@@ -290,6 +314,13 @@ function supportedHooks(plugin) {
   const hooks = [];
   if (plugin && typeof plugin["tool.execute.before"] === "function") hooks.push("before_tool");
   if (plugin && typeof plugin["tool.execute.after"] === "function") hooks.push("after_tool");
+  if (plugin && typeof plugin["chat.message"] === "function") hooks.push("chat_message");
+  if (plugin && typeof plugin["chat.params"] === "function") hooks.push("chat_params");
+  if (plugin && typeof plugin["chat.headers"] === "function") hooks.push("chat_headers");
+  if (plugin && typeof plugin["permission.ask"] === "function") hooks.push("permission_request");
+  if (plugin && typeof plugin["event"] === "function") hooks.push("event");
+  if (plugin && typeof plugin["config"] === "function") hooks.push("prompt_context");
+  if (plugin && typeof plugin["command.execute.before"] === "function") hooks.push("before_tool");
   return hooks;
 }
 
