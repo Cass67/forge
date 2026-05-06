@@ -84,6 +84,53 @@ func TestValidateApprovalRulesRejectMalformedMatchers(t *testing.T) {
 	}
 }
 
+func TestValidatePluginConfig(t *testing.T) {
+	var cfg Config
+	setDefaults(&cfg)
+	cfg.Plugins = []PluginConfig{
+		{
+			ID:         "bad id",
+			Command:    []string{"node", ""},
+			Env:        map[string]string{"1BAD": "value"},
+			InheritEnv: []string{""},
+		},
+		{
+			ID:               "demo",
+			Kind:             "unknown",
+			Command:          []string{"node"},
+			StartupTimeoutMS: -1,
+			RequestTimeoutMS: -1,
+		},
+		{
+			ID:      "demo",
+			Command: []string{"node"},
+		},
+	}
+
+	issues := cfg.Validate()
+	if !hasIssueContaining(issues, "plugins[0].id", "letters") {
+		t.Fatalf("expected invalid plugin id issue, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "plugins[0].command[1]", "must not be empty") {
+		t.Fatalf("expected empty command token issue, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "plugins[0].env", "invalid environment variable") {
+		t.Fatalf("expected invalid env issue, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "plugins[1].startup_timeout_ms", ">= 0") {
+		t.Fatalf("expected startup timeout issue, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "plugins[1].kind", "forge-stdio") {
+		t.Fatalf("expected plugin kind issue, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "plugins[1].request_timeout_ms", ">= 0") {
+		t.Fatalf("expected request timeout issue, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "plugins[2].id", "duplicate") {
+		t.Fatalf("expected duplicate plugin id issue, got %v", issues)
+	}
+}
+
 func hasIssueContaining(issues []ValidationIssue, field, substring string) bool {
 	for _, issue := range issues {
 		if issue.Field == field && strings.Contains(issue.Message, substring) {

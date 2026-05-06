@@ -118,8 +118,89 @@ func (c *Config) Validate() []ValidationIssue {
 			add(fmt.Sprintf("pipeline[%d].rounds", i), fmt.Sprintf("must be between 1 and 10 when set, got %d", pass.Rounds))
 		}
 	}
+	seenPluginIDs := map[string]struct{}{}
+	for i, plugin := range c.Plugins {
+		pluginField := fmt.Sprintf("plugins[%d]", i)
+		id := strings.TrimSpace(plugin.ID)
+		if id == "" {
+			add(pluginField+".id", "must not be empty")
+		} else if !validPluginID(id) {
+			add(pluginField+".id", "must contain only letters, digits, underscores, or hyphens")
+		} else {
+			key := strings.ToLower(id)
+			if _, ok := seenPluginIDs[key]; ok {
+				add(pluginField+".id", fmt.Sprintf("duplicate plugin id %q", id))
+			} else {
+				seenPluginIDs[key] = struct{}{}
+			}
+		}
+		if strings.TrimSpace(plugin.Kind) != "" {
+			switch strings.ToLower(strings.TrimSpace(plugin.Kind)) {
+			case "forge-stdio", "opencode":
+			default:
+				add(pluginField+".kind", fmt.Sprintf("must be one of forge-stdio, opencode, got %q", plugin.Kind))
+			}
+		}
+		if len(plugin.Command) == 0 {
+			add(pluginField+".command", "must not be empty")
+		}
+		for j, token := range plugin.Command {
+			if strings.TrimSpace(token) == "" {
+				add(fmt.Sprintf("%s.command[%d]", pluginField, j), "must not be empty")
+			}
+		}
+		for key := range plugin.Env {
+			if !validEnvName(key) {
+				add(pluginField+".env", fmt.Sprintf("invalid environment variable name %q", key))
+			}
+		}
+		for j, key := range plugin.InheritEnv {
+			if !validEnvName(key) {
+				add(fmt.Sprintf("%s.inherit_env[%d]", pluginField, j), "must be a valid environment variable name")
+			}
+		}
+		if plugin.StartupTimeoutMS < 0 {
+			add(pluginField+".startup_timeout_ms", "must be >= 0")
+		}
+		if plugin.RequestTimeoutMS < 0 {
+			add(pluginField+".request_timeout_ms", "must be >= 0")
+		}
+	}
 
 	return issues
+}
+
+func validPluginID(id string) bool {
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '_' || r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func validEnvName(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		if i == 0 {
+			if r != '_' && (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') {
+				return false
+			}
+			continue
+		}
+		if r != '_' && (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 func validateShellCommandRule(pattern string) error {
