@@ -39,6 +39,7 @@ type initializeParams struct {
 	PluginID        string   `json:"plugin_id"`
 	CWD             string   `json:"cwd"`
 	Capabilities    []string `json:"capabilities"`
+	ForgeTools      []string `json:"forge_tools,omitempty"`
 }
 
 type initializeResult struct {

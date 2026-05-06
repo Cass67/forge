@@ -18,7 +18,9 @@ const openCodeHostScript = `#!/usr/bin/env node
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
+import fs from "node:fs";
 import readline from "node:readline";
+import child_process from "node:child_process";
 
 const args = parseArgs(process.argv.slice(2));
 const moduleSpec = args.module || process.env.FORGE_OPENCODE_PLUGIN_MODULE;
@@ -26,6 +28,7 @@ const installDir = args.installDir || process.env.FORGE_OPENCODE_PLUGIN_INSTALL_
 let cwd = process.cwd();
 let instance = null;
 let tools = {};
+let forgeTools = [];
 
 if (!moduleSpec) {
   throw new Error("missing --module for OpenCode plugin host");
@@ -54,6 +57,7 @@ async function dispatch(method, params) {
   switch (method) {
     case "initialize":
       cwd = params.cwd || process.cwd();
+      if (Array.isArray(params.forge_tools)) forgeTools = params.forge_tools;
       await ensurePlugin(params.plugin_id || "opencode");
       return {
         tools: Object.entries(tools).map(([name, definition]) => ({
@@ -102,8 +106,10 @@ function createPluginInput(pluginID) {
   return {
     directory: cwd,
     project: cwd,
+    worktree: cwd,
     serverUrl: "forge://opencode-compat",
     client: createCompatClient(),
+    experimental_workspace: undefined,
     $: async () => {
       throw new Error("Unsupported OpenCode runtime API: shell helper $. Forge OpenCode compatibility currently supports simple plugin tools only.");
     },
@@ -136,7 +142,89 @@ function createCompatClient() {
     agent: new Proxy({}, {
       get: (_target, prop) => unsupported("client.agent." + String(prop)),
     }),
+    file: {
+      list: async (params) => {
+        const dir = params?.path ? path.resolve(cwd, params.path) : cwd;
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        return entries.map((e) => ({
+          name: e.name,
+          type: e.isDirectory() ? "directory" : e.isFile() ? "file" : "other",
+        }));
+      },
+      read: async (params) => {
+        const filePath = path.resolve(cwd, params.path || ".");
+        let content = fs.readFileSync(filePath, "utf-8");
+        if (typeof params.offset === "number") {
+          const lines = content.split("\n");
+          const start = Math.max(0, params.offset);
+          const end = typeof params.limit === "number" ? start + params.limit : lines.length;
+          content = lines.slice(start, end).join("\n");
+        }
+        return { content, path: filePath };
+      },
+      status: async () => {
+        const output = child_process.execSync("git status --porcelain", { cwd, encoding: "utf-8", maxBuffer: 1024 * 1024 });
+        return { changes: output.trim().split("\n").filter(Boolean) };
+      },
+    },
+    find: {
+      text: async (params) => {
+        const pattern = params.pattern || "";
+        if (!pattern) return { matches: [] };
+        const dir = params.path ? path.resolve(cwd, params.path) : cwd;
+        const args = ["--no-heading", "--line-number", "-e", pattern];
+        if (params.fileTypes) args.push("--type", params.fileTypes);
+        const output = child_process.execSync("rg", args.concat([dir]), { cwd, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024, stdio: ["pipe", "pipe", "ignore"] });
+        const lines = output.trim().split("\n").filter(Boolean);
+        return { matches: lines.map(parseRgLine) };
+      },
+      files: async (params) => {
+        const dir = params?.path ? path.resolve(cwd, params.path) : cwd;
+        let output;
+        try {
+          output = child_process.execSync("rg", ["--files", dir], { cwd, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024, stdio: ["pipe", "pipe", "ignore"] });
+        } catch {
+          output = child_process.execSync("find", [dir, "-type", "f"], { cwd, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 });
+        }
+        return { files: output.trim().split("\n").filter(Boolean) };
+      },
+    },
+    tool: {
+      ids: async () => Object.keys(tools),
+      list: async () => {
+        const result = {};
+        for (const name of Object.keys(tools)) {
+          result[name] = {
+            description: typeof tools[name].description === "string" ? tools[name].description : "OpenCode plugin tool " + name,
+            parameters: parametersFromArgs(tools[name].args || tools[name].parameters || {}),
+          };
+        }
+        for (const name of forgeTools) {
+          if (!result[name]) {
+            result[name] = { description: "forge tool " + name, parameters: [] };
+          }
+        }
+        return result;
+      },
+    },
+    app: {
+      log: async (msg) => {
+        process.stderr.write(String(msg) + "\n");
+      },
+    },
   };
+}
+
+function parseRgLine(line) {
+  const idx = line.indexOf(":");
+  if (idx < 0) return { file: line, line: 1, content: "" };
+  const file = line.substring(0, idx);
+  const rest = line.substring(idx + 1);
+  const colon2 = rest.indexOf(":");
+  if (colon2 < 0) return { file, line: 1, content: rest };
+  const lineNum = parseInt(rest.substring(0, colon2), 10);
+  const content = rest.substring(colon2 + 1);
+  return { file, line: lineNum || 1, content };
 }
 
 async function callTool(name, inputArgs) {
