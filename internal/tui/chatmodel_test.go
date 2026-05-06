@@ -3305,6 +3305,80 @@ func TestChatModelFilePickerAcceptsExplicitRelativePath(t *testing.T) {
 	}
 }
 
+func TestChatModelFilesCommandBrowsesAndScrollsFilePreview(t *testing.T) {
+	workDir := t.TempDir()
+	lines := make([]string, 0, 40)
+	for i := 1; i <= 40; i++ {
+		lines = append(lines, fmt.Sprintf("line %02d", i))
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "pkg.go"), []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workDir, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: workDir})
+	m.width = 100
+	m.height = 18
+	m.inputBuf = "/files pkg"
+	m.inputPos = len(m.inputBuf)
+
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+	if !m.filesVisible || !m.filesBrowser || m.filesViewing {
+		t.Fatalf("expected files browser list, visible=%v browser=%v viewing=%v", m.filesVisible, m.filesBrowser, m.filesViewing)
+	}
+	if len(m.filesFiltered) != 1 || m.filesFiltered[0] != "pkg.go" {
+		t.Fatalf("filesFiltered = %#v", m.filesFiltered)
+	}
+	if got := m.View(); !strings.Contains(got, "Browse workspace files") || !strings.Contains(got, "pkg.go") {
+		t.Fatalf("view missing files browser overlay: %s", got)
+	}
+
+	updated, _ = m.handleFilePickerKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+	if !m.filesViewing || m.filesViewPath != "pkg.go" {
+		t.Fatalf("expected file preview for pkg.go, viewing=%v path=%q", m.filesViewing, m.filesViewPath)
+	}
+	if got := m.View(); !strings.Contains(got, "File preview") || !strings.Contains(got, "line 01") {
+		t.Fatalf("view missing file preview: %s", got)
+	}
+
+	updated, _ = m.handleFilePickerKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	m = updated.(ChatModel)
+	if m.filesViewScroll != 1 {
+		t.Fatalf("filesViewScroll = %d", m.filesViewScroll)
+	}
+}
+
+func TestChatModelFilesCommandAddsPreviewedFileAsContext(t *testing.T) {
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, "pkg.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: workDir})
+	m.width = 100
+	m.height = 18
+	m.inputBuf = "/files"
+	m.inputPos = len(m.inputBuf)
+
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+	updated, _ = m.handleFilePickerKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+	updated, _ = m.handleFilePickerKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("@")})
+	m = updated.(ChatModel)
+
+	if len(m.contextFiles) != 1 || m.contextFiles[0] != "pkg.go" {
+		t.Fatalf("contextFiles = %#v", m.contextFiles)
+	}
+	if m.flash != "added context pkg.go" {
+		t.Fatalf("flash = %q", m.flash)
+	}
+}
+
 func TestChatModelSlashExpandIsUnknownCommand(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 100
