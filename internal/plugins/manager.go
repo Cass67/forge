@@ -128,6 +128,55 @@ func (m *Manager) Agents() []agentDef {
 	return all
 }
 
+type AgentDef struct {
+	Name         string
+	Description  string
+	SystemPrompt string
+	Model        string
+	Fallbacks    []string
+	ModelFamily  string
+	Tools        []string
+}
+
+func (m *Manager) AgentDefs() []AgentDef {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var all []AgentDef
+	for _, state := range m.plugins {
+		for _, a := range state.agents {
+			all = append(all, AgentDef{
+				Name:         a.Name,
+				Description:  a.Description,
+				SystemPrompt: a.SystemPrompt,
+				Model:        a.Model,
+				Fallbacks:    a.Fallbacks,
+				ModelFamily:  a.ModelFamily,
+				Tools:        toToolList(a.Tools),
+			})
+		}
+	}
+	return all
+}
+
+func toToolList(tools any) []string {
+	if tools == nil || tools == "*" {
+		return nil
+	}
+	if arr, ok := tools.([]any); ok {
+		list := make([]string, 0, len(arr))
+		for _, item := range arr {
+			if s, ok := item.(string); ok {
+				list = append(list, s)
+			}
+		}
+		return list
+	}
+	return nil
+}
+
 func (m *Manager) RegisterTools(reg *agenttools.Registry, approve agenttools.ApprovalFunc) {
 	if m == nil || reg == nil {
 		return
