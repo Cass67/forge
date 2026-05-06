@@ -187,7 +187,21 @@ type hookRegistration struct {
 }
 
 func hookRegistrationPoints() []hooks.Point {
-	return []hooks.Point{hooks.PointPromptContext, hooks.PointBeforeTool, hooks.PointAfterTool}
+	return []hooks.Point{
+		hooks.PointPromptContext,
+		hooks.PointBeforeTool,
+		hooks.PointAfterTool,
+		hooks.PointChatMessage,
+		hooks.PointChatParams,
+		hooks.PointChatHeaders,
+		hooks.PointPermissionRequest,
+		hooks.PointSessionStart,
+		hooks.PointSessionEnd,
+		hooks.PointPreCompact,
+		hooks.PointPostCompact,
+		hooks.PointTurnComplete,
+		hooks.PointEvent,
+	}
 }
 
 func (m *Manager) CallTool(ctx context.Context, pluginID, toolName string, args map[string]any) (string, error) {
@@ -343,7 +357,26 @@ func hookParams(point hooks.Point, event hooks.Event) hookCallParams {
 			params.Status = "ok"
 		}
 	}
+	if point == hooks.PointEvent || point == hooks.PointSessionStart || point == hooks.PointSessionEnd ||
+		point == hooks.PointTurnComplete || point == hooks.PointPreCompact || point == hooks.PointPostCompact ||
+		point == hooks.PointChatMessage || point == hooks.PointChatParams || point == hooks.PointChatHeaders ||
+		point == hooks.PointPermissionRequest {
+		params.Event = eventToMap(event)
+	}
 	return params
+}
+
+func eventToMap(event hooks.Event) map[string]any {
+	result := map[string]any{
+		"type": string(event.Point),
+	}
+	if event.Snapshot != nil {
+		result["snapshot"] = event.Snapshot
+	}
+	if event.Transient != nil {
+		result["transient"] = event.Transient
+	}
+	return result
 }
 
 func hookResults(pluginID string, result hookCallResult) []hooks.Result {
