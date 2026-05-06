@@ -22,11 +22,14 @@ var snapshotData []byte
 
 // ModelInfo holds capability flags for a single model.
 type ModelInfo struct {
-	Reasoning     bool
-	Temperature   bool
-	ToolCall      bool
-	ContextWindow int
-	OutputLimit   int
+	Reasoning           bool
+	Temperature         bool
+	ToolCall            bool
+	ContextWindow       int
+	OutputLimit         int
+	SupportsImages      bool
+	MaxImageBytes       int64
+	SupportedImageMIMEs []string
 }
 
 type CustomProviderRoute struct {
@@ -78,6 +81,30 @@ var (
 	catalog        map[string]providerData // keyed by models.dev provider ID
 	customSources  = map[string]customSource{}
 )
+
+// imageCapableModels maps provider/model to image capability metadata.
+// These override the catalog (which doesn't yet carry image metadata).
+var imageCapableModels = map[string]map[string]struct {
+	MaxBytes int64
+	MIMEs    []string
+}{
+	"openai": {
+		"gpt-4o":      {MaxBytes: 20 * 1024 * 1024, MIMEs: []string{"image/png", "image/jpeg", "image/gif"}},
+		"gpt-4-turbo": {MaxBytes: 20 * 1024 * 1024, MIMEs: []string{"image/png", "image/jpeg", "image/gif"}},
+		"gpt-5.5":     {MaxBytes: 20 * 1024 * 1024, MIMEs: []string{"image/png", "image/jpeg", "image/gif"}},
+		"gpt-5":       {MaxBytes: 20 * 1024 * 1024, MIMEs: []string{"image/png", "image/jpeg", "image/gif"}},
+		"o3":          {MaxBytes: 20 * 1024 * 1024, MIMEs: []string{"image/png", "image/jpeg", "image/gif"}},
+		"o4-mini":     {MaxBytes: 20 * 1024 * 1024, MIMEs: []string{"image/png", "image/jpeg", "image/gif"}},
+	},
+	"chatgpt": {
+		"gpt-4o":      {MaxBytes: 20 * 1024 * 1024, MIMEs: []string{"image/png", "image/jpeg", "image/gif"}},
+		"gpt-4-turbo": {MaxBytes: 20 * 1024 * 1024, MIMEs: []string{"image/png", "image/jpeg", "image/gif"}},
+		"gpt-5.5":     {MaxBytes: 20 * 1024 * 1024, MIMEs: []string{"image/png", "image/jpeg", "image/gif"}},
+		"gpt-5":       {MaxBytes: 20 * 1024 * 1024, MIMEs: []string{"image/png", "image/jpeg", "image/gif"}},
+		"o3":          {MaxBytes: 20 * 1024 * 1024, MIMEs: []string{"image/png", "image/jpeg", "image/gif"}},
+		"o4-mini":     {MaxBytes: 20 * 1024 * 1024, MIMEs: []string{"image/png", "image/jpeg", "image/gif"}},
+	},
+}
 
 type customSource struct {
 	URL     string
@@ -213,14 +240,71 @@ func Lookup(providerID, modelID string) *ModelInfo {
 
 	switch {
 	case liveOK && bundledOK:
-		return mergeModelInfo(liveInfo, bundledInfo)
+		info := mergeModelInfo(liveInfo, bundledInfo)
+		injectImageCapability(providerID, modelID, info)
+		return info
 	case liveOK:
+		injectImageCapability(providerID, modelID, liveInfo)
 		return liveInfo
 	case bundledOK:
+		injectImageCapability(providerID, modelID, bundledInfo)
 		return bundledInfo
 	default:
-		return lookupCustomProvider(providerID, modelID)
+		info := lookupCustomProvider(providerID, modelID)
+		if info != nil {
+			injectImageCapability(providerID, modelID, info)
+			return info
+		}
+		// Model not found in any catalog, but may still have hardcoded image capability.
+		// Create a minimal ModelInfo just for the capability check.
+		imageInfo := lookupImageCapabilityOnly(providerID, modelID)
+		if imageInfo != nil {
+			return imageInfo
+		}
+		return nil
 	}
+}
+
+func lookupImageCapabilityOnly(providerID, modelID string) *ModelInfo {
+	providerImages, ok := imageCapableModels[providerID]
+	if !ok {
+		return nil
+	}
+	cap, ok := providerImages[modelID]
+	if !ok {
+		// Try prefix match (e.g. "gpt-5.5-preview" matches "gpt-5.5*")
+		for prefix, c := range providerImages {
+			if strings.HasPrefix(modelID, prefix+"-") || strings.HasPrefix(modelID, prefix+".") {
+				cap = c
+				break
+			}
+		}
+		if cap.MaxBytes == 0 {
+			return nil
+		}
+	}
+	return &ModelInfo{
+		SupportsImages:      true,
+		MaxImageBytes:       cap.MaxBytes,
+		SupportedImageMIMEs: cap.MIMEs,
+	}
+}
+
+func injectImageCapability(providerID, modelID string, info *ModelInfo) {
+	if info == nil {
+		return
+	}
+	providerImages, ok := imageCapableModels[providerID]
+	if !ok {
+		return
+	}
+	cap, ok := providerImages[modelID]
+	if !ok {
+		return
+	}
+	info.SupportsImages = true
+	info.MaxImageBytes = cap.MaxBytes
+	info.SupportedImageMIMEs = cap.MIMEs
 }
 
 func lookupModelInfo(provider providerData, providerOK bool, modelID string) (*ModelInfo, bool) {

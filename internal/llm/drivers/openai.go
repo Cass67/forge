@@ -3,6 +3,7 @@ package drivers
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -789,7 +790,38 @@ func toOpenAIMessages(msgs []llm.Message) []openai.ChatCompletionMessageParamUni
 		case llm.RoleSystem:
 			out = append(out, openai.SystemMessage(m.Content))
 		case llm.RoleUser:
-			out = append(out, openai.UserMessage(m.Content))
+			if m.HasContentParts() {
+				parts := make([]openai.ChatCompletionContentPartUnionParam, 0, len(m.ContentParts)+1)
+				if strings.TrimSpace(m.Content) != "" {
+					parts = append(parts, openai.TextContentPart(m.Content))
+				}
+				for _, part := range m.ContentParts {
+					switch part.Type {
+					case "text":
+						if strings.TrimSpace(part.Text) != "" {
+							parts = append(parts, openai.TextContentPart(part.Text))
+						}
+					case "image":
+						if part.Image != nil {
+							dataURL, err := imageToDataURL(part.Image.Path, part.Image.MIMEType)
+							if err != nil {
+								continue
+							}
+							parts = append(parts, openai.ImageContentPart(
+								openai.ChatCompletionContentPartImageImageURLParam{
+									URL:    dataURL,
+									Detail: "auto",
+								}))
+						}
+					}
+				}
+				if len(parts) == 0 {
+					parts = append(parts, openai.TextContentPart(m.Content))
+				}
+				out = append(out, openai.UserMessage(parts))
+			} else {
+				out = append(out, openai.UserMessage(m.Content))
+			}
 		case llm.RoleTool:
 			out = append(out, openai.ToolMessage(m.Content, m.ToolCallID))
 		case llm.RoleAssistant:
@@ -1180,7 +1212,11 @@ func toResponseInput(msgs []llm.Message) []responses.ResponseInputItemUnionParam
 		case llm.RoleSystem:
 			out = append(out, responses.ResponseInputItemParamOfMessage(m.Content, responses.EasyInputMessageRoleSystem))
 		case llm.RoleUser:
-			out = append(out, responses.ResponseInputItemParamOfMessage(m.Content, responses.EasyInputMessageRoleUser))
+			if m.HasContentParts() {
+				out = append(out, messageWithContentParts(m, responses.EasyInputMessageRoleUser))
+			} else {
+				out = append(out, responses.ResponseInputItemParamOfMessage(m.Content, responses.EasyInputMessageRoleUser))
+			}
 		case llm.RoleTool:
 			if strings.TrimSpace(m.ToolCallID) == "" {
 				continue
@@ -1200,6 +1236,64 @@ func toResponseInput(msgs []llm.Message) []responses.ResponseInputItemUnionParam
 		}
 	}
 	return out
+}
+
+func messageWithContentParts(m llm.Message, role responses.EasyInputMessageRole) responses.ResponseInputItemUnionParam {
+	parts := make(responses.ResponseInputMessageContentListParam, 0, len(m.ContentParts)+2)
+	hasText := false
+
+	// Always include the text content as the first part
+	if strings.TrimSpace(m.Content) != "" {
+		parts = append(parts, responses.ResponseInputContentParamOfInputText(m.Content))
+		hasText = true
+	}
+
+	for _, part := range m.ContentParts {
+		switch part.Type {
+		case "text":
+			if strings.TrimSpace(part.Text) != "" {
+				parts = append(parts, responses.ResponseInputContentParamOfInputText(part.Text))
+				hasText = true
+			}
+		case "image":
+			if part.Image != nil {
+				dataURL, err := imageToDataURL(part.Image.Path, part.Image.MIMEType)
+				if err != nil {
+					continue
+				}
+				parts = append(parts, responses.ResponseInputContentUnionParam{
+					OfInputImage: &responses.ResponseInputImageParam{
+						Detail:   responses.ResponseInputImageDetailAuto,
+						ImageURL: openai.String(dataURL),
+					},
+				})
+			}
+		}
+	}
+	// Ensure at least one text part exists: the Responses API requires at least
+	// one input_text content part in a mixed-content user message.
+	if !hasText && len(parts) > 0 {
+		parts = append(responses.ResponseInputMessageContentListParam{
+			responses.ResponseInputContentParamOfInputText(" "),
+		}, parts...)
+		hasText = true
+	}
+	if !hasText {
+		return responses.ResponseInputItemParamOfMessage(" ", role)
+	}
+	return responses.ResponseInputItemParamOfMessage(parts, role)
+}
+
+func imageToDataURL(path, mimeType string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("cannot read image file %s: %w", path, err)
+	}
+	if mimeType == "" {
+		mimeType = "image/png"
+	}
+	encoded := base64.StdEncoding.EncodeToString(data)
+	return fmt.Sprintf("data:%s;base64,%s", mimeType, encoded), nil
 }
 
 func emitResponsesFunctionCalls(ctx context.Context, out chan<- llm.Token, items []responses.ResponseOutputItemUnion) error {

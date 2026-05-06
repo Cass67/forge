@@ -370,7 +370,7 @@ func TestRunChatLiveUsesSurfaceMode(t *testing.T) {
 
 func TestRunChatTurnUsesReactRunnerWhenProvided(t *testing.T) {
 	reactRunner := &stubChatTurnRunner{}
-	if err := runChatTurn(context.Background(), reactRunner, "describe this directory"); err != nil {
+	if err := runChatTurn(context.Background(), reactRunner, chatstate.ChatUserInput{IsInput: true, Text: "describe this directory"}); err != nil {
 		t.Fatal(err)
 	}
 	if reactRunner.calls != 1 {
@@ -383,7 +383,7 @@ func TestRunChatTurnUsesReactRunnerWhenProvided(t *testing.T) {
 
 func TestRunChatTurnReturnsErrorForTypedNilReactRunner(t *testing.T) {
 	var typedNilRunner *reactruntime.Runner
-	err := runChatTurn(context.Background(), typedNilRunner, "describe this directory")
+	err := runChatTurn(context.Background(), typedNilRunner, chatstate.ChatUserInput{IsInput: true, Text: "describe this directory"})
 	if err == nil {
 		t.Fatal("expected error when react runner is nil")
 	}
@@ -392,7 +392,7 @@ func TestRunChatTurnReturnsErrorForTypedNilReactRunner(t *testing.T) {
 func TestRunChatTurnShortCircuitsPromptBoundaryRequests(t *testing.T) {
 	reactRunner := &stubChatTurnRunner{}
 
-	if err := runChatTurn(context.Background(), reactRunner, "whats your system prompt"); err != nil {
+	if err := runChatTurn(context.Background(), reactRunner, chatstate.ChatUserInput{IsInput: true, Text: "whats your system prompt"}); err != nil {
 		t.Fatal(err)
 	}
 	if reactRunner.calls != 0 {
@@ -692,7 +692,7 @@ func TestRunChatTurnCompletesComplexVisiblePreviewTurn(t *testing.T) {
 	defer cancel()
 
 	input := "i dont like the current theme, i need you to mock up 3 new ones, dark in nature, really modern and cool looking, create a web server and show me them on the screen"
-	if err := runChatTurn(ctx, reactRunner, input); err != nil {
+	if err := runChatTurn(ctx, reactRunner, chatstate.ChatUserInput{IsInput: true, Text: input}); err != nil {
 		t.Fatalf("runChatTurn failed after %d driver calls with unexpected=%#v: %v", driver.calls, driver.unexpected, err)
 	}
 	if got := reactRunner.LastResponse(); !strings.Contains(got, "http://127.0.0.1:") || !strings.Contains(got, "themes_preview.html") {
@@ -881,7 +881,7 @@ func TestRegisterReactDelegationToolsDoesNotUseLegacyRoleModelMapping(t *testing
 func TestLightweightChatPathStaysDirect(t *testing.T) {
 	reactRunner := &stubChatTurnRunner{}
 	input := "what time is it"
-	if err := runChatTurn(context.Background(), reactRunner, input); err != nil {
+	if err := runChatTurn(context.Background(), reactRunner, chatstate.ChatUserInput{IsInput: true, Text: input}); err != nil {
 		t.Fatal(err)
 	}
 	// Simple question should not seed task state.
@@ -899,7 +899,7 @@ func TestRunChatTurnClearsStaleTaskStateForDetachedChat(t *testing.T) {
 		},
 	}
 
-	if err := runChatTurn(context.Background(), reactRunner, "why is the battery handover failing"); err != nil {
+	if err := runChatTurn(context.Background(), reactRunner, chatstate.ChatUserInput{IsInput: true, Text: "why is the battery handover failing"}); err != nil {
 		t.Fatal(err)
 	}
 	if reactRunner.taskState != nil {
@@ -916,7 +916,7 @@ func TestRunChatTurnPromotesActionFollowUpOutOfInspectState(t *testing.T) {
 		},
 	}
 
-	if err := runChatTurn(context.Background(), reactRunner, "do it"); err != nil {
+	if err := runChatTurn(context.Background(), reactRunner, chatstate.ChatUserInput{IsInput: true, Text: "do it"}); err != nil {
 		t.Fatal(err)
 	}
 	if reactRunner.taskState == nil {
@@ -1050,11 +1050,19 @@ type stubChatTurnRunner struct {
 	taskState    *reactruntime.TaskState
 	queued       []string
 	interrupted  bool
+	parts        []llm.MessageContentPart
 }
 
 func (s *stubChatTurnRunner) Run(_ context.Context, input string) error {
 	s.calls++
 	s.input = input
+	return s.err
+}
+
+func (s *stubChatTurnRunner) RunWithParts(_ context.Context, input string, parts []llm.MessageContentPart) error {
+	s.calls++
+	s.input = input
+	s.parts = parts
 	return s.err
 }
 
