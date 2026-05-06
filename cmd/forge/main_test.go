@@ -73,6 +73,9 @@ func TestPrintHelpPromotesMakeAndKeepsImproveAlias(t *testing.T) {
 	if !strings.Contains(output, "forge mcp [list|get|add|remove|login|logout]") {
 		t.Fatalf("expected forge mcp help entry, got:\n%s", output)
 	}
+	if !strings.Contains(output, "forge plugin install <source>") {
+		t.Fatalf("expected forge plugin help entry, got:\n%s", output)
+	}
 }
 
 func TestPrintChatHelpMentionsAdvancedDebugView(t *testing.T) {
@@ -167,6 +170,106 @@ func TestRunMCPAddListGetAndRemove(t *testing.T) {
 	}
 	if _, ok := cfg.MCPServers["context7"]; ok {
 		t.Fatal("expected MCP server to be removed")
+	}
+}
+
+func TestRunPluginInstallLocalOpenCodePlugin(t *testing.T) {
+	oldLoad := loadMainConfigFn
+	oldSave := saveMainConfigFn
+	oldPath := mainConfigPathFn
+	oldInstall := runPluginInstallCmdFn
+	defer func() {
+		loadMainConfigFn = oldLoad
+		saveMainConfigFn = oldSave
+		mainConfigPathFn = oldPath
+		runPluginInstallCmdFn = oldInstall
+	}()
+
+	tmp := t.TempDir()
+	pluginPath := filepath.Join(tmp, "plugin.mjs")
+	if err := os.WriteFile(pluginPath, []byte("export default { server: async () => ({ tool: {} }) }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{}
+	loadMainConfigFn = func() (*config.Config, error) { return cfg, nil }
+	saveMainConfigFn = func(_ string, in *config.Config) error {
+		cfg = in
+		return nil
+	}
+	mainConfigPathFn = func() string { return filepath.Join(tmp, "forge", "config.toml") }
+	runPluginInstallCmdFn = func(name string, args ...string) error {
+		t.Fatalf("local plugin install should not run %s %#v", name, args)
+		return nil
+	}
+
+	output := captureStdout(t, func() {
+		runPlugin([]string{"install", "--id", "simple", "--auto-approve", "echo", pluginPath})
+	})
+	if !strings.Contains(output, "Installed OpenCode plugin simple") {
+		t.Fatalf("install output = %q", output)
+	}
+	if len(cfg.Plugins) != 1 {
+		t.Fatalf("plugins = %d, want 1", len(cfg.Plugins))
+	}
+	plugin := cfg.Plugins[0]
+	if plugin.ID != "simple" || plugin.Kind != "opencode" || plugin.Source != pluginPath {
+		t.Fatalf("plugin config = %#v", plugin)
+	}
+	if len(plugin.Command) < 4 || plugin.Command[0] != "node" || !strings.Contains(plugin.Command[1], "opencode-host.mjs") || plugin.Command[2] != "--module" || plugin.Command[3] != pluginPath {
+		t.Fatalf("plugin command = %#v", plugin.Command)
+	}
+	if got := strings.Join(plugin.AutoApproveTools, ","); got != "echo" {
+		t.Fatalf("auto approve = %q", got)
+	}
+	if _, err := os.Stat(plugin.Command[1]); err != nil {
+		t.Fatalf("expected host script to be written: %v", err)
+	}
+
+	listOutput := captureStdout(t, runPluginList)
+	if !strings.Contains(listOutput, "simple") || !strings.Contains(listOutput, "opencode") {
+		t.Fatalf("plugin list = %q", listOutput)
+	}
+}
+
+func TestRunPluginInstallPackageRunsNPM(t *testing.T) {
+	oldLoad := loadMainConfigFn
+	oldSave := saveMainConfigFn
+	oldPath := mainConfigPathFn
+	oldInstall := runPluginInstallCmdFn
+	defer func() {
+		loadMainConfigFn = oldLoad
+		saveMainConfigFn = oldSave
+		mainConfigPathFn = oldPath
+		runPluginInstallCmdFn = oldInstall
+	}()
+
+	tmp := t.TempDir()
+	cfg := &config.Config{}
+	loadMainConfigFn = func() (*config.Config, error) { return cfg, nil }
+	saveMainConfigFn = func(_ string, in *config.Config) error {
+		cfg = in
+		return nil
+	}
+	mainConfigPathFn = func() string { return filepath.Join(tmp, "forge", "config.toml") }
+	var ran string
+	runPluginInstallCmdFn = func(name string, args ...string) error {
+		ran = name + " " + strings.Join(args, " ")
+		return nil
+	}
+
+	runPlugin([]string{"install", "oh-my-openagent"})
+	if !strings.Contains(ran, "npm install") || !strings.Contains(ran, "oh-my-openagent") {
+		t.Fatalf("install command = %q", ran)
+	}
+	if len(cfg.Plugins) != 1 {
+		t.Fatalf("plugins = %d, want 1", len(cfg.Plugins))
+	}
+	plugin := cfg.Plugins[0]
+	if plugin.ID != "oh-my-openagent" || plugin.Kind != "opencode" {
+		t.Fatalf("plugin = %#v", plugin)
+	}
+	if got := strings.Join(plugin.Command, " "); !strings.Contains(got, "--module oh-my-openagent") || !strings.Contains(got, "--install-dir") {
+		t.Fatalf("command = %q", got)
 	}
 }
 
