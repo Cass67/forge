@@ -348,7 +348,7 @@ func RunChatLive(setup *ChatSetup) {
 		CompactionMaxFailures: setup.Config.Resilience.CompactionMaxFailures,
 		Interactive:           true,
 	})
-	registerReactDelegationTools(reg, setup, baseReg, approve)
+	registerReactDelegationTools(reg, setup, baseReg, approve, pluginManager)
 
 	inputCh := make(chan string, 1)
 	doneCh := make(chan struct{}, 1)
@@ -677,7 +677,7 @@ func RunChatConsole(setup *ChatSetup) {
 		CompactionMaxFailures: setup.Config.Resilience.CompactionMaxFailures,
 		Interactive:           true,
 	})
-	registerReactDelegationTools(reg, setup, baseReg, approve)
+	registerReactDelegationTools(reg, setup, baseReg, approve, pluginManager)
 
 	fmt.Printf("forge (%s) — %s\n", setup.ChatModel, setup.WorkDir)
 	fmt.Println("type your request, or /help for commands")
@@ -758,7 +758,7 @@ func RunChatConsole(setup *ChatSetup) {
 	fmt.Println()
 }
 
-func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg *tools.Registry, _ tools.ApprovalFunc) {
+func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg *tools.Registry, _ tools.ApprovalFunc, pluginManager *pluginruntime.Manager) {
 	if reg == nil || setup == nil || baseReg == nil {
 		return
 	}
@@ -788,6 +788,22 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 		}
 		return childRunner.LastResponse(), nil
 	})
+	if pluginManager != nil {
+		pluginAgents := pluginManager.AgentDefs()
+		poolAgents := make([]reactruntime.AgentDefinition, len(pluginAgents))
+		for i, a := range pluginAgents {
+			poolAgents[i] = reactruntime.AgentDefinition{
+				Name:         a.Name,
+				Description:  a.Description,
+				SystemPrompt: a.SystemPrompt,
+				Model:        a.Model,
+				Fallbacks:    a.Fallbacks,
+				ModelFamily:  a.ModelFamily,
+				Tools:        a.Tools,
+			}
+		}
+		pool.RegisterAgents(poolAgents)
+	}
 	reg.Register(reacttools.NewSpawnAgent(pool))
 	reg.Register(reacttools.NewWaitAgent(pool))
 }
