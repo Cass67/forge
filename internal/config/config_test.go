@@ -242,6 +242,65 @@ decision = "prompt"
 	}
 }
 
+func TestLoadPluginConfig(t *testing.T) {
+	toml := `
+[[plugins]]
+id = "omo"
+kind = "opencode"
+source = "oh-my-openagent"
+enabled = true
+command = ["node", "/tmp/plugin.js"]
+env = { OMO_MODE = "forge" }
+inherit_env = ["OMO_API_KEY"]
+auto_approve_tools = ["search_docs"]
+startup_timeout_ms = 3000
+request_timeout_ms = 10000
+`
+	path := writeTemp(t, toml)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Plugins) != 1 {
+		t.Fatalf("plugins = %d, want 1", len(cfg.Plugins))
+	}
+	plugin := cfg.Plugins[0]
+	if plugin.ID != "omo" {
+		t.Fatalf("plugin.ID = %q", plugin.ID)
+	}
+	if plugin.Kind != "opencode" {
+		t.Fatalf("plugin.Kind = %q", plugin.Kind)
+	}
+	if plugin.Source != "oh-my-openagent" {
+		t.Fatalf("plugin.Source = %q", plugin.Source)
+	}
+	if !plugin.IsEnabled() {
+		t.Fatal("expected plugin to be enabled")
+	}
+	if got := strings.Join(plugin.Command, " "); got != "node /tmp/plugin.js" {
+		t.Fatalf("plugin.Command = %q", got)
+	}
+	if plugin.Env["OMO_MODE"] != "forge" {
+		t.Fatalf("plugin.Env[OMO_MODE] = %q", plugin.Env["OMO_MODE"])
+	}
+	if got := strings.Join(plugin.InheritEnv, ","); got != "OMO_API_KEY" {
+		t.Fatalf("plugin.InheritEnv = %q", got)
+	}
+	if got := strings.Join(plugin.AutoApproveTools, ","); got != "search_docs" {
+		t.Fatalf("plugin.AutoApproveTools = %q", got)
+	}
+	if plugin.StartupTimeoutMS != 3000 || plugin.RequestTimeoutMS != 10000 {
+		t.Fatalf("timeouts = %d/%d", plugin.StartupTimeoutMS, plugin.RequestTimeoutMS)
+	}
+}
+
+func TestPluginConfigEnabledDefaultsToTrue(t *testing.T) {
+	plugin := config.PluginConfig{}
+	if !plugin.IsEnabled() {
+		t.Fatal("plugin without explicit enabled should default to true")
+	}
+}
+
 func TestChatModel(t *testing.T) {
 	cfg, _ := config.Load("/nonexistent/path.toml")
 	if got := cfg.ChatModel(); got != "" {

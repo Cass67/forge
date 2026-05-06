@@ -122,6 +122,19 @@ type MCPServerConfig struct {
 	TimeoutMS int               `toml:"timeout_ms"`
 }
 
+type PluginConfig struct {
+	ID               string            `toml:"id"`
+	Kind             string            `toml:"kind"`
+	Source           string            `toml:"source"`
+	Enabled          *bool             `toml:"enabled"`
+	Command          []string          `toml:"command"`
+	Env              map[string]string `toml:"env"`
+	InheritEnv       []string          `toml:"inherit_env"`
+	AutoApproveTools []string          `toml:"auto_approve_tools"`
+	StartupTimeoutMS int               `toml:"startup_timeout_ms"`
+	RequestTimeoutMS int               `toml:"request_timeout_ms"`
+}
+
 type Config struct {
 	Models           Models                     `toml:"models"`
 	Session          Session                    `toml:"session"`
@@ -136,6 +149,7 @@ type Config struct {
 	Chat             ChatConfig                 `toml:"chat"`
 	Approval         ApprovalConfig             `toml:"approval"`
 	MCPServers       map[string]MCPServerConfig `toml:"mcp_servers"`
+	Plugins          []PluginConfig             `toml:"plugins"`
 	LiveCompatModels bool                       `toml:"live_compat_models"`
 }
 
@@ -282,6 +296,13 @@ func setDefaults(c *Config) {
 }
 
 func (c MCPServerConfig) IsEnabled() bool {
+	if c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
+}
+
+func (c PluginConfig) IsEnabled() bool {
 	if c.Enabled == nil {
 		return true
 	}
