@@ -77,6 +77,43 @@ func TestManagerRegistersPluginToolsAndHooks(t *testing.T) {
 	}
 }
 
+func TestManagerRegistersPluginAgents(t *testing.T) {
+	m := newTestManager(t, config.PluginConfig{
+		ID:               "demo",
+		Command:          pluginHelperCommand(),
+		Env:              map[string]string{"FORGE_PLUGIN_HELPER": "1"},
+		StartupTimeoutMS: 1000,
+		RequestTimeoutMS: 1000,
+	})
+	defer func() { _ = m.Close() }()
+
+	agents := m.AgentDefs()
+	if len(agents) != 1 {
+		t.Fatalf("expected 1 agent, got %d", len(agents))
+	}
+	if agents[0].Name != "helper_agent" {
+		t.Fatalf("agent name = %q, want helper_agent", agents[0].Name)
+	}
+	if agents[0].Description != "A helper agent" {
+		t.Fatalf("agent description = %q", agents[0].Description)
+	}
+	if agents[0].SystemPrompt != "You are a helper agent." {
+		t.Fatalf("agent system_prompt = %q", agents[0].SystemPrompt)
+	}
+	if agents[0].Model != "helper/model" {
+		t.Fatalf("agent model = %q", agents[0].Model)
+	}
+	if len(agents[0].Fallbacks) != 1 || agents[0].Fallbacks[0] != "helper/fallback" {
+		t.Fatalf("agent fallbacks = %#v", agents[0].Fallbacks)
+	}
+	if agents[0].ModelFamily != "claude" {
+		t.Fatalf("agent model_family = %q", agents[0].ModelFamily)
+	}
+	if len(agents[0].Tools) != 2 || agents[0].Tools[0] != "echo" || agents[0].Tools[1] != "env" {
+		t.Fatalf("agent tools = %#v", agents[0].Tools)
+	}
+}
+
 func TestManagerPromptsForPluginToolApproval(t *testing.T) {
 	m := newTestManager(t, config.PluginConfig{
 		ID:               "demo",
@@ -226,6 +263,17 @@ func servePluginHelper(in io.Reader, out io.Writer) {
 					},
 				},
 				Hooks: []string{"prompt_context", "before_tool", "after_tool"},
+				Agents: []agentDef{
+					{
+						Name:         "helper_agent",
+						Description:  "A helper agent",
+						SystemPrompt: "You are a helper agent.",
+						Model:        "helper/model",
+						Fallbacks:    []string{"helper/fallback"},
+						ModelFamily:  "claude",
+						Tools:        []any{"echo", "env"},
+					},
+				},
 			})
 		case "tool_call":
 			var params toolCallParams
