@@ -686,7 +686,7 @@ func TestRunChatTurnCompletesComplexVisiblePreviewTurn(t *testing.T) {
 		SystemPrompt: func() string { return agent.BuildNativeSystemPrompt(workDir) },
 		Session:      reactruntime.NewSession(),
 	})
-	registerReactDelegationTools(reg, &ChatSetup{Config: cfg, WorkDir: workDir, Driver: driver}, baseReg, approve)
+	registerReactDelegationTools(reg, &ChatSetup{Config: cfg, WorkDir: workDir, Driver: driver}, baseReg, approve, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -741,7 +741,7 @@ func TestRegisterReactDelegationToolsAddsSpawnAndWait(t *testing.T) {
 		MakeDriver: func(name string) llm.Driver { return &kernelMockDriver{response: "ok"} },
 	}
 
-	registerReactDelegationTools(reg, setup, baseReg, approve)
+	registerReactDelegationTools(reg, setup, baseReg, approve, nil)
 	if _, ok := reg.Get("spawn_agent"); !ok {
 		t.Fatal("spawn_agent tool not registered")
 	}
@@ -834,7 +834,7 @@ func TestRegisterReactDelegationToolsDoesNotUseLegacyRoleModelMapping(t *testing
 		},
 	}
 
-	registerReactDelegationTools(reg, setup, baseReg, approve)
+	registerReactDelegationTools(reg, setup, baseReg, approve, nil)
 
 	spawnTool, ok := reg.Get("spawn_agent")
 	if !ok {
