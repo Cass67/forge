@@ -123,16 +123,22 @@ type MCPServerConfig struct {
 }
 
 type PluginConfig struct {
-	ID               string            `toml:"id"`
-	Kind             string            `toml:"kind"`
-	Source           string            `toml:"source"`
-	Enabled          *bool             `toml:"enabled"`
-	Command          []string          `toml:"command"`
-	Env              map[string]string `toml:"env"`
-	InheritEnv       []string          `toml:"inherit_env"`
-	AutoApproveTools []string          `toml:"auto_approve_tools"`
-	StartupTimeoutMS int               `toml:"startup_timeout_ms"`
-	RequestTimeoutMS int               `toml:"request_timeout_ms"`
+	ID               string                   `toml:"id"`
+	Kind             string                   `toml:"kind"`
+	Source           string                   `toml:"source"`
+	Enabled          *bool                    `toml:"enabled"`
+	Command          []string                 `toml:"command"`
+	Env              map[string]string        `toml:"env"`
+	InheritEnv       []string                 `toml:"inherit_env"`
+	AutoApproveTools []string                 `toml:"auto_approve_tools"`
+	AgentOverrides   map[string]AgentOverride `toml:"agent_overrides,omitempty"`
+	StartupTimeoutMS int                      `toml:"startup_timeout_ms"`
+	RequestTimeoutMS int                      `toml:"request_timeout_ms"`
+}
+
+type AgentOverride struct {
+	Model     string   `toml:"model"`
+	Fallbacks []string `toml:"fallbacks,omitempty"`
 }
 
 type Config struct {

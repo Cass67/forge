@@ -43,8 +43,19 @@ type initializeParams struct {
 }
 
 type initializeResult struct {
-	Tools []toolDef `json:"tools,omitempty"`
-	Hooks []string  `json:"hooks,omitempty"`
+	Tools  []toolDef  `json:"tools,omitempty"`
+	Hooks  []string   `json:"hooks,omitempty"`
+	Agents []agentDef `json:"agents,omitempty"`
+}
+
+type agentDef struct {
+	Name         string   `json:"name"`
+	Description  string   `json:"description,omitempty"`
+	SystemPrompt string   `json:"system_prompt,omitempty"`
+	Model        string   `json:"model,omitempty"`
+	Fallbacks    []string `json:"fallbacks,omitempty"`
+	ModelFamily  string   `json:"model_family,omitempty"`
+	Tools        any      `json:"tools,omitempty"`
 }
 
 type toolDef struct {
@@ -112,6 +123,7 @@ type pluginState struct {
 	client *client
 	tools  []pluginTool
 	hooks  map[hooks.Point]struct{}
+	agents []agentDef
 }
 
 func startupTimeout(cfg config.PluginConfig) time.Duration {
