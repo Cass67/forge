@@ -246,7 +246,7 @@ func runPluginInstall(args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("Installed OpenCode plugin %s from %s.\n", id, source)
-	fmt.Println("Note: Forge OpenCode compatibility currently supports simple plugin tools; plugins that require OpenCode session or agent APIs will report unsupported APIs at runtime.")
+	fmt.Println("Note: Forge OpenCode compatibility supports plugin tools, hooks, and agent registration. Session, provider, and model APIs are available via Node.js built-ins. The OpenCode shell helper ($) and SSE events are not supported.")
 }
 
 func runPluginList() {

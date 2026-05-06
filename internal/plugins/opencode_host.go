@@ -127,7 +127,7 @@ function createPluginInput(pluginID) {
     client: createCompatClient(),
     experimental_workspace: undefined,
     $: async () => {
-      throw new Error("Unsupported OpenCode runtime API: shell helper $. Forge OpenCode compatibility currently supports simple plugin tools only.");
+      throw new Error("Unsupported OpenCode runtime API: shell helper $. The BunShell API is not available in Forge.");
     },
     skills: [],
     pluginID,
@@ -136,7 +136,7 @@ function createPluginInput(pluginID) {
 
 function createCompatClient() {
   const unsupported = (name) => async () => {
-    throw new Error("Unsupported OpenCode client API: " + name + ". Forge OpenCode compatibility currently supports simple plugin tools only.");
+    throw new Error("Unsupported OpenCode client API: " + name + ". This API requires the OpenCode runtime and is not available in Forge.");
   };
   return {
     _client: {
