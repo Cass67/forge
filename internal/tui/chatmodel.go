@@ -292,13 +292,18 @@ type ChatModel struct {
 	sessionRenameBuf string
 	sessionRenamePos int
 
-	contextFiles  []string
-	filesVisible  bool
-	filesCursor   int
-	filesList     []string
-	filesFiltered []string
-	filesQuery    string
-	filesPos      int
+	contextFiles    []string
+	filesVisible    bool
+	filesBrowser    bool
+	filesViewing    bool
+	filesCursor     int
+	filesList       []string
+	filesFiltered   []string
+	filesQuery      string
+	filesPos        int
+	filesViewPath   string
+	filesViewText   string
+	filesViewScroll int
 
 	pendingApproval *tools.Action
 	inputCh         chan<- string
@@ -1189,8 +1194,8 @@ func (m ChatModel) sessionsOverlayLayout() (x0, y0, boxW, boxH, listY, contentHe
 }
 
 func (m ChatModel) filesOverlayLayout() (x0, y0, boxW, boxH, listY, contentHeight, start int) {
-	boxW = min(72, max(42, m.width-6))
-	boxH = min(24, max(12, m.height-4))
+	boxW = min(96, max(42, m.width-6))
+	boxH = min(30, max(12, m.height-4))
 	contentHeight = max(1, boxH-8)
 	x0 = max(0, (m.width-boxW)/2)
 	y0 = max(0, (m.height-boxH)/2)
@@ -1301,6 +1306,27 @@ func (m ChatModel) handleSessionsMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m ChatModel) handleFilesMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.filesViewing {
+		if tea.MouseEvent(msg).IsWheel() {
+			_, _, _, _, _, contentHeight, _ := m.filesOverlayLayout()
+			maxScroll := max(0, len(strings.Split(m.filesViewText, "\n"))-contentHeight)
+			switch msg.Button {
+			case tea.MouseButtonWheelUp:
+				m.filesViewScroll = max(0, m.filesViewScroll-3)
+			case tea.MouseButtonWheelDown:
+				m.filesViewScroll = min(maxScroll, m.filesViewScroll+3)
+			}
+			return m, nil
+		}
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			x0, y0, boxW, boxH, _, _, _ := m.filesOverlayLayout()
+			if !(msg.X >= x0 && msg.X < x0+boxW && msg.Y >= y0 && msg.Y < y0+boxH) {
+				m.filesVisible = false
+				m.filesViewing = false
+			}
+		}
+		return m, nil
+	}
 	x0, y0, boxW, boxH, listY, contentHeight, start := m.filesOverlayLayout()
 	if tea.MouseEvent(msg).IsWheel() {
 		switch msg.Button {
@@ -1321,7 +1347,11 @@ func (m ChatModel) handleFilesMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				idx := start + (msg.Y - listY)
 				if idx >= 0 && idx < len(m.filesFiltered) {
 					m.filesCursor = idx
-					m.replaceActiveAtToken(m.filesFiltered[idx])
+					if m.filesBrowser {
+						m.openFileViewer(m.filesFiltered[idx])
+					} else {
+						m.replaceActiveAtToken(m.filesFiltered[idx])
+					}
 				}
 			}
 			return m, nil
@@ -2425,7 +2455,7 @@ var builtinCommands = []string{
 	"/tools", "/toggle tools", "/toggle tools on", "/toggle tools off",
 	"/models", "/model", "/provider",
 	"/skills", "/auto-skills", "/sessions", "/save", "/restore",
-	"/find", "/copy agent", "/copy tools", "/copy code", "/copy result",
+	"/find", "/files", "/copy agent", "/copy tools", "/copy code", "/copy result",
 	"/exit", "/quit",
 }
 
@@ -2610,6 +2640,11 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 	case strings.HasPrefix(input, "/find "):
 		query := strings.TrimSpace(strings.TrimPrefix(input, "/find "))
 		m.openSearchOverlay(query)
+	case input == "/files":
+		m.openWorkspaceFileBrowser("")
+	case strings.HasPrefix(input, "/files "):
+		query := strings.TrimSpace(strings.TrimPrefix(input, "/files "))
+		m.openWorkspaceFileBrowser(query)
 	case input == "/copy agent":
 		if err := m.copyFn(plainCopyText(m.chatContent)); err != nil {
 			m.flash = fmt.Sprintf("copy failed: %v", err)
@@ -2658,6 +2693,8 @@ func (m ChatModel) helpLines() []string {
 			"  /help              open this help overlay",
 			"  /find              open search for current pane",
 			"  /find <query>      search current pane with initial query",
+			"  /files             browse workspace files and preview code",
+			"  /files <query>     browse workspace files with an initial filter",
 			"  /models            list available models",
 			"  /model             list available models",
 			"  /model <name>      switch to a model",
@@ -2808,11 +2845,22 @@ func (m *ChatModel) openFilePicker(query string) {
 		return
 	}
 	m.filesVisible = true
+	m.filesBrowser = false
+	m.filesViewing = false
 	m.filesList = list
 	m.filesQuery = query
 	m.filesPos = len([]rune(query))
 	m.filesCursor = 0
+	m.filesViewPath = ""
+	m.filesViewText = ""
+	m.filesViewScroll = 0
 	m.updateFilePickerMatches()
+}
+
+func (m *ChatModel) openWorkspaceFileBrowser(query string) {
+	m.openFilePicker(query)
+	m.filesBrowser = true
+	m.flash = "files opened"
 }
 
 func (m *ChatModel) updateFilePickerMatches() {
@@ -2875,14 +2923,61 @@ func (m *ChatModel) replaceActiveAtToken(path string) {
 		sort.Strings(m.contextFiles)
 	}
 	m.filesVisible = false
+	m.filesViewing = false
 	m.flash = fmt.Sprintf("added context %s", path)
 }
 
+func (m *ChatModel) addContextFile(path string) {
+	if path == "" {
+		return
+	}
+	already := false
+	for _, existing := range m.contextFiles {
+		if existing == path {
+			already = true
+			break
+		}
+	}
+	if !already {
+		m.contextFiles = append(m.contextFiles, path)
+		sort.Strings(m.contextFiles)
+	}
+	m.flash = fmt.Sprintf("added context %s", path)
+}
+
+func (m *ChatModel) openFileViewer(path string) {
+	resolved, err := tools.ResolvePath(m.workDir, path)
+	if err != nil {
+		m.flash = fmt.Sprintf("open failed: %v", err)
+		return
+	}
+	data, err := os.ReadFile(resolved)
+	if err != nil {
+		m.filesViewText = fmt.Sprintf("error reading file: %v", err)
+	} else if tools.IsBinary(data) {
+		m.filesViewText = "binary file preview unavailable"
+	} else {
+		m.filesViewText = string(data)
+	}
+	m.filesViewing = true
+	m.filesViewPath = path
+	m.filesViewScroll = 0
+}
+
 func (m ChatModel) handleFilePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.filesViewing {
+		return m.handleFileViewerKey(msg)
+	}
 	switch msg.Type {
 	case tea.KeyEscape:
 		m.filesVisible = false
 	case tea.KeyEnter:
+		if m.filesBrowser {
+			if m.filesCursor >= 0 && m.filesCursor < len(m.filesFiltered) {
+				m.openFileViewer(m.filesFiltered[m.filesCursor])
+			}
+			return m, nil
+		}
 		if rel := m.resolveExplicitContextPath(strings.TrimSpace(m.filesQuery)); rel != "" {
 			m.replaceActiveAtToken(rel)
 			return m, nil
@@ -2932,6 +3027,12 @@ func (m ChatModel) handleFilePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.filesVisible = false
 			return m, nil
 		}
+		if m.filesBrowser && len(msg.Runes) == 1 && msg.Runes[0] == '@' {
+			if m.filesCursor >= 0 && m.filesCursor < len(m.filesFiltered) {
+				m.addContextFile(m.filesFiltered[m.filesCursor])
+			}
+			return m, nil
+		}
 		for _, r := range msg.Runes {
 			runes := []rune(m.filesQuery)
 			newRunes := make([]rune, 0, len(runes)+1)
@@ -2942,6 +3043,48 @@ func (m ChatModel) handleFilePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.filesPos++
 		}
 		m.updateFilePickerMatches()
+	}
+	return m, nil
+}
+
+func (m ChatModel) handleFileViewerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	_, _, _, _, _, contentHeight, _ := m.filesOverlayLayout()
+	maxScroll := max(0, len(strings.Split(m.filesViewText, "\n"))-contentHeight)
+	scrollBy := func(delta int) {
+		m.filesViewScroll = clamp(m.filesViewScroll+delta, 0, maxScroll)
+	}
+	switch msg.Type {
+	case tea.KeyEscape:
+		m.filesViewing = false
+	case tea.KeyUp:
+		scrollBy(-1)
+	case tea.KeyDown:
+		scrollBy(1)
+	case tea.KeyPgUp:
+		scrollBy(-max(1, contentHeight-1))
+	case tea.KeyPgDown:
+		scrollBy(max(1, contentHeight-1))
+	case tea.KeyHome:
+		m.filesViewScroll = 0
+	case tea.KeyEnd:
+		m.filesViewScroll = maxScroll
+	case tea.KeyRunes:
+		if len(msg.Runes) == 1 {
+			switch msg.Runes[0] {
+			case 'q', 'Q':
+				m.filesViewing = false
+			case 'j', 'J':
+				scrollBy(1)
+			case 'k', 'K':
+				scrollBy(-1)
+			case 'g':
+				m.filesViewScroll = 0
+			case 'G':
+				m.filesViewScroll = maxScroll
+			case 'a', 'A', '@':
+				m.addContextFile(m.filesViewPath)
+			}
+		}
 	}
 	return m, nil
 }
@@ -4044,8 +4187,8 @@ func (m ChatModel) renderSearchOverlay() string {
 
 func (m ChatModel) renderFilesOverlay() string {
 	theme := m.theme()
-	boxW := min(72, max(42, m.width-6))
-	boxH := min(24, max(12, m.height-4))
+	boxW := min(96, max(42, m.width-6))
+	boxH := min(30, max(12, m.height-4))
 	contentHeight := max(1, boxH-8)
 
 	titleStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true)
@@ -4053,6 +4196,9 @@ func (m ChatModel) renderFilesOverlay() string {
 	textStyle := lipgloss.NewStyle().Foreground(theme.Text)
 	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
 	inputStyle := lipgloss.NewStyle().Foreground(theme.Text).Background(theme.PanelBG)
+	if m.filesViewing {
+		return m.renderFileViewerOverlay(boxW, boxH, contentHeight, titleStyle, textStyle, dimStyle)
+	}
 
 	lines := make([]string, 0, min(len(m.filesFiltered), contentHeight))
 	start := 0
@@ -4071,18 +4217,70 @@ func (m ChatModel) renderFilesOverlay() string {
 	if len(lines) == 0 {
 		lines = append(lines, dimStyle.Render("No matching files"))
 	}
+	title := "Add context file (@...)"
+	footer := "Type to filter • Enter insert • Esc close"
+	if m.filesBrowser {
+		title = "Browse workspace files"
+		footer = "Type to filter • Enter view • @ add context • Esc close"
+	}
 	inner := lipgloss.JoinVertical(lipgloss.Left,
-		titleStyle.Render("Add context file (@...)"),
+		titleStyle.Render(title),
 		inputStyle.Render("Query: "+m.filesQuery),
 		"",
 		lipgloss.NewStyle().Width(boxW-6).Height(contentHeight).Render(strings.Join(lines, "\n")),
 		"",
-		dimStyle.Render("Type to filter • Enter insert • Esc close"),
+		dimStyle.Render(footer),
 	)
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(theme.BorderFocus).
 		Background(theme.HeaderBG).
+		Padding(1, 2).
+		Width(boxW - 6).
+		Height(boxH - 4).
+		Render(inner)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+}
+
+func (m ChatModel) renderFileViewerOverlay(boxW, boxH, contentHeight int, titleStyle, textStyle, dimStyle lipgloss.Style) string {
+	lines := strings.Split(m.filesViewText, "\n")
+	if len(lines) == 0 {
+		lines = []string{""}
+	}
+	m.filesViewScroll = clamp(m.filesViewScroll, 0, max(0, len(lines)-contentHeight))
+	start := m.filesViewScroll
+	end := min(len(lines), start+contentHeight)
+	visible := make([]string, 0, contentHeight)
+	lineNoWidth := len(fmt.Sprintf("%d", len(lines)))
+	bodyW := max(20, boxW-10)
+	for i := start; i < end; i++ {
+		prefix := fmt.Sprintf("%*d ", lineNoWidth, i+1)
+		line := prefix + lines[i]
+		visible = append(visible, textStyle.Render(truncate(line, bodyW-1)))
+	}
+	for len(visible) < contentHeight {
+		visible = append(visible, "")
+	}
+	for i := range visible {
+		plainWidth := ansiPrintableWidth(visible[i])
+		if plainWidth < bodyW {
+			visible[i] += strings.Repeat(" ", bodyW-plainWidth)
+		}
+	}
+	body := strings.Join(visible, "\n")
+	footer := fmt.Sprintf("lines %d-%d/%d • j/k scroll • PgUp/PgDn • a/@ add context • q back • Esc close", min(len(lines), start+1), end, len(lines))
+	inner := lipgloss.JoinVertical(lipgloss.Left,
+		titleStyle.Render("File preview"),
+		dimStyle.Render(m.filesViewPath),
+		"",
+		lipgloss.NewStyle().Width(boxW-6).Height(contentHeight).Render(body),
+		"",
+		dimStyle.Render(truncate(footer, max(20, boxW-8))),
+	)
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(m.theme().BorderFocus).
+		Background(m.theme().HeaderBG).
 		Padding(1, 2).
 		Width(boxW - 6).
 		Height(boxH - 4).
