@@ -41,9 +41,30 @@ type NativeToolCall struct {
 type Message struct {
 	Role             Role
 	Content          string
-	ReasoningContent string           // reasoning/thinking tokens that must be replayed (e.g. DeepSeek thinking mode)
-	ToolCalls        []NativeToolCall // non-nil when Role==RoleAssistant and model made native tool calls
-	ToolCallID       string           // non-empty when Role==RoleTool (result message)
+	ContentParts     []MessageContentPart // non-nil for multimodal messages (text + images)
+	ReasoningContent string               // reasoning/thinking tokens that must be replayed (e.g. DeepSeek thinking mode)
+	ToolCalls        []NativeToolCall     // non-nil when Role==RoleAssistant and model made native tool calls
+	ToolCallID       string               // non-empty when Role==RoleTool (result message)
+}
+
+// MessageContentPart represents one part of a multimodal message content.
+type MessageContentPart struct {
+	Type  string // "text" or "image"
+	Text  string
+	Image *ImageContent
+}
+
+// ImageContent describes an image to be sent to a vision-capable model.
+type ImageContent struct {
+	Path     string
+	MIMEType string
+	Width    int
+	Height   int
+}
+
+// HasContentParts reports whether the message carries multimodal content parts.
+func (m Message) HasContentParts() bool {
+	return len(m.ContentParts) > 0
 }
 
 // Token is a single streamed chunk from an LLM response.

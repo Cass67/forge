@@ -131,6 +131,10 @@ func NewSession() *Session {
 }
 
 func (s *Session) RecordInput(input string) int {
+	return s.RecordInputWithParts(input, nil)
+}
+
+func (s *Session) RecordInputWithParts(input string, parts []llm.MessageContentPart) int {
 	if s == nil {
 		return 0
 	}
@@ -142,7 +146,11 @@ func (s *Session) RecordInput(input string) int {
 		s.initialInput = strings.TrimSpace(input)
 	}
 	s.recentInputs = append(s.recentInputs, input)
-	s.history = append(s.history, llm.Message{Role: llm.RoleUser, Content: input})
+	msg := llm.Message{Role: llm.RoleUser, Content: input}
+	if len(parts) > 0 {
+		msg.ContentParts = parts
+	}
+	s.history = append(s.history, msg)
 	s.turns = append(s.turns, TurnRecord{
 		Number: s.turn,
 		Input:  input,

@@ -195,8 +195,9 @@ type ChatModel struct {
 	messages []ChatMessage
 	records  []TranscriptRecord
 
-	inputBuf string
-	inputPos int
+	inputBuf    string
+	inputPos    int
+	attachments []chatstate.ChatAttachment
 
 	width  int
 	height int
@@ -872,6 +873,8 @@ func (m ChatModel) composer() ChatComposer {
 	composer.SetLineBudget(minLines, maxLines)
 	composer.SetText(m.inputBuf)
 	composer.SetCursor(m.inputPos)
+	composer.SetAttachments(m.attachments)
+	composer.SetWorkDir(m.workDir)
 	return composer
 }
 
@@ -2067,19 +2070,22 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		prevText := m.inputBuf
 		prevPos := m.inputPos
+		prevAttachments := len(m.attachments)
 		composer := m.composer()
 		action := composer.HandleKey(msg, m.busy)
-		if action == (ComposerAction{}) && composer.Text() == prevText && composer.Cursor() == prevPos {
+		if action.SubmitText == "" && !action.CancelTurn && !action.Exit && len(action.Attachments) == 0 && composer.Text() == prevText && composer.Cursor() == prevPos && len(composer.Attachments()) == prevAttachments {
 			return m, nil
 		}
 
 		m.inputBuf = composer.Text()
 		m.inputPos = composer.Cursor()
+		m.attachments = composer.Attachments()
 		m.resizeChatViewport()
 
 		switch {
-		case action.SubmitText != "":
-			updated, cmd, submitted := m.trySubmitText(action.SubmitText)
+		case action.SubmitText != "" || len(action.Attachments) > 0:
+			m.attachments = action.Attachments
+			updated, cmd, submitted := m.trySubmitText(action.SubmitText, action.Attachments)
 			m = updated
 			if !submitted {
 				m.inputBuf = prevText
@@ -2114,9 +2120,9 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m ChatModel) trySubmitText(input string) (ChatModel, tea.Cmd, bool) {
+func (m ChatModel) trySubmitText(input string, attachments []chatstate.ChatAttachment) (ChatModel, tea.Cmd, bool) {
 	input = strings.TrimSpace(input)
-	if input == "" {
+	if input == "" && len(attachments) == 0 {
 		return m, nil, false
 	}
 
@@ -2125,8 +2131,11 @@ func (m ChatModel) trySubmitText(input string) (ChatModel, tea.Cmd, bool) {
 	}
 
 	if strings.HasPrefix(input, "/") {
+		if len(attachments) > 0 {
+			m.flash = "cannot combine commands with image attachments — remove attachments first"
+			return m, nil, false
+		}
 		cmd := strings.TrimPrefix(input, "/")
-		// Built-in commands first, then skill activation
 		if m.isBuiltinCommand(input) {
 			updated, submitCmd := m.handleSlashCommand(input)
 			return updated.(ChatModel), submitCmd, true
@@ -2146,8 +2155,9 @@ func (m ChatModel) trySubmitText(input string) (ChatModel, tea.Cmd, bool) {
 		m.inputPos = 0
 		if m.inputCh != nil {
 			ch := m.inputCh
+			ui := chatstate.ChatUserInput{IsInput: true, Text: input, Attachments: attachments}
 			return m, func() tea.Msg {
-				ch <- input
+				ch <- chatUserInputToString(ui)
 				return nil
 			}, true
 		}
@@ -2159,8 +2169,16 @@ func (m ChatModel) trySubmitText(input string) (ChatModel, tea.Cmd, bool) {
 		return m, nil, false
 	}
 
+	// Model capability check for images
+	if len(attachments) > 0 && m.config.ModelInfo != nil {
+		info := m.config.ModelInfo(m.model)
+		if info != nil && !info.SupportsImages {
+			m.flash = "current model may not support image input — try gpt-4o or similar"
+		}
+	}
+
 	// Auto-skill detection
-	if !m.busy {
+	if !m.busy && input != "" {
 		switch m.autoSkillsMode {
 		case skills.AutoSkillsAuto:
 			if s, ok := skills.DetectAuto(m.skills, input); ok {
@@ -2174,7 +2192,7 @@ func (m ChatModel) trySubmitText(input string) (ChatModel, tea.Cmd, bool) {
 		}
 	}
 
-	// Required skill check — show the nudge but always let the input through.
+	// Required skill check
 	requiredSkill := skills.RequiredForInput(input)
 	if requiredSkill != "" && !m.state.SkillActivated(requiredSkill) {
 		if _, ok := skills.Get(m.skills, requiredSkill); ok {
@@ -2183,10 +2201,18 @@ func (m ChatModel) trySubmitText(input string) (ChatModel, tea.Cmd, bool) {
 	}
 
 	stamp := time.Now().Format("15:04:05")
+	displayText := input
+	if len(attachments) > 0 {
+		names := make([]string, len(attachments))
+		for i, att := range attachments {
+			names[i] = att.Name
+		}
+		displayText = fmt.Sprintf("[%s] %s", strings.Join(names, ", "), input)
+	}
 	m.AddMessage(ChatMessage{
 		Kind:    MsgUser,
 		Header:  "You • " + stamp,
-		Content: input,
+		Content: displayText,
 	})
 	m.anchorLatestTurnToBottom()
 	m.refreshViewport()
@@ -2196,10 +2222,15 @@ func (m ChatModel) trySubmitText(input string) (ChatModel, tea.Cmd, bool) {
 	m.status = "running"
 	m.syncStatusData()
 
+	m.inputBuf = ""
+	m.inputPos = 0
+	m.attachments = nil
+
 	if m.inputCh != nil {
 		ch := m.inputCh
+		ui := chatstate.ChatUserInput{IsInput: true, Text: input, Attachments: attachments}
 		return m, func() tea.Msg {
-			ch <- input
+			ch <- chatUserInputToString(ui)
 			return nil
 		}, true
 	}
@@ -2207,12 +2238,18 @@ func (m ChatModel) trySubmitText(input string) (ChatModel, tea.Cmd, bool) {
 	return m, nil, true
 }
 
+func chatUserInputToString(ui chatstate.ChatUserInput) string {
+	data, _ := json.Marshal(ui)
+	return string(data)
+}
+
 func (m ChatModel) submitInput() (tea.Model, tea.Cmd) {
-	updated, cmd, submitted := m.trySubmitText(m.inputBuf)
+	updated, cmd, submitted := m.trySubmitText(m.inputBuf, m.attachments)
 	m = updated
 	if submitted {
 		m.inputBuf = ""
 		m.inputPos = 0
+		m.attachments = nil
 		m.resizeChatViewport()
 	}
 	return m, cmd

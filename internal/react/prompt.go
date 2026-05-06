@@ -112,18 +112,15 @@ func BuildMessages(systemPrompt string, snapshot SessionSnapshot) []llm.Message 
 	}
 
 	for _, msg := range snapshot.History {
-		// Pass through tool-role messages and assistant messages with native tool calls
-		// even if their text content is empty — the ToolCallID / ToolCalls fields carry
-		// the payload that the provider needs.
 		if msg.Role == llm.RoleTool || len(msg.ToolCalls) > 0 {
 			messages = append(messages, msg)
 			continue
 		}
 		content := strings.TrimSpace(msg.Content)
-		if content == "" {
+		if content == "" && !msg.HasContentParts() {
 			continue
 		}
-		messages = append(messages, llm.Message{Role: msg.Role, Content: content})
+		messages = append(messages, llm.Message{Role: msg.Role, Content: content, ContentParts: msg.ContentParts, ReasoningContent: msg.ReasoningContent})
 	}
 
 	return dropOrphanedToolCalls(truncateToolResults(truncateAssistantToolCalls(messages), toolResultMaxLines))

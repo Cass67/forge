@@ -307,7 +307,13 @@ func wrapProseLines(text string, width int) []string {
 	}
 
 	out := make([]string, 0, 8)
+	prevBlank := false
 	for _, raw := range strings.Split(text, "\n") {
+		blank := raw == ""
+		if blank && prevBlank {
+			continue
+		}
+		prevBlank = blank
 		if raw == "" {
 			out = append(out, "")
 			continue
@@ -345,7 +351,8 @@ func parseFenceBody(raw string) (string, string) {
 		return "", ""
 	}
 	if newline := strings.IndexByte(raw, '\n'); newline >= 0 {
-		return strings.TrimSpace(raw[:newline]), raw[newline+1:]
+		body := strings.TrimLeft(raw[newline+1:], "\n")
+		return strings.TrimSpace(raw[:newline]), body
 	}
 	return strings.TrimSpace(raw), ""
 }
@@ -404,12 +411,19 @@ func normalizeCodeBlockBodyLines(body string) []string {
 	}
 	raw := strings.Split(trimmed, "\n")
 	lines := make([]string, 0, len(raw))
+	prevBlank := false
 	for _, line := range raw {
 		fragment := strings.TrimSpace(line)
 		if len(lines) > 0 && strings.HasSuffix(lines[len(lines)-1], "-") && isLikelyShortFlagFragment(fragment) {
 			lines[len(lines)-1] += fragment
+			prevBlank = false
 			continue
 		}
+		blank := strings.TrimSpace(line) == ""
+		if blank && prevBlank {
+			continue
+		}
+		prevBlank = blank
 		lines = append(lines, line)
 	}
 	return lines

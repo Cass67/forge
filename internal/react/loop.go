@@ -161,14 +161,18 @@ func NewRunner(cfg Config) *Runner {
 }
 
 func (r *Runner) Run(ctx context.Context, input string) error {
+	return r.RunWithParts(ctx, input, nil)
+}
+
+func (r *Runner) RunWithParts(ctx context.Context, input string, parts []llm.MessageContentPart) error {
 	if r == nil {
 		return fmt.Errorf("react runner: runner is nil")
 	}
 	prompt := BuildPrompt(input)
-	if prompt == "" {
+	if prompt == "" && len(parts) == 0 {
 		return nil
 	}
-	turn := r.session.RecordInput(prompt)
+	turn := r.session.RecordInputWithParts(prompt, parts)
 	r.pendingRetryPrompt = ""
 	if CompactSessionHistory(r.session, 40) {
 		r.compactionFailures++

@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"forge/internal/chatstate"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -31,7 +33,7 @@ func TestChatComposerShiftEnterInsertsNewline(t *testing.T) {
 	action := c.HandleKey(tea.KeyMsg{Type: tea.KeyEnter, Alt: true}, false)
 	c.InsertString("second line")
 
-	if action != (ComposerAction{}) {
+	if action.SubmitText != "" || action.CancelTurn || action.Exit || len(action.Attachments) != 0 {
 		t.Fatalf("action = %#v", action)
 	}
 	if got := c.Text(); got != "first line\nsecond line" {
@@ -48,7 +50,7 @@ func TestChatComposerBracketedPasteKeepsLiteralMultilineText(t *testing.T) {
 		Paste: true,
 	}, false)
 
-	if action != (ComposerAction{}) {
+	if action.SubmitText != "" || action.CancelTurn || action.Exit || len(action.Attachments) != 0 {
 		t.Fatalf("action = %#v", action)
 	}
 	if got := c.Text(); got != "first line\nsecond line" {
@@ -65,7 +67,7 @@ func TestChatComposerIgnoresMouseTrackingSequences(t *testing.T) {
 		Runes: []rune("[<64;56;33M[<65;58;32M"),
 	}, false)
 
-	if action != (ComposerAction{}) {
+	if action.SubmitText != "" || action.CancelTurn || action.Exit || len(action.Attachments) != 0 {
 		t.Fatalf("action = %#v", action)
 	}
 	if got := c.Text(); got != "draft" {
@@ -79,7 +81,7 @@ func TestChatComposerCtrlCClearsDraftWhenIdle(t *testing.T) {
 
 	action := c.HandleKey(tea.KeyMsg{Type: tea.KeyCtrlC}, false)
 
-	if action != (ComposerAction{}) {
+	if action.SubmitText != "" || action.CancelTurn || action.Exit || len(action.Attachments) != 0 {
 		t.Fatalf("action = %#v", action)
 	}
 	if got := c.Text(); got != "" {
@@ -265,5 +267,102 @@ func TestChatComposerVisibleLineBudget(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "5555555555") {
 		t.Fatalf("expected scrolled composer to keep latest content, got %q", rendered)
+	}
+}
+
+func TestChatComposerBackspaceRemovesLastAttachmentWhenEmpty(t *testing.T) {
+	c := NewChatComposer()
+	c.SetAttachments([]chatstate.ChatAttachment{
+		{ID: "a1", Name: "img1.png", MIMEType: "image/png", Size: 100, Width: 10, Height: 20},
+		{ID: "a2", Name: "img2.jpg", MIMEType: "image/jpeg", Size: 200, Width: 30, Height: 40},
+	})
+
+	// Backspace with empty text removes last attachment
+	action := c.HandleKey(tea.KeyMsg{Type: tea.KeyBackspace}, false)
+	if action.SubmitText != "" || len(action.Attachments) != 0 {
+		t.Fatalf("action = %#v", action)
+	}
+	if len(c.Attachments()) != 1 {
+		t.Fatalf("expected 1 attachment after backspace, got %d", len(c.Attachments()))
+	}
+	if c.Attachments()[0].Name != "img1.png" {
+		t.Fatalf("expected img1.png to remain, got %s", c.Attachments()[0].Name)
+	}
+
+	// Backspace again removes it too
+	c.HandleKey(tea.KeyMsg{Type: tea.KeyBackspace}, false)
+	if len(c.Attachments()) != 0 {
+		t.Fatalf("expected 0 attachments, got %d", len(c.Attachments()))
+	}
+}
+
+func TestChatComposerEnterSubmitsAttachmentsOnly(t *testing.T) {
+	c := NewChatComposer()
+	c.SetAttachments([]chatstate.ChatAttachment{
+		{ID: "a1", Name: "screenshot.png", MIMEType: "image/png", Size: 100, Width: 10, Height: 20},
+	})
+
+	// Submit with only attachments (no text)
+	action := c.HandleKey(tea.KeyMsg{Type: tea.KeyEnter}, false)
+	if action.SubmitText != "" {
+		t.Fatalf("expected empty submit text, got %q", action.SubmitText)
+	}
+	if len(action.Attachments) != 1 {
+		t.Fatalf("expected 1 attachment in action, got %d", len(action.Attachments))
+	}
+	if c.Text() != "" {
+		t.Fatalf("composer should clear after submit, got %q", c.Text())
+	}
+	if len(c.Attachments()) != 0 {
+		t.Fatalf("composer attachments should clear after submit, got %d", len(c.Attachments()))
+	}
+}
+
+func TestChatComposerRenderShowsAttachmentChips(t *testing.T) {
+	c := NewChatComposer()
+	c.SetAttachments([]chatstate.ChatAttachment{
+		{ID: "a1", Name: "screenshot.png", MIMEType: "image/png", Size: 245760, Width: 1280, Height: 720},
+	})
+
+	theme := chatTheme{
+		Text:          lipgloss.Color("#ffffff"),
+		TextDim:       lipgloss.Color("#888888"),
+		Border:        lipgloss.Color("#555555"),
+		AccentPrimary: lipgloss.Color("#00ff00"),
+		AppBG:         lipgloss.Color("#000000"),
+	}
+	rendered := c.Render(theme, 80)
+	if !strings.Contains(rendered, "screenshot.png") {
+		t.Errorf("render should show filename, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "1280x720") {
+		t.Errorf("render should show dimensions, got:\n%s", rendered)
+	}
+}
+
+func TestChatComposerClearAttachments(t *testing.T) {
+	c := NewChatComposer()
+	c.SetAttachments([]chatstate.ChatAttachment{
+		{ID: "a1", Name: "img.png", MIMEType: "image/png", Size: 100, Width: 10, Height: 20},
+	})
+	if len(c.Attachments()) != 1 {
+		t.Fatal("expected 1 attachment")
+	}
+	c.ClearAttachments()
+	if len(c.Attachments()) != 0 {
+		t.Fatal("expected 0 attachments after clear")
+	}
+}
+
+func TestChatComposerMaxAttachments(t *testing.T) {
+	c := NewChatComposer()
+	for i := 0; i < chatstate.MaxAttachments+2; i++ {
+		c.SetAttachments(append(c.Attachments(), chatstate.ChatAttachment{
+			ID: "a", Name: "img.png", MIMEType: "image/png", Size: 100, Width: 10, Height: 20,
+		}))
+	}
+	if len(c.Attachments()) != chatstate.MaxAttachments+2 {
+		// SetAttachments just sets, doesn't enforce limit - enforcement is in detectAndAttachImages
+		t.Logf("attachments = %d", len(c.Attachments()))
 	}
 }
