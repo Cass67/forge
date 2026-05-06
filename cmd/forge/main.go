@@ -7,12 +7,16 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"golang.org/x/term"
@@ -22,10 +26,12 @@ import (
 	"forge/internal/cli"
 	"forge/internal/config"
 	"forge/internal/copilot"
+	"forge/internal/fsutil"
 	"forge/internal/history"
 	"forge/internal/llm"
 	"forge/internal/mcp"
 	"forge/internal/output"
+	pluginruntime "forge/internal/plugins"
 	runtimepkg "forge/internal/runtime"
 	"forge/internal/session"
 	"forge/internal/skills"
@@ -33,12 +39,13 @@ import (
 )
 
 var (
-	runMakeInteractiveFn = runMakeInteractive
-	runImproveArgsFn     = runImproveArgs
-	loadMainConfigFn     = bootstrap.LoadConfig
-	saveMainConfigFn     = config.Save
-	mainConfigPathFn     = config.DefaultPath
-	promptMCPTokenFn     = promptMCPToken
+	runMakeInteractiveFn  = runMakeInteractive
+	runImproveArgsFn      = runImproveArgs
+	loadMainConfigFn      = bootstrap.LoadConfig
+	saveMainConfigFn      = config.Save
+	mainConfigPathFn      = config.DefaultPath
+	promptMCPTokenFn      = promptMCPToken
+	runPluginInstallCmdFn = runPluginInstallCommand
 )
 
 var mcpServerPresets = map[string]config.MCPServerConfig{
@@ -75,6 +82,12 @@ func main() {
 		},
 		"make": {Name: "make", Run: func(args []string) { runMake(args) }},
 		"mcp":  {Name: "mcp", Run: func(args []string) { runMCP(args) }},
+		"plugin": {
+			Name: "plugin",
+			Run: func(args []string) {
+				runPlugin(args)
+			},
+		},
 		"improve": {Name: "improve", Run: func(args []string) {
 			runImproveArgsFn("improve", args)
 		}},
@@ -139,6 +152,446 @@ func runMCP(args []string) {
 		fmt.Fprintln(os.Stderr, "usage: forge mcp [list|get|add|remove|login|logout]")
 		os.Exit(1)
 	}
+}
+
+func runPlugin(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: forge plugin [install|list|remove]")
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "install", "add":
+		runPluginInstall(args[1:])
+	case "list", "ls":
+		runPluginList()
+	case "remove", "rm":
+		runPluginRemove(cli.RequireArg(args[1:], "usage: forge plugin remove <id>"))
+	default:
+		fmt.Fprintln(os.Stderr, "usage: forge plugin [install|list|remove]")
+		os.Exit(1)
+	}
+}
+
+type stringListFlag []string
+
+func (f *stringListFlag) String() string {
+	if f == nil {
+		return ""
+	}
+	return strings.Join(*f, ",")
+}
+
+func (f *stringListFlag) Set(value string) error {
+	*f = append(*f, strings.TrimSpace(value))
+	return nil
+}
+
+func runPluginInstall(args []string) {
+	fs := flag.NewFlagSet("plugin install", flag.ExitOnError)
+	idFlag := fs.String("id", "", "plugin id in Forge config")
+	runtimeFlag := fs.String("runtime", "opencode", "plugin runtime: opencode")
+	moduleFlag := fs.String("module", "", "OpenCode module specifier to import after install")
+	disabled := fs.Bool("disabled", false, "install plugin disabled")
+	noInstall := fs.Bool("no-install", false, "skip npm install for package sources")
+	var autoApprove stringListFlag
+	fs.Var(&autoApprove, "auto-approve", "plugin tool to auto-approve; may be repeated")
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, "usage: forge plugin install [--id ID] [--module NAME] [--auto-approve TOOL] <npm-package|git-url|local-js-url|local-path>")
+		os.Exit(1)
+	}
+	source := cli.RequireArg(fs.Args(), "usage: forge plugin install [--id ID] [--module NAME] <npm-package|git-url|local-js-url|local-path>")
+	kind := strings.ToLower(strings.TrimSpace(*runtimeFlag))
+	if kind == "" {
+		kind = "opencode"
+	}
+	if kind != "opencode" {
+		fmt.Fprintln(os.Stderr, "error: forge plugin install currently supports OpenCode plugins through --runtime opencode")
+		os.Exit(1)
+	}
+	id := strings.TrimSpace(*idFlag)
+	if id == "" {
+		id = inferPluginID(firstNonEmpty(*moduleFlag, source))
+	}
+	if !validCLIPluginID(id) {
+		fmt.Fprintf(os.Stderr, "error: invalid plugin id %q; use only letters, digits, underscores, or hyphens\n", id)
+		os.Exit(1)
+	}
+	command, err := prepareOpenCodePluginCommand(id, source, strings.TrimSpace(*moduleFlag), *noInstall)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error installing plugin: %v\n", err)
+		os.Exit(1)
+	}
+
+	cfg, err := loadMainConfigFn()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
+		os.Exit(1)
+	}
+	plugin := config.PluginConfig{
+		ID:               id,
+		Kind:             kind,
+		Source:           source,
+		Command:          command,
+		AutoApproveTools: compactStrings(autoApprove),
+		StartupTimeoutMS: 3000,
+		RequestTimeoutMS: 10000,
+	}
+	if *disabled {
+		plugin.Enabled = boolPtr(false)
+	}
+	cfg.Plugins = upsertPluginConfig(cfg.Plugins, plugin)
+	if err := saveMainConfigFn(mainConfigPathFn(), cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "error saving config: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Installed OpenCode plugin %s from %s.\n", id, source)
+	fmt.Println("Note: Forge OpenCode compatibility currently supports simple plugin tools; plugins that require OpenCode session or agent APIs will report unsupported APIs at runtime.")
+}
+
+func runPluginList() {
+	cfg, err := loadMainConfigFn()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
+		os.Exit(1)
+	}
+	if len(cfg.Plugins) == 0 {
+		fmt.Println("No plugins configured.")
+		return
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	if _, err := fmt.Fprintln(w, "ID\tKIND\tENABLED\tSOURCE"); err != nil {
+		fmt.Fprintf(os.Stderr, "error writing plugin list: %v\n", err)
+		os.Exit(1)
+	}
+	for _, plugin := range cfg.Plugins {
+		kind := strings.TrimSpace(plugin.Kind)
+		if kind == "" {
+			kind = "forge-stdio"
+		}
+		source := strings.TrimSpace(plugin.Source)
+		if source == "" && len(plugin.Command) > 0 {
+			source = strings.Join(plugin.Command, " ")
+		}
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%t\t%s\n", plugin.ID, kind, plugin.IsEnabled(), source); err != nil {
+			fmt.Fprintf(os.Stderr, "error writing plugin list: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	_ = w.Flush()
+}
+
+func runPluginRemove(id string) {
+	cfg, err := loadMainConfigFn()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
+		os.Exit(1)
+	}
+	next := cfg.Plugins[:0]
+	removed := false
+	for _, plugin := range cfg.Plugins {
+		if strings.EqualFold(strings.TrimSpace(plugin.ID), strings.TrimSpace(id)) {
+			removed = true
+			continue
+		}
+		next = append(next, plugin)
+	}
+	if !removed {
+		fmt.Fprintf(os.Stderr, "error: unknown plugin %q\n", id)
+		os.Exit(1)
+	}
+	cfg.Plugins = next
+	if err := saveMainConfigFn(mainConfigPathFn(), cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "error saving config: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Removed plugin %s.\n", id)
+}
+
+func prepareOpenCodePluginCommand(id, source, moduleOverride string, noInstall bool) ([]string, error) {
+	configDir := filepath.Dir(mainConfigPathFn())
+	if configDir == "." || configDir == "" {
+		configDir = fsutil.ForgeConfigDir()
+	}
+	pluginDir := filepath.Join(configDir, "plugins")
+	hostPath := filepath.Join(pluginDir, pluginruntime.OpenCodeHostFileName)
+	if err := pluginruntime.WriteOpenCodeHost(hostPath); err != nil {
+		return nil, err
+	}
+
+	moduleRef := moduleOverride
+	installDir := ""
+	if localPath, ok := localPluginPath(source); ok {
+		if moduleRef == "" {
+			moduleRef = localPath
+		}
+	} else if isRawJavaScriptURL(source) {
+		downloadDir := filepath.Join(pluginDir, "opencode", id)
+		modulePath := filepath.Join(downloadDir, "plugin"+filepath.Ext(urlPath(source)))
+		if err := downloadPluginModule(source, modulePath); err != nil {
+			return nil, err
+		}
+		if moduleRef == "" {
+			moduleRef = modulePath
+		}
+	} else {
+		installDir = filepath.Join(pluginDir, "opencode", id)
+		if err := os.MkdirAll(installDir, 0o700); err != nil {
+			return nil, err
+		}
+		if err := ensurePluginPackageJSON(installDir); err != nil {
+			return nil, err
+		}
+		if !noInstall {
+			if err := runPluginInstallCmdFn("npm", "install", "--silent", "--prefix", installDir, source); err != nil {
+				return nil, err
+			}
+		}
+		if moduleRef == "" {
+			moduleRef = inferInstalledModule(source, installDir)
+		}
+	}
+	if strings.TrimSpace(moduleRef) == "" {
+		return nil, fmt.Errorf("could not infer OpenCode module; pass --module")
+	}
+	command := []string{"node", hostPath, "--module", moduleRef}
+	if installDir != "" {
+		command = append(command, "--install-dir", installDir)
+	}
+	return command, nil
+}
+
+func runPluginInstallCommand(name string, args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return err
+	}
+	return nil
+}
+
+func upsertPluginConfig(plugins []config.PluginConfig, plugin config.PluginConfig) []config.PluginConfig {
+	out := make([]config.PluginConfig, 0, len(plugins)+1)
+	replaced := false
+	for _, existing := range plugins {
+		if strings.EqualFold(strings.TrimSpace(existing.ID), strings.TrimSpace(plugin.ID)) {
+			out = append(out, plugin)
+			replaced = true
+			continue
+		}
+		out = append(out, existing)
+	}
+	if !replaced {
+		out = append(out, plugin)
+	}
+	return out
+}
+
+func ensurePluginPackageJSON(dir string) error {
+	path := filepath.Join(dir, "package.json")
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+	return os.WriteFile(path, []byte("{}\n"), 0o600)
+}
+
+func downloadPluginModule(source, destination string) error {
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Get(source)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("download failed with status %s", resp.Status)
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+		return err
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(destination, body, 0o600)
+}
+
+func inferInstalledModule(source, installDir string) string {
+	if name := npmPackageName(source); name != "" {
+		return name
+	}
+	if name := singleInstalledPackageName(filepath.Join(installDir, "node_modules")); name != "" {
+		return name
+	}
+	return source
+}
+
+func singleInstalledPackageName(nodeModules string) string {
+	entries, err := os.ReadDir(nodeModules)
+	if err != nil {
+		return ""
+	}
+	var names []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		if strings.HasPrefix(name, "@") && entry.IsDir() {
+			scopedEntries, err := os.ReadDir(filepath.Join(nodeModules, name))
+			if err != nil {
+				continue
+			}
+			for _, scoped := range scopedEntries {
+				if scoped.IsDir() {
+					names = append(names, name+"/"+scoped.Name())
+				}
+			}
+			continue
+		}
+		if entry.IsDir() {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 1 {
+		return names[0]
+	}
+	return ""
+}
+
+func npmPackageName(source string) string {
+	trimmed := strings.TrimSpace(source)
+	if trimmed == "" || strings.Contains(trimmed, "://") || strings.HasPrefix(trimmed, "git+") || strings.HasPrefix(trimmed, ".") || strings.HasPrefix(trimmed, "/") || strings.HasPrefix(trimmed, "~") {
+		return ""
+	}
+	if strings.HasPrefix(trimmed, "@") {
+		parts := strings.Split(trimmed, "/")
+		if len(parts) >= 2 {
+			return parts[0] + "/" + stripPackageVersion(parts[1])
+		}
+		return ""
+	}
+	return stripPackageVersion(trimmed)
+}
+
+func stripPackageVersion(name string) string {
+	if i := strings.LastIndex(name, "@"); i > 0 {
+		return name[:i]
+	}
+	return name
+}
+
+func localPluginPath(source string) (string, bool) {
+	path := expandTildePath(strings.TrimSpace(source))
+	if path == "" {
+		return "", false
+	}
+	if _, err := os.Stat(path); err != nil {
+		return "", false
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path, true
+	}
+	return abs, true
+}
+
+func expandTildePath(path string) string {
+	if path == "~" {
+		return fsutil.UserHomeDir()
+	}
+	if suffix, ok := strings.CutPrefix(path, "~/"); ok {
+		return filepath.Join(fsutil.UserHomeDir(), suffix)
+	}
+	return path
+}
+
+func isRawJavaScriptURL(source string) bool {
+	u, err := url.Parse(source)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return false
+	}
+	ext := strings.ToLower(filepath.Ext(u.Path))
+	return ext == ".js" || ext == ".mjs"
+}
+
+func urlPath(source string) string {
+	u, err := url.Parse(source)
+	if err != nil {
+		return source
+	}
+	return u.Path
+}
+
+func inferPluginID(source string) string {
+	name := source
+	if pkg := npmPackageName(source); pkg != "" {
+		name = pkg
+	} else if u, err := url.Parse(source); err == nil && u.Path != "" {
+		name = strings.TrimSuffix(filepath.Base(u.Path), filepath.Ext(u.Path))
+	} else {
+		name = strings.TrimSuffix(filepath.Base(source), filepath.Ext(source))
+	}
+	name = strings.TrimPrefix(name, "@")
+	name = strings.ReplaceAll(name, "/", "-")
+	var b strings.Builder
+	for _, r := range strings.ToLower(name) {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			b.WriteRune(r)
+		case r == '_' || r == '-':
+			b.WriteRune(r)
+		case r == '.' || unicode.IsSpace(r):
+			b.WriteRune('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "plugin"
+	}
+	return out
+}
+
+func validCLIPluginID(id string) bool {
+	if strings.TrimSpace(id) == "" {
+		return false
+	}
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '_' || r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func compactStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func runMCPList() {
@@ -622,7 +1075,7 @@ type perfSessionRow struct {
 	OutputTokens int           `json:"output_tokens"`
 	TotalTokens  int           `json:"total_tokens"`
 	Calls        int           `json:"calls"`
-	StartedAt    time.Time     `json:"started_at,omitempty"`
+	StartedAt    time.Time     `json:"started_at,omitzero"`
 	CompletedAt  *time.Time    `json:"completed_at,omitempty"`
 	Elapsed      time.Duration `json:"elapsed_ns,omitempty"`
 	TokensPerSec float64       `json:"tokens_per_sec,omitempty"`
@@ -1180,6 +1633,8 @@ Usage:
   forge perf show <id>            Show token/perf details for a session
   forge mcp [list|get|add|remove|login|logout]
                                   Manage MCP server configuration
+  forge plugin install <source>   Install an OpenCode plugin package, URL, or local module
+  forge plugin list               List configured plugins
   forge skills list               List loaded skills
   forge skills dir                Show global/project skill directories
   forge skills install [flags] <source>
