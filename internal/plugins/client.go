@@ -71,6 +71,7 @@ func startClient(ctx context.Context, workDir string, cfg config.PluginConfig) (
 		PluginID:        plugin.id,
 		CWD:             workDir,
 		Capabilities:    []string{"tools", "hooks"},
+		ForgeTools:      []string{},
 	}, &result)
 	if err != nil {
 		_ = plugin.Close()
