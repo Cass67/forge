@@ -76,6 +76,7 @@ type hookCallParams struct {
 	Args     map[string]any `json:"args,omitempty"`
 	Status   string         `json:"status,omitempty"`
 	Error    string         `json:"error,omitempty"`
+	Event    map[string]any `json:"event,omitempty"`
 }
 
 type hookCallResult struct {
@@ -135,6 +136,26 @@ func hookPoint(name string) (hooks.Point, bool) {
 		return hooks.PointBeforeTool, true
 	case hooks.PointAfterTool:
 		return hooks.PointAfterTool, true
+	case hooks.PointChatMessage:
+		return hooks.PointChatMessage, true
+	case hooks.PointChatParams:
+		return hooks.PointChatParams, true
+	case hooks.PointChatHeaders:
+		return hooks.PointChatHeaders, true
+	case hooks.PointEvent:
+		return hooks.PointEvent, true
+	case hooks.PointSessionStart:
+		return hooks.PointSessionStart, true
+	case hooks.PointSessionEnd:
+		return hooks.PointSessionEnd, true
+	case hooks.PointPermissionRequest:
+		return hooks.PointPermissionRequest, true
+	case hooks.PointPreCompact:
+		return hooks.PointPreCompact, true
+	case hooks.PointPostCompact:
+		return hooks.PointPostCompact, true
+	case hooks.PointTurnComplete:
+		return hooks.PointTurnComplete, true
 	default:
 		return "", false
 	}
