@@ -67,6 +67,7 @@ func (m *Manager) Start(ctx context.Context) error {
 			client: client,
 			tools:  tools,
 			hooks:  normalizeHooks(initResult.Hooks),
+			agents: initResult.Agents,
 		}
 		pluginsByID[strings.ToLower(id)] = state
 		allTools = append(allTools, tools...)
@@ -112,6 +113,19 @@ func (m *Manager) Tools() []pluginTool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return append([]pluginTool(nil), m.tools...)
+}
+
+func (m *Manager) Agents() []agentDef {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var all []agentDef
+	for _, state := range m.plugins {
+		all = append(all, state.agents...)
+	}
+	return all
 }
 
 func (m *Manager) RegisterTools(reg *agenttools.Registry, approve agenttools.ApprovalFunc) {

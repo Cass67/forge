@@ -53,6 +53,21 @@ rl.on("line", async (line) => {
   }
 });
 
+async function getAgents(instance) {
+    const agents = [];
+    if (instance && Array.isArray(instance.agents)) {
+        for (const a of instance.agents) {
+            if (a && a.name) agents.push(a);
+        }
+    }
+    if (instance && instance.config && Array.isArray(instance.config.agents)) {
+        for (const a of instance.config.agents) {
+            if (a && a.name) agents.push(a);
+        }
+    }
+    return agents;
+}
+
 async function dispatch(method, params) {
   switch (method) {
     case "initialize":
@@ -66,6 +81,7 @@ async function dispatch(method, params) {
           parameters: parametersFromArgs(definition.args || definition.parameters || {}),
         })),
         hooks: supportedHooks(instance),
+        agents: await getAgents(instance),
       };
     case "tool_call":
       await ensurePlugin("opencode");
@@ -262,10 +278,13 @@ async function callTool(name, inputArgs) {
 }
 
 async function callHook(params) {
-  if (params.point === "before_tool" && typeof instance["tool.execute.before"] === "function") {
+  if (params.point === "before_tool" && (typeof instance["tool.execute.before"] === "function" || typeof instance["command.execute.before"] === "function")) {
     const output = { args: params.args || {} };
     try {
-      await instance["tool.execute.before"]({ tool: params.tool_name || "", sessionID: "forge-session", callID: "forge-call" }, output);
+      const handler = typeof instance["tool.execute.before"] === "function"
+        ? instance["tool.execute.before"]
+        : instance["command.execute.before"];
+      await handler({ tool: params.tool_name || "", sessionID: "forge-session", callID: "forge-call" }, output);
     } catch (error) {
       return { block: { message: errorMessage(error) } };
     }
@@ -305,6 +324,18 @@ async function callHook(params) {
   }
   if (params.point === "event" && typeof instance["event"] === "function") {
     await instance["event"](params.event || {});
+    return {};
+  }
+  if (params.point === "prompt_context" && typeof instance["config"] === "function") {
+    const output = { overlays: [] };
+    try {
+      await instance["config"]({ config: params.event || {} });
+      if (output.overlays && output.overlays.length) {
+        return { overlays: output.overlays };
+      }
+    } catch (error) {
+      return { note: { message: errorMessage(error) } };
+    }
     return {};
   }
   return {};

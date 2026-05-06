@@ -37,11 +37,22 @@ type agentJob struct {
 	done   chan struct{}
 }
 
+type AgentDefinition struct {
+	Name         string
+	Description  string
+	SystemPrompt string
+	Model        string
+	Fallbacks    []string
+	ModelFamily  string
+	Tools        []string
+}
+
 type AgentPool struct {
-	mu    sync.Mutex
-	next  int
-	jobs  map[string]*agentJob
-	spawn SpawnFunc
+	mu     sync.Mutex
+	next   int
+	jobs   map[string]*agentJob
+	spawn  SpawnFunc
+	agents map[string]*AgentDefinition
 }
 
 func NewAgentPool(spawn SpawnFunc) *AgentPool {
@@ -144,6 +155,25 @@ func (p *AgentPool) snapshot(job *agentJob) AgentResult {
 		result.Error = job.err.Error()
 	}
 	return result
+}
+
+func (p *AgentPool) RegisterAgents(agents []AgentDefinition) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.agents == nil {
+		p.agents = make(map[string]*AgentDefinition)
+	}
+	for i := range agents {
+		a := agents[i]
+		p.agents[strings.ToLower(a.Name)] = &a
+	}
+}
+
+func (p *AgentPool) GetAgent(name string) (*AgentDefinition, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	a, ok := p.agents[strings.ToLower(name)]
+	return a, ok
 }
 
 func MapSpawnRole(role string) string {
