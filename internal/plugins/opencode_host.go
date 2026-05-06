@@ -152,7 +152,15 @@ function createCompatClient() {
         }));
       },
       read: async (params) => {
-        const filePath = path.resolve(cwd, params.path || ".");
+        if (!params.path || String(params.path).trim() === "") {
+          throw new Error("file.read requires a non-empty path");
+        }
+        const resolvedCwd = path.resolve(cwd);
+        const filePath = path.resolve(cwd, params.path);
+        const normalized = path.resolve(filePath);
+        if (!normalized.startsWith(resolvedCwd + path.sep) && normalized !== resolvedCwd) {
+          throw new Error("path traversal detected: " + params.path);
+        }
         let content = fs.readFileSync(filePath, "utf-8");
         if (typeof params.offset === "number") {
           const lines = content.split("\n");
@@ -163,8 +171,12 @@ function createCompatClient() {
         return { content, path: filePath };
       },
       status: async () => {
-        const output = child_process.execSync("git status --porcelain", { cwd, encoding: "utf-8", maxBuffer: 1024 * 1024 });
-        return { changes: output.trim().split("\n").filter(Boolean) };
+        try {
+          const output = child_process.execSync("git status --porcelain", { cwd, encoding: "utf-8", maxBuffer: 1024 * 1024, stdio: ["pipe", "pipe", "ignore"] });
+          return { changes: output.trim().split("\n").filter(Boolean) };
+        } catch {
+          return { changes: [], error: "not a git repository or git not available" };
+        }
       },
     },
     find: {
@@ -178,7 +190,7 @@ function createCompatClient() {
           if (params.fileTypes) args.push("--type", params.fileTypes);
           output = child_process.execSync("rg", args.concat([dir]), { cwd, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024, stdio: ["pipe", "pipe", "ignore"] });
         } catch {
-          output = child_process.execSync("grep", ["-rn", pattern, dir], { cwd, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024, stdio: ["pipe", "pipe", "ignore"] });
+          output = child_process.execSync("grep", ["-Irn", pattern, dir], { cwd, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024, stdio: ["pipe", "pipe", "ignore"] });
         }
         const lines = output.trim().split("\n").filter(Boolean);
         return { matches: lines.map(parseRgLine) };
@@ -189,7 +201,11 @@ function createCompatClient() {
         try {
           output = child_process.execSync("rg", ["--files", dir], { cwd, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024, stdio: ["pipe", "pipe", "ignore"] });
         } catch {
-          output = child_process.execSync("find", [dir, "-type", "f"], { cwd, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 });
+          try {
+            output = child_process.execSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "--full-name", dir], { cwd, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024, stdio: ["pipe", "pipe", "ignore"] });
+          } catch {
+            output = child_process.execSync("find", [dir, "-type", "f"], { cwd, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024 });
+          }
         }
         return { files: output.trim().split("\n").filter(Boolean) };
       },
@@ -214,21 +230,21 @@ function createCompatClient() {
     },
     app: {
       log: async (msg) => {
-        process.stderr.write(String(msg) + "\n");
+        process.stdout.write("__LOG__:" + String(msg) + "\n");
       },
     },
   };
 }
 
 function parseRgLine(line) {
-  const idx = line.indexOf(":");
-  if (idx < 0) return { file: line, line: 1, content: "" };
-  const file = line.substring(0, idx);
-  const rest = line.substring(idx + 1);
-  const colon2 = rest.indexOf(":");
-  if (colon2 < 0) return { file, line: 1, content: rest };
-  const lineNum = parseInt(rest.substring(0, colon2), 10);
-  const content = rest.substring(colon2 + 1);
+  const lastColon = line.lastIndexOf(":");
+  if (lastColon < 0) return { file: line, line: 1, content: "" };
+  const content = line.substring(lastColon + 1);
+  const beforeContent = line.substring(0, lastColon);
+  const secondLastColon = beforeContent.lastIndexOf(":");
+  if (secondLastColon < 0) return { file: beforeContent, line: 1, content };
+  const file = line.substring(0, secondLastColon);
+  const lineNum = parseInt(line.substring(secondLastColon + 1, lastColon), 10);
   return { file, line: lineNum || 1, content };
 }
 
