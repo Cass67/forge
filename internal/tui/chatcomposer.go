@@ -1,7 +1,10 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
+
+	"forge/internal/chatstate"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -13,9 +16,10 @@ const (
 )
 
 type ComposerAction struct {
-	SubmitText string
-	CancelTurn bool
-	Exit       bool
+	SubmitText  string
+	CancelTurn  bool
+	Exit        bool
+	Attachments []chatstate.ChatAttachment
 }
 
 type ChatComposer struct {
@@ -23,6 +27,8 @@ type ChatComposer struct {
 	cursor       int
 	minBodyLines int
 	maxBodyLines int
+	attachments  []chatstate.ChatAttachment
+	workDir      string
 }
 
 type composerVisibleLine struct {
@@ -60,6 +66,30 @@ func (c *ChatComposer) SetLineBudget(minBodyLines, maxBodyLines int) {
 	maxBodyLines = max(minBodyLines, maxBodyLines)
 	c.minBodyLines = minBodyLines
 	c.maxBodyLines = maxBodyLines
+}
+
+func (c *ChatComposer) SetWorkDir(dir string) {
+	c.workDir = dir
+}
+
+func (c ChatComposer) Attachments() []chatstate.ChatAttachment {
+	return c.attachments
+}
+
+func (c *ChatComposer) SetAttachments(attachments []chatstate.ChatAttachment) {
+	c.attachments = append([]chatstate.ChatAttachment(nil), attachments...)
+}
+
+func (c *ChatComposer) RemoveLastAttachment() bool {
+	if len(c.attachments) == 0 {
+		return false
+	}
+	c.attachments = c.attachments[:len(c.attachments)-1]
+	return true
+}
+
+func (c *ChatComposer) ClearAttachments() {
+	c.attachments = nil
 }
 
 func (c *ChatComposer) InsertString(text string) {
@@ -133,8 +163,21 @@ func (c ChatComposer) Render(theme chatTheme, width int) string {
 	divider := lipgloss.NewStyle().
 		Foreground(theme.Border).
 		Render(strings.Repeat("─", width))
-	out := make([]string, 0, len(bodyLines)+1)
+	out := make([]string, 0, len(bodyLines)+len(c.attachments)+1)
 	out = append(out, divider)
+
+	// Render attachment chips
+	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
+	accentStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary)
+	for i, att := range c.attachments {
+		chip := fmt.Sprintf(" 📎 %s  %dx%d  %s",
+			att.Name, att.Width, att.Height, chatstate.FormatSize(att.Size))
+		if i == 0 {
+			out = append(out, "  "+accentStyle.Render(chip))
+		} else {
+			out = append(out, "  "+dimStyle.Render(chip))
+		}
+	}
 
 	for i, line := range bodyLines {
 		var prefix string
@@ -144,7 +187,11 @@ func (c ChatComposer) Render(theme chatTheme, width int) string {
 			prefix = "  "
 			prefixStyle = lipgloss.NewStyle().Foreground(theme.TextDim)
 			if i == 0 {
-				line.text = " " + strings.TrimSpace("Ask Forge anything... ("+hintText+")")
+				if len(c.attachments) > 0 {
+					line.text = " Add message... (" + hintText + ")"
+				} else {
+					line.text = " " + strings.TrimSpace("Ask Forge anything... ("+hintText+")")
+				}
 				line.hasCursor = true
 				line.cursorCol = 0
 			}
@@ -198,12 +245,19 @@ func (c *ChatComposer) HandleKey(msg tea.KeyMsg, busy bool) ComposerAction {
 			return ComposerAction{}
 		}
 		text := strings.TrimSpace(c.text)
-		if text == "" {
+		if text == "" && len(c.attachments) == 0 {
 			return ComposerAction{}
 		}
+		submitted := c.attachments
 		c.clear()
-		return ComposerAction{SubmitText: text}
+		c.ClearAttachments()
+		return ComposerAction{SubmitText: text, Attachments: submitted}
 	case tea.KeyBackspace:
+		if c.text == "" && c.cursor == 0 {
+			if c.RemoveLastAttachment() {
+				return ComposerAction{}
+			}
+		}
 		c.deleteBackward()
 	case tea.KeyLeft:
 		if c.cursor > 0 {
@@ -224,9 +278,49 @@ func (c *ChatComposer) HandleKey(msg tea.KeyMsg, busy bool) ComposerAction {
 		if !msg.Paste {
 			text = stripMouseTrackingSequences(text)
 		}
+		text = c.processPasteImages(text, msg.Paste)
 		c.InsertString(text)
 	}
 	return ComposerAction{}
+}
+
+func (c *ChatComposer) processPasteImages(text string, isPaste bool) string {
+	if len(c.attachments) >= chatstate.MaxAttachments {
+		return text
+	}
+	// Only scan for image paths when the text looks like it contains a path.
+	// On most terminals, drag-and-drop produces either a bracketed paste
+	// (isPaste=true) or inserts a path starting with / or ~ or file://.
+	if !isPaste && !strings.HasPrefix(strings.TrimSpace(text), "/") &&
+		!strings.HasPrefix(strings.TrimSpace(text), "~") &&
+		!strings.HasPrefix(strings.TrimSpace(text), "file://") {
+		return text
+	}
+	refs := chatstate.DetectImageReferences(text, c.workDir)
+	remaining := text
+	for _, ref := range refs {
+		if len(c.attachments) >= chatstate.MaxAttachments {
+			break
+		}
+		att, err := chatstate.ValidateImageAttachment(ref)
+		if err != nil {
+			continue
+		}
+		remaining = stripImagePath(remaining, ref)
+		remaining = stripImagePath(remaining, "file://"+ref)
+		for _, q := range []string{"'", "\""} {
+			remaining = strings.TrimSpace(strings.ReplaceAll(remaining, q+ref+q, ""))
+		}
+		c.attachments = append(c.attachments, *att)
+	}
+	return strings.TrimSpace(remaining)
+}
+
+func stripImagePath(text, path string) string {
+	result := strings.ReplaceAll(text, path, "")
+	result = strings.ReplaceAll(result, strings.ReplaceAll(path, " ", "\\ "), "")
+	result = strings.ReplaceAll(result, path, "")
+	return result
 }
 
 func (c ChatComposer) visibleBodyLines(width int) []string {

@@ -354,13 +354,14 @@ func RunChatLive(setup *ChatSetup) {
 			bootstrap.ReportModelSuccess(setup.ChatModel)
 			return "__turn_done__"
 		}
-		startRun := func(msg string) {
+		startRun := func(ui chatstate.ChatUserInput) {
 			running = true
+			text := ui.Text
 			if setup != nil && setup.debugRec != nil {
-				setup.debugRec.logInput("user", msg)
+				setup.debugRec.logInput("user", text)
 			}
-			applySuggestedSkillOverlay(session, msg, loadedSkills, state)
-			if nudge, skillName := suggestedSkillNudgeWithName(msg, loadedSkills, state); nudge != "" {
+			applySuggestedSkillOverlay(session, text, loadedSkills, state)
+			if nudge, skillName := suggestedSkillNudgeWithName(text, loadedSkills, state); nudge != "" {
 				evRenderer.Info(nudge)
 				if nudgeForwarder != nil {
 					nudgeForwarder("", "", skillName)
@@ -369,31 +370,50 @@ func RunChatLive(setup *ChatSetup) {
 			turnCtx, tc := context.WithCancel(ctx)
 			turnCancel.Store(tc)
 			wg.Add(1)
-			go func(runMsg string) {
+			go func(runInput chatstate.ChatUserInput) {
 				defer wg.Done()
-				err := runChatTurn(turnCtx, reactRunner, runMsg)
+				err := runChatTurn(turnCtx, reactRunner, runInput)
 				if turnCtx.Err() != nil {
 					inputCh <- "__turn_failed__"
 					return
 				}
 				inputCh <- runOutcome(err)
-			}(msg)
+			}(ui)
 		}
-		for input := range inputCh {
-			switch input {
+		for rawInput := range inputCh {
+			// Try to decode as ChatUserInput
+			var ui chatstate.ChatUserInput
+			if err := json.Unmarshal([]byte(rawInput), &ui); err == nil && ui.IsInput {
+				if len(ui.Attachments) > 0 && setup != nil && setup.debugRec != nil {
+					setup.debugRec.logInput("user-attachments", fmt.Sprintf("%d image(s)", len(ui.Attachments)))
+				}
+				if running {
+					if setup != nil && setup.debugRec != nil {
+						setup.debugRec.logInput("queued", ui.Text)
+					}
+					reactRunner.QueuePendingInput(ui.Text)
+					evRenderer.Info(fmt.Sprintf("queued steering: %s", ui.Text))
+					continue
+				}
+				startRun(ui)
+				continue
+			}
+
+			// Legacy control/string handling
+			switch rawInput {
 			case "__approve_yes":
 				if setup != nil && setup.debugRec != nil {
-					setup.debugRec.logInput("control", input)
+					setup.debugRec.logInput("control", rawInput)
 				}
 				evRenderer.ResponseChan() <- true
 			case "__approve_no":
 				if setup != nil && setup.debugRec != nil {
-					setup.debugRec.logInput("control", input)
+					setup.debugRec.logInput("control", rawInput)
 				}
 				evRenderer.ResponseChan() <- false
 			case "__cancel_turn__":
 				if setup != nil && setup.debugRec != nil {
-					setup.debugRec.logInput("control", input)
+					setup.debugRec.logInput("control", rawInput)
 				}
 				if running {
 					reactRunner.MarkInterrupted()
@@ -413,13 +433,13 @@ func RunChatLive(setup *ChatSetup) {
 			default:
 				if running {
 					if setup != nil && setup.debugRec != nil {
-						setup.debugRec.logInput("queued", input)
+						setup.debugRec.logInput("queued", rawInput)
 					}
-					reactRunner.QueuePendingInput(input)
-					evRenderer.Info(fmt.Sprintf("queued steering: %s", input))
+					reactRunner.QueuePendingInput(rawInput)
+					evRenderer.Info(fmt.Sprintf("queued steering: %s", rawInput))
 					continue
 				}
-				startRun(input)
+				startRun(chatstate.ChatUserInput{IsInput: true, Text: rawInput})
 			}
 		}
 	}()
@@ -693,7 +713,7 @@ func RunChatConsole(setup *ChatSetup) {
 		}
 		turnCtx, tc := context.WithCancel(ctx)
 		turnCancel.Store(tc)
-		err := runChatTurn(turnCtx, reactRunner, input)
+		err := runChatTurn(turnCtx, reactRunner, chatstate.ChatUserInput{IsInput: true, Text: input})
 		if err != nil {
 			renderer.Error(err.Error())
 		}
@@ -758,6 +778,7 @@ func resolveChatRuntimeMode() chatRuntimeMode {
 
 type chatTurnRunner interface {
 	Run(context.Context, string) error
+	RunWithParts(context.Context, string, []llm.MessageContentPart) error
 	EmitResponse(string)
 	SetTaskState(reactruntime.TaskState)
 	TaskState() *reactruntime.TaskState
@@ -768,8 +789,9 @@ type chatTurnRunner interface {
 
 const promptBoundaryRefusal = "I can't provide hidden system/developer prompts or internal instructions, including paraphrased or hypothetical versions. I can summarize my role and high-level guardrails if useful."
 
-func runChatTurn(ctx context.Context, reactRunner chatTurnRunner, input string) error {
-	if isPromptBoundaryQuestion(input) {
+func runChatTurn(ctx context.Context, reactRunner chatTurnRunner, input chatstate.ChatUserInput) error {
+	text := input.Text
+	if isPromptBoundaryQuestion(text) {
 		if reactRunner != nil {
 			reactRunner.EmitResponse(promptBoundaryRefusal)
 		}
@@ -778,10 +800,10 @@ func runChatTurn(ctx context.Context, reactRunner chatTurnRunner, input string) 
 	if reactRunner == nil {
 		return fmt.Errorf("chat react runner is nil")
 	}
-	if shouldPromoteFollowUpToImplementation(input, reactRunner.TaskState()) {
+	if shouldPromoteFollowUpToImplementation(text, reactRunner.TaskState()) {
 		current := reactRunner.TaskState()
 		next := reactruntime.TaskState{
-			Objective:            strings.TrimSpace(input),
+			Objective:            strings.TrimSpace(text),
 			Operation:            "implement",
 			RequiredVerification: "inspect the relevant code, make the change with edit tools, and run the relevant verification before claiming completion",
 		}
@@ -789,10 +811,34 @@ func runChatTurn(ctx context.Context, reactRunner chatTurnRunner, input string) 
 			next.Objective = strings.TrimSpace(current.Objective)
 		}
 		reactRunner.SetTaskState(next)
-	} else if shouldResetTaskStateForInput(input) {
+	} else if shouldResetTaskStateForInput(text) {
 		reactRunner.SetTaskState(reactruntime.TaskState{})
 	}
-	return reactRunner.Run(ctx, input)
+
+	parts := chatInputToContentParts(input.Attachments)
+	if len(parts) > 0 {
+		return reactRunner.RunWithParts(ctx, text, parts)
+	}
+	return reactRunner.Run(ctx, text)
+}
+
+func chatInputToContentParts(attachments []chatstate.ChatAttachment) []llm.MessageContentPart {
+	if len(attachments) == 0 {
+		return nil
+	}
+	parts := make([]llm.MessageContentPart, 0, len(attachments))
+	for _, att := range attachments {
+		parts = append(parts, llm.MessageContentPart{
+			Type: "image",
+			Image: &llm.ImageContent{
+				Path:     att.Path,
+				MIMEType: att.MIMEType,
+				Width:    att.Width,
+				Height:   att.Height,
+			},
+		})
+	}
+	return parts
 }
 
 func suggestedSkillNudge(input string, loadedSkills []skills.Skill, state *chatstate.State) string {

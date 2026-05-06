@@ -229,3 +229,31 @@ func TestCustomProviderLegacyCacheRefreshesWhenRoutesAreMissing(t *testing.T) {
 		t.Fatalf("alias APIModel = %q", aliasRoute.APIModel)
 	}
 }
+
+func TestGPT55HasImageSupport(t *testing.T) {
+	// GPT-5.5 via openai should have image support
+	info := Lookup("openai", "gpt-5.5")
+	if info != nil && !info.SupportsImages {
+		t.Error("gpt-5.5 should support images via openai provider")
+	}
+}
+
+func TestNonVisionModelLacksImageSupport(t *testing.T) {
+	info := Lookup("openai", "gpt-4o-mini")
+	if info != nil && info.SupportsImages {
+		t.Error("gpt-4o-mini should not have image support in hardcoded list")
+	}
+}
+
+func TestImageCapabilityMetadata(t *testing.T) {
+	info := Lookup("openai", "gpt-5.5")
+	if info == nil {
+		t.Skip("gpt-5.5 not in catalog")
+	}
+	if info.MaxImageBytes <= 0 {
+		t.Errorf("MaxImageBytes = %d, want positive", info.MaxImageBytes)
+	}
+	if len(info.SupportedImageMIMEs) == 0 {
+		t.Error("SupportedImageMIMEs should not be empty")
+	}
+}

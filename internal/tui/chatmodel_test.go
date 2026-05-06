@@ -2,8 +2,11 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +19,7 @@ import (
 
 	"forge/internal/auth"
 	"forge/internal/chatgptauth"
+	"forge/internal/chatstate"
 	"forge/internal/claudeauth"
 	"forge/internal/codexusage"
 	"forge/internal/copilot"
@@ -3594,7 +3598,8 @@ func TestChatModelEnterWhileBusyQueuesSteering(t *testing.T) {
 	}
 	select {
 	case prompt := <-inputCh:
-		if prompt != "draft while running" {
+		var ui chatstate.ChatUserInput
+		if err := json.Unmarshal([]byte(prompt), &ui); err != nil || ui.Text != "draft while running" {
 			t.Fatalf("queued prompt = %q", prompt)
 		}
 	default:
@@ -3605,6 +3610,76 @@ func TestChatModelEnterWhileBusyQueuesSteering(t *testing.T) {
 	}
 	if got := strippedLine(m.View()); !strings.Contains(got, "Queued input") || !strings.Contains(got, "draft while running") {
 		t.Fatalf("expected queued input preview, got:\n%s", got)
+	}
+}
+
+func TestChatModelPasteImagePathAttachesImage(t *testing.T) {
+	// Create a real test PNG so DetectImageReferences and ValidateImageAttachment succeed.
+	tmpDir := t.TempDir()
+	pngPath := filepath.Join(tmpDir, "screenshot.png")
+	img := image.NewRGBA(image.Rect(0, 0, 10, 20))
+	f, err := os.Create(pngPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(f, img); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	_ = f.Close()
+
+	m := NewChatModel(ChatLiveConfig{Model: "chatgpt/gpt-5.5", WorkDir: tmpDir})
+	m.width = 80
+	m.height = 20
+
+	// Simulate drag-and-drop of an image path (with escaped spaces, as Terminal.app pastes)
+	escaped := strings.ReplaceAll(pngPath, " ", "\\ ")
+	updated, _ := m.handleKey(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune(escaped),
+		Paste: true,
+	})
+	m = updated.(ChatModel)
+
+	if len(m.attachments) != 1 {
+		t.Fatalf("expected 1 attachment after paste, got %d", len(m.attachments))
+	}
+	if m.attachments[0].Name != "screenshot.png" {
+		t.Errorf("attachment name = %q, want screenshot.png", m.attachments[0].Name)
+	}
+	if m.inputBuf != "" {
+		t.Errorf("inputBuf should be empty after stripping image path, got %q", m.inputBuf)
+	}
+}
+
+func TestChatModelPasteImagePathWithoutPasteFlag(t *testing.T) {
+	// Create a real test PNG.
+	tmpDir := t.TempDir()
+	pngPath := filepath.Join(tmpDir, "photo.png")
+	img := image.NewRGBA(image.Rect(0, 0, 10, 20))
+	f, err := os.Create(pngPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(f, img); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	_ = f.Close()
+
+	m := NewChatModel(ChatLiveConfig{Model: "chatgpt/gpt-5.5", WorkDir: tmpDir})
+	m.width = 80
+	m.height = 20
+
+	// Simulate drag-and-drop without bracketed paste (some terminals)
+	updated, _ := m.handleKey(tea.KeyMsg{
+		Type:  tea.KeyRunes,
+		Runes: []rune(pngPath),
+	})
+	m = updated.(ChatModel)
+
+	if len(m.attachments) != 1 {
+		t.Fatalf("expected 1 attachment without paste flag, got %d", len(m.attachments))
 	}
 }
 
