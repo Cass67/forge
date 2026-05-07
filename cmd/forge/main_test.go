@@ -215,7 +215,7 @@ func TestRunPluginInstallLocalOpenCodePlugin(t *testing.T) {
 	if plugin.ID != "simple" || plugin.Kind != "opencode" || plugin.Source != pluginPath {
 		t.Fatalf("plugin config = %#v", plugin)
 	}
-	if len(plugin.Command) < 4 || plugin.Command[0] != "node" || !strings.Contains(plugin.Command[1], "opencode-host.mjs") || plugin.Command[2] != "--module" || plugin.Command[3] != pluginPath {
+	if len(plugin.Command) < 4 || (plugin.Command[0] != "node" && plugin.Command[0] != "bun") || !strings.Contains(plugin.Command[1], "opencode-host.mjs") || plugin.Command[2] != "--module" || plugin.Command[3] != pluginPath {
 		t.Fatalf("plugin command = %#v", plugin.Command)
 	}
 	if got := strings.Join(plugin.AutoApproveTools, ","); got != "echo" {
