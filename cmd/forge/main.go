@@ -354,11 +354,18 @@ func prepareOpenCodePluginCommand(id, source, moduleOverride string, noInstall b
 	if strings.TrimSpace(moduleRef) == "" {
 		return nil, fmt.Errorf("could not infer OpenCode module; pass --module")
 	}
-	command := []string{"node", hostPath, "--module", moduleRef}
+	command := []string{openCodeRuntime(), hostPath, "--module", moduleRef}
 	if installDir != "" {
 		command = append(command, "--install-dir", installDir)
 	}
 	return command, nil
+}
+
+func openCodeRuntime() string {
+	if _, err := exec.LookPath("bun"); err == nil {
+		return "bun"
+	}
+	return "node"
 }
 
 func runPluginInstallCommand(name string, args ...string) error {
