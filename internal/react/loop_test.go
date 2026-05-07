@@ -2239,6 +2239,34 @@ func TestRunnerStopsForcingToolsAfterDelegatedWait(t *testing.T) {
 	}
 }
 
+func TestRunnerRestoresActionToolsAfterDelegatedWaitWhenUserAskedForFileWrite(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"spawn_agent", "wait_agent", "write_file", "run_command", "git_status"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{
+		LastInput: "ask agents to compare the implementation, then write the findings to docs/findings/status.md and run tests",
+		History: []llm.Message{
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "wait-1", Content: `{"status":"completed"}`},
+		},
+	}
+
+	defs := r.selectToolDefs(snap)
+	names := toolDefNames(defs)
+	for _, want := range []string{"write_file", "run_command"} {
+		if !containsString(names, want) {
+			t.Fatalf("post-delegation tools = %#v, want %s", names, want)
+		}
+	}
+	for _, blocked := range []string{"spawn_agent", "wait_agent"} {
+		if containsString(names, blocked) {
+			t.Fatalf("post-delegation tools = %#v, should stop forcing %s", names, blocked)
+		}
+	}
+}
+
 func TestRunnerPluginPromptOverlayDoesNotDuplicate(t *testing.T) {
 	session := NewSession()
 	r := NewRunner(Config{
