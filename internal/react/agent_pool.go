@@ -176,6 +176,16 @@ func (p *AgentPool) GetAgent(name string) (*AgentDefinition, bool) {
 	return a, ok
 }
 
+func (p *AgentPool) AgentNames() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	names := make([]string, 0, len(p.agents))
+	for name := range p.agents {
+		names = append(names, name)
+	}
+	return names
+}
+
 func MapSpawnRole(role string) string {
 	role = strings.TrimSpace(role)
 	if role == "" {
