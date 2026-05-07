@@ -122,8 +122,9 @@ func TestRunnerDispatchesCompactionHookPayloads(t *testing.T) {
 	var preSnapshots []any
 	var postSnapshots []any
 	r := NewRunner(Config{
-		Driver:  driver,
-		Session: session,
+		Driver:                driver,
+		Session:               session,
+		CompactionMaxFailures: 1,
 		ConfigureHooks: func(registry *hooks.Registry) {
 			registry.Register(hooks.PointPreCompact, "capture:pre", func(_ context.Context, event hooks.Event) []hooks.Result {
 				preSnapshots = append(preSnapshots, event.Snapshot)
@@ -205,7 +206,7 @@ func TestRunnerDispatchesCompactionHookPayloads(t *testing.T) {
 	if !post.Changed {
 		t.Fatal("post Changed = false, want true")
 	}
-	if post.CircuitOpen {
-		t.Fatal("post CircuitOpen = true, want false")
+	if !post.CircuitOpen {
+		t.Fatal("post CircuitOpen = false, want true after runtime circuit trips")
 	}
 }

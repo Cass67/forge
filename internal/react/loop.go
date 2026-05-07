@@ -251,7 +251,7 @@ func (r *Runner) applyCompactionDecision(ctx context.Context, decision Compactio
 	} else if !changed && r.compactionMaxFailures > 0 {
 		r.compactionFailures++
 	}
-	if r.compactionManager.CircuitOpen() || (r.compactionMaxFailures > 0 && r.compactionFailures >= r.compactionMaxFailures) {
+	if r.compactionCircuitOpen() {
 		if r.progress != nil {
 			r.progress("react runtime: compaction circuit breaker tripped")
 		}
@@ -273,9 +273,19 @@ func (r *Runner) dispatchCompactionHook(ctx context.Context, point hooks.Point, 
 			DroppedTurns:  dropped,
 			SummaryLength: len(snap.CompactionSummary),
 			Changed:       changed,
-			CircuitOpen:   r.compactionManager.CircuitOpen(),
+			CircuitOpen:   r.compactionCircuitOpen(),
 		},
 	})
+}
+
+func (r *Runner) compactionCircuitOpen() bool {
+	if r == nil {
+		return false
+	}
+	if r.compactionManager != nil && r.compactionManager.CircuitOpen() {
+		return true
+	}
+	return r.compactionMaxFailures > 0 && r.compactionFailures >= r.compactionMaxFailures
 }
 
 func droppedTurns(before, after SessionSnapshot) int {
