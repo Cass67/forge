@@ -212,6 +212,37 @@ decision = "forbidden"
 	}
 }
 
+func TestLoadPermissionsConfigSectionRules(t *testing.T) {
+	toml := `
+[[permissions.project.rules]]
+behavior = "deny"
+tool = "run_command"
+pattern = "rm:*"
+
+[[permissions.user.rules]]
+behavior = "allow"
+tool = "run_command"
+pattern = "go test:*"
+`
+	path := writeTemp(t, toml)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Permissions.Project.Rules) != 1 {
+		t.Fatalf("project rules = %d, want 1", len(cfg.Permissions.Project.Rules))
+	}
+	if got := cfg.Permissions.Project.Rules[0]; got.Behavior != "deny" || got.Tool != "run_command" || got.Pattern != "rm:*" {
+		t.Fatalf("project rule = %#v", got)
+	}
+	if len(cfg.Permissions.User.Rules) != 1 {
+		t.Fatalf("user rules = %d, want 1", len(cfg.Permissions.User.Rules))
+	}
+	if got := cfg.Permissions.User.Rules[0]; got.Behavior != "allow" || got.Tool != "run_command" || got.Pattern != "go test:*" {
+		t.Fatalf("user rule = %#v", got)
+	}
+}
+
 func TestLoadApprovalConfigSectionApprovalSupportsCommandRules(t *testing.T) {
 	toml := `
 [approval]

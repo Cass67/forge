@@ -112,6 +112,25 @@ type ApprovalConfig struct {
 	Rules             []ApprovalRuleConfig `toml:"rules"`
 }
 
+type PermissionRuleConfig struct {
+	Behavior string `toml:"behavior"`
+	Tool     string `toml:"tool"`
+	Pattern  string `toml:"pattern"`
+}
+
+type PermissionScopeConfig struct {
+	Rules []PermissionRuleConfig `toml:"rules"`
+}
+
+type PermissionsConfig struct {
+	Managed PermissionScopeConfig `toml:"managed"`
+	User    PermissionScopeConfig `toml:"user"`
+	Project PermissionScopeConfig `toml:"project"`
+	Local   PermissionScopeConfig `toml:"local"`
+	Session PermissionScopeConfig `toml:"session"`
+	CLI     PermissionScopeConfig `toml:"cli"`
+}
+
 type MCPServerConfig struct {
 	Type      string            `toml:"type"`
 	Command   []string          `toml:"command"`
@@ -154,6 +173,7 @@ type Config struct {
 	Git              Git                        `toml:"git"`
 	Chat             ChatConfig                 `toml:"chat"`
 	Approval         ApprovalConfig             `toml:"approval"`
+	Permissions      PermissionsConfig          `toml:"permissions"`
 	MCPServers       map[string]MCPServerConfig `toml:"mcp_servers"`
 	Plugins          []PluginConfig             `toml:"plugins"`
 	LiveCompatModels bool                       `toml:"live_compat_models"`

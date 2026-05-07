@@ -110,6 +110,34 @@ func (c *Config) Validate() []ValidationIssue {
 			}
 		}
 	}
+	validatePermissionScope := func(scope string, cfg PermissionScopeConfig) {
+		for i, rule := range cfg.Rules {
+			ruleField := fmt.Sprintf("permissions.%s.rules[%d]", scope, i)
+			if strings.TrimSpace(rule.Behavior) == "" {
+				add(ruleField+".behavior", "must not be empty")
+			} else {
+				switch strings.ToLower(strings.TrimSpace(rule.Behavior)) {
+				case "allow", "ask", "deny":
+				default:
+					add(ruleField+".behavior", fmt.Sprintf("must be one of allow, ask, deny, got %q", rule.Behavior))
+				}
+			}
+			if strings.TrimSpace(rule.Tool) == "" {
+				add(ruleField+".tool", "must not be empty")
+			} else if !validPermissionTool(rule.Tool) {
+				add(ruleField+".tool", fmt.Sprintf("unknown permission tool %q", rule.Tool))
+			}
+			if pattern := strings.TrimSpace(rule.Pattern); strings.Contains(pattern, "..") {
+				add(ruleField+".pattern", "must not contain ..")
+			}
+		}
+	}
+	validatePermissionScope("managed", c.Permissions.Managed)
+	validatePermissionScope("user", c.Permissions.User)
+	validatePermissionScope("project", c.Permissions.Project)
+	validatePermissionScope("local", c.Permissions.Local)
+	validatePermissionScope("session", c.Permissions.Session)
+	validatePermissionScope("cli", c.Permissions.CLI)
 	for i, pass := range c.Pipeline {
 		if strings.TrimSpace(pass.Name) == "" {
 			add(fmt.Sprintf("pipeline[%d].name", i), "must not be empty")
@@ -168,6 +196,17 @@ func (c *Config) Validate() []ValidationIssue {
 	}
 
 	return issues
+}
+
+func validPermissionTool(tool string) bool {
+	switch strings.TrimSpace(tool) {
+	case "apply_patch", "artifact_read", "artifact_write", "code_search", "edit_file", "exec_session_start",
+		"glob", "lsp_definition", "lsp_document_symbols", "lsp_hover", "lsp_references", "read_file",
+		"run_command", "search", "view_image", "web_fetch", "write_file":
+		return true
+	default:
+		return strings.HasPrefix(tool, "mcp__") || strings.Contains(tool, "__")
+	}
 }
 
 func validPluginID(id string) bool {
