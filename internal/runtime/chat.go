@@ -793,7 +793,11 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 				return agent.BuildNativeSystemPromptForMode(setup.WorkDir, "", false)
 			}
 		}
-		childTools := baseReg.Filter(nil)
+		var allowedTools []string
+		if agentDef, ok := pool.GetAgent(role); ok && agentDef != nil && len(agentDef.Tools) > 0 {
+			allowedTools = append([]string(nil), agentDef.Tools...)
+		}
+		childTools := baseReg.Filter(allowedTools)
 		childRenderer := agent.NewSilentRenderer(nil)
 		if renderer != nil {
 			childRenderer = agent.NewSubAgentRenderer(renderer, role)
@@ -815,6 +819,7 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 		childRenderer.Info(fmt.Sprintf("[%s] done", role))
 		return childRunner.LastResponse(), nil
 	})
+	pool.RegisterAgents(reactruntime.DefaultAgentDefinitions())
 	if pluginManager != nil {
 		pluginAgents := pluginManager.AgentDefs()
 		poolAgents := make([]reactruntime.AgentDefinition, len(pluginAgents))
@@ -1288,14 +1293,18 @@ func handleChatSlashCommand(input string, renderer *agent.Renderer, loadedSkills
 			fmt.Printf("  %s%d. %s\n", marker, i+1, m)
 		}
 		fmt.Println()
-	case input == "/clear":
+	case input == "/clear" || input == "/new":
 		if state != nil {
 			state.Clear()
 		}
 		if session != nil {
 			session.ClearHistory()
 		}
-		renderer.Info("conversation history cleared")
+		if input == "/new" {
+			renderer.Info("new session started")
+		} else {
+			renderer.Info("conversation history cleared")
+		}
 	case input == "/skills":
 		if len(loadedSkills) == 0 {
 			renderer.Info("no skills loaded")
@@ -1401,6 +1410,7 @@ func PrintChatHelp() {
 	fmt.Println("    /model          select model from list")
 	fmt.Println("    /model <name>   switch to a specific model")
 	fmt.Println("    /models         show available models")
+	fmt.Println("    /new            start a clean session")
 	fmt.Println("    /clear          clear conversation history")
 	fmt.Println("    /trace          open debug trace overlay (requires forge -d)")
 	fmt.Println("    /skills         list available skills and how to activate them")

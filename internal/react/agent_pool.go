@@ -3,6 +3,7 @@ package react
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -165,14 +166,17 @@ func (p *AgentPool) RegisterAgents(agents []AgentDefinition) {
 	}
 	for i := range agents {
 		a := agents[i]
-		p.agents[strings.ToLower(a.Name)] = &a
+		if strings.TrimSpace(a.Name) == "" {
+			continue
+		}
+		p.agents[agentLookupKey(a.Name)] = &a
 	}
 }
 
 func (p *AgentPool) GetAgent(name string) (*AgentDefinition, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	a, ok := p.agents[strings.ToLower(name)]
+	a, ok := p.agents[agentLookupKey(name)]
 	return a, ok
 }
 
@@ -180,10 +184,85 @@ func (p *AgentPool) AgentNames() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	names := make([]string, 0, len(p.agents))
-	for name := range p.agents {
-		names = append(names, name)
+	for _, agent := range p.agents {
+		if agent != nil && strings.TrimSpace(agent.Name) != "" {
+			names = append(names, strings.TrimSpace(agent.Name))
+		}
 	}
+	sort.Strings(names)
 	return names
+}
+
+func agentLookupKey(name string) string {
+	name = strings.NewReplacer("-", " ", "_", " ").Replace(strings.ToLower(strings.TrimSpace(name)))
+	return strings.Join(strings.Fields(name), " ")
+}
+
+func DefaultAgentDefinitions() []AgentDefinition {
+	readOnlyTools := defaultReadOnlyAgentTools()
+	return []AgentDefinition{
+		{
+			Name:        "repo-auditor",
+			Description: "Audit repository architecture, workflows, UX, tests, and gaps against comparable tools.",
+			Tools:       readOnlyTools,
+			SystemPrompt: strings.Join([]string{
+				"You are Forge's repo-auditor agent.",
+				"Inspect the repository for architecture, product, UX, testing, workflow, and maintainability evidence.",
+				"Return concise findings with concrete file references when available.",
+				"Prefer evidence over speculation and call out uncertainty clearly.",
+			}, "\n"),
+		},
+		{
+			Name:        "code-reviewer",
+			Description: "Review implementation quality, regressions, risks, and missing tests.",
+			Tools:       readOnlyTools,
+			SystemPrompt: strings.Join([]string{
+				"You are Forge's code-reviewer agent.",
+				"Prioritize bugs, behavioral regressions, missing tests, and concrete risks.",
+				"Report findings first, ordered by severity, with file references when available.",
+				"Do not edit files, run mutation commands, or implement fixes; return review findings for the parent agent to act on.",
+			}, "\n"),
+		},
+		{
+			Name:        "explorer",
+			Description: "Gather codebase evidence quickly across files, symbols, and conventions.",
+			Tools:       readOnlyTools,
+			SystemPrompt: strings.Join([]string{
+				"You are Forge's explorer agent.",
+				"Find relevant files, patterns, dependencies, and conventions with minimal speculation.",
+				"Return a compact evidence map the parent can use for decisions.",
+			}, "\n"),
+		},
+		{
+			Name:        "oracle",
+			Description: "Analyze hard architecture, debugging, or design questions with extra rigor.",
+			Tools:       readOnlyTools,
+			SystemPrompt: strings.Join([]string{
+				"You are Forge's oracle agent.",
+				"Use rigorous reasoning for hard architecture, debugging, or design questions.",
+				"Challenge weak assumptions and explain the most likely root cause or tradeoff.",
+			}, "\n"),
+		},
+		{
+			Name:        "synthesizer",
+			Description: "Combine multiple evidence streams into a clear final answer or plan.",
+			Tools:       readOnlyTools,
+			SystemPrompt: strings.Join([]string{
+				"You are Forge's synthesizer agent.",
+				"Combine evidence from multiple workstreams into a concise, structured result.",
+				"Resolve contradictions explicitly and avoid inventing unsupported conclusions.",
+			}, "\n"),
+		},
+	}
+}
+
+func defaultReadOnlyAgentTools() []string {
+	return []string{
+		"read_file", "list_dir", "search", "code_search", "glob", "view_image",
+		"lsp_definition", "lsp_references", "lsp_hover", "lsp_document_symbols",
+		"git_status", "git_diff", "git_log", "git_branch_state", "git_merge_status",
+		"tool_help", "think",
+	}
 }
 
 func MapSpawnRole(role string) string {
