@@ -113,6 +113,159 @@ func TestAutoPermissionClassifierObserverReceivesRedactedDecision(t *testing.T) 
 	}
 }
 
+func TestAutoPermissionClassifierObserverReceivesRedactedDeny(t *testing.T) {
+	secret := dummyApprovalSecret()
+	classifier := &fakePermissionClassifier{response: permissions.ClassifierResponse{Decision: permissions.ClassifierDeny, Reason: "unsafe command"}}
+	promptCalls := 0
+	var events []ClassifierEvent
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy: ApprovalUnlessTrusted,
+		SandboxPolicy: SandboxDangerFull,
+		Classifier:    classifier,
+		ClassifierObserver: func(event ClassifierEvent) {
+			events = append(events, event)
+		},
+	}, func(action tools.Action) (bool, error) {
+		promptCalls++
+		return true, nil
+	}, nil)
+
+	approved, err := gate.Approve(tools.Action{Tool: "run_command", Summary: "git push origin main " + secret, Detail: "TOKEN=" + secret})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved || promptCalls != 0 {
+		t.Fatalf("approved=%v promptCalls=%d, want deny without prompt", approved, promptCalls)
+	}
+	assertClassifierObserverEvent(t, events, permissions.ClassifierDeny, "unsafe command", "", "", secret)
+}
+
+func TestAutoPermissionClassifierObserverReceivesRedactedAskFallback(t *testing.T) {
+	secret := dummyApprovalSecret()
+	classifier := &fakePermissionClassifier{response: permissions.ClassifierResponse{Decision: permissions.ClassifierAsk, Reason: "needs review"}}
+	promptCalls := 0
+	var events []ClassifierEvent
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy: ApprovalUnlessTrusted,
+		SandboxPolicy: SandboxDangerFull,
+		Classifier:    classifier,
+		ClassifierObserver: func(event ClassifierEvent) {
+			events = append(events, event)
+		},
+	}, func(action tools.Action) (bool, error) {
+		promptCalls++
+		return true, nil
+	}, nil)
+
+	approved, err := gate.Approve(tools.Action{Tool: "run_command", Summary: "git push origin main " + secret, Detail: "TOKEN=" + secret})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !approved || promptCalls != 1 {
+		t.Fatalf("approved=%v promptCalls=%d, want approved prompt", approved, promptCalls)
+	}
+	assertClassifierObserverEvent(t, events, permissions.ClassifierAsk, "needs review", string(ClassifierFailureAsk), "", secret)
+}
+
+func TestAutoPermissionClassifierObserverReceivesRedactedErrorFallbackAsk(t *testing.T) {
+	secret := dummyApprovalSecret()
+	classifier := &fakePermissionClassifier{err: errors.New("parse failed")}
+	promptCalls := 0
+	var events []ClassifierEvent
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy: ApprovalUnlessTrusted,
+		SandboxPolicy: SandboxDangerFull,
+		Classifier:    classifier,
+		ClassifierObserver: func(event ClassifierEvent) {
+			events = append(events, event)
+		},
+	}, func(action tools.Action) (bool, error) {
+		promptCalls++
+		return true, nil
+	}, nil)
+
+	approved, err := gate.Approve(tools.Action{Tool: "run_command", Summary: "git push origin main " + secret, Detail: "TOKEN=" + secret})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !approved || promptCalls != 1 {
+		t.Fatalf("approved=%v promptCalls=%d, want approved prompt", approved, promptCalls)
+	}
+	assertClassifierObserverEvent(t, events, permissions.ClassifierAsk, "", string(ClassifierFailureAsk), "parse failed", secret)
+}
+
+func TestAutoPermissionClassifierObserverReceivesRedactedErrorFallbackDeny(t *testing.T) {
+	secret := dummyApprovalSecret()
+	classifier := &fakePermissionClassifier{err: errors.New("parse failed")}
+	promptCalls := 0
+	var events []ClassifierEvent
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy:             ApprovalUnlessTrusted,
+		SandboxPolicy:             SandboxDangerFull,
+		Classifier:                classifier,
+		ClassifierFailureBehavior: ClassifierFailureDeny,
+		ClassifierObserver: func(event ClassifierEvent) {
+			events = append(events, event)
+		},
+	}, func(action tools.Action) (bool, error) {
+		promptCalls++
+		return true, nil
+	}, nil)
+
+	approved, err := gate.Approve(tools.Action{Tool: "run_command", Summary: "git push origin main " + secret, Detail: "TOKEN=" + secret})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved || promptCalls != 0 {
+		t.Fatalf("approved=%v promptCalls=%d, want deny without prompt", approved, promptCalls)
+	}
+	assertClassifierObserverEvent(t, events, permissions.ClassifierDeny, "", string(ClassifierFailureDeny), "parse failed", secret)
+}
+
+func TestAutoPermissionClassifierObserverReceivesRedactedImmunePromptFallback(t *testing.T) {
+	secret := dummyApprovalSecret()
+	classifier := &fakePermissionClassifier{response: permissions.ClassifierResponse{Decision: permissions.ClassifierAllow}}
+	promptCalls := 0
+	var events []ClassifierEvent
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy: ApprovalUnlessTrusted,
+		SandboxPolicy: SandboxDangerFull,
+		Classifier:    classifier,
+		ClassifierObserver: func(event ClassifierEvent) {
+			events = append(events, event)
+		},
+	}, func(action tools.Action) (bool, error) {
+		promptCalls++
+		return true, nil
+	}, nil)
+
+	approved, err := gate.Approve(tools.Action{Tool: "run_command", Summary: "rm -rf / " + secret, Detail: "TOKEN=" + secret})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !approved || promptCalls != 1 || classifier.calls != 0 {
+		t.Fatalf("approved=%v promptCalls=%d classifierCalls=%d, want immune prompt without classifier", approved, promptCalls, classifier.calls)
+	}
+	assertClassifierObserverEvent(t, events, permissions.ClassifierAsk, "classifier-immune action", string(ClassifierFailureAsk), "", secret)
+}
+
+func assertClassifierObserverEvent(t *testing.T, events []ClassifierEvent, decision permissions.ClassifierDecision, reason, fallback, errorText, secret string) {
+	t.Helper()
+	if len(events) != 1 {
+		t.Fatalf("event count = %d, want 1", len(events))
+	}
+	event := events[0]
+	if event.Decision != decision || event.Reason != reason || event.Fallback != fallback || event.Error != errorText {
+		t.Fatalf("unexpected classifier event = %#v", event)
+	}
+	if strings.Contains(event.Action.Summary, secret) || strings.Contains(event.Action.Detail, secret) {
+		t.Fatalf("classifier event leaked secret: %#v", event.Action)
+	}
+	if !strings.Contains(event.Action.Summary, "<REDACTED:github-pat>") || !strings.Contains(event.Action.Detail, "<REDACTED:github-pat>") {
+		t.Fatalf("classifier event action was not redacted: %#v", event.Action)
+	}
+}
+
 func TestAutoPermissionClassifierAllowsMediumRiskEdit(t *testing.T) {
 	classifier := &fakePermissionClassifier{response: permissions.ClassifierResponse{Decision: permissions.ClassifierAllow, Reason: "normal edit"}}
 	gate := NewApprovalGate("", ApprovalConfig{DefaultPolicy: ApprovalUnlessTrusted, SandboxPolicy: SandboxDangerFull, Classifier: classifier}, nil, nil)
