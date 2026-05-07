@@ -2281,9 +2281,14 @@ func (m ChatModel) trySubmitText(input string, attachments []chatstate.ChatAttac
 			updated, submitCmd := m.submitSkillInput(s, fmt.Sprintf("/%s", s.Name), skills.SkillMessage(s))
 			return updated.(ChatModel), submitCmd, true
 		}
+		if looksLikeAbsolutePathInput(input) {
+			goto submitChatInput
+		}
 		updated, submitCmd := m.handleSlashCommand(input)
 		return updated.(ChatModel), submitCmd, true
 	}
+
+submitChatInput:
 
 	if m.busy {
 		m.flash = "queued steering"
@@ -2572,6 +2577,21 @@ func (m ChatModel) isBuiltinCommand(input string) bool {
 		if input == cmd || strings.HasPrefix(input, cmd+" ") {
 			return true
 		}
+	}
+	return false
+}
+
+func looksLikeAbsolutePathInput(input string) bool {
+	candidate := strings.Trim(strings.TrimSpace(input), "'\"")
+	if !filepath.IsAbs(candidate) {
+		return false
+	}
+	withoutRoot := strings.TrimPrefix(candidate, string(filepath.Separator))
+	if strings.ContainsRune(withoutRoot, filepath.Separator) {
+		return true
+	}
+	if _, err := os.Stat(candidate); err == nil {
+		return true
 	}
 	return false
 }
