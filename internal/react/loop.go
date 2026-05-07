@@ -346,12 +346,13 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 		}
 		snap := r.session.Snapshot()
 		toolDefs := r.selectToolDefs(snap)
+		requireToolCall := shouldRequireToolCallForSnapshot(snap)
 		if len(toolDefs) > 0 && !isNative {
 			err := fmt.Errorf("react runtime: driver %q does not support native tool calling", r.driver.Name())
 			r.session.CompleteTurn(turn, "", nil, err)
 			return err
 		}
-		calls, err := r.streamNativeTurn(ctx, turn, nativeCaller, toolDefs)
+		calls, err := r.streamNativeTurn(ctx, turn, nativeCaller, toolDefs, requireToolCall)
 		if err != nil {
 			var retryable *RetryableCompletionError
 			if errors.As(err, &retryable) && completionRetries < maxCompletionRetriesPerTurn {
@@ -385,12 +386,12 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 // streamNativeTurn runs one native tool calling step.
 // Returns nil calls (+ nil error) when a final text answer was received.
 // Returns non-nil calls when the model requested tool executions.
-func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.NativeToolCaller, toolDefs []llm.ToolDef) ([]llm.NativeToolCall, error) {
+func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.NativeToolCaller, toolDefs []llm.ToolDef, requireToolCall bool) ([]llm.NativeToolCall, error) {
 	messages := r.session.Messages(r.currentSystemPrompt())
 	if prompt := strings.TrimSpace(r.pendingRetryPrompt); prompt != "" {
 		messages = injectSystemMessageBeforeHistory(messages, "Runtime correction for the previous attempt:\n"+prompt)
 	}
-	opts := llm.NativeToolOptions{}
+	opts := llm.NativeToolOptions{RequireToolCall: requireToolCall}
 	if len(toolDefs) == 0 {
 		return r.streamPlainTurn(ctx, turn, messages)
 	}
@@ -773,6 +774,12 @@ func (r *Runner) selectToolDefs(snapshot SessionSnapshot) []llm.ToolDef {
 	if r == nil || r.tools == nil {
 		return nil
 	}
+	if shouldRouteParentThroughDelegation(snapshot) {
+		if historyIncludesCompletedToolCall(snapshot, "wait_agent") {
+			return nil
+		}
+		return r.tools.Filter(delegateToolNames).ToLLMToolDefs()
+	}
 	allowed := allowedToolNamesForSnapshot(snapshot)
 	pluginNames := r.pluginToolNames()
 	if len(allowed) == 0 && !inputSuggestsPluginTool(snapshot.LastInput, pluginNames) {
@@ -941,17 +948,52 @@ func allowedToolNamesForSnapshot(snapshot SessionSnapshot) []string {
 }
 
 func historyIncludesToolHelp(snapshot SessionSnapshot) bool {
+	return historyIncludesToolCall(snapshot, "tool_help")
+}
+
+func historyIncludesToolCall(snapshot SessionSnapshot, toolName string) bool {
 	for _, msg := range snapshot.History {
 		if msg.Role != llm.RoleAssistant {
 			continue
 		}
 		for _, tc := range msg.ToolCalls {
-			if tc.Name == "tool_help" {
+			if tc.Name == toolName {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+func historyIncludesCompletedToolCall(snapshot SessionSnapshot, toolName string) bool {
+	ids := make(map[string]struct{})
+	for _, msg := range snapshot.History {
+		switch msg.Role {
+		case llm.RoleAssistant:
+			for _, tc := range msg.ToolCalls {
+				if tc.Name == toolName && strings.TrimSpace(tc.ID) != "" {
+					ids[tc.ID] = struct{}{}
+				}
+			}
+		case llm.RoleTool:
+			if _, ok := ids[msg.ToolCallID]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func shouldRequireToolCallForSnapshot(snapshot SessionSnapshot) bool {
+	return shouldRouteParentThroughDelegation(snapshot) && !historyIncludesCompletedToolCall(snapshot, "wait_agent")
+}
+
+func shouldRouteParentThroughDelegation(snapshot SessionSnapshot) bool {
+	if snapshot.TaskState != nil {
+		return false
+	}
+	text := normalizeToolIntentText(snapshot.LastInput)
+	return inputSuggestsDelegation(text)
 }
 
 func normalizeToolIntentText(text string) string {
@@ -1061,7 +1103,11 @@ func inputAsksGitPushStatus(text string) bool {
 
 func inputSuggestsDelegation(text string) bool {
 	return containsToolPhrase(text,
-		"sub-agent", "sub agent", "delegate", "parallel agent", "spawn agent",
+		"sub-agent", "sub agent", "delegate", "parallel agent", "parallel agents", "spawn agent",
+		"ask agent", "ask agents", "use agent", "use agents", "agent to", "agents to",
+		"multiple agents", "three agents", "3 agents", "omo agent", "omo agents", "openagent", "oh my openagent",
+		"audit this repo", "audit the repo", "audit repository", "audit this codebase", "audit the codebase",
+		"compare this repo", "compare the repo", "fall down compared to",
 	)
 }
 
