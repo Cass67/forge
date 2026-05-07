@@ -51,6 +51,17 @@ func (c *Config) Validate() []ValidationIssue {
 	if c.Retry.Timeout < 1 {
 		add("retry.timeout_seconds", "must be at least 1")
 	}
+	validateSecretPolicy := func(field, value string) {
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "allow", "redact", "ask", "block":
+		default:
+			add(field, fmt.Sprintf("must be one of allow, redact, ask, block, got %q", value))
+		}
+	}
+	validateSecretPolicy("security.secrets.read", c.Security.Secrets.Read)
+	validateSecretPolicy("security.secrets.write", c.Security.Secrets.Write)
+	validateSecretPolicy("security.secrets.command_output", c.Security.Secrets.CommandOutput)
+	validateSecretPolicy("security.secrets.approval_detail", c.Security.Secrets.ApprovalDetail)
 	if c.Chat.CommandTimeout < 1 {
 		add("chat.command_timeout", "must be at least 1")
 	}

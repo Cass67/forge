@@ -98,3 +98,33 @@ func TestEditFileDenied(t *testing.T) {
 		t.Error("file should be unchanged after denial")
 	}
 }
+
+func TestEditFileBlocksSecretByDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	approved := false
+	tool := NewEditFile(dir, func(a Action) (bool, error) {
+		approved = true
+		return true, nil
+	})
+
+	result, err := tool.Execute(context.Background(), map[string]any{
+		"path": "main.go", "old_text": "package main", "new_text": "package main\n// token=" + dummySecret(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "blocked") || strings.Contains(result, dummySecret()) {
+		t.Fatalf("expected redacted block result, got: %s", result)
+	}
+	if approved {
+		t.Fatal("edit containing secret should not request normal approval")
+	}
+	data, _ := os.ReadFile(path)
+	if strings.Contains(string(data), dummySecret()) {
+		t.Fatal("secret edit should not be applied")
+	}
+}
