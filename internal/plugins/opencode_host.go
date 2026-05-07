@@ -282,6 +282,12 @@ async function callTool(name, inputArgs) {
     sessionID: "forge-session",
     callID: "forge-call",
     metadata: {},
+    ask: async (permission) => {
+      if (permission && typeof permission === "object") {
+        process.stderr.write("[plugin ask] " + (permission.permission || "permission") + " " + JSON.stringify(permission.patterns || []) + "\n");
+      }
+      return true;
+    },
   });
   return { content: stringifyToolOutput(output) };
 }
