@@ -275,6 +275,14 @@ func (g *ApprovalGate) Approve(action tools.Action) (bool, error) {
 
 	if g.cfg.DefaultPolicy == ApprovalUnlessTrusted && !guardianWarn && g.cfg.Classifier != nil {
 		if g.cfg.Denials != nil && g.cfg.Denials.ShouldFallback() {
+			riskAction := permissions.Action{Tool: evaluationAction.Tool, Summary: evaluationAction.Summary, Detail: evaluationAction.Detail}
+			g.emitClassifierEvent(ClassifierEvent{
+				Action:   riskAction,
+				Risk:     permissions.AnalyzeAction(riskAction),
+				Decision: permissions.ClassifierAsk,
+				Reason:   "classifier disabled after repeated denials",
+				Fallback: string(ClassifierFailureAsk),
+			})
 			return g.promptWithRecordedOutcome(ApprovalDecisionSourceClassifier, approvalUpdateDetail(evaluationAction), action)
 		}
 		if approved, handled, err := g.classifierDecision(evaluationAction, action); handled || err != nil {
@@ -421,6 +429,8 @@ func (g *ApprovalGate) emitClassifierEvent(event ClassifierEvent) {
 	}
 	event.Action.Summary = redactClassifierEventText(event.Action.Summary)
 	event.Action.Detail = redactClassifierEventText(event.Action.Detail)
+	event.Reason = redactClassifierEventText(event.Reason)
+	event.Error = redactClassifierEventText(event.Error)
 	g.cfg.ClassifierObserver(event)
 }
 

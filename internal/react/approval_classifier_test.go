@@ -80,7 +80,7 @@ func TestAutoPermissionClassifierAllowsLowRiskCommand(t *testing.T) {
 
 func TestAutoPermissionClassifierObserverReceivesRedactedDecision(t *testing.T) {
 	secret := dummyApprovalSecret()
-	classifier := &fakePermissionClassifier{response: permissions.ClassifierResponse{Decision: permissions.ClassifierAllow, Reason: "safe test"}}
+	classifier := &fakePermissionClassifier{response: permissions.ClassifierResponse{Decision: permissions.ClassifierAllow, Reason: "safe test " + secret}}
 	var events []ClassifierEvent
 	gate := NewApprovalGate("", ApprovalConfig{
 		DefaultPolicy: ApprovalUnlessTrusted,
@@ -102,7 +102,7 @@ func TestAutoPermissionClassifierObserverReceivesRedactedDecision(t *testing.T) 
 		t.Fatalf("event count = %d, want 1", len(events))
 	}
 	event := events[0]
-	if event.Decision != permissions.ClassifierAllow || event.Reason != "safe test" || event.Fallback != "" || event.Error != "" {
+	if event.Decision != permissions.ClassifierAllow || event.Reason != "safe test <REDACTED:github-pat>" || event.Fallback != "" || event.Error != "" {
 		t.Fatalf("unexpected classifier event = %#v", event)
 	}
 	if strings.Contains(event.Action.Summary, secret) || strings.Contains(event.Action.Detail, secret) {
@@ -169,7 +169,7 @@ func TestAutoPermissionClassifierObserverReceivesRedactedAskFallback(t *testing.
 
 func TestAutoPermissionClassifierObserverReceivesRedactedErrorFallbackAsk(t *testing.T) {
 	secret := dummyApprovalSecret()
-	classifier := &fakePermissionClassifier{err: errors.New("parse failed")}
+	classifier := &fakePermissionClassifier{err: errors.New("parse failed " + secret)}
 	promptCalls := 0
 	var events []ClassifierEvent
 	gate := NewApprovalGate("", ApprovalConfig{
@@ -191,7 +191,7 @@ func TestAutoPermissionClassifierObserverReceivesRedactedErrorFallbackAsk(t *tes
 	if !approved || promptCalls != 1 {
 		t.Fatalf("approved=%v promptCalls=%d, want approved prompt", approved, promptCalls)
 	}
-	assertClassifierObserverEvent(t, events, permissions.ClassifierAsk, "", string(ClassifierFailureAsk), "parse failed", secret)
+	assertClassifierObserverEvent(t, events, permissions.ClassifierAsk, "", string(ClassifierFailureAsk), "parse failed <REDACTED:github-pat>", secret)
 }
 
 func TestAutoPermissionClassifierObserverReceivesRedactedErrorFallbackDeny(t *testing.T) {
@@ -249,6 +249,38 @@ func TestAutoPermissionClassifierObserverReceivesRedactedImmunePromptFallback(t 
 	assertClassifierObserverEvent(t, events, permissions.ClassifierAsk, "classifier-immune action", string(ClassifierFailureAsk), "", secret)
 }
 
+func TestAutoPermissionClassifierObserverReceivesDenialTrackerFallback(t *testing.T) {
+	secret := dummyApprovalSecret()
+	classifier := &fakePermissionClassifier{response: permissions.ClassifierResponse{Decision: permissions.ClassifierAllow}}
+	denials := permissions.NewDenialTracker(3, 20)
+	denials.RecordDenied()
+	denials.RecordDenied()
+	denials.RecordDenied()
+	promptCalls := 0
+	var events []ClassifierEvent
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy: ApprovalUnlessTrusted,
+		SandboxPolicy: SandboxDangerFull,
+		Classifier:    classifier,
+		Denials:       denials,
+		ClassifierObserver: func(event ClassifierEvent) {
+			events = append(events, event)
+		},
+	}, func(action tools.Action) (bool, error) {
+		promptCalls++
+		return true, nil
+	}, nil)
+
+	approved, err := gate.Approve(tools.Action{Tool: "run_command", Summary: "go test ./... " + secret, Detail: "TOKEN=" + secret})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !approved || promptCalls != 1 || classifier.calls != 0 {
+		t.Fatalf("approved=%v promptCalls=%d classifierCalls=%d, want denial tracker prompt without classifier", approved, promptCalls, classifier.calls)
+	}
+	assertClassifierObserverEvent(t, events, permissions.ClassifierAsk, "classifier disabled after repeated denials", string(ClassifierFailureAsk), "", secret)
+}
+
 func assertClassifierObserverEvent(t *testing.T, events []ClassifierEvent, decision permissions.ClassifierDecision, reason, fallback, errorText, secret string) {
 	t.Helper()
 	if len(events) != 1 {
@@ -260,6 +292,9 @@ func assertClassifierObserverEvent(t *testing.T, events []ClassifierEvent, decis
 	}
 	if strings.Contains(event.Action.Summary, secret) || strings.Contains(event.Action.Detail, secret) {
 		t.Fatalf("classifier event leaked secret: %#v", event.Action)
+	}
+	if strings.Contains(event.Reason, secret) || strings.Contains(event.Error, secret) {
+		t.Fatalf("classifier event leaked secret in reason or error: %#v", event)
 	}
 	if !strings.Contains(event.Action.Summary, "<REDACTED:github-pat>") || !strings.Contains(event.Action.Detail, "<REDACTED:github-pat>") {
 		t.Fatalf("classifier event action was not redacted: %#v", event.Action)
