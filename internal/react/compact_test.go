@@ -119,11 +119,14 @@ func TestRunnerDispatchesCompactionHookPayloads(t *testing.T) {
 
 	var prePayloads []CompactionHookPayload
 	var postPayloads []CompactionHookPayload
+	var preSnapshots []any
+	var postSnapshots []any
 	r := NewRunner(Config{
 		Driver:  driver,
 		Session: session,
 		ConfigureHooks: func(registry *hooks.Registry) {
 			registry.Register(hooks.PointPreCompact, "capture:pre", func(_ context.Context, event hooks.Event) []hooks.Result {
+				preSnapshots = append(preSnapshots, event.Snapshot)
 				payload, ok := event.Transient.(CompactionHookPayload)
 				if !ok {
 					t.Fatalf("pre_compact payload type = %T, want CompactionHookPayload", event.Transient)
@@ -132,6 +135,7 @@ func TestRunnerDispatchesCompactionHookPayloads(t *testing.T) {
 				panic("pre hook failure should be non-fatal")
 			})
 			registry.Register(hooks.PointPostCompact, "capture:post", func(_ context.Context, event hooks.Event) []hooks.Result {
+				postSnapshots = append(postSnapshots, event.Snapshot)
 				payload, ok := event.Transient.(CompactionHookPayload)
 				if !ok {
 					t.Fatalf("post_compact payload type = %T, want CompactionHookPayload", event.Transient)
@@ -149,6 +153,9 @@ func TestRunnerDispatchesCompactionHookPayloads(t *testing.T) {
 
 	if len(prePayloads) != 1 {
 		t.Fatalf("pre payload count = %d, want 1", len(prePayloads))
+	}
+	if len(preSnapshots) != 1 || preSnapshots[0] != nil {
+		t.Fatalf("pre snapshot = %#v, want nil", preSnapshots)
 	}
 	pre := prePayloads[0]
 	if pre.Mode != CompactionSummarize {
@@ -172,6 +179,9 @@ func TestRunnerDispatchesCompactionHookPayloads(t *testing.T) {
 
 	if len(postPayloads) != 1 {
 		t.Fatalf("post payload count = %d, want 1", len(postPayloads))
+	}
+	if len(postSnapshots) != 1 || postSnapshots[0] != nil {
+		t.Fatalf("post snapshot = %#v, want nil", postSnapshots)
 	}
 	post := postPayloads[0]
 	if post.Mode != CompactionSummarize {

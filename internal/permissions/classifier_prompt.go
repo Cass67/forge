@@ -36,6 +36,7 @@ func BuildClassifierPrompt(req ClassifierRequest) string {
 func redactClassifierRequest(req ClassifierRequest) ClassifierRequest {
 	req.Action.Summary = redactClassifierText(req.Action.Summary)
 	req.Action.Detail = redactClassifierText(req.Action.Detail)
+	req.Action.Path = redactClassifierText(req.Action.Path)
 	req.Transcript = redactClassifierText(req.Transcript)
 	if len(req.Rules) > 0 {
 		rules := append([]Rule(nil), req.Rules...)

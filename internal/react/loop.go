@@ -265,8 +265,7 @@ func (r *Runner) dispatchCompactionHook(ctx context.Context, point hooks.Point, 
 		return
 	}
 	r.hooks.Dispatch(ctx, hooks.Event{
-		Point:    point,
-		Snapshot: snap,
+		Point: point,
 		Transient: CompactionHookPayload{
 			Mode:          decision.Mode,
 			Reason:        decision.Reason,
