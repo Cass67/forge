@@ -284,6 +284,34 @@ func TestResponsesRequestStateUsesFullInputForChatGPTStatelessMode(t *testing.T)
 	}
 }
 
+func TestTrimStatelessConversationPreservesLatestUserRequest(t *testing.T) {
+	msgs := []llm.Message{{Role: llm.RoleSystem, Content: "sys"}}
+	msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: "add /new session option"})
+	for i := 0; i < 20; i++ {
+		msgs = append(msgs, llm.Message{Role: llm.RoleAssistant, Content: strings.Repeat("tool chatter ", 20)})
+	}
+
+	trimmed := trimStatelessConversation(msgs)
+
+	foundRequest := false
+	latestUser := ""
+	for _, msg := range trimmed {
+		if msg.Role != llm.RoleUser {
+			continue
+		}
+		latestUser = msg.Content
+		if msg.Content == "add /new session option" {
+			foundRequest = true
+		}
+	}
+	if !foundRequest {
+		t.Fatalf("trimmed messages lost latest real user request: %#v", trimmed)
+	}
+	if latestUser != "add /new session option" {
+		t.Fatalf("latest user message = %q, want active request", latestUser)
+	}
+}
+
 func TestResponseParamsUseStatelessCodexDefaultsForChatGPT(t *testing.T) {
 	d := &OpenAIDriver{
 		providerLabel:     "chatgpt",

@@ -9,6 +9,7 @@ type StaticInput struct {
 	System         string
 	Responsiveness string
 	Planning       string
+	Delegation     string
 	Validation     string
 	Progress       string
 	Autonomy       string
@@ -91,6 +92,7 @@ func staticSections(in StaticInput) []string {
 		in.System,
 		in.Responsiveness,
 		in.Planning,
+		in.Delegation,
 		in.Validation,
 		in.Progress,
 		in.Autonomy,

@@ -253,6 +253,9 @@ func (r *Runner) ClearHistory() {
 	r.repeatWorkflow = repeatToolCallState{}
 	r.pendingRetryPrompt = ""
 	r.session.Clear()
+	if resetter, ok := r.driver.(llm.ConversationResetter); ok {
+		resetter.ResetConversation()
+	}
 }
 
 func (r *Runner) AppendUserMessage(text string) {

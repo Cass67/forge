@@ -21,6 +21,55 @@ func TestRenderMessageContentRendersFencedCodeBlocks(t *testing.T) {
 	}
 }
 
+func TestRenderMessageContentDoesNotInsertBlankRowsInsideFencedCodeBlock(t *testing.T) {
+	theme := lookupThemeForTest(t, "default")
+	content := "```go\nfirst()\nsecond()\n```"
+
+	got := strippedLine(renderMessageContent(content, 80, theme))
+	lines := strings.Split(got, "\n")
+	firstLine, secondLine := -1, -1
+	for i, line := range lines {
+		if strings.Contains(line, "first()") {
+			firstLine = i
+		}
+		if strings.Contains(line, "second()") {
+			secondLine = i
+		}
+	}
+
+	if firstLine < 0 || secondLine < 0 {
+		t.Fatalf("expected both code lines, got:\n%s", got)
+	}
+	if secondLine != firstLine+1 {
+		t.Fatalf("unexpected blank visual row between code lines:\n%s", got)
+	}
+	for i := firstLine + 1; i < secondLine; i++ {
+		if strings.TrimSpace(lines[i]) == "" {
+			t.Fatalf("unexpected blank visual row between code lines:\n%s", got)
+		}
+	}
+}
+
+func TestRenderMessageContentDoesNotInsertBlankSeparatorsAdjacentToCodeBlocks(t *testing.T) {
+	theme := lookupThemeForTest(t, "default")
+	content := strings.Join([]string{
+		"Before",
+		"```go",
+		"fmt.Println(\"hi\")",
+		"```",
+		"After",
+	}, "\n")
+
+	got := strippedLine(renderMessageContent(content, 80, theme))
+
+	if strings.Contains(got, "Before\n\nGO") {
+		t.Fatalf("unexpected blank separator before code block:\n%s", got)
+	}
+	if strings.Contains(got, "fmt.Println(\"hi\")\n\nAfter") {
+		t.Fatalf("unexpected blank separator after code block:\n%s", got)
+	}
+}
+
 func TestRenderMessageContentRendersDiffBlocks(t *testing.T) {
 	theme := lookupThemeForTest(t, "default")
 	got := renderMessageContent("```diff\n+ added line\n- removed line\n```", 60, theme)

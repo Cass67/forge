@@ -1101,7 +1101,8 @@ func TestChatModelStructuredSubAgentEnvelopeDoesNotLeakIntoChat(t *testing.T) {
 }
 
 func TestChatModelSlashClear(t *testing.T) {
-	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	clearCalls := 0
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp", ClearHistory: func() { clearCalls++ }})
 	m.width = 80
 	m.height = 24
 	m.AddMessage(ChatMessage{Kind: MsgUser, Header: "You", Content: "hello"})
@@ -1114,6 +1115,45 @@ func TestChatModelSlashClear(t *testing.T) {
 
 	if len(m.messages) != 0 {
 		t.Fatalf("expected 0 messages after /clear, got %d", len(m.messages))
+	}
+	if clearCalls != 1 {
+		t.Fatalf("ClearHistory calls = %d, want 1", clearCalls)
+	}
+}
+
+func TestChatModelSlashNewStartsCleanSession(t *testing.T) {
+	clearCalls := 0
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp", ClearHistory: func() { clearCalls++ }})
+	m.width = 80
+	m.height = 24
+	m.AddMessage(ChatMessage{Kind: MsgUser, Header: "You", Content: "hello"})
+	setToolsContent(&m, "tool output")
+
+	m.inputBuf = "/new"
+	m.inputPos = len(m.inputBuf)
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+
+	if len(m.messages) != 0 {
+		t.Fatalf("expected 0 messages after /new, got %d", len(m.messages))
+	}
+	if m.renderedToolsBuf() != "" {
+		t.Fatalf("tools = %q, want empty after /new", m.renderedToolsBuf())
+	}
+	if clearCalls != 1 {
+		t.Fatalf("ClearHistory calls = %d, want 1", clearCalls)
+	}
+	if m.flash != "new session started" {
+		t.Fatalf("flash = %q", m.flash)
+	}
+}
+
+func TestChatModelHelpMentionsNewSessionCommand(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.helpTab = 1
+
+	if !strings.Contains(strings.Join(m.helpLines(), "\n"), "/new") {
+		t.Fatalf("help lines missing /new: %#v", m.helpLines())
 	}
 }
 
