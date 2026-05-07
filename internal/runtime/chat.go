@@ -762,23 +762,43 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 	if reg == nil || setup == nil || baseReg == nil {
 		return
 	}
-	pool := reactruntime.NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+	var pool *reactruntime.AgentPool
+	pool = reactruntime.NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
 		driver := setup.Driver
-		if driver == nil && setup.MakeDriver != nil && strings.TrimSpace(setup.ChatModel) != "" {
-			driver = setup.MakeDriver(setup.ChatModel)
+		model := setup.ChatModel
+		var systemPrompt func() string
+
+		if agent, ok := pool.GetAgent(role); ok && agent != nil {
+			if agent.SystemPrompt != "" {
+				systemPrompt = func() string {
+					p := agent.SystemPrompt + "\n\nCurrent project: " + setup.WorkDir
+					return p
+				}
+			}
+			if agent.Model != "" {
+				model = agent.Model
+			}
+		}
+		if driver == nil || model != setup.ChatModel {
+			if setup.MakeDriver != nil && strings.TrimSpace(model) != "" {
+				driver = setup.MakeDriver(model)
+			}
 		}
 		if driver == nil {
 			return "", fmt.Errorf("react delegation driver unavailable")
 		}
+		if systemPrompt == nil {
+			systemPrompt = func() string {
+				return agent.BuildNativeSystemPromptForMode(setup.WorkDir, "", false)
+			}
+		}
 		role = reactruntime.MapSpawnRole(role)
 		childTools := baseReg.Filter(nil)
 		childRunner := reactruntime.NewRunner(reactruntime.Config{
-			Driver:   driver,
-			Tools:    childTools,
-			Renderer: agent.NewSilentRenderer(nil),
-			SystemPrompt: func() string {
-				return agent.BuildNativeSystemPromptForMode(setup.WorkDir, "", false)
-			},
+			Driver:                driver,
+			Tools:                 childTools,
+			Renderer:              agent.NewSilentRenderer(nil),
+			SystemPrompt:          systemPrompt,
 			Session:               reactruntime.NewSession(),
 			CompactionMaxFailures: setup.Config.Resilience.CompactionMaxFailures,
 			Interactive:           false,
