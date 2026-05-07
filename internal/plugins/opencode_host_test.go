@@ -185,3 +185,57 @@ export default {
 		t.Fatalf("block = %#v", output[0])
 	}
 }
+
+func TestOpenCodeHostProvidesMetadataFunction(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is required for OpenCode host compatibility test")
+	}
+	dir := t.TempDir()
+	pluginPath := filepath.Join(dir, "metadata-plugin.mjs")
+	if err := os.WriteFile(pluginPath, []byte(`
+export default {
+  server: async () => ({
+    tool: {
+      task: {
+        description: "Call metadata like oh-my-openagent task tools",
+        args: { description: { type: "string", description: "Task title" } },
+        execute: async (args, ctx) => {
+          await ctx.metadata?.({ title: args.description || "task" })
+          return "metadata ok"
+        },
+      },
+    },
+  }),
+}
+`), 0o600); err != nil {
+		t.Fatalf("write plugin: %v", err)
+	}
+	hostPath := filepath.Join(dir, OpenCodeHostFileName)
+	if err := WriteOpenCodeHost(hostPath); err != nil {
+		t.Fatalf("write host: %v", err)
+	}
+
+	m := NewManager(dir, []config.PluginConfig{{
+		ID:               "oc",
+		Kind:             "opencode",
+		Source:           pluginPath,
+		Command:          []string{"node", hostPath, "--module", pluginPath},
+		AutoApproveTools: []string{"task"},
+		StartupTimeoutMS: 1000,
+		RequestTimeoutMS: 1000,
+	}})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := m.Start(ctx); err != nil {
+		t.Fatalf("start opencode host: %v", err)
+	}
+	defer func() { _ = m.Close() }()
+
+	result, err := m.CallTool(context.Background(), "oc", "task", map[string]any{"description": "audit repo"})
+	if err != nil {
+		t.Fatalf("call opencode tool: %v", err)
+	}
+	if result != "metadata ok" {
+		t.Fatalf("result = %q", result)
+	}
+}

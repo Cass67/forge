@@ -1697,6 +1697,14 @@ func containsString(values []string, want string) bool {
 	return slices.Contains(values, want)
 }
 
+func toolDefNames(defs []llm.ToolDef) []string {
+	names := make([]string, 0, len(defs))
+	for _, def := range defs {
+		names = append(names, def.Name)
+	}
+	return names
+}
+
 func TestRunnerClearHistoryResetsSessionState(t *testing.T) {
 	r := NewRunner(Config{
 		Driver:       &nativeScriptedDriver{responses: []string{"done"}},
@@ -2056,6 +2064,123 @@ func TestRunnerSelectsPluginToolForPluginOnlyInput(t *testing.T) {
 	defs := r.selectToolDefs(SessionSnapshot{LastInput: "use the demo plugin to search docs"})
 	if len(defs) != 1 || defs[0].Name != "plugin__demo__search_docs" {
 		t.Fatalf("plugin-only input defs = %#v", defs)
+	}
+}
+
+func TestRunnerDelegationIntentRestrictsParentToDelegationTools(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{
+		"read_file",
+		"list_dir",
+		"plugin__oh-my-openagent__skill",
+		"plugin__oh-my-openagent__task",
+		"spawn_agent",
+		"wait_agent",
+	} {
+		toolName := name
+		reg.Register(agenttools.Tool{
+			Name:        toolName,
+			Description: toolName,
+			AutoApprove: true,
+			Execute: func(_ context.Context, _ map[string]any) (string, error) {
+				return "ok", nil
+			},
+		})
+	}
+	r := NewRunner(Config{Tools: reg})
+
+	defs := r.selectToolDefs(SessionSnapshot{LastInput: "ask three agents to review the codebase"})
+	names := toolDefNames(defs)
+
+	for _, want := range []string{"spawn_agent", "wait_agent"} {
+		if !containsString(names, want) {
+			t.Fatalf("delegation tools = %#v, want %s", names, want)
+		}
+	}
+	for _, blocked := range []string{"read_file", "list_dir", "plugin__oh-my-openagent__skill", "plugin__oh-my-openagent__task"} {
+		if containsString(names, blocked) {
+			t.Fatalf("delegation tools = %#v, should not include competing parent tool %s", names, blocked)
+		}
+	}
+}
+
+func TestRunnerBroadRepoAuditRestrictsParentToDelegationTools(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"read_file", "list_dir", "plugin__oh-my-openagent__task", "spawn_agent", "wait_agent"} {
+		toolName := name
+		reg.Register(agenttools.Tool{
+			Name:        toolName,
+			Description: toolName,
+			AutoApprove: true,
+			Execute: func(_ context.Context, _ map[string]any) (string, error) {
+				return "ok", nil
+			},
+		})
+	}
+	r := NewRunner(Config{Tools: reg})
+
+	defs := r.selectToolDefs(SessionSnapshot{LastInput: "audit this repo and tell me where we fall down compared to the tui big hitters out there, codex, claude, opencode, github copilot."})
+	names := toolDefNames(defs)
+
+	for _, want := range []string{"spawn_agent", "wait_agent"} {
+		if !containsString(names, want) {
+			t.Fatalf("audit tools = %#v, want %s", names, want)
+		}
+	}
+	for _, blocked := range []string{"read_file", "list_dir", "plugin__oh-my-openagent__task"} {
+		if containsString(names, blocked) {
+			t.Fatalf("audit tools = %#v, should not include competing parent tool %s", names, blocked)
+		}
+	}
+}
+
+func TestRunnerRequiresToolCallBeforeDelegationCompletes(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{{{Text: "Which agents should I ask?"}}}}
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"spawn_agent", "wait_agent"} {
+		toolName := name
+		reg.Register(agenttools.Tool{
+			Name:        toolName,
+			Description: toolName,
+			AutoApprove: true,
+			Execute: func(_ context.Context, _ map[string]any) (string, error) {
+				return "ok", nil
+			},
+		})
+	}
+	r := NewRunner(Config{
+		Driver:  driver,
+		Tools:   reg,
+		Session: NewSession(),
+	})
+
+	if err := r.Run(context.Background(), "ask three agents to review the codebase"); err != nil {
+		t.Fatal(err)
+	}
+	if len(driver.lastOpts) == 0 {
+		t.Fatal("expected native tool options to be passed")
+	}
+	if !driver.lastOpts[0].RequireToolCall {
+		t.Fatalf("RequireToolCall = false, want true for delegation intent")
+	}
+}
+
+func TestRunnerStopsForcingToolsAfterDelegatedWait(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"spawn_agent", "wait_agent"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{
+		LastInput: "ask three agents to review the codebase",
+		History: []llm.Message{
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "wait-1", Content: `{"status":"completed"}`},
+		},
+	}
+
+	if defs := r.selectToolDefs(snap); len(defs) != 0 {
+		t.Fatalf("delegation should stop exposing tools after wait_agent result, got %#v", defs)
 	}
 }
 

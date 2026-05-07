@@ -281,7 +281,7 @@ async function callTool(name, inputArgs) {
   const output = await definition.execute(inputArgs, {
     sessionID: "forge-session",
     callID: "forge-call",
-    metadata: {},
+    metadata: async () => true,
     ask: async (permission) => {
       if (permission && typeof permission === "object") {
         process.stderr.write("[plugin ask] " + (permission.permission || "permission") + " " + JSON.stringify(permission.patterns || []) + "\n");
