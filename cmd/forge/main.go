@@ -88,6 +88,12 @@ func main() {
 				runPlugin(args)
 			},
 		},
+		"plugins": {
+			Name: "plugins",
+			Run: func(args []string) {
+				runPlugin(args)
+			},
+		},
 		"improve": {Name: "improve", Run: func(args []string) {
 			runImproveArgsFn("improve", args)
 		}},
@@ -156,7 +162,7 @@ func runMCP(args []string) {
 
 func runPlugin(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: forge plugin [install|list|remove]")
+		fmt.Fprintln(os.Stderr, "usage: forge plugin [install|list|validate|remove]")
 		os.Exit(1)
 	}
 	switch args[0] {
@@ -164,12 +170,23 @@ func runPlugin(args []string) {
 		runPluginInstall(args[1:])
 	case "list", "ls":
 		runPluginList()
+	case "validate":
+		runPluginValidate(cli.RequireArg(args[1:], "usage: forge plugin validate <path>"))
 	case "remove", "rm":
 		runPluginRemove(cli.RequireArg(args[1:], "usage: forge plugin remove <id>"))
 	default:
-		fmt.Fprintln(os.Stderr, "usage: forge plugin [install|list|remove]")
+		fmt.Fprintln(os.Stderr, "usage: forge plugin [install|list|validate|remove]")
 		os.Exit(1)
 	}
+}
+
+func runPluginValidate(path string) {
+	manifest, err := pluginruntime.LoadManifest(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: plugin manifest invalid: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("valid plugin manifest: %s@%s\n", manifest.Name, manifest.Version)
 }
 
 type stringListFlag []string
@@ -201,6 +218,16 @@ func runPluginInstall(args []string) {
 		os.Exit(1)
 	}
 	source := cli.RequireArg(fs.Args(), "usage: forge plugin install [--id ID] [--module NAME] <npm-package|git-url|local-js-url|local-path>")
+	if _, err := os.Stat(filepath.Join(source, pluginruntime.ManifestFilename)); err == nil && strings.TrimSpace(*moduleFlag) == "" && len(autoApprove) == 0 {
+		store := pluginruntime.NewInstallStore(fsutil.ForgeConfigDir())
+		installed, err := store.InstallLocal(source, pluginruntime.InstallOptions{})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error installing plugin manifest: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Installed local plugin %s@%s.\n", installed.Name, installed.Version)
+		return
+	}
 	kind := strings.ToLower(strings.TrimSpace(*runtimeFlag))
 	if kind == "" {
 		kind = "opencode"
