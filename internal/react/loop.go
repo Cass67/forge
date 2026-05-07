@@ -777,13 +777,22 @@ func (r *Runner) selectToolDefs(snapshot SessionSnapshot) []llm.ToolDef {
 	if r == nil || r.tools == nil {
 		return nil
 	}
+	delegationComplete := false
 	if shouldRouteParentThroughDelegation(snapshot) {
-		if historyIncludesCompletedToolCall(snapshot, "wait_agent") {
+		delegationComplete = historyIncludesCompletedToolCall(snapshot, "wait_agent")
+		if delegationComplete && !inputSuggestsPostDelegationAction(normalizeToolIntentText(snapshot.LastInput)) {
 			return nil
+		}
+		if delegationComplete {
+			goto selectParentTools
 		}
 		return r.tools.Filter(delegateToolNames).ToLLMToolDefs()
 	}
+selectParentTools:
 	allowed := allowedToolNamesForSnapshot(snapshot)
+	if delegationComplete {
+		allowed = withoutToolNames(allowed, delegateToolNames...)
+	}
 	pluginNames := r.pluginToolNames()
 	pluginIntent := inputSuggestsPluginTool(snapshot.LastInput, pluginNames)
 	if len(allowed) == 0 && !pluginIntent {
@@ -792,8 +801,28 @@ func (r *Runner) selectToolDefs(snapshot SessionSnapshot) []llm.ToolDef {
 	if pluginIntent {
 		allowed = append(allowed, pluginNames...)
 	}
-	allowed = append(allowed, delegateToolNames...)
+	if !delegationComplete {
+		allowed = append(allowed, delegateToolNames...)
+	}
 	return r.tools.Filter(allowed).ToLLMToolDefs()
+}
+
+func withoutToolNames(names []string, excluded ...string) []string {
+	if len(names) == 0 || len(excluded) == 0 {
+		return names
+	}
+	exclude := make(map[string]struct{}, len(excluded))
+	for _, name := range excluded {
+		exclude[name] = struct{}{}
+	}
+	out := names[:0]
+	for _, name := range names {
+		if _, ok := exclude[name]; ok {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
 }
 
 func (r *Runner) pluginToolNames() []string {
@@ -1126,6 +1155,16 @@ func inputSuggestsDelegation(text string) bool {
 		"audit this repo", "audit the repo", "audit repository", "audit this codebase", "audit the codebase",
 		"compare this repo", "compare the repo", "fall down compared to",
 	)
+}
+
+func inputSuggestsPostDelegationAction(text string) bool {
+	return inputSuggestsFileWrites(text) ||
+		inputSuggestsCommandWork(text) ||
+		inputSuggestsPreviewWork(text) ||
+		inputSuggestsGitCommit(text) ||
+		inputSuggestsGitPush(text) ||
+		inputSuggestsActionFollowUp(text) ||
+		inputSuggestsBugFixWork(text)
 }
 
 func inputMentionsPathLikeText(text string) bool {
