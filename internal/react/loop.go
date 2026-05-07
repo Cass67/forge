@@ -205,7 +205,7 @@ func (r *Runner) RunWithParts(ctx context.Context, input string, parts []llm.Mes
 	turn := r.session.RecordInputWithParts(prompt, parts)
 	r.pendingRetryPrompt = ""
 	r.syncRuntimeNote()
-	r.applyCompactionDecision(r.compactionManager.Decide(r.session.Snapshot()))
+	r.applyCompactionDecision(ctx, r.compactionManager.Decide(r.session.Snapshot()))
 	if r.driver == nil {
 		err := fmt.Errorf("react runner: driver is nil")
 		r.session.CompleteTurn(turn, "", nil, err)
@@ -218,7 +218,7 @@ func (r *Runner) CompactHistory(keep int) bool {
 	if r == nil || r.compactionManager == nil {
 		return false
 	}
-	return r.compactionManager.Apply(r.session, r.compactionManager.UserPartial(keep))
+	return r.applyCompactionDecision(context.Background(), r.compactionManager.UserPartial(keep))
 }
 
 func (r *Runner) CompactionStatus() string {
@@ -232,11 +232,20 @@ func (r *Runner) CompactionStatus() string {
 	return fmt.Sprintf("%d compacted turns; summary length %d", snap.CompactedTurns, len(snap.CompactionSummary))
 }
 
-func (r *Runner) applyCompactionDecision(decision CompactionDecision) bool {
+func (r *Runner) applyCompactionDecision(ctx context.Context, decision CompactionDecision) bool {
 	if r == nil || r.compactionManager == nil || decision.Mode == CompactionNone {
 		return false
 	}
+	before := SessionSnapshot{}
+	if r.session != nil {
+		before = r.session.Snapshot()
+	}
+	r.dispatchCompactionHook(ctx, hooks.PointPreCompact, decision, before, false, 0)
 	changed := r.compactionManager.Apply(r.session, decision)
+	after := SessionSnapshot{}
+	if r.session != nil {
+		after = r.session.Snapshot()
+	}
 	if changed && r.compactionMaxFailures > 0 {
 		r.compactionFailures++
 	} else if !changed && r.compactionMaxFailures > 0 {
@@ -247,7 +256,37 @@ func (r *Runner) applyCompactionDecision(decision CompactionDecision) bool {
 			r.progress("react runtime: compaction circuit breaker tripped")
 		}
 	}
+	r.dispatchCompactionHook(ctx, hooks.PointPostCompact, decision, after, changed, droppedTurns(before, after))
 	return changed
+}
+
+func (r *Runner) dispatchCompactionHook(ctx context.Context, point hooks.Point, decision CompactionDecision, snap SessionSnapshot, changed bool, dropped int) {
+	if r == nil || r.hooks == nil {
+		return
+	}
+	r.hooks.Dispatch(ctx, hooks.Event{
+		Point:    point,
+		Snapshot: snap,
+		Transient: CompactionHookPayload{
+			Mode:          decision.Mode,
+			Reason:        decision.Reason,
+			KeepTurns:     decision.KeepTurns,
+			DroppedTurns:  dropped,
+			SummaryLength: len(snap.CompactionSummary),
+			Changed:       changed,
+			CircuitOpen:   r.compactionManager.CircuitOpen(),
+		},
+	})
+}
+
+func droppedTurns(before, after SessionSnapshot) int {
+	if dropped := after.CompactedTurns - before.CompactedTurns; dropped > 0 {
+		return dropped
+	}
+	if dropped := len(before.RecentInputs) - len(after.RecentInputs); dropped > 0 {
+		return dropped
+	}
+	return 0
 }
 
 func (r *Runner) SetDriver(driver llm.Driver) {

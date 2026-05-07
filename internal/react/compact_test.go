@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"forge/internal/hooks"
 )
 
 func TestCompactSessionHistoryTrimsOldTurns(t *testing.T) {
@@ -102,5 +104,98 @@ func TestRunnerRunEmitsCompactionProgress(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected compaction progress message, got %#v", progress)
+	}
+}
+
+func TestRunnerDispatchesCompactionHookPayloads(t *testing.T) {
+	driver := &nativeScriptedDriver{responses: []string{"done"}}
+	session := NewSession()
+	for i := 1; i <= 45; i++ {
+		turn := session.RecordInput(fmt.Sprintf("prompt %d", i))
+		session.AppendAssistantMessage(fmt.Sprintf("answer %d", i))
+		session.CompleteTurn(turn, fmt.Sprintf("answer %d", i), nil, nil)
+	}
+	before := session.Snapshot()
+
+	var prePayloads []CompactionHookPayload
+	var postPayloads []CompactionHookPayload
+	r := NewRunner(Config{
+		Driver:  driver,
+		Session: session,
+		ConfigureHooks: func(registry *hooks.Registry) {
+			registry.Register(hooks.PointPreCompact, "capture:pre", func(_ context.Context, event hooks.Event) []hooks.Result {
+				payload, ok := event.Transient.(CompactionHookPayload)
+				if !ok {
+					t.Fatalf("pre_compact payload type = %T, want CompactionHookPayload", event.Transient)
+				}
+				prePayloads = append(prePayloads, payload)
+				panic("pre hook failure should be non-fatal")
+			})
+			registry.Register(hooks.PointPostCompact, "capture:post", func(_ context.Context, event hooks.Event) []hooks.Result {
+				payload, ok := event.Transient.(CompactionHookPayload)
+				if !ok {
+					t.Fatalf("post_compact payload type = %T, want CompactionHookPayload", event.Transient)
+				}
+				postPayloads = append(postPayloads, payload)
+				return nil
+			})
+		},
+	})
+
+	if err := r.Run(context.Background(), "trigger compaction"); err != nil {
+		t.Fatal(err)
+	}
+	after := session.Snapshot()
+
+	if len(prePayloads) != 1 {
+		t.Fatalf("pre payload count = %d, want 1", len(prePayloads))
+	}
+	pre := prePayloads[0]
+	if pre.Mode != CompactionSummarize {
+		t.Fatalf("pre Mode = %q, want %q", pre.Mode, CompactionSummarize)
+	}
+	if pre.Reason != "history pressure" {
+		t.Fatalf("pre Reason = %q, want history pressure", pre.Reason)
+	}
+	if pre.KeepTurns != 40 {
+		t.Fatalf("pre KeepTurns = %d, want 40", pre.KeepTurns)
+	}
+	if pre.SummaryLength != len(before.CompactionSummary) {
+		t.Fatalf("pre SummaryLength = %d, want %d", pre.SummaryLength, len(before.CompactionSummary))
+	}
+	if pre.Changed {
+		t.Fatal("pre Changed = true, want false before compaction")
+	}
+	if pre.CircuitOpen {
+		t.Fatal("pre CircuitOpen = true, want false")
+	}
+
+	if len(postPayloads) != 1 {
+		t.Fatalf("post payload count = %d, want 1", len(postPayloads))
+	}
+	post := postPayloads[0]
+	if post.Mode != CompactionSummarize {
+		t.Fatalf("post Mode = %q, want %q", post.Mode, CompactionSummarize)
+	}
+	if post.Reason != "history pressure" {
+		t.Fatalf("post Reason = %q, want history pressure", post.Reason)
+	}
+	if post.KeepTurns != 40 {
+		t.Fatalf("post KeepTurns = %d, want 40", post.KeepTurns)
+	}
+	if post.DroppedTurns != after.CompactedTurns-before.CompactedTurns {
+		t.Fatalf("post DroppedTurns = %d, want compacted turn delta %d", post.DroppedTurns, after.CompactedTurns-before.CompactedTurns)
+	}
+	if post.DroppedTurns <= 0 {
+		t.Fatalf("post DroppedTurns = %d, want meaningful positive count", post.DroppedTurns)
+	}
+	if post.SummaryLength != len(after.CompactionSummary) {
+		t.Fatalf("post SummaryLength = %d, want %d", post.SummaryLength, len(after.CompactionSummary))
+	}
+	if !post.Changed {
+		t.Fatal("post Changed = false, want true")
+	}
+	if post.CircuitOpen {
+		t.Fatal("post CircuitOpen = true, want false")
 	}
 }
