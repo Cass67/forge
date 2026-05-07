@@ -355,6 +355,7 @@ func (g *ApprovalGate) classifierDecision(evaluationAction, promptAction tools.A
 	if reason == "" {
 		reason = approvalUpdateDetail(evaluationAction)
 	}
+	reason = redactClassifierEventText(reason)
 	switch resp.Decision {
 	case permissions.ClassifierAllow:
 		g.emitClassifierEvent(ClassifierEvent{Action: riskAction, Risk: risk, Decision: resp.Decision, Reason: reason})
