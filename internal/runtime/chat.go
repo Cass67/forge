@@ -348,7 +348,7 @@ func RunChatLive(setup *ChatSetup) {
 		CompactionMaxFailures: setup.Config.Resilience.CompactionMaxFailures,
 		Interactive:           true,
 	})
-	registerReactDelegationTools(reg, setup, baseReg, approve, pluginManager)
+	registerReactDelegationTools(reg, setup, baseReg, approve, evRenderer, pluginManager)
 
 	inputCh := make(chan string, 1)
 	doneCh := make(chan struct{}, 1)
@@ -677,7 +677,7 @@ func RunChatConsole(setup *ChatSetup) {
 		CompactionMaxFailures: setup.Config.Resilience.CompactionMaxFailures,
 		Interactive:           true,
 	})
-	registerReactDelegationTools(reg, setup, baseReg, approve, pluginManager)
+	registerReactDelegationTools(reg, setup, baseReg, approve, nil, pluginManager)
 
 	fmt.Printf("forge (%s) — %s\n", setup.ChatModel, setup.WorkDir)
 	fmt.Println("type your request, or /help for commands")
@@ -758,7 +758,7 @@ func RunChatConsole(setup *ChatSetup) {
 	fmt.Println()
 }
 
-func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg *tools.Registry, _ tools.ApprovalFunc, pluginManager *pluginruntime.Manager) {
+func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg *tools.Registry, _ tools.ApprovalFunc, renderer *agent.EventRenderer, pluginManager *pluginruntime.Manager) {
 	if reg == nil || setup == nil || baseReg == nil {
 		return
 	}
@@ -767,6 +767,7 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 		driver := setup.Driver
 		model := setup.ChatModel
 		var systemPrompt func() string
+		role = reactruntime.MapSpawnRole(role)
 
 		if agent, ok := pool.GetAgent(role); ok && agent != nil {
 			if agent.SystemPrompt != "" {
@@ -792,20 +793,26 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 				return agent.BuildNativeSystemPromptForMode(setup.WorkDir, "", false)
 			}
 		}
-		role = reactruntime.MapSpawnRole(role)
 		childTools := baseReg.Filter(nil)
+		childRenderer := agent.NewSilentRenderer(nil)
+		if renderer != nil {
+			childRenderer = agent.NewSubAgentRenderer(renderer, role)
+		}
+		childRenderer.Info(fmt.Sprintf("[%s] starting", role))
 		childRunner := reactruntime.NewRunner(reactruntime.Config{
 			Driver:                driver,
 			Tools:                 childTools,
-			Renderer:              agent.NewSilentRenderer(nil),
+			Renderer:              childRenderer,
 			SystemPrompt:          systemPrompt,
 			Session:               reactruntime.NewSession(),
 			CompactionMaxFailures: setup.Config.Resilience.CompactionMaxFailures,
 			Interactive:           false,
 		})
 		if err := childRunner.Run(ctx, task); err != nil {
+			childRenderer.Info(fmt.Sprintf("[%s] cancelled", role))
 			return "", err
 		}
+		childRenderer.Info(fmt.Sprintf("[%s] done", role))
 		return childRunner.LastResponse(), nil
 	})
 	if pluginManager != nil {

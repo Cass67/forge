@@ -686,7 +686,7 @@ func TestRunChatTurnCompletesComplexVisiblePreviewTurn(t *testing.T) {
 		SystemPrompt: func() string { return agent.BuildNativeSystemPrompt(workDir) },
 		Session:      reactruntime.NewSession(),
 	})
-	registerReactDelegationTools(reg, &ChatSetup{Config: cfg, WorkDir: workDir, Driver: driver}, baseReg, approve, nil)
+	registerReactDelegationTools(reg, &ChatSetup{Config: cfg, WorkDir: workDir, Driver: driver}, baseReg, approve, nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -741,7 +741,7 @@ func TestRegisterReactDelegationToolsAddsSpawnAndWait(t *testing.T) {
 		MakeDriver: func(name string) llm.Driver { return &kernelMockDriver{response: "ok"} },
 	}
 
-	registerReactDelegationTools(reg, setup, baseReg, approve, nil)
+	registerReactDelegationTools(reg, setup, baseReg, approve, nil, nil)
 	if _, ok := reg.Get("spawn_agent"); !ok {
 		t.Fatal("spawn_agent tool not registered")
 	}
@@ -834,7 +834,7 @@ func TestRegisterReactDelegationToolsDoesNotUseLegacyRoleModelMapping(t *testing
 		},
 	}
 
-	registerReactDelegationTools(reg, setup, baseReg, approve, nil)
+	registerReactDelegationTools(reg, setup, baseReg, approve, nil, nil)
 
 	spawnTool, ok := reg.Get("spawn_agent")
 	if !ok {
@@ -871,6 +871,65 @@ func TestRegisterReactDelegationToolsDoesNotUseLegacyRoleModelMapping(t *testing
 
 	if len(makeDriverCalls) != 0 {
 		t.Fatalf("react delegation should not consult legacy role-model mapping, got makeDriver calls %v", makeDriverCalls)
+	}
+}
+
+func TestRegisterReactDelegationToolsStreamsSubAgentEvents(t *testing.T) {
+	reg := tools.NewRegistry()
+	cfg := &config.Config{}
+	workDir := t.TempDir()
+	approve := agent.YoloApproval()
+	_, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), approve, nil, nil)
+	baseReg := reg.Filter(nil)
+	events := make(chan llm.Event, 16)
+	renderer := agent.NewEventRenderer(events)
+	setup := &ChatSetup{
+		Config:  cfg,
+		WorkDir: workDir,
+		Driver:  &kernelNativeTextDriver{response: "sub-agent result"},
+	}
+
+	registerReactDelegationTools(reg, setup, baseReg, approve, renderer, nil)
+	spawnTool, ok := reg.Get("spawn_agent")
+	if !ok {
+		t.Fatal("spawn_agent tool not registered")
+	}
+	waitTool, ok := reg.Get("wait_agent")
+	if !ok {
+		t.Fatal("wait_agent tool not registered")
+	}
+	rawSpawn, err := spawnTool.Execute(context.Background(), map[string]any{
+		"task_description": "inspect repo",
+		"role":             "code researcher",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spawnPayload map[string]any
+	if err := json.Unmarshal([]byte(rawSpawn), &spawnPayload); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := spawnPayload["id"].(string)
+	if id == "" {
+		t.Fatal("spawn id missing")
+	}
+	waitResult, err := waitTool.Execute(context.Background(), map[string]any{"id": id, "timeout_seconds": 1.0})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	found := false
+	var queued []llm.Event
+	for len(events) > 0 {
+		ev := <-events
+		queued = append(queued, ev)
+		if ev.SubAgent == "code researcher" && ev.Kind == llm.EventToken && strings.Contains(ev.Text, "sub-agent result") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected sub-agent token event, wait result = %s, queued events = %#v", waitResult, queued)
 	}
 }
 
@@ -1147,6 +1206,24 @@ func (d *kernelMockDriver) Stream(_ context.Context, _ []llm.Message, out chan<-
 		d.callIdx++
 		return nil
 	}
+	out <- llm.Token{Text: d.response}
+	return nil
+}
+
+type kernelNativeTextDriver struct {
+	response string
+}
+
+func (d *kernelNativeTextDriver) Name() string { return "kernel-native-text" }
+
+func (d *kernelNativeTextDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	defer close(out)
+	out <- llm.Token{Text: d.response}
+	return nil
+}
+
+func (d *kernelNativeTextDriver) StreamWithTools(_ context.Context, _ []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
+	defer close(out)
 	out <- llm.Token{Text: d.response}
 	return nil
 }

@@ -69,6 +69,16 @@ func progressLine(role, toolName, summary string) string {
 		return "Reading MCP resource content"
 	case "think":
 		return "Reasoning through the next step"
+	case "spawn_agent":
+		if summary == "" {
+			return "Starting a delegated agent"
+		}
+		return fmt.Sprintf("Starting a delegated agent for %q", truncateProgressSummary(summary))
+	case "wait_agent":
+		if summary == "" {
+			return "Waiting for the delegated agent to finish"
+		}
+		return fmt.Sprintf("Waiting for delegated agent %s", truncateProgressSummary(summary))
 	case "delegate":
 		return delegateProgressLine(summary)
 	default:
@@ -77,6 +87,14 @@ func progressLine(role, toolName, summary string) string {
 		}
 		return ""
 	}
+}
+
+func truncateProgressSummary(summary string) string {
+	summary = strings.TrimSpace(summary)
+	if len(summary) <= 60 {
+		return summary
+	}
+	return summary[:60] + "..."
 }
 
 func readFileProgressLine(summary string) string {

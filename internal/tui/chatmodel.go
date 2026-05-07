@@ -212,12 +212,13 @@ type ChatModel struct {
 	debugEnabled    bool
 	traceVisible    bool
 
-	toolsSections   []toolsSection
-	toolsVisible    bool
-	toolsWasShowing bool
-	lastToolResult  string
-	lastCodeBlock   string
-	lastToolSummary map[string]string
+	toolsSections          []toolsSection
+	toolsVisible           bool
+	toolsWasShowing        bool
+	agentPanelHiddenByUser bool
+	lastToolResult         string
+	lastCodeBlock          string
+	lastToolSummary        map[string]string
 
 	busy                   bool
 	viewportDirty          bool
@@ -939,7 +940,33 @@ func (m *ChatModel) resizeChatViewport() {
 }
 
 func (m ChatModel) chatPaneWidth() int {
+	if m.hasAgentWorkPane() && m.width >= 90 {
+		return max(40, m.width-m.toolsPaneWidth())
+	}
 	return m.width
+}
+
+func (m ChatModel) toolsPaneWidth() int {
+	if !m.hasAgentWorkPane() || m.width < 90 {
+		return 0
+	}
+	return clamp(m.width/3, 34, max(34, m.width-40))
+}
+
+func (m ChatModel) hasAgentWorkPane() bool {
+	return m.toolsVisible && m.hasAgentWorkPaneContent()
+}
+
+func (m ChatModel) hasAgentWorkPaneContent() bool {
+	for _, sec := range m.toolsSections {
+		if strings.TrimSpace(sec.role) == "" {
+			continue
+		}
+		if strings.TrimSpace(sec.buf) != "" || strings.TrimSpace(sec.summary) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (m ChatModel) chatContentWidth() int {
@@ -968,7 +995,7 @@ func (m ChatModel) mouseContext() chatLayoutMouseContext {
 		chatH:  chatH,
 		inputY: headerH + chatHeaderGapHeight + chatH + m.debugDockHeight() + m.composerGapHeight(),
 	}
-	if m.toolsVisible {
+	if m.hasAgentWorkPane() {
 		ctx.toolsX = chatPaneWidth
 		ctx.toolsY = headerH + chatHeaderGapHeight
 		ctx.toolsW = max(0, m.width-chatPaneWidth)
@@ -1002,12 +1029,28 @@ func (m ChatModel) renderedToolsBuf() string {
 	return sb.String()
 }
 
+func (m ChatModel) renderedAgentWorkBuf() string {
+	var sb strings.Builder
+	for _, sec := range m.toolsSections {
+		if strings.TrimSpace(sec.role) == "" {
+			continue
+		}
+		if sec.collapsed && sec.summary != "" {
+			sb.WriteString(sec.summary)
+			sb.WriteByte('\n')
+		} else {
+			sb.WriteString(sec.buf)
+		}
+	}
+	return sb.String()
+}
+
 func (m *ChatModel) clearToolsSections() {
 	m.toolsSections = nil
 }
 
 func (m ChatModel) toolsWrappedLines() []string {
-	rendered := m.renderedToolsBuf()
+	rendered := m.renderedAgentWorkBuf()
 	if strings.TrimSpace(rendered) == "" {
 		return nil
 	}
@@ -1016,6 +1059,42 @@ func (m ChatModel) toolsWrappedLines() []string {
 	toolsContentWidth := max(1, toolsInnerWidth-1)
 	wrappedTools := lipgloss.NewStyle().Width(toolsContentWidth).Render(rendered)
 	return strings.Split(wrappedTools, "\n")
+}
+
+func (m ChatModel) renderToolsPane(theme chatTheme, height int) string {
+	width := m.toolsPaneWidth()
+	if width <= 0 {
+		return ""
+	}
+	lines := m.toolsWrappedLines()
+	if len(lines) == 0 {
+		return ""
+	}
+	visible := max(1, height-2)
+	offset := clamp(m.toolsScroll, 0, max(0, len(lines)-visible))
+	end := min(len(lines), offset+visible)
+	bodyLines := append([]string(nil), lines[offset:end]...)
+	for len(bodyLines) < visible {
+		bodyLines = append(bodyLines, "")
+	}
+	contentWidth := max(1, width-3)
+	scrollbar := scrollbarColumn(len(lines), visible, offset, visible)
+	body := joinWithScrollbar(bodyLines, scrollbar, contentWidth, visible)
+	title := " Agent work "
+	if role := strings.TrimSpace(m.activeSubAgent); role != "" {
+		title = " " + displayAgentLabel(role) + " "
+	}
+	return lipgloss.NewStyle().
+		Foreground(theme.Text).
+		BorderLeft(true).
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(theme.Border).
+		Width(width).
+		Height(height).
+		Render(lipgloss.JoinVertical(lipgloss.Left,
+			lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true).Width(max(1, width-1)).Render(fitCell(title, max(1, width-1))),
+			body,
+		))
 }
 
 func (m ChatModel) toolsMaxScroll() int {
@@ -1695,6 +1774,12 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 func (m ChatModel) handleSubAgentEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 	label := ev.SubAgent
 	m.activeSubAgent = label
+	if strings.TrimSpace(label) != "" && !m.toolsVisible && !m.agentPanelHiddenByUser {
+		m.toolsVisible = true
+		m.toolsWasShowing = true
+		m.resizeChatViewport()
+		m.viewportDirty = true
+	}
 
 	// Detect start/done/cancelled lifecycle messages from the sub-agent renderer.
 	if ev.Kind == llm.EventToolCall && ev.Agent == "runtime" {
@@ -1758,6 +1843,10 @@ func (m ChatModel) handleSubAgentEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 			m.appendTools(label, fmt.Sprintf("  │   ✗ %s\n", truncate(ev.Text, 200)))
 		} else {
 			m.appendTools(label, fmt.Sprintf("  │   ✓ %s\n", truncate(ev.Text, 200)))
+		}
+	case llm.EventProgress:
+		if line := strings.TrimSpace(ev.Text); line != "" {
+			m.UpdateRecentActivity(label, line)
 		}
 	case llm.EventStats:
 		sec := m.currentToolsSection(label)
@@ -2470,6 +2559,7 @@ var builtinCommands = []string{
 	"/clear", "/clear all", "/clear agent", "/clear tools",
 	"/help", "/stats", "/trace",
 	"/theme", "/theme low", "/theme default", "/theme light", "/theme dusk", "/theme midnight-ink", "/theme eclipse",
+	"/panel", "/panel on", "/panel off", "/toggle panel",
 	"/tools", "/toggle tools", "/toggle tools on", "/toggle tools off",
 	"/models", "/model", "/provider",
 	"/skills", "/auto-skills", "/sessions", "/save", "/restore",
@@ -2588,6 +2678,39 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		} else {
 			m.flash = fmt.Sprintf("session restored: %s", name)
 		}
+	case input == "/panel" || input == "/toggle panel":
+		m.agentPanelHiddenByUser = false
+		if m.hasAgentWorkPaneContent() {
+			m.toolsVisible = !m.toolsVisible
+			if m.toolsVisible {
+				m.flash = "panel opened"
+			} else {
+				m.agentPanelHiddenByUser = true
+				m.flash = "panel closed"
+			}
+		} else {
+			m.toolsVisible = false
+			m.flash = "panel will open when agent work starts"
+		}
+		m.resizeChatViewport()
+		m.viewportDirty = true
+	case input == "/panel on":
+		m.agentPanelHiddenByUser = false
+		if m.hasAgentWorkPaneContent() {
+			m.toolsVisible = true
+			m.flash = "panel opened"
+		} else {
+			m.toolsVisible = false
+			m.flash = "panel will open when agent work starts"
+		}
+		m.resizeChatViewport()
+		m.viewportDirty = true
+	case input == "/panel off":
+		m.toolsVisible = false
+		m.agentPanelHiddenByUser = true
+		m.flash = "panel closed"
+		m.resizeChatViewport()
+		m.viewportDirty = true
 	case input == "/tools" || input == "/toggle tools":
 		m.toolsVisible = false
 		m.flash = "tools pane removed"
@@ -4693,9 +4816,12 @@ func (m ChatModel) View() string {
 	chatBody := joinWithScrollbar(chatLines, chatScrollbar, chatContentWidth, chatBodyHeight)
 	chatPane := lipgloss.NewStyle().
 		Foreground(theme.Text).
-		Width(m.width).
+		Width(m.chatPaneWidth()).
 		Height(chatBodyHeight).
 		Render(chatBody)
+	if toolsPane := m.renderToolsPane(theme, chatBodyHeight); toolsPane != "" {
+		chatPane = lipgloss.JoinHorizontal(lipgloss.Top, chatPane, toolsPane)
+	}
 	debugDock := ""
 	if m.debugSurfaceActive() {
 		debugDock = m.renderTraceDock(theme)
