@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,6 +29,7 @@ import (
 	"forge/internal/mcp"
 	"forge/internal/memory"
 	"forge/internal/modelcatalog"
+	"forge/internal/permissions"
 	pluginruntime "forge/internal/plugins"
 	reactruntime "forge/internal/react"
 	reacttools "forge/internal/react/tools"
@@ -43,6 +45,37 @@ var (
 	runChatLiveUI     = tui.RunChatLive
 	newChatMCPManager = func() *mcp.Manager { return mcp.NewManager() }
 )
+
+func loadChatApprovalConfig(setup *ChatSetup) reactruntime.ApprovalConfig {
+	if setup == nil || setup.Config == nil {
+		return reactruntime.LoadApprovalConfig(nil)
+	}
+	cfg := reactruntime.LoadApprovalConfig(setup.Config)
+	if !setup.Config.Permissions.Auto.Enabled {
+		return cfg
+	}
+	model := strings.TrimSpace(setup.Config.Permissions.Auto.Model)
+	if model == "" {
+		model = strings.TrimSpace(setup.Config.Models.Auditor)
+	}
+	if model == "" {
+		model = strings.TrimSpace(setup.Config.Models.Summarizer)
+	}
+	if model == "" {
+		model = strings.TrimSpace(setup.ChatModel)
+	}
+	if model == "" || setup.MakeDriver == nil {
+		return cfg
+	}
+	driver := setup.MakeDriver(model)
+	if driver == nil {
+		return cfg
+	}
+	cfg.Classifier = newLLMPermissionClassifier(driver, 5*time.Second)
+	cfg.Denials = permissions.NewDenialTracker(setup.Config.Permissions.Auto.MaxConsecutiveDenials, setup.Config.Permissions.Auto.MaxTotalDenials)
+	cfg.ClassifierFailureBehavior = reactruntime.ClassifierFailureBehavior(setup.Config.Permissions.Auto.FailureBehavior)
+	return cfg
+}
 
 type chatRuntimeMode string
 
@@ -188,10 +221,16 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 		})
 	}
 	_ = mcpManager.Refresh(context.Background(), cfg)
-	reg.Register(tools.NewReadFile(workDir))
-	reg.Register(tools.NewWriteFile(workDir, approve))
-	reg.Register(tools.NewEditFile(workDir, approve))
-	reg.Register(tools.NewApplyPatch(workDir, approve))
+	secretPolicy := tools.SecretPolicy{
+		Read:           tools.SecretPolicyMode(cfg.Security.Secrets.Read),
+		Write:          tools.SecretPolicyMode(cfg.Security.Secrets.Write),
+		CommandOutput:  tools.SecretPolicyMode(cfg.Security.Secrets.CommandOutput),
+		ApprovalDetail: tools.SecretPolicyMode(cfg.Security.Secrets.ApprovalDetail),
+	}
+	reg.Register(tools.NewReadFile(workDir, secretPolicy))
+	reg.Register(tools.NewWriteFile(workDir, approve, secretPolicy))
+	reg.Register(tools.NewEditFile(workDir, approve, secretPolicy))
+	reg.Register(tools.NewApplyPatch(workDir, approve, secretPolicy))
 	reg.Register(tools.NewArtifactWrite(previewRuntime))
 	reg.Register(tools.NewArtifactRead(previewRuntime))
 	reg.Register(tools.NewPreviewServerEnsure(previewRuntime))
@@ -203,7 +242,7 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 	reg.Register(tools.NewLSPReferences(workDir))
 	reg.Register(tools.NewLSPHover(workDir))
 	reg.Register(tools.NewLSPDocumentSymbols(workDir))
-	reg.Register(tools.NewRunCommand(workDir, cfg.Chat.CommandTimeout, execManager, approve, fp))
+	reg.Register(tools.NewRunCommandWithSecretPolicy(workDir, cfg.Chat.CommandTimeout, execManager, approve, secretPolicy, fp))
 	reg.Register(tools.NewExecSessionStart(workDir, execManager, approve))
 	reg.Register(tools.NewExecSessionStatus(execManager))
 	reg.Register(tools.NewExecSessionWrite(execManager))
@@ -276,7 +315,7 @@ func RunChatLive(setup *ChatSetup) {
 	session := reactruntime.NewSession()
 
 	var approve tools.ApprovalFunc
-	gate := reactruntime.NewApprovalGate(setup.WorkDir, reactruntime.LoadApprovalConfig(setup.Config), nil, func(text string) {
+	gate := reactruntime.NewApprovalGate(setup.WorkDir, loadChatApprovalConfig(setup), nil, func(text string) {
 		evRenderer.Info(text)
 	})
 	gate.SetGuardianReviewer(func(transcript string, action tools.Action) tools.GuardianReview {
@@ -605,7 +644,7 @@ func RunChatConsole(setup *ChatSetup) {
 	} else {
 		approve = agent.InteractiveApproval(os.Stdin, os.Stdout)
 	}
-	gate := reactruntime.NewApprovalGate(setup.WorkDir, reactruntime.LoadApprovalConfig(setup.Config), approve, func(text string) {
+	gate := reactruntime.NewApprovalGate(setup.WorkDir, loadChatApprovalConfig(setup), approve, func(text string) {
 		_, _ = fmt.Fprintln(os.Stdout, text)
 	})
 	gate.SetGuardianReviewer(func(transcript string, action tools.Action) tools.GuardianReview {
@@ -1240,6 +1279,8 @@ type chatSessionControl interface {
 	AppendUserMessage(string)
 	EmitResponse(string)
 	SetTaskState(reactruntime.TaskState)
+	CompactHistory(keep int) bool
+	CompactionStatus() string
 }
 
 func handleChatSlashCommand(input string, renderer *agent.Renderer, loadedSkills []skills.Skill, state *chatstate.State, session chatSessionControl, setup *ChatSetup) bool {
@@ -1304,6 +1345,35 @@ func handleChatSlashCommand(input string, renderer *agent.Renderer, loadedSkills
 			renderer.Info("new session started")
 		} else {
 			renderer.Info("conversation history cleared")
+		}
+	case input == "/compact" || strings.HasPrefix(input, "/compact "):
+		if session == nil {
+			renderer.Error("compact unavailable")
+			return true
+		}
+		arg := strings.TrimSpace(strings.TrimPrefix(input, "/compact"))
+		switch {
+		case arg == "":
+			if session.CompactHistory(1) {
+				renderer.Info("compacted conversation history")
+			} else {
+				renderer.Info("conversation history already compact")
+			}
+		case arg == "status":
+			renderer.Info(session.CompactionStatus())
+		case strings.HasPrefix(arg, "recent "):
+			keep, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(arg, "recent ")))
+			if err != nil || keep < 1 {
+				renderer.Error("usage: /compact recent N")
+				return true
+			}
+			if session.CompactHistory(keep) {
+				renderer.Info(fmt.Sprintf("compacted conversation history; preserved recent %d turns", keep))
+			} else {
+				renderer.Info("conversation history already compact")
+			}
+		default:
+			renderer.Error("usage: /compact, /compact recent N, or /compact status")
 		}
 	case input == "/skills":
 		if len(loadedSkills) == 0 {
@@ -1412,6 +1482,9 @@ func PrintChatHelp() {
 	fmt.Println("    /models         show available models")
 	fmt.Println("    /new            start a clean session")
 	fmt.Println("    /clear          clear conversation history")
+	fmt.Println("    /compact        compact conversation history")
+	fmt.Println("    /compact recent N  compact while preserving recent N turns")
+	fmt.Println("    /compact status show compaction status")
 	fmt.Println("    /trace          open debug trace overlay (requires forge -d)")
 	fmt.Println("    /skills         list available skills and how to activate them")
 	fmt.Println("    /<skill>        activate a loaded skill by name from /skills")

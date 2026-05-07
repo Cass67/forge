@@ -284,6 +284,82 @@ func TestHandleChatSlashCommandModelAlsoUpdatesReactSessionDriver(t *testing.T) 
 	}
 }
 
+func TestLoadChatApprovalConfigWiresAutoClassifier(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Permissions.Auto.Enabled = true
+	cfg.Permissions.Auto.Model = "classifier-model"
+	cfg.Permissions.Auto.MaxConsecutiveDenials = 2
+	cfg.Permissions.Auto.MaxTotalDenials = 10
+	cfg.Permissions.Auto.FailureBehavior = "deny"
+	requested := ""
+	setup := &ChatSetup{
+		Config: cfg,
+		MakeDriver: func(name string) llm.Driver {
+			requested = name
+			return &kernelMockDriver{response: `{"decision":"allow","reason":"safe"}`}
+		},
+	}
+
+	approvalCfg := loadChatApprovalConfig(setup)
+	if requested != "classifier-model" {
+		t.Fatalf("requested model = %q", requested)
+	}
+	if approvalCfg.Classifier == nil {
+		t.Fatal("expected classifier")
+	}
+	if approvalCfg.Denials == nil {
+		t.Fatal("expected denial tracker")
+	}
+	if approvalCfg.ClassifierFailureBehavior != reactruntime.ClassifierFailureDeny {
+		t.Fatalf("failure behavior = %q", approvalCfg.ClassifierFailureBehavior)
+	}
+}
+
+func TestHandleChatSlashCommandCompact(t *testing.T) {
+	var buf bytes.Buffer
+	renderer := agent.NewRenderer(&buf, 80, false)
+	session := &stubChatSessionControl{compactChanged: true}
+
+	if handled := handleChatSlashCommand("/compact", renderer, nil, nil, session, &ChatSetup{}); !handled {
+		t.Fatal("expected slash command to be handled")
+	}
+	if session.compactKeep != 1 {
+		t.Fatalf("compact keep = %d, want 1", session.compactKeep)
+	}
+	if !strings.Contains(buf.String(), "compacted conversation history") {
+		t.Fatalf("expected compact message, got %q", buf.String())
+	}
+}
+
+func TestHandleChatSlashCommandCompactRecent(t *testing.T) {
+	var buf bytes.Buffer
+	renderer := agent.NewRenderer(&buf, 80, false)
+	session := &stubChatSessionControl{compactChanged: true}
+
+	if handled := handleChatSlashCommand("/compact recent 20", renderer, nil, nil, session, &ChatSetup{}); !handled {
+		t.Fatal("expected slash command to be handled")
+	}
+	if session.compactKeep != 20 {
+		t.Fatalf("compact keep = %d, want 20", session.compactKeep)
+	}
+	if !strings.Contains(buf.String(), "preserved recent 20 turns") {
+		t.Fatalf("expected compact recent message, got %q", buf.String())
+	}
+}
+
+func TestHandleChatSlashCommandCompactStatus(t *testing.T) {
+	var buf bytes.Buffer
+	renderer := agent.NewRenderer(&buf, 80, false)
+	session := &stubChatSessionControl{compactStatus: "3 compacted turns; summary length 12"}
+
+	if handled := handleChatSlashCommand("/compact status", renderer, nil, nil, session, &ChatSetup{}); !handled {
+		t.Fatal("expected slash command to be handled")
+	}
+	if !strings.Contains(buf.String(), "3 compacted turns") {
+		t.Fatalf("expected compact status, got %q", buf.String())
+	}
+}
+
 func TestHandleChatSlashCommandActivatesSkillInReactSession(t *testing.T) {
 	var buf bytes.Buffer
 	renderer := agent.NewRenderer(&buf, 80, false)
@@ -1190,6 +1266,10 @@ type stubChatTurnRunner struct {
 	parts        []llm.MessageContentPart
 }
 
+func (s *stubChatTurnRunner) CompactHistory(int) bool { return false }
+
+func (s *stubChatTurnRunner) CompactionStatus() string { return "no compacted turns" }
+
 func (s *stubChatTurnRunner) Run(_ context.Context, input string) error {
 	s.calls++
 	s.input = input
@@ -1243,6 +1323,9 @@ type stubChatSessionControl struct {
 	lastUserMessage string
 	lastResponse    string
 	taskState       *reactruntime.TaskState
+	compactKeep     int
+	compactChanged  bool
+	compactStatus   string
 }
 
 func (s *stubChatSessionControl) SetDriver(driver llm.Driver) {
@@ -1267,6 +1350,15 @@ func (s *stubChatSessionControl) SetTaskState(state reactruntime.TaskState) {
 		return
 	}
 	s.taskState = &state
+}
+
+func (s *stubChatSessionControl) CompactHistory(keep int) bool {
+	s.compactKeep = keep
+	return s.compactChanged
+}
+
+func (s *stubChatSessionControl) CompactionStatus() string {
+	return s.compactStatus
 }
 
 type kernelMockDriver struct {

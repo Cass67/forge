@@ -37,6 +37,7 @@ type Runner struct {
 	session               *Session
 	hooks                 *hooks.Registry
 	progress              func(string)
+	compactionManager     *CompactionManager
 	compactionFailures    int
 	compactionMaxFailures int
 	maxSteps              int
@@ -162,13 +163,18 @@ func NewRunner(cfg Config) *Runner {
 		cfg.ConfigureHooks(hookRegistry)
 	}
 	runner := &Runner{
-		driver:                cfg.Driver,
-		tools:                 reg,
-		renderer:              cfg.Renderer,
-		systemPrompt:          cfg.SystemPrompt,
-		session:               session,
-		hooks:                 hookRegistry,
-		progress:              cfg.Progress,
+		driver:       cfg.Driver,
+		tools:        reg,
+		renderer:     cfg.Renderer,
+		systemPrompt: cfg.SystemPrompt,
+		session:      session,
+		hooks:        hookRegistry,
+		progress:     cfg.Progress,
+		compactionManager: NewCompactionManager(CompactionConfig{
+			KeepTurns:            40,
+			HistoryPressureTurns: 40,
+			MaxFailures:          cfg.CompactionMaxFailures,
+		}),
 		compactionMaxFailures: cfg.CompactionMaxFailures,
 		turnComplete:          cfg.TurnComplete,
 		maxSteps:              maxLoopSteps(cfg.MaxSteps),
@@ -199,27 +205,49 @@ func (r *Runner) RunWithParts(ctx context.Context, input string, parts []llm.Mes
 	turn := r.session.RecordInputWithParts(prompt, parts)
 	r.pendingRetryPrompt = ""
 	r.syncRuntimeNote()
-	if CompactSessionHistory(r.session, 40) {
-		r.compactionFailures++
-		if r.compactionFailures >= r.compactionMaxFailures {
-			if r.progress != nil {
-				r.progress("react runtime: compaction circuit breaker tripped")
-			}
-		}
-	} else if r.compactionMaxFailures > 0 && r.session.Snapshot().Turn > 50 {
-		r.compactionFailures++
-		if r.compactionFailures >= r.compactionMaxFailures {
-			if r.progress != nil {
-				r.progress("react runtime: compaction circuit breaker tripped")
-			}
-		}
-	}
+	r.applyCompactionDecision(r.compactionManager.Decide(r.session.Snapshot()))
 	if r.driver == nil {
 		err := fmt.Errorf("react runner: driver is nil")
 		r.session.CompleteTurn(turn, "", nil, err)
 		return err
 	}
 	return r.runLoop(ctx, turn)
+}
+
+func (r *Runner) CompactHistory(keep int) bool {
+	if r == nil || r.compactionManager == nil {
+		return false
+	}
+	return r.compactionManager.Apply(r.session, r.compactionManager.UserPartial(keep))
+}
+
+func (r *Runner) CompactionStatus() string {
+	if r == nil || r.session == nil {
+		return "compaction unavailable"
+	}
+	snap := r.session.Snapshot()
+	if strings.TrimSpace(snap.CompactionSummary) == "" && snap.CompactedTurns == 0 {
+		return "no compacted turns"
+	}
+	return fmt.Sprintf("%d compacted turns; summary length %d", snap.CompactedTurns, len(snap.CompactionSummary))
+}
+
+func (r *Runner) applyCompactionDecision(decision CompactionDecision) bool {
+	if r == nil || r.compactionManager == nil || decision.Mode == CompactionNone {
+		return false
+	}
+	changed := r.compactionManager.Apply(r.session, decision)
+	if changed && r.compactionMaxFailures > 0 {
+		r.compactionFailures++
+	} else if !changed && r.compactionMaxFailures > 0 {
+		r.compactionFailures++
+	}
+	if r.compactionManager.CircuitOpen() || (r.compactionMaxFailures > 0 && r.compactionFailures >= r.compactionMaxFailures) {
+		if r.progress != nil {
+			r.progress("react runtime: compaction circuit breaker tripped")
+		}
+	}
+	return changed
 }
 
 func (r *Runner) SetDriver(driver llm.Driver) {
