@@ -315,6 +315,51 @@ func TestLoadChatApprovalConfigWiresAutoClassifier(t *testing.T) {
 	}
 }
 
+func TestHandleChatSlashCommandCompact(t *testing.T) {
+	var buf bytes.Buffer
+	renderer := agent.NewRenderer(&buf, 80, false)
+	session := &stubChatSessionControl{compactChanged: true}
+
+	if handled := handleChatSlashCommand("/compact", renderer, nil, nil, session, &ChatSetup{}); !handled {
+		t.Fatal("expected slash command to be handled")
+	}
+	if session.compactKeep != 1 {
+		t.Fatalf("compact keep = %d, want 1", session.compactKeep)
+	}
+	if !strings.Contains(buf.String(), "compacted conversation history") {
+		t.Fatalf("expected compact message, got %q", buf.String())
+	}
+}
+
+func TestHandleChatSlashCommandCompactRecent(t *testing.T) {
+	var buf bytes.Buffer
+	renderer := agent.NewRenderer(&buf, 80, false)
+	session := &stubChatSessionControl{compactChanged: true}
+
+	if handled := handleChatSlashCommand("/compact recent 20", renderer, nil, nil, session, &ChatSetup{}); !handled {
+		t.Fatal("expected slash command to be handled")
+	}
+	if session.compactKeep != 20 {
+		t.Fatalf("compact keep = %d, want 20", session.compactKeep)
+	}
+	if !strings.Contains(buf.String(), "preserved recent 20 turns") {
+		t.Fatalf("expected compact recent message, got %q", buf.String())
+	}
+}
+
+func TestHandleChatSlashCommandCompactStatus(t *testing.T) {
+	var buf bytes.Buffer
+	renderer := agent.NewRenderer(&buf, 80, false)
+	session := &stubChatSessionControl{compactStatus: "3 compacted turns; summary length 12"}
+
+	if handled := handleChatSlashCommand("/compact status", renderer, nil, nil, session, &ChatSetup{}); !handled {
+		t.Fatal("expected slash command to be handled")
+	}
+	if !strings.Contains(buf.String(), "3 compacted turns") {
+		t.Fatalf("expected compact status, got %q", buf.String())
+	}
+}
+
 func TestHandleChatSlashCommandActivatesSkillInReactSession(t *testing.T) {
 	var buf bytes.Buffer
 	renderer := agent.NewRenderer(&buf, 80, false)
@@ -1221,6 +1266,10 @@ type stubChatTurnRunner struct {
 	parts        []llm.MessageContentPart
 }
 
+func (s *stubChatTurnRunner) CompactHistory(int) bool { return false }
+
+func (s *stubChatTurnRunner) CompactionStatus() string { return "no compacted turns" }
+
 func (s *stubChatTurnRunner) Run(_ context.Context, input string) error {
 	s.calls++
 	s.input = input
@@ -1274,6 +1323,9 @@ type stubChatSessionControl struct {
 	lastUserMessage string
 	lastResponse    string
 	taskState       *reactruntime.TaskState
+	compactKeep     int
+	compactChanged  bool
+	compactStatus   string
 }
 
 func (s *stubChatSessionControl) SetDriver(driver llm.Driver) {
@@ -1298,6 +1350,15 @@ func (s *stubChatSessionControl) SetTaskState(state reactruntime.TaskState) {
 		return
 	}
 	s.taskState = &state
+}
+
+func (s *stubChatSessionControl) CompactHistory(keep int) bool {
+	s.compactKeep = keep
+	return s.compactChanged
+}
+
+func (s *stubChatSessionControl) CompactionStatus() string {
+	return s.compactStatus
 }
 
 type kernelMockDriver struct {
