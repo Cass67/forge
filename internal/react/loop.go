@@ -756,9 +756,10 @@ func (r *Runner) selectToolDefs(snapshot SessionSnapshot) []llm.ToolDef {
 	allowed := allowedToolNamesForSnapshot(snapshot)
 	pluginNames := r.pluginToolNames()
 	if len(allowed) == 0 && !inputSuggestsPluginTool(snapshot.LastInput, pluginNames) {
-		return nil
+		allowed = append(allowed, delegateToolNames...)
+	} else {
+		allowed = append(allowed, pluginNames...)
 	}
-	allowed = append(allowed, pluginNames...)
 	return r.tools.Filter(allowed).ToLLMToolDefs()
 }
 
