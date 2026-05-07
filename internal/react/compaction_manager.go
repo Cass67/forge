@@ -20,6 +20,16 @@ type CompactionDecision struct {
 	SummaryLen int
 }
 
+type CompactionHookPayload struct {
+	Mode          CompactionMode `json:"mode"`
+	Reason        string         `json:"reason"`
+	KeepTurns     int            `json:"keep_turns"`
+	DroppedTurns  int            `json:"dropped_turns"`
+	SummaryLength int            `json:"summary_length"`
+	Changed       bool           `json:"changed"`
+	CircuitOpen   bool           `json:"circuit_open"`
+}
+
 type CompactionConfig struct {
 	KeepTurns            int
 	HistoryPressureTurns int

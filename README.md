@@ -105,13 +105,48 @@ model = "claude/claude-sonnet-4-6"
 last_model = "claude/claude-sonnet-4-6"
 ```
 
+Permissions can be scoped by source. Precedence is fixed from broadest to narrowest: managed, user, project, local, session, then CLI. For example:
+
+```toml
+[[permissions.project.rules]]
+behavior = "deny"
+tool = "run_command"
+pattern = "rm:*"
+
+[[permissions.user.rules]]
+behavior = "allow"
+tool = "run_command"
+pattern = "go test:*"
+```
+
+Secret handling policies are configured separately:
+
+```toml
+[security.secrets]
+read = "redact"
+write = "block"
+command_output = "redact"
+approval_detail = "redact"
+```
+
+Automatic permission classification is off by default and can be configured explicitly:
+
+```toml
+[permissions.auto]
+enabled = false
+posture = "balanced"
+model = ""
+max_consecutive_denials = 3
+max_total_denials = 20
+failure_behavior = "ask"
+```
+
 Chat model startup precedence is:
 
 1. `--model`
 2. `FORGE_CHAT_MODEL`
 3. `chat.last_model`
 4. `chat.model`
-5. `models.writer`
 
 ## Providers
 
@@ -211,9 +246,11 @@ See [docs/chatgpt-provider.md](./docs/chatgpt-provider.md) for full provider det
 Core commands:
 
 ```bash
-forge [--model MODEL] [--yolo] [-C PATH]
+forge [--model MODEL] [-C PATH]
 forge make [<path>] [--prompt "..."]
 forge improve <path> [--prompt "..."]
+forge plugin validate <path>
+forge plugin install <source>
 forge list
 forge show <session-id>
 forge perf
@@ -228,7 +265,18 @@ Useful command families:
 - `forge`: primary local interactive coding loop
 - `forge make`: legacy writer/auditor/summarizer pipeline
 - `forge perf`: session usage and throughput reporting
+- `forge plugin install`: installs an npm package, git URL, local filesystem path, or HTTP(S) `.js`/`.mjs` URL; local manifest directories are supported
 - `forge status`: auth and provider status snapshot
+
+Advanced: `--yolo` skips approval prompts; use only in an isolated disposable environment such as a VM, container, or sandbox with no valuable host files or credentials.
+
+Useful chat slash commands:
+
+```text
+/compact
+/compact recent 20
+/compact status
+```
 
 ## Output
 
