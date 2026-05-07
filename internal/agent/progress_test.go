@@ -33,6 +33,8 @@ func TestProgressLineCoversCoreTools(t *testing.T) {
 		{tool: "git_log", summary: "5"},
 		{tool: "git_commit", summary: "fix progress updates"},
 		{tool: "think", summary: "plan the next step"},
+		{tool: "spawn_agent", summary: "audit the repository"},
+		{tool: "wait_agent", summary: "agent-1"},
 		{tool: "delegate", summary: "builder"},
 	}
 
