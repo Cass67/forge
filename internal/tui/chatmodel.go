@@ -1536,6 +1536,24 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if ev.Agent == "spawn_agent" && !ev.IsError {
+			var spawnResult struct {
+				Role string `json:"role"`
+			}
+			role := ""
+			if json.Unmarshal([]byte(ev.Text), &spawnResult) == nil && spawnResult.Role != "" {
+				role = spawnResult.Role
+			} else if json.Unmarshal([]byte(ev.Content), &spawnResult) == nil && spawnResult.Role != "" {
+				role = spawnResult.Role
+			}
+			if role != "" {
+				m.AddMessage(ChatMessage{
+					Kind:    MsgStatus,
+					Content: fmt.Sprintf("delegating to %s", displayAgentLabel(role)),
+				})
+			}
+			return m, nil
+		}
 		if ev.Agent == "update_plan" && !ev.IsError {
 			m.upsertPlanMessage(ev.Text)
 		}
