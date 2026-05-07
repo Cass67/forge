@@ -11,9 +11,15 @@ import (
 )
 
 func NewSpawnAgent(pool *react.AgentPool) agenttools.Tool {
+	desc := "Spawn a bounded child agent task. Role is optional advisory context."
+	if pool != nil {
+		if names := pool.AgentNames(); len(names) > 0 {
+			desc += " Available agents: " + strings.Join(names, ", ")
+		}
+	}
 	return agenttools.Tool{
 		Name:        "spawn_agent",
-		Description: "Spawn a bounded child agent task. Role is optional advisory context.",
+		Description: desc,
 		Parameters: []agenttools.ParameterDef{
 			{Name: "task_description", Type: "string", Description: "Task to delegate to the child agent", Required: true},
 			{Name: "role", Type: "string", Description: "Optional role hint for the child agent", Required: false},
