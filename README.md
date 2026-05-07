@@ -147,7 +147,6 @@ Chat model startup precedence is:
 2. `FORGE_CHAT_MODEL`
 3. `chat.last_model`
 4. `chat.model`
-5. `models.writer`
 
 ## Providers
 
@@ -247,7 +246,7 @@ See [docs/chatgpt-provider.md](./docs/chatgpt-provider.md) for full provider det
 Core commands:
 
 ```bash
-forge [--model MODEL] [--yolo] [-C PATH]
+forge [--model MODEL] [-C PATH]
 forge make [<path>] [--prompt "..."]
 forge improve <path> [--prompt "..."]
 forge plugin validate <path>
@@ -266,7 +265,7 @@ Useful command families:
 - `forge`: primary local interactive coding loop
 - `forge make`: legacy writer/auditor/summarizer pipeline
 - `forge perf`: session usage and throughput reporting
-- `forge plugin install`: installs an npm package, git URL, local JS URL, or local path; local manifest directories are supported
+- `forge plugin install`: installs an npm package, git URL, local filesystem path, or HTTP(S) `.js`/`.mjs` URL; local manifest directories are supported
 - `forge status`: auth and provider status snapshot
 
 Useful chat slash commands:
