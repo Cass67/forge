@@ -1,12 +1,16 @@
 package permissions
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"forge/internal/secscan"
 )
 
 func BuildClassifierPrompt(req ClassifierRequest) string {
+	req = redactClassifierRequest(req)
 	payload := map[string]any{
 		"action":     req.Action,
 		"risk":       req.Risk,
@@ -20,11 +24,32 @@ func BuildClassifierPrompt(req ClassifierRequest) string {
 			"Prefer allow for common tests, read-only git commands, and safe local build commands.",
 		},
 	}
-	data, err := json.Marshal(payload)
-	if err != nil {
+	var data bytes.Buffer
+	encoder := json.NewEncoder(&data)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(payload); err != nil {
 		return "Classify this pending Forge tool action. Return JSON only."
 	}
-	return "Classify this pending Forge tool action. Return JSON only: " + string(data)
+	return "Classify this pending Forge tool action. Return JSON only: " + strings.TrimSpace(data.String())
+}
+
+func redactClassifierRequest(req ClassifierRequest) ClassifierRequest {
+	req.Action.Summary = redactClassifierText(req.Action.Summary)
+	req.Action.Detail = redactClassifierText(req.Action.Detail)
+	req.Transcript = redactClassifierText(req.Transcript)
+	if len(req.Rules) > 0 {
+		rules := append([]Rule(nil), req.Rules...)
+		for i := range rules {
+			rules[i].Pattern = redactClassifierText(rules[i].Pattern)
+		}
+		req.Rules = rules
+	}
+	return req
+}
+
+func redactClassifierText(text string) string {
+	scanner := secscan.NewDefaultScanner()
+	return secscan.Redact(text, scanner.Scan(text))
 }
 
 func ParseClassifierResponse(text string) (ClassifierResponse, error) {
