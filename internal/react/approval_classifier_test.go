@@ -218,6 +218,26 @@ func TestAutoPermissionClassifierFallbackApprovalUpdateRedactsSummary(t *testing
 	}
 }
 
+func TestAutoPermissionClassifierImmuneApprovalUpdateRedactsSummary(t *testing.T) {
+	secret := dummyApprovalSecret()
+	classifier := &fakePermissionClassifier{response: permissions.ClassifierResponse{Decision: permissions.ClassifierAllow}}
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy: ApprovalUnlessTrusted,
+		SandboxPolicy: SandboxDangerFull,
+		Classifier:    classifier,
+	}, func(action tools.Action) (bool, error) {
+		return true, nil
+	}, nil)
+
+	if _, err := gate.Approve(tools.Action{Tool: "run_command", Summary: "rm -rf / " + secret, Detail: "rm -rf /"}); err != nil {
+		t.Fatal(err)
+	}
+	if classifier.calls != 0 {
+		t.Fatalf("classifier calls = %d, want 0", classifier.calls)
+	}
+	assertApprovalUpdatesRedacted(t, gate.ApprovalUpdates(), secret)
+}
+
 func saturatedDenialTracker() *permissions.DenialTracker {
 	denials := permissions.NewDenialTracker(3, 20)
 	denials.RecordDenied()

@@ -333,7 +333,7 @@ func (g *ApprovalGate) classifierDecision(evaluationAction, promptAction tools.A
 	risk := permissions.AnalyzeAction(riskAction)
 	if risk.ClassifierImmune {
 		g.emitClassifierEvent(ClassifierEvent{Action: riskAction, Risk: risk, Decision: permissions.ClassifierAsk, Reason: "classifier-immune action", Fallback: string(ClassifierFailureAsk)})
-		approved, err := g.promptWithRecordedOutcome(ApprovalDecisionSourcePolicy, approvalUpdateDetail(evaluationAction), promptAction)
+		approved, err := g.promptWithRecordedOutcome(ApprovalDecisionSourcePolicy, classifierApprovalUpdateDetail(evaluationAction), promptAction)
 		return approved, true, err
 	}
 	resp, err := g.cfg.Classifier.Classify(context.Background(), permissions.ClassifierRequest{
