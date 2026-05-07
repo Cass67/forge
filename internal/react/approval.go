@@ -429,6 +429,7 @@ func (g *ApprovalGate) emitClassifierEvent(event ClassifierEvent) {
 	}
 	event.Action.Summary = redactClassifierEventText(event.Action.Summary)
 	event.Action.Detail = redactClassifierEventText(event.Action.Detail)
+	event.Action.Path = redactClassifierEventText(event.Action.Path)
 	event.Reason = redactClassifierEventText(event.Reason)
 	event.Error = redactClassifierEventText(event.Error)
 	g.cfg.ClassifierObserver(event)

@@ -113,6 +113,30 @@ func TestAutoPermissionClassifierObserverReceivesRedactedDecision(t *testing.T) 
 	}
 }
 
+func TestAutoPermissionClassifierObserverRedactsActionPath(t *testing.T) {
+	secret := dummyApprovalSecret()
+	var events []ClassifierEvent
+	gate := NewApprovalGate("", ApprovalConfig{
+		ClassifierObserver: func(event ClassifierEvent) {
+			events = append(events, event)
+		},
+	}, nil, nil)
+
+	gate.emitClassifierEvent(ClassifierEvent{
+		Action: permissions.Action{Tool: "read_file", Path: "config/" + secret},
+	})
+
+	if len(events) != 1 {
+		t.Fatalf("event count = %d, want 1", len(events))
+	}
+	if strings.Contains(events[0].Action.Path, secret) {
+		t.Fatalf("classifier event path leaked secret: %#v", events[0].Action)
+	}
+	if !strings.Contains(events[0].Action.Path, "<REDACTED:github-pat>") {
+		t.Fatalf("classifier event path was not redacted: %#v", events[0].Action)
+	}
+}
+
 func TestAutoPermissionClassifierObserverReceivesRedactedDeny(t *testing.T) {
 	secret := dummyApprovalSecret()
 	classifier := &fakePermissionClassifier{response: permissions.ClassifierResponse{Decision: permissions.ClassifierDeny, Reason: "unsafe command"}}
