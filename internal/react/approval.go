@@ -1,6 +1,7 @@
 package react
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -28,6 +29,13 @@ const (
 	DecisionForbidden RuleDecision = "forbidden"
 )
 
+type ClassifierFailureBehavior string
+
+const (
+	ClassifierFailureAsk  ClassifierFailureBehavior = "ask"
+	ClassifierFailureDeny ClassifierFailureBehavior = "deny"
+)
+
 type ApprovalRule struct {
 	Tool          string
 	CommandPrefix []string
@@ -38,12 +46,15 @@ type ApprovalRule struct {
 }
 
 type ApprovalConfig struct {
-	DefaultPolicy    ApprovalPolicy
-	SandboxPolicy    SandboxPolicy
-	Rules            []ApprovalRule
-	ScopedRules      []permissions.Rule
-	KnownSafeCommand []string
-	SecretPolicy     tools.SecretPolicy
+	DefaultPolicy             ApprovalPolicy
+	SandboxPolicy             SandboxPolicy
+	Rules                     []ApprovalRule
+	ScopedRules               []permissions.Rule
+	KnownSafeCommand          []string
+	SecretPolicy              tools.SecretPolicy
+	Classifier                permissions.Classifier
+	Denials                   *permissions.DenialTracker
+	ClassifierFailureBehavior ClassifierFailureBehavior
 }
 
 type GuardianEvent struct {
@@ -251,6 +262,15 @@ func (g *ApprovalGate) Approve(action tools.Action) (bool, error) {
 		}
 	}
 
+	if g.cfg.DefaultPolicy == ApprovalUnlessTrusted && !guardianWarn && g.cfg.Classifier != nil {
+		if g.cfg.Denials != nil && g.cfg.Denials.ShouldFallback() {
+			return g.promptWithRecordedOutcome(ApprovalDecisionSourceClassifier, approvalUpdateDetail(evaluationAction), action)
+		}
+		if approved, handled, err := g.classifierDecision(evaluationAction, action); handled || err != nil {
+			return approved, err
+		}
+	}
+
 	switch g.cfg.DefaultPolicy {
 	case ApprovalNever:
 		if guardianWarn {
@@ -286,6 +306,52 @@ func (g *ApprovalGate) Approve(action tools.Action) (bool, error) {
 		return g.promptWithRecordedOutcome(source, approvalUpdateDetail(evaluationAction), action)
 	default:
 		return false, fmt.Errorf("unknown approval policy %q", g.cfg.DefaultPolicy)
+	}
+}
+
+func (g *ApprovalGate) classifierDecision(evaluationAction, promptAction tools.Action) (bool, bool, error) {
+	riskAction := permissions.Action{Tool: evaluationAction.Tool, Summary: evaluationAction.Summary, Detail: evaluationAction.Detail}
+	risk := permissions.AnalyzeAction(riskAction)
+	if risk.ClassifierImmune {
+		approved, err := g.promptWithRecordedOutcome(ApprovalDecisionSourcePolicy, approvalUpdateDetail(evaluationAction), promptAction)
+		return approved, true, err
+	}
+	resp, err := g.cfg.Classifier.Classify(context.Background(), permissions.ClassifierRequest{
+		Action: riskAction,
+		Risk:   risk,
+		Rules:  g.cfg.ScopedRules,
+	})
+	if err != nil {
+		if g.cfg.ClassifierFailureBehavior == ClassifierFailureDeny {
+			g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionForbidden, ApprovalDecisionSourceClassifier, approvalUpdateDetail(evaluationAction)))
+			return false, true, nil
+		}
+		approved, promptErr := g.promptWithRecordedOutcome(ApprovalDecisionSourceClassifier, approvalUpdateDetail(evaluationAction), promptAction)
+		return approved, true, promptErr
+	}
+	reason := strings.TrimSpace(resp.Reason)
+	if reason == "" {
+		reason = approvalUpdateDetail(evaluationAction)
+	}
+	switch resp.Decision {
+	case permissions.ClassifierAllow:
+		if g.cfg.Denials != nil {
+			g.cfg.Denials.RecordAllowed()
+		}
+		g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionAllow, ApprovalDecisionSourceClassifier, reason))
+		return true, true, nil
+	case permissions.ClassifierDeny:
+		if g.cfg.Denials != nil {
+			g.cfg.Denials.RecordDenied()
+		}
+		g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionForbidden, ApprovalDecisionSourceClassifier, reason))
+		return false, true, nil
+	case permissions.ClassifierAsk, "":
+		approved, err := g.promptWithRecordedOutcome(ApprovalDecisionSourceClassifier, reason, promptAction)
+		return approved, true, err
+	default:
+		approved, err := g.promptWithRecordedOutcome(ApprovalDecisionSourceClassifier, approvalUpdateDetail(evaluationAction), promptAction)
+		return approved, true, err
 	}
 }
 
@@ -342,6 +408,9 @@ func normalizeApprovalConfig(cfg ApprovalConfig) ApprovalConfig {
 		cfg.KnownSafeCommand = append([]string(nil), defaultKnownSafeCommandPrefixes...)
 	}
 	cfg.SecretPolicy = cfg.SecretPolicy.WithDefaults()
+	if cfg.ClassifierFailureBehavior == "" {
+		cfg.ClassifierFailureBehavior = ClassifierFailureAsk
+	}
 	return cfg
 }
 

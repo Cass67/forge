@@ -149,6 +149,22 @@ func (c *Config) Validate() []ValidationIssue {
 	validatePermissionScope("local", c.Permissions.Local)
 	validatePermissionScope("session", c.Permissions.Session)
 	validatePermissionScope("cli", c.Permissions.CLI)
+	switch strings.ToLower(strings.TrimSpace(c.Permissions.Auto.Posture)) {
+	case "conservative", "balanced":
+	default:
+		add("permissions.auto.posture", fmt.Sprintf("must be one of conservative, balanced, got %q", c.Permissions.Auto.Posture))
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Permissions.Auto.FailureBehavior)) {
+	case "ask", "deny":
+	default:
+		add("permissions.auto.failure_behavior", fmt.Sprintf("must be one of ask, deny, got %q", c.Permissions.Auto.FailureBehavior))
+	}
+	if c.Permissions.Auto.MaxConsecutiveDenials < 1 {
+		add("permissions.auto.max_consecutive_denials", "must be at least 1")
+	}
+	if c.Permissions.Auto.MaxTotalDenials < 1 {
+		add("permissions.auto.max_total_denials", "must be at least 1")
+	}
 	for i, pass := range c.Pipeline {
 		if strings.TrimSpace(pass.Name) == "" {
 			add(fmt.Sprintf("pipeline[%d].name", i), "must not be empty")

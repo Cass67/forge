@@ -29,6 +29,7 @@ func LoadApprovalConfig(cfg *config.Config) ApprovalConfig {
 		CommandOutput:  tools.SecretPolicyMode(cfg.Security.Secrets.CommandOutput),
 		ApprovalDetail: tools.SecretPolicyMode(cfg.Security.Secrets.ApprovalDetail),
 	}
+	out.ClassifierFailureBehavior = ClassifierFailureBehavior(cfg.Permissions.Auto.FailureBehavior)
 	out.ScopedRules = permissions.LoadConfigRules(cfg.Permissions)
 	for _, rule := range cfg.Approval.Rules {
 		decision := parseRuleDecision(rule.Decision)
