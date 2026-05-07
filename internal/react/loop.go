@@ -729,6 +729,15 @@ func reactToolSummary(args map[string]any) string {
 	if query, _ := args["query"].(string); strings.TrimSpace(query) != "" {
 		return strings.TrimSpace(query)
 	}
+	if task, _ := args["task_description"].(string); strings.TrimSpace(task) != "" {
+		return strings.TrimSpace(task)
+	}
+	if role, _ := args["role"].(string); strings.TrimSpace(role) != "" {
+		return strings.TrimSpace(role)
+	}
+	if id, _ := args["id"].(string); strings.TrimSpace(id) != "" {
+		return strings.TrimSpace(id)
+	}
 	if pattern, _ := args["pattern"].(string); strings.TrimSpace(pattern) != "" {
 		return strings.TrimSpace(pattern)
 	}
