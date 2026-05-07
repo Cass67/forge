@@ -84,6 +84,81 @@ func TestValidateApprovalRulesRejectMalformedMatchers(t *testing.T) {
 	}
 }
 
+func TestValidatePermissionsRules(t *testing.T) {
+	var cfg Config
+	setDefaults(&cfg)
+	cfg.Permissions.Project.Rules = []PermissionRuleConfig{
+		{Behavior: "", Tool: "run_command", Pattern: "go test:*"},
+		{Behavior: "maybe", Tool: "run_command", Pattern: "go test:*"},
+		{Behavior: "allow", Tool: "", Pattern: "go test:*"},
+		{Behavior: "deny", Tool: "write_file", Pattern: "../*.go"},
+		{Behavior: "allow", Tool: "unknown_tool", Pattern: ""},
+	}
+
+	issues := cfg.Validate()
+	if !hasIssueContaining(issues, "permissions.project.rules[0].behavior", "must not be empty") {
+		t.Fatalf("expected empty behavior issue, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "permissions.project.rules[1].behavior", "must be one of allow, ask, deny") {
+		t.Fatalf("expected invalid behavior issue, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "permissions.project.rules[2].tool", "must not be empty") {
+		t.Fatalf("expected empty tool issue, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "permissions.project.rules[3].pattern", "must not contain ..") {
+		t.Fatalf("expected traversal pattern issue, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "permissions.project.rules[4].tool", "unknown permission tool") {
+		t.Fatalf("expected unknown tool issue, got %v", issues)
+	}
+}
+
+func TestValidatePermissionsAutoConfig(t *testing.T) {
+	var cfg Config
+	setDefaults(&cfg)
+	cfg.Permissions.Auto.Posture = "aggressive"
+	cfg.Permissions.Auto.FailureBehavior = "allow"
+	cfg.Permissions.Auto.MaxConsecutiveDenials = -1
+	cfg.Permissions.Auto.MaxTotalDenials = 0
+
+	issues := cfg.Validate()
+	if !hasIssueContaining(issues, "permissions.auto.posture", "must be one of conservative, balanced") {
+		t.Fatalf("expected posture issue, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "permissions.auto.failure_behavior", "must be one of ask, deny") {
+		t.Fatalf("expected failure behavior issue, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "permissions.auto.max_consecutive_denials", "must be at least 1") {
+		t.Fatalf("expected max consecutive issue, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "permissions.auto.max_total_denials", "must be at least 1") {
+		t.Fatalf("expected max total issue, got %v", issues)
+	}
+}
+
+func TestValidateSecuritySecretsPolicy(t *testing.T) {
+	var cfg Config
+	setDefaults(&cfg)
+	cfg.Security.Secrets.Read = "maybe"
+	cfg.Security.Secrets.Write = "nope"
+	cfg.Security.Secrets.CommandOutput = "hide"
+	cfg.Security.Secrets.ApprovalDetail = "mask"
+
+	issues := cfg.Validate()
+	if !hasIssueContaining(issues, "security.secrets.read", "must be one of allow, redact, ask, block") {
+		t.Fatalf("expected read policy issue, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "security.secrets.write", "must be one of allow, redact, ask, block") {
+		t.Fatalf("expected write policy issue, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "security.secrets.command_output", "must be one of allow, redact, ask, block") {
+		t.Fatalf("expected command_output policy issue, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "security.secrets.approval_detail", "must be one of allow, redact, ask, block") {
+		t.Fatalf("expected approval_detail policy issue, got %v", issues)
+	}
+}
+
 func TestValidatePluginConfig(t *testing.T) {
 	var cfg Config
 	setDefaults(&cfg)

@@ -17,12 +17,13 @@ const (
 type ApprovalDecisionSource string
 
 const (
-	ApprovalDecisionSourceRule     ApprovalDecisionSource = "rule"
-	ApprovalDecisionSourceSandbox  ApprovalDecisionSource = "sandbox"
-	ApprovalDecisionSourceTrusted  ApprovalDecisionSource = "trusted"
-	ApprovalDecisionSourcePolicy   ApprovalDecisionSource = "policy"
-	ApprovalDecisionSourceGuardian ApprovalDecisionSource = "guardian"
-	ApprovalDecisionSourceUser     ApprovalDecisionSource = "user"
+	ApprovalDecisionSourceRule       ApprovalDecisionSource = "rule"
+	ApprovalDecisionSourceSandbox    ApprovalDecisionSource = "sandbox"
+	ApprovalDecisionSourceTrusted    ApprovalDecisionSource = "trusted"
+	ApprovalDecisionSourcePolicy     ApprovalDecisionSource = "policy"
+	ApprovalDecisionSourceGuardian   ApprovalDecisionSource = "guardian"
+	ApprovalDecisionSourceUser       ApprovalDecisionSource = "user"
+	ApprovalDecisionSourceClassifier ApprovalDecisionSource = "classifier"
 )
 
 type ApprovalUpdate struct {
@@ -92,6 +93,15 @@ func approvalReasonHead(decision ApprovalDecision, source ApprovalDecisionSource
 			return "user denied prompt"
 		case ApprovalDecisionPrompt:
 			return "user prompt response"
+		}
+	case ApprovalDecisionSourceClassifier:
+		switch decision {
+		case ApprovalDecisionAllow:
+			return "classifier allowed"
+		case ApprovalDecisionPrompt:
+			return "classifier requested prompt"
+		case ApprovalDecisionForbidden:
+			return "classifier denied"
 		}
 	}
 	if trimmed := strings.TrimSpace(string(source)); trimmed != "" {

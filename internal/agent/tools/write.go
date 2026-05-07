@@ -8,8 +8,9 @@ import (
 	"strings"
 )
 
-func NewWriteFile(workDir string, approve ApprovalFunc) Tool {
+func NewWriteFile(workDir string, approve ApprovalFunc, policies ...SecretPolicy) Tool {
 	var lastDiff string
+	secretPolicy := secretPolicyFromOptions(policies)
 	return Tool{
 		Name:        "write_file",
 		Description: "Create or overwrite a file.",
@@ -27,6 +28,11 @@ func NewWriteFile(workDir string, approve ApprovalFunc) Tool {
 			lastDiff = ""
 			path, _ := args["path"].(string)
 			content, _ := args["content"].(string)
+			checkedContent, blocked := secretPolicy.ApplyWrite(content)
+			if blocked {
+				return checkedContent, nil
+			}
+			content = checkedContent
 
 			resolved, err := ResolvePath(workDir, path)
 			if err != nil {

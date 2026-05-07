@@ -1,0 +1,196 @@
+package react
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"forge/internal/agent/tools"
+	"forge/internal/permissions"
+)
+
+type fakePermissionClassifier struct {
+	calls    int
+	requests []permissions.ClassifierRequest
+	response permissions.ClassifierResponse
+	err      error
+}
+
+func (f *fakePermissionClassifier) Classify(ctx context.Context, req permissions.ClassifierRequest) (permissions.ClassifierResponse, error) {
+	f.calls++
+	f.requests = append(f.requests, req)
+	return f.response, f.err
+}
+
+func TestAutoPermissionClassifierRuleBlockBypassesClassifier(t *testing.T) {
+	classifier := &fakePermissionClassifier{response: permissions.ClassifierResponse{Decision: permissions.ClassifierAllow}}
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy: ApprovalUnlessTrusted,
+		SandboxPolicy: SandboxDangerFull,
+		Classifier:    classifier,
+		Rules: []ApprovalRule{{
+			Tool:          "run_command",
+			CommandPrefix: []string{"git", "push"},
+			Decision:      DecisionForbidden,
+		}},
+	}, func(action tools.Action) (bool, error) { return true, nil }, nil)
+
+	approved, err := gate.Approve(tools.Action{Tool: "run_command", Summary: "git push origin main", Detail: "git push origin main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved {
+		t.Fatal("expected rule block")
+	}
+	if classifier.calls != 0 {
+		t.Fatalf("classifier calls = %d, want 0", classifier.calls)
+	}
+}
+
+func TestAutoPermissionClassifierAllowsLowRiskCommand(t *testing.T) {
+	classifier := &fakePermissionClassifier{response: permissions.ClassifierResponse{Decision: permissions.ClassifierAllow, Reason: "safe test"}}
+	promptCalls := 0
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy: ApprovalUnlessTrusted,
+		SandboxPolicy: SandboxDangerFull,
+		Classifier:    classifier,
+	}, func(action tools.Action) (bool, error) {
+		promptCalls++
+		return true, nil
+	}, nil)
+
+	approved, err := gate.Approve(tools.Action{Tool: "run_command", Summary: "go test ./...", Detail: "go test ./..."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !approved {
+		t.Fatal("expected classifier allow")
+	}
+	if promptCalls != 0 {
+		t.Fatalf("prompt calls = %d, want 0", promptCalls)
+	}
+	if classifier.calls != 1 {
+		t.Fatalf("classifier calls = %d, want 1", classifier.calls)
+	}
+	if classifier.requests[0].Risk.Level != permissions.RiskLow {
+		t.Fatalf("risk = %#v", classifier.requests[0].Risk)
+	}
+}
+
+func TestAutoPermissionClassifierAllowsMediumRiskEdit(t *testing.T) {
+	classifier := &fakePermissionClassifier{response: permissions.ClassifierResponse{Decision: permissions.ClassifierAllow, Reason: "normal edit"}}
+	gate := NewApprovalGate("", ApprovalConfig{DefaultPolicy: ApprovalUnlessTrusted, SandboxPolicy: SandboxDangerFull, Classifier: classifier}, nil, nil)
+
+	approved, err := gate.Approve(tools.Action{Tool: "edit_file", Summary: "edit main.go", Detail: "diff"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !approved {
+		t.Fatal("expected medium-risk edit to be classifier-allowed")
+	}
+	if classifier.requests[0].Risk.Level != permissions.RiskMedium || classifier.requests[0].Risk.Destructive {
+		t.Fatalf("unexpected risk = %#v", classifier.requests[0].Risk)
+	}
+}
+
+func TestAutoPermissionClassifierHighRiskAskPrompts(t *testing.T) {
+	classifier := &fakePermissionClassifier{response: permissions.ClassifierResponse{Decision: permissions.ClassifierAsk, Reason: "high risk"}}
+	promptCalls := 0
+	gate := NewApprovalGate("", ApprovalConfig{DefaultPolicy: ApprovalUnlessTrusted, SandboxPolicy: SandboxDangerFull, Classifier: classifier}, func(action tools.Action) (bool, error) {
+		promptCalls++
+		return true, nil
+	}, nil)
+
+	approved, err := gate.Approve(tools.Action{Tool: "run_command", Summary: "git push origin main", Detail: "git push origin main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !approved || promptCalls != 1 {
+		t.Fatalf("approved=%v promptCalls=%d, want approved prompt", approved, promptCalls)
+	}
+}
+
+func TestAutoPermissionClassifierImmuneActionPromptsWithoutClassifier(t *testing.T) {
+	classifier := &fakePermissionClassifier{response: permissions.ClassifierResponse{Decision: permissions.ClassifierAllow}}
+	promptCalls := 0
+	gate := NewApprovalGate("", ApprovalConfig{DefaultPolicy: ApprovalUnlessTrusted, SandboxPolicy: SandboxDangerFull, Classifier: classifier}, func(action tools.Action) (bool, error) {
+		promptCalls++
+		return true, nil
+	}, nil)
+
+	approved, err := gate.Approve(tools.Action{Tool: "run_command", Summary: "rm -rf /", Detail: "rm -rf /"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !approved || promptCalls != 1 {
+		t.Fatalf("approved=%v promptCalls=%d, want prompt", approved, promptCalls)
+	}
+	if classifier.calls != 0 {
+		t.Fatalf("classifier calls = %d, want 0", classifier.calls)
+	}
+}
+
+func TestAutoPermissionClassifierFailureAsks(t *testing.T) {
+	classifier := &fakePermissionClassifier{err: errors.New("parse failed")}
+	promptCalls := 0
+	gate := NewApprovalGate("", ApprovalConfig{DefaultPolicy: ApprovalUnlessTrusted, SandboxPolicy: SandboxDangerFull, Classifier: classifier}, func(action tools.Action) (bool, error) {
+		promptCalls++
+		return true, nil
+	}, nil)
+
+	approved, err := gate.Approve(tools.Action{Tool: "run_command", Summary: "go test ./...", Detail: "go test ./..."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !approved || promptCalls != 1 {
+		t.Fatalf("approved=%v promptCalls=%d, want prompt", approved, promptCalls)
+	}
+}
+
+func TestAutoPermissionClassifierFailureCanDeny(t *testing.T) {
+	classifier := &fakePermissionClassifier{err: errors.New("parse failed")}
+	promptCalls := 0
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy:             ApprovalUnlessTrusted,
+		SandboxPolicy:             SandboxDangerFull,
+		Classifier:                classifier,
+		ClassifierFailureBehavior: ClassifierFailureDeny,
+	}, func(action tools.Action) (bool, error) {
+		promptCalls++
+		return true, nil
+	}, nil)
+
+	approved, err := gate.Approve(tools.Action{Tool: "run_command", Summary: "go test ./...", Detail: "go test ./..."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved || promptCalls != 0 {
+		t.Fatalf("approved=%v promptCalls=%d, want deny without prompt", approved, promptCalls)
+	}
+}
+
+func TestAutoPermissionClassifierDenialTrackerFallbackPrompts(t *testing.T) {
+	classifier := &fakePermissionClassifier{response: permissions.ClassifierResponse{Decision: permissions.ClassifierAllow}}
+	denials := permissions.NewDenialTracker(3, 20)
+	denials.RecordDenied()
+	denials.RecordDenied()
+	denials.RecordDenied()
+	promptCalls := 0
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy: ApprovalUnlessTrusted,
+		SandboxPolicy: SandboxDangerFull,
+		Classifier:    classifier,
+		Denials:       denials,
+	}, func(action tools.Action) (bool, error) {
+		promptCalls++
+		return true, nil
+	}, nil)
+
+	approved, err := gate.Approve(tools.Action{Tool: "run_command", Summary: "go test ./...", Detail: "go test ./..."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !approved || promptCalls != 1 || classifier.calls != 0 {
+		t.Fatalf("approved=%v promptCalls=%d classifierCalls=%d", approved, promptCalls, classifier.calls)
+	}
+}
