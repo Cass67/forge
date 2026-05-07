@@ -283,7 +283,7 @@ func (g *ApprovalGate) Approve(action tools.Action) (bool, error) {
 				Reason:   "classifier disabled after repeated denials",
 				Fallback: string(ClassifierFailureAsk),
 			})
-			return g.promptWithRecordedOutcome(ApprovalDecisionSourceClassifier, classifierApprovalUpdateDetail(evaluationAction), action)
+			return g.promptWithRecordedOutcome(ApprovalDecisionSourceClassifier, classifierApprovalUpdateDetail(evaluationAction), classifierPromptAction(action))
 		}
 		if approved, handled, err := g.classifierDecision(evaluationAction, action); handled || err != nil {
 			return approved, err
@@ -333,7 +333,7 @@ func (g *ApprovalGate) classifierDecision(evaluationAction, promptAction tools.A
 	risk := permissions.AnalyzeAction(riskAction)
 	if risk.ClassifierImmune {
 		g.emitClassifierEvent(ClassifierEvent{Action: riskAction, Risk: risk, Decision: permissions.ClassifierAsk, Reason: "classifier-immune action", Fallback: string(ClassifierFailureAsk)})
-		approved, err := g.promptWithRecordedOutcome(ApprovalDecisionSourcePolicy, classifierApprovalUpdateDetail(evaluationAction), promptAction)
+		approved, err := g.promptWithRecordedOutcome(ApprovalDecisionSourcePolicy, classifierApprovalUpdateDetail(evaluationAction), classifierPromptAction(promptAction))
 		return approved, true, err
 	}
 	resp, err := g.cfg.Classifier.Classify(context.Background(), permissions.ClassifierRequest{
@@ -348,7 +348,7 @@ func (g *ApprovalGate) classifierDecision(evaluationAction, promptAction tools.A
 			return false, true, nil
 		}
 		g.emitClassifierEvent(ClassifierEvent{Action: riskAction, Risk: risk, Decision: permissions.ClassifierAsk, Fallback: string(ClassifierFailureAsk), Error: err.Error()})
-		approved, promptErr := g.promptWithRecordedOutcome(ApprovalDecisionSourceClassifier, classifierApprovalUpdateDetail(evaluationAction), promptAction)
+		approved, promptErr := g.promptWithRecordedOutcome(ApprovalDecisionSourceClassifier, classifierApprovalUpdateDetail(evaluationAction), classifierPromptAction(promptAction))
 		return approved, true, promptErr
 	}
 	reason := strings.TrimSpace(resp.Reason)
@@ -373,11 +373,11 @@ func (g *ApprovalGate) classifierDecision(evaluationAction, promptAction tools.A
 		return false, true, nil
 	case permissions.ClassifierAsk, "":
 		g.emitClassifierEvent(ClassifierEvent{Action: riskAction, Risk: risk, Decision: permissions.ClassifierAsk, Reason: reason, Fallback: string(ClassifierFailureAsk)})
-		approved, err := g.promptWithRecordedOutcome(ApprovalDecisionSourceClassifier, reason, promptAction)
+		approved, err := g.promptWithRecordedOutcome(ApprovalDecisionSourceClassifier, reason, classifierPromptAction(promptAction))
 		return approved, true, err
 	default:
 		g.emitClassifierEvent(ClassifierEvent{Action: riskAction, Risk: risk, Decision: permissions.ClassifierAsk, Reason: reason, Fallback: string(ClassifierFailureAsk)})
-		approved, err := g.promptWithRecordedOutcome(ApprovalDecisionSourceClassifier, classifierApprovalUpdateDetail(evaluationAction), promptAction)
+		approved, err := g.promptWithRecordedOutcome(ApprovalDecisionSourceClassifier, classifierApprovalUpdateDetail(evaluationAction), classifierPromptAction(promptAction))
 		return approved, true, err
 	}
 }
@@ -386,6 +386,12 @@ func classifierApprovalUpdateDetail(action tools.Action) string {
 	action.Summary = redactClassifierEventText(action.Summary)
 	action.Detail = redactClassifierEventText(action.Detail)
 	return approvalUpdateDetail(action)
+}
+
+func classifierPromptAction(action tools.Action) tools.Action {
+	action.Summary = redactClassifierEventText(action.Summary)
+	action.Detail = redactClassifierEventText(action.Detail)
+	return action
 }
 
 func (g *ApprovalGate) scopedRuleDecision(action tools.Action) (RuleDecision, bool) {
