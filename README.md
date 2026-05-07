@@ -105,7 +105,7 @@ model = "claude/claude-sonnet-4-6"
 last_model = "claude/claude-sonnet-4-6"
 ```
 
-Permissions can be scoped by source. Later scopes are intended for narrower overrides, such as project rules denying risky command patterns while user rules allow known-safe work:
+Permissions can be scoped by source. Precedence is fixed from broadest to narrowest: managed, user, project, local, session, then CLI. For example:
 
 ```toml
 [[permissions.project.rules]]
@@ -251,7 +251,7 @@ forge [--model MODEL] [--yolo] [-C PATH]
 forge make [<path>] [--prompt "..."]
 forge improve <path> [--prompt "..."]
 forge plugin validate <path>
-forge plugin install <path>
+forge plugin install <source>
 forge list
 forge show <session-id>
 forge perf
@@ -266,6 +266,7 @@ Useful command families:
 - `forge`: primary local interactive coding loop
 - `forge make`: legacy writer/auditor/summarizer pipeline
 - `forge perf`: session usage and throughput reporting
+- `forge plugin install`: installs an npm package, git URL, local JS URL, or local path; local manifest directories are supported
 - `forge status`: auth and provider status snapshot
 
 Useful chat slash commands:
