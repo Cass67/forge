@@ -760,6 +760,7 @@ func (r *Runner) selectToolDefs(snapshot SessionSnapshot) []llm.ToolDef {
 	} else {
 		allowed = append(allowed, pluginNames...)
 	}
+	allowed = append(allowed, delegateToolNames...)
 	return r.tools.Filter(allowed).ToLLMToolDefs()
 }
 
