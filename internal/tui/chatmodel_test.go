@@ -2049,6 +2049,83 @@ func TestChatModelSlashAgentsIsUnknown(t *testing.T) {
 	}
 }
 
+func TestChatModelSubmitsAbsolutePathAsPrompt(t *testing.T) {
+	inputCh := make(chan string, 1)
+	path := filepath.Join(t.TempDir(), "2026-05-07-best-of-claude-forge.md")
+	if err := os.WriteFile(path, []byte("plan"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "openai/gpt-5",
+		WorkDir: "/tmp",
+	})
+	m.inputCh = inputCh
+	m.inputBuf = path
+	m.inputPos = len(m.inputBuf)
+
+	updated, cmd := m.submitInput()
+	m = updated.(ChatModel)
+
+	if cmd == nil {
+		t.Fatal("expected absolute path to submit to chat")
+	}
+	if len(m.messages) != 1 || m.messages[0].Kind != MsgUser || m.messages[0].Content != path {
+		t.Fatalf("messages = %#v", m.messages)
+	}
+	cmd()
+	select {
+	case raw := <-inputCh:
+		if !strings.Contains(raw, path) {
+			t.Fatalf("queued input = %q", raw)
+		}
+	default:
+		t.Fatal("expected queued chat input")
+	}
+}
+
+func TestChatModelSubmitsPromptContainingAbsolutePath(t *testing.T) {
+	inputCh := make(chan string, 1)
+	path := filepath.Join(t.TempDir(), "2026-05-07-best-of-claude-forge.md")
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "openai/gpt-5",
+		WorkDir: "/tmp",
+	})
+	m.inputCh = inputCh
+	m.inputBuf = "read " + path
+	m.inputPos = len(m.inputBuf)
+
+	updated, cmd := m.submitInput()
+	m = updated.(ChatModel)
+
+	if cmd == nil {
+		t.Fatal("expected path-containing prompt to submit to chat")
+	}
+	if len(m.messages) != 1 || m.messages[0].Kind != MsgUser || !strings.Contains(m.messages[0].Content, "best-of-claude-forge.md") {
+		t.Fatalf("messages = %#v", m.messages)
+	}
+}
+
+func TestChatModelSubmitsTildePathAsPrompt(t *testing.T) {
+	inputCh := make(chan string, 1)
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "openai/gpt-5",
+		WorkDir: "/tmp",
+	})
+	m.inputCh = inputCh
+	m.inputBuf = "~/git/forge/docs/plans/2026-05-07-best-of-claude-forge.md"
+	m.inputPos = len(m.inputBuf)
+
+	updated, cmd := m.submitInput()
+	m = updated.(ChatModel)
+
+	if cmd == nil {
+		t.Fatal("expected tilde path to submit to chat")
+	}
+	if len(m.messages) != 1 || m.messages[0].Kind != MsgUser || m.messages[0].Content != "~/git/forge/docs/plans/2026-05-07-best-of-claude-forge.md" {
+		t.Fatalf("messages = %#v", m.messages)
+	}
+}
+
 func TestChatModelHelpOmitsLegacyAgentCommands(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{
 		Model:   "openai/gpt-5",
