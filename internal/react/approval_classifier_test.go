@@ -137,6 +137,52 @@ func TestAutoPermissionClassifierObserverRedactsActionPath(t *testing.T) {
 	}
 }
 
+func TestAutoPermissionClassifierApprovalUpdateRedactsReason(t *testing.T) {
+	secret := dummyApprovalSecret()
+	cases := []struct {
+		name     string
+		decision permissions.ClassifierDecision
+	}{
+		{name: "allow", decision: permissions.ClassifierAllow},
+		{name: "deny", decision: permissions.ClassifierDeny},
+		{name: "ask", decision: permissions.ClassifierAsk},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			classifier := &fakePermissionClassifier{response: permissions.ClassifierResponse{Decision: tc.decision, Reason: "contains " + secret}}
+			gate := NewApprovalGate("", ApprovalConfig{
+				DefaultPolicy: ApprovalUnlessTrusted,
+				SandboxPolicy: SandboxDangerFull,
+				Classifier:    classifier,
+			}, func(action tools.Action) (bool, error) {
+				return true, nil
+			}, nil)
+
+			if _, err := gate.Approve(tools.Action{Tool: "run_command", Summary: "git push origin main", Detail: "git push origin main"}); err != nil {
+				t.Fatal(err)
+			}
+
+			updates := gate.ApprovalUpdates()
+			if len(updates) == 0 {
+				t.Fatal("expected approval updates")
+			}
+			foundRedaction := false
+			for _, update := range updates {
+				if strings.Contains(update.Reason, secret) {
+					t.Fatalf("approval update leaked classifier reason: %#v", update)
+				}
+				if strings.Contains(update.Reason, "<REDACTED:github-pat>") {
+					foundRedaction = true
+				}
+			}
+			if !foundRedaction {
+				t.Fatalf("approval updates did not include redacted reason: %#v", updates)
+			}
+		})
+	}
+}
+
 func TestAutoPermissionClassifierObserverReceivesRedactedDeny(t *testing.T) {
 	secret := dummyApprovalSecret()
 	classifier := &fakePermissionClassifier{response: permissions.ClassifierResponse{Decision: permissions.ClassifierDeny, Reason: "unsafe command"}}
