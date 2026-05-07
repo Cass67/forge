@@ -238,6 +238,61 @@ func TestAutoPermissionClassifierImmuneApprovalUpdateRedactsSummary(t *testing.T
 	assertApprovalUpdatesRedacted(t, gate.ApprovalUpdates(), secret)
 }
 
+func TestAutoPermissionClassifierErrorFallbackPromptRedactsAction(t *testing.T) {
+	secret := dummyApprovalSecret()
+	classifier := &fakePermissionClassifier{err: errors.New("parse failed")}
+	var prompted []tools.Action
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy: ApprovalUnlessTrusted,
+		SandboxPolicy: SandboxDangerFull,
+		Classifier:    classifier,
+	}, func(action tools.Action) (bool, error) {
+		prompted = append(prompted, action)
+		return true, nil
+	}, nil)
+
+	if _, err := gate.Approve(tools.Action{Tool: "run_command", Summary: "go test ./... " + secret, Detail: "TOKEN=" + secret}); err != nil {
+		t.Fatal(err)
+	}
+	assertPromptedActionRedacted(t, prompted, secret)
+}
+
+func TestAutoPermissionClassifierImmuneFallbackPromptRedactsAction(t *testing.T) {
+	secret := dummyApprovalSecret()
+	classifier := &fakePermissionClassifier{response: permissions.ClassifierResponse{Decision: permissions.ClassifierAllow}}
+	var prompted []tools.Action
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy: ApprovalUnlessTrusted,
+		SandboxPolicy: SandboxDangerFull,
+		Classifier:    classifier,
+	}, func(action tools.Action) (bool, error) {
+		prompted = append(prompted, action)
+		return true, nil
+	}, nil)
+
+	if _, err := gate.Approve(tools.Action{Tool: "run_command", Summary: "rm -rf / " + secret, Detail: "TOKEN=" + secret}); err != nil {
+		t.Fatal(err)
+	}
+	if classifier.calls != 0 {
+		t.Fatalf("classifier calls = %d, want 0", classifier.calls)
+	}
+	assertPromptedActionRedacted(t, prompted, secret)
+}
+
+func assertPromptedActionRedacted(t *testing.T, prompted []tools.Action, secret string) {
+	t.Helper()
+	if len(prompted) != 1 {
+		t.Fatalf("prompted actions = %d, want 1", len(prompted))
+	}
+	action := prompted[0]
+	if strings.Contains(action.Summary, secret) || strings.Contains(action.Detail, secret) {
+		t.Fatalf("prompt action leaked secret: %#v", action)
+	}
+	if !strings.Contains(action.Summary, "<REDACTED:github-pat>") || !strings.Contains(action.Detail, "<REDACTED:github-pat>") {
+		t.Fatalf("prompt action was not redacted: %#v", action)
+	}
+}
+
 func saturatedDenialTracker() *permissions.DenialTracker {
 	denials := permissions.NewDenialTracker(3, 20)
 	denials.RecordDenied()
