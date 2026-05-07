@@ -77,6 +77,17 @@ type Resilience struct {
 	StreamIdleTimeoutMS       int `toml:"stream_idle_timeout_ms"`
 }
 
+type SecretSecurityConfig struct {
+	Read           string `toml:"read"`
+	Write          string `toml:"write"`
+	CommandOutput  string `toml:"command_output"`
+	ApprovalDetail string `toml:"approval_detail"`
+}
+
+type SecurityConfig struct {
+	Secrets SecretSecurityConfig `toml:"secrets"`
+}
+
 type Git struct {
 	Enabled    bool `toml:"enabled"`
 	AutoCommit bool `toml:"auto_commit"`
@@ -170,6 +181,7 @@ type Config struct {
 	Log              Log                        `toml:"log"`
 	Retry            Retry                      `toml:"retry"`
 	Resilience       Resilience                 `toml:"resilience"`
+	Security         SecurityConfig             `toml:"security"`
 	Git              Git                        `toml:"git"`
 	Chat             ChatConfig                 `toml:"chat"`
 	Approval         ApprovalConfig             `toml:"approval"`
@@ -294,6 +306,10 @@ func setDefaults(c *Config) {
 	c.Resilience.TokenDiminishingChecks = 2
 	c.Resilience.ToolThrashCircuitBreaker = 8
 	c.Resilience.StreamIdleTimeoutMS = 30000
+	c.Security.Secrets.Read = "redact"
+	c.Security.Secrets.Write = "block"
+	c.Security.Secrets.CommandOutput = "redact"
+	c.Security.Secrets.ApprovalDetail = "redact"
 	c.Git.AutoCommit = true
 	c.Chat.CommandTimeout = 60
 	c.Chat.IgnoreDirs = []string{".git", "node_modules", "__pycache__", ".venv", "vendor"}

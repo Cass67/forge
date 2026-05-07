@@ -3,6 +3,7 @@ package react
 import (
 	"strings"
 
+	"forge/internal/agent/tools"
 	"forge/internal/config"
 	"forge/internal/permissions"
 )
@@ -22,6 +23,12 @@ func LoadApprovalConfig(cfg *config.Config) ApprovalConfig {
 		out.SandboxPolicy = sandbox
 	}
 	out.KnownSafeCommand = append(out.KnownSafeCommand, nonEmptyStrings(cfg.Approval.KnownSafePrefixes)...)
+	out.SecretPolicy = tools.SecretPolicy{
+		Read:           tools.SecretPolicyMode(cfg.Security.Secrets.Read),
+		Write:          tools.SecretPolicyMode(cfg.Security.Secrets.Write),
+		CommandOutput:  tools.SecretPolicyMode(cfg.Security.Secrets.CommandOutput),
+		ApprovalDetail: tools.SecretPolicyMode(cfg.Security.Secrets.ApprovalDetail),
+	}
 	out.ScopedRules = permissions.LoadConfigRules(cfg.Permissions)
 	for _, rule := range cfg.Approval.Rules {
 		decision := parseRuleDecision(rule.Decision)

@@ -243,6 +243,52 @@ pattern = "go test:*"
 	}
 }
 
+func TestLoadSecuritySecretsConfig(t *testing.T) {
+	toml := `
+[security.secrets]
+read = "block"
+write = "ask"
+command_output = "allow"
+approval_detail = "redact"
+`
+	path := writeTemp(t, toml)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Security.Secrets.Read != "block" {
+		t.Fatalf("Read = %q", cfg.Security.Secrets.Read)
+	}
+	if cfg.Security.Secrets.Write != "ask" {
+		t.Fatalf("Write = %q", cfg.Security.Secrets.Write)
+	}
+	if cfg.Security.Secrets.CommandOutput != "allow" {
+		t.Fatalf("CommandOutput = %q", cfg.Security.Secrets.CommandOutput)
+	}
+	if cfg.Security.Secrets.ApprovalDetail != "redact" {
+		t.Fatalf("ApprovalDetail = %q", cfg.Security.Secrets.ApprovalDetail)
+	}
+}
+
+func TestSecuritySecretsDefaults(t *testing.T) {
+	cfg, err := config.Load("/nonexistent/path.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Security.Secrets.Read != "redact" {
+		t.Fatalf("Read default = %q", cfg.Security.Secrets.Read)
+	}
+	if cfg.Security.Secrets.Write != "block" {
+		t.Fatalf("Write default = %q", cfg.Security.Secrets.Write)
+	}
+	if cfg.Security.Secrets.CommandOutput != "redact" {
+		t.Fatalf("CommandOutput default = %q", cfg.Security.Secrets.CommandOutput)
+	}
+	if cfg.Security.Secrets.ApprovalDetail != "redact" {
+		t.Fatalf("ApprovalDetail default = %q", cfg.Security.Secrets.ApprovalDetail)
+	}
+}
+
 func TestLoadApprovalConfigSectionApprovalSupportsCommandRules(t *testing.T) {
 	toml := `
 [approval]

@@ -19,9 +19,18 @@ var (
 )
 
 func NewRunCommand(workDir string, timeoutSecs int, manager *ExecSessionManager, approve ApprovalFunc, forcePrompt ...ApprovalFunc) Tool {
+	return newRunCommand(workDir, timeoutSecs, manager, approve, DefaultSecretPolicy(), forcePrompt...)
+}
+
+func NewRunCommandWithSecretPolicy(workDir string, timeoutSecs int, manager *ExecSessionManager, approve ApprovalFunc, policy SecretPolicy, forcePrompt ...ApprovalFunc) Tool {
+	return newRunCommand(workDir, timeoutSecs, manager, approve, policy, forcePrompt...)
+}
+
+func newRunCommand(workDir string, timeoutSecs int, manager *ExecSessionManager, approve ApprovalFunc, policy SecretPolicy, forcePrompt ...ApprovalFunc) Tool {
 	if manager == nil {
 		manager = NewExecSessionManager()
 	}
+	secretPolicy := policy.WithDefaults()
 	return Tool{
 		Name:        "run_command",
 		Description: "Execute a shell command.",
@@ -83,7 +92,10 @@ func NewRunCommand(workDir string, timeoutSecs int, manager *ExecSessionManager,
 			cmd.Dir = workDir
 			out, err := cmd.CombinedOutput()
 
-			result := string(out)
+			result, blocked := secretPolicy.ApplyCommandOutput(string(out))
+			if blocked {
+				return result, nil
+			}
 			if len(result) > 50*1024 {
 				result = result[:50*1024] + "\n... output truncated at 50KB"
 			}

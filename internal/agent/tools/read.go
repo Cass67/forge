@@ -7,8 +7,9 @@ import (
 	"strings"
 )
 
-func NewReadFile(workDir string) Tool {
+func NewReadFile(workDir string, policies ...SecretPolicy) Tool {
 	guard := newIgnoreGuard(workDir)
+	secretPolicy := secretPolicyFromOptions(policies)
 	return Tool{
 		Name:        "read_file",
 		Description: "Read a file's contents. Returns content with line numbers.",
@@ -41,7 +42,12 @@ func NewReadFile(workDir string) Tool {
 				return "error: binary file, cannot display", nil
 			}
 
-			lines := strings.Split(string(data), "\n")
+			content, blocked := secretPolicy.ApplyRead(string(data))
+			if blocked {
+				return content, nil
+			}
+
+			lines := strings.Split(content, "\n")
 			start := 1
 			end := len(lines)
 

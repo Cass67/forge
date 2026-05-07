@@ -9,8 +9,9 @@ import (
 	"strings"
 )
 
-func NewApplyPatch(workDir string, approve ApprovalFunc) Tool {
+func NewApplyPatch(workDir string, approve ApprovalFunc, policies ...SecretPolicy) Tool {
 	var lastDiff string
+	secretPolicy := secretPolicyFromOptions(policies)
 	return Tool{
 		Name:        "apply_patch",
 		Description: "Apply a unified diff patch across one or more files. Prefer this for multi-hunk edits, file creation, deletion, or moves.",
@@ -30,6 +31,11 @@ func NewApplyPatch(workDir string, approve ApprovalFunc) Tool {
 			if patch == "" {
 				return "apply_patch failed: patch is required", nil
 			}
+			checkedPatch, blocked := secretPolicy.ApplyWrite(patch)
+			if blocked {
+				return checkedPatch, nil
+			}
+			patch = checkedPatch
 			lastDiff = patch
 
 			approved, err := approve(Action{
