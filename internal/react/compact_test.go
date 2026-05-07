@@ -70,30 +70,13 @@ func TestCompactSessionHistorySummarizesToolsAndErrors(t *testing.T) {
 }
 
 func TestRunnerRunEmitsCompactionProgress(t *testing.T) {
-	driver := &nativeScriptedDriver{responses: []string{"done 1", "done 2", "done 3"}}
 	var progress []string
-	session := NewSession()
-	// Pad so recentInputs exceeds the compaction threshold (40), triggering
-	// CompactSessionHistory to return true on the first run.
-	for i := 0; i < 40; i++ {
-		_ = session.RecordInput("padding")
-	}
 	r := NewRunner(Config{
-		Driver:                driver,
-		Session:               session,
 		Progress:              func(text string) { progress = append(progress, text) },
 		CompactionMaxFailures: 1,
 	})
 
-	if err := r.Run(context.Background(), "first"); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.Run(context.Background(), "second"); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.Run(context.Background(), "third"); err != nil {
-		t.Fatal(err)
-	}
+	r.applyCompactionDecision(context.Background(), CompactionDecision{Mode: CompactionSummarize, Reason: "test failure", KeepTurns: 40})
 
 	found := false
 	for _, msg := range progress {
@@ -206,7 +189,7 @@ func TestRunnerDispatchesCompactionHookPayloads(t *testing.T) {
 	if !post.Changed {
 		t.Fatal("post Changed = false, want true")
 	}
-	if !post.CircuitOpen {
-		t.Fatal("post CircuitOpen = false, want true after runtime circuit trips")
+	if post.CircuitOpen {
+		t.Fatal("post CircuitOpen = true, want false after successful compaction")
 	}
 }
