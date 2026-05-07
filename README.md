@@ -268,6 +268,8 @@ Useful command families:
 - `forge plugin install`: installs an npm package, git URL, local filesystem path, or HTTP(S) `.js`/`.mjs` URL; local manifest directories are supported
 - `forge status`: auth and provider status snapshot
 
+Advanced: `--yolo` skips approval prompts; use only in disposable or sandboxed repositories.
+
 Useful chat slash commands:
 
 ```text
