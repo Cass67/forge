@@ -84,6 +84,35 @@ func TestValidateApprovalRulesRejectMalformedMatchers(t *testing.T) {
 	}
 }
 
+func TestValidatePermissionsRules(t *testing.T) {
+	var cfg Config
+	setDefaults(&cfg)
+	cfg.Permissions.Project.Rules = []PermissionRuleConfig{
+		{Behavior: "", Tool: "run_command", Pattern: "go test:*"},
+		{Behavior: "maybe", Tool: "run_command", Pattern: "go test:*"},
+		{Behavior: "allow", Tool: "", Pattern: "go test:*"},
+		{Behavior: "deny", Tool: "write_file", Pattern: "../*.go"},
+		{Behavior: "allow", Tool: "unknown_tool", Pattern: ""},
+	}
+
+	issues := cfg.Validate()
+	if !hasIssueContaining(issues, "permissions.project.rules[0].behavior", "must not be empty") {
+		t.Fatalf("expected empty behavior issue, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "permissions.project.rules[1].behavior", "must be one of allow, ask, deny") {
+		t.Fatalf("expected invalid behavior issue, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "permissions.project.rules[2].tool", "must not be empty") {
+		t.Fatalf("expected empty tool issue, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "permissions.project.rules[3].pattern", "must not contain ..") {
+		t.Fatalf("expected traversal pattern issue, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "permissions.project.rules[4].tool", "unknown permission tool") {
+		t.Fatalf("expected unknown tool issue, got %v", issues)
+	}
+}
+
 func TestValidatePluginConfig(t *testing.T) {
 	var cfg Config
 	setDefaults(&cfg)
