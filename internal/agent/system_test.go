@@ -92,3 +92,19 @@ func TestBuildNativeSystemPromptIncludesRicherCodexStyleContract(t *testing.T) {
 		t.Fatalf("prompt still contains stale pre-tool progress instruction:\n%s", prompt)
 	}
 }
+
+func TestBuildNativeSystemPromptIncludesNativeDelegationGuidance(t *testing.T) {
+	prompt := BuildNativeSystemPrompt("/home/user/project")
+
+	for _, want := range []string{
+		"spawn_agent",
+		"wait_agent",
+		"broad repo audits",
+		"multiple independent workstreams",
+		"without requiring plugins",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}

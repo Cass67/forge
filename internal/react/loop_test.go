@@ -20,6 +20,7 @@ import (
 type nativeScriptedDriver struct {
 	responses []string
 	callCount int
+	reset     bool
 }
 
 func (d *nativeScriptedDriver) Name() string { return "native-scripted" }
@@ -43,6 +44,8 @@ func (d *nativeScriptedDriver) StreamWithTools(_ context.Context, _ []llm.Messag
 	d.callCount++
 	return nil
 }
+
+func (d *nativeScriptedDriver) ResetConversation() { d.reset = true }
 
 type captureMessagesDriver struct {
 	lastMessages []llm.Message
@@ -1706,8 +1709,9 @@ func toolDefNames(defs []llm.ToolDef) []string {
 }
 
 func TestRunnerClearHistoryResetsSessionState(t *testing.T) {
+	driver := &nativeScriptedDriver{responses: []string{"done"}}
 	r := NewRunner(Config{
-		Driver:       &nativeScriptedDriver{responses: []string{"done"}},
+		Driver:       driver,
 		Renderer:     silentRenderer{},
 		SystemPrompt: func() string { return "system prompt" },
 		Session:      NewSession(),
@@ -1726,6 +1730,9 @@ func TestRunnerClearHistoryResetsSessionState(t *testing.T) {
 	}
 	if snap := r.session.Snapshot(); snap.Turn != 0 || len(snap.History) != 0 || len(snap.Turns) != 0 {
 		t.Fatalf("snapshot after clear = %#v", snap)
+	}
+	if !driver.reset {
+		t.Fatal("expected driver conversation state to reset")
 	}
 }
 

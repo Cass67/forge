@@ -132,6 +132,8 @@ func (m InputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cursorPos = len([]rune(m.Prompt))
 
 	case "enter":
+		m.Prompt = strings.TrimSpace(m.Prompt)
+		m.cursorPos = len([]rune(m.Prompt))
 		if m.Prompt != "" {
 			return m, func() tea.Msg {
 				return SessionStarted{

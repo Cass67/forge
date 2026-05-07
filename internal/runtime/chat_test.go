@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -202,6 +203,13 @@ func TestPrintChatHelpMentionsDebugViewAndTraceCommand(t *testing.T) {
 	}
 }
 
+func TestPrintChatHelpMentionsNewSessionCommand(t *testing.T) {
+	output := captureRuntimeStdout(t, PrintChatHelp)
+	if !strings.Contains(output, "/new") {
+		t.Fatalf("expected chat help to mention /new, got:\n%s", output)
+	}
+}
+
 func TestHandleChatSlashCommandExpandIsUnknown(t *testing.T) {
 	var buf bytes.Buffer
 	renderer := agent.NewRenderer(&buf, 80, false)
@@ -230,6 +238,27 @@ func TestHandleChatSlashCommandClearAlsoClearsReactSession(t *testing.T) {
 	}
 	if got := state.ActiveSkills(); len(got) != 0 {
 		t.Fatalf("active skills after clear = %#v", got)
+	}
+}
+
+func TestHandleChatSlashCommandNewClearsReactSession(t *testing.T) {
+	var buf bytes.Buffer
+	renderer := agent.NewRenderer(&buf, 80, false)
+	session := &stubChatSessionControl{}
+	state := chatstate.New()
+	state.ActivateSkill("brainstorming")
+
+	if handled := handleChatSlashCommand("/new", renderer, nil, state, session, &ChatSetup{}); !handled {
+		t.Fatal("expected slash command to be handled")
+	}
+	if !session.cleared {
+		t.Fatal("expected react session clear to be invoked")
+	}
+	if got := state.ActiveSkills(); len(got) != 0 {
+		t.Fatalf("active skills after new session = %#v", got)
+	}
+	if !strings.Contains(buf.String(), "new session started") {
+		t.Fatalf("expected new-session output, got %q", buf.String())
 	}
 }
 
@@ -933,6 +962,55 @@ func TestRegisterReactDelegationToolsStreamsSubAgentEvents(t *testing.T) {
 	}
 }
 
+func TestRegisterReactDelegationToolsRestrictsCodeReviewerToReadOnlyTools(t *testing.T) {
+	reg := tools.NewRegistry()
+	cfg := &config.Config{}
+	workDir := t.TempDir()
+	approve := agent.YoloApproval()
+	_, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), approve, nil, nil)
+	baseReg := reg.Filter(nil)
+	driver := &captureToolDefsDriver{response: "review findings"}
+	setup := &ChatSetup{
+		Config:  cfg,
+		WorkDir: workDir,
+		Driver:  driver,
+	}
+
+	registerReactDelegationTools(reg, setup, baseReg, approve, nil, nil)
+	spawnTool, ok := reg.Get("spawn_agent")
+	if !ok {
+		t.Fatal("spawn_agent tool not registered")
+	}
+	waitTool, ok := reg.Get("wait_agent")
+	if !ok {
+		t.Fatal("wait_agent tool not registered")
+	}
+	rawSpawn, err := spawnTool.Execute(context.Background(), map[string]any{
+		"task_description": "review this implementation and fix it if anything is obvious",
+		"role":             "code-reviewer",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spawnPayload map[string]any
+	if err := json.Unmarshal([]byte(rawSpawn), &spawnPayload); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := spawnPayload["id"].(string)
+	if id == "" {
+		t.Fatal("spawn id missing")
+	}
+	if _, err := waitTool.Execute(context.Background(), map[string]any{"id": id, "timeout_seconds": 1.0}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, forbidden := range []string{"apply_patch", "edit_file", "write_file", "artifact_write"} {
+		if slices.Contains(driver.toolNames, forbidden) {
+			t.Fatalf("code-reviewer saw mutating tool %q in %#v", forbidden, driver.toolNames)
+		}
+	}
+}
+
 // ── Integration hardening (Task 10) ──────────────────────────────────────────
 
 // TestLightweightChatPathStaysDirect verifies that a simple conversational
@@ -1224,6 +1302,29 @@ func (d *kernelNativeTextDriver) Stream(_ context.Context, _ []llm.Message, out 
 
 func (d *kernelNativeTextDriver) StreamWithTools(_ context.Context, _ []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
 	defer close(out)
+	out <- llm.Token{Text: d.response}
+	return nil
+}
+
+type captureToolDefsDriver struct {
+	response  string
+	toolNames []string
+}
+
+func (d *captureToolDefsDriver) Name() string { return "capture-tool-defs" }
+
+func (d *captureToolDefsDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	defer close(out)
+	out <- llm.Token{Text: d.response}
+	return nil
+}
+
+func (d *captureToolDefsDriver) StreamWithTools(_ context.Context, _ []llm.Message, defs []llm.ToolDef, out chan<- llm.Token) error {
+	defer close(out)
+	d.toolNames = d.toolNames[:0]
+	for _, def := range defs {
+		d.toolNames = append(d.toolNames, def.Name)
+	}
 	out <- llm.Token{Text: d.response}
 	return nil
 }

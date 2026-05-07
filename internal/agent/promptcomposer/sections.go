@@ -11,6 +11,7 @@ func ForgeCorePrompt(workDir string) StaticInput {
 		Responsiveness: responsivenessSection(),
 		System:         coreGuidelinesSection(),
 		Planning:       planningSection(),
+		Delegation:     delegationSection(),
 		Validation:     validationSection(),
 		Progress:       progressSection(),
 		Autonomy:       autonomySection(),
@@ -102,6 +103,17 @@ func planningSection() string {
 		"- Finish or update the current step before drifting into unrelated exploration.",
 		"- High-quality plans: Inspect runtime path; Tighten prompt contract; Add UI checklist; Verify behavior.",
 		"- Low-quality plans: Do coding; Fix stuff; Test it.",
+	}, "\n")
+}
+
+func delegationSection() string {
+	return strings.Join([]string{
+		"## Delegation",
+		"- Use spawn_agent for broad repo audits, code reviews, competitive comparisons, and other tasks that benefit from multiple independent workstreams.",
+		"- Use spawn_agent early for parallel evidence gathering instead of doing all investigation in the parent turn.",
+		"- Prefer available native agent roles when they fit: repo-auditor, code-reviewer, explorer, oracle, synthesizer.",
+		"- Use clear role labels for ad-hoc workstreams, then call wait_agent to collect results before final synthesis.",
+		"- Native delegation works without requiring plugins; plugin tools are optional extras, not the default delegation path.",
 	}, "\n")
 }
 

@@ -3,6 +3,7 @@ package reacttools
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"forge/internal/react"
@@ -30,6 +31,18 @@ func TestSpawnAgentToolReturnsRunningEnvelope(t *testing.T) {
 	}
 	if payload["id"] == "" {
 		t.Fatalf("id = %#v", payload["id"])
+	}
+}
+
+func TestSpawnAgentToolAdvertisesDefaultAgents(t *testing.T) {
+	pool := react.NewAgentPool(nil)
+	pool.RegisterAgents(react.DefaultAgentDefinitions())
+	tool := NewSpawnAgent(pool)
+
+	for _, want := range []string{"repo-auditor", "code-reviewer", "oracle"} {
+		if !strings.Contains(tool.Description, want) {
+			t.Fatalf("spawn_agent description missing %q: %s", want, tool.Description)
+		}
 	}
 }
 

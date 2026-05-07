@@ -19,19 +19,31 @@ func renderMessageContent(content string, width int, theme chatTheme) string {
 		width = 10
 	}
 	blocks := parseMessageBlocks(content)
-	rendered := make([]string, 0, len(blocks))
+	rendered := make([]messageBlock, 0, len(blocks))
 	for _, block := range blocks {
 		body := strings.TrimRight(block.Body, "\n")
 		if strings.TrimSpace(body) == "" {
 			continue
 		}
+		block.Body = body
+		rendered = append(rendered, block)
+	}
+
+	parts := make([]string, 0, len(rendered))
+	for i, block := range rendered {
+		if i > 0 {
+			prev := rendered[i-1]
+			if !prev.Fenced && !block.Fenced {
+				parts = append(parts, "")
+			}
+		}
 		if block.Fenced {
-			rendered = append(rendered, renderCodeBlock(block.Lang, body, width, theme))
+			parts = append(parts, renderCodeBlock(block.Lang, block.Body, width, theme))
 			continue
 		}
-		rendered = append(rendered, renderWrappedProseBlock(body, width, theme))
+		parts = append(parts, renderWrappedProseBlock(block.Body, width, theme))
 	}
-	return strings.Join(rendered, "\n\n")
+	return strings.Join(parts, "\n")
 }
 
 func renderWrappedProseBlock(body string, width int, theme chatTheme) string {

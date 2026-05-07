@@ -2556,7 +2556,7 @@ func (m ChatModel) submitSkillInput(s skills.Skill, turnLabel, msg string) (tea.
 }
 
 var builtinCommands = []string{
-	"/clear", "/clear all", "/clear agent", "/clear tools",
+	"/new", "/clear", "/clear all", "/clear agent", "/clear tools",
 	"/help", "/stats", "/trace",
 	"/theme", "/theme low", "/theme default", "/theme light", "/theme dusk", "/theme midnight-ink", "/theme eclipse",
 	"/panel", "/panel on", "/panel off", "/toggle panel",
@@ -2581,13 +2581,29 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 	m.inputPos = 0
 
 	switch {
+	case input == "/new":
+		m.messages = nil
+		m.resetRecentActivity()
+		m.clearToolsSections()
+		m.turnAnchorMessageIndex = -1
+		m.pendingQueuedInput = nil
+		m.followMode = followBottom
+		m.refreshViewport()
+		if m.config.ClearHistory != nil {
+			m.config.ClearHistory()
+		}
+		m.flash = "new session started"
 	case input == "/clear" || input == "/clear all":
 		m.messages = nil
 		m.resetRecentActivity()
 		m.clearToolsSections()
 		m.turnAnchorMessageIndex = -1
+		m.pendingQueuedInput = nil
 		m.followMode = followBottom
 		m.refreshViewport()
+		if m.config.ClearHistory != nil {
+			m.config.ClearHistory()
+		}
 		m.flash = "conversation cleared"
 	case input == "/clear agent":
 		m.messages = nil
@@ -2844,6 +2860,7 @@ func (m ChatModel) helpLines() []string {
 			"  /auto-skills <m>   set off, suggest, or auto",
 			"",
 			"Session state:",
+			"  /new               start a clean session",
 			"  /sessions          open saved sessions picker",
 			"  /save [name]       save the current session",
 			"  /restore [name]    restore a saved session",

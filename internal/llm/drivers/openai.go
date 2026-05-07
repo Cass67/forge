@@ -656,14 +656,31 @@ func trimStatelessConversation(messages []llm.Message) []llm.Message {
 		}
 	}
 	kept := nonSystem[keptStart:]
+	latestUserIndex := -1
+	for i, msg := range nonSystem {
+		if msg.Role == llm.RoleUser {
+			latestUserIndex = i
+		}
+	}
+	var latestUser *llm.Message
+	if latestUserIndex >= 0 && latestUserIndex < keptStart {
+		msg := nonSystem[latestUserIndex]
+		latestUser = &msg
+	}
 	dropped := len(messages) - len(system) - len(kept)
-	result := make([]llm.Message, 0, len(system)+len(kept)+1)
+	if latestUser != nil {
+		dropped--
+	}
+	result := make([]llm.Message, 0, len(system)+len(kept)+2)
 	result = append(result, system...)
 	if dropped > 0 {
 		result = append(result, llm.Message{
 			Role:    llm.RoleUser,
 			Content: fmt.Sprintf("[%d earlier messages trimmed to fit context budget]", dropped),
 		})
+	}
+	if latestUser != nil {
+		result = append(result, *latestUser)
 	}
 	result = append(result, kept...)
 	return result

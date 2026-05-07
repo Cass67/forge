@@ -20,7 +20,7 @@ func strippedLine(s string) string {
 			if r == 'm' || r == 'A' || r == 'B' || r == 'C' || r == 'D' || r == 'K' {
 				inEsc = false
 			}
-		} else if r > 127 || unicode.IsPrint(r) {
+		} else if r == '\n' || r > 127 || unicode.IsPrint(r) {
 			b.WriteRune(r)
 		}
 	}

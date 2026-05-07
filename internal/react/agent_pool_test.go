@@ -91,3 +91,35 @@ func TestMapSpawnRole(t *testing.T) {
 		}
 	}
 }
+
+func TestDefaultAgentDefinitionsIncludeNativeSpecialists(t *testing.T) {
+	defs := DefaultAgentDefinitions()
+	names := make(map[string]bool)
+	for _, def := range defs {
+		names[def.Name] = true
+		if def.SystemPrompt == "" {
+			t.Fatalf("default agent %q missing system prompt", def.Name)
+		}
+	}
+
+	for _, want := range []string{"repo-auditor", "code-reviewer", "explorer", "oracle", "synthesizer"} {
+		if !names[want] {
+			t.Fatalf("default agents missing %q in %#v", want, names)
+		}
+	}
+}
+
+func TestAgentPoolMatchesRegisteredAgentsWithSpacesOrHyphens(t *testing.T) {
+	pool := NewAgentPool(nil)
+	pool.RegisterAgents([]AgentDefinition{{Name: "repo-auditor", SystemPrompt: "audit"}})
+
+	for _, role := range []string{"repo-auditor", "repo auditor", "Repo Auditor", "repo_auditor"} {
+		agent, ok := pool.GetAgent(role)
+		if !ok {
+			t.Fatalf("GetAgent(%q) not found", role)
+		}
+		if agent.SystemPrompt != "audit" {
+			t.Fatalf("GetAgent(%q) = %#v", role, agent)
+		}
+	}
+}
