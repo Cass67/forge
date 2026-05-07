@@ -3429,6 +3429,47 @@ func TestChatModelAutoSkillsCommands(t *testing.T) {
 	}
 }
 
+func TestChatModelAutoSkillAlreadyActiveDoesNotSwallowInput(t *testing.T) {
+	inputCh := make(chan string, 1)
+	state := chatstate.New()
+	state.ActivateSkill("brainstorming")
+	m := NewChatModel(ChatLiveConfig{
+		Model:          "test",
+		WorkDir:        "/tmp",
+		Skills:         []skills.Skill{{Name: "brainstorming", Description: "Plan first", Body: "Brainstorm before coding."}},
+		AutoSkillsMode: skills.AutoSkillsAuto,
+		State:          state,
+	})
+	m.inputCh = inputCh
+	m.width = 100
+	m.height = 24
+	m.inputBuf = "hello, i am asking what your plan is to remedy all the stuff you said is missing"
+	m.inputPos = len(m.inputBuf)
+
+	updated, cmd := m.submitInput()
+	m = updated.(ChatModel)
+
+	if cmd == nil {
+		t.Fatal("expected active auto-skill input to submit normally")
+	}
+	if len(m.messages) != 1 || m.messages[0].Kind != MsgUser || !strings.Contains(m.messages[0].Content, "what your plan is") {
+		t.Fatalf("messages = %#v", m.messages)
+	}
+	cmd()
+	select {
+	case raw := <-inputCh:
+		var ui chatstate.ChatUserInput
+		if err := json.Unmarshal([]byte(raw), &ui); err != nil {
+			t.Fatal(err)
+		}
+		if !ui.IsInput || !strings.Contains(ui.Text, "remedy all the stuff") {
+			t.Fatalf("queued input = %#v", ui)
+		}
+	default:
+		t.Fatal("expected queued chat input")
+	}
+}
+
 func TestChatModelSlashClearVariants(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 100

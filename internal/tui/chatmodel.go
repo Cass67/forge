@@ -2346,6 +2346,9 @@ submitChatInput:
 		switch m.autoSkillsMode {
 		case skills.AutoSkillsAuto:
 			if s, ok := skills.DetectAuto(m.skills, input); ok {
+				if m.state != nil && m.state.SkillActivated(s.Name) {
+					break
+				}
 				updated, submitCmd := m.submitSkillInput(s, input, skills.SkillMessageWithUserInput(s, input))
 				return updated.(ChatModel), submitCmd, true
 			}
