@@ -113,6 +113,29 @@ func TestValidatePermissionsRules(t *testing.T) {
 	}
 }
 
+func TestValidateSecuritySecretsPolicy(t *testing.T) {
+	var cfg Config
+	setDefaults(&cfg)
+	cfg.Security.Secrets.Read = "maybe"
+	cfg.Security.Secrets.Write = "nope"
+	cfg.Security.Secrets.CommandOutput = "hide"
+	cfg.Security.Secrets.ApprovalDetail = "mask"
+
+	issues := cfg.Validate()
+	if !hasIssueContaining(issues, "security.secrets.read", "must be one of allow, redact, ask, block") {
+		t.Fatalf("expected read policy issue, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "security.secrets.write", "must be one of allow, redact, ask, block") {
+		t.Fatalf("expected write policy issue, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "security.secrets.command_output", "must be one of allow, redact, ask, block") {
+		t.Fatalf("expected command_output policy issue, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "security.secrets.approval_detail", "must be one of allow, redact, ask, block") {
+		t.Fatalf("expected approval_detail policy issue, got %v", issues)
+	}
+}
+
 func TestValidatePluginConfig(t *testing.T) {
 	var cfg Config
 	setDefaults(&cfg)

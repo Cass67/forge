@@ -43,6 +43,7 @@ type ApprovalConfig struct {
 	Rules            []ApprovalRule
 	ScopedRules      []permissions.Rule
 	KnownSafeCommand []string
+	SecretPolicy     tools.SecretPolicy
 }
 
 type GuardianEvent struct {
@@ -158,6 +159,7 @@ func (g *ApprovalGate) Approve(action tools.Action) (bool, error) {
 	action.Tool = strings.TrimSpace(action.Tool)
 	action.Summary = strings.TrimSpace(action.Summary)
 	action.Detail = strings.TrimSpace(action.Detail)
+	action.Detail = g.cfg.SecretPolicy.RedactApprovalDetail(action.Detail)
 	if action.Tool == "" {
 		return false, fmt.Errorf("approval action tool is required")
 	}
@@ -339,6 +341,7 @@ func normalizeApprovalConfig(cfg ApprovalConfig) ApprovalConfig {
 	if len(cfg.KnownSafeCommand) == 0 {
 		cfg.KnownSafeCommand = append([]string(nil), defaultKnownSafeCommandPrefixes...)
 	}
+	cfg.SecretPolicy = cfg.SecretPolicy.WithDefaults()
 	return cfg
 }
 

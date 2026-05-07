@@ -38,6 +38,22 @@ func TestRunCommandFailure(t *testing.T) {
 	}
 }
 
+func TestRunCommandRedactsSecretOutputByDefault(t *testing.T) {
+	dir := t.TempDir()
+	tool := NewRunCommand(dir, 60, nil, func(a Action) (bool, error) { return true, nil })
+
+	result, err := tool.Execute(context.Background(), map[string]any{"command": "printf '%s' 'token=" + dummySecret() + "'"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(result, dummySecret()) {
+		t.Fatalf("command result leaked secret: %s", result)
+	}
+	if !strings.Contains(result, "<REDACTED:github-pat>") {
+		t.Fatalf("command result missing redaction: %s", result)
+	}
+}
+
 func TestRunCommandDenied(t *testing.T) {
 	dir := t.TempDir()
 	tool := NewRunCommand(dir, 60, nil, func(a Action) (bool, error) { return false, nil })

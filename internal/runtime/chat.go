@@ -188,10 +188,16 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 		})
 	}
 	_ = mcpManager.Refresh(context.Background(), cfg)
-	reg.Register(tools.NewReadFile(workDir))
-	reg.Register(tools.NewWriteFile(workDir, approve))
-	reg.Register(tools.NewEditFile(workDir, approve))
-	reg.Register(tools.NewApplyPatch(workDir, approve))
+	secretPolicy := tools.SecretPolicy{
+		Read:           tools.SecretPolicyMode(cfg.Security.Secrets.Read),
+		Write:          tools.SecretPolicyMode(cfg.Security.Secrets.Write),
+		CommandOutput:  tools.SecretPolicyMode(cfg.Security.Secrets.CommandOutput),
+		ApprovalDetail: tools.SecretPolicyMode(cfg.Security.Secrets.ApprovalDetail),
+	}
+	reg.Register(tools.NewReadFile(workDir, secretPolicy))
+	reg.Register(tools.NewWriteFile(workDir, approve, secretPolicy))
+	reg.Register(tools.NewEditFile(workDir, approve, secretPolicy))
+	reg.Register(tools.NewApplyPatch(workDir, approve, secretPolicy))
 	reg.Register(tools.NewArtifactWrite(previewRuntime))
 	reg.Register(tools.NewArtifactRead(previewRuntime))
 	reg.Register(tools.NewPreviewServerEnsure(previewRuntime))
@@ -203,7 +209,7 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 	reg.Register(tools.NewLSPReferences(workDir))
 	reg.Register(tools.NewLSPHover(workDir))
 	reg.Register(tools.NewLSPDocumentSymbols(workDir))
-	reg.Register(tools.NewRunCommand(workDir, cfg.Chat.CommandTimeout, execManager, approve, fp))
+	reg.Register(tools.NewRunCommandWithSecretPolicy(workDir, cfg.Chat.CommandTimeout, execManager, approve, secretPolicy, fp))
 	reg.Register(tools.NewExecSessionStart(workDir, execManager, approve))
 	reg.Register(tools.NewExecSessionStatus(execManager))
 	reg.Register(tools.NewExecSessionWrite(execManager))

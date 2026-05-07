@@ -12,6 +12,10 @@ import (
 	"forge/internal/gitutil"
 )
 
+func dummyApprovalSecret() string {
+	return "ghp_" + strings.Repeat("a", 36)
+}
+
 func TestApprovalGateRuleForbidsCommand(t *testing.T) {
 	prompted := false
 	gate := NewApprovalGate("", ApprovalConfig{
@@ -49,6 +53,39 @@ func TestApprovalGateRuleForbidsCommand(t *testing.T) {
 	}
 	if updates[0].Decision != ApprovalDecisionForbidden || updates[0].Source != ApprovalDecisionSourceRule {
 		t.Fatalf("forbidden rule update = %#v", updates[0])
+	}
+}
+
+func TestApprovalGateRedactsSecretDetailBeforePromptAndUpdates(t *testing.T) {
+	secret := dummyApprovalSecret()
+	var prompted tools.Action
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy: ApprovalOnRequest,
+		SandboxPolicy: SandboxWorkspaceWrite,
+	}, func(action tools.Action) (bool, error) {
+		prompted = action
+		return true, nil
+	}, nil)
+
+	approved, err := gate.Approve(tools.Action{
+		Tool:    "write_file",
+		Summary: "write token.txt",
+		Detail:  "token=" + secret,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !approved {
+		t.Fatal("expected approval")
+	}
+	if strings.Contains(prompted.Detail, secret) {
+		t.Fatalf("prompt detail leaked secret: %s", prompted.Detail)
+	}
+	updates := gate.ApprovalUpdates()
+	for _, update := range updates {
+		if strings.Contains(update.Reason, secret) {
+			t.Fatalf("approval update leaked secret: %#v", update)
+		}
 	}
 }
 
