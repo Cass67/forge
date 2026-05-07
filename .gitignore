@@ -74,6 +74,7 @@ log/
 
 # Local build artifacts
 /forge
+/bin/
 
 # Local docs and design scratch files
 /chat-ui-demo.html
