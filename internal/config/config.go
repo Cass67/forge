@@ -140,6 +140,16 @@ type PermissionsConfig struct {
 	Local   PermissionScopeConfig `toml:"local"`
 	Session PermissionScopeConfig `toml:"session"`
 	CLI     PermissionScopeConfig `toml:"cli"`
+	Auto    PermissionAutoConfig  `toml:"auto"`
+}
+
+type PermissionAutoConfig struct {
+	Enabled               bool   `toml:"enabled"`
+	Posture               string `toml:"posture"`
+	Model                 string `toml:"model"`
+	MaxConsecutiveDenials int    `toml:"max_consecutive_denials"`
+	MaxTotalDenials       int    `toml:"max_total_denials"`
+	FailureBehavior       string `toml:"failure_behavior"`
 }
 
 type MCPServerConfig struct {
@@ -310,6 +320,10 @@ func setDefaults(c *Config) {
 	c.Security.Secrets.Write = "block"
 	c.Security.Secrets.CommandOutput = "redact"
 	c.Security.Secrets.ApprovalDetail = "redact"
+	c.Permissions.Auto.Posture = "balanced"
+	c.Permissions.Auto.MaxConsecutiveDenials = 3
+	c.Permissions.Auto.MaxTotalDenials = 20
+	c.Permissions.Auto.FailureBehavior = "ask"
 	c.Git.AutoCommit = true
 	c.Chat.CommandTimeout = 60
 	c.Chat.IgnoreDirs = []string{".git", "node_modules", "__pycache__", ".venv", "vendor"}

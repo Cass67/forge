@@ -28,6 +28,7 @@ import (
 	"forge/internal/mcp"
 	"forge/internal/memory"
 	"forge/internal/modelcatalog"
+	"forge/internal/permissions"
 	pluginruntime "forge/internal/plugins"
 	reactruntime "forge/internal/react"
 	reacttools "forge/internal/react/tools"
@@ -43,6 +44,37 @@ var (
 	runChatLiveUI     = tui.RunChatLive
 	newChatMCPManager = func() *mcp.Manager { return mcp.NewManager() }
 )
+
+func loadChatApprovalConfig(setup *ChatSetup) reactruntime.ApprovalConfig {
+	if setup == nil || setup.Config == nil {
+		return reactruntime.LoadApprovalConfig(nil)
+	}
+	cfg := reactruntime.LoadApprovalConfig(setup.Config)
+	if !setup.Config.Permissions.Auto.Enabled {
+		return cfg
+	}
+	model := strings.TrimSpace(setup.Config.Permissions.Auto.Model)
+	if model == "" {
+		model = strings.TrimSpace(setup.Config.Models.Auditor)
+	}
+	if model == "" {
+		model = strings.TrimSpace(setup.Config.Models.Summarizer)
+	}
+	if model == "" {
+		model = strings.TrimSpace(setup.ChatModel)
+	}
+	if model == "" || setup.MakeDriver == nil {
+		return cfg
+	}
+	driver := setup.MakeDriver(model)
+	if driver == nil {
+		return cfg
+	}
+	cfg.Classifier = newLLMPermissionClassifier(driver, 5*time.Second)
+	cfg.Denials = permissions.NewDenialTracker(setup.Config.Permissions.Auto.MaxConsecutiveDenials, setup.Config.Permissions.Auto.MaxTotalDenials)
+	cfg.ClassifierFailureBehavior = reactruntime.ClassifierFailureBehavior(setup.Config.Permissions.Auto.FailureBehavior)
+	return cfg
+}
 
 type chatRuntimeMode string
 
@@ -282,7 +314,7 @@ func RunChatLive(setup *ChatSetup) {
 	session := reactruntime.NewSession()
 
 	var approve tools.ApprovalFunc
-	gate := reactruntime.NewApprovalGate(setup.WorkDir, reactruntime.LoadApprovalConfig(setup.Config), nil, func(text string) {
+	gate := reactruntime.NewApprovalGate(setup.WorkDir, loadChatApprovalConfig(setup), nil, func(text string) {
 		evRenderer.Info(text)
 	})
 	gate.SetGuardianReviewer(func(transcript string, action tools.Action) tools.GuardianReview {
@@ -611,7 +643,7 @@ func RunChatConsole(setup *ChatSetup) {
 	} else {
 		approve = agent.InteractiveApproval(os.Stdin, os.Stdout)
 	}
-	gate := reactruntime.NewApprovalGate(setup.WorkDir, reactruntime.LoadApprovalConfig(setup.Config), approve, func(text string) {
+	gate := reactruntime.NewApprovalGate(setup.WorkDir, loadChatApprovalConfig(setup), approve, func(text string) {
 		_, _ = fmt.Fprintln(os.Stdout, text)
 	})
 	gate.SetGuardianReviewer(func(transcript string, action tools.Action) tools.GuardianReview {
