@@ -77,6 +77,17 @@ type Resilience struct {
 	StreamIdleTimeoutMS       int `toml:"stream_idle_timeout_ms"`
 }
 
+type SecretSecurityConfig struct {
+	Read           string `toml:"read"`
+	Write          string `toml:"write"`
+	CommandOutput  string `toml:"command_output"`
+	ApprovalDetail string `toml:"approval_detail"`
+}
+
+type SecurityConfig struct {
+	Secrets SecretSecurityConfig `toml:"secrets"`
+}
+
 type Git struct {
 	Enabled    bool `toml:"enabled"`
 	AutoCommit bool `toml:"auto_commit"`
@@ -110,6 +121,35 @@ type ApprovalConfig struct {
 	SandboxPolicy     string               `toml:"sandbox_policy"`
 	KnownSafePrefixes []string             `toml:"known_safe_prefixes"`
 	Rules             []ApprovalRuleConfig `toml:"rules"`
+}
+
+type PermissionRuleConfig struct {
+	Behavior string `toml:"behavior"`
+	Tool     string `toml:"tool"`
+	Pattern  string `toml:"pattern"`
+}
+
+type PermissionScopeConfig struct {
+	Rules []PermissionRuleConfig `toml:"rules"`
+}
+
+type PermissionsConfig struct {
+	Managed PermissionScopeConfig `toml:"managed"`
+	User    PermissionScopeConfig `toml:"user"`
+	Project PermissionScopeConfig `toml:"project"`
+	Local   PermissionScopeConfig `toml:"local"`
+	Session PermissionScopeConfig `toml:"session"`
+	CLI     PermissionScopeConfig `toml:"cli"`
+	Auto    PermissionAutoConfig  `toml:"auto"`
+}
+
+type PermissionAutoConfig struct {
+	Enabled               bool   `toml:"enabled"`
+	Posture               string `toml:"posture"`
+	Model                 string `toml:"model"`
+	MaxConsecutiveDenials int    `toml:"max_consecutive_denials"`
+	MaxTotalDenials       int    `toml:"max_total_denials"`
+	FailureBehavior       string `toml:"failure_behavior"`
 }
 
 type MCPServerConfig struct {
@@ -151,9 +191,11 @@ type Config struct {
 	Log              Log                        `toml:"log"`
 	Retry            Retry                      `toml:"retry"`
 	Resilience       Resilience                 `toml:"resilience"`
+	Security         SecurityConfig             `toml:"security"`
 	Git              Git                        `toml:"git"`
 	Chat             ChatConfig                 `toml:"chat"`
 	Approval         ApprovalConfig             `toml:"approval"`
+	Permissions      PermissionsConfig          `toml:"permissions"`
 	MCPServers       map[string]MCPServerConfig `toml:"mcp_servers"`
 	Plugins          []PluginConfig             `toml:"plugins"`
 	LiveCompatModels bool                       `toml:"live_compat_models"`
@@ -274,6 +316,14 @@ func setDefaults(c *Config) {
 	c.Resilience.TokenDiminishingChecks = 2
 	c.Resilience.ToolThrashCircuitBreaker = 8
 	c.Resilience.StreamIdleTimeoutMS = 30000
+	c.Security.Secrets.Read = "redact"
+	c.Security.Secrets.Write = "block"
+	c.Security.Secrets.CommandOutput = "redact"
+	c.Security.Secrets.ApprovalDetail = "redact"
+	c.Permissions.Auto.Posture = "balanced"
+	c.Permissions.Auto.MaxConsecutiveDenials = 3
+	c.Permissions.Auto.MaxTotalDenials = 20
+	c.Permissions.Auto.FailureBehavior = "ask"
 	c.Git.AutoCommit = true
 	c.Chat.CommandTimeout = 60
 	c.Chat.IgnoreDirs = []string{".git", "node_modules", "__pycache__", ".venv", "vendor"}

@@ -7,8 +7,9 @@ import (
 	"strings"
 )
 
-func NewEditFile(workDir string, approve ApprovalFunc) Tool {
+func NewEditFile(workDir string, approve ApprovalFunc, policies ...SecretPolicy) Tool {
 	var lastDiff string
+	secretPolicy := secretPolicyFromOptions(policies)
 	return Tool{
 		Name:        "edit_file",
 		Description: "Make a search-and-replace edit within a file.",
@@ -28,6 +29,11 @@ func NewEditFile(workDir string, approve ApprovalFunc) Tool {
 			path, _ := args["path"].(string)
 			oldText, _ := args["old_text"].(string)
 			newText, _ := args["new_text"].(string)
+			checkedNewText, blocked := secretPolicy.ApplyWrite(newText)
+			if blocked {
+				return checkedNewText, nil
+			}
+			newText = checkedNewText
 
 			resolved, err := ResolvePath(workDir, path)
 			if err != nil {

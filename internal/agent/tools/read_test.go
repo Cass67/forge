@@ -87,3 +87,22 @@ func TestReadFileNotFound(t *testing.T) {
 		t.Errorf("expected error message, got: %s", result)
 	}
 }
+
+func TestReadFileRedactsSecretsByDefault(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "token.txt"), []byte("token="+dummySecret()+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := NewReadFile(dir)
+	result, err := tool.Execute(context.Background(), map[string]any{"path": "token.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(result, dummySecret()) {
+		t.Fatalf("read result leaked secret: %s", result)
+	}
+	if !strings.Contains(result, "<REDACTED:github-pat>") {
+		t.Fatalf("read result missing redaction: %s", result)
+	}
+}

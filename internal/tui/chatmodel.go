@@ -311,6 +311,15 @@ type ChatModel struct {
 	responseCh      chan<- bool
 	slashComplete   chatSlashCompletionState
 	nextRecordSeq   int
+	renderCache     *transcriptRenderCache
+	lastRenderStats transcriptRenderStats
+}
+
+type transcriptRenderStats struct {
+	Rendered int
+	Hits     int
+	Misses   int
+	Lines    int
 }
 
 func NewChatModel(cfg ChatLiveConfig) ChatModel {
@@ -344,6 +353,7 @@ func NewChatModel(cfg ChatLiveConfig) ChatModel {
 		modelsFiltered:         uniqueStringsPreserveOrder(cfg.AvailableModels),
 		providersList:          append([]ProviderOption(nil), cfg.Providers...),
 		contextFiles:           append([]string(nil), cfg.ContextFiles...),
+		renderCache:            newTranscriptRenderCache(),
 	}
 	m.modelsList = m.uniqueModelOptions(m.modelsList)
 	m.modelsFiltered = append([]string(nil), m.modelsList...)
@@ -830,6 +840,7 @@ func (m *ChatModel) refreshViewport() {
 	wasPinnedToBottom := m.followMode == followManual && m.chatViewport.YOffset >= prevMaxScroll
 
 	var blocks []string
+	renderedCount := 0
 	messageBlockIndex := make([]int, len(m.messages))
 	for i := range messageBlockIndex {
 		messageBlockIndex[i] = -1
@@ -846,7 +857,17 @@ func (m *ChatModel) refreshViewport() {
 			continue
 		}
 		messageBlockIndex[i] = len(blocks)
-		rendered := msg.Render(contentWidth, theme)
+		rendered, ok := "", false
+		if msg.Kind != MsgWorking {
+			rendered, ok = m.renderCache.Get(msg, contentWidth, m.themeID)
+		}
+		if !ok {
+			rendered = msg.Render(contentWidth, theme)
+			if msg.Kind != MsgWorking {
+				m.renderCache.Put(msg, contentWidth, m.themeID, rendered)
+			}
+			renderedCount++
+		}
 		blocks = append(blocks, rendered)
 	}
 	content := ""
@@ -857,6 +878,7 @@ func (m *ChatModel) refreshViewport() {
 	visible := content
 	m.chatContent = content
 	m.chatVisible = visible
+	m.lastRenderStats = transcriptRenderStats{Rendered: renderedCount, Hits: m.renderCache.Hits, Misses: m.renderCache.Misses, Lines: strings.Count(visible, "\n") + 1}
 	m.chatViewport.SetContent(visible)
 	totalLines := strings.Count(visible, "\n") + 1
 	if totalLines == 0 {

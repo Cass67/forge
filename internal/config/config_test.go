@@ -212,6 +212,109 @@ decision = "forbidden"
 	}
 }
 
+func TestLoadPermissionsConfigSectionRules(t *testing.T) {
+	toml := `
+[[permissions.project.rules]]
+behavior = "deny"
+tool = "run_command"
+pattern = "rm:*"
+
+[[permissions.user.rules]]
+behavior = "allow"
+tool = "run_command"
+pattern = "go test:*"
+`
+	path := writeTemp(t, toml)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Permissions.Project.Rules) != 1 {
+		t.Fatalf("project rules = %d, want 1", len(cfg.Permissions.Project.Rules))
+	}
+	if got := cfg.Permissions.Project.Rules[0]; got.Behavior != "deny" || got.Tool != "run_command" || got.Pattern != "rm:*" {
+		t.Fatalf("project rule = %#v", got)
+	}
+	if len(cfg.Permissions.User.Rules) != 1 {
+		t.Fatalf("user rules = %d, want 1", len(cfg.Permissions.User.Rules))
+	}
+	if got := cfg.Permissions.User.Rules[0]; got.Behavior != "allow" || got.Tool != "run_command" || got.Pattern != "go test:*" {
+		t.Fatalf("user rule = %#v", got)
+	}
+}
+
+func TestLoadPermissionsAutoConfig(t *testing.T) {
+	toml := `
+[permissions.auto]
+enabled = true
+posture = "conservative"
+model = "audit-model"
+max_consecutive_denials = 2
+max_total_denials = 10
+failure_behavior = "deny"
+`
+	path := writeTemp(t, toml)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Permissions.Auto.Enabled || cfg.Permissions.Auto.Posture != "conservative" || cfg.Permissions.Auto.Model != "audit-model" {
+		t.Fatalf("auto config = %#v", cfg.Permissions.Auto)
+	}
+	if cfg.Permissions.Auto.MaxConsecutiveDenials != 2 || cfg.Permissions.Auto.MaxTotalDenials != 10 {
+		t.Fatalf("auto denial config = %#v", cfg.Permissions.Auto)
+	}
+	if cfg.Permissions.Auto.FailureBehavior != "deny" {
+		t.Fatalf("failure behavior = %q", cfg.Permissions.Auto.FailureBehavior)
+	}
+}
+
+func TestLoadSecuritySecretsConfig(t *testing.T) {
+	toml := `
+[security.secrets]
+read = "block"
+write = "ask"
+command_output = "allow"
+approval_detail = "redact"
+`
+	path := writeTemp(t, toml)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Security.Secrets.Read != "block" {
+		t.Fatalf("Read = %q", cfg.Security.Secrets.Read)
+	}
+	if cfg.Security.Secrets.Write != "ask" {
+		t.Fatalf("Write = %q", cfg.Security.Secrets.Write)
+	}
+	if cfg.Security.Secrets.CommandOutput != "allow" {
+		t.Fatalf("CommandOutput = %q", cfg.Security.Secrets.CommandOutput)
+	}
+	if cfg.Security.Secrets.ApprovalDetail != "redact" {
+		t.Fatalf("ApprovalDetail = %q", cfg.Security.Secrets.ApprovalDetail)
+	}
+}
+
+func TestSecuritySecretsDefaults(t *testing.T) {
+	cfg, err := config.Load("/nonexistent/path.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Security.Secrets.Read != "redact" {
+		t.Fatalf("Read default = %q", cfg.Security.Secrets.Read)
+	}
+	if cfg.Security.Secrets.Write != "block" {
+		t.Fatalf("Write default = %q", cfg.Security.Secrets.Write)
+	}
+	if cfg.Security.Secrets.CommandOutput != "redact" {
+		t.Fatalf("CommandOutput default = %q", cfg.Security.Secrets.CommandOutput)
+	}
+	if cfg.Security.Secrets.ApprovalDetail != "redact" {
+		t.Fatalf("ApprovalDetail default = %q", cfg.Security.Secrets.ApprovalDetail)
+	}
+}
+
 func TestLoadApprovalConfigSectionApprovalSupportsCommandRules(t *testing.T) {
 	toml := `
 [approval]
