@@ -2067,6 +2067,54 @@ func TestRunnerSelectsPluginToolForPluginOnlyInput(t *testing.T) {
 	}
 }
 
+func TestRunnerDoesNotExposePluginToolsForOrdinaryRepoWork(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"read_file", "list_dir", "plugin__oh-my-openagent__task", "plugin__oh-my-openagent__skill"} {
+		toolName := name
+		reg.Register(agenttools.Tool{
+			Name:        toolName,
+			Description: toolName,
+			AutoApprove: true,
+			Execute: func(_ context.Context, _ map[string]any) (string, error) {
+				return "ok", nil
+			},
+		})
+	}
+	r := NewRunner(Config{Tools: reg})
+
+	defs := r.selectToolDefs(SessionSnapshot{LastInput: "inspect the repo architecture and summarize the weak spots"})
+	names := toolDefNames(defs)
+
+	for _, want := range []string{"read_file", "list_dir"} {
+		if !containsString(names, want) {
+			t.Fatalf("repo work tools = %#v, want %s", names, want)
+		}
+	}
+	for _, blocked := range []string{"plugin__oh-my-openagent__task", "plugin__oh-my-openagent__skill"} {
+		if containsString(names, blocked) {
+			t.Fatalf("repo work tools = %#v, should not include plugin tool %s", names, blocked)
+		}
+	}
+}
+
+func TestRunnerGenericTaskTextDoesNotExposePluginTaskTool(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"read_file", "plugin__oh-my-openagent__task"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+
+	defs := r.selectToolDefs(SessionSnapshot{LastInput: "continue this task by reading the README"})
+	names := toolDefNames(defs)
+
+	if containsString(names, "plugin__oh-my-openagent__task") {
+		t.Fatalf("generic task text exposed OMO task tool: %#v", names)
+	}
+	if !containsString(names, "read_file") {
+		t.Fatalf("generic task tools = %#v, want read_file", names)
+	}
+}
+
 func TestRunnerDelegationIntentRestrictsParentToDelegationTools(t *testing.T) {
 	reg := agenttools.NewRegistry()
 	for _, name := range []string{

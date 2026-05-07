@@ -782,9 +782,11 @@ func (r *Runner) selectToolDefs(snapshot SessionSnapshot) []llm.ToolDef {
 	}
 	allowed := allowedToolNamesForSnapshot(snapshot)
 	pluginNames := r.pluginToolNames()
-	if len(allowed) == 0 && !inputSuggestsPluginTool(snapshot.LastInput, pluginNames) {
+	pluginIntent := inputSuggestsPluginTool(snapshot.LastInput, pluginNames)
+	if len(allowed) == 0 && !pluginIntent {
 		allowed = append(allowed, delegateToolNames...)
-	} else {
+	}
+	if pluginIntent {
 		allowed = append(allowed, pluginNames...)
 	}
 	allowed = append(allowed, delegateToolNames...)
@@ -830,10 +832,22 @@ func pluginIntentTokens(namespacedName string) []string {
 	if len(parts) != 3 || parts[0] != "plugin" {
 		return nil
 	}
-	return []string{
+	tokens := []string{
 		normalizePluginIntentToken(parts[1]),
-		normalizePluginIntentToken(parts[2]),
 		normalizePluginIntentToken(parts[1] + " " + parts[2]),
+	}
+	if token := normalizePluginIntentToken(parts[2]); !isGenericPluginIntentToken(token) {
+		tokens = append(tokens, token)
+	}
+	return tokens
+}
+
+func isGenericPluginIntentToken(token string) bool {
+	switch token {
+	case "", "task", "skill", "grep", "glob", "look at":
+		return true
+	default:
+		return false
 	}
 }
 
