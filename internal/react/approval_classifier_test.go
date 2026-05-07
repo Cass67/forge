@@ -183,6 +183,68 @@ func TestAutoPermissionClassifierApprovalUpdateRedactsReason(t *testing.T) {
 	}
 }
 
+func TestAutoPermissionClassifierFallbackApprovalUpdateRedactsSummary(t *testing.T) {
+	secret := dummyApprovalSecret()
+	cases := []struct {
+		name       string
+		classifier *fakePermissionClassifier
+		denials    *permissions.DenialTracker
+		failure    ClassifierFailureBehavior
+	}{
+		{name: "denial tracker", classifier: &fakePermissionClassifier{response: permissions.ClassifierResponse{Decision: permissions.ClassifierAllow}}, denials: saturatedDenialTracker()},
+		{name: "error ask", classifier: &fakePermissionClassifier{err: errors.New("parse failed")}},
+		{name: "error deny", classifier: &fakePermissionClassifier{err: errors.New("parse failed")}, failure: ClassifierFailureDeny},
+		{name: "unknown decision", classifier: &fakePermissionClassifier{response: permissions.ClassifierResponse{Decision: permissions.ClassifierDecision("maybe")}}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gate := NewApprovalGate("", ApprovalConfig{
+				DefaultPolicy:             ApprovalUnlessTrusted,
+				SandboxPolicy:             SandboxDangerFull,
+				Classifier:                tc.classifier,
+				Denials:                   tc.denials,
+				ClassifierFailureBehavior: tc.failure,
+			}, func(action tools.Action) (bool, error) {
+				return true, nil
+			}, nil)
+
+			if _, err := gate.Approve(tools.Action{Tool: "run_command", Summary: "go test ./... " + secret, Detail: "go test ./..."}); err != nil {
+				t.Fatal(err)
+			}
+
+			assertApprovalUpdatesRedacted(t, gate.ApprovalUpdates(), secret)
+		})
+	}
+}
+
+func saturatedDenialTracker() *permissions.DenialTracker {
+	denials := permissions.NewDenialTracker(3, 20)
+	denials.RecordDenied()
+	denials.RecordDenied()
+	denials.RecordDenied()
+	return denials
+}
+
+func assertApprovalUpdatesRedacted(t *testing.T, updates []ApprovalUpdate, secret string) {
+	t.Helper()
+	if len(updates) == 0 {
+		t.Fatal("expected approval updates")
+	}
+	foundRedaction := false
+	for _, update := range updates {
+		if strings.Contains(update.Reason, secret) {
+			t.Fatalf("approval update leaked secret: %#v", update)
+		}
+		if strings.Contains(update.Reason, "<REDACTED:github-pat>") {
+			foundRedaction = true
+		}
+	}
+	if !foundRedaction {
+		t.Fatalf("approval updates did not include redacted detail: %#v", updates)
+	}
+}
+
 func TestAutoPermissionClassifierObserverReceivesRedactedDeny(t *testing.T) {
 	secret := dummyApprovalSecret()
 	classifier := &fakePermissionClassifier{response: permissions.ClassifierResponse{Decision: permissions.ClassifierDeny, Reason: "unsafe command"}}
