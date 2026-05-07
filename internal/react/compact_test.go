@@ -193,3 +193,27 @@ func TestRunnerDispatchesCompactionHookPayloads(t *testing.T) {
 		t.Fatal("post CircuitOpen = true, want false after successful compaction")
 	}
 }
+
+func TestRunnerSuccessfulCompactionResetsFailureCircuit(t *testing.T) {
+	session := NewSession()
+	r := NewRunner(Config{Session: session, CompactionMaxFailures: 2})
+
+	r.applyCompactionDecision(context.Background(), CompactionDecision{Mode: CompactionMicro, Reason: "failed once", KeepTurns: 40})
+	if r.compactionCircuitOpen() {
+		t.Fatal("circuit open after one failed compaction, want closed")
+	}
+
+	for i := 1; i <= 45; i++ {
+		turn := session.RecordInput(fmt.Sprintf("prompt %d", i))
+		session.AppendAssistantMessage(fmt.Sprintf("answer %d", i))
+		session.CompleteTurn(turn, fmt.Sprintf("answer %d", i), nil, nil)
+	}
+	if !r.applyCompactionDecision(context.Background(), CompactionDecision{Mode: CompactionSummarize, Reason: "success", KeepTurns: 40}) {
+		t.Fatal("expected successful compaction")
+	}
+
+	r.applyCompactionDecision(context.Background(), CompactionDecision{Mode: CompactionMicro, Reason: "failed after reset", KeepTurns: 40})
+	if r.compactionCircuitOpen() {
+		t.Fatal("circuit open after failure-success-failure, want success to reset failure count")
+	}
+}

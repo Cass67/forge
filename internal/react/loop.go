@@ -246,7 +246,9 @@ func (r *Runner) applyCompactionDecision(ctx context.Context, decision Compactio
 	if r.session != nil {
 		after = r.session.Snapshot()
 	}
-	if !changed && r.compactionMaxFailures > 0 {
+	if changed {
+		r.compactionFailures = 0
+	} else if r.compactionMaxFailures > 0 {
 		r.compactionFailures++
 	}
 	if r.compactionCircuitOpen() {
