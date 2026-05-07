@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1278,6 +1279,8 @@ type chatSessionControl interface {
 	AppendUserMessage(string)
 	EmitResponse(string)
 	SetTaskState(reactruntime.TaskState)
+	CompactHistory(keep int) bool
+	CompactionStatus() string
 }
 
 func handleChatSlashCommand(input string, renderer *agent.Renderer, loadedSkills []skills.Skill, state *chatstate.State, session chatSessionControl, setup *ChatSetup) bool {
@@ -1342,6 +1345,35 @@ func handleChatSlashCommand(input string, renderer *agent.Renderer, loadedSkills
 			renderer.Info("new session started")
 		} else {
 			renderer.Info("conversation history cleared")
+		}
+	case input == "/compact" || strings.HasPrefix(input, "/compact "):
+		if session == nil {
+			renderer.Error("compact unavailable")
+			return true
+		}
+		arg := strings.TrimSpace(strings.TrimPrefix(input, "/compact"))
+		switch {
+		case arg == "":
+			if session.CompactHistory(1) {
+				renderer.Info("compacted conversation history")
+			} else {
+				renderer.Info("conversation history already compact")
+			}
+		case arg == "status":
+			renderer.Info(session.CompactionStatus())
+		case strings.HasPrefix(arg, "recent "):
+			keep, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(arg, "recent ")))
+			if err != nil || keep < 1 {
+				renderer.Error("usage: /compact recent N")
+				return true
+			}
+			if session.CompactHistory(keep) {
+				renderer.Info(fmt.Sprintf("compacted conversation history; preserved recent %d turns", keep))
+			} else {
+				renderer.Info("conversation history already compact")
+			}
+		default:
+			renderer.Error("usage: /compact, /compact recent N, or /compact status")
 		}
 	case input == "/skills":
 		if len(loadedSkills) == 0 {
@@ -1450,6 +1482,9 @@ func PrintChatHelp() {
 	fmt.Println("    /models         show available models")
 	fmt.Println("    /new            start a clean session")
 	fmt.Println("    /clear          clear conversation history")
+	fmt.Println("    /compact        compact conversation history")
+	fmt.Println("    /compact recent N  compact while preserving recent N turns")
+	fmt.Println("    /compact status show compaction status")
 	fmt.Println("    /trace          open debug trace overlay (requires forge -d)")
 	fmt.Println("    /skills         list available skills and how to activate them")
 	fmt.Println("    /<skill>        activate a loaded skill by name from /skills")
