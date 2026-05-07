@@ -3,6 +3,7 @@ package react
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"forge/internal/agent/tools"
@@ -74,6 +75,41 @@ func TestAutoPermissionClassifierAllowsLowRiskCommand(t *testing.T) {
 	}
 	if classifier.requests[0].Risk.Level != permissions.RiskLow {
 		t.Fatalf("risk = %#v", classifier.requests[0].Risk)
+	}
+}
+
+func TestAutoPermissionClassifierObserverReceivesRedactedDecision(t *testing.T) {
+	secret := dummyApprovalSecret()
+	classifier := &fakePermissionClassifier{response: permissions.ClassifierResponse{Decision: permissions.ClassifierAllow, Reason: "safe test"}}
+	var events []ClassifierEvent
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy: ApprovalUnlessTrusted,
+		SandboxPolicy: SandboxDangerFull,
+		Classifier:    classifier,
+		ClassifierObserver: func(event ClassifierEvent) {
+			events = append(events, event)
+		},
+	}, nil, nil)
+
+	approved, err := gate.Approve(tools.Action{Tool: "run_command", Summary: "go test ./... " + secret, Detail: "TOKEN=" + secret})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !approved {
+		t.Fatal("expected classifier allow")
+	}
+	if len(events) != 1 {
+		t.Fatalf("event count = %d, want 1", len(events))
+	}
+	event := events[0]
+	if event.Decision != permissions.ClassifierAllow || event.Reason != "safe test" || event.Fallback != "" || event.Error != "" {
+		t.Fatalf("unexpected classifier event = %#v", event)
+	}
+	if strings.Contains(event.Action.Summary, secret) || strings.Contains(event.Action.Detail, secret) {
+		t.Fatalf("classifier event leaked secret: %#v", event.Action)
+	}
+	if !strings.Contains(event.Action.Summary, "<REDACTED:github-pat>") || !strings.Contains(event.Action.Detail, "<REDACTED:github-pat>") {
+		t.Fatalf("classifier event action was not redacted: %#v", event.Action)
 	}
 }
 

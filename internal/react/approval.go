@@ -10,6 +10,7 @@ import (
 	"forge/internal/agent/tools"
 	"forge/internal/gitutil"
 	"forge/internal/permissions"
+	"forge/internal/secscan"
 )
 
 type ApprovalPolicy string
@@ -53,8 +54,18 @@ type ApprovalConfig struct {
 	KnownSafeCommand          []string
 	SecretPolicy              tools.SecretPolicy
 	Classifier                permissions.Classifier
+	ClassifierObserver        func(ClassifierEvent)
 	Denials                   *permissions.DenialTracker
 	ClassifierFailureBehavior ClassifierFailureBehavior
+}
+
+type ClassifierEvent struct {
+	Action   permissions.Action
+	Risk     permissions.RiskFacts
+	Decision permissions.ClassifierDecision
+	Reason   string
+	Fallback string
+	Error    string
 }
 
 type GuardianEvent struct {
@@ -313,6 +324,7 @@ func (g *ApprovalGate) classifierDecision(evaluationAction, promptAction tools.A
 	riskAction := permissions.Action{Tool: evaluationAction.Tool, Summary: evaluationAction.Summary, Detail: evaluationAction.Detail}
 	risk := permissions.AnalyzeAction(riskAction)
 	if risk.ClassifierImmune {
+		g.emitClassifierEvent(ClassifierEvent{Action: riskAction, Risk: risk, Decision: permissions.ClassifierAsk, Reason: "classifier-immune action", Fallback: string(ClassifierFailureAsk)})
 		approved, err := g.promptWithRecordedOutcome(ApprovalDecisionSourcePolicy, approvalUpdateDetail(evaluationAction), promptAction)
 		return approved, true, err
 	}
@@ -323,9 +335,11 @@ func (g *ApprovalGate) classifierDecision(evaluationAction, promptAction tools.A
 	})
 	if err != nil {
 		if g.cfg.ClassifierFailureBehavior == ClassifierFailureDeny {
+			g.emitClassifierEvent(ClassifierEvent{Action: riskAction, Risk: risk, Decision: permissions.ClassifierDeny, Fallback: string(ClassifierFailureDeny), Error: err.Error()})
 			g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionForbidden, ApprovalDecisionSourceClassifier, approvalUpdateDetail(evaluationAction)))
 			return false, true, nil
 		}
+		g.emitClassifierEvent(ClassifierEvent{Action: riskAction, Risk: risk, Decision: permissions.ClassifierAsk, Fallback: string(ClassifierFailureAsk), Error: err.Error()})
 		approved, promptErr := g.promptWithRecordedOutcome(ApprovalDecisionSourceClassifier, approvalUpdateDetail(evaluationAction), promptAction)
 		return approved, true, promptErr
 	}
@@ -335,21 +349,25 @@ func (g *ApprovalGate) classifierDecision(evaluationAction, promptAction tools.A
 	}
 	switch resp.Decision {
 	case permissions.ClassifierAllow:
+		g.emitClassifierEvent(ClassifierEvent{Action: riskAction, Risk: risk, Decision: resp.Decision, Reason: reason})
 		if g.cfg.Denials != nil {
 			g.cfg.Denials.RecordAllowed()
 		}
 		g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionAllow, ApprovalDecisionSourceClassifier, reason))
 		return true, true, nil
 	case permissions.ClassifierDeny:
+		g.emitClassifierEvent(ClassifierEvent{Action: riskAction, Risk: risk, Decision: resp.Decision, Reason: reason})
 		if g.cfg.Denials != nil {
 			g.cfg.Denials.RecordDenied()
 		}
 		g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionForbidden, ApprovalDecisionSourceClassifier, reason))
 		return false, true, nil
 	case permissions.ClassifierAsk, "":
+		g.emitClassifierEvent(ClassifierEvent{Action: riskAction, Risk: risk, Decision: permissions.ClassifierAsk, Reason: reason, Fallback: string(ClassifierFailureAsk)})
 		approved, err := g.promptWithRecordedOutcome(ApprovalDecisionSourceClassifier, reason, promptAction)
 		return approved, true, err
 	default:
+		g.emitClassifierEvent(ClassifierEvent{Action: riskAction, Risk: risk, Decision: permissions.ClassifierAsk, Reason: reason, Fallback: string(ClassifierFailureAsk)})
 		approved, err := g.promptWithRecordedOutcome(ApprovalDecisionSourceClassifier, approvalUpdateDetail(evaluationAction), promptAction)
 		return approved, true, err
 	}
@@ -395,6 +413,20 @@ func (g *ApprovalGate) emitGuardianEvent(event GuardianEvent) {
 		return
 	}
 	g.guardianObserve(event)
+}
+
+func (g *ApprovalGate) emitClassifierEvent(event ClassifierEvent) {
+	if g == nil || g.cfg.ClassifierObserver == nil {
+		return
+	}
+	event.Action.Summary = redactClassifierEventText(event.Action.Summary)
+	event.Action.Detail = redactClassifierEventText(event.Action.Detail)
+	g.cfg.ClassifierObserver(event)
+}
+
+func redactClassifierEventText(text string) string {
+	scanner := secscan.NewDefaultScanner()
+	return secscan.Redact(text, scanner.Scan(text))
 }
 
 func normalizeApprovalConfig(cfg ApprovalConfig) ApprovalConfig {
