@@ -284,6 +284,37 @@ func TestHandleChatSlashCommandModelAlsoUpdatesReactSessionDriver(t *testing.T) 
 	}
 }
 
+func TestLoadChatApprovalConfigWiresAutoClassifier(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Permissions.Auto.Enabled = true
+	cfg.Permissions.Auto.Model = "classifier-model"
+	cfg.Permissions.Auto.MaxConsecutiveDenials = 2
+	cfg.Permissions.Auto.MaxTotalDenials = 10
+	cfg.Permissions.Auto.FailureBehavior = "deny"
+	requested := ""
+	setup := &ChatSetup{
+		Config: cfg,
+		MakeDriver: func(name string) llm.Driver {
+			requested = name
+			return &kernelMockDriver{response: `{"decision":"allow","reason":"safe"}`}
+		},
+	}
+
+	approvalCfg := loadChatApprovalConfig(setup)
+	if requested != "classifier-model" {
+		t.Fatalf("requested model = %q", requested)
+	}
+	if approvalCfg.Classifier == nil {
+		t.Fatal("expected classifier")
+	}
+	if approvalCfg.Denials == nil {
+		t.Fatal("expected denial tracker")
+	}
+	if approvalCfg.ClassifierFailureBehavior != reactruntime.ClassifierFailureDeny {
+		t.Fatalf("failure behavior = %q", approvalCfg.ClassifierFailureBehavior)
+	}
+}
+
 func TestHandleChatSlashCommandActivatesSkillInReactSession(t *testing.T) {
 	var buf bytes.Buffer
 	renderer := agent.NewRenderer(&buf, 80, false)

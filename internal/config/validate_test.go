@@ -113,6 +113,29 @@ func TestValidatePermissionsRules(t *testing.T) {
 	}
 }
 
+func TestValidatePermissionsAutoConfig(t *testing.T) {
+	var cfg Config
+	setDefaults(&cfg)
+	cfg.Permissions.Auto.Posture = "aggressive"
+	cfg.Permissions.Auto.FailureBehavior = "allow"
+	cfg.Permissions.Auto.MaxConsecutiveDenials = -1
+	cfg.Permissions.Auto.MaxTotalDenials = 0
+
+	issues := cfg.Validate()
+	if !hasIssueContaining(issues, "permissions.auto.posture", "must be one of conservative, balanced") {
+		t.Fatalf("expected posture issue, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "permissions.auto.failure_behavior", "must be one of ask, deny") {
+		t.Fatalf("expected failure behavior issue, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "permissions.auto.max_consecutive_denials", "must be at least 1") {
+		t.Fatalf("expected max consecutive issue, got %v", issues)
+	}
+	if !hasIssueContaining(issues, "permissions.auto.max_total_denials", "must be at least 1") {
+		t.Fatalf("expected max total issue, got %v", issues)
+	}
+}
+
 func TestValidateSecuritySecretsPolicy(t *testing.T) {
 	var cfg Config
 	setDefaults(&cfg)

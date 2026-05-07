@@ -243,6 +243,32 @@ pattern = "go test:*"
 	}
 }
 
+func TestLoadPermissionsAutoConfig(t *testing.T) {
+	toml := `
+[permissions.auto]
+enabled = true
+posture = "conservative"
+model = "audit-model"
+max_consecutive_denials = 2
+max_total_denials = 10
+failure_behavior = "deny"
+`
+	path := writeTemp(t, toml)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Permissions.Auto.Enabled || cfg.Permissions.Auto.Posture != "conservative" || cfg.Permissions.Auto.Model != "audit-model" {
+		t.Fatalf("auto config = %#v", cfg.Permissions.Auto)
+	}
+	if cfg.Permissions.Auto.MaxConsecutiveDenials != 2 || cfg.Permissions.Auto.MaxTotalDenials != 10 {
+		t.Fatalf("auto denial config = %#v", cfg.Permissions.Auto)
+	}
+	if cfg.Permissions.Auto.FailureBehavior != "deny" {
+		t.Fatalf("failure behavior = %q", cfg.Permissions.Auto.FailureBehavior)
+	}
+}
+
 func TestLoadSecuritySecretsConfig(t *testing.T) {
 	toml := `
 [security.secrets]
