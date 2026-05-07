@@ -165,6 +165,57 @@ func TestLoadApprovalConfigApprovalGateAppliesToolOnlyRules(t *testing.T) {
 	}
 }
 
+func TestLoadApprovalConfigIncludesScopedPermissionRules(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Permissions.Project.Rules = []config.PermissionRuleConfig{
+		{Behavior: "deny", Tool: "run_command", Pattern: "rm:*"},
+	}
+	cfg.Permissions.User.Rules = []config.PermissionRuleConfig{
+		{Behavior: "allow", Tool: "run_command", Pattern: "go test:*"},
+	}
+
+	got := LoadApprovalConfig(cfg)
+	if len(got.ScopedRules) != 2 {
+		t.Fatalf("ScopedRules = %d, want 2", len(got.ScopedRules))
+	}
+	if got.ScopedRules[0].Behavior != "allow" || got.ScopedRules[0].Pattern != "go test:*" {
+		t.Fatalf("ScopedRules[0] = %#v", got.ScopedRules[0])
+	}
+	if got.ScopedRules[1].Behavior != "deny" || got.ScopedRules[1].Pattern != "rm:*" {
+		t.Fatalf("ScopedRules[1] = %#v", got.ScopedRules[1])
+	}
+}
+
+func TestApprovalGateAppliesScopedPathRules(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Approval.DefaultPolicy = "never"
+	cfg.Approval.SandboxPolicy = "workspace_write"
+	cfg.Permissions.Project.Rules = []config.PermissionRuleConfig{
+		{Behavior: "deny", Tool: "write_file", Pattern: "docs/**/*.md"},
+	}
+
+	promptCalls := 0
+	gate := NewApprovalGate("", LoadApprovalConfig(cfg), func(action tools.Action) (bool, error) {
+		promptCalls++
+		return true, nil
+	}, nil)
+
+	approved, err := gate.Approve(tools.Action{
+		Tool:    "write_file",
+		Summary: "write docs/plans/demo.md",
+		Detail:  "new file: docs/plans/demo.md",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved {
+		t.Fatal("expected scoped path rule to forbid")
+	}
+	if promptCalls != 0 {
+		t.Fatalf("prompt calls = %d, want 0", promptCalls)
+	}
+}
+
 func TestLoadApprovalConfigApprovalFallsBackOnInvalidValues(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Approval.DefaultPolicy = "sometimes"

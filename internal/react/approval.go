@@ -8,6 +8,7 @@ import (
 
 	"forge/internal/agent/tools"
 	"forge/internal/gitutil"
+	"forge/internal/permissions"
 )
 
 type ApprovalPolicy string
@@ -40,6 +41,7 @@ type ApprovalConfig struct {
 	DefaultPolicy    ApprovalPolicy
 	SandboxPolicy    SandboxPolicy
 	Rules            []ApprovalRule
+	ScopedRules      []permissions.Rule
 	KnownSafeCommand []string
 }
 
@@ -229,6 +231,24 @@ func (g *ApprovalGate) Approve(action tools.Action) (bool, error) {
 		}
 	}
 
+	if decision, matched := g.scopedRuleDecision(evaluationAction); matched {
+		switch decision {
+		case DecisionAllow:
+			if guardianWarn {
+				return g.promptWithRecordedOutcome(ApprovalDecisionSourceGuardian, approvalUpdateDetail(evaluationAction), action)
+			}
+			g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionAllow, ApprovalDecisionSourceRule, approvalUpdateDetail(evaluationAction)))
+			return true, nil
+		case DecisionForbidden:
+			g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionForbidden, ApprovalDecisionSourceRule, approvalUpdateDetail(evaluationAction)))
+			return false, nil
+		case DecisionPrompt:
+			return g.promptWithRecordedOutcome(ApprovalDecisionSourceRule, approvalUpdateDetail(evaluationAction), action)
+		default:
+			return false, fmt.Errorf("unknown scoped approval rule decision %q", decision)
+		}
+	}
+
 	switch g.cfg.DefaultPolicy {
 	case ApprovalNever:
 		if guardianWarn {
@@ -264,6 +284,27 @@ func (g *ApprovalGate) Approve(action tools.Action) (bool, error) {
 		return g.promptWithRecordedOutcome(source, approvalUpdateDetail(evaluationAction), action)
 	default:
 		return false, fmt.Errorf("unknown approval policy %q", g.cfg.DefaultPolicy)
+	}
+}
+
+func (g *ApprovalGate) scopedRuleDecision(action tools.Action) (RuleDecision, bool) {
+	decision := permissions.Evaluate(g.cfg.ScopedRules, permissions.Action{
+		Tool:    action.Tool,
+		Summary: action.Summary,
+		Detail:  action.Detail,
+	})
+	if !decision.Matched {
+		return "", false
+	}
+	switch decision.Behavior {
+	case permissions.BehaviorAllow:
+		return DecisionAllow, true
+	case permissions.BehaviorAsk:
+		return DecisionPrompt, true
+	case permissions.BehaviorDeny:
+		return DecisionForbidden, true
+	default:
+		return "", false
 	}
 }
 
