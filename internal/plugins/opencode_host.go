@@ -115,7 +115,16 @@ function resolveModule(spec) {
     return pathToFileURL(path.resolve(cwd, spec)).href;
   }
   const require = createRequire(path.join(installDir, "forge-opencode-host.cjs"));
-  return pathToFileURL(require.resolve(spec, { paths: [installDir, process.cwd()] })).href;
+  const pkgPath = path.join(installDir, "node_modules", spec);
+  let main = "./index.js";
+  try {
+    const pkg = require(path.join(pkgPath, "package.json"));
+    main = pkg.main || main;
+  } catch (e) {
+    throw new Error("cannot resolve module " + spec + ": " + (e instanceof Error ? e.message : String(e)));
+  }
+  const resolved = path.resolve(pkgPath, main);
+  return pathToFileURL(resolved).href;
 }
 
 function createPluginInput(pluginID) {
