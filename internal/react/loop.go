@@ -26,6 +26,7 @@ type Config struct {
 	ConfigureHooks        func(*hooks.Registry)
 	CompactionMaxFailures int
 	Interactive           bool
+	MaxSteps              int
 }
 
 type Runner struct {
@@ -38,6 +39,7 @@ type Runner struct {
 	progress              func(string)
 	compactionFailures    int
 	compactionMaxFailures int
+	maxSteps              int
 	gitWorkflow           gitWorkflowState
 	planWorkflow          planWorkflowState
 	searchWorkflow        sameFileSearchWorkflowState
@@ -98,7 +100,15 @@ const overviewExplorationBudget = 6
 const reviewExplorationBudget = 10
 const validateExplorationBudget = 6
 const chatExplorationBudget = 8
-const maxLoopSafetySteps = 200
+const maxLoopSafetySteps = 1000
+
+func maxLoopSteps(configured int) int {
+	if configured > 0 {
+		return configured
+	}
+	return maxLoopSafetySteps
+}
+
 const sameFileSearchThrashThreshold = 5
 const repeatToolCallThreshold = 6
 const maxCompletionRetriesPerTurn = 3
@@ -161,6 +171,7 @@ func NewRunner(cfg Config) *Runner {
 		progress:              cfg.Progress,
 		compactionMaxFailures: cfg.CompactionMaxFailures,
 		turnComplete:          cfg.TurnComplete,
+		maxSteps:              maxLoopSteps(cfg.MaxSteps),
 	}
 	if snap := session.Snapshot(); snap.TaskState != nil && isSynthesisGuardOperation(snap.TaskState.Operation) {
 		runner.planWorkflow.active = true
@@ -329,7 +340,7 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 	nativeCaller, isNative := r.driver.(llm.NativeToolCaller)
 
 	completionRetries := 0
-	for range maxLoopSafetySteps {
+	for range r.maxSteps {
 		if r.applyPendingInput() {
 			r.syncRuntimeNote()
 		}
@@ -366,7 +377,7 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 		}
 	}
 
-	err := fmt.Errorf("react runtime: safety step limit (%d) exceeded", maxLoopSafetySteps)
+	err := fmt.Errorf("react runtime: safety step limit (%d) exceeded", r.maxSteps)
 	r.session.CompleteTurn(turn, "", nil, err)
 	return err
 }
