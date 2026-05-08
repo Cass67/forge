@@ -88,6 +88,27 @@ func TestPrintChatHelpMentionsAdvancedDebugView(t *testing.T) {
 	}
 }
 
+func TestShouldUseChatConsoleForPipedInput(t *testing.T) {
+	t.Setenv("FORGE_CHAT_CONSOLE", "")
+	if !shouldUseChatConsole(false) {
+		t.Fatal("expected non-terminal stdin to use console chat")
+	}
+}
+
+func TestShouldUseChatConsoleCanBeForced(t *testing.T) {
+	t.Setenv("FORGE_CHAT_CONSOLE", "1")
+	if !shouldUseChatConsole(true) {
+		t.Fatal("expected FORGE_CHAT_CONSOLE=1 to force console chat")
+	}
+}
+
+func TestShouldUseChatConsoleKeepsTerminalLiveByDefault(t *testing.T) {
+	t.Setenv("FORGE_CHAT_CONSOLE", "")
+	if shouldUseChatConsole(true) {
+		t.Fatal("expected terminal stdin to keep live chat")
+	}
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	prev := os.Stdout

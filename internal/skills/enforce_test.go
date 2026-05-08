@@ -9,6 +9,7 @@ func TestRequiredForInput(t *testing.T) {
 		want  string
 	}{
 		{name: "planning", input: "please plan the architecture first", want: "brainstorming"},
+		{name: "existing plan audit", input: "did they all follow the plan and what gaps remain", want: ""},
 		{name: "debugging", input: "debug this failing regression", want: "systematic-debugging"},
 		{name: "implementation", input: "implement this feature with tests", want: "test-driven-development"},
 		{name: "generic", input: "hello there", want: ""},

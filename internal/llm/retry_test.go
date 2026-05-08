@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"forge/internal/llm"
+	resilerrors "forge/internal/resilience/errors"
 )
 
 type failNDriver struct {
@@ -72,6 +73,98 @@ func (d *slowDriver) Stream(ctx context.Context, _ []llm.Message, out chan<- llm
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+type idleDriver struct{}
+
+func (d *idleDriver) Name() string { return "idle" }
+func (d *idleDriver) Stream(ctx context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	defer close(out)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+type idleNativeDriver struct{}
+
+func (d *idleNativeDriver) Name() string { return "idle-native" }
+func (d *idleNativeDriver) Stream(ctx context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	defer close(out)
+	<-ctx.Done()
+	return ctx.Err()
+}
+func (d *idleNativeDriver) StreamWithTools(_ context.Context, _ []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
+	defer close(out)
+	return nil
+}
+func (d *idleNativeDriver) StreamWithToolsOptions(ctx context.Context, _ []llm.Message, _ []llm.ToolDef, _ llm.NativeToolOptions, out chan<- llm.Token) error {
+	defer close(out)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+type partialThenIdleDriver struct {
+	called int
+}
+
+func (d *partialThenIdleDriver) Name() string { return "partial-idle" }
+func (d *partialThenIdleDriver) Stream(ctx context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	defer close(out)
+	d.called++
+	out <- llm.Token{Text: "partial"}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+type partialToolThenIdleDriver struct {
+	called int
+}
+
+func (d *partialToolThenIdleDriver) Name() string { return "partial-tool-idle" }
+func (d *partialToolThenIdleDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	defer close(out)
+	return nil
+}
+func (d *partialToolThenIdleDriver) StreamWithTools(_ context.Context, _ []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
+	defer close(out)
+	return nil
+}
+func (d *partialToolThenIdleDriver) StreamWithToolsOptions(ctx context.Context, _ []llm.Message, _ []llm.ToolDef, _ llm.NativeToolOptions, out chan<- llm.Token) error {
+	defer close(out)
+	d.called++
+	out <- llm.Token{ToolCall: &llm.NativeToolCall{ID: "c1", Name: "git_status", ArgsJSON: "{}"}}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+type uncooperativeIdleDriver struct {
+	release chan struct{}
+}
+
+func (d *uncooperativeIdleDriver) Name() string { return "uncooperative-idle" }
+func (d *uncooperativeIdleDriver) Stream(ctx context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	defer close(out)
+	<-d.release
+	return ctx.Err()
+}
+
+type uncooperativeNativeIdleDriver struct {
+	release chan struct{}
+}
+
+func (d *uncooperativeNativeIdleDriver) Name() string { return "uncooperative-native-idle" }
+func (d *uncooperativeNativeIdleDriver) Stream(ctx context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	defer close(out)
+	<-d.release
+	return ctx.Err()
+}
+func (d *uncooperativeNativeIdleDriver) StreamWithTools(_ context.Context, _ []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
+	defer close(out)
+	return nil
+}
+func (d *uncooperativeNativeIdleDriver) StreamWithToolsOptions(ctx context.Context, _ []llm.Message, _ []llm.ToolDef, _ llm.NativeToolOptions, out chan<- llm.Token) error {
+	defer close(out)
+	<-d.release
+	return ctx.Err()
 }
 
 type usageDriver struct {
@@ -260,6 +353,139 @@ func TestRetryPerCallTimeout(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "all 2 attempts failed") {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestRetryStreamIdleTimeoutCancelsIdleStream(t *testing.T) {
+	rd := llm.NewRetryDriverWithIdleTimeout(&idleDriver{}, 1, time.Millisecond, time.Millisecond, 0, 20*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	out := make(chan llm.Token, 64)
+	err := rd.Stream(ctx, nil, out)
+	if err == nil {
+		t.Fatal("expected idle timeout error")
+	}
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Fatalf("idle timeout took %s, want well before outer context timeout", elapsed)
+	}
+	if !strings.Contains(err.Error(), "stream idle timeout") {
+		t.Fatalf("error = %v, want stream idle timeout", err)
+	}
+	if classified := resilerrors.ClassifyError(err); !classified.Retryable {
+		t.Fatalf("idle timeout classified as non-retryable: %#v", classified)
+	}
+}
+
+func TestRetryStreamWithToolsIdleTimeoutCancelsIdleStream(t *testing.T) {
+	rd := llm.NewRetryDriverWithIdleTimeout(&idleNativeDriver{}, 1, time.Millisecond, time.Millisecond, 0, 20*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	out := make(chan llm.Token, 64)
+	err := rd.StreamWithToolsOptions(ctx, nil, nil, llm.NativeToolOptions{}, out)
+	if err == nil {
+		t.Fatal("expected idle timeout error")
+	}
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Fatalf("idle timeout took %s, want well before outer context timeout", elapsed)
+	}
+	if !strings.Contains(err.Error(), "stream idle timeout") {
+		t.Fatalf("error = %v, want stream idle timeout", err)
+	}
+}
+
+func TestRetryStreamIdleTimeoutDoesNotRetryAfterPartialOutput(t *testing.T) {
+	inner := &partialThenIdleDriver{}
+	rd := llm.NewRetryDriverWithIdleTimeout(inner, 3, time.Millisecond, time.Millisecond, 0, 20*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	out := make(chan llm.Token, 64)
+	err := rd.Stream(ctx, nil, out)
+	if err == nil {
+		t.Fatal("expected idle timeout error")
+	}
+	if !strings.Contains(err.Error(), "stream idle timeout") {
+		t.Fatalf("error = %v, want stream idle timeout", err)
+	}
+	if inner.called != 1 {
+		t.Fatalf("inner called %d times, want no retry after partial output", inner.called)
+	}
+	tokens := collect(out)
+	if len(tokens) != 1 || tokens[0].Text != "partial" {
+		t.Fatalf("tokens = %#v, want one partial token", tokens)
+	}
+}
+
+func TestRetryStreamWithToolsIdleTimeoutDoesNotRetryAfterToolCall(t *testing.T) {
+	inner := &partialToolThenIdleDriver{}
+	rd := llm.NewRetryDriverWithIdleTimeout(inner, 3, time.Millisecond, time.Millisecond, 0, 20*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	out := make(chan llm.Token, 64)
+	err := rd.StreamWithToolsOptions(ctx, nil, nil, llm.NativeToolOptions{}, out)
+	if err == nil {
+		t.Fatal("expected idle timeout error")
+	}
+	if !strings.Contains(err.Error(), "stream idle timeout") {
+		t.Fatalf("error = %v, want stream idle timeout", err)
+	}
+	if inner.called != 1 {
+		t.Fatalf("inner called %d times, want no retry after emitted tool call", inner.called)
+	}
+	tokens := collect(out)
+	if len(tokens) != 1 || tokens[0].ToolCall == nil || tokens[0].ToolCall.Name != "git_status" {
+		t.Fatalf("tokens = %#v, want one tool-call token", tokens)
+	}
+}
+
+func TestRetryStreamIdleTimeoutReturnsWhenDriverIgnoresCancel(t *testing.T) {
+	inner := &uncooperativeIdleDriver{release: make(chan struct{})}
+	defer close(inner.release)
+	rd := llm.NewRetryDriverWithIdleTimeout(inner, 1, time.Millisecond, time.Millisecond, 0, 20*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		out := make(chan llm.Token, 64)
+		errCh <- rd.Stream(ctx, nil, out)
+	}()
+
+	select {
+	case err := <-errCh:
+		if err == nil || !strings.Contains(err.Error(), "stream idle timeout") {
+			t.Fatalf("error = %v, want stream idle timeout", err)
+		}
+	case <-time.After(150 * time.Millisecond):
+		t.Fatal("idle timeout waited for uncooperative driver to close token channel")
+	}
+}
+
+func TestRetryStreamWithToolsIdleTimeoutReturnsWhenDriverIgnoresCancel(t *testing.T) {
+	inner := &uncooperativeNativeIdleDriver{release: make(chan struct{})}
+	defer close(inner.release)
+	rd := llm.NewRetryDriverWithIdleTimeout(inner, 1, time.Millisecond, time.Millisecond, 0, 20*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		out := make(chan llm.Token, 64)
+		errCh <- rd.StreamWithToolsOptions(ctx, nil, nil, llm.NativeToolOptions{}, out)
+	}()
+
+	select {
+	case err := <-errCh:
+		if err == nil || !strings.Contains(err.Error(), "stream idle timeout") {
+			t.Fatalf("error = %v, want stream idle timeout", err)
+		}
+	case <-time.After(150 * time.Millisecond):
+		t.Fatal("idle timeout waited for uncooperative native driver to close token channel")
 	}
 }
 

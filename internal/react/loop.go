@@ -46,6 +46,7 @@ type Runner struct {
 	searchWorkflow        sameFileSearchWorkflowState
 	validationWorkflow    validationWorkflowState
 	repeatWorkflow        repeatToolCallState
+	postDelegation        postDelegationWorkflowState
 	pendingRetryPrompt    string
 	turnComplete          func(SessionSnapshot)
 }
@@ -92,6 +93,10 @@ type repeatToolCallState struct {
 	streak       int
 }
 
+type postDelegationWorkflowState struct {
+	pendingWrite bool
+}
+
 const planExplorationBudget = 10
 const analysisExplorationBudget = 15
 const previewExplorationBudget = 4
@@ -124,6 +129,7 @@ var loopHookOverlayKeys = map[string]struct{}{
 	"search_thrash":      {},
 	"git_workflow":       {},
 	"repeat_loop":        {},
+	"agent_status":       {},
 }
 
 type promptHookPayload struct {
@@ -327,6 +333,7 @@ func (r *Runner) ClearHistory() {
 	r.searchWorkflow = sameFileSearchWorkflowState{}
 	r.validationWorkflow = validationWorkflowState{}
 	r.repeatWorkflow = repeatToolCallState{}
+	r.postDelegation = postDelegationWorkflowState{}
 	r.pendingRetryPrompt = ""
 	r.session.Clear()
 	if resetter, ok := r.driver.(llm.ConversationResetter); ok {
@@ -725,6 +732,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 			}
 			r.session.AppendNativeToolResult(call.ID, errResult)
 			r.updateGitWorkflow(call.Name, args, errResult)
+			r.updatePostDelegationWorkflow(call.Name, errResult, true)
 			r.session.CompleteTurn(turn, "", nil, err)
 			return err
 		}
@@ -739,6 +747,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 		r.updateSameFileSearchWorkflow(call.Name, args, false)
 		r.updateValidationWorkflow(call.Name, args, result)
 		r.updateRepeatToolCallWorkflow(call.Name, args, result)
+		r.updatePostDelegationWorkflow(call.Name, result, false)
 		r.applyHookOutput(beforeTool)
 		r.applyHookOutput(r.afterToolHookOutput(ctx, call.Name, args, false, ""))
 	}
@@ -853,10 +862,14 @@ func (r *Runner) selectToolDefs(snapshot SessionSnapshot) []llm.ToolDef {
 	if r == nil || r.tools == nil {
 		return nil
 	}
+	if len(outstandingSpawnedAgents(snapshot)) > 0 {
+		return r.tools.Filter([]string{"wait_agent"}).ToLLMToolDefs()
+	}
 	delegationComplete := historyIncludesCompletedToolCall(snapshot, "wait_agent")
+	pendingPostDelegationWrite := r.postDelegation.pendingWrite || pendingPostDelegationWriteAction(snapshot)
 	if delegationComplete {
 		postDelegationText := postDelegationToolIntentText(snapshot)
-		if !inputSuggestsPostDelegationAction(normalizeToolIntentText(postDelegationText)) {
+		if !pendingPostDelegationWrite && !inputSuggestsPostDelegationAction(normalizeToolIntentText(postDelegationText)) {
 			return nil
 		}
 		snapshot.LastInput = postDelegationText
@@ -871,6 +884,12 @@ selectParentTools:
 	allowed := allowedToolNamesForSnapshot(snapshot)
 	if delegationComplete {
 		allowed = withoutToolNames(allowed, delegateToolNames...)
+	}
+	if pendingPostDelegationWrite {
+		allowed = append(allowed, readOnlyToolNames...)
+		allowed = append(allowed, writeToolNames...)
+		allowed = append(allowed, gitReadToolNames...)
+		allowed = append(allowed, "tool_help")
 	}
 	pluginNames := r.pluginToolNames()
 	pluginIntent := inputSuggestsPluginTool(snapshot.LastInput, pluginNames)
@@ -1129,6 +1148,82 @@ func completedToolCallResults(snapshot SessionSnapshot, toolName string) []strin
 	return results
 }
 
+func outstandingSpawnedAgents(snapshot SessionSnapshot) []AgentResult {
+	toolNamesByCallID := make(map[string]string)
+	outstanding := make(map[string]AgentResult)
+	var order []string
+
+	for _, msg := range snapshot.History {
+		switch msg.Role {
+		case llm.RoleAssistant:
+			for _, call := range msg.ToolCalls {
+				if id := strings.TrimSpace(call.ID); id != "" {
+					toolNamesByCallID[id] = strings.TrimSpace(call.Name)
+				}
+			}
+		case llm.RoleTool:
+			toolName := toolNamesByCallID[msg.ToolCallID]
+			if toolName != "spawn_agent" && toolName != "wait_agent" {
+				continue
+			}
+			result, ok := decodeAgentToolResult(msg.Content)
+			if !ok || strings.TrimSpace(result.ID) == "" {
+				continue
+			}
+			switch toolName {
+			case "spawn_agent":
+				if agentStillOutstanding(result.Status) {
+					if _, exists := outstanding[result.ID]; !exists {
+						order = append(order, result.ID)
+					}
+					outstanding[result.ID] = result
+				}
+			case "wait_agent":
+				if agentStillOutstanding(result.Status) {
+					if _, exists := outstanding[result.ID]; !exists {
+						order = append(order, result.ID)
+					}
+					outstanding[result.ID] = result
+				} else {
+					delete(outstanding, result.ID)
+				}
+			}
+		}
+	}
+
+	agents := make([]AgentResult, 0, len(outstanding))
+	for _, id := range order {
+		if result, ok := outstanding[id]; ok {
+			agents = append(agents, result)
+		}
+	}
+	return agents
+}
+
+func decodeAgentToolResult(content string) (AgentResult, bool) {
+	content = strings.TrimSpace(content)
+	if content == "" || strings.HasPrefix(normalizeToolIntentText(content), "error:") {
+		return AgentResult{}, false
+	}
+	var result AgentResult
+	if err := json.Unmarshal([]byte(content), &result); err != nil {
+		return AgentResult{}, false
+	}
+	if strings.TrimSpace(result.ID) == "" {
+		return AgentResult{}, false
+	}
+	return result, true
+}
+
+func agentStillOutstanding(status AgentStatus) bool {
+	switch status {
+	case "", AgentStatusRunning, AgentStatusTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
 func postDelegationToolIntentText(snapshot SessionSnapshot) string {
 	parts := []string{snapshot.LastInput}
 	if hints := postDelegationActionHints(completedToolCallResults(snapshot, "wait_agent")); hints != "" {
@@ -1157,7 +1252,127 @@ func postDelegationActionHints(results []string) string {
 	return strings.Join(hints, "\n")
 }
 
+func (r *Runner) updatePostDelegationWorkflow(toolName, result string, isError bool) {
+	if r == nil {
+		return
+	}
+	toolName = strings.TrimSpace(toolName)
+	switch toolName {
+	case "wait_agent":
+		if isError {
+			return
+		}
+		snapshot := SessionSnapshot{}
+		if r.session != nil {
+			snapshot = r.session.Snapshot()
+		}
+		if inputSuggestsFileWrites(normalizeToolIntentText(snapshot.LastInput)) || inputSuggestsFileWrites(normalizeToolIntentText(result)) {
+			r.postDelegation.pendingWrite = true
+		}
+	case "write_file", "edit_file", "apply_patch":
+		if !isError {
+			r.postDelegation.pendingWrite = false
+		}
+	}
+}
+
+func pendingPostDelegationWriteAction(snapshot SessionSnapshot) bool {
+	waitResultIndex := lastCompletedToolResultIndex(snapshot, "wait_agent")
+	if waitResultIndex < 0 {
+		return false
+	}
+	if successfulToolResultAfterIndex(snapshot, waitResultIndex, writeToolNames) {
+		return false
+	}
+	if historyBeforeIndexSuggestsFileWrite(snapshot, waitResultIndex) {
+		return true
+	}
+	for _, result := range completedToolCallResults(snapshot, "wait_agent") {
+		if inputSuggestsFileWrites(normalizeToolIntentText(result)) {
+			return true
+		}
+	}
+	return false
+}
+
+func lastCompletedToolResultIndex(snapshot SessionSnapshot, toolName string) int {
+	ids := make(map[string]struct{})
+	last := -1
+	for i, msg := range snapshot.History {
+		switch msg.Role {
+		case llm.RoleAssistant:
+			for _, tc := range msg.ToolCalls {
+				if tc.Name == toolName && strings.TrimSpace(tc.ID) != "" {
+					ids[tc.ID] = struct{}{}
+				}
+			}
+		case llm.RoleTool:
+			if _, ok := ids[msg.ToolCallID]; ok {
+				last = i
+			}
+		}
+	}
+	return last
+}
+
+func historyBeforeIndexSuggestsFileWrite(snapshot SessionSnapshot, index int) bool {
+	if index < 0 {
+		return false
+	}
+	for i, msg := range snapshot.History {
+		if i > index {
+			break
+		}
+		if msg.Role != llm.RoleUser {
+			continue
+		}
+		if inputSuggestsFileWrites(normalizeToolIntentText(msg.Content)) {
+			return true
+		}
+	}
+	return false
+}
+
+func successfulToolResultAfterIndex(snapshot SessionSnapshot, index int, toolNames []string) bool {
+	if index < 0 || len(toolNames) == 0 {
+		return false
+	}
+	ids := make(map[string]struct{})
+	for i, msg := range snapshot.History {
+		if i <= index {
+			continue
+		}
+		switch msg.Role {
+		case llm.RoleAssistant:
+			for _, tc := range msg.ToolCalls {
+				if toolNameIn(tc.Name, toolNames) && strings.TrimSpace(tc.ID) != "" {
+					ids[tc.ID] = struct{}{}
+				}
+			}
+		case llm.RoleTool:
+			if _, ok := ids[msg.ToolCallID]; ok && !strings.HasPrefix(normalizeToolIntentText(msg.Content), "error:") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func toolNameIn(name string, names []string) bool {
+	name = strings.TrimSpace(name)
+	for _, candidate := range names {
+		if name == strings.TrimSpace(candidate) {
+			return true
+		}
+	}
+	return false
+}
+
 func shouldRequireToolCallForSnapshot(snapshot SessionSnapshot) bool {
+	if len(outstandingSpawnedAgents(snapshot)) > 0 {
+		text := normalizeToolIntentText(snapshot.LastInput)
+		return shouldRouteParentThroughDelegation(snapshot) || inputSuggestsPostDelegationAction(text)
+	}
 	return shouldRouteParentThroughDelegation(snapshot) && !historyIncludesCompletedToolCall(snapshot, "wait_agent")
 }
 
@@ -1217,6 +1432,7 @@ func inputSuggestsFileWrites(text string) bool {
 	return inputMentionsPathLikeText(text) || containsToolPhrase(text,
 		" file", " files", "markdown", ".md", "to a file", "into a file",
 		"readme", "config", "artifact", "html", "script",
+		" doc", " docs", "document", "spec", "report", "findings",
 	)
 }
 
@@ -1492,7 +1708,7 @@ func newLoopHookRegistry() *hooks.Registry {
 	registry.Register(hooks.PointPromptContext, "search_thrash", searchThrashPromptHook)
 	registry.Register(hooks.PointPromptContext, "git_workflow", gitWorkflowPromptHook)
 	registry.Register(hooks.PointPromptContext, "repeat_loop", repeatLoopPromptHook)
-	registry.Register(hooks.PointBeforeTool, "search_pattern_guard", beforeToolSearchPatternGuardHook)
+	registry.Register(hooks.PointPromptContext, "agent_status", agentStatusPromptHook)
 	registry.Register(hooks.PointBeforeTool, "git_commit_blocker", beforeToolGitCommitBlockHook)
 	return registry
 }
@@ -1843,17 +2059,33 @@ func repeatLoopPromptHook(_ context.Context, event hooks.Event) []hooks.Result {
 	}}
 }
 
-func beforeToolSearchPatternGuardHook(_ context.Context, event hooks.Event) []hooks.Result {
-	payload, ok := event.Transient.(beforeToolHookPayload)
-	if !ok || payload.ToolName != "search" {
+func agentStatusPromptHook(_ context.Context, event hooks.Event) []hooks.Result {
+	snap, ok := event.Snapshot.(SessionSnapshot)
+	if !ok {
 		return nil
 	}
-	pattern := strings.TrimSpace(stringArg(payload.Args, "pattern"))
-	if !looksLikeShotgunAlternationSearch(pattern) {
+	agents := outstandingSpawnedAgents(snap)
+	if len(agents) == 0 {
 		return nil
 	}
-	return []hooks.Result{hooks.BlockResult{
-		Message:    "blocked: avoid shotgun alternation regex searches like foo|bar|baz. Search one likely term at a time, use code_search for a literal identifier, or list_dir/read_file on the likely path instead.",
+	var b strings.Builder
+	b.WriteString("Outstanding child agents are still unresolved:\n")
+	for _, agent := range agents {
+		role := strings.TrimSpace(agent.Role)
+		if role == "" {
+			role = "unknown-role"
+		}
+		status := strings.TrimSpace(string(agent.Status))
+		if status == "" {
+			status = string(AgentStatusRunning)
+		}
+		fmt.Fprintf(&b, "- %s (%s): %s\n", strings.TrimSpace(agent.ID), role, status)
+	}
+	b.WriteString("Do not say no agents are running while this list is non-empty. If the user asks about agents, report this state; use wait_agent with the agent id before continuing delegated work.")
+	return []hooks.Result{hooks.OverlayResult{
+		Key:        "agent_status",
+		Content:    strings.TrimSpace(b.String()),
+		Priority:   hooks.PriorityHigh,
 		Provenance: "runtime",
 	}}
 }
@@ -2327,21 +2559,6 @@ func synthesisGuardBudget(mode string) int {
 	default:
 		return planExplorationBudget
 	}
-}
-
-func looksLikeShotgunAlternationSearch(pattern string) bool {
-	pattern = strings.TrimSpace(pattern)
-	if len(pattern) < 24 || strings.Count(pattern, "|") < 2 {
-		return false
-	}
-	parts := strings.Split(pattern, "|")
-	nonEmpty := 0
-	for _, part := range parts {
-		if strings.TrimSpace(part) != "" {
-			nonEmpty++
-		}
-	}
-	return nonEmpty >= 3
 }
 
 func isReadOnlyCommand(command string) bool {

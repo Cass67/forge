@@ -666,20 +666,20 @@ func TestRunnerPromptHookOutputIncludesRuntimeGuidance(t *testing.T) {
 	})
 }
 
-func TestRunnerBeforeToolHookBlocksCommitWorkflow(t *testing.T) {
-	t.Run("shotgun alternation search", func(t *testing.T) {
-		r := NewRunner(Config{})
+func TestRunnerBeforeToolHookAllowsBroadAlternationSearch(t *testing.T) {
+	r := NewRunner(Config{})
 
-		output := r.beforeToolHookOutput(context.Background(), "search", map[string]any{
-			"pattern": "tui|theming|theme|terminal ui|tailwind|colors|palette|config|styles|css|scss",
-			"path":    ".",
-		})
-
-		if output.Block == nil || !strings.Contains(output.Block.Message, "avoid shotgun alternation regex searches") {
-			t.Fatalf("block = %#v", output.Block)
-		}
+	output := r.beforeToolHookOutput(context.Background(), "search", map[string]any{
+		"pattern": "tui|theming|theme|terminal ui|tailwind|colors|palette|config|styles|css|scss",
+		"path":    ".",
 	})
 
+	if output.Block != nil {
+		t.Fatalf("search should not be hard-blocked: %#v", output.Block)
+	}
+}
+
+func TestRunnerBeforeToolHookBlocksCommitWorkflow(t *testing.T) {
 	t.Run("unmerged conflicts", func(t *testing.T) {
 		r := NewRunner(Config{})
 		r.gitWorkflow.unmergedFiles = true
@@ -2239,6 +2239,88 @@ func TestRunnerStopsForcingToolsAfterDelegatedWait(t *testing.T) {
 	}
 }
 
+func TestRunnerKeepsWaitToolAvailableForOutstandingSpawnedAgent(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"spawn_agent", "wait_agent", "read_file"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{
+		LastInput: "are agents still running?",
+		History: []llm.Message{
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "spawn-1", Name: "spawn_agent", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "spawn-1", Content: `{"id":"agent-1","role":"repo-auditor","status":"running"}`},
+		},
+	}
+
+	names := toolDefNames(r.selectToolDefs(snap))
+	if !containsString(names, "wait_agent") {
+		t.Fatalf("tools with outstanding agent = %#v, want wait_agent", names)
+	}
+	if shouldRequireToolCallForSnapshot(snap) {
+		t.Fatal("status follow-up should not force a wait_agent tool call")
+	}
+}
+
+func TestRunnerKeepsWaitingWhenOneOfMultipleAgentsCompletes(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"spawn_agent", "wait_agent", "read_file"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{
+		LastInput: "what are the agents doing?",
+		History: []llm.Message{
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{
+				{ID: "spawn-1", Name: "spawn_agent", ArgsJSON: `{}`},
+				{ID: "spawn-2", Name: "spawn_agent", ArgsJSON: `{}`},
+			}},
+			{Role: llm.RoleTool, ToolCallID: "spawn-1", Content: `{"id":"agent-1","role":"repo-auditor","status":"running"}`},
+			{Role: llm.RoleTool, ToolCallID: "spawn-2", Content: `{"id":"agent-2","role":"code-reviewer","status":"running"}`},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{"id":"agent-1"}`}}},
+			{Role: llm.RoleTool, ToolCallID: "wait-1", Content: `{"id":"agent-1","role":"repo-auditor","status":"completed","result":"done"}`},
+		},
+	}
+
+	names := toolDefNames(r.selectToolDefs(snap))
+	if !containsString(names, "wait_agent") {
+		t.Fatalf("tools with one outstanding agent = %#v, want wait_agent", names)
+	}
+	if shouldRequireToolCallForSnapshot(snap) {
+		t.Fatal("status follow-up should not force a wait_agent tool call")
+	}
+}
+
+func TestRunnerRequiresWaitForOutstandingAgentDuringDelegationTurn(t *testing.T) {
+	snap := SessionSnapshot{
+		LastInput: "ask three agents to review the codebase",
+		History: []llm.Message{
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "spawn-1", Name: "spawn_agent", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "spawn-1", Content: `{"id":"agent-1","role":"code-reviewer","status":"running"}`},
+		},
+	}
+
+	if !shouldRequireToolCallForSnapshot(snap) {
+		t.Fatal("delegation turn with outstanding agent should require wait_agent")
+	}
+}
+
+func TestRunnerPromptIncludesOutstandingAgentStatus(t *testing.T) {
+	session := NewSession()
+	session.RecordInput("ask three agents to review the codebase")
+	session.AppendAssistantWithToolCalls([]llm.NativeToolCall{{ID: "spawn-1", Name: "spawn_agent", ArgsJSON: `{}`}})
+	session.AppendNativeToolResult("spawn-1", `{"id":"agent-1","role":"code-reviewer","status":"running"}`)
+	r := NewRunner(Config{Session: session})
+
+	output := r.promptHookOutput(context.Background())
+	got := hookOverlayContent(output, "agent_status")
+	for _, want := range []string{"Outstanding child agents", "agent-1", "code-reviewer", "Do not say no agents are running"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("agent_status overlay = %q, want %q", got, want)
+		}
+	}
+}
+
 func TestRunnerRestoresActionToolsAfterDelegatedWaitWhenUserAskedForFileWrite(t *testing.T) {
 	reg := agenttools.NewRegistry()
 	for _, name := range []string{"spawn_agent", "wait_agent", "write_file", "run_command", "git_status", "git_commit"} {
@@ -2316,6 +2398,89 @@ func TestRunnerDoesNotExposeCommandToolsFromIncidentalChildAuditText(t *testing.
 	}
 	if containsString(names, "run_command") {
 		t.Fatalf("post-delegation tools = %#v, should not include incidental run_command", names)
+	}
+}
+
+func TestRunnerRestoresWriteToolsForPostDelegationWriteDocFollowUp(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"spawn_agent", "wait_agent", "write_file", "edit_file", "apply_patch", "git_status"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{
+		LastInput: "tool access is available .. write teh doc",
+		History: []llm.Message{
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "wait-1", Content: `{"status":"completed","result":"Use the parent agent to save the final assessment document."}`},
+		},
+	}
+
+	defs := r.selectToolDefs(snap)
+	names := toolDefNames(defs)
+	for _, want := range []string{"write_file", "edit_file", "apply_patch"} {
+		if !containsString(names, want) {
+			t.Fatalf("post-delegation write-doc tools = %#v, want %s", names, want)
+		}
+	}
+	for _, blocked := range []string{"spawn_agent", "wait_agent"} {
+		if containsString(names, blocked) {
+			t.Fatalf("post-delegation write-doc tools = %#v, should stop forcing %s", names, blocked)
+		}
+	}
+}
+
+func TestRunnerKeepsWriteToolsForUnresolvedPostDelegationDocument(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"spawn_agent", "wait_agent", "write_file", "edit_file", "apply_patch", "git_status"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{
+		InitialInput: "forge has had many changes, did they all follow the plan, are there any gaps, whats next, figure this out and write me a nice doc",
+		LastInput:    "what happened?",
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "forge has had many changes, did they all follow the plan, are there any gaps, whats next, figure this out and write me a nice doc"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "wait-1", Content: `{"status":"completed","result":"Bottom line: Forge hardening is mostly on-plan. The parent should save this as the final document."}`},
+			{Role: llm.RoleAssistant, Content: "## Bottom Line\nForge hardening work appears mostly on-plan and materially implemented."},
+			{Role: llm.RoleUser, Content: "what happened?"},
+		},
+	}
+
+	defs := r.selectToolDefs(snap)
+	names := toolDefNames(defs)
+	for _, want := range []string{"write_file", "edit_file", "apply_patch"} {
+		if !containsString(names, want) {
+			t.Fatalf("post-delegation pending-document tools = %#v, want %s", names, want)
+		}
+	}
+	for _, blocked := range []string{"spawn_agent", "wait_agent"} {
+		if containsString(names, blocked) {
+			t.Fatalf("post-delegation pending-document tools = %#v, should stop forcing %s", names, blocked)
+		}
+	}
+}
+
+func TestRunnerClearsPostDelegationDocumentWorkAfterWrite(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"spawn_agent", "wait_agent", "write_file", "edit_file", "apply_patch", "git_status"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{
+		LastInput: "what happened?",
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "figure this out and write me a nice doc"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "wait-1", Content: `{"status":"completed","result":"The parent should save this as the final document."}`},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "write-1", Name: "write_file", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "write-1", Content: `wrote docs/reports/status.md`},
+			{Role: llm.RoleUser, Content: "what happened?"},
+		},
+	}
+
+	if defs := r.selectToolDefs(snap); len(defs) != 0 {
+		t.Fatalf("post-delegation tools after successful write = %#v, want none", toolDefNames(defs))
 	}
 }
 
