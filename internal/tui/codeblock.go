@@ -375,26 +375,17 @@ func renderCodeBlock(lang, body string, width int, theme chatTheme) string {
 	if lang != "" {
 		label = strings.ToUpper(lang)
 	}
-	innerWidth := max(8, width-4)
+	innerWidth := max(8, width)
 	title := lipgloss.NewStyle().
-		Foreground(theme.HeaderBG).
-		Background(codeBlockBorder(lang, theme)).
+		Foreground(codeBlockBorder(lang, theme)).
 		Bold(true).
-		Padding(0, 1).
 		Render(label)
 	content := renderCodeBlockBody(lang, body, innerWidth, theme)
-	stack := lipgloss.JoinVertical(lipgloss.Left, title, content)
-	return lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder()).
-		BorderForeground(codeBlockBorder(lang, theme)).
-		Background(theme.AppBG).
-		Padding(0, 1).
-		Width(innerWidth).
-		Render(stack)
+	return strings.Join([]string{padStyledWidth(title, innerWidth), content}, "\n")
 }
 
 func renderCodeBlockBody(lang, body string, width int, theme chatTheme) string {
-	lines := normalizeCodeBlockBodyLines(body)
+	lines := normalizeCodeBlockBodyLines(lang, body)
 	rendered := make([]string, 0, len(lines))
 	for _, line := range lines {
 		style := lipgloss.NewStyle().
@@ -416,11 +407,12 @@ func renderCodeBlockBody(lang, body string, width int, theme chatTheme) string {
 	return strings.Join(rendered, "\n")
 }
 
-func normalizeCodeBlockBodyLines(body string) []string {
+func normalizeCodeBlockBodyLines(lang, body string) []string {
 	trimmed := strings.TrimRight(body, "\n")
 	if trimmed == "" {
 		return []string{""}
 	}
+	dropBlankLines := isPlainTextOutputLang(lang)
 	raw := strings.Split(trimmed, "\n")
 	lines := make([]string, 0, len(raw))
 	prevBlank := false
@@ -432,6 +424,9 @@ func normalizeCodeBlockBodyLines(body string) []string {
 			continue
 		}
 		blank := strings.TrimSpace(line) == ""
+		if blank && dropBlankLines {
+			continue
+		}
 		if blank && prevBlank {
 			continue
 		}
@@ -439,6 +434,15 @@ func normalizeCodeBlockBodyLines(body string) []string {
 		lines = append(lines, line)
 	}
 	return lines
+}
+
+func isPlainTextOutputLang(lang string) bool {
+	switch strings.ToLower(strings.TrimSpace(lang)) {
+	case "", "text", "txt", "plain", "output", "log":
+		return true
+	default:
+		return false
+	}
 }
 
 func isLikelyShortFlagFragment(fragment string) bool {

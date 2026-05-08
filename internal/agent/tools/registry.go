@@ -102,6 +102,7 @@ func (r *Registry) Filter(allowed []string) *Registry {
 		for _, name := range r.order {
 			filtered.Register(r.tools[name])
 		}
+		filtered.rebindToolHelp()
 		return filtered
 	}
 	allowSet := make(map[string]bool, len(allowed))
@@ -114,7 +115,18 @@ func (r *Registry) Filter(allowed []string) *Registry {
 			filtered.Register(r.tools[name])
 		}
 	}
+	filtered.rebindToolHelp()
 	return filtered
+}
+
+func (r *Registry) rebindToolHelp() {
+	if r == nil {
+		return
+	}
+	if _, ok := r.Get("tool_help"); !ok {
+		return
+	}
+	r.Register(NewToolHelp(r))
 }
 
 // Describe formats all tools for injection into the system prompt.

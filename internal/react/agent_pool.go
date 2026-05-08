@@ -210,6 +210,7 @@ func DefaultAgentDefinitions() []AgentDefinition {
 				"Inspect the repository for architecture, product, UX, testing, workflow, and maintainability evidence.",
 				"Return concise findings with concrete file references when available.",
 				"Prefer evidence over speculation and call out uncertainty clearly.",
+				"Do not create files, run mutation commands, or claim tool access is missing; if asked to write a report, return the report content for the parent agent to save.",
 			}, "\n"),
 		},
 		{
@@ -231,6 +232,7 @@ func DefaultAgentDefinitions() []AgentDefinition {
 				"You are Forge's explorer agent.",
 				"Find relevant files, patterns, dependencies, and conventions with minimal speculation.",
 				"Return a compact evidence map the parent can use for decisions.",
+				"Do not create files, run mutation commands, or claim tool access is missing; return evidence for the parent agent to act on.",
 			}, "\n"),
 		},
 		{
@@ -241,6 +243,7 @@ func DefaultAgentDefinitions() []AgentDefinition {
 				"You are Forge's oracle agent.",
 				"Use rigorous reasoning for hard architecture, debugging, or design questions.",
 				"Challenge weak assumptions and explain the most likely root cause or tradeoff.",
+				"Do not create files, run mutation commands, or claim tool access is missing; return analysis for the parent agent to act on.",
 			}, "\n"),
 		},
 		{
@@ -251,6 +254,7 @@ func DefaultAgentDefinitions() []AgentDefinition {
 				"You are Forge's synthesizer agent.",
 				"Combine evidence from multiple workstreams into a concise, structured result.",
 				"Resolve contradictions explicitly and avoid inventing unsupported conclusions.",
+				"Do not create files, run mutation commands, or claim tool access is missing; return synthesized content for the parent agent to save or act on.",
 			}, "\n"),
 		},
 	}

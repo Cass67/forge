@@ -43,10 +43,15 @@ func DiffStat(dir string) (string, error) {
 // CurrentBranch returns the currently checked out branch name.
 func CurrentBranch(dir string) (string, error) {
 	branch, err := output(dir, "git", "rev-parse", "--abbrev-ref", "HEAD")
-	if err != nil {
-		return "", err
+	if err == nil {
+		return strings.TrimSpace(branch), nil
 	}
-	return strings.TrimSpace(branch), nil
+	if symbolic, symbolicErr := output(dir, "git", "symbolic-ref", "--short", "HEAD"); symbolicErr == nil {
+		if symbolic = strings.TrimSpace(symbolic); symbolic != "" {
+			return symbolic, nil
+		}
+	}
+	return strings.TrimSpace(branch), err
 }
 
 // IsRepository reports whether dir is inside a git work tree.
