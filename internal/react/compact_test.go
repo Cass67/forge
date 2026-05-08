@@ -2,12 +2,42 @@ package react
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
 	"forge/internal/hooks"
+	"forge/internal/llm"
 )
+
+type contextErrorThenSuccessDriver struct {
+	calls int
+}
+
+func (d *contextErrorThenSuccessDriver) Name() string { return "context-error-then-success" }
+
+func (d *contextErrorThenSuccessDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	defer close(out)
+	d.calls++
+	if d.calls == 1 {
+		return errors.New("context_length_exceeded")
+	}
+	out <- llm.Token{Text: "recovered after compaction"}
+	return nil
+}
+
+type contextErrorAlwaysDriver struct {
+	calls int
+}
+
+func (d *contextErrorAlwaysDriver) Name() string { return "context-error-always" }
+
+func (d *contextErrorAlwaysDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	defer close(out)
+	d.calls++
+	return errors.New("context_length_exceeded")
+}
 
 func TestCompactSessionHistoryTrimsOldTurns(t *testing.T) {
 	session := NewSession()
@@ -215,5 +245,48 @@ func TestRunnerSuccessfulCompactionResetsFailureCircuit(t *testing.T) {
 	r.applyCompactionDecision(context.Background(), CompactionDecision{Mode: CompactionMicro, Reason: "failed after reset", KeepTurns: 40})
 	if r.compactionCircuitOpen() {
 		t.Fatal("circuit open after failure-success-failure, want success to reset failure count")
+	}
+}
+
+func TestRunnerReactiveCompactsAndRetriesOnceOnContextError(t *testing.T) {
+	driver := &contextErrorThenSuccessDriver{}
+	session := NewSession()
+	for i := 1; i <= 45; i++ {
+		turn := session.RecordInput(fmt.Sprintf("prompt %d", i))
+		session.AppendAssistantMessage(fmt.Sprintf("answer %d", i))
+		session.CompleteTurn(turn, fmt.Sprintf("answer %d", i), nil, nil)
+	}
+	r := NewRunner(Config{Driver: driver, Session: session})
+
+	if err := r.Run(context.Background(), "continue"); err != nil {
+		t.Fatal(err)
+	}
+	if driver.calls != 2 {
+		t.Fatalf("driver calls = %d, want 2", driver.calls)
+	}
+	snap := session.Snapshot()
+	if !strings.Contains(snap.CompactionSummary, "prompt 1") {
+		t.Fatalf("expected reactive compaction summary, got %q", snap.CompactionSummary)
+	}
+	if got := r.LastResponse(); got != "recovered after compaction" {
+		t.Fatalf("last response = %q", got)
+	}
+}
+
+func TestRunnerReactiveCompactionOnlyRetriesOnce(t *testing.T) {
+	driver := &contextErrorAlwaysDriver{}
+	session := NewSession()
+	for i := 1; i <= 45; i++ {
+		turn := session.RecordInput(fmt.Sprintf("prompt %d", i))
+		session.AppendAssistantMessage(fmt.Sprintf("answer %d", i))
+		session.CompleteTurn(turn, fmt.Sprintf("answer %d", i), nil, nil)
+	}
+	r := NewRunner(Config{Driver: driver, Session: session})
+
+	if err := r.Run(context.Background(), "continue"); err == nil {
+		t.Fatal("expected context error after one reactive retry")
+	}
+	if driver.calls != 2 {
+		t.Fatalf("driver calls = %d, want one retry", driver.calls)
 	}
 }

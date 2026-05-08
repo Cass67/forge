@@ -74,3 +74,44 @@ func TestActionRiskSecretAdjacentPathIsClassifierImmune(t *testing.T) {
 		t.Fatalf("secret-adjacent write should touch secrets and be classifier immune: %#v", facts)
 	}
 }
+
+func TestActionRiskConservativeShellConstructsAreClassifierImmune(t *testing.T) {
+	cases := []struct {
+		name        string
+		command     string
+		wantSecrets bool
+	}{
+		{name: "bash -c", command: "bash -c 'echo ok'"},
+		{name: "command substitution", command: "echo $(cat .env) && go test ./...", wantSecrets: true},
+		{name: "backtick substitution", command: "echo `cat config/credentials.json`", wantSecrets: true},
+		{name: "sensitive redirect", command: "echo token > ~/.aws/credentials", wantSecrets: true},
+		{name: "env dump", command: "printenv", wantSecrets: true},
+		{name: "dotenv read", command: "cat .env", wantSecrets: true},
+		{name: "credential path read", command: "cat ~/.aws/credentials", wantSecrets: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			facts := AnalyzeAction(Action{Tool: "run_command", Summary: tc.command, Detail: tc.command})
+			if facts.Level != RiskHigh {
+				t.Fatalf("Level = %q, want %q: %#v", facts.Level, RiskHigh, facts)
+			}
+			if !facts.ClassifierImmune {
+				t.Fatalf("command should be classifier immune: %#v", facts)
+			}
+			if tc.wantSecrets && !facts.TouchesSecrets {
+				t.Fatalf("command should touch secrets: %#v", facts)
+			}
+		})
+	}
+}
+
+func TestActionRiskExecSessionUsesCommandRiskAnalysis(t *testing.T) {
+	facts := AnalyzeAction(Action{Tool: "exec_session_start", Summary: "cat ~/.ssh/id_ed25519", Detail: "cat ~/.ssh/id_ed25519"})
+	if facts.Level != RiskHigh {
+		t.Fatalf("Level = %q, want %q: %#v", facts.Level, RiskHigh, facts)
+	}
+	if !facts.MutatesWorkspace || !facts.TouchesSecrets || !facts.ClassifierImmune {
+		t.Fatalf("exec session should use command risk analysis: %#v", facts)
+	}
+}

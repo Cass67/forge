@@ -27,6 +27,9 @@ func NewDefaultScanner() *Scanner {
 		{ID: "aws-access-token", Pattern: regexp.MustCompile(`\b(?:AKIA|ASIA)[A-Z0-9]{16}\b`)},
 		{ID: "anthropic-api-key", Pattern: regexp.MustCompile(`\bsk-ant-api[0-9]{2}-[A-Za-z0-9_-]{80,}\b`)},
 		{ID: "openai-api-key", Pattern: regexp.MustCompile(`\bsk-(?:proj-)?[A-Za-z0-9_-]{40,}\b`)},
+		{ID: "bearer-token", Pattern: regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._\-]{16,}\b`)},
+		{ID: "generic-token", Pattern: regexp.MustCompile(`(?i)\b[A-Z0-9_]*(?:TOKEN|API[_-]?KEY|PASSWORD|SECRET)[A-Z0-9_]*\s*[:=]\s*["']?[A-Za-z0-9._+\-/=]{12,}["']?`)},
+		{ID: "private-key", Pattern: regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`)},
 	}}
 }
 
@@ -46,6 +49,7 @@ func (s *Scanner) Scan(text string) []Match {
 			matches = append(matches, Match{RuleID: rule.ID, Start: loc[0], End: loc[1]})
 		}
 	}
+	matches = dropGenericTokenOverlaps(matches)
 	sort.SliceStable(matches, func(i, j int) bool {
 		if matches[i].Start == matches[j].Start {
 			return matches[i].End < matches[j].End
@@ -53,6 +57,36 @@ func (s *Scanner) Scan(text string) []Match {
 		return matches[i].Start < matches[j].Start
 	})
 	return coalesceMatches(matches)
+}
+
+func dropGenericTokenOverlaps(matches []Match) []Match {
+	if len(matches) == 0 {
+		return nil
+	}
+	out := make([]Match, 0, len(matches))
+	for i, match := range matches {
+		if match.RuleID == "generic-token" {
+			overlapsSpecific := false
+			for j, other := range matches {
+				if i == j || other.RuleID == "generic-token" {
+					continue
+				}
+				if rangesOverlap(match, other) {
+					overlapsSpecific = true
+					break
+				}
+			}
+			if overlapsSpecific {
+				continue
+			}
+		}
+		out = append(out, match)
+	}
+	return out
+}
+
+func rangesOverlap(a, b Match) bool {
+	return a.Start < b.End && b.Start < a.End
 }
 
 func Redact(text string, matches []Match) string {

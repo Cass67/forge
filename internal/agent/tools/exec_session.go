@@ -458,10 +458,11 @@ func NewExecSessionStart(workDir string, manager *ExecSessionManager, approve Ap
 			{Name: "rows", Type: "int", Description: "terminal height in rows", Required: false},
 		},
 		AutoApprove: false,
-		Execute: func(_ context.Context, args map[string]any) (string, error) {
+		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			command, _ := args["command"].(string)
 			command = normalizePseudoToolCommands(command)
 			approved, err := approve(Action{
+				Context: ctx,
 				Tool:    "exec_session_start",
 				Summary: command,
 				Detail:  command,

@@ -25,6 +25,16 @@ import (
 	"forge/internal/tui"
 )
 
+type discardRuntimeRenderTarget struct{}
+
+func (discardRuntimeRenderTarget) AgentToken(string)                       {}
+func (discardRuntimeRenderTarget) AgentText(string)                        {}
+func (discardRuntimeRenderTarget) ToolCall(string, string)                 {}
+func (discardRuntimeRenderTarget) ToolResult(string, string, string, bool) {}
+func (discardRuntimeRenderTarget) Stats(time.Duration, llm.Usage)          {}
+func (discardRuntimeRenderTarget) Error(string)                            {}
+func (discardRuntimeRenderTarget) Info(string)                             {}
+
 func TestResolveModelExactAndIndexed(t *testing.T) {
 	models := []string{"alpha/model-a", "beta/model-b", "gamma/model-c"}
 	if got := ResolveModel(models, "2"); got != "beta/model-b" {
@@ -32,6 +42,20 @@ func TestResolveModelExactAndIndexed(t *testing.T) {
 	}
 	if got := ResolveModel(models, "gamma/model-c"); got != "gamma/model-c" {
 		t.Fatalf("expected exact model, got %q", got)
+	}
+}
+
+func TestAgentProgressRendererRecordsToolCalls(t *testing.T) {
+	var gotName, gotSummary string
+	renderer := newAgentProgressRenderTarget(discardRuntimeRenderTarget{}, func(name, summary string) {
+		gotName = name
+		gotSummary = summary
+	})
+
+	renderer.ToolCall("read_file", "README.md")
+
+	if gotName != "read_file" || gotSummary != "README.md" {
+		t.Fatalf("recorded progress = %q %q", gotName, gotSummary)
 	}
 }
 
@@ -312,6 +336,28 @@ func TestLoadChatApprovalConfigWiresAutoClassifier(t *testing.T) {
 	}
 	if approvalCfg.ClassifierFailureBehavior != reactruntime.ClassifierFailureDeny {
 		t.Fatalf("failure behavior = %q", approvalCfg.ClassifierFailureBehavior)
+	}
+}
+
+func TestLoadChatApprovalConfigUsesClassifierTimeoutMS(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Permissions.Auto.Enabled = true
+	cfg.Permissions.Auto.Model = "classifier-model"
+	cfg.Permissions.Auto.TimeoutMS = 250
+	setup := &ChatSetup{
+		Config: cfg,
+		MakeDriver: func(name string) llm.Driver {
+			return &kernelMockDriver{response: `{"decision":"allow","reason":"safe"}`}
+		},
+	}
+
+	approvalCfg := loadChatApprovalConfig(setup)
+	classifier, ok := approvalCfg.Classifier.(*llmPermissionClassifier)
+	if !ok {
+		t.Fatalf("classifier = %T, want *llmPermissionClassifier", approvalCfg.Classifier)
+	}
+	if classifier.timeout != 250*time.Millisecond {
+		t.Fatalf("classifier timeout = %s, want 250ms", classifier.timeout)
 	}
 }
 

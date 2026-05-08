@@ -168,9 +168,11 @@ func NewArtifactWrite(runtime *PreviewRuntime) Tool {
 
 			if runtime.approve != nil {
 				approved, err := runtime.approve(Action{
+					Context: ctx,
 					Tool:    "artifact_write",
 					Summary: fmt.Sprintf("write artifact %s", path),
 					Detail:  detail,
+					Path:    path,
 				})
 				if err != nil {
 					return "", err

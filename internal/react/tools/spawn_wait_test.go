@@ -3,6 +3,7 @@ package reacttools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -121,5 +122,284 @@ func TestWaitAgentToolReturnsCompletionEnvelope(t *testing.T) {
 	}
 	if waitPayload["result"] != "result text" {
 		t.Fatalf("result = %#v", waitPayload["result"])
+	}
+	if waitPayload["resume_supported"] != false {
+		t.Fatalf("resume_supported = %#v, want false", waitPayload["resume_supported"])
+	}
+	if hint, _ := waitPayload["resume_hint"].(string); !strings.Contains(hint, "cannot be resumed") {
+		t.Fatalf("resume_hint = %#v, want explicit cannot-resume guidance", waitPayload["resume_hint"])
+	}
+}
+
+func TestWaitAgentToolRedactsResultErrorAndActivity(t *testing.T) {
+	secret := "TOKEN=" + strings.Repeat("x", 24)
+	pool := react.NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+		return "result " + secret, errors.New("error " + secret)
+	})
+	spawn := NewSpawnAgent(pool)
+	wait := NewWaitAgent(pool)
+
+	rawSpawn, err := spawn.Execute(context.Background(), map[string]any{"task_description": "inspect repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spawnPayload map[string]any
+	if err := json.Unmarshal([]byte(rawSpawn), &spawnPayload); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := spawnPayload["id"].(string)
+	pool.RecordProgress(id, "run_command", "printed "+secret)
+
+	rawWait, err := wait.Execute(context.Background(), map[string]any{"id": id, "timeout_seconds": 1.0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(rawWait, secret) {
+		t.Fatalf("wait_agent leaked secret: %s", rawWait)
+	}
+	if !strings.Contains(rawWait, "REDACTED:generic-token") {
+		t.Fatalf("wait_agent missing redaction marker: %s", rawWait)
+	}
+}
+
+func TestAgentStatusToolReturnsAgents(t *testing.T) {
+	release := make(chan struct{})
+	pool := react.NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+		<-release
+		return "done", nil
+	})
+	spawn := NewSpawnAgent(pool)
+	statusTool := NewAgentStatus(pool)
+
+	if _, err := spawn.Execute(context.Background(), map[string]any{
+		"task_description": "inspect repo",
+		"role":             "repo-auditor",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := statusTool.Execute(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Agents []react.AgentResult `json:"agents"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Agents) != 1 || payload.Agents[0].Status != react.AgentStatusRunning || payload.Agents[0].Role != "repo-auditor" {
+		t.Fatalf("status payload = %#v", payload)
+	}
+	close(release)
+}
+
+func TestAgentStatusToolReturnsEmptyAgentsArray(t *testing.T) {
+	statusTool := NewAgentStatus(react.NewAgentPool(nil))
+
+	raw, err := statusTool.Execute(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Agents []react.AgentResult `json:"agents"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Agents == nil || len(payload.Agents) != 0 {
+		t.Fatalf("agents = %#v, want empty non-nil array from %s", payload.Agents, raw)
+	}
+}
+
+func TestAgentStatusToolRedactsResultErrorAndActivity(t *testing.T) {
+	secret := "TOKEN=" + strings.Repeat("x", 24)
+	pool := react.NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+		return "result " + secret, errors.New("error " + secret)
+	})
+	spawn := NewSpawnAgent(pool)
+	wait := NewWaitAgent(pool)
+	statusTool := NewAgentStatus(pool)
+
+	rawSpawn, err := spawn.Execute(context.Background(), map[string]any{"task_description": "inspect repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spawnPayload map[string]any
+	if err := json.Unmarshal([]byte(rawSpawn), &spawnPayload); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := spawnPayload["id"].(string)
+	pool.RecordProgress(id, "run_command", "printed "+secret)
+	if _, err := wait.Execute(context.Background(), map[string]any{"id": id, "timeout_seconds": 1.0}); err != nil {
+		t.Fatal(err)
+	}
+
+	rawStatus, err := statusTool.Execute(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(rawStatus, secret) {
+		t.Fatalf("agent_status leaked secret: %s", rawStatus)
+	}
+	if !strings.Contains(rawStatus, "REDACTED:generic-token") {
+		t.Fatalf("agent_status missing redaction marker: %s", rawStatus)
+	}
+}
+
+func TestKillAgentToolCancelsRunningAgent(t *testing.T) {
+	started := make(chan struct{})
+	pool := react.NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+		close(started)
+		<-ctx.Done()
+		return "", ctx.Err()
+	})
+	spawn := NewSpawnAgent(pool)
+	killTool := NewKillAgent(pool)
+
+	rawSpawn, err := spawn.Execute(context.Background(), map[string]any{
+		"task_description": "long task",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spawnPayload map[string]any
+	if err := json.Unmarshal([]byte(rawSpawn), &spawnPayload); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := spawnPayload["id"].(string)
+	<-started
+	rawKill, err := killTool.Execute(context.Background(), map[string]any{"id": id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var killPayload map[string]any
+	if err := json.Unmarshal([]byte(rawKill), &killPayload); err != nil {
+		t.Fatal(err)
+	}
+	if killPayload["status"] != string(react.AgentStatusKilled) {
+		t.Fatalf("kill payload = %#v", killPayload)
+	}
+}
+
+func TestKillAgentToolRedactsTerminalResultErrorAndActivity(t *testing.T) {
+	secret := "TOKEN=" + strings.Repeat("x", 24)
+	pool := react.NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+		return "result " + secret, errors.New("error " + secret)
+	})
+	spawn := NewSpawnAgent(pool)
+	wait := NewWaitAgent(pool)
+	killTool := NewKillAgent(pool)
+
+	rawSpawn, err := spawn.Execute(context.Background(), map[string]any{"task_description": "inspect repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spawnPayload map[string]any
+	if err := json.Unmarshal([]byte(rawSpawn), &spawnPayload); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := spawnPayload["id"].(string)
+	pool.RecordProgress(id, "run_command", "printed "+secret)
+	if _, err := wait.Execute(context.Background(), map[string]any{"id": id, "timeout_seconds": 1.0}); err != nil {
+		t.Fatal(err)
+	}
+
+	rawKill, err := killTool.Execute(context.Background(), map[string]any{"id": id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(rawKill, secret) {
+		t.Fatalf("kill_agent leaked secret: %s", rawKill)
+	}
+	if !strings.Contains(rawKill, "REDACTED:generic-token") {
+		t.Fatalf("kill_agent missing redaction marker: %s", rawKill)
+	}
+}
+
+func TestAgentStatusToolReflectsTimeoutAndProgress(t *testing.T) {
+	release := make(chan struct{})
+	pool := react.NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+		<-release
+		return "done", nil
+	})
+	spawn := NewSpawnAgent(pool)
+	wait := NewWaitAgent(pool)
+	statusTool := NewAgentStatus(pool)
+
+	rawSpawn, err := spawn.Execute(context.Background(), map[string]any{
+		"task_description": "inspect repo",
+		"role":             "repo-auditor",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spawnPayload map[string]any
+	if err := json.Unmarshal([]byte(rawSpawn), &spawnPayload); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := spawnPayload["id"].(string)
+	pool.RecordProgress(id, "read_file", "README.md")
+	if _, err := wait.Execute(context.Background(), map[string]any{"id": id, "timeout_seconds": 0.01}); err != nil {
+		t.Fatal(err)
+	}
+
+	rawStatus, err := statusTool.Execute(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Agents []react.AgentResult `json:"agents"`
+	}
+	if err := json.Unmarshal([]byte(rawStatus), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Agents) != 1 || payload.Agents[0].Status != react.AgentStatusTimeout {
+		t.Fatalf("status payload = %#v", payload)
+	}
+	if payload.Agents[0].LastToolName != "read_file" || len(payload.Agents[0].RecentActivity) != 1 {
+		t.Fatalf("status progress = %#v", payload.Agents[0])
+	}
+	close(release)
+}
+
+func TestAgentStatusToolReportsTerminalAgentsCannotResume(t *testing.T) {
+	pool := react.NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+		return "done", nil
+	})
+	spawn := NewSpawnAgent(pool)
+	wait := NewWaitAgent(pool)
+	statusTool := NewAgentStatus(pool)
+
+	rawSpawn, err := spawn.Execute(context.Background(), map[string]any{"task_description": "inspect repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spawnPayload map[string]any
+	if err := json.Unmarshal([]byte(rawSpawn), &spawnPayload); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := spawnPayload["id"].(string)
+	if _, err := wait.Execute(context.Background(), map[string]any{"id": id, "timeout_seconds": 1.0}); err != nil {
+		t.Fatal(err)
+	}
+
+	rawStatus, err := statusTool.Execute(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Agents []map[string]any `json:"agents"`
+	}
+	if err := json.Unmarshal([]byte(rawStatus), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Agents) != 1 {
+		t.Fatalf("status payload = %#v", payload)
+	}
+	if payload.Agents[0]["resume_supported"] != false {
+		t.Fatalf("resume_supported = %#v, want false", payload.Agents[0]["resume_supported"])
+	}
+	if hint, _ := payload.Agents[0]["resume_hint"].(string); !strings.Contains(hint, "cannot be resumed") {
+		t.Fatalf("resume_hint = %#v, want explicit cannot-resume guidance", payload.Agents[0]["resume_hint"])
 	}
 }

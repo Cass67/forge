@@ -729,6 +729,14 @@ func hookOverlayContent(output hooks.ExecutionOutput, key string) string {
 	return ""
 }
 
+func promptHookOutputForSnapshot(t *testing.T, snap SessionSnapshot) hooks.ExecutionOutput {
+	t.Helper()
+	return newLoopHookRegistry().Dispatch(context.Background(), hooks.Event{
+		Point:    hooks.PointPromptContext,
+		Snapshot: snap,
+	})
+}
+
 func TestRunnerAllowsNonNativeDriverWithTaskState(t *testing.T) {
 	// A plain scriptedDriver does NOT implement NativeToolCaller.
 	// With no forced tool requirements, it falls back to plain text mode.
@@ -1649,9 +1657,61 @@ func TestRunnerNudgesOnRepeatedSameFileCodeSearch(t *testing.T) {
 	}
 }
 
+func TestRunnerUsesConfiguredToolThrashThreshold(t *testing.T) {
+	steps := [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "c1", Name: "code_search", ArgsJSON: `{"path":"internal/tui/chatmodel.go","query":"one"}`}}},
+		{{ToolCall: &llm.NativeToolCall{ID: "c2", Name: "code_search", ArgsJSON: `{"path":"internal/tui/chatmodel.go","query":"two"}`}}},
+		{{Text: "Done."}},
+	}
+	driver := &nativeSequenceDriver{steps: steps}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "code_search",
+		Description: "search code",
+		Parameters:  []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}, {Name: "query", Type: "string", Required: true}},
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return "no matches", nil
+		},
+	})
+
+	session := NewSession()
+	session.SetTaskState(TaskState{
+		Objective:            "add a file tree panel to the tui",
+		Operation:            "implement",
+		RequiredVerification: "inspect the relevant code, make the change with edit tools, and run the relevant verification before claiming completion",
+	})
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session, ToolThrashCircuitBreaker: 2})
+	if err := r.Run(context.Background(), "add the panel"); err != nil {
+		t.Fatal(err)
+	}
+	if len(driver.allMsgs) < 3 {
+		t.Fatalf("driver message batches = %d, want at least 3", len(driver.allMsgs))
+	}
+	foundOverlay := false
+	for _, msg := range driver.allMsgs[2] {
+		if msg.Role == llm.RoleSystem && strings.Contains(msg.Content, "Search thrash guidance") {
+			foundOverlay = true
+		}
+	}
+	if !foundOverlay {
+		t.Fatalf("expected configured threshold to emit search thrash overlay on third step")
+	}
+}
+
 func TestRepeatToolCallTargetUsesSearchPattern(t *testing.T) {
 	if got := repeatToolCallTarget("search", map[string]any{"pattern": "theme"}); got != "theme" {
 		t.Fatalf("search target = %q", got)
+	}
+}
+
+func TestRepeatToolCallTargetCoversNoOpEditAndFailedWait(t *testing.T) {
+	editArgs := map[string]any{"path": "main.go", "old_text": "old", "new_text": "old"}
+	if got := repeatToolCallTarget("edit_file", editArgs); got != "main.go:old->old" {
+		t.Fatalf("edit target = %q", got)
+	}
+	if got := repeatToolCallTarget("wait_agent", map[string]any{"id": "agent-1"}); got != "agent-1" {
+		t.Fatalf("wait target = %q", got)
 	}
 }
 
@@ -2159,6 +2219,49 @@ func TestRunnerDelegationIntentRestrictsParentToDelegationTools(t *testing.T) {
 	}
 }
 
+func TestRunnerReportsToolExposureDecision(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"read_file", "spawn_agent", "wait_agent"} {
+		toolName := name
+		reg.Register(agenttools.Tool{
+			Name:        toolName,
+			Description: toolName,
+			AutoApprove: true,
+			Execute: func(_ context.Context, _ map[string]any) (string, error) {
+				return "ok", nil
+			},
+		})
+	}
+	var decisions []ToolExposureDecision
+	driver := &nativeScriptedDriver{responses: []string{"delegating"}}
+	r := NewRunner(Config{
+		Driver: driver,
+		Tools:  reg,
+		ToolExposureObserver: func(decision ToolExposureDecision) {
+			decisions = append(decisions, decision)
+		},
+	})
+
+	if err := r.Run(context.Background(), "ask three agents to review the codebase TOKEN="+strings.Repeat("x", 24)); err != nil {
+		t.Fatal(err)
+	}
+	if len(decisions) == 0 {
+		t.Fatal("expected tool exposure decision")
+	}
+	decision := decisions[0]
+	if decision.Reason != "delegation_intent" {
+		t.Fatalf("reason = %q, want delegation_intent", decision.Reason)
+	}
+	if !decision.RequireToolCall {
+		t.Fatalf("RequireToolCall = false, want true")
+	}
+	for _, want := range []string{"spawn_agent", "wait_agent"} {
+		if !containsString(decision.ToolNames, want) {
+			t.Fatalf("tool names = %#v, want %s", decision.ToolNames, want)
+		}
+	}
+}
+
 func TestRunnerBroadRepoAuditRestrictsParentToDelegationTools(t *testing.T) {
 	reg := agenttools.NewRegistry()
 	for _, name := range []string{"read_file", "list_dir", "plugin__oh-my-openagent__task", "spawn_agent", "wait_agent"} {
@@ -2262,6 +2365,185 @@ func TestRunnerKeepsWaitToolAvailableForOutstandingSpawnedAgent(t *testing.T) {
 	}
 }
 
+func TestRunnerUsesAgentTaskStateForOutstandingAgent(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"spawn_agent", "wait_agent", "read_file"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{
+		LastInput: "are agents still running?",
+		AgentTasks: []AgentTaskState{{
+			ID:     "agent-1",
+			Role:   "repo-auditor",
+			Status: AgentStatusRunning,
+		}},
+		History: []llm.Message{
+			{Role: llm.RoleTool, ToolCallID: "malformed", Content: `{not-json`},
+		},
+	}
+
+	names := toolDefNames(r.selectToolDefs(snap))
+	if !containsString(names, "wait_agent") {
+		t.Fatalf("tools with state-backed outstanding agent = %#v, want wait_agent", names)
+	}
+	got := hookOverlayContent(promptHookOutputForSnapshot(t, snap), "agent_status")
+	for _, want := range []string{"agent-1", "repo-auditor", "running"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("agent_status overlay = %q, want %q", got, want)
+		}
+	}
+}
+
+func TestAgentTaskPromptLineRedactsRecentActivitySummary(t *testing.T) {
+	secret := "TOKEN=" + strings.Repeat("x", 24)
+	line := formatAgentTaskPromptLine(AgentTaskState{
+		ID:           "agent-1",
+		Role:         "repo-auditor",
+		Status:       AgentStatusRunning,
+		LastToolName: "run_command",
+		RecentActivity: []AgentTaskActivity{{
+			ToolName: "run_command",
+			Summary:  "printed " + secret,
+		}},
+	})
+	if strings.Contains(line, secret) {
+		t.Fatalf("agent task prompt leaked secret: %q", line)
+	}
+	if !strings.Contains(line, "<REDACTED:generic-token>") {
+		t.Fatalf("agent task prompt missing redaction marker: %q", line)
+	}
+}
+
+func TestRunnerAgentTaskStateOverridesStaleTranscript(t *testing.T) {
+	snap := SessionSnapshot{
+		LastInput: "what happened?",
+		AgentTasks: []AgentTaskState{{
+			ID:     "agent-1",
+			Role:   "repo-auditor",
+			Status: AgentStatusCompleted,
+			Result: "done",
+		}},
+		History: []llm.Message{
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "spawn-1", Name: "spawn_agent", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "spawn-1", Content: `{"id":"agent-1","role":"repo-auditor","status":"running"}`},
+		},
+	}
+
+	if shouldRequireToolCallForSnapshot(snap) {
+		t.Fatal("state-completed agent should not force wait_agent from stale transcript")
+	}
+	if got := hookOverlayContent(promptHookOutputForSnapshot(t, snap), "agent_status"); got != "" {
+		t.Fatalf("agent_status overlay = %q, want empty", got)
+	}
+}
+
+func TestRunnerKilledAgentStateOverridesStaleTranscript(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"spawn_agent", "wait_agent", "agent_status", "kill_agent"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{
+		LastInput: "is the child agent still running?",
+		AgentTasks: []AgentTaskState{{
+			ID:     "agent-1",
+			Role:   "repo-auditor",
+			Status: AgentStatusKilled,
+			Error:  context.Canceled.Error(),
+		}},
+		History: []llm.Message{
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "spawn-1", Name: "spawn_agent", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "spawn-1", Content: `{"id":"agent-1","role":"repo-auditor","status":"running"}`},
+		},
+	}
+
+	if names := toolDefNames(r.selectToolDefs(snap)); containsString(names, "wait_agent") {
+		t.Fatalf("killed agent tools = %#v, should not expose wait_agent from stale transcript", names)
+	}
+	if shouldRequireToolCallForSnapshot(snap) {
+		t.Fatal("killed agent should not force wait_agent from stale transcript")
+	}
+	if got := hookOverlayContent(promptHookOutputForSnapshot(t, snap), "agent_status"); got != "" {
+		t.Fatalf("agent_status overlay = %q, want empty for killed agent", got)
+	}
+}
+
+func TestRunnerFallsBackToTranscriptWhenAgentTaskStateIsPartial(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"spawn_agent", "wait_agent", "agent_status", "kill_agent"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{
+		LastInput: "what are agents doing?",
+		AgentTasks: []AgentTaskState{{
+			ID:     "missing-agent",
+			Status: AgentStatusNotFound,
+		}},
+		History: []llm.Message{
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "spawn-1", Name: "spawn_agent", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "spawn-1", Content: `{"id":"agent-1","role":"repo-auditor","status":"running"}`},
+		},
+	}
+
+	names := toolDefNames(r.selectToolDefs(snap))
+	if !containsString(names, "wait_agent") {
+		t.Fatalf("partial state fallback tools = %#v, want wait_agent", names)
+	}
+	got := hookOverlayContent(promptHookOutputForSnapshot(t, snap), "agent_status")
+	if !strings.Contains(got, "agent-1") {
+		t.Fatalf("agent_status overlay = %q, want transcript-backed agent-1", got)
+	}
+}
+
+func TestRunnerAllowsRepeatedWaitForTimedOutAgentState(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"spawn_agent", "wait_agent", "read_file"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{
+		LastInput: "continue delegated work",
+		AgentTasks: []AgentTaskState{{
+			ID:     "agent-1",
+			Role:   "repo-auditor",
+			Status: AgentStatusTimeout,
+		}},
+	}
+
+	names := toolDefNames(r.selectToolDefs(snap))
+	if !containsString(names, "wait_agent") {
+		t.Fatalf("timed-out unresolved agent tools = %#v, want wait_agent", names)
+	}
+}
+
+func TestRunnerExposesStatusAndKillForOutstandingAgent(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"spawn_agent", "wait_agent", "agent_status", "kill_agent", "read_file"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{
+		LastInput: "what is the child agent doing?",
+		AgentTasks: []AgentTaskState{{
+			ID:     "agent-1",
+			Role:   "repo-auditor",
+			Status: AgentStatusRunning,
+		}},
+	}
+
+	names := toolDefNames(r.selectToolDefs(snap))
+	for _, want := range []string{"wait_agent", "agent_status", "kill_agent"} {
+		if !containsString(names, want) {
+			t.Fatalf("outstanding agent tools = %#v, want %s", names, want)
+		}
+	}
+	if containsString(names, "spawn_agent") {
+		t.Fatalf("outstanding agent tools = %#v, should not offer another spawn", names)
+	}
+}
+
 func TestRunnerKeepsWaitingWhenOneOfMultipleAgentsCompletes(t *testing.T) {
 	reg := agenttools.NewRegistry()
 	for _, name := range []string{"spawn_agent", "wait_agent", "read_file"} {
@@ -2315,6 +2597,28 @@ func TestRunnerPromptIncludesOutstandingAgentStatus(t *testing.T) {
 	output := r.promptHookOutput(context.Background())
 	got := hookOverlayContent(output, "agent_status")
 	for _, want := range []string{"Outstanding child agents", "agent-1", "code-reviewer", "Do not say no agents are running"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("agent_status overlay = %q, want %q", got, want)
+		}
+	}
+}
+
+func TestRunnerPromptIncludesAgentTaskProgress(t *testing.T) {
+	snap := SessionSnapshot{
+		AgentTasks: []AgentTaskState{{
+			ID:           "agent-1",
+			Role:         "repo-auditor",
+			Status:       AgentStatusRunning,
+			LastToolName: "read_file",
+			RecentActivity: []AgentTaskActivity{{
+				ToolName: "read_file",
+				Summary:  "README.md",
+			}},
+		}},
+	}
+
+	got := hookOverlayContent(promptHookOutputForSnapshot(t, snap), "agent_status")
+	for _, want := range []string{"last: read_file", "README.md"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("agent_status overlay = %q, want %q", got, want)
 		}
@@ -2426,6 +2730,120 @@ func TestRunnerRestoresWriteToolsForPostDelegationWriteDocFollowUp(t *testing.T)
 		if containsString(names, blocked) {
 			t.Fatalf("post-delegation write-doc tools = %#v, should stop forcing %s", names, blocked)
 		}
+	}
+}
+
+func TestRunnerRestoresWriteToolsFromPendingDelegationAction(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"spawn_agent", "wait_agent", "write_file", "edit_file", "apply_patch", "git_status"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{
+		LastInput: "continue",
+		PendingDelegationAction: &DelegationActionState{
+			Kind:       DelegationActionWriteDoc,
+			TargetPath: "docs/reports/audit.md",
+		},
+		History: []llm.Message{
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "wait-1", Content: `{"status":"completed","result":"findings returned"}`},
+		},
+	}
+
+	names := toolDefNames(r.selectToolDefs(snap))
+	for _, want := range []string{"write_file", "edit_file", "apply_patch"} {
+		if !containsString(names, want) {
+			t.Fatalf("pending action tools = %#v, want %s", names, want)
+		}
+	}
+	if containsString(names, "spawn_agent") || containsString(names, "wait_agent") {
+		t.Fatalf("pending action tools = %#v, should not force delegation", names)
+	}
+}
+
+func TestRunnerRecordsPendingDelegationWriteActionAfterWait(t *testing.T) {
+	session := NewSession()
+	session.RecordInput("use repo-auditor then write the report to docs/reports/audit.md")
+	r := NewRunner(Config{Session: session})
+
+	r.updatePostDelegationWorkflow("wait_agent", `{"id":"agent-1","status":"completed","result":"findings returned"}`, false)
+
+	action := session.Snapshot().PendingDelegationAction
+	if action == nil {
+		t.Fatal("expected pending delegation action")
+	}
+	if action.Kind != DelegationActionWriteDoc || action.TargetPath != "docs/reports/audit.md" || action.SourceAgent != "agent-1" {
+		t.Fatalf("pending delegation action = %#v", action)
+	}
+}
+
+func TestRunnerRecordsPendingDelegationWriteActionAtSpawnForPathlessArtifactRequests(t *testing.T) {
+	for _, input := range []string{
+		"ask repo-auditor to inspect the repo, then write me a memo",
+		"ask repo-auditor to inspect the repo and save a note",
+		"ask repo-auditor to inspect the repo and create a report",
+		"ask repo-auditor to inspect the repo and write findings",
+	} {
+		t.Run(input, func(t *testing.T) {
+			session := NewSession()
+			session.RecordInput(input)
+			r := NewRunner(Config{Session: session})
+
+			r.updatePostDelegationWorkflow("spawn_agent", `{"id":"agent-1","role":"repo-auditor","status":"running"}`, false)
+
+			action := session.Snapshot().PendingDelegationAction
+			if action == nil {
+				t.Fatal("expected pending delegation action")
+			}
+			if action.Kind != DelegationActionWriteDoc || action.SourceAgent != "agent-1" {
+				t.Fatalf("pending delegation action = %#v", action)
+			}
+			if action.TargetPath != "" {
+				t.Fatalf("target path = %q, want empty for pathless request", action.TargetPath)
+			}
+		})
+	}
+}
+
+func TestRunnerKeepsWriteToolsFromSpawnActionWhenWaitResultHasNoWriteText(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"spawn_agent", "wait_agent", "write_file", "edit_file", "apply_patch", "git_status"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	session := NewSession()
+	session.RecordInput("ask repo-auditor to inspect the repo, then write me a memo")
+	session.SetPendingDelegationAction(DelegationActionState{Kind: DelegationActionWriteDoc, SourceAgent: "agent-1"})
+	r := NewRunner(Config{Tools: reg, Session: session})
+	snap := session.Snapshot()
+	snap.LastInput = "continue"
+	snap.History = []llm.Message{
+		{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{}`}}},
+		{Role: llm.RoleTool, ToolCallID: "wait-1", Content: `{"id":"agent-1","status":"completed","result":"analysis complete"}`},
+	}
+
+	names := toolDefNames(r.selectToolDefs(snap))
+	for _, want := range []string{"write_file", "edit_file", "apply_patch"} {
+		if !containsString(names, want) {
+			t.Fatalf("pending action tools = %#v, want %s", names, want)
+		}
+	}
+	for _, blocked := range []string{"spawn_agent", "wait_agent"} {
+		if containsString(names, blocked) {
+			t.Fatalf("pending action tools = %#v, should not force %s", names, blocked)
+		}
+	}
+}
+
+func TestRunnerClearsPendingDelegationActionAfterParentWrite(t *testing.T) {
+	session := NewSession()
+	session.SetPendingDelegationAction(DelegationActionState{Kind: DelegationActionWriteDoc, TargetPath: "docs/reports/audit.md"})
+	r := NewRunner(Config{Session: session})
+
+	r.updatePostDelegationWorkflow("write_file", "wrote docs/reports/audit.md", false)
+
+	if action := session.Snapshot().PendingDelegationAction; action != nil {
+		t.Fatalf("pending delegation action after write = %#v", action)
 	}
 }
 

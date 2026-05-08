@@ -203,6 +203,11 @@ func globPatternRegex(pattern string) (*regexp.Regexp, error) {
 		switch ch {
 		case '*':
 			if i+1 < len(pattern) && pattern[i+1] == '*' {
+				if i+2 < len(pattern) && pattern[i+2] == '/' {
+					out.WriteString(`(?:.*/)?`)
+					i += 2
+					continue
+				}
 				out.WriteString(`.*`)
 				i++
 				continue

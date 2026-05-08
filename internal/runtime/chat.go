@@ -71,7 +71,7 @@ func loadChatApprovalConfig(setup *ChatSetup) reactruntime.ApprovalConfig {
 	if driver == nil {
 		return cfg
 	}
-	cfg.Classifier = newLLMPermissionClassifier(driver, 5*time.Second)
+	cfg.Classifier = newLLMPermissionClassifier(driver, time.Duration(setup.Config.Permissions.Auto.TimeoutMS)*time.Millisecond)
 	cfg.Denials = permissions.NewDenialTracker(setup.Config.Permissions.Auto.MaxConsecutiveDenials, setup.Config.Permissions.Auto.MaxTotalDenials)
 	cfg.ClassifierFailureBehavior = reactruntime.ClassifierFailureBehavior(setup.Config.Permissions.Auto.FailureBehavior)
 	return cfg
@@ -376,6 +376,7 @@ func RunChatLive(setup *ChatSetup) {
 				session.SetMemorySummary(next.Summary)
 			}
 		},
+		ToolExposureObserver: debugToolExposureObserver(setup),
 		Progress: func(text string) {
 			evRenderer.Progress(text)
 		},
@@ -384,10 +385,11 @@ func RunChatLive(setup *ChatSetup) {
 				pluginManager.RegisterHooks(registry)
 			}
 		},
-		CompactionMaxFailures: setup.Config.Resilience.CompactionMaxFailures,
-		Interactive:           true,
+		CompactionMaxFailures:    setup.Config.Resilience.CompactionMaxFailures,
+		Interactive:              true,
+		ToolThrashCircuitBreaker: setup.Config.Resilience.ToolThrashCircuitBreaker,
 	})
-	registerReactDelegationTools(reg, setup, baseReg, approve, evRenderer, pluginManager)
+	registerReactDelegationTools(reg, setup, baseReg, approve, evRenderer, pluginManager, session)
 
 	inputCh := make(chan string, 1)
 	doneCh := make(chan struct{}, 1)
@@ -705,6 +707,7 @@ func RunChatConsole(setup *ChatSetup) {
 				session.SetMemorySummary(next.Summary)
 			}
 		},
+		ToolExposureObserver: debugToolExposureObserver(setup),
 		Progress: func(text string) {
 			renderer.Progress(text)
 		},
@@ -713,10 +716,11 @@ func RunChatConsole(setup *ChatSetup) {
 				pluginManager.RegisterHooks(registry)
 			}
 		},
-		CompactionMaxFailures: setup.Config.Resilience.CompactionMaxFailures,
-		Interactive:           true,
+		CompactionMaxFailures:    setup.Config.Resilience.CompactionMaxFailures,
+		Interactive:              true,
+		ToolThrashCircuitBreaker: setup.Config.Resilience.ToolThrashCircuitBreaker,
 	})
-	registerReactDelegationTools(reg, setup, baseReg, approve, nil, pluginManager)
+	registerReactDelegationTools(reg, setup, baseReg, approve, nil, pluginManager, session)
 
 	fmt.Printf("forge (%s) — %s\n", setup.ChatModel, setup.WorkDir)
 	fmt.Println("type your request, or /help for commands")
@@ -797,7 +801,7 @@ func RunChatConsole(setup *ChatSetup) {
 	fmt.Println()
 }
 
-func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg *tools.Registry, _ tools.ApprovalFunc, renderer *agent.EventRenderer, pluginManager *pluginruntime.Manager) {
+func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg *tools.Registry, _ tools.ApprovalFunc, renderer *agent.EventRenderer, pluginManager *pluginruntime.Manager, sessions ...*reactruntime.Session) {
 	if reg == nil || setup == nil || baseReg == nil {
 		return
 	}
@@ -841,15 +845,22 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 		if renderer != nil {
 			childRenderer = agent.NewSubAgentRenderer(renderer, role)
 		}
+		if agentID := reactruntime.AgentIDFromContext(ctx); agentID != "" {
+			childRenderer = newAgentProgressRenderTarget(childRenderer, func(name, summary string) {
+				pool.RecordProgress(agentID, name, summary)
+			})
+		}
 		childRenderer.Info(fmt.Sprintf("[%s] starting", role))
 		childRunner := reactruntime.NewRunner(reactruntime.Config{
-			Driver:                driver,
-			Tools:                 childTools,
-			Renderer:              childRenderer,
-			SystemPrompt:          systemPrompt,
-			Session:               reactruntime.NewSession(),
-			CompactionMaxFailures: setup.Config.Resilience.CompactionMaxFailures,
-			Interactive:           false,
+			Driver:                   driver,
+			Tools:                    childTools,
+			Renderer:                 childRenderer,
+			SystemPrompt:             systemPrompt,
+			Session:                  reactruntime.NewSession(),
+			ToolExposureObserver:     debugToolExposureObserver(setup),
+			CompactionMaxFailures:    setup.Config.Resilience.CompactionMaxFailures,
+			Interactive:              false,
+			ToolThrashCircuitBreaker: setup.Config.Resilience.ToolThrashCircuitBreaker,
 		})
 		if err := childRunner.Run(ctx, task); err != nil {
 			childRenderer.Info(fmt.Sprintf("[%s] cancelled", role))
@@ -858,6 +869,21 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 		childRenderer.Info(fmt.Sprintf("[%s] done", role))
 		return childRunner.LastResponse(), nil
 	})
+	if len(sessions) > 0 {
+		pool.AttachSession(sessions[0])
+	}
+	if setup.debugRec != nil || renderer != nil {
+		pool.SetLifecycleObserver(func(state reactruntime.AgentTaskState) {
+			if setup.debugRec != nil {
+				setup.debugRec.logAgentTask(state)
+			}
+			if renderer != nil {
+				if payload, err := json.Marshal(redactAgentTaskState(state)); err == nil {
+					renderer.AgentTaskState(string(payload))
+				}
+			}
+		})
+	}
 	pool.RegisterAgents(reactruntime.DefaultAgentDefinitions())
 	if pluginManager != nil {
 		pluginAgents := pluginManager.AgentDefs()
@@ -877,7 +903,36 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 	}
 	reg.Register(reacttools.NewSpawnAgent(pool))
 	reg.Register(reacttools.NewWaitAgent(pool))
+	reg.Register(reacttools.NewAgentStatus(pool))
+	reg.Register(reacttools.NewKillAgent(pool))
 }
+
+type agentProgressRenderTarget struct {
+	target agent.RenderTarget
+	record func(name, summary string)
+}
+
+func newAgentProgressRenderTarget(target agent.RenderTarget, record func(name, summary string)) agent.RenderTarget {
+	if target == nil || record == nil {
+		return target
+	}
+	return agentProgressRenderTarget{target: target, record: record}
+}
+
+func (r agentProgressRenderTarget) AgentToken(text string) { r.target.AgentToken(text) }
+func (r agentProgressRenderTarget) AgentText(text string)  { r.target.AgentText(text) }
+func (r agentProgressRenderTarget) ToolCall(name, summary string) {
+	r.record(name, summary)
+	r.target.ToolCall(name, summary)
+}
+func (r agentProgressRenderTarget) ToolResult(name, output, diff string, isError bool) {
+	r.target.ToolResult(name, output, diff, isError)
+}
+func (r agentProgressRenderTarget) Stats(duration time.Duration, usage llm.Usage) {
+	r.target.Stats(duration, usage)
+}
+func (r agentProgressRenderTarget) Error(msg string) { r.target.Error(msg) }
+func (r agentProgressRenderTarget) Info(msg string)  { r.target.Info(msg) }
 
 func reactDelegationSystemSuffix(role string) string {
 	var sb strings.Builder

@@ -50,6 +50,37 @@ func TestGlobIgnoreDirs(t *testing.T) {
 	}
 }
 
+func TestGlobRespectsIgnoreSecretBoundaries(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".ignore"), []byte("*.env\nsecrets/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "secrets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "app.env"), []byte("TOKEN=dummy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secrets", "token.txt"), []byte("TOKEN=dummy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := NewGlob(dir, nil)
+	result, err := tool.Execute(context.Background(), map[string]any{"pattern": "**/*"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "main.go") {
+		t.Fatalf("expected allowed file in result, got: %s", result)
+	}
+	if strings.Contains(result, "app.env") || strings.Contains(result, "secrets") {
+		t.Fatalf("glob result crossed ignored secret boundary: %s", result)
+	}
+}
+
 func TestGlobPathEscape(t *testing.T) {
 	dir := t.TempDir()
 	// glob now allows reading outside the workdir (read-only access)
