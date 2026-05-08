@@ -2013,7 +2013,18 @@ func runChat(args []string) {
 			os.Exit(1)
 		}
 	}
+	if shouldUseChatConsole(term.IsTerminal(int(os.Stdin.Fd()))) {
+		runtimepkg.RunChatConsole(setup)
+		return
+	}
 	runtimepkg.RunChatLive(setup)
+}
+
+func shouldUseChatConsole(stdinIsTerminal bool) bool {
+	if os.Getenv("FORGE_CHAT_CONSOLE") == "1" {
+		return true
+	}
+	return !stdinIsTerminal
 }
 
 func runCopilotAuth() {

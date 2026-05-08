@@ -31,6 +31,21 @@ func TestSuggestFallsBackToInputHeuristics(t *testing.T) {
 	}
 }
 
+func TestSuggestPrefersReviewForAuditOfExistingPlan(t *testing.T) {
+	loaded := []Skill{
+		{Name: "brainstorming"},
+		{Name: "requesting-code-review"},
+	}
+
+	got, ok := Suggest(loaded, "", "did the changes follow the plan, what gaps remain, audit it", map[string]bool{})
+	if !ok {
+		t.Fatal("expected suggestion")
+	}
+	if got.Name != "requesting-code-review" {
+		t.Fatalf("suggestion = %#v", got)
+	}
+}
+
 func TestSuggestSkipsAlreadyActiveSkill(t *testing.T) {
 	loaded := []Skill{
 		{Name: "brainstorming"},

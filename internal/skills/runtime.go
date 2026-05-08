@@ -67,7 +67,9 @@ func (r *Runtime) UseRecords() []UseRecord {
 func resolveRequiredSkillName(input string) string {
 	lower := strings.ToLower(strings.TrimSpace(input))
 	switch {
-	case containsAny(lower, "plan", "planning", "brainstorm", "design", "architecture", "approach"):
+	case looksLikeReviewOrStatusAudit(lower):
+		return ""
+	case looksLikePlanningRequest(lower):
 		return "brainstorming"
 	case containsAny(lower, "debug", "bug", "failing", "failure", "regression", "investigate", "root cause", "broken"):
 		return "systematic-debugging"
@@ -81,6 +83,9 @@ func resolveRequiredSkillName(input string) string {
 func resolveAutoSkill(loaded []Skill, input string) (Skill, bool) {
 	// Use the same keyword heuristics as required-skill resolution instead of
 	// requiring the user to type the literal skill name.
+	if looksLikeReviewOrStatusAudit(strings.ToLower(strings.TrimSpace(input))) {
+		return Get(loaded, "requesting-code-review")
+	}
 	name := resolveRequiredSkillName(input)
 	if name == "" {
 		// Fall back to literal name/description match for skills that don't
@@ -97,4 +102,18 @@ func resolveAutoSkill(loaded []Skill, input string) (Skill, bool) {
 		return Skill{}, false
 	}
 	return Get(loaded, name)
+}
+
+func looksLikePlanningRequest(input string) bool {
+	return containsAny(input, "plan", "planning", "brainstorm", "design", "architecture", "approach")
+}
+
+func looksLikeReviewOrStatusAudit(input string) bool {
+	if input == "" {
+		return false
+	}
+	if containsAny(input, "audit", "review", "gap", "gaps", "missed", "what's next", "whats next", "what is next") {
+		return true
+	}
+	return strings.Contains(input, "plan") && containsAny(input, "follow", "followed", "status", "complete", "completed", "done", "remain", "remaining")
 }

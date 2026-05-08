@@ -3470,6 +3470,44 @@ func TestChatModelAutoSkillAlreadyActiveDoesNotSwallowInput(t *testing.T) {
 	}
 }
 
+func TestChatModelAutoSkillsDoesNotBrainstormExistingPlanAudit(t *testing.T) {
+	inputCh := make(chan string, 1)
+	m := NewChatModel(ChatLiveConfig{
+		Model:   "test",
+		WorkDir: "/tmp",
+		Skills: []skills.Skill{
+			{Name: "brainstorming", Description: "Plan first", Body: "Brainstorm before coding."},
+			{Name: "requesting-code-review", Description: "Review work", Body: "Findings first."},
+		},
+		AutoSkillsMode: skills.AutoSkillsAuto,
+		State:          chatstate.New(),
+	})
+	m.inputCh = inputCh
+	m.width = 100
+	m.height = 24
+	m.inputBuf = "forge has had many changes, did they all follow the plan, are there any gaps, whats next, figure this out and write me a nice doc"
+	m.inputPos = len(m.inputBuf)
+
+	updated, cmd := m.submitInput()
+	m = updated.(ChatModel)
+
+	if cmd == nil {
+		t.Fatal("expected audit input to submit")
+	}
+	cmd()
+	select {
+	case raw := <-inputCh:
+		if strings.Contains(raw, "[Skill: brainstorming]") {
+			t.Fatalf("audit input should not activate brainstorming: %q", raw)
+		}
+		if !strings.Contains(raw, "[Skill: requesting-code-review]") {
+			t.Fatalf("audit input should use review-oriented skill: %q", raw)
+		}
+	default:
+		t.Fatal("expected queued chat input")
+	}
+}
+
 func TestChatModelSlashClearVariants(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 100
