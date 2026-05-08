@@ -28,6 +28,82 @@ func TestAgentPoolSpawnAndWaitComplete(t *testing.T) {
 	}
 }
 
+func TestAgentPoolUpdatesSessionAgentTaskOnSpawnAndComplete(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("delegate audit")
+	pool := NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+		return role + ":" + task, nil
+	})
+	pool.AttachSession(session)
+
+	id, err := pool.Spawn(context.Background(), "repo-auditor", "inspect repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := pool.Wait(context.Background(), id, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != AgentStatusCompleted {
+		t.Fatalf("wait result = %#v", result)
+	}
+
+	tasks := session.Snapshot().AgentTasks
+	if len(tasks) != 1 {
+		t.Fatalf("agent tasks = %#v", tasks)
+	}
+	task := tasks[0]
+	if task.ID != id || task.Role != "repo-auditor" || task.Prompt != "inspect repo" || task.ParentTurn != turn {
+		t.Fatalf("agent task identity = %#v", task)
+	}
+	if task.Status != AgentStatusCompleted || task.Result != "repo-auditor:inspect repo" || task.Error != "" {
+		t.Fatalf("agent task terminal state = %#v", task)
+	}
+	if task.CreatedAt.IsZero() || task.StartedAt.IsZero() || task.CompletedAt.IsZero() || task.LastActivityAt.IsZero() {
+		t.Fatalf("agent task timestamps = %#v", task)
+	}
+}
+
+func TestAgentPoolUpdatesSessionAgentTaskOnTimeoutFailureAndNotFound(t *testing.T) {
+	session := NewSession()
+	session.RecordInput("delegate work")
+	started := make(chan struct{})
+	release := make(chan struct{})
+	pool := NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+		close(started)
+		<-release
+		return "", errors.New("boom")
+	})
+	pool.AttachSession(session)
+
+	id, err := pool.Spawn(context.Background(), "worker", "change file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	if _, err := pool.Wait(context.Background(), id, 10*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	if task := session.Snapshot().AgentTasks[0]; task.Status != AgentStatusTimeout {
+		t.Fatalf("task after timeout = %#v", task)
+	}
+	close(release)
+	if _, err := pool.Wait(context.Background(), id, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if task := session.Snapshot().AgentTasks[0]; task.Status != AgentStatusFailed || task.Error == "" {
+		t.Fatalf("task after failure = %#v", task)
+	}
+
+	if _, err := pool.Wait(context.Background(), "missing-agent", time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	tasks := session.Snapshot().AgentTasks
+	if len(tasks) != 2 || tasks[1].ID != "missing-agent" || tasks[1].Status != AgentStatusNotFound {
+		t.Fatalf("tasks after not_found = %#v", tasks)
+	}
+}
+
 func TestAgentPoolWaitTimeout(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -69,6 +145,149 @@ func TestAgentPoolWaitFailed(t *testing.T) {
 	}
 	if result.Error == "" {
 		t.Fatal("expected error text")
+	}
+}
+
+func TestAgentPoolStatusListsRunningAndCompletedAgents(t *testing.T) {
+	release := make(chan struct{})
+	pool := NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+		if role == "running" {
+			<-release
+		}
+		return role, nil
+	})
+
+	runningID, err := pool.Spawn(context.Background(), "running", "wait")
+	if err != nil {
+		t.Fatal(err)
+	}
+	completedID, err := pool.Spawn(context.Background(), "done", "finish")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Wait(context.Background(), completedID, time.Second); err != nil {
+		t.Fatal(err)
+	}
+
+	statuses := pool.Statuses()
+	if len(statuses) != 2 {
+		t.Fatalf("statuses = %#v", statuses)
+	}
+	if statuses[0].ID != runningID || statuses[0].Status != AgentStatusRunning {
+		t.Fatalf("running status = %#v", statuses[0])
+	}
+	if statuses[1].ID != completedID || statuses[1].Status != AgentStatusCompleted {
+		t.Fatalf("completed status = %#v", statuses[1])
+	}
+	close(release)
+}
+
+func TestAgentPoolKillCancelsRunningAgentAndUpdatesSession(t *testing.T) {
+	session := NewSession()
+	session.RecordInput("run child")
+	started := make(chan struct{})
+	pool := NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+		close(started)
+		<-ctx.Done()
+		return "", ctx.Err()
+	})
+	pool.AttachSession(session)
+
+	id, err := pool.Spawn(context.Background(), "worker", "long task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	result, err := pool.Kill(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != AgentStatusKilled {
+		t.Fatalf("kill result = %#v", result)
+	}
+	if task := session.Snapshot().AgentTasks[0]; task.Status != AgentStatusKilled {
+		t.Fatalf("session task after kill = %#v", task)
+	}
+	waitResult, err := pool.Wait(context.Background(), id, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if waitResult.Status != AgentStatusKilled {
+		t.Fatalf("wait after kill = %#v", waitResult)
+	}
+}
+
+func TestAgentPoolRecordsProgressInSession(t *testing.T) {
+	session := NewSession()
+	session.RecordInput("delegate audit")
+	release := make(chan struct{})
+	pool := NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+		<-release
+		return "done", nil
+	})
+	pool.AttachSession(session)
+
+	id, err := pool.Spawn(context.Background(), "repo-auditor", "inspect repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.RecordProgress(id, "read_file", "README.md")
+	pool.RecordProgress(id, "git_status", "")
+
+	task := session.Snapshot().AgentTasks[0]
+	if task.LastToolName != "git_status" || len(task.RecentActivity) != 2 || task.RecentActivity[0].ToolName != "read_file" {
+		t.Fatalf("task progress = %#v", task)
+	}
+	close(release)
+}
+
+func TestAgentPoolLifecycleObserverReceivesProgressUpdates(t *testing.T) {
+	release := make(chan struct{})
+	pool := NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+		<-release
+		return "done", nil
+	})
+	var observed []AgentTaskState
+	pool.SetLifecycleObserver(func(state AgentTaskState) {
+		observed = append(observed, state)
+	})
+
+	id, err := pool.Spawn(context.Background(), "repo-auditor", "inspect repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.RecordProgress(id, "read_file", "README.md")
+	close(release)
+	if _, err := pool.Wait(context.Background(), id, time.Second); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, state := range observed {
+		if state.ID == id && state.LastToolName == "read_file" && len(state.RecentActivity) == 1 {
+			return
+		}
+	}
+	t.Fatalf("observer states = %#v, want progress update for %s", observed, id)
+}
+
+func TestAgentPoolAddsAgentIDToSpawnContext(t *testing.T) {
+	seenID := make(chan string, 1)
+	pool := NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+		seenID <- AgentIDFromContext(ctx)
+		return "done", nil
+	})
+
+	id, err := pool.Spawn(context.Background(), "repo-auditor", "inspect repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-seenID:
+		if got != id {
+			t.Fatalf("context agent id = %q, want %q", got, id)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("spawn did not run")
 	}
 }
 

@@ -38,7 +38,7 @@ func AnalyzeAction(action Action) RiskFacts {
 		facts.Reasons = append(facts.Reasons, "mutating tool")
 	}
 
-	if tool == "run_command" {
+	if tool == "run_command" || tool == "exec_session_start" {
 		analyzeCommand(summary, &facts)
 	}
 
@@ -80,6 +80,28 @@ func analyzeCommand(command string, facts *RiskFacts) {
 		facts.MutatesWorkspace = true
 		facts.Level = maxRisk(facts.Level, RiskMedium)
 		facts.Reasons = append(facts.Reasons, "git state command")
+	}
+	if commandUsesShellInterpreter(lower) {
+		facts.ClassifierImmune = true
+		facts.Level = maxRisk(facts.Level, RiskHigh)
+		facts.Reasons = append(facts.Reasons, "shell interpreter command")
+	}
+	if commandUsesSubstitution(lower) {
+		facts.ClassifierImmune = true
+		facts.Level = maxRisk(facts.Level, RiskHigh)
+		facts.Reasons = append(facts.Reasons, "command substitution")
+	}
+	if commandDumpsEnvironment(lower) {
+		facts.TouchesSecrets = true
+		facts.ClassifierImmune = true
+		facts.Level = maxRisk(facts.Level, RiskHigh)
+		facts.Reasons = append(facts.Reasons, "environment dump")
+	}
+	if commandTouchesCredentialPath(lower) {
+		facts.TouchesSecrets = true
+		facts.ClassifierImmune = true
+		facts.Level = maxRisk(facts.Level, RiskHigh)
+		facts.Reasons = append(facts.Reasons, "credential path command")
 	}
 	if commandIsDestructive(lower) {
 		facts.Destructive = true
@@ -143,6 +165,36 @@ func commandTouchesGitState(command string) bool {
 	prefixes := []string{"git commit", "git add", "git rm", "git mv", "git reset", "git checkout", "git switch", "git merge", "git rebase", "git config"}
 	for _, prefix := range prefixes {
 		if command == prefix || strings.HasPrefix(command, prefix+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+func commandUsesShellInterpreter(command string) bool {
+	for _, pattern := range []string{"bash -c", "bash -lc", "sh -c", "zsh -c", "fish -c"} {
+		if command == pattern || strings.HasPrefix(command, pattern+" ") || strings.Contains(command, " "+pattern+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+func commandUsesSubstitution(command string) bool {
+	return strings.Contains(command, "$(") || strings.Contains(command, "`")
+}
+
+func commandDumpsEnvironment(command string) bool {
+	trimmed := strings.TrimSpace(command)
+	return trimmed == "env" || trimmed == "printenv" || strings.HasPrefix(trimmed, "printenv ") || strings.HasPrefix(trimmed, "env |") || strings.Contains(trimmed, "| printenv")
+}
+
+func commandTouchesCredentialPath(command string) bool {
+	patterns := []string{
+		".env", "~/.aws/credentials", ".aws/credentials", "~/.ssh/", ".ssh/", "id_rsa", "id_ed25519", "credentials.json", "/secrets/", ".npmrc", ".netrc",
+	}
+	for _, pattern := range patterns {
+		if strings.Contains(command, pattern) {
 			return true
 		}
 	}

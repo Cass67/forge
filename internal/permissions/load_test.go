@@ -40,3 +40,20 @@ func TestLoadConfigRulesSkipsInvalidRules(t *testing.T) {
 		t.Fatalf("rule = %#v", rules[0])
 	}
 }
+
+func TestLoadConfigRulesSkipsUnsupportedToolNames(t *testing.T) {
+	cfg := config.PermissionsConfig{
+		Project: config.PermissionScopeConfig{Rules: []config.PermissionRuleConfig{
+			{Behavior: "deny", Tool: "unknown_tool", Pattern: "*"},
+			{Behavior: "ask", Tool: "write_file", Pattern: "docs/**/*.md"},
+		}},
+	}
+
+	rules := LoadConfigRules(cfg)
+	if len(rules) != 1 {
+		t.Fatalf("rules = %d, want 1", len(rules))
+	}
+	if rules[0].Tool != "write_file" || rules[0].Behavior != BehaviorAsk {
+		t.Fatalf("rule = %#v", rules[0])
+	}
+}

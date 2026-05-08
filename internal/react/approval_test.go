@@ -56,7 +56,7 @@ func TestApprovalGateRuleForbidsCommand(t *testing.T) {
 	}
 }
 
-func TestApprovalGateRedactsSecretDetailBeforePromptAndUpdates(t *testing.T) {
+func TestApprovalGateRedactsSecretSummaryAndDetailBeforePromptAndUpdates(t *testing.T) {
 	secret := dummyApprovalSecret()
 	var prompted tools.Action
 	gate := NewApprovalGate("", ApprovalConfig{
@@ -69,7 +69,7 @@ func TestApprovalGateRedactsSecretDetailBeforePromptAndUpdates(t *testing.T) {
 
 	approved, err := gate.Approve(tools.Action{
 		Tool:    "write_file",
-		Summary: "write token.txt",
+		Summary: "write token " + secret,
 		Detail:  "token=" + secret,
 	})
 	if err != nil {
@@ -77,6 +77,9 @@ func TestApprovalGateRedactsSecretDetailBeforePromptAndUpdates(t *testing.T) {
 	}
 	if !approved {
 		t.Fatal("expected approval")
+	}
+	if strings.Contains(prompted.Summary, secret) {
+		t.Fatalf("prompt summary leaked secret: %s", prompted.Summary)
 	}
 	if strings.Contains(prompted.Detail, secret) {
 		t.Fatalf("prompt detail leaked secret: %s", prompted.Detail)

@@ -66,9 +66,11 @@ func NewEditFile(workDir string, approve ApprovalFunc, policies ...SecretPolicy)
 			lastDiff = diff
 
 			approved, err := approve(Action{
+				Context: ctx,
 				Tool:    "edit_file",
 				Summary: fmt.Sprintf("edit %s", path),
 				Detail:  diff,
+				Path:    path,
 			})
 			if err != nil {
 				return "", err

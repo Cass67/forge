@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"forge/internal/hooks"
 	"forge/internal/llm"
@@ -38,6 +39,46 @@ type TaskState struct {
 	Operation            string
 	SourceRef            string
 	TargetBranch         string
+}
+
+type AgentTaskActivity struct {
+	ToolName string    `json:"tool_name"`
+	Summary  string    `json:"summary,omitempty"`
+	At       time.Time `json:"at"`
+}
+
+type AgentTaskState struct {
+	ID             string              `json:"id"`
+	Role           string              `json:"role"`
+	Description    string              `json:"description,omitempty"`
+	Prompt         string              `json:"prompt,omitempty"`
+	Status         AgentStatus         `json:"status"`
+	CreatedAt      time.Time           `json:"created_at"`
+	StartedAt      time.Time           `json:"started_at,omitempty"`
+	CompletedAt    time.Time           `json:"completed_at,omitempty"`
+	LastActivityAt time.Time           `json:"last_activity_at,omitempty"`
+	Result         string              `json:"result,omitempty"`
+	Error          string              `json:"error,omitempty"`
+	ParentTurn     int                 `json:"parent_turn,omitempty"`
+	LastToolName   string              `json:"last_tool_name,omitempty"`
+	RecentActivity []AgentTaskActivity `json:"recent_activity,omitempty"`
+}
+
+type DelegationActionKind string
+
+const (
+	DelegationActionNone            DelegationActionKind = "none"
+	DelegationActionWriteDoc        DelegationActionKind = "write_doc"
+	DelegationActionRunVerification DelegationActionKind = "run_verification"
+	DelegationActionCommit          DelegationActionKind = "commit"
+	DelegationActionAskUser         DelegationActionKind = "ask_user"
+)
+
+type DelegationActionState struct {
+	Kind        DelegationActionKind `json:"kind"`
+	TargetPath  string               `json:"target_path,omitempty"`
+	SourceAgent string               `json:"source_agent,omitempty"`
+	Description string               `json:"description,omitempty"`
 }
 
 type PlanStep struct {
@@ -84,46 +125,51 @@ type TurnRecord struct {
 }
 
 type SessionSnapshot struct {
-	Turn              int
-	LastInput         string
-	InitialInput      string
-	RecentInputs      []string
-	History           []llm.Message
-	Turns             []TurnRecord
-	CompactedTurns    int
-	CompactionSummary string
-	MemorySummary     string
-	HookOutputSet     bool
-	HookOutput        hooks.ExecutionOutput
-	HookOverlays      []hooks.Overlay
-	RuntimeNote       string
-	Mode              Mode
-	TaskState         *TaskState
-	PlanState         *PlanState
-	PendingInput      []string
-	Interrupted       bool
+	Turn                    int
+	LastInput               string
+	InitialInput            string
+	RecentInputs            []string
+	History                 []llm.Message
+	Turns                   []TurnRecord
+	CompactedTurns          int
+	CompactionSummary       string
+	MemorySummary           string
+	HookOutputSet           bool
+	HookOutput              hooks.ExecutionOutput
+	HookOverlays            []hooks.Overlay
+	RuntimeNote             string
+	Mode                    Mode
+	TaskState               *TaskState
+	PlanState               *PlanState
+	AgentTasks              []AgentTaskState
+	PendingDelegationAction *DelegationActionState
+	PendingInput            []string
+	Interrupted             bool
 }
 
 type Session struct {
-	mu                sync.Mutex
-	turn              int
-	lastInput         string
-	initialInput      string
-	recentInputs      []string
-	history           []llm.Message
-	turns             []TurnRecord
-	compactedTurns    int
-	compactionSummary string
-	memorySummary     string
-	hookOutputSet     bool
-	hookOutput        hooks.ExecutionOutput
-	hookOverlays      []hooks.Overlay
-	runtimeNote       string
-	mode              Mode
-	taskState         *TaskState
-	planState         *PlanState
-	pendingInput      []string
-	interrupted       bool
+	mu                      sync.Mutex
+	turn                    int
+	lastInput               string
+	initialInput            string
+	recentInputs            []string
+	history                 []llm.Message
+	turns                   []TurnRecord
+	compactedTurns          int
+	compactionSummary       string
+	memorySummary           string
+	hookOutputSet           bool
+	hookOutput              hooks.ExecutionOutput
+	hookOverlays            []hooks.Overlay
+	runtimeNote             string
+	mode                    Mode
+	taskState               *TaskState
+	planState               *PlanState
+	agentTasks              map[string]AgentTaskState
+	agentTaskOrder          []string
+	pendingDelegationAction *DelegationActionState
+	pendingInput            []string
+	interrupted             bool
 }
 
 func NewSession() *Session {
@@ -269,24 +315,26 @@ func (s *Session) Snapshot() SessionSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return SessionSnapshot{
-		Turn:              s.turn,
-		LastInput:         s.lastInput,
-		InitialInput:      s.initialInput,
-		RecentInputs:      append([]string(nil), s.recentInputs...),
-		History:           append([]llm.Message(nil), s.history...),
-		Turns:             append([]TurnRecord(nil), s.turns...),
-		CompactedTurns:    s.compactedTurns,
-		CompactionSummary: s.compactionSummary,
-		MemorySummary:     s.memorySummary,
-		HookOutputSet:     s.hookOutputSet,
-		HookOutput:        cloneHookOutput(s.hookOutput),
-		HookOverlays:      append([]hooks.Overlay(nil), s.hookOverlays...),
-		RuntimeNote:       s.runtimeNote,
-		Mode:              s.mode,
-		TaskState:         cloneTaskState(s.taskState),
-		PlanState:         clonePlanState(s.planState),
-		PendingInput:      append([]string(nil), s.pendingInput...),
-		Interrupted:       s.interrupted,
+		Turn:                    s.turn,
+		LastInput:               s.lastInput,
+		InitialInput:            s.initialInput,
+		RecentInputs:            append([]string(nil), s.recentInputs...),
+		History:                 append([]llm.Message(nil), s.history...),
+		Turns:                   append([]TurnRecord(nil), s.turns...),
+		CompactedTurns:          s.compactedTurns,
+		CompactionSummary:       s.compactionSummary,
+		MemorySummary:           s.memorySummary,
+		HookOutputSet:           s.hookOutputSet,
+		HookOutput:              cloneHookOutput(s.hookOutput),
+		HookOverlays:            append([]hooks.Overlay(nil), s.hookOverlays...),
+		RuntimeNote:             s.runtimeNote,
+		Mode:                    s.mode,
+		TaskState:               cloneTaskState(s.taskState),
+		PlanState:               clonePlanState(s.planState),
+		AgentTasks:              cloneAgentTasksLocked(s.agentTaskOrder, s.agentTasks),
+		PendingDelegationAction: cloneDelegationActionState(s.pendingDelegationAction),
+		PendingInput:            append([]string(nil), s.pendingInput...),
+		Interrupted:             s.interrupted,
 	}
 }
 
@@ -312,8 +360,148 @@ func (s *Session) Clear() {
 	s.mode = ModeChat
 	s.taskState = nil
 	s.planState = nil
+	s.agentTasks = nil
+	s.agentTaskOrder = nil
+	s.pendingDelegationAction = nil
 	s.pendingInput = nil
 	s.interrupted = false
+}
+
+func (s *Session) SetPendingDelegationAction(state DelegationActionState) {
+	if s == nil {
+		return
+	}
+	state.Kind = normalizeDelegationActionKind(state.Kind)
+	if state.Kind == DelegationActionNone {
+		s.ClearPendingDelegationAction()
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingDelegationAction = &DelegationActionState{
+		Kind:        state.Kind,
+		TargetPath:  strings.TrimSpace(state.TargetPath),
+		SourceAgent: strings.TrimSpace(state.SourceAgent),
+		Description: strings.TrimSpace(state.Description),
+	}
+}
+
+func (s *Session) ClearPendingDelegationAction() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingDelegationAction = nil
+}
+
+func normalizeDelegationActionKind(kind DelegationActionKind) DelegationActionKind {
+	switch kind {
+	case DelegationActionWriteDoc, DelegationActionRunVerification, DelegationActionCommit, DelegationActionAskUser:
+		return kind
+	default:
+		return DelegationActionNone
+	}
+}
+
+func (s *Session) UpsertAgentTask(state AgentTaskState) {
+	if s == nil {
+		return
+	}
+	state.ID = strings.TrimSpace(state.ID)
+	if state.ID == "" {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.agentTasks == nil {
+		s.agentTasks = make(map[string]AgentTaskState)
+	}
+	existing, exists := s.agentTasks[state.ID]
+	if !exists {
+		existing = AgentTaskState{ID: state.ID, Status: AgentStatusPending, CreatedAt: time.Now()}
+		s.agentTaskOrder = append(s.agentTaskOrder, state.ID)
+	}
+	merged := mergeAgentTaskState(existing, state)
+	s.agentTasks[state.ID] = merged
+}
+
+func (s *Session) RecordAgentTaskProgress(id, toolName, summary string, at time.Time) {
+	id = strings.TrimSpace(id)
+	toolName = strings.TrimSpace(toolName)
+	if s == nil || id == "" || toolName == "" {
+		return
+	}
+	if at.IsZero() {
+		at = time.Now()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.agentTasks == nil {
+		s.agentTasks = make(map[string]AgentTaskState)
+	}
+	task, exists := s.agentTasks[id]
+	if !exists {
+		task = AgentTaskState{ID: id, Status: AgentStatusRunning, CreatedAt: at, StartedAt: at}
+		s.agentTaskOrder = append(s.agentTaskOrder, id)
+	}
+	task.LastToolName = toolName
+	task.LastActivityAt = at
+	task.RecentActivity = append(task.RecentActivity, AgentTaskActivity{
+		ToolName: toolName,
+		Summary:  strings.TrimSpace(summary),
+		At:       at,
+	})
+	if len(task.RecentActivity) > 12 {
+		task.RecentActivity = append([]AgentTaskActivity(nil), task.RecentActivity[len(task.RecentActivity)-12:]...)
+	}
+	s.agentTasks[id] = task
+}
+
+func mergeAgentTaskState(existing, next AgentTaskState) AgentTaskState {
+	merged := existing
+	merged.ID = strings.TrimSpace(next.ID)
+	if role := strings.TrimSpace(next.Role); role != "" {
+		merged.Role = role
+	}
+	if description := strings.TrimSpace(next.Description); description != "" {
+		merged.Description = description
+	}
+	if prompt := strings.TrimSpace(next.Prompt); prompt != "" {
+		merged.Prompt = prompt
+	}
+	if next.Status != "" {
+		merged.Status = next.Status
+	}
+	if !next.CreatedAt.IsZero() {
+		merged.CreatedAt = next.CreatedAt
+	}
+	if !next.StartedAt.IsZero() {
+		merged.StartedAt = next.StartedAt
+	}
+	if !next.CompletedAt.IsZero() {
+		merged.CompletedAt = next.CompletedAt
+	}
+	if !next.LastActivityAt.IsZero() {
+		merged.LastActivityAt = next.LastActivityAt
+	}
+	if result := strings.TrimSpace(next.Result); result != "" {
+		merged.Result = result
+	}
+	if errText := strings.TrimSpace(next.Error); errText != "" {
+		merged.Error = errText
+	}
+	if next.ParentTurn != 0 {
+		merged.ParentTurn = next.ParentTurn
+	}
+	if toolName := strings.TrimSpace(next.LastToolName); toolName != "" {
+		merged.LastToolName = toolName
+	}
+	if len(next.RecentActivity) > 0 {
+		merged.RecentActivity = cloneAgentTaskActivity(next.RecentActivity)
+	}
+	return merged
 }
 
 func (s *Session) SetRuntimeNote(text string) {
@@ -513,6 +701,37 @@ func clonePlanState(state *PlanState) *PlanState {
 		Explanation: state.Explanation,
 		Steps:       append([]PlanStep(nil), state.Steps...),
 	}
+	return &cloned
+}
+
+func cloneAgentTasksLocked(order []string, tasks map[string]AgentTaskState) []AgentTaskState {
+	if len(order) == 0 || len(tasks) == 0 {
+		return nil
+	}
+	out := make([]AgentTaskState, 0, len(order))
+	for _, id := range order {
+		task, ok := tasks[id]
+		if !ok {
+			continue
+		}
+		task.RecentActivity = cloneAgentTaskActivity(task.RecentActivity)
+		out = append(out, task)
+	}
+	return out
+}
+
+func cloneAgentTaskActivity(in []AgentTaskActivity) []AgentTaskActivity {
+	if len(in) == 0 {
+		return nil
+	}
+	return append([]AgentTaskActivity(nil), in...)
+}
+
+func cloneDelegationActionState(state *DelegationActionState) *DelegationActionState {
+	if state == nil {
+		return nil
+	}
+	cloned := *state
 	return &cloned
 }
 

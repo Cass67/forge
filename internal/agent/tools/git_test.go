@@ -81,6 +81,26 @@ func TestGitDiff(t *testing.T) {
 	}
 }
 
+func TestGitDiffRedactsSecretContent(t *testing.T) {
+	dir := initGitRepo(t)
+	secret := dummySecret()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n// token="+secret+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := NewGitDiff(dir)
+	result, err := tool.Execute(context.Background(), map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(result, secret) {
+		t.Fatalf("git diff leaked secret: %s", result)
+	}
+	if !strings.Contains(result, "<REDACTED:github-pat>") {
+		t.Fatalf("git diff missing redaction marker: %s", result)
+	}
+}
+
 func TestGitDiffDefaultIsHEAD(t *testing.T) {
 	dir := initGitRepo(t)
 	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nfunc changed() {}\n"), 0o644)
@@ -178,6 +198,30 @@ func TestGitCommit(t *testing.T) {
 	out, _ := cmd.Output()
 	if !strings.Contains(string(out), "add new file") {
 		t.Errorf("commit not found in git log: %s", out)
+	}
+}
+
+func TestGitCommitApprovalRedactsSecretPaths(t *testing.T) {
+	dir := initGitRepo(t)
+	secret := dummySecret()
+	secretPath := "token-" + secret + ".txt"
+	if err := os.WriteFile(filepath.Join(dir, secretPath), []byte("placeholder\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var capturedAction Action
+	tool := NewGitCommit(dir, func(a Action) (bool, error) {
+		capturedAction = a
+		return false, nil
+	})
+	if _, err := tool.Execute(context.Background(), map[string]any{"message": "add token file"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(capturedAction.Detail, secret) {
+		t.Fatalf("git commit approval detail leaked secret path: %s", capturedAction.Detail)
+	}
+	if !strings.Contains(capturedAction.Detail, "<REDACTED:github-pat>") {
+		t.Fatalf("git commit approval detail missing redaction: %s", capturedAction.Detail)
 	}
 }
 

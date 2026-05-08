@@ -63,6 +63,7 @@ func TestEventKindConstants(t *testing.T) {
 		llm.EventError,
 		llm.EventDone,
 		llm.EventAbort,
+		llm.EventAgentTask,
 	}
 	for _, k := range kinds {
 		if k == "" {

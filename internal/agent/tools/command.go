@@ -58,6 +58,7 @@ func newRunCommand(workDir string, timeoutSecs int, manager *ExecSessionManager,
 			}
 
 			approved, err := approver(Action{
+				Context: ctx,
 				Tool:    "run_command",
 				Summary: command,
 				Detail:  command,

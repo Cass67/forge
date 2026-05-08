@@ -9,6 +9,7 @@ import (
 )
 
 func NewGitStatus(workDir string) Tool {
+	secretPolicy := DefaultSecretPolicy()
 	return Tool{
 		Name:        "git_status",
 		Description: "Show working tree status (git status --porcelain).",
@@ -19,14 +20,17 @@ func NewGitStatus(workDir string) Tool {
 			cmd.Dir = workDir
 			out, err := cmd.CombinedOutput()
 			if err != nil {
-				return fmt.Sprintf("error: %s\n%s", err, out), nil
+				result, _ := secretPolicy.ApplyCommandOutput(fmt.Sprintf("error: %s\n%s", err, out))
+				return result, nil
 			}
-			return string(out), nil
+			result, _ := secretPolicy.ApplyCommandOutput(string(out))
+			return result, nil
 		},
 	}
 }
 
 func NewGitDiff(workDir string) Tool {
+	secretPolicy := DefaultSecretPolicy()
 	return Tool{
 		Name:        "git_diff",
 		Description: "Show changes in the working tree. Default compares against HEAD (staged + unstaged). Pass a different ref to compare against that instead.",
@@ -44,9 +48,10 @@ func NewGitDiff(workDir string) Tool {
 			cmd.Dir = workDir
 			out, err := cmd.CombinedOutput()
 			if err != nil {
-				return fmt.Sprintf("error: %s\n%s", err, out), nil
+				result, _ := secretPolicy.ApplyCommandOutput(fmt.Sprintf("error: %s\n%s", err, out))
+				return result, nil
 			}
-			result := string(out)
+			result, _ := secretPolicy.ApplyCommandOutput(string(out))
 			if len(result) > 50*1024 {
 				result = result[:50*1024] + "\n... output truncated at 50KB"
 			}
@@ -56,6 +61,7 @@ func NewGitDiff(workDir string) Tool {
 }
 
 func NewGitLog(workDir string) Tool {
+	secretPolicy := DefaultSecretPolicy()
 	return Tool{
 		Name:        "git_log",
 		Description: "Show recent commit history (git log --oneline).",
@@ -72,14 +78,17 @@ func NewGitLog(workDir string) Tool {
 			cmd.Dir = workDir
 			out, err := cmd.CombinedOutput()
 			if err != nil {
-				return fmt.Sprintf("error: %s\n%s", err, out), nil
+				result, _ := secretPolicy.ApplyCommandOutput(fmt.Sprintf("error: %s\n%s", err, out))
+				return result, nil
 			}
-			return string(out), nil
+			result, _ := secretPolicy.ApplyCommandOutput(string(out))
+			return result, nil
 		},
 	}
 }
 
 func NewGitCommit(workDir string, approve ApprovalFunc) Tool {
+	secretPolicy := DefaultSecretPolicy()
 	return Tool{
 		Name:        "git_commit",
 		Description: "Stage all changes and commit. Shows you what will be committed for approval.",
@@ -101,10 +110,13 @@ func NewGitCommit(workDir string, approve ApprovalFunc) Tool {
 				return "nothing to commit", nil
 			}
 
+			summary := secretPolicy.RedactApprovalDetail(fmt.Sprintf("git commit -m %q", message))
+			detail := secretPolicy.RedactApprovalDetail(fmt.Sprintf("Files to be committed:\n%s", statusOut))
 			approved, err := approve(Action{
+				Context: ctx,
 				Tool:    "git_commit",
-				Summary: fmt.Sprintf("git commit -m %q", message),
-				Detail:  fmt.Sprintf("Files to be committed:\n%s", statusOut),
+				Summary: summary,
+				Detail:  detail,
 			})
 			if err != nil {
 				return "", err
@@ -116,16 +128,19 @@ func NewGitCommit(workDir string, approve ApprovalFunc) Tool {
 			addCmd := exec.CommandContext(ctx, "git", "add", "-A")
 			addCmd.Dir = workDir
 			if out, err := addCmd.CombinedOutput(); err != nil {
-				return fmt.Sprintf("error staging: %s\n%s", err, out), nil
+				result, _ := secretPolicy.ApplyCommandOutput(fmt.Sprintf("error staging: %s\n%s", err, out))
+				return result, nil
 			}
 
 			commitCmd := exec.CommandContext(ctx, "git", "commit", "-m", message)
 			commitCmd.Dir = workDir
 			out, err := commitCmd.CombinedOutput()
 			if err != nil {
-				return fmt.Sprintf("error committing: %s\n%s", err, out), nil
+				result, _ := secretPolicy.ApplyCommandOutput(fmt.Sprintf("error committing: %s\n%s", err, out))
+				return result, nil
 			}
-			return string(out), nil
+			result, _ := secretPolicy.ApplyCommandOutput(string(out))
+			return result, nil
 		},
 	}
 }

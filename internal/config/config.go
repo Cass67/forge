@@ -150,6 +150,7 @@ type PermissionAutoConfig struct {
 	MaxConsecutiveDenials int    `toml:"max_consecutive_denials"`
 	MaxTotalDenials       int    `toml:"max_total_denials"`
 	FailureBehavior       string `toml:"failure_behavior"`
+	TimeoutMS             int    `toml:"timeout_ms"`
 }
 
 type MCPServerConfig struct {
@@ -324,6 +325,7 @@ func setDefaults(c *Config) {
 	c.Permissions.Auto.MaxConsecutiveDenials = 3
 	c.Permissions.Auto.MaxTotalDenials = 20
 	c.Permissions.Auto.FailureBehavior = "ask"
+	c.Permissions.Auto.TimeoutMS = 5000
 	c.Git.AutoCommit = true
 	c.Chat.CommandTimeout = 60
 	c.Chat.IgnoreDirs = []string{".git", "node_modules", "__pycache__", ".venv", "vendor"}

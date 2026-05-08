@@ -13,42 +13,56 @@ import (
 	agenttools "forge/internal/agent/tools"
 	"forge/internal/hooks"
 	"forge/internal/llm"
+	resilienceerrors "forge/internal/resilience/errors"
+	"forge/internal/secscan"
 )
 
 type Config struct {
-	Driver                llm.Driver
-	Tools                 *agenttools.Registry
-	Renderer              agent.RenderTarget
-	SystemPrompt          func() string
-	Session               *Session
-	Progress              func(string)
-	TurnComplete          func(SessionSnapshot)
-	ConfigureHooks        func(*hooks.Registry)
-	CompactionMaxFailures int
-	Interactive           bool
-	MaxSteps              int
+	Driver                   llm.Driver
+	Tools                    *agenttools.Registry
+	Renderer                 agent.RenderTarget
+	SystemPrompt             func() string
+	Session                  *Session
+	Progress                 func(string)
+	TurnComplete             func(SessionSnapshot)
+	ToolExposureObserver     func(ToolExposureDecision)
+	ConfigureHooks           func(*hooks.Registry)
+	CompactionMaxFailures    int
+	Interactive              bool
+	MaxSteps                 int
+	ToolThrashCircuitBreaker int
+}
+
+type ToolExposureDecision struct {
+	Reason                string
+	ToolNames             []string
+	RequireToolCall       bool
+	OutstandingAgentCount int
+	PendingActionKind     string
 }
 
 type Runner struct {
-	driver                llm.Driver
-	tools                 *agenttools.Registry
-	renderer              agent.RenderTarget
-	systemPrompt          func() string
-	session               *Session
-	hooks                 *hooks.Registry
-	progress              func(string)
-	compactionManager     *CompactionManager
-	compactionFailures    int
-	compactionMaxFailures int
-	maxSteps              int
-	gitWorkflow           gitWorkflowState
-	planWorkflow          planWorkflowState
-	searchWorkflow        sameFileSearchWorkflowState
-	validationWorkflow    validationWorkflowState
-	repeatWorkflow        repeatToolCallState
-	postDelegation        postDelegationWorkflowState
-	pendingRetryPrompt    string
-	turnComplete          func(SessionSnapshot)
+	driver                   llm.Driver
+	tools                    *agenttools.Registry
+	renderer                 agent.RenderTarget
+	systemPrompt             func() string
+	session                  *Session
+	hooks                    *hooks.Registry
+	progress                 func(string)
+	compactionManager        *CompactionManager
+	compactionFailures       int
+	compactionMaxFailures    int
+	maxSteps                 int
+	gitWorkflow              gitWorkflowState
+	planWorkflow             planWorkflowState
+	searchWorkflow           sameFileSearchWorkflowState
+	validationWorkflow       validationWorkflowState
+	repeatWorkflow           repeatToolCallState
+	postDelegation           postDelegationWorkflowState
+	pendingRetryPrompt       string
+	turnComplete             func(SessionSnapshot)
+	toolExposureObserver     func(ToolExposureDecision)
+	toolThrashCircuitBreaker int
 }
 
 type gitCommitBlocker int
@@ -115,6 +129,13 @@ func maxLoopSteps(configured int) int {
 	return maxLoopSafetySteps
 }
 
+func toolThrashThreshold(configured, fallback int) int {
+	if configured > 0 {
+		return configured
+	}
+	return fallback
+}
+
 const sameFileSearchThrashThreshold = 5
 const repeatToolCallThreshold = 6
 const maxCompletionRetriesPerTurn = 3
@@ -133,13 +154,14 @@ var loopHookOverlayKeys = map[string]struct{}{
 }
 
 type promptHookPayload struct {
-	Mode               Mode
-	PlanState          *PlanState
-	PlanWorkflow       planWorkflowState
-	ValidationWorkflow validationWorkflowState
-	SearchWorkflow     sameFileSearchWorkflowState
-	GitWorkflow        gitWorkflowState
-	RepeatWorkflow     repeatToolCallState
+	Mode                     Mode
+	PlanState                *PlanState
+	PlanWorkflow             planWorkflowState
+	ValidationWorkflow       validationWorkflowState
+	SearchWorkflow           sameFileSearchWorkflowState
+	GitWorkflow              gitWorkflowState
+	RepeatWorkflow           repeatToolCallState
+	ToolThrashCircuitBreaker int
 }
 
 type beforeToolHookPayload struct {
@@ -181,9 +203,11 @@ func NewRunner(cfg Config) *Runner {
 			HistoryPressureTurns: 40,
 			MaxFailures:          cfg.CompactionMaxFailures,
 		}),
-		compactionMaxFailures: cfg.CompactionMaxFailures,
-		turnComplete:          cfg.TurnComplete,
-		maxSteps:              maxLoopSteps(cfg.MaxSteps),
+		compactionMaxFailures:    cfg.CompactionMaxFailures,
+		turnComplete:             cfg.TurnComplete,
+		toolExposureObserver:     cfg.ToolExposureObserver,
+		maxSteps:                 maxLoopSteps(cfg.MaxSteps),
+		toolThrashCircuitBreaker: cfg.ToolThrashCircuitBreaker,
 	}
 	if snap := session.Snapshot(); snap.TaskState != nil && isSynthesisGuardOperation(snap.TaskState.Operation) {
 		runner.planWorkflow.active = true
@@ -426,13 +450,16 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 	nativeCaller, isNative := r.driver.(llm.NativeToolCaller)
 
 	completionRetries := 0
+	reactiveCompacted := false
 	for range r.maxSteps {
 		if r.applyPendingInput() {
 			r.syncRuntimeNote()
 		}
 		snap := r.session.Snapshot()
-		toolDefs := r.selectToolDefs(snap)
+		toolDefs, toolDecision := r.selectToolDefsWithDecision(snap)
 		requireToolCall := shouldRequireToolCallForSnapshot(snap)
+		toolDecision.RequireToolCall = requireToolCall
+		r.observeToolExposure(toolDecision)
 		if len(toolDefs) > 0 && !isNative {
 			err := fmt.Errorf("react runtime: driver %q does not support native tool calling", r.driver.Name())
 			r.session.CompleteTurn(turn, "", nil, err)
@@ -440,6 +467,11 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 		}
 		calls, err := r.streamNativeTurn(ctx, turn, nativeCaller, toolDefs, requireToolCall)
 		if err != nil {
+			if !reactiveCompacted && r.reactiveCompactForContextError(ctx, err) {
+				reactiveCompacted = true
+				completionRetries = 0
+				continue
+			}
 			var retryable *RetryableCompletionError
 			if errors.As(err, &retryable) && completionRetries < maxCompletionRetriesPerTurn {
 				completionRetries++
@@ -467,6 +499,20 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 	err := fmt.Errorf("react runtime: safety step limit (%d) exceeded", r.maxSteps)
 	r.session.CompleteTurn(turn, "", nil, err)
 	return err
+}
+
+func (r *Runner) reactiveCompactForContextError(ctx context.Context, err error) bool {
+	if r == nil || r.compactionManager == nil || err == nil {
+		return false
+	}
+	classified := resilienceerrors.ClassifyError(err)
+	if classified.Class != resilienceerrors.ErrorClassContext {
+		return false
+	}
+	if r.progress != nil {
+		r.progress("react runtime: compacting after context window error")
+	}
+	return r.applyCompactionDecision(ctx, r.compactionManager.Reactive(20, "context window exceeded"))
 }
 
 // streamNativeTurn runs one native tool calling step.
@@ -851,41 +897,55 @@ var (
 		"run_command", "exec_session_start", "exec_session_status", "exec_session_write",
 		"exec_session_resize", "exec_session_stop", "command_status", "command_write_stdin",
 	}
-	gitReadToolNames  = []string{"git_status", "git_diff", "git_log", "git_branch_state", "git_merge_status"}
-	previewToolNames  = []string{"artifact_write", "artifact_read", "preview_server_ensure", "preview_server_status"}
-	planningToolNames = []string{"think", "update_plan", "enter_plan_mode", "exit_plan_mode", "ask_user_question"}
-	webToolNames      = []string{"web_fetch", "web_search"}
-	delegateToolNames = []string{"spawn_agent", "wait_agent"}
+	gitReadToolNames     = []string{"git_status", "git_diff", "git_log", "git_branch_state", "git_merge_status"}
+	previewToolNames     = []string{"artifact_write", "artifact_read", "preview_server_ensure", "preview_server_status"}
+	planningToolNames    = []string{"think", "update_plan", "enter_plan_mode", "exit_plan_mode", "ask_user_question"}
+	webToolNames         = []string{"web_fetch", "web_search"}
+	delegateToolNames    = []string{"spawn_agent", "wait_agent"}
+	activeAgentToolNames = []string{"wait_agent", "agent_status", "kill_agent"}
+	agentStatusToolNames = []string{"agent_status"}
 )
 
 func (r *Runner) selectToolDefs(snapshot SessionSnapshot) []llm.ToolDef {
+	defs, _ := r.selectToolDefsWithDecision(snapshot)
+	return defs
+}
+
+func (r *Runner) selectToolDefsWithDecision(snapshot SessionSnapshot) ([]llm.ToolDef, ToolExposureDecision) {
+	decision := newToolExposureDecision(snapshot)
 	if r == nil || r.tools == nil {
-		return nil
+		return nil, decision
 	}
 	if len(outstandingSpawnedAgents(snapshot)) > 0 {
-		return r.tools.Filter([]string{"wait_agent"}).ToLLMToolDefs()
+		defs := r.tools.Filter(activeAgentToolNames).ToLLMToolDefs()
+		return defs, decision.withTools("active_agents", defs)
 	}
 	delegationComplete := historyIncludesCompletedToolCall(snapshot, "wait_agent")
-	pendingPostDelegationWrite := r.postDelegation.pendingWrite || pendingPostDelegationWriteAction(snapshot)
+	pendingPostDelegationWrite := r.postDelegation.pendingWrite || pendingDelegationWriteAction(snapshot) || pendingPostDelegationWriteAction(snapshot)
 	if delegationComplete {
 		postDelegationText := postDelegationToolIntentText(snapshot)
 		if !pendingPostDelegationWrite && !inputSuggestsPostDelegationAction(normalizeToolIntentText(postDelegationText)) {
-			return nil
+			return nil, decision
 		}
 		snapshot.LastInput = postDelegationText
 		goto selectParentTools
 	}
 	if shouldRouteParentThroughDelegation(snapshot) {
 		if defs := r.tools.Filter(delegateToolNames).ToLLMToolDefs(); len(defs) > 0 {
-			return defs
+			return defs, decision.withTools("delegation_intent", defs)
 		}
 	}
 selectParentTools:
 	allowed := allowedToolNamesForSnapshot(snapshot)
+	reason := "parent_intent"
+	if len(allowed) == 0 {
+		reason = "none"
+	}
 	if delegationComplete {
 		allowed = withoutToolNames(allowed, delegateToolNames...)
 	}
 	if pendingPostDelegationWrite {
+		reason = "post_delegation_pending_action"
 		allowed = append(allowed, readOnlyToolNames...)
 		allowed = append(allowed, writeToolNames...)
 		allowed = append(allowed, gitReadToolNames...)
@@ -893,16 +953,71 @@ selectParentTools:
 	}
 	pluginNames := r.pluginToolNames()
 	pluginIntent := inputSuggestsPluginTool(snapshot.LastInput, pluginNames)
+	if len(allowed) == 0 && !pluginIntent && len(snapshot.AgentTasks) > 0 {
+		if defs := r.tools.Filter(agentStatusToolNames).ToLLMToolDefs(); len(defs) > 0 {
+			return defs, decision.withTools("agent_status_state", defs)
+		}
+	}
 	if len(allowed) == 0 && !pluginIntent {
+		reason = "fallback_delegate"
 		allowed = append(allowed, delegateToolNames...)
 	}
 	if pluginIntent {
+		if reason == "none" || reason == "fallback_delegate" {
+			reason = "plugin_intent"
+		} else {
+			reason = reason + "+plugin_intent"
+		}
 		allowed = append(allowed, pluginNames...)
 	}
 	if !delegationComplete {
 		allowed = append(allowed, delegateToolNames...)
 	}
-	return r.tools.Filter(allowed).ToLLMToolDefs()
+	defs := r.tools.Filter(allowed).ToLLMToolDefs()
+	return defs, decision.withTools(reason, defs)
+}
+
+func newToolExposureDecision(snapshot SessionSnapshot) ToolExposureDecision {
+	decision := ToolExposureDecision{
+		Reason:                "none",
+		OutstandingAgentCount: len(outstandingSpawnedAgents(snapshot)),
+	}
+	if snapshot.PendingDelegationAction != nil {
+		decision.PendingActionKind = string(snapshot.PendingDelegationAction.Kind)
+	}
+	return decision
+}
+
+func (d ToolExposureDecision) withTools(reason string, defs []llm.ToolDef) ToolExposureDecision {
+	if strings.TrimSpace(reason) != "" {
+		d.Reason = reason
+	}
+	d.ToolNames = toolNamesFromDefs(defs)
+	if len(d.ToolNames) == 0 && d.Reason != "none" {
+		d.Reason = "none"
+	}
+	return d
+}
+
+func toolNamesFromDefs(defs []llm.ToolDef) []string {
+	if len(defs) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(defs))
+	for _, def := range defs {
+		if name := strings.TrimSpace(def.Name); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func (r *Runner) observeToolExposure(decision ToolExposureDecision) {
+	if r == nil || r.toolExposureObserver == nil {
+		return
+	}
+	decision.ToolNames = append([]string(nil), decision.ToolNames...)
+	r.toolExposureObserver(decision)
 }
 
 func withoutToolNames(names []string, excluded ...string) []string {
@@ -1149,6 +1264,27 @@ func completedToolCallResults(snapshot SessionSnapshot, toolName string) []strin
 }
 
 func outstandingSpawnedAgents(snapshot SessionSnapshot) []AgentResult {
+	transcriptAgents := outstandingTranscriptAgents(snapshot)
+	if len(snapshot.AgentTasks) > 0 {
+		stateIDs := make(map[string]struct{}, len(snapshot.AgentTasks))
+		out := outstandingAgentTasks(snapshot.AgentTasks)
+		for _, task := range snapshot.AgentTasks {
+			if id := strings.TrimSpace(task.ID); id != "" {
+				stateIDs[id] = struct{}{}
+			}
+		}
+		for _, agent := range transcriptAgents {
+			if _, exists := stateIDs[strings.TrimSpace(agent.ID)]; exists {
+				continue
+			}
+			out = append(out, agent)
+		}
+		return out
+	}
+	return transcriptAgents
+}
+
+func outstandingTranscriptAgents(snapshot SessionSnapshot) []AgentResult {
 	toolNamesByCallID := make(map[string]string)
 	outstanding := make(map[string]AgentResult)
 	var order []string
@@ -1196,6 +1332,28 @@ func outstandingSpawnedAgents(snapshot SessionSnapshot) []AgentResult {
 		if result, ok := outstanding[id]; ok {
 			agents = append(agents, result)
 		}
+	}
+	return agents
+}
+
+func outstandingAgentTasks(tasks []AgentTaskState) []AgentResult {
+	agents := make([]AgentResult, 0, len(tasks))
+	for _, task := range tasks {
+		id := strings.TrimSpace(task.ID)
+		if id == "" || !agentStillOutstanding(task.Status) {
+			continue
+		}
+		status := task.Status
+		if status == "" {
+			status = AgentStatusRunning
+		}
+		agents = append(agents, AgentResult{
+			ID:     id,
+			Role:   strings.TrimSpace(task.Role),
+			Status: status,
+			Result: strings.TrimSpace(task.Result),
+			Error:  strings.TrimSpace(task.Error),
+		})
 	}
 	return agents
 }
@@ -1258,6 +1416,24 @@ func (r *Runner) updatePostDelegationWorkflow(toolName, result string, isError b
 	}
 	toolName = strings.TrimSpace(toolName)
 	switch toolName {
+	case "spawn_agent":
+		if isError || r.session == nil {
+			return
+		}
+		snapshot := r.session.Snapshot()
+		if !inputSuggestsFileWrites(normalizeToolIntentText(snapshot.LastInput)) {
+			return
+		}
+		action := DelegationActionState{
+			Kind:        DelegationActionWriteDoc,
+			TargetPath:  extractDelegationTargetPath(snapshot.LastInput),
+			Description: "write delegated output",
+		}
+		if agentResult, ok := decodeAgentToolResult(result); ok {
+			action.SourceAgent = strings.TrimSpace(agentResult.ID)
+		}
+		r.postDelegation.pendingWrite = true
+		r.session.SetPendingDelegationAction(action)
 	case "wait_agent":
 		if isError {
 			return
@@ -1268,12 +1444,38 @@ func (r *Runner) updatePostDelegationWorkflow(toolName, result string, isError b
 		}
 		if inputSuggestsFileWrites(normalizeToolIntentText(snapshot.LastInput)) || inputSuggestsFileWrites(normalizeToolIntentText(result)) {
 			r.postDelegation.pendingWrite = true
+			if r.session != nil {
+				action := DelegationActionState{
+					Kind:        DelegationActionWriteDoc,
+					TargetPath:  extractDelegationTargetPath(snapshot.LastInput + "\n" + result),
+					Description: "write delegated output",
+				}
+				if agentResult, ok := decodeAgentToolResult(result); ok {
+					action.SourceAgent = strings.TrimSpace(agentResult.ID)
+				}
+				r.session.SetPendingDelegationAction(action)
+			}
 		}
 	case "write_file", "edit_file", "apply_patch":
 		if !isError {
 			r.postDelegation.pendingWrite = false
+			if r.session != nil {
+				r.session.ClearPendingDelegationAction()
+			}
 		}
 	}
+}
+
+func extractDelegationTargetPath(text string) string {
+	for _, field := range strings.Fields(text) {
+		candidate := strings.Trim(field, "`'\".,:;()[]{}<>")
+		candidate = strings.TrimPrefix(candidate, "path=")
+		candidate = strings.TrimPrefix(candidate, "target=")
+		if strings.Contains(candidate, "/") && strings.HasSuffix(strings.ToLower(candidate), ".md") {
+			return candidate
+		}
+	}
+	return ""
 }
 
 func pendingPostDelegationWriteAction(snapshot SessionSnapshot) bool {
@@ -1293,6 +1495,10 @@ func pendingPostDelegationWriteAction(snapshot SessionSnapshot) bool {
 		}
 	}
 	return false
+}
+
+func pendingDelegationWriteAction(snapshot SessionSnapshot) bool {
+	return snapshot.PendingDelegationAction != nil && snapshot.PendingDelegationAction.Kind == DelegationActionWriteDoc
 }
 
 func lastCompletedToolResultIndex(snapshot SessionSnapshot, toolName string) int {
@@ -1432,7 +1638,7 @@ func inputSuggestsFileWrites(text string) bool {
 	return inputMentionsPathLikeText(text) || containsToolPhrase(text,
 		" file", " files", "markdown", ".md", "to a file", "into a file",
 		"readme", "config", "artifact", "html", "script",
-		" doc", " docs", "document", "spec", "report", "findings",
+		" doc", " docs", "document", "spec", "report", "findings", "memo", "note",
 	)
 }
 
@@ -1639,13 +1845,14 @@ func (r *Runner) promptHookOutput(ctx context.Context) hooks.ExecutionOutput {
 		Point:    hooks.PointPromptContext,
 		Snapshot: snap,
 		Transient: promptHookPayload{
-			Mode:               snap.Mode,
-			PlanState:          snap.PlanState,
-			PlanWorkflow:       r.planWorkflow,
-			ValidationWorkflow: r.validationWorkflow,
-			SearchWorkflow:     r.searchWorkflow,
-			GitWorkflow:        r.gitWorkflow,
-			RepeatWorkflow:     r.repeatWorkflow,
+			Mode:                     snap.Mode,
+			PlanState:                snap.PlanState,
+			PlanWorkflow:             r.planWorkflow,
+			ValidationWorkflow:       r.validationWorkflow,
+			SearchWorkflow:           r.searchWorkflow,
+			GitWorkflow:              r.gitWorkflow,
+			RepeatWorkflow:           r.repeatWorkflow,
+			ToolThrashCircuitBreaker: r.toolThrashCircuitBreaker,
 		},
 	})
 }
@@ -2047,7 +2254,7 @@ func repeatLoopPromptHook(_ context.Context, event hooks.Event) []hooks.Result {
 	if !ok {
 		return nil
 	}
-	content := strings.TrimSpace(payload.RepeatWorkflow.overlayContent())
+	content := strings.TrimSpace(payload.RepeatWorkflow.overlayContent(payload.ToolThrashCircuitBreaker))
 	if content == "" {
 		return nil
 	}
@@ -2070,7 +2277,17 @@ func agentStatusPromptHook(_ context.Context, event hooks.Event) []hooks.Result 
 	}
 	var b strings.Builder
 	b.WriteString("Outstanding child agents are still unresolved:\n")
+	tasksByID := make(map[string]AgentTaskState, len(snap.AgentTasks))
+	for _, task := range snap.AgentTasks {
+		if id := strings.TrimSpace(task.ID); id != "" {
+			tasksByID[id] = task
+		}
+	}
 	for _, agent := range agents {
+		if task, ok := tasksByID[strings.TrimSpace(agent.ID)]; ok && agentStillOutstanding(task.Status) {
+			fmt.Fprintf(&b, "- %s\n", formatAgentTaskPromptLine(task))
+			continue
+		}
 		role := strings.TrimSpace(agent.Role)
 		if role == "" {
 			role = "unknown-role"
@@ -2088,6 +2305,36 @@ func agentStatusPromptHook(_ context.Context, event hooks.Event) []hooks.Result 
 		Priority:   hooks.PriorityHigh,
 		Provenance: "runtime",
 	}}
+}
+
+func formatAgentTaskPromptLine(task AgentTaskState) string {
+	role := strings.TrimSpace(task.Role)
+	if role == "" {
+		role = "unknown-role"
+	}
+	status := strings.TrimSpace(string(task.Status))
+	if status == "" {
+		status = string(AgentStatusRunning)
+	}
+	line := fmt.Sprintf("%s (%s): %s", strings.TrimSpace(task.ID), role, status)
+	if tool := strings.TrimSpace(task.LastToolName); tool != "" {
+		line += "; last: " + tool
+		if len(task.RecentActivity) > 0 {
+			last := task.RecentActivity[len(task.RecentActivity)-1]
+			if summary := strings.TrimSpace(last.Summary); summary != "" {
+				line += " " + redactRuntimeText(summary)
+			}
+		}
+	}
+	return line
+}
+
+func redactRuntimeText(text string) string {
+	if text == "" {
+		return ""
+	}
+	scanner := secscan.NewDefaultScanner()
+	return secscan.Redact(text, scanner.Scan(text))
 }
 
 func beforeToolGitCommitBlockHook(_ context.Context, event hooks.Event) []hooks.Result {
@@ -2210,7 +2457,7 @@ func (r *Runner) updateSameFileSearchWorkflow(toolName string, args map[string]a
 				streak:   1,
 			}
 		}
-		r.searchWorkflow.nudged = r.searchWorkflow.streak >= sameFileSearchThrashThreshold
+		r.searchWorkflow.nudged = r.searchWorkflow.streak >= toolThrashThreshold(r.toolThrashCircuitBreaker, sameFileSearchThrashThreshold)
 	default:
 		r.searchWorkflow = sameFileSearchWorkflowState{}
 	}
@@ -2495,13 +2742,23 @@ func repeatToolCallTarget(toolName string, args map[string]any) string {
 		return strings.TrimSpace(stringArg(args, "command"))
 	case "glob":
 		return strings.TrimSpace(stringArg(args, "pattern"))
+	case "edit_file":
+		path := strings.TrimSpace(stringArg(args, "path"))
+		oldText := strings.TrimSpace(stringArg(args, "old_text"))
+		newText := strings.TrimSpace(stringArg(args, "new_text"))
+		if path == "" || oldText != newText {
+			return ""
+		}
+		return path + ":" + oldText + "->" + newText
+	case "wait_agent":
+		return strings.TrimSpace(stringArg(args, "id"))
 	default:
 		return ""
 	}
 }
 
-func (s repeatToolCallState) overlayContent() string {
-	if s.streak < repeatToolCallThreshold {
+func (s repeatToolCallState) overlayContent(threshold int) string {
+	if s.streak < toolThrashThreshold(threshold, repeatToolCallThreshold) {
 		return ""
 	}
 	return fmt.Sprintf("Loop detection: you have called %s on the same target %q %d times in a row without making progress. Stop repeating this action. Either the approach is wrong or you already have the information you need. Switch to a different tool or synthesize your findings now.", s.lastToolName, s.lastTarget, s.streak)

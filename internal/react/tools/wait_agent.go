@@ -33,14 +33,14 @@ func NewWaitAgent(pool *react.AgentPool) agenttools.Tool {
 				if value <= 0 {
 					timeout = 30 * time.Second
 				} else {
-					timeout = time.Duration(int(value)) * time.Second
+					timeout = time.Duration(value * float64(time.Second))
 				}
 			}
 			result, err := pool.Wait(ctx, id, timeout)
 			if err != nil {
 				return "", err
 			}
-			encoded, err := json.Marshal(result)
+			encoded, err := json.Marshal(redactAgentResult(result))
 			if err != nil {
 				return "", err
 			}

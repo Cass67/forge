@@ -39,9 +39,11 @@ type ParameterDef struct {
 
 // Action describes a tool action for the approval system.
 type Action struct {
+	Context context.Context
 	Tool    string
 	Summary string
 	Detail  string // diff content, command text, or file content
+	Path    string
 }
 
 // ApprovalFunc asks the user to approve an action. Returns true if approved.

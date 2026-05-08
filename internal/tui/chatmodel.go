@@ -21,6 +21,7 @@ import (
 	"forge/internal/codexusage"
 	"forge/internal/copilot"
 	"forge/internal/llm"
+	"forge/internal/secscan"
 	"forge/internal/skills"
 
 	"github.com/charmbracelet/bubbles/viewport"
@@ -178,12 +179,34 @@ const chatHeaderGapHeight = 1
 const chatComposerGapHeight = 1
 const chatStatusHeight = 0
 const chatDebugDockHeight = 8
+const transcriptVirtualizationThreshold = 200
+const transcriptVirtualizationOverscan = 30
 
 type subAgentSummary struct {
 	role              string
 	turns             int
 	tools             int
 	transcriptVisible bool
+}
+
+type chatAgentTaskActivity struct {
+	ToolName string    `json:"tool_name"`
+	Summary  string    `json:"summary,omitempty"`
+	At       time.Time `json:"at"`
+}
+
+type chatAgentTaskState struct {
+	ID             string                  `json:"id"`
+	Role           string                  `json:"role"`
+	Status         string                  `json:"status"`
+	CreatedAt      time.Time               `json:"created_at"`
+	StartedAt      time.Time               `json:"started_at,omitempty"`
+	CompletedAt    time.Time               `json:"completed_at,omitempty"`
+	LastActivityAt time.Time               `json:"last_activity_at,omitempty"`
+	Result         string                  `json:"result,omitempty"`
+	Error          string                  `json:"error,omitempty"`
+	LastToolName   string                  `json:"last_tool_name,omitempty"`
+	RecentActivity []chatAgentTaskActivity `json:"recent_activity,omitempty"`
 }
 
 type ChatModel struct {
@@ -216,6 +239,7 @@ type ChatModel struct {
 	toolsVisible           bool
 	toolsWasShowing        bool
 	agentPanelHiddenByUser bool
+	agentTasks             []chatAgentTaskState
 	lastToolResult         string
 	lastCodeBlock          string
 	lastToolSummary        map[string]string
@@ -845,7 +869,16 @@ func (m *ChatModel) refreshViewport() {
 	for i := range messageBlockIndex {
 		messageBlockIndex[i] = -1
 	}
-	for i, msg := range m.messages {
+	start, end := 0, len(m.messages)
+	if len(m.messages) > transcriptVirtualizationThreshold {
+		offset := m.chatViewport.YOffset
+		if m.followMode == followBottom || offset <= 0 {
+			offset = max(0, len(m.messages)-max(1, m.chatViewport.Height))
+		}
+		start, end = transcriptVirtualWindow(len(m.messages), offset, max(1, m.chatViewport.Height), transcriptVirtualizationOverscan)
+	}
+	for i := start; i < end; i++ {
+		msg := m.messages[i]
 		// Active working status is rendered in the dedicated live slot near the
 		// composer; hiding it here avoids duplicate "mirror" lines.
 		if msg.Kind == MsgWorking && i == m.recentActivityIndex {
@@ -980,6 +1013,9 @@ func (m ChatModel) hasAgentWorkPane() bool {
 }
 
 func (m ChatModel) hasAgentWorkPaneContent() bool {
+	if strings.TrimSpace(m.renderedAgentTaskStateBuf(time.Now())) != "" {
+		return true
+	}
 	for _, sec := range m.toolsSections {
 		if strings.TrimSpace(sec.role) == "" {
 			continue
@@ -1053,6 +1089,10 @@ func (m ChatModel) renderedToolsBuf() string {
 
 func (m ChatModel) renderedAgentWorkBuf() string {
 	var sb strings.Builder
+	if stateBuf := strings.TrimSpace(m.renderedAgentTaskStateBuf(time.Now())); stateBuf != "" {
+		sb.WriteString(stateBuf)
+		sb.WriteString("\n\n")
+	}
 	for _, sec := range m.toolsSections {
 		if strings.TrimSpace(sec.role) == "" {
 			continue
@@ -1064,7 +1104,114 @@ func (m ChatModel) renderedAgentWorkBuf() string {
 			sb.WriteString(sec.buf)
 		}
 	}
-	return sb.String()
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+func (m ChatModel) renderedAgentTaskStateBuf(now time.Time) string {
+	if len(m.agentTasks) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Agent tasks\n")
+	for _, task := range m.agentTasks {
+		if strings.TrimSpace(task.ID) == "" {
+			continue
+		}
+		line := formatChatAgentTaskLine(task, now)
+		if strings.TrimSpace(line) != "" {
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func formatChatAgentTaskLine(task chatAgentTaskState, now time.Time) string {
+	id := strings.TrimSpace(task.ID)
+	if id == "" {
+		return ""
+	}
+	role := strings.TrimSpace(task.Role)
+	if role == "" {
+		role = "unknown-role"
+	}
+	status := strings.TrimSpace(task.Status)
+	if status == "" {
+		status = "running"
+	}
+	parts := []string{fmt.Sprintf("- %s (%s): %s", id, role, status)}
+	if at := agentTaskDisplayTime(task); !at.IsZero() {
+		parts = append(parts, "last "+at.Format("15:04:05"))
+	}
+	if elapsed := agentTaskElapsed(task, now); elapsed != "" {
+		parts = append(parts, "elapsed "+elapsed)
+	}
+	if tool := strings.TrimSpace(task.LastToolName); tool != "" {
+		activity := tool
+		if len(task.RecentActivity) > 0 {
+			last := task.RecentActivity[len(task.RecentActivity)-1]
+			if summary := strings.TrimSpace(last.Summary); summary != "" {
+				activity += " " + redactChatAgentTaskText(summary)
+			}
+		}
+		parts = append(parts, activity)
+	}
+	if isTerminalAgentTaskStatus(status) {
+		if result := strings.TrimSpace(task.Result); result != "" {
+			parts = append(parts, "result: "+truncate(redactChatAgentTaskText(result), 120))
+		}
+		if errText := strings.TrimSpace(task.Error); errText != "" {
+			parts = append(parts, "error: "+truncate(redactChatAgentTaskText(errText), 120))
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+func redactChatAgentTaskText(text string) string {
+	if text == "" {
+		return ""
+	}
+	scanner := secscan.NewDefaultScanner()
+	return secscan.Redact(text, scanner.Scan(text))
+}
+
+func agentTaskDisplayTime(task chatAgentTaskState) time.Time {
+	for _, candidate := range []time.Time{task.LastActivityAt, task.CompletedAt, task.StartedAt, task.CreatedAt} {
+		if !candidate.IsZero() {
+			return candidate
+		}
+	}
+	return time.Time{}
+}
+
+func agentTaskElapsed(task chatAgentTaskState, now time.Time) string {
+	start := task.StartedAt
+	if start.IsZero() {
+		start = task.CreatedAt
+	}
+	if start.IsZero() {
+		return ""
+	}
+	end := task.CompletedAt
+	if end.IsZero() {
+		end = task.LastActivityAt
+	}
+	if end.IsZero() {
+		end = now
+	}
+	if end.Before(start) {
+		return ""
+	}
+	return end.Sub(start).Round(time.Second).String()
+}
+
+func isTerminalAgentTaskStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "completed", "failed", "killed", "not_found":
+		return true
+	default:
+		return false
+	}
 }
 
 func (m *ChatModel) clearToolsSections() {
@@ -1583,6 +1730,8 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 	}
 
 	switch ev.Kind {
+	case llm.EventAgentTask:
+		return m.handleAgentTaskEvent(ev)
 	case llm.EventToken:
 		if token := sanitizeAssistantTokenForDisplay(ev.Text); token != "" {
 			m.AppendToLastAgentLabeled(token, ev.Agent)
@@ -1788,6 +1937,80 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		m.toolsScroll = m.toolsMaxScroll()
 	}
 	return m, nil
+}
+
+func (m ChatModel) handleAgentTaskEvent(ev llm.Event) (tea.Model, tea.Cmd) {
+	payload := strings.TrimSpace(ev.Content)
+	if payload == "" {
+		payload = strings.TrimSpace(ev.Text)
+	}
+	if payload == "" {
+		return m, nil
+	}
+	var task chatAgentTaskState
+	if err := json.Unmarshal([]byte(payload), &task); err != nil || strings.TrimSpace(task.ID) == "" {
+		return m, nil
+	}
+	m.upsertAgentTaskState(task)
+	if !m.toolsVisible && !m.agentPanelHiddenByUser {
+		m.toolsVisible = true
+		m.toolsWasShowing = true
+		m.resizeChatViewport()
+		m.viewportDirty = true
+	}
+	m.toolsScroll = m.toolsMaxScroll()
+	return m, nil
+}
+
+func (m *ChatModel) upsertAgentTaskState(task chatAgentTaskState) {
+	id := strings.TrimSpace(task.ID)
+	if id == "" {
+		return
+	}
+	task.ID = id
+	for i := range m.agentTasks {
+		if strings.TrimSpace(m.agentTasks[i].ID) == id {
+			m.agentTasks[i] = mergeChatAgentTaskState(m.agentTasks[i], task)
+			return
+		}
+	}
+	m.agentTasks = append(m.agentTasks, task)
+}
+
+func mergeChatAgentTaskState(existing, next chatAgentTaskState) chatAgentTaskState {
+	merged := existing
+	merged.ID = strings.TrimSpace(next.ID)
+	if role := strings.TrimSpace(next.Role); role != "" {
+		merged.Role = role
+	}
+	if status := strings.TrimSpace(next.Status); status != "" {
+		merged.Status = status
+	}
+	if !next.CreatedAt.IsZero() {
+		merged.CreatedAt = next.CreatedAt
+	}
+	if !next.StartedAt.IsZero() {
+		merged.StartedAt = next.StartedAt
+	}
+	if !next.CompletedAt.IsZero() {
+		merged.CompletedAt = next.CompletedAt
+	}
+	if !next.LastActivityAt.IsZero() {
+		merged.LastActivityAt = next.LastActivityAt
+	}
+	if result := strings.TrimSpace(next.Result); result != "" {
+		merged.Result = result
+	}
+	if errText := strings.TrimSpace(next.Error); errText != "" {
+		merged.Error = errText
+	}
+	if tool := strings.TrimSpace(next.LastToolName); tool != "" {
+		merged.LastToolName = tool
+	}
+	if len(next.RecentActivity) > 0 {
+		merged.RecentActivity = append([]chatAgentTaskActivity(nil), next.RecentActivity...)
+	}
+	return merged
 }
 
 // handleSubAgentEvent routes all sub-agent activity to the tools pane with
@@ -5008,7 +5231,22 @@ func (m ChatModel) renderComposerGap(theme chatTheme) string {
 }
 
 func (m ChatModel) renderTraceDock(theme chatTheme) string {
-	return renderTraceDockPanel(theme, m.renderedToolsBuf(), m.config.DebugLogPath, m.width, m.debugDockHeight())
+	content := strings.TrimSpace(m.renderedToolsBuf())
+	if stats := m.renderPerformanceTraceLine(); stats != "" {
+		if content != "" {
+			content += "\n"
+		}
+		content += stats
+	}
+	return renderTraceDockPanel(theme, content, m.config.DebugLogPath, m.width, m.debugDockHeight())
+}
+
+func (m ChatModel) renderPerformanceTraceLine() string {
+	stats := m.lastRenderStats
+	if stats.Rendered == 0 && stats.Hits == 0 && stats.Misses == 0 && stats.Lines == 0 {
+		return ""
+	}
+	return fmt.Sprintf("rendered %d • cache hits %d • misses %d • lines %d", stats.Rendered, stats.Hits, stats.Misses, stats.Lines)
 }
 
 func (m ChatModel) transientStatusMessage() (string, bool) {
