@@ -120,6 +120,30 @@ func TestRegistryRevealTools(t *testing.T) {
 	}
 }
 
+func TestRegistryFilterRebindsToolHelpToFilteredRegistry(t *testing.T) {
+	reg := NewRegistry()
+	reg.Register(Tool{Name: "read_file", Description: "Read a file"})
+	reg.Register(NewToolHelp(reg))
+	reg.Register(Tool{Name: "write_file", Description: "Write a file", PromptVisibility: PromptHidden})
+
+	filtered := reg.Filter([]string{"read_file", "tool_help"})
+	help, ok := filtered.Get("tool_help")
+	if !ok {
+		t.Fatal("filtered registry missing tool_help")
+	}
+	result, err := help.Execute(context.Background(), map[string]any{"query": "write_file"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(result, "write_file") {
+		t.Fatalf("filtered tool_help revealed unavailable tool: %s", result)
+	}
+	if _, ok := filtered.Get("write_file"); ok {
+		t.Fatal("filtered registry should not contain write_file")
+	}
+}
+
 func TestRegistryNeedsApproval(t *testing.T) {
 	reg := NewRegistry()
 	reg.Register(Tool{Name: "read_file", AutoApprove: true})

@@ -70,6 +70,87 @@ func TestRenderMessageContentDoesNotInsertBlankSeparatorsAdjacentToCodeBlocks(t 
 	}
 }
 
+func TestRenderMessageContentPreservesReadableBlankRowsBetweenProseBlocks(t *testing.T) {
+	theme := lookupThemeForTest(t, "default")
+	content := strings.Join([]string{
+		"### TUI large-session validation gap",
+		"",
+		"Transcript cache and virtual window helpers exist, but user-facing performance needs proof.",
+		"",
+		"Remaining likely work:",
+		"",
+		"- load a large transcript/session and test scroll/render behavior",
+		"",
+		"- verify cache invalidation on width/theme/content changes",
+	}, "\n")
+
+	got := strippedLine(renderMessageContent(content, 64, theme))
+	foundBlank := false
+	for _, line := range strings.Split(got, "\n") {
+		if strings.TrimSpace(line) == "" {
+			foundBlank = true
+			break
+		}
+	}
+	if !foundBlank {
+		t.Fatalf("expected readable blank row between prose blocks:\n%s", got)
+	}
+}
+
+func TestRenderMessageContentDropsBlankRowsInsideTextOutputBlocks(t *testing.T) {
+	theme := lookupThemeForTest(t, "default")
+	content := strings.Join([]string{
+		"Targeted verification passed:",
+		"```text",
+		"ok forge/internal/permissions",
+		"",
+		"ok forge/internal/secscan",
+		"",
+		"ok forge/internal/react",
+		"```",
+	}, "\n")
+
+	got := strippedLine(renderMessageContent(content, 80, theme))
+	lines := strings.Split(got, "\n")
+	first, second, third := -1, -1, -1
+	for i, line := range lines {
+		switch {
+		case strings.Contains(line, "ok forge/internal/permissions"):
+			first = i
+		case strings.Contains(line, "ok forge/internal/secscan"):
+			second = i
+		case strings.Contains(line, "ok forge/internal/react"):
+			third = i
+		}
+	}
+	if first < 0 || second < 0 || third < 0 {
+		t.Fatalf("expected all output lines, got:\n%s", got)
+	}
+	if second != first+1 || third != second+1 {
+		t.Fatalf("unexpected blank visual row in text output block:\n%s", got)
+	}
+}
+
+func TestRenderMessageContentDoesNotBoxFencedBlocks(t *testing.T) {
+	theme := lookupThemeForTest(t, "default")
+	content := strings.Join([]string{
+		"```text",
+		"ok forge/internal/permissions",
+		"ok forge/internal/secscan",
+		"```",
+	}, "\n")
+
+	got := strippedLine(renderMessageContent(content, 80, theme))
+	for _, glyph := range []string{"┌", "┐", "└", "┘", "│", "─"} {
+		if strings.Contains(got, glyph) {
+			t.Fatalf("fenced block should not render as a bordered box, found %q in:\n%s", glyph, got)
+		}
+	}
+	if !strings.Contains(got, "TEXT") || !strings.Contains(got, "ok forge/internal/permissions") {
+		t.Fatalf("missing text block label/content:\n%s", got)
+	}
+}
+
 func TestRenderMessageContentRendersDiffBlocks(t *testing.T) {
 	theme := lookupThemeForTest(t, "default")
 	got := renderMessageContent("```diff\n+ added line\n- removed line\n```", 60, theme)

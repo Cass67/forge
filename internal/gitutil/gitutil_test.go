@@ -163,6 +163,18 @@ func TestCurrentBranchAndCheckoutNewBranch(t *testing.T) {
 	}
 }
 
+func TestCurrentBranchInUnbornRepo(t *testing.T) {
+	dir := setupRepo(t)
+
+	current, err := CurrentBranch(dir)
+	if err != nil {
+		t.Fatalf("CurrentBranch: %v", err)
+	}
+	if current == "" || current == "HEAD" {
+		t.Fatalf("expected symbolic branch name, got %q", current)
+	}
+}
+
 func TestBranchExists(t *testing.T) {
 	dir := setupRepo(t)
 	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
