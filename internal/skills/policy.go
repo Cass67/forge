@@ -44,12 +44,12 @@ func suggestionForInput(input string) Suggestion {
 	switch {
 	case containsAny(lower, "debug", "bug", "failing", "failure", "regression", "root cause", "broken"):
 		return Suggestion{Name: "systematic-debugging", Reason: "the request looks like debugging work"}
-	case containsAny(lower, "plan", "planning", "design", "architecture", "approach", "brainstorm"):
+	case looksLikeReviewOrStatusAudit(lower):
+		return Suggestion{Name: "requesting-code-review", Reason: "the request looks like review work"}
+	case looksLikePlanningRequest(lower):
 		return Suggestion{Name: "brainstorming", Reason: "the request looks like planning or design work"}
 	case containsAny(lower, "implement", "implementation", "build", "feature", "refactor", "fix", "add"):
 		return Suggestion{Name: "test-driven-development", Reason: "the request looks like implementation work"}
-	case containsAny(lower, "review", "code review", "audit"):
-		return Suggestion{Name: "requesting-code-review", Reason: "the request looks like review work"}
 	default:
 		return Suggestion{}
 	}

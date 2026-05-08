@@ -99,10 +99,11 @@ func (d *RetryDriver) Stream(ctx context.Context, messages []Message, out chan<-
 		}
 
 		callCtx := ctx
+		var cancel context.CancelFunc = func() {}
 		if d.timeout > 0 {
-			var cancel context.CancelFunc
 			callCtx, cancel = context.WithTimeout(ctx, d.timeout)
-			defer cancel()
+		} else if d.streamIdleTimeout > 0 {
+			callCtx, cancel = context.WithCancel(ctx)
 		}
 
 		internal := make(chan Token, 64)
@@ -111,7 +112,9 @@ func (d *RetryDriver) Stream(ctx context.Context, messages []Message, out chan<-
 			errCh <- d.inner.Stream(callCtx, messages, internal)
 		}()
 
+		idleTimer, idleC := newStreamIdleTimer(d.streamIdleTimeout)
 		var emittedAny bool
+		var idleErr error
 		for {
 			select {
 			case tok, ok := <-internal:
@@ -119,24 +122,33 @@ func (d *RetryDriver) Stream(ctx context.Context, messages []Message, out chan<-
 					goto done
 				}
 				emittedAny = true
+				resetStreamIdleTimer(idleTimer, d.streamIdleTimeout)
 				select {
 				case out <- tok:
 				case <-ctx.Done():
-					for range internal {
-					}
-					<-errCh
+					stopStreamIdleTimer(idleTimer)
+					cancel()
 					return ctx.Err()
 				}
 			case <-ctx.Done():
-				for range internal {
-				}
-				<-errCh
+				stopStreamIdleTimer(idleTimer)
+				cancel()
 				return ctx.Err()
+			case <-idleC:
+				idleErr = fmt.Errorf("stream idle timeout after %s", d.streamIdleTimeout)
+				cancel()
+				goto done
 			}
 		}
 	done:
+		stopStreamIdleTimer(idleTimer)
 
-		lastErr = <-errCh
+		if idleErr != nil {
+			lastErr = idleErr
+		} else {
+			lastErr = <-errCh
+		}
+		cancel()
 		if lastErr == nil {
 			return nil
 		}
@@ -181,10 +193,11 @@ func (d *RetryDriver) StreamWithToolsOptions(ctx context.Context, messages []Mes
 		}
 
 		callCtx := ctx
+		var cancel context.CancelFunc = func() {}
 		if d.timeout > 0 {
-			var cancel context.CancelFunc
 			callCtx, cancel = context.WithTimeout(ctx, d.timeout)
-			defer cancel()
+		} else if d.streamIdleTimeout > 0 {
+			callCtx, cancel = context.WithCancel(ctx)
 		}
 
 		internal := make(chan Token, 64)
@@ -197,7 +210,9 @@ func (d *RetryDriver) StreamWithToolsOptions(ctx context.Context, messages []Mes
 			errCh <- caller.StreamWithTools(callCtx, messages, tools, internal)
 		}()
 
+		idleTimer, idleC := newStreamIdleTimer(d.streamIdleTimeout)
 		var emittedAny bool
+		var idleErr error
 		for {
 			select {
 			case tok, ok := <-internal:
@@ -205,24 +220,33 @@ func (d *RetryDriver) StreamWithToolsOptions(ctx context.Context, messages []Mes
 					goto done
 				}
 				emittedAny = true
+				resetStreamIdleTimer(idleTimer, d.streamIdleTimeout)
 				select {
 				case out <- tok:
 				case <-ctx.Done():
-					for range internal {
-					}
-					<-errCh
+					stopStreamIdleTimer(idleTimer)
+					cancel()
 					return ctx.Err()
 				}
 			case <-ctx.Done():
-				for range internal {
-				}
-				<-errCh
+				stopStreamIdleTimer(idleTimer)
+				cancel()
 				return ctx.Err()
+			case <-idleC:
+				idleErr = fmt.Errorf("stream idle timeout after %s", d.streamIdleTimeout)
+				cancel()
+				goto done
 			}
 		}
 	done:
+		stopStreamIdleTimer(idleTimer)
 
-		lastErr = <-errCh
+		if idleErr != nil {
+			lastErr = idleErr
+		} else {
+			lastErr = <-errCh
+		}
+		cancel()
 		if lastErr == nil {
 			return nil
 		}
@@ -238,6 +262,39 @@ func (d *RetryDriver) StreamWithToolsOptions(ctx context.Context, messages []Mes
 		}
 	}
 	return fmt.Errorf("all %d attempts failed: %w", d.maxAttempts, lastErr)
+}
+
+func newStreamIdleTimer(timeout time.Duration) (*time.Timer, <-chan time.Time) {
+	if timeout <= 0 {
+		return nil, nil
+	}
+	timer := time.NewTimer(timeout)
+	return timer, timer.C
+}
+
+func resetStreamIdleTimer(timer *time.Timer, timeout time.Duration) {
+	if timer == nil || timeout <= 0 {
+		return
+	}
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(timeout)
+}
+
+func stopStreamIdleTimer(timer *time.Timer) {
+	if timer == nil {
+		return
+	}
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
 }
 
 func (d *RetryDriver) backoff(attempt int, lastErr error) time.Duration {
