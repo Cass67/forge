@@ -7,9 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"forge/internal/config"
 	"forge/internal/llm"
+	reactruntime "forge/internal/react"
 )
 
 type debugMockDriver struct {
@@ -121,6 +123,37 @@ func TestEnableChatDebugWrapsDriverAndLogsRequestResponse(t *testing.T) {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("debug log should not contain raw prompt/response content %q: %s", forbidden, text)
 		}
+	}
+}
+
+func TestEnableChatDebugDoesNotLogSecretContent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chat-debug.jsonl")
+	secret := "TOKEN=" + strings.Repeat("x", 24)
+	setup := &ChatSetup{
+		ChatModel: "openai/gpt-5",
+		WorkDir:   t.TempDir(),
+		Driver:    &debugMockDriver{response: "response " + secret},
+	}
+	if _, err := EnableChatDebug(setup, path); err != nil {
+		t.Fatal(err)
+	}
+
+	msgs := []llm.Message{{Role: llm.RoleUser, Content: "prompt " + secret}}
+	out := make(chan llm.Token, 4)
+	errCh := make(chan error, 1)
+	go func() { errCh <- setup.Driver.Stream(context.Background(), msgs, out) }()
+	for range out {
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), secret) {
+		t.Fatalf("debug log leaked secret content: %s", data)
 	}
 }
 
@@ -313,6 +346,44 @@ func TestEnableChatDebugLogsTaskStateMetadata(t *testing.T) {
 	}
 	if got := taskState["target_branch"]; got != "main" {
 		t.Fatalf("target_branch = %#v", got)
+	}
+}
+
+func TestEnableChatDebugRedactsTaskStateMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chat-debug.jsonl")
+	inner := &debugNativeToolDriver{}
+	setup := &ChatSetup{ChatModel: "openai/gpt-5", WorkDir: t.TempDir(), Driver: inner}
+	if _, err := EnableChatDebug(setup, path); err != nil {
+		t.Fatal(err)
+	}
+	secret := "TOKEN=" + strings.Repeat("x", 24)
+
+	msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: "Task objective: audit " + secret + "\nRequired verification: run check with " + secret},
+		{Role: llm.RoleUser, Content: "do it"},
+	}
+	out := make(chan llm.Token, 4)
+	errCh := make(chan error, 1)
+	go func() {
+		native := setup.Driver.(llm.NativeToolCaller)
+		errCh <- native.StreamWithTools(context.Background(), msgs, nil, out)
+	}()
+	for range out {
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if strings.Contains(text, secret) {
+		t.Fatalf("debug task_state leaked secret: %s", text)
+	}
+	if !strings.Contains(text, "REDACTED:generic-token") {
+		t.Fatalf("debug task_state missing redaction marker: %s", text)
 	}
 }
 
@@ -519,6 +590,130 @@ func TestEnableChatDebugLogsDebugSurfaceMode(t *testing.T) {
 	}
 }
 
+func TestChatDebugRecorderLogsAgentLifecycleWithoutRawPayloads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chat-debug.jsonl")
+	setup := &ChatSetup{WorkDir: t.TempDir()}
+	if _, err := EnableChatDebug(setup, path); err != nil {
+		t.Fatal(err)
+	}
+	secret := "TOKEN=" + strings.Repeat("x", 24)
+
+	setup.debugRec.logAgentTask(reactruntime.AgentTaskState{
+		ID:           "agent-1",
+		Role:         "repo-auditor",
+		Description:  "audit " + secret,
+		Prompt:       "inspect repo with " + secret,
+		Status:       reactruntime.AgentStatusRunning,
+		CreatedAt:    time.Unix(100, 0),
+		StartedAt:    time.Unix(101, 0),
+		ParentTurn:   7,
+		Result:       "findings mention " + secret,
+		Error:        "failed with " + secret,
+		LastToolName: "read_file",
+		RecentActivity: []reactruntime.AgentTaskActivity{{
+			ToolName: "read_file",
+			Summary:  "opened " + secret,
+			At:       time.Unix(102, 0),
+		}},
+	})
+
+	entry := lastDebugEntryWithMessage(t, path, "chat.agent_lifecycle")
+	fields, _ := entry["fields"].(map[string]any)
+	if got := fields["id"]; got != "agent-1" {
+		t.Fatalf("id = %#v, want agent-1", got)
+	}
+	if got := fields["role"]; got != "repo-auditor" {
+		t.Fatalf("role = %#v, want repo-auditor", got)
+	}
+	if got := fields["status"]; got != "running" {
+		t.Fatalf("status = %#v, want running", got)
+	}
+	if got := fields["parent_turn"]; got != float64(7) {
+		t.Fatalf("parent_turn = %#v, want 7", got)
+	}
+	if got := fields["description_secret_rules"]; got != "generic-token" {
+		t.Fatalf("description_secret_rules = %#v, want generic-token", got)
+	}
+	if got := fields["recent_activity_count"]; got != float64(1) {
+		t.Fatalf("recent_activity_count = %#v, want 1", got)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if strings.Contains(text, secret) || strings.Contains(text, "inspect repo with") || strings.Contains(text, "findings mention") || strings.Contains(text, "opened ") {
+		t.Fatalf("agent lifecycle debug log exposed raw payload: %s", text)
+	}
+}
+
+func TestRedactAgentTaskStateForEventPayload(t *testing.T) {
+	secret := "TOKEN=" + strings.Repeat("x", 24)
+	state := reactruntime.AgentTaskState{
+		ID:           "agent-1",
+		Role:         "repo-auditor",
+		Description:  "audit " + secret,
+		Prompt:       "inspect repo with " + secret,
+		Status:       reactruntime.AgentStatusFailed,
+		Result:       "findings mention " + secret,
+		Error:        "failed with " + secret,
+		LastToolName: "run_command",
+		RecentActivity: []reactruntime.AgentTaskActivity{{
+			ToolName: "run_command",
+			Summary:  "printed " + secret,
+		}},
+	}
+
+	data, err := json.Marshal(redactAgentTaskState(state))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if strings.Contains(text, secret) {
+		t.Fatalf("agent task event payload leaked secret: %s", text)
+	}
+	if !strings.Contains(text, "REDACTED:generic-token") {
+		t.Fatalf("agent task event payload missing redaction marker: %s", text)
+	}
+}
+
+func TestChatDebugRecorderLogsToolExposureDecisionWithoutRawInput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chat-debug.jsonl")
+	setup := &ChatSetup{WorkDir: t.TempDir()}
+	if _, err := EnableChatDebug(setup, path); err != nil {
+		t.Fatal(err)
+	}
+
+	setup.debugRec.logToolExposure(reactruntime.ToolExposureDecision{
+		Reason:                "active_agents",
+		ToolNames:             []string{"wait_agent", "agent_status", "kill_agent"},
+		RequireToolCall:       true,
+		OutstandingAgentCount: 1,
+		PendingActionKind:     "write_doc",
+	})
+
+	entry := lastDebugEntryWithMessage(t, path, "chat.tool_exposure")
+	fields, _ := entry["fields"].(map[string]any)
+	if got := fields["reason"]; got != "active_agents" {
+		t.Fatalf("reason = %#v, want active_agents", got)
+	}
+	if got := fields["tool_count"]; got != float64(3) {
+		t.Fatalf("tool_count = %#v, want 3", got)
+	}
+	if got := fields["tool_choice_required"]; got != true {
+		t.Fatalf("tool_choice_required = %#v, want true", got)
+	}
+	if got := fields["outstanding_agent_count"]; got != float64(1) {
+		t.Fatalf("outstanding_agent_count = %#v, want 1", got)
+	}
+	if got := fields["pending_action_kind"]; got != "write_doc" {
+		t.Fatalf("pending_action_kind = %#v, want write_doc", got)
+	}
+	if _, ok := fields["last_input"]; ok {
+		t.Fatalf("tool exposure debug log should not include raw input: %#v", fields)
+	}
+}
+
 func readDebugLines(t *testing.T, path string) []string {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -526,4 +721,20 @@ func readDebugLines(t *testing.T, path string) []string {
 		t.Fatal(err)
 	}
 	return strings.Split(strings.TrimSpace(string(data)), "\n")
+}
+
+func lastDebugEntryWithMessage(t *testing.T, path, msg string) map[string]any {
+	t.Helper()
+	lines := readDebugLines(t, path)
+	for i := len(lines) - 1; i >= 0; i-- {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(lines[i]), &entry); err != nil {
+			t.Fatal(err)
+		}
+		if entry["msg"] == msg {
+			return entry
+		}
+	}
+	t.Fatalf("expected debug entry %q, got %v", msg, lines)
+	return nil
 }

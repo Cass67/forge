@@ -77,6 +77,16 @@ func TestPermissionRuleMatchesPathRule(t *testing.T) {
 	}
 }
 
+func TestPermissionRuleDoubleStarPathRuleMatchesDirectChild(t *testing.T) {
+	decision := Evaluate([]Rule{
+		{Scope: ScopeProject, Behavior: BehaviorDeny, Tool: "write_file", Pattern: "docs/**/*.md"},
+	}, Action{Tool: "write_file", Summary: "write docs/report.md", Path: "docs/report.md"})
+
+	if decision.Behavior != BehaviorDeny {
+		t.Fatalf("Behavior = %q, want %q", decision.Behavior, BehaviorDeny)
+	}
+}
+
 func TestPermissionRuleRejectsUnknownTool(t *testing.T) {
 	err := ValidateRule(Rule{Scope: ScopeUser, Behavior: BehaviorAllow, Tool: "unknown_tool"})
 	if err == nil {

@@ -153,6 +153,7 @@ const (
 	EventToolResult      EventKind = "tool_result"
 	EventStats           EventKind = "stats"
 	EventProgress        EventKind = "progress"
+	EventAgentTask       EventKind = "agent_task"
 )
 
 // PassName returns a human-readable label for a 1-based pass number.

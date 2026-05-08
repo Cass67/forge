@@ -8,6 +8,7 @@ import (
 )
 
 func NewSearch(workDir string) Tool {
+	secretPolicy := DefaultSecretPolicy()
 	return Tool{
 		Name:        "search",
 		Description: "Search for a pattern across files.",
@@ -31,6 +32,11 @@ func NewSearch(workDir string) Tool {
 				if err != nil {
 					return fmt.Sprintf("search error: %v", err), nil
 				}
+			}
+			if checked, blocked := secretPolicy.ApplyRead(result); blocked {
+				return checked, nil
+			} else {
+				result = checked
 			}
 
 			if result == "" {
@@ -74,6 +80,10 @@ func searchGrep(ctx context.Context, workDir, pattern, searchPath, glob string) 
 	guard := newIgnoreGuard(workDir)
 	args := []string{"-rn"}
 	for _, pat := range guard.patterns {
+		if strings.HasSuffix(pat, "/") {
+			args = append(args, "--exclude-dir="+strings.TrimSuffix(pat, "/"))
+			continue
+		}
 		// Only use simple filename patterns (no path separators) as --exclude globs.
 		if !strings.Contains(pat, "/") {
 			args = append(args, "--exclude="+pat)

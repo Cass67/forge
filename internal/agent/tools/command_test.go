@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+type testApprovalContextKey struct{}
+
 func TestRunCommandBasic(t *testing.T) {
 	dir := t.TempDir()
 	tool := NewRunCommand(dir, 60, nil, func(a Action) (bool, error) { return true, nil })
@@ -64,6 +66,26 @@ func TestRunCommandDenied(t *testing.T) {
 	}
 	if !strings.Contains(result, "denied") {
 		t.Error("expected denied message")
+	}
+}
+
+func TestRunCommandPassesExecutionContextToApproval(t *testing.T) {
+	dir := t.TempDir()
+	var got context.Context
+	tool := NewRunCommand(dir, 60, nil, func(a Action) (bool, error) {
+		got = a.Context
+		return false, nil
+	})
+	ctx := context.WithValue(context.Background(), testApprovalContextKey{}, "turn")
+
+	if _, err := tool.Execute(ctx, map[string]any{"command": "echo hello"}); err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("approval action context is nil")
+	}
+	if got.Value(testApprovalContextKey{}) != "turn" {
+		t.Fatalf("approval action context did not preserve caller value")
 	}
 }
 

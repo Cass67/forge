@@ -105,7 +105,18 @@ model = "claude/claude-sonnet-4-6"
 last_model = "claude/claude-sonnet-4-6"
 ```
 
-Permissions can be scoped by source. Precedence is fixed from broadest to narrowest: managed, user, project, local, session, then CLI. For example:
+Permissions can be scoped by source. Precedence is fixed from broadest to narrowest: managed, user, project, local, session, then CLI. A narrower scope wins over a broader scope; within the same scope, `deny` wins over `ask`, and `ask` wins over `allow`.
+
+| Scope | Intended owner | Typical use |
+| --- | --- | --- |
+| `managed` | organization or managed install | mandatory baseline policy |
+| `user` | user-level config | personal defaults across repos |
+| `project` | checked-in project config | repo-specific safety policy |
+| `local` | local project override | machine-specific exceptions |
+| `session` | current chat/session | temporary turn-level policy |
+| `cli` | command-line override | most specific explicit override |
+
+Rules support tool-wide matching, command patterns for `run_command`, and path globs for file/artifact tools. Invalid behaviors and unsupported tool names are ignored during config loading rather than treated as implicit allows. For example:
 
 ```toml
 [[permissions.project.rules]]
@@ -117,6 +128,11 @@ pattern = "rm:*"
 behavior = "allow"
 tool = "run_command"
 pattern = "go test:*"
+
+[[permissions.local.rules]]
+behavior = "ask"
+tool = "write_file"
+pattern = "docs/**/*.md"
 ```
 
 Secret handling policies are configured separately:
@@ -129,6 +145,19 @@ command_output = "redact"
 approval_detail = "redact"
 ```
 
+Secret policy modes:
+
+- `allow` leaves matching content unchanged.
+- `redact` replaces detected values with markers such as `<REDACTED:github-pat>`.
+- `ask` blocks the tool boundary with a redacted explanation so the model cannot see the matched value.
+- `block` blocks the tool boundary with a redacted explanation.
+
+Defaults are conservative: reads, command output, and approval details are redacted; writes, edits, and patches are blocked when they contain detected secrets. The scanner is intentionally high-confidence and covers common token families, bearer tokens, private-key blocks, cloud access-key shapes, and generic assignments such as `TOKEN=<dummy-value>`.
+
+To audit a false positive safely, reproduce it with a dummy value that has the same shape, then check which boundary produced the redaction or block message. Do not paste real secrets into prompts, examples, test fixtures, debug logs, issue reports, docs, commit messages, or review comments. Prefer environment-variable references such as `${TOKEN}` in examples.
+
+Classifier and approval observability follow the same redaction contract: action summaries, details, paths, classifier reasons, fallbacks, errors, approval updates, classifier prompts, and debug summaries must not contain matched secret values. Debug logs record counts, lengths, reason codes, and redaction markers rather than raw secret-bearing payloads.
+
 Automatic permission classification is off by default and can be configured explicitly:
 
 ```toml
@@ -139,7 +168,31 @@ model = ""
 max_consecutive_denials = 3
 max_total_denials = 20
 failure_behavior = "ask"
+timeout_ms = 5000
 ```
+
+Long-session resilience settings live under `[resilience]`:
+
+```toml
+[resilience]
+stream_idle_timeout_ms = 30000
+compaction_max_failures = 3
+tool_thrash_circuit_breaker = 8
+token_diminishing_threshold = 500
+token_diminishing_checks = 2
+```
+
+`stream_idle_timeout_ms` bounds stalled provider streams. `compaction_max_failures` opens the compaction failure circuit after repeated compaction failures. `tool_thrash_circuit_breaker` controls when Forge starts adding recovery guidance for repeated same-target tool use; it is a progressive prompt overlay, not a hard tool block. `token_diminishing_threshold` and `token_diminishing_checks` are reserved for future token-budget diagnostics and do not currently interrupt chat turns.
+
+Compaction modes are deterministic:
+
+- `none` means no compaction is needed or the compaction circuit is open.
+- `summarize` drops older turns when history pressure crosses the configured threshold and keeps a compact summary.
+- `reactive` runs once after a context-window error and retries the turn after preserving a smaller recent window.
+- `user_partial` runs when the user explicitly asks to preserve only the most recent turns.
+- `micro` is currently a detection-only decision for oversized tool results; real large-result microcompaction is intentionally unimplemented until the retained-result format is stable.
+
+Compaction hooks receive a stable `CompactionHookPayload` with the mode, reason, keep-turn count, dropped-turn count, summary length, changed flag, and circuit-open flag. Hook payloads report metadata only; hook implementations must not depend on raw transcript text being present.
 
 Chat model startup precedence is:
 

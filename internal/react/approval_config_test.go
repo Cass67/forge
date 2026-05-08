@@ -216,6 +216,37 @@ func TestApprovalGateAppliesScopedPathRules(t *testing.T) {
 	}
 }
 
+func TestApprovalGateScopedPathRuleUsesActionPath(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Approval.DefaultPolicy = "on_request"
+	cfg.Approval.SandboxPolicy = "workspace_write"
+	cfg.Permissions.Project.Rules = []config.PermissionRuleConfig{
+		{Behavior: "deny", Tool: "write_file", Pattern: "docs/**/*.md"},
+	}
+
+	promptCalls := 0
+	gate := NewApprovalGate("", LoadApprovalConfig(cfg), func(action tools.Action) (bool, error) {
+		promptCalls++
+		return true, nil
+	}, nil)
+
+	approved, err := gate.Approve(tools.Action{
+		Tool:    "write_file",
+		Summary: "write delegated report",
+		Detail:  "new markdown file",
+		Path:    "docs/plans/demo.md",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved {
+		t.Fatal("expected scoped path rule to forbid using action path")
+	}
+	if promptCalls != 0 {
+		t.Fatalf("prompt calls = %d, want 0", promptCalls)
+	}
+}
+
 func TestLoadApprovalConfigApprovalFallsBackOnInvalidValues(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Approval.DefaultPolicy = "sometimes"

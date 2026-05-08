@@ -47,20 +47,21 @@ Local plugin safety may appear only where it affects core security boundaries. M
 
 ## Current Assessment
 
-Forge has real foundations in place:
+Forge now has real foundations in place:
 
 - scoped permission rules exist under `internal/permissions`;
 - high-confidence secret scanning exists under `internal/secscan`;
 - read/write/edit/patch/command paths have secret-policy integration;
 - action-risk facts, classifier contracts, redacted classifier prompts, and denial tracking exist;
 - compaction manager and compaction hook payloads exist;
-- delegation can spawn/wait child agents and now has read-only specialist boundaries;
+- delegation can spawn/wait/status/kill child agents and now has read-only specialist boundaries;
 - skill routing has tests for review/status prompts avoiding `brainstorming`;
 - post-delegation document writes now keep tools available until a write succeeds;
 - broad regex search is no longer hard-blocked in a way that traps the model;
-- outstanding child agents are surfaced to the parent prompt instead of letting the model claim none are running.
+- outstanding child agents are surfaced to the parent prompt instead of letting the model claim none are running;
+- debug, event, prompt, and TUI agent-state payloads are redacted before user-visible or persisted surfaces.
 
-The remaining gap is reliability maturity. Several capabilities are currently reconstructed from transcript history or prompt overlays rather than being first-class runtime/session state. That is below the bar set by CCI, Codex, and OpenCode.
+The remaining gap is acceptance coverage. The core state machines now have unit coverage, but several live harness checks still need repeatable provider-backed evidence.
 
 ## Roadmap Status Legend
 
@@ -96,12 +97,12 @@ Goal: stop reconstructing agent truth from transcript history. Agent lifecycle m
 
 ### 1.1 Add Durable AgentTaskState
 
-- [ ] Create a first-class `AgentTaskState` model owned by runtime/session, not only `AgentPool` internals.
-- [ ] Track `id`, `role`, `description`, `prompt`, `status`, `created_at`, `started_at`, `completed_at`, `last_activity_at`, `result`, `error`, and `parent_turn`.
-- [ ] Track status values: `pending`, `running`, `completed`, `failed`, `killed`, `timeout`, `not_found`.
-- [ ] Keep progress records: last tool name, recent tool activities, token/turn counts if available.
-- [ ] Store enough state for UI and model prompts to agree.
-- [ ] Add tests for every state transition.
+- [x] Create a first-class `AgentTaskState` model owned by runtime/session, not only `AgentPool` internals.
+- [x] Track `id`, `role`, `description`, `prompt`, `status`, `created_at`, `started_at`, `completed_at`, `last_activity_at`, `result`, `error`, and `parent_turn`.
+- [x] Track status values: `pending`, `running`, `completed`, `failed`, `killed`, `timeout`, `not_found`.
+- [x] Keep progress records: last tool name, recent tool activities, token/turn counts if available.
+- [x] Store enough state for UI and model prompts to agree.
+- [x] Add tests for every state transition.
 
 Code areas:
 
@@ -118,12 +119,12 @@ Reference behavior:
 
 ### 1.2 Replace Transcript Reconstruction With State Queries
 
-- [ ] Replace `outstandingSpawnedAgents(snapshot)` as the primary source with runtime `AgentTaskState` queries.
-- [ ] Keep transcript reconstruction only as a fallback for restored old sessions.
-- [ ] Add tests proving malformed or missing tool results cannot hide a running agent.
-- [ ] Add tests for multiple agents where one completes and another continues.
-- [ ] Add tests for repeated waits against the same agent ID.
-- [ ] Add tests for failed, killed, timeout, and not-found agents.
+- [x] Replace `outstandingSpawnedAgents(snapshot)` as the primary source with runtime `AgentTaskState` queries.
+- [x] Keep transcript reconstruction only as a fallback for restored old sessions.
+- [x] Add tests proving malformed or missing tool results cannot hide a running agent.
+- [x] Add tests for multiple agents where one completes and another continues.
+- [x] Add tests for repeated waits against the same agent ID.
+- [x] Add tests for failed, killed, timeout, and not-found agents.
 
 Acceptance criteria:
 
@@ -132,12 +133,12 @@ Acceptance criteria:
 
 ### 1.3 Add Agent Status, Kill, And Resume Controls
 
-- [ ] Add a runtime status query for all agents in the current session.
-- [ ] Add slash command or tool support for `agent status`.
-- [ ] Add cancellation support for running child agents.
-- [ ] Add `kill_agent` or equivalent command/tool with approval rules if needed.
-- [ ] Add resume semantics or explicit “cannot resume” behavior for completed/failed tasks.
-- [ ] Add tests for cancellation cleanup and prompt truthfulness after kill.
+- [x] Add a runtime status query for all agents in the current session.
+- [x] Add slash command or tool support for `agent status`.
+- [x] Add cancellation support for running child agents.
+- [x] Add `kill_agent` or equivalent command/tool with approval rules if needed.
+- [x] Add resume semantics or explicit “cannot resume” behavior for completed/failed tasks.
+- [x] Add tests for cancellation cleanup and prompt truthfulness after kill.
 
 Acceptance criteria:
 
@@ -146,11 +147,11 @@ Acceptance criteria:
 
 ### 1.4 Make Agent Progress Durable And Visible
 
-- [ ] Capture recent child tool activity in state.
-- [ ] Render child activity from state in the side panel.
-- [ ] Include concise progress in prompt context only when relevant.
-- [ ] Avoid dumping large child transcripts into parent context by default.
-- [ ] Add tests for progress update ordering and terminal states.
+- [x] Capture recent child tool activity in state.
+- [x] Render child activity from state in the side panel.
+- [x] Include concise progress in prompt context only when relevant.
+- [x] Avoid dumping large child transcripts into parent context by default.
+- [x] Add tests for progress update ordering and terminal states.
 
 Acceptance criteria:
 
@@ -163,11 +164,11 @@ Goal: delegated workflows should consistently finish the user’s requested outc
 
 ### 2.1 Define Delegation Contracts
 
-- [ ] Define parent-owned vs child-owned actions.
-- [ ] Mark read-only agents as inspect/report only.
-- [ ] Ensure child prompts instruct read-only agents to return findings and proposed output, not write files or run commands.
-- [ ] Ensure parent state records pending post-delegation actions: write doc, run verification, commit, ask user, no action.
-- [ ] Add tests for each pending action kind.
+- [x] Define parent-owned vs child-owned actions.
+- [x] Mark read-only agents as inspect/report only.
+- [x] Ensure child prompts instruct read-only agents to return findings and proposed output, not write files or run commands.
+- [x] Ensure parent state records pending post-delegation actions: write doc, run verification, commit, ask user, no action.
+- [x] Add tests for each pending action kind.
 
 Acceptance criteria:
 
@@ -176,11 +177,11 @@ Acceptance criteria:
 
 ### 2.2 Replace Natural-Language Tool Restoration With Action State
 
-- [ ] Keep the current pending-write fix as a short-term bridge.
-- [ ] Replace write-intent inference with explicit action markers produced by delegation orchestration.
-- [ ] Extract target path and action type from user request or child report into structured state.
-- [ ] Add tests for “memo”, “note”, “report”, “findings”, and pathless document requests without adding phrase-specific runtime branches.
-- [ ] Add tests showing generic follow-ups still expose the right tools while pending action exists.
+- [x] Keep the current pending-write fix as a short-term bridge.
+- [x] Replace write-intent inference with explicit action markers produced by delegation orchestration.
+- [x] Extract target path and action type from user request or child report into structured state.
+- [x] Add tests for “memo”, “note”, “report”, “findings”, and pathless document requests without adding phrase-specific runtime branches.
+- [x] Add tests showing generic follow-ups still expose the right tools while pending action exists.
 
 Acceptance criteria:
 
@@ -204,11 +205,11 @@ Goal: deterministic policy first, classifier second, and no user-intent classifi
 
 ### 3.1 Scoped Permission Rules Closeout
 
-- [ ] Create a closeout table for permission scopes: managed, user, project, local, session, CLI.
-- [ ] Verify precedence and conflict behavior: deny > ask > allow at the right scope.
-- [ ] Verify command/path/tool matching with realistic cases.
-- [ ] Document examples in README or dedicated config docs.
-- [ ] Add tests for invalid config and unsupported tool names.
+- [x] Create a closeout table for permission scopes: managed, user, project, local, session, CLI.
+- [x] Verify precedence and conflict behavior: deny > ask > allow at the right scope.
+- [x] Verify command/path/tool matching with realistic cases.
+- [x] Document examples in README or dedicated config docs.
+- [x] Add tests for invalid config and unsupported tool names.
 
 Acceptance criteria:
 
@@ -216,11 +217,11 @@ Acceptance criteria:
 
 ### 3.2 Classifier Cancellation And Timeouts
 
-- [ ] Replace classifier calls that use `context.Background()` with caller-scoped context.
-- [ ] Add short classifier timeout in runtime configuration.
-- [ ] Add cancellation tests for user abort.
-- [ ] Add timeout fallback tests for interactive and headless modes.
-- [ ] Ensure fallback is `ask` or `deny`, never `allow`.
+- [x] Replace classifier calls that use `context.Background()` with caller-scoped context.
+- [x] Add short classifier timeout in runtime configuration.
+- [x] Add cancellation tests for user abort.
+- [x] Add timeout fallback tests for interactive and headless modes.
+- [x] Ensure fallback is `ask` or `deny`, never `allow`.
 
 Acceptance criteria:
 
@@ -228,11 +229,11 @@ Acceptance criteria:
 
 ### 3.3 Redacted Classifier Observability
 
-- [ ] Keep classifier observer events redacted.
-- [ ] Expand redaction tests beyond GitHub PAT-like tokens.
-- [ ] Cover bearer tokens, OpenAI-like keys, Anthropic-like keys, AWS-like keys, generic `TOKEN=...`, and private-key blocks.
-- [ ] Verify redaction in action summary, detail, path, reason, fallback, approval updates, debug logs, and classifier prompt.
-- [ ] Document the redaction contract.
+- [x] Keep classifier observer events redacted.
+- [x] Expand redaction tests beyond GitHub PAT-like tokens.
+- [x] Cover bearer tokens, OpenAI-like keys, Anthropic-like keys, AWS-like keys, generic `TOKEN=...`, and private-key blocks.
+- [x] Verify redaction in action summary, detail, path, reason, fallback, approval updates, debug logs, and classifier prompt.
+- [x] Document the redaction contract.
 
 Acceptance criteria:
 
@@ -240,11 +241,11 @@ Acceptance criteria:
 
 ### 3.4 Command Risk Analyzer Hardening
 
-- [ ] Keep current risk facts for common commands.
-- [ ] Add conservative shell construct detection: pipes to shell, command substitution, redirects to sensitive paths, env dumps, credential path reads.
-- [ ] Add tests for `curl | sh`, `bash -c`, `rm -rf`, `.env` reads, `printenv`, and safe commands like `go test` / `git status`.
-- [ ] Feed risk facts to approvals and classifier prompt.
-- [ ] Do not build a full shell parser until the conservative analyzer proves insufficient.
+- [x] Keep current risk facts for common commands.
+- [x] Add conservative shell construct detection: pipes to shell, command substitution, redirects to sensitive paths, env dumps, credential path reads.
+- [x] Add tests for `curl | sh`, `bash -c`, `rm -rf`, `.env` reads, `printenv`, and safe commands like `go test` / `git status`.
+- [x] Feed risk facts to approvals and classifier prompt.
+- [x] Do not build a full shell parser until the conservative analyzer proves insufficient.
 
 Acceptance criteria:
 
@@ -256,11 +257,11 @@ Goal: secrets are inaccessible by default and redacted everywhere they can surfa
 
 ### 4.1 Secret Scanner Rule Matrix
 
-- [ ] Expand `internal/secscan` with high-confidence rules only.
-- [ ] Add private-key block detection.
-- [ ] Add bearer token and generic assignment detection with low false-positive thresholds.
-- [ ] Keep scanner public formatting match-free; never expose matched values.
-- [ ] Add table-driven scanner tests using dummy values only.
+- [x] Expand `internal/secscan` with high-confidence rules only.
+- [x] Add private-key block detection.
+- [x] Add bearer token and generic assignment detection with low false-positive thresholds.
+- [x] Keep scanner public formatting match-free; never expose matched values.
+- [x] Add table-driven scanner tests using dummy values only.
 
 Acceptance criteria:
 
@@ -268,12 +269,12 @@ Acceptance criteria:
 
 ### 4.2 Tool Boundary Enforcement
 
-- [ ] Verify read redaction before line-number formatting.
-- [ ] Verify write/edit/apply_patch blocking before approval prompts.
-- [ ] Verify command output redaction before truncation and return to model.
-- [ ] Verify search/glob boundaries respect ignore files and secret file rules.
-- [ ] Verify git diff/commit helper paths do not print secrets.
-- [ ] Add tests for each tool boundary.
+- [x] Verify read redaction before line-number formatting.
+- [x] Verify write/edit/apply_patch blocking before approval prompts.
+- [x] Verify command output redaction before truncation and return to model.
+- [x] Verify search/glob boundaries respect ignore files and secret file rules.
+- [x] Verify git diff/commit helper paths do not print secrets.
+- [x] Add tests for each tool boundary.
 
 Acceptance criteria:
 
@@ -281,10 +282,10 @@ Acceptance criteria:
 
 ### 4.3 Secret Policy Documentation
 
-- [ ] Document `[security.secrets]` modes: `allow`, `redact`, `ask`, `block`.
-- [ ] Document defaults.
-- [ ] Document how to audit a false positive safely.
-- [ ] Document that real secrets must not appear in examples, fixtures, logs, or commit messages.
+- [x] Document `[security.secrets]` modes: `allow`, `redact`, `ask`, `block`.
+- [x] Document defaults.
+- [x] Document how to audit a false positive safely.
+- [x] Document that real secrets must not appear in examples, fixtures, logs, or commit messages.
 
 Acceptance criteria:
 
@@ -308,11 +309,11 @@ Acceptance criteria:
 
 ### 5.2 Token Diminishing And Tool Thrash Controls
 
-- [ ] Implement token diminishing detection or remove/document config as future.
-- [ ] Implement tool thrash circuit breaker using stateful loop metrics.
-- [ ] Replace hard blocking of broad searches with progressive warnings/recovery state.
-- [ ] Add recovery prompt overlays that are finite and testable.
-- [ ] Add tests for repeated same-file search/read loops, repeated no-op edits, and repeated failed delegation waits.
+- [x] Implement token diminishing detection or remove/document config as future.
+- [x] Implement tool thrash circuit breaker using stateful loop metrics.
+- [x] Replace hard blocking of broad searches with progressive warnings/recovery state.
+- [x] Add recovery prompt overlays that are finite and testable.
+- [x] Add tests for repeated same-file search/read loops, repeated no-op edits, and repeated failed delegation waits.
 
 Acceptance criteria:
 
@@ -320,12 +321,12 @@ Acceptance criteria:
 
 ### 5.3 Compaction State Machine Closeout
 
-- [ ] Verify compaction modes: none, micro, summarize, reactive, user partial.
-- [ ] Implement real microcompaction for large tool results or mark it explicitly unimplemented.
-- [ ] Verify prompt-too-long reactive compaction and one retry.
-- [ ] Verify compaction failure circuit opens and success resets failures.
-- [ ] Document `CompactionHookPayload` contract and stability expectations.
-- [ ] Add golden-ish pre/post hook payload tests.
+- [x] Verify compaction modes: none, micro, summarize, reactive, user partial.
+- [x] Implement real microcompaction for large tool results or mark it explicitly unimplemented.
+- [x] Verify prompt-too-long reactive compaction and one retry.
+- [x] Verify compaction failure circuit opens and success resets failures.
+- [x] Document `CompactionHookPayload` contract and stability expectations.
+- [x] Add golden-ish pre/post hook payload tests.
 
 Acceptance criteria:
 
@@ -337,11 +338,11 @@ Goal: the UI and model-visible state must agree.
 
 ### 6.1 Agent Panel From State
 
-- [ ] Render side-panel child agents from `AgentTaskState`.
-- [ ] Show status, last activity, elapsed time, and terminal result.
-- [ ] Show killed/failed/timeout distinctly.
-- [ ] Avoid stale panels after terminal states.
-- [ ] Add TUI tests for panel state transitions.
+- [x] Render side-panel child agents from `AgentTaskState`.
+- [x] Show status, last activity, elapsed time, and terminal result.
+- [x] Show killed/failed/timeout distinctly.
+- [x] Avoid stale panels after terminal states.
+- [x] Add TUI tests for panel state transitions.
 
 Acceptance criteria:
 
@@ -349,10 +350,10 @@ Acceptance criteria:
 
 ### 6.2 Debug Log Trustworthiness
 
-- [ ] Include agent lifecycle events in chat debug logs.
-- [ ] Include tool exposure decisions and reason codes.
-- [ ] Redact secrets in debug payloads.
-- [ ] Add tests for redacted debug events.
+- [x] Include agent lifecycle events in chat debug logs.
+- [x] Include tool exposure decisions and reason codes.
+- [x] Redact secrets in debug payloads.
+- [x] Add tests for redacted debug events.
 
 Acceptance criteria:
 
@@ -360,10 +361,10 @@ Acceptance criteria:
 
 ### 6.3 Long Transcript Performance
 
-- [ ] Cache rendered transcript blocks.
-- [ ] Add viewport rendering guardrails for very large transcripts.
-- [ ] Keep trace/export complete even when viewport rendering is virtualized.
-- [ ] Add performance counters in debug view only.
+- [x] Cache rendered transcript blocks.
+- [x] Add viewport rendering guardrails for very large transcripts.
+- [x] Keep trace/export complete even when viewport rendering is virtualized.
+- [x] Add performance counters in debug view only.
 
 Acceptance criteria:
 
@@ -393,6 +394,17 @@ Goal: every reliability/security claim has a test or live reproduction.
 - [ ] Live write containing dummy secret is blocked without writing file.
 - [ ] Live long-session compaction test emits compact boundary and continues.
 
+Note: the latest provider-backed dummy-secret live attempt timed out before producing a conclusive result, so the related live checks remain unchecked.
+
+### 7.4 Code Review Follow-Up
+
+- [x] Redact debug `task_state` metadata before writing `llm.request` records.
+- [x] Redact `AgentTaskState` event payloads before live renderer/TUI surfaces.
+- [x] Redact `AgentTaskState` recent activity/result/error text before prompt or pane rendering.
+- [x] Redact `wait_agent`, `agent_status`, and `kill_agent` tool-result payloads before transcript/TUI exposure.
+- [x] Match direct children for scoped path rules such as `docs/**/*.md`.
+- [x] Keep `wait_agent` timeout as unresolved state: timeout remains non-terminal in prompt/tool logic, and existing tests prove a timed-out child can later complete or fail.
+
 ### 7.3 Required Repository Checks
 
 - [x] `go test ./... -timeout 120s`
@@ -406,12 +418,12 @@ Goal: every reliability/security claim has a test or live reproduction.
 These should be done before new feature breadth:
 
 1. [x] Stabilize and commit the current delegation/skill-routing/search changes.
-2. [ ] Introduce first-class `AgentTaskState` and migrate UI/prompt/wait logic to it.
-3. [ ] Add status/kill controls for child agents.
-4. [ ] Thread approval classifier cancellation context and timeout behavior.
+2. [x] Introduce first-class `AgentTaskState` and migrate UI/prompt/wait logic to it.
+3. [x] Add status/kill controls for child agents.
+4. [x] Thread approval classifier cancellation context and timeout behavior.
 5. [x] Enforce stream idle timeout for streaming and tool-streaming paths.
-6. [ ] Replace config-only token/tool-thrash fields with implemented state machines or remove/document them as future.
-7. [ ] Expand secret scanner and redaction matrix.
+6. [x] Replace config-only token/tool-thrash fields with implemented state machines or remove/document them as future.
+7. [x] Expand secret scanner and redaction matrix.
 8. [ ] Add live harness checks for delegated write, outstanding agent status, cancellation, and secret handling.
 
 ## Definition Of Done

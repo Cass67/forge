@@ -7,6 +7,7 @@ import (
 
 	"forge/internal/agent/tools"
 	"forge/internal/llm"
+	"forge/internal/secscan"
 )
 
 // EventRenderer sends render calls as llm.Event values to a channel.
@@ -93,6 +94,18 @@ func (r *EventRenderer) Info(msg string) {
 
 func (r *EventRenderer) Progress(msg string) {
 	r.events <- llm.Event{Kind: llm.EventProgress, Agent: r.label, Text: msg}
+}
+
+func (r *EventRenderer) AgentTaskState(payload string) {
+	r.events <- llm.Event{Kind: llm.EventAgentTask, Content: redactEventPayload(payload)}
+}
+
+func redactEventPayload(payload string) string {
+	if payload == "" {
+		return ""
+	}
+	scanner := secscan.NewDefaultScanner()
+	return secscan.Redact(payload, scanner.Scan(payload))
 }
 
 // TurnDone signals the agent finished processing a user message.

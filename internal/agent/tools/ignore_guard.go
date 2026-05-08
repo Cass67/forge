@@ -46,7 +46,14 @@ func loadIgnorePatterns(path string) []string {
 // blocked reports whether absPath should be denied based on the ignore patterns.
 func (g ignoreGuard) blocked(absPath string) bool {
 	name := filepath.Base(absPath)
+	slashPath := filepath.ToSlash(absPath)
 	for _, pat := range g.patterns {
+		if strings.HasSuffix(pat, "/") {
+			dir := strings.TrimSuffix(filepath.ToSlash(pat), "/")
+			if strings.HasSuffix(slashPath, "/"+dir) || strings.Contains(slashPath, "/"+dir+"/") {
+				return true
+			}
+		}
 		// Match against the base filename first (handles patterns like "config.toml", "*.env").
 		if ok, _ := doublestar.Match(pat, name); ok {
 			return true

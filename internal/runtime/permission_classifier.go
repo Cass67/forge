@@ -33,11 +33,31 @@ func (c *llmPermissionClassifier) Classify(ctx context.Context, req permissions.
 		errCh <- c.driver.Stream(ctx, []llm.Message{{Role: llm.RoleUser, Content: permissions.BuildClassifierPrompt(req)}}, out)
 	}()
 	var text strings.Builder
-	for tok := range out {
-		text.WriteString(tok.Text)
+	for {
+		select {
+		case tok, ok := <-out:
+			if !ok {
+				out = nil
+				continue
+			}
+			text.WriteString(tok.Text)
+		case err := <-errCh:
+			if err != nil {
+				return permissions.ClassifierResponse{Decision: permissions.ClassifierAsk}, err
+			}
+			for {
+				select {
+				case tok, ok := <-out:
+					if !ok {
+						return permissions.ParseClassifierResponse(text.String())
+					}
+					text.WriteString(tok.Text)
+				default:
+					return permissions.ParseClassifierResponse(text.String())
+				}
+			}
+		case <-ctx.Done():
+			return permissions.ClassifierResponse{Decision: permissions.ClassifierAsk}, ctx.Err()
+		}
 	}
-	if err := <-errCh; err != nil {
-		return permissions.ClassifierResponse{Decision: permissions.ClassifierAsk}, err
-	}
-	return permissions.ParseClassifierResponse(text.String())
 }

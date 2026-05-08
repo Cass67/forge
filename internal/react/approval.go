@@ -81,6 +81,7 @@ type ApprovalGate struct {
 	guardian        func(string, tools.Action) tools.GuardianReview
 	guardianContext func() string
 	guardianObserve func(GuardianEvent)
+	classifierCtx   func() context.Context
 	updates         []ApprovalUpdate
 	progress        func(string)
 	now             func() time.Time
@@ -126,6 +127,12 @@ func (g *ApprovalGate) SetGuardianContext(provider func() string) {
 func (g *ApprovalGate) SetGuardianObserver(observer func(GuardianEvent)) {
 	if g != nil {
 		g.guardianObserve = observer
+	}
+}
+
+func (g *ApprovalGate) SetClassifierContextProvider(provider func() context.Context) {
+	if g != nil {
+		g.classifierCtx = provider
 	}
 }
 
@@ -181,6 +188,7 @@ func (g *ApprovalGate) Approve(action tools.Action) (bool, error) {
 	action.Tool = strings.TrimSpace(action.Tool)
 	action.Summary = strings.TrimSpace(action.Summary)
 	action.Detail = strings.TrimSpace(action.Detail)
+	action.Summary = g.cfg.SecretPolicy.RedactApprovalDetail(action.Summary)
 	action.Detail = g.cfg.SecretPolicy.RedactApprovalDetail(action.Detail)
 	if action.Tool == "" {
 		return false, fmt.Errorf("approval action tool is required")
@@ -336,7 +344,8 @@ func (g *ApprovalGate) classifierDecision(evaluationAction, promptAction tools.A
 		approved, err := g.promptWithRecordedOutcome(ApprovalDecisionSourcePolicy, classifierApprovalUpdateDetail(evaluationAction), classifierPromptAction(promptAction))
 		return approved, true, err
 	}
-	resp, err := g.cfg.Classifier.Classify(context.Background(), permissions.ClassifierRequest{
+	ctx := g.classifierContext(evaluationAction)
+	resp, err := g.cfg.Classifier.Classify(ctx, permissions.ClassifierRequest{
 		Action: riskAction,
 		Risk:   risk,
 		Rules:  g.cfg.ScopedRules,
@@ -382,6 +391,18 @@ func (g *ApprovalGate) classifierDecision(evaluationAction, promptAction tools.A
 	}
 }
 
+func (g *ApprovalGate) classifierContext(action tools.Action) context.Context {
+	if action.Context != nil {
+		return action.Context
+	}
+	if g != nil && g.classifierCtx != nil {
+		if ctx := g.classifierCtx(); ctx != nil {
+			return ctx
+		}
+	}
+	return context.Background()
+}
+
 func classifierApprovalUpdateDetail(action tools.Action) string {
 	action.Summary = redactClassifierEventText(action.Summary)
 	action.Detail = redactClassifierEventText(action.Detail)
@@ -399,6 +420,7 @@ func (g *ApprovalGate) scopedRuleDecision(action tools.Action) (RuleDecision, bo
 		Tool:    action.Tool,
 		Summary: action.Summary,
 		Detail:  action.Detail,
+		Path:    action.Path,
 	})
 	if !decision.Matched {
 		return "", false
@@ -444,6 +466,7 @@ func (g *ApprovalGate) emitClassifierEvent(event ClassifierEvent) {
 	event.Action.Detail = redactClassifierEventText(event.Action.Detail)
 	event.Action.Path = redactClassifierEventText(event.Action.Path)
 	event.Reason = redactClassifierEventText(event.Reason)
+	event.Fallback = redactClassifierEventText(event.Fallback)
 	event.Error = redactClassifierEventText(event.Error)
 	g.cfg.ClassifierObserver(event)
 }

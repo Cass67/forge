@@ -15,6 +15,7 @@ func NewGlob(workDir string, ignoreDirs []string) Tool {
 	for _, d := range ignoreDirs {
 		ignoreSet[d] = true
 	}
+	guard := newIgnoreGuard(workDir)
 
 	return Tool{
 		Name:        "glob",
@@ -41,6 +42,13 @@ func NewGlob(workDir string, ignoreDirs []string) Tool {
 
 			fsys := os.DirFS(resolved)
 			_ = doublestar.GlobWalk(fsys, pattern, func(path string, d os.DirEntry) error {
+				fullPath := filepath.Join(resolved, path)
+				if guard.blocked(fullPath) {
+					if d.IsDir() {
+						return doublestar.SkipDir
+					}
+					return nil
+				}
 				// Check if any path component is in the ignore set
 				for _, part := range strings.Split(filepath.Dir(path), string(os.PathSeparator)) {
 					if ignoreSet[part] {

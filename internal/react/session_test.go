@@ -2,6 +2,7 @@ package react
 
 import (
 	"testing"
+	"time"
 
 	"forge/internal/hooks"
 	"forge/internal/llm"
@@ -147,6 +148,155 @@ func TestSessionPlanStateAppearsInSnapshot(t *testing.T) {
 	snap := s.Snapshot()
 	if snap.PlanState == nil || len(snap.PlanState.Steps) != 2 {
 		t.Fatalf("plan state = %#v", snap.PlanState)
+	}
+}
+
+func TestSessionPendingDelegationActionAppearsInSnapshotAndClears(t *testing.T) {
+	s := NewSession()
+	s.SetPendingDelegationAction(DelegationActionState{
+		Kind:        DelegationActionWriteDoc,
+		TargetPath:  "docs/reports/audit.md",
+		SourceAgent: "agent-1",
+		Description: "write delegated audit report",
+	})
+
+	snap := s.Snapshot()
+	if snap.PendingDelegationAction == nil {
+		t.Fatal("expected pending delegation action")
+	}
+	if snap.PendingDelegationAction.Kind != DelegationActionWriteDoc || snap.PendingDelegationAction.TargetPath != "docs/reports/audit.md" {
+		t.Fatalf("pending delegation action = %#v", snap.PendingDelegationAction)
+	}
+	snap.PendingDelegationAction.TargetPath = "mutated.md"
+	if got := s.Snapshot().PendingDelegationAction.TargetPath; got != "docs/reports/audit.md" {
+		t.Fatalf("session action mutated through snapshot: %q", got)
+	}
+
+	s.ClearPendingDelegationAction()
+	if got := s.Snapshot().PendingDelegationAction; got != nil {
+		t.Fatalf("pending delegation action after clear = %#v", got)
+	}
+}
+
+func TestSessionPendingDelegationActionKinds(t *testing.T) {
+	for _, kind := range []DelegationActionKind{
+		DelegationActionWriteDoc,
+		DelegationActionRunVerification,
+		DelegationActionCommit,
+		DelegationActionAskUser,
+	} {
+		t.Run(string(kind), func(t *testing.T) {
+			s := NewSession()
+			s.SetPendingDelegationAction(DelegationActionState{Kind: kind})
+			if got := s.Snapshot().PendingDelegationAction; got == nil || got.Kind != kind {
+				t.Fatalf("pending action for %q = %#v", kind, got)
+			}
+		})
+	}
+}
+
+func TestSessionAgentTaskStateTracksLifecycle(t *testing.T) {
+	s := NewSession()
+	turn := s.RecordInput("audit the repo")
+	created := time.Date(2026, 5, 8, 20, 30, 0, 0, time.UTC)
+	started := created.Add(time.Second)
+	progressAt := started.Add(2 * time.Second)
+	completed := progressAt.Add(3 * time.Second)
+
+	s.UpsertAgentTask(AgentTaskState{
+		ID:          " agent-1 ",
+		Role:        " repo-auditor ",
+		Description: " Inspect repository ",
+		Prompt:      " Read files and report findings ",
+		Status:      AgentStatusPending,
+		CreatedAt:   created,
+		ParentTurn:  turn,
+	})
+	s.UpsertAgentTask(AgentTaskState{
+		ID:             "agent-1",
+		Status:         AgentStatusRunning,
+		StartedAt:      started,
+		LastActivityAt: started,
+	})
+	s.RecordAgentTaskProgress("agent-1", "read_file", "README.md", progressAt)
+	s.UpsertAgentTask(AgentTaskState{
+		ID:             "agent-1",
+		Status:         AgentStatusCompleted,
+		CompletedAt:    completed,
+		LastActivityAt: completed,
+		Result:         "done",
+	})
+
+	snap := s.Snapshot()
+	if len(snap.AgentTasks) != 1 {
+		t.Fatalf("agent tasks = %#v", snap.AgentTasks)
+	}
+	task := snap.AgentTasks[0]
+	if task.ID != "agent-1" || task.Role != "repo-auditor" || task.Description != "Inspect repository" || task.Prompt != "Read files and report findings" {
+		t.Fatalf("normalized task identity = %#v", task)
+	}
+	if task.Status != AgentStatusCompleted || task.ParentTurn != turn {
+		t.Fatalf("task status/turn = %#v", task)
+	}
+	if !task.CreatedAt.Equal(created) || !task.StartedAt.Equal(started) || !task.CompletedAt.Equal(completed) || !task.LastActivityAt.Equal(completed) {
+		t.Fatalf("task timestamps = %#v", task)
+	}
+	if task.Result != "done" || task.Error != "" {
+		t.Fatalf("task terminal data = %#v", task)
+	}
+	if task.LastToolName != "read_file" || len(task.RecentActivity) != 1 || task.RecentActivity[0].Summary != "README.md" {
+		t.Fatalf("task progress = %#v", task)
+	}
+}
+
+func TestSessionAgentTaskStateCoversTerminalStatuses(t *testing.T) {
+	s := NewSession()
+	statuses := []AgentStatus{
+		AgentStatusFailed,
+		AgentStatusKilled,
+		AgentStatusTimeout,
+		AgentStatusNotFound,
+	}
+	for _, status := range statuses {
+		s.UpsertAgentTask(AgentTaskState{ID: string(status), Status: status, Error: "terminal"})
+	}
+
+	snap := s.Snapshot()
+	if len(snap.AgentTasks) != len(statuses) {
+		t.Fatalf("agent tasks = %#v", snap.AgentTasks)
+	}
+	for i, status := range statuses {
+		if snap.AgentTasks[i].Status != status {
+			t.Fatalf("agent task %d status = %q, want %q", i, snap.AgentTasks[i].Status, status)
+		}
+	}
+}
+
+func TestSessionAgentTaskSnapshotIsCloned(t *testing.T) {
+	s := NewSession()
+	s.UpsertAgentTask(AgentTaskState{ID: "agent-1", Status: AgentStatusRunning})
+	s.RecordAgentTaskProgress("agent-1", "list_dir", ".", time.Now())
+
+	snap := s.Snapshot()
+	snap.AgentTasks[0].Status = AgentStatusCompleted
+	snap.AgentTasks[0].RecentActivity[0].ToolName = "mutated"
+
+	next := s.Snapshot()
+	if next.AgentTasks[0].Status != AgentStatusRunning {
+		t.Fatalf("session task status mutated through snapshot: %#v", next.AgentTasks[0])
+	}
+	if next.AgentTasks[0].RecentActivity[0].ToolName != "list_dir" {
+		t.Fatalf("session task activity mutated through snapshot: %#v", next.AgentTasks[0])
+	}
+}
+
+func TestSessionClearRemovesAgentTaskState(t *testing.T) {
+	s := NewSession()
+	s.UpsertAgentTask(AgentTaskState{ID: "agent-1", Status: AgentStatusRunning})
+	s.Clear()
+
+	if got := s.Snapshot().AgentTasks; len(got) != 0 {
+		t.Fatalf("agent tasks after clear = %#v", got)
 	}
 }
 

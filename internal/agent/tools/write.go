@@ -55,9 +55,11 @@ func NewWriteFile(workDir string, approve ApprovalFunc, policies ...SecretPolicy
 			lastDiff = detail
 
 			approved, err := approve(Action{
+				Context: ctx,
 				Tool:    "write_file",
 				Summary: fmt.Sprintf("write %s", path),
 				Detail:  detail,
+				Path:    path,
 			})
 			if err != nil {
 				return "", err

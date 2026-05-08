@@ -39,6 +39,7 @@ func NewApplyPatch(workDir string, approve ApprovalFunc, policies ...SecretPolic
 			lastDiff = patch
 
 			approved, err := approve(Action{
+				Context: ctx,
 				Tool:    "apply_patch",
 				Summary: "apply unified patch",
 				Detail:  patch,

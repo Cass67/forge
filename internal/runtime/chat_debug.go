@@ -10,6 +10,8 @@ import (
 
 	"forge/internal/llm"
 	"forge/internal/logger"
+	reactruntime "forge/internal/react"
+	"forge/internal/secscan"
 	"forge/internal/version"
 )
 
@@ -100,18 +102,16 @@ func (r *chatDebugRecorder) logEvent(ev llm.Event) {
 		return
 	}
 	fields := map[string]any{
-		"kind":      ev.Kind,
-		"agent":     ev.Agent,
-		"sub_agent": ev.SubAgent,
+		"kind":      redactDebugString(string(ev.Kind)),
+		"agent":     redactDebugString(ev.Agent),
+		"sub_agent": redactDebugString(ev.SubAgent),
 		"is_error":  ev.IsError,
 	}
 	if strings.TrimSpace(ev.Text) != "" {
-		fields["text_chars"] = len(ev.Text)
-		fields["text_lines"] = lineCount(ev.Text)
+		addDebugTextMetadata(fields, "text", ev.Text)
 	}
 	if strings.TrimSpace(ev.Content) != "" {
-		fields["content_chars"] = len(ev.Content)
-		fields["content_lines"] = lineCount(ev.Content)
+		addDebugTextMetadata(fields, "content", ev.Content)
 	}
 	if ev.Duration > 0 {
 		fields["duration"] = ev.Duration.String()
@@ -125,11 +125,85 @@ func (r *chatDebugRecorder) logEvent(ev llm.Event) {
 	r.log.Debug("chat.event", fields)
 }
 
+func (r *chatDebugRecorder) logAgentTask(state reactruntime.AgentTaskState) {
+	if r == nil || r.log == nil {
+		return
+	}
+	fields := map[string]any{
+		"id":                    redactDebugString(state.ID),
+		"role":                  redactDebugString(state.Role),
+		"status":                string(state.Status),
+		"parent_turn":           state.ParentTurn,
+		"recent_activity_count": len(state.RecentActivity),
+	}
+	addDebugTextMetadata(fields, "description", state.Description)
+	addDebugTextMetadata(fields, "prompt", state.Prompt)
+	addDebugTextMetadata(fields, "result", state.Result)
+	addDebugTextMetadata(fields, "error", state.Error)
+	if !state.CreatedAt.IsZero() {
+		fields["created_at"] = state.CreatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if !state.StartedAt.IsZero() {
+		fields["started_at"] = state.StartedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if !state.CompletedAt.IsZero() {
+		fields["completed_at"] = state.CompletedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if !state.LastActivityAt.IsZero() {
+		fields["last_activity_at"] = state.LastActivityAt.UTC().Format(time.RFC3339Nano)
+	}
+	if strings.TrimSpace(state.LastToolName) != "" {
+		fields["last_tool_name"] = redactDebugString(state.LastToolName)
+	}
+	for _, activity := range state.RecentActivity {
+		if strings.TrimSpace(activity.Summary) == "" {
+			continue
+		}
+		if rules := debugSecretRules(activity.Summary); rules != "" {
+			fields["recent_activity_secret_rules"] = rules
+			break
+		}
+	}
+	r.log.Debug("chat.agent_lifecycle", fields)
+}
+
+func (r *chatDebugRecorder) logToolExposure(decision reactruntime.ToolExposureDecision) {
+	if r == nil || r.log == nil {
+		return
+	}
+	toolNames := make([]string, 0, len(decision.ToolNames))
+	for _, name := range decision.ToolNames {
+		if trimmed := strings.TrimSpace(redactDebugString(name)); trimmed != "" {
+			toolNames = append(toolNames, trimmed)
+		}
+	}
+	fields := map[string]any{
+		"reason":               redactDebugString(decision.Reason),
+		"tool_count":           len(toolNames),
+		"tool_names":           toolNames,
+		"tool_choice_required": decision.RequireToolCall,
+	}
+	if decision.OutstandingAgentCount > 0 {
+		fields["outstanding_agent_count"] = decision.OutstandingAgentCount
+	}
+	if strings.TrimSpace(decision.PendingActionKind) != "" {
+		fields["pending_action_kind"] = redactDebugString(decision.PendingActionKind)
+	}
+	r.log.Debug("chat.tool_exposure", fields)
+}
+
 func (r *chatDebugRecorder) wrapDriver(inner llm.Driver) llm.Driver {
 	if inner == nil {
 		return nil
 	}
 	return &chatDebugDriver{inner: inner, rec: r}
+}
+
+func debugToolExposureObserver(setup *ChatSetup) func(reactruntime.ToolExposureDecision) {
+	if setup == nil || setup.debugRec == nil {
+		return nil
+	}
+	return setup.debugRec.logToolExposure
 }
 
 func (d *chatDebugDriver) Name() string { return d.inner.Name() }
@@ -174,7 +248,10 @@ func (d *chatDebugDriver) Stream(ctx context.Context, messages []llm.Message, ou
 			"response_lines": lineCount(response.String()),
 		}
 		if err != nil {
-			fields["error"] = err.Error()
+			fields["error"] = redactDebugString(err.Error())
+			if rules := debugSecretRules(err.Error()); rules != "" {
+				fields["error_secret_rules"] = rules
+			}
 		}
 		d.rec.log.Debug("llm.response", fields)
 	}
@@ -257,7 +334,10 @@ func (d *chatDebugDriver) StreamWithToolsOptions(ctx context.Context, messages [
 			fields["tool_calls"] = toolCalls
 		}
 		if err != nil {
-			fields["error"] = err.Error()
+			fields["error"] = redactDebugString(err.Error())
+			if rules := debugSecretRules(err.Error()); rules != "" {
+				fields["error_secret_rules"] = rules
+			}
 		}
 		d.rec.log.Debug("llm.response", fields)
 	}
@@ -301,15 +381,15 @@ func taskStateFromMessages(messages []llm.Message) map[string]any {
 			line = strings.TrimSpace(line)
 			switch {
 			case strings.HasPrefix(line, "Task objective: "):
-				state["objective"] = strings.TrimSpace(strings.TrimPrefix(line, "Task objective: "))
+				state["objective"] = redactDebugString(strings.TrimSpace(strings.TrimPrefix(line, "Task objective: ")))
 			case strings.HasPrefix(line, "Task operation: "):
-				state["operation"] = strings.TrimSpace(strings.TrimPrefix(line, "Task operation: "))
+				state["operation"] = redactDebugString(strings.TrimSpace(strings.TrimPrefix(line, "Task operation: ")))
 			case strings.HasPrefix(line, "Task source ref: "):
-				state["source_ref"] = strings.TrimSpace(strings.TrimPrefix(line, "Task source ref: "))
+				state["source_ref"] = redactDebugString(strings.TrimSpace(strings.TrimPrefix(line, "Task source ref: ")))
 			case strings.HasPrefix(line, "Task target branch: "):
-				state["target_branch"] = strings.TrimSpace(strings.TrimPrefix(line, "Task target branch: "))
+				state["target_branch"] = redactDebugString(strings.TrimSpace(strings.TrimPrefix(line, "Task target branch: ")))
 			case strings.HasPrefix(line, "Required verification: "):
-				state["required_verification"] = strings.TrimSpace(strings.TrimPrefix(line, "Required verification: "))
+				state["required_verification"] = redactDebugString(strings.TrimSpace(strings.TrimPrefix(line, "Required verification: ")))
 			}
 		}
 	}
@@ -344,15 +424,45 @@ func summarizeDebugToolCalls(calls []llm.NativeToolCall) []map[string]any {
 	summary := make([]map[string]any, 0, len(calls))
 	for _, call := range calls {
 		entry := map[string]any{
-			"id":   call.ID,
-			"name": call.Name,
+			"id":   redactDebugString(call.ID),
+			"name": redactDebugString(call.Name),
 		}
 		if strings.TrimSpace(call.ArgsJSON) != "" {
 			entry["args_chars"] = len(call.ArgsJSON)
+			if rules := debugSecretRules(call.ArgsJSON); rules != "" {
+				entry["args_secret_rules"] = rules
+			}
 		}
 		summary = append(summary, entry)
 	}
 	return summary
+}
+
+func addDebugTextMetadata(fields map[string]any, prefix, text string) {
+	if fields == nil || strings.TrimSpace(prefix) == "" || strings.TrimSpace(text) == "" {
+		return
+	}
+	fields[prefix+"_chars"] = len(text)
+	fields[prefix+"_lines"] = lineCount(text)
+	if rules := debugSecretRules(text); rules != "" {
+		fields[prefix+"_secret_rules"] = rules
+	}
+}
+
+func redactDebugString(text string) string {
+	if text == "" {
+		return ""
+	}
+	scanner := secscan.NewDefaultScanner()
+	return secscan.Redact(text, scanner.Scan(text))
+}
+
+func debugSecretRules(text string) string {
+	if text == "" {
+		return ""
+	}
+	scanner := secscan.NewDefaultScanner()
+	return secscan.Summary(scanner.Scan(text))
 }
 
 func lineCount(text string) int {

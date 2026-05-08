@@ -12,21 +12,37 @@ import (
 type AgentStatus string
 
 const (
+	AgentStatusPending   AgentStatus = "pending"
 	AgentStatusRunning   AgentStatus = "running"
 	AgentStatusCompleted AgentStatus = "completed"
 	AgentStatusFailed    AgentStatus = "failed"
+	AgentStatusKilled    AgentStatus = "killed"
 	AgentStatusTimeout   AgentStatus = "timeout"
 	AgentStatusNotFound  AgentStatus = "not_found"
 )
 
 type SpawnFunc func(ctx context.Context, role, task string) (string, error)
 
+type agentIDContextKey struct{}
+
+func AgentIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	id, _ := ctx.Value(agentIDContextKey{}).(string)
+	return strings.TrimSpace(id)
+}
+
 type AgentResult struct {
-	ID     string      `json:"id"`
-	Role   string      `json:"role"`
-	Status AgentStatus `json:"status"`
-	Result string      `json:"result,omitempty"`
-	Error  string      `json:"error,omitempty"`
+	ID              string              `json:"id"`
+	Role            string              `json:"role"`
+	Status          AgentStatus         `json:"status"`
+	Result          string              `json:"result,omitempty"`
+	Error           string              `json:"error,omitempty"`
+	ResumeSupported bool                `json:"resume_supported"`
+	ResumeHint      string              `json:"resume_hint,omitempty"`
+	LastToolName    string              `json:"last_tool_name,omitempty"`
+	RecentActivity  []AgentTaskActivity `json:"recent_activity,omitempty"`
 }
 
 type agentJob struct {
@@ -35,7 +51,11 @@ type agentJob struct {
 	status AgentStatus
 	result string
 	err    error
+	cancel context.CancelFunc
 	done   chan struct{}
+
+	lastToolName   string
+	recentActivity []AgentTaskActivity
 }
 
 type AgentDefinition struct {
@@ -49,11 +69,15 @@ type AgentDefinition struct {
 }
 
 type AgentPool struct {
-	mu     sync.Mutex
-	next   int
-	jobs   map[string]*agentJob
-	spawn  SpawnFunc
-	agents map[string]*AgentDefinition
+	mu                sync.Mutex
+	next              int
+	jobs              map[string]*agentJob
+	spawn             SpawnFunc
+	agents            map[string]*AgentDefinition
+	taskObserver      func(AgentTaskState)
+	lifecycleObserver func(AgentTaskState)
+	progressObserver  func(id, toolName, summary string, at time.Time)
+	currentTurnFunc   func() int
 }
 
 func NewAgentPool(spawn SpawnFunc) *AgentPool {
@@ -61,6 +85,23 @@ func NewAgentPool(spawn SpawnFunc) *AgentPool {
 		jobs:  make(map[string]*agentJob),
 		spawn: spawn,
 	}
+}
+
+func (p *AgentPool) AttachSession(session *Session) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if session == nil {
+		p.taskObserver = nil
+		p.progressObserver = nil
+		p.currentTurnFunc = nil
+		return
+	}
+	p.taskObserver = session.UpsertAgentTask
+	p.progressObserver = session.RecordAgentTaskProgress
+	p.currentTurnFunc = func() int { return session.Snapshot().Turn }
 }
 
 func (p *AgentPool) Spawn(ctx context.Context, role, task string) (string, error) {
@@ -76,38 +117,81 @@ func (p *AgentPool) Spawn(ctx context.Context, role, task string) (string, error
 		return "", fmt.Errorf("task is required")
 	}
 
+	now := time.Now()
 	p.mu.Lock()
 	p.next++
 	id := fmt.Sprintf("agent-%d", p.next)
+	runCtx := context.Background()
+	if ctx != nil {
+		runCtx = ctx
+	}
+	runCtx, runCancel := context.WithCancel(context.WithValue(runCtx, agentIDContextKey{}, id))
 	job := &agentJob{
 		id:     id,
 		role:   role,
 		status: AgentStatusRunning,
+		cancel: runCancel,
 		done:   make(chan struct{}),
 	}
 	p.jobs[id] = job
+	parentTurn := 0
+	if p.currentTurnFunc != nil {
+		parentTurn = p.currentTurnFunc()
+	}
 	p.mu.Unlock()
 
-	go p.runSpawn(ctx, job, role, task)
+	p.notifyAgentTask(AgentTaskState{
+		ID:             id,
+		Role:           role,
+		Description:    firstAgentTaskLine(task),
+		Prompt:         task,
+		Status:         AgentStatusRunning,
+		CreatedAt:      now,
+		StartedAt:      now,
+		LastActivityAt: now,
+		ParentTurn:     parentTurn,
+	})
+
+	go p.runSpawn(runCtx, job, role, task)
 	return id, nil
 }
 
-func (p *AgentPool) runSpawn(parent context.Context, job *agentJob, role, task string) {
-	runCtx := context.Background()
-	if parent != nil {
-		runCtx = parent
+func (p *AgentPool) SetLifecycleObserver(observer func(AgentTaskState)) {
+	if p == nil {
+		return
 	}
+	p.mu.Lock()
+	p.lifecycleObserver = observer
+	p.mu.Unlock()
+}
+
+func (p *AgentPool) runSpawn(runCtx context.Context, job *agentJob, role, task string) {
 	result, err := p.spawn(runCtx, role, task)
+	completedAt := time.Now()
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	job.result = strings.TrimSpace(result)
 	job.err = err
-	if err != nil {
+	if job.status == AgentStatusKilled {
+		job.result = ""
+	} else if err != nil {
 		job.status = AgentStatusFailed
 	} else {
 		job.status = AgentStatusCompleted
 	}
+	state := AgentTaskState{
+		ID:             job.id,
+		Role:           job.role,
+		Status:         job.status,
+		CompletedAt:    completedAt,
+		LastActivityAt: completedAt,
+		Result:         job.result,
+	}
+	if job.err != nil {
+		state.Error = job.err.Error()
+	}
+	p.mu.Unlock()
+	p.notifyAgentTask(state)
 	close(job.done)
 }
 
@@ -121,7 +205,9 @@ func (p *AgentPool) Wait(ctx context.Context, id string, timeout time.Duration) 
 	}
 	job := p.job(id)
 	if job == nil {
-		return AgentResult{ID: id, Status: AgentStatusNotFound}, nil
+		result := decorateAgentResultResumeState(AgentResult{ID: id, Status: AgentStatusNotFound})
+		p.notifyAgentTask(AgentTaskState{ID: id, Status: AgentStatusNotFound, LastActivityAt: time.Now()})
+		return result, nil
 	}
 
 	timer := time.NewTimer(timeout)
@@ -130,11 +216,156 @@ func (p *AgentPool) Wait(ctx context.Context, id string, timeout time.Duration) 
 	select {
 	case <-job.done:
 		return p.snapshot(job), nil
+	default:
+		current := p.snapshot(job)
+		if agentWaitStatusIsTerminal(current.Status) {
+			return current, nil
+		}
+	}
+
+	select {
+	case <-job.done:
+		return p.snapshot(job), nil
 	case <-timer.C:
-		return AgentResult{ID: id, Role: job.role, Status: AgentStatusTimeout}, nil
+		now := time.Now()
+		p.mu.Lock()
+		if !agentWaitStatusIsTerminal(job.status) {
+			job.status = AgentStatusTimeout
+		}
+		result := p.snapshotLocked(job)
+		p.mu.Unlock()
+		p.notifyAgentTask(AgentTaskState{ID: id, Role: result.Role, Status: result.Status, LastActivityAt: now})
+		return result, nil
 	case <-ctx.Done():
 		return AgentResult{}, ctx.Err()
 	}
+}
+
+func (p *AgentPool) Statuses() []AgentResult {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	ids := make([]string, 0, len(p.jobs))
+	for id := range p.jobs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	results := make([]AgentResult, 0, len(ids))
+	for _, id := range ids {
+		results = append(results, p.snapshotLocked(p.jobs[id]))
+	}
+	return results
+}
+
+func (p *AgentPool) Kill(ctx context.Context, id string) (AgentResult, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return AgentResult{}, fmt.Errorf("id is required")
+	}
+	if p == nil {
+		return decorateAgentResultResumeState(AgentResult{ID: id, Status: AgentStatusNotFound}), nil
+	}
+	now := time.Now()
+	p.mu.Lock()
+	job := p.jobs[id]
+	if job == nil {
+		p.mu.Unlock()
+		result := decorateAgentResultResumeState(AgentResult{ID: id, Status: AgentStatusNotFound})
+		p.notifyAgentTask(AgentTaskState{ID: id, Status: AgentStatusNotFound, LastActivityAt: now})
+		return result, nil
+	}
+	if agentWaitStatusIsTerminal(job.status) {
+		result := p.snapshotLocked(job)
+		p.mu.Unlock()
+		return result, nil
+	}
+	job.status = AgentStatusKilled
+	job.result = ""
+	job.err = context.Canceled
+	cancel := job.cancel
+	result := p.snapshotLocked(job)
+	p.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	p.notifyAgentTask(AgentTaskState{ID: id, Role: result.Role, Status: AgentStatusKilled, CompletedAt: now, LastActivityAt: now, Error: result.Error})
+	return result, nil
+}
+
+func (p *AgentPool) RecordProgress(id, toolName, summary string) {
+	id = strings.TrimSpace(id)
+	toolName = strings.TrimSpace(toolName)
+	if p == nil || id == "" || toolName == "" {
+		return
+	}
+	now := time.Now()
+	p.mu.Lock()
+	job := p.jobs[id]
+	observer := p.progressObserver
+	lifecycleObserver := p.lifecycleObserver
+	var state AgentTaskState
+	if job != nil {
+		job.lastToolName = toolName
+		job.recentActivity = append(job.recentActivity, AgentTaskActivity{ToolName: toolName, Summary: strings.TrimSpace(summary), At: now})
+		if len(job.recentActivity) > 12 {
+			job.recentActivity = append([]AgentTaskActivity(nil), job.recentActivity[len(job.recentActivity)-12:]...)
+		}
+		state = AgentTaskState{
+			ID:             job.id,
+			Role:           job.role,
+			Status:         job.status,
+			LastActivityAt: now,
+			Result:         job.result,
+			LastToolName:   job.lastToolName,
+			RecentActivity: cloneAgentTaskActivity(job.recentActivity),
+		}
+		if job.err != nil {
+			state.Error = job.err.Error()
+		}
+	}
+	p.mu.Unlock()
+	if observer != nil {
+		observer(id, toolName, summary, now)
+	}
+	if lifecycleObserver != nil && state.ID != "" {
+		lifecycleObserver(state)
+	}
+}
+
+func agentWaitStatusIsTerminal(status AgentStatus) bool {
+	switch status {
+	case AgentStatusCompleted, AgentStatusFailed, AgentStatusKilled, AgentStatusNotFound:
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *AgentPool) notifyAgentTask(state AgentTaskState) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	observer := p.taskObserver
+	lifecycleObserver := p.lifecycleObserver
+	p.mu.Unlock()
+	if observer != nil {
+		observer(state)
+	}
+	if lifecycleObserver != nil {
+		lifecycleObserver(state)
+	}
+}
+
+func firstAgentTaskLine(task string) string {
+	for _, line := range strings.Split(strings.TrimSpace(task), "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func (p *AgentPool) job(id string) *agentJob {
@@ -146,16 +377,42 @@ func (p *AgentPool) job(id string) *agentJob {
 func (p *AgentPool) snapshot(job *agentJob) AgentResult {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.snapshotLocked(job)
+}
+
+func (p *AgentPool) snapshotLocked(job *agentJob) AgentResult {
+	if job == nil {
+		return AgentResult{}
+	}
 	result := AgentResult{
-		ID:     job.id,
-		Role:   job.role,
-		Status: job.status,
-		Result: job.result,
+		ID:             job.id,
+		Role:           job.role,
+		Status:         job.status,
+		Result:         job.result,
+		LastToolName:   job.lastToolName,
+		RecentActivity: cloneAgentTaskActivity(job.recentActivity),
 	}
 	if job.err != nil {
 		result.Error = job.err.Error()
 	}
+	return decorateAgentResultResumeState(result)
+}
+
+func decorateAgentResultResumeState(result AgentResult) AgentResult {
+	result.ResumeSupported = false
+	if agentTerminalCannotResume(result.Status) {
+		result.ResumeHint = "Child agent sessions cannot be resumed; spawn a new agent with follow-up context to continue."
+	}
 	return result
+}
+
+func agentTerminalCannotResume(status AgentStatus) bool {
+	switch status {
+	case AgentStatusCompleted, AgentStatusFailed, AgentStatusKilled, AgentStatusNotFound:
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *AgentPool) RegisterAgents(agents []AgentDefinition) {

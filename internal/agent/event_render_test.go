@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -53,5 +54,21 @@ func TestEventRendererThrottlesBurstToolProgress(t *testing.T) {
 	}
 	if progressCount != 2 {
 		t.Fatalf("expected progress emission after throttle window, got %d total lines", progressCount)
+	}
+}
+
+func TestEventRendererRedactsAgentTaskStatePayload(t *testing.T) {
+	events := make(chan llm.Event, 1)
+	renderer := NewEventRenderer(events)
+	secret := "TOKEN=" + strings.Repeat("x", 24)
+
+	renderer.AgentTaskState(`{"id":"agent-1","result":"` + secret + `"}`)
+
+	ev := <-events
+	if strings.Contains(ev.Content, secret) {
+		t.Fatalf("agent task event leaked secret: %q", ev.Content)
+	}
+	if !strings.Contains(ev.Content, "<REDACTED:generic-token>") {
+		t.Fatalf("agent task event missing redaction marker: %q", ev.Content)
 	}
 }

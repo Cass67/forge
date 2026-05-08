@@ -4387,6 +4387,131 @@ func TestChatModelAgentPaneStillRendersWhenToolsVisible(t *testing.T) {
 	}
 }
 
+func TestChatModelAgentPaneRendersAgentTaskState(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 120
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{
+		Kind:    llm.EventAgentTask,
+		Content: `{"id":"agent-1","role":"repo-auditor","status":"running","started_at":"2026-05-08T10:00:00Z","last_activity_at":"2026-05-08T10:00:05Z","last_tool_name":"read_file","recent_activity":[{"tool_name":"read_file","summary":"README.md","at":"2026-05-08T10:00:05Z"}]}`,
+	})
+	m = updated.(ChatModel)
+
+	if !m.toolsVisible {
+		t.Fatal("expected agent pane to become visible")
+	}
+	buf := strippedLine(m.renderedAgentWorkBuf())
+	for _, want := range []string{"agent-1", "repo-auditor", "running", "read_file", "README.md", "10:00:05"} {
+		if !strings.Contains(buf, want) {
+			t.Fatalf("agent pane = %q, want %q", buf, want)
+		}
+	}
+}
+
+func TestChatModelAgentPaneReplacesRunningStateWithTerminalState(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 120
+	m.height = 24
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventAgentTask, Content: `{"id":"agent-1","role":"repo-auditor","status":"running"}`})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{Kind: llm.EventAgentTask, Content: `{"id":"agent-1","role":"repo-auditor","status":"completed","completed_at":"2026-05-08T10:00:10Z","result":"audit complete"}`})
+	m = updated.(ChatModel)
+
+	buf := strippedLine(m.renderedAgentWorkBuf())
+	if strings.Count(buf, "agent-1") != 1 {
+		t.Fatalf("agent pane should render one current state, got %q", buf)
+	}
+	for _, want := range []string{"completed", "audit complete", "10:00:10"} {
+		if !strings.Contains(buf, want) {
+			t.Fatalf("agent pane = %q, want %q", buf, want)
+		}
+	}
+	if strings.Contains(buf, "running") {
+		t.Fatalf("agent pane kept stale running state: %q", buf)
+	}
+}
+
+func TestChatModelAgentPaneShowsDistinctTerminalStatuses(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 120
+	m.height = 24
+
+	for _, payload := range []string{
+		`{"id":"agent-killed","role":"worker","status":"killed","error":"context canceled"}`,
+		`{"id":"agent-failed","role":"worker","status":"failed","error":"boom"}`,
+		`{"id":"agent-timeout","role":"worker","status":"timeout"}`,
+	} {
+		updated, _ := m.Update(llm.Event{Kind: llm.EventAgentTask, Content: payload})
+		m = updated.(ChatModel)
+	}
+
+	buf := strippedLine(m.renderedAgentWorkBuf())
+	for _, want := range []string{"agent-killed", "killed", "context canceled", "agent-failed", "failed", "boom", "agent-timeout", "timeout"} {
+		if !strings.Contains(buf, want) {
+			t.Fatalf("agent pane = %q, want %q", buf, want)
+		}
+	}
+}
+
+func TestChatModelAgentPaneRedactsAgentTaskPayloads(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 120
+	m.height = 24
+	secret := "TOKEN=" + strings.Repeat("x", 24)
+	payload := fmt.Sprintf(`{"id":"agent-1","role":"repo-auditor","status":"failed","result":"result %s","error":"error %s","last_tool_name":"run_command","recent_activity":[{"tool_name":"run_command","summary":"printed %s"}]}`, secret, secret, secret)
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventAgentTask, Content: payload})
+	m = updated.(ChatModel)
+
+	buf := strippedLine(m.renderedAgentWorkBuf())
+	if strings.Contains(buf, secret) {
+		t.Fatalf("agent pane leaked secret: %q", buf)
+	}
+	if !strings.Contains(buf, "<REDACTED:generic-token>") {
+		t.Fatalf("agent pane missing redaction marker: %q", buf)
+	}
+}
+
+func TestChatModelRefreshViewportVirtualizesLargeTranscript(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+	m.chatViewport.Height = 20
+	for i := range 500 {
+		m.messages = append(m.messages, ChatMessage{Kind: MsgAgent, Header: "Forge", Content: fmt.Sprintf("message %03d", i)})
+	}
+	m.rebuildTranscriptStateFromMessages()
+	records := len(m.records)
+
+	m.refreshViewport()
+
+	if m.lastRenderStats.Rendered > 80 {
+		t.Fatalf("rendered blocks = %d, want bounded virtual window", m.lastRenderStats.Rendered)
+	}
+	if len(m.messages) != 500 || len(m.records) != records {
+		t.Fatalf("virtual render should preserve transcript data: messages=%d records=%d want records=%d", len(m.messages), len(m.records), records)
+	}
+	if !strings.Contains(m.chatVisible, "message 499") {
+		t.Fatalf("virtualized viewport should include transcript tail, got %q", m.chatVisible)
+	}
+}
+
+func TestDebugTraceDockShowsRenderPerformanceCounters(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp", SurfaceKind: ChatSurfaceDebug, DebugEnabled: true})
+	m.width = 100
+	m.height = 24
+	m.lastRenderStats = transcriptRenderStats{Rendered: 7, Hits: 11, Misses: 3, Lines: 29}
+
+	view := strippedLine(m.renderTraceDock(m.theme()))
+	for _, want := range []string{"rendered 7", "cache hits 11", "misses 3", "lines 29"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("trace dock = %q, want %q", view, want)
+		}
+	}
+}
+
 func TestChatModelToolsToggleDoesNotRevealHiddenBuffer(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
