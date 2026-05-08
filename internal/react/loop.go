@@ -853,16 +853,19 @@ func (r *Runner) selectToolDefs(snapshot SessionSnapshot) []llm.ToolDef {
 	if r == nil || r.tools == nil {
 		return nil
 	}
-	delegationComplete := false
-	if shouldRouteParentThroughDelegation(snapshot) {
-		delegationComplete = historyIncludesCompletedToolCall(snapshot, "wait_agent")
-		if delegationComplete && !inputSuggestsPostDelegationAction(normalizeToolIntentText(snapshot.LastInput)) {
+	delegationComplete := historyIncludesCompletedToolCall(snapshot, "wait_agent")
+	if delegationComplete {
+		postDelegationText := postDelegationToolIntentText(snapshot)
+		if !inputSuggestsPostDelegationAction(normalizeToolIntentText(postDelegationText)) {
 			return nil
 		}
-		if delegationComplete {
-			goto selectParentTools
+		snapshot.LastInput = postDelegationText
+		goto selectParentTools
+	}
+	if shouldRouteParentThroughDelegation(snapshot) {
+		if defs := r.tools.Filter(delegateToolNames).ToLLMToolDefs(); len(defs) > 0 {
+			return defs
 		}
-		return r.tools.Filter(delegateToolNames).ToLLMToolDefs()
 	}
 selectParentTools:
 	allowed := allowedToolNamesForSnapshot(snapshot)
@@ -1106,6 +1109,54 @@ func historyIncludesCompletedToolCall(snapshot SessionSnapshot, toolName string)
 	return false
 }
 
+func completedToolCallResults(snapshot SessionSnapshot, toolName string) []string {
+	ids := make(map[string]struct{})
+	var results []string
+	for _, msg := range snapshot.History {
+		switch msg.Role {
+		case llm.RoleAssistant:
+			for _, tc := range msg.ToolCalls {
+				if tc.Name == toolName && strings.TrimSpace(tc.ID) != "" {
+					ids[tc.ID] = struct{}{}
+				}
+			}
+		case llm.RoleTool:
+			if _, ok := ids[msg.ToolCallID]; ok && strings.TrimSpace(msg.Content) != "" {
+				results = append(results, msg.Content)
+			}
+		}
+	}
+	return results
+}
+
+func postDelegationToolIntentText(snapshot SessionSnapshot) string {
+	parts := []string{snapshot.LastInput}
+	if hints := postDelegationActionHints(completedToolCallResults(snapshot, "wait_agent")); hints != "" {
+		parts = append(parts, hints)
+	}
+	return strings.Join(parts, "\n")
+}
+
+func postDelegationActionHints(results []string) string {
+	var hints []string
+	for _, result := range results {
+		text := normalizeToolIntentText(result)
+		if text == "" {
+			continue
+		}
+		if inputMentionsPathLikeText(text) && containsToolPhrase(text,
+			"report path", "intended report path", "file creation", "target path",
+			"docs/reports", "docs/findings", "docs/superpowers", ".md",
+		) {
+			hints = append(hints, "write report path docs/reports/report.md")
+		}
+		if !containsToolPhrase(text, "do not commit", "don't commit") && inputSuggestsGitCommit(text) {
+			hints = append(hints, "commit it")
+		}
+	}
+	return strings.Join(hints, "\n")
+}
+
 func shouldRequireToolCallForSnapshot(snapshot SessionSnapshot) bool {
 	return shouldRouteParentThroughDelegation(snapshot) && !historyIncludesCompletedToolCall(snapshot, "wait_agent")
 }
@@ -1161,11 +1212,18 @@ func inputSuggestsFileWrites(text string) bool {
 		"write ", "save ", "create ", "update ", "edit ", "patch ", "append ",
 		"rewrite ", "modify ",
 	) {
-		return false
+		return inputSuggestsReportFileTarget(text)
 	}
 	return inputMentionsPathLikeText(text) || containsToolPhrase(text,
 		" file", " files", "markdown", ".md", "to a file", "into a file",
 		"readme", "config", "artifact", "html", "script",
+	)
+}
+
+func inputSuggestsReportFileTarget(text string) bool {
+	return inputMentionsPathLikeText(text) && containsToolPhrase(text,
+		"report path", "intended report path", "file creation", "target path", "save as", "write as",
+		"docs/reports", "docs/findings", "docs/superpowers", "conformance.md", "audit.md",
 	)
 }
 

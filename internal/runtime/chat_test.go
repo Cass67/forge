@@ -1087,6 +1087,60 @@ func TestRegisterReactDelegationToolsRestrictsCodeReviewerToReadOnlyTools(t *tes
 	}
 }
 
+func TestRegisterReactDelegationToolsGivesSanitizedAuditReadOnlyTools(t *testing.T) {
+	reg := tools.NewRegistry()
+	cfg := &config.Config{}
+	workDir := t.TempDir()
+	approve := agent.YoloApproval()
+	_, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), approve, nil, nil)
+	baseReg := reg.Filter(nil)
+	driver := &captureToolDefsDriver{response: "audit findings"}
+	setup := &ChatSetup{
+		Config:  cfg,
+		WorkDir: workDir,
+		Driver:  driver,
+	}
+
+	registerReactDelegationTools(reg, setup, baseReg, approve, nil, nil)
+	spawnTool, ok := reg.Get("spawn_agent")
+	if !ok {
+		t.Fatal("spawn_agent tool not registered")
+	}
+	waitTool, ok := reg.Get("wait_agent")
+	if !ok {
+		t.Fatal("wait_agent tool not registered")
+	}
+	rawSpawn, err := spawnTool.Execute(context.Background(), map[string]any{
+		"task_description": "Use repo-auditor to audit this disposable repo. The child agent must only inspect and return findings. After wait_agent completes, the parent agent must write docs/reports/live-agent-write.md with the audit findings. Do not commit.",
+		"role":             "repo-auditor",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spawnPayload map[string]any
+	if err := json.Unmarshal([]byte(rawSpawn), &spawnPayload); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := spawnPayload["id"].(string)
+	if id == "" {
+		t.Fatal("spawn id missing")
+	}
+	if _, err := waitTool.Execute(context.Background(), map[string]any{"id": id, "timeout_seconds": 1.0}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, want := range []string{"read_file", "list_dir", "glob", "git_status"} {
+		if !slices.Contains(driver.toolNames, want) {
+			t.Fatalf("repo-auditor tools = %#v, want %s", driver.toolNames, want)
+		}
+	}
+	for _, forbidden := range []string{"apply_patch", "edit_file", "write_file", "run_command", "git_commit"} {
+		if slices.Contains(driver.toolNames, forbidden) {
+			t.Fatalf("repo-auditor saw mutating tool %q in %#v", forbidden, driver.toolNames)
+		}
+	}
+}
+
 // ── Integration hardening (Task 10) ──────────────────────────────────────────
 
 // TestLightweightChatPathStaysDirect verifies that a simple conversational

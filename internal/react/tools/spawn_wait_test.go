@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"forge/internal/react"
 )
@@ -43,6 +44,42 @@ func TestSpawnAgentToolAdvertisesDefaultAgents(t *testing.T) {
 		if !strings.Contains(tool.Description, want) {
 			t.Fatalf("spawn_agent description missing %q: %s", want, tool.Description)
 		}
+	}
+}
+
+func TestSpawnAgentSanitizesWriteTasksForReadOnlyAgents(t *testing.T) {
+	cases := []string{
+		"Audit the repo and create docs/superpowers/audits/2026-05-07-forge-plan-followup-audit.md",
+		"Perform the audit. File creation target: docs/reports/2026-05-07-best-of-claude-plan-followup-audit.md",
+		"Write a new report at /Users/cass/git/forge/docs/reports/2026-05-07-best-of-claude-plan-followup-audit.md",
+	}
+	for _, task := range cases {
+		t.Run(task, func(t *testing.T) {
+			seenTask := make(chan string, 1)
+			pool := react.NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+				seenTask <- task
+				return "unexpected", nil
+			})
+			pool.RegisterAgents(react.DefaultAgentDefinitions())
+			tool := NewSpawnAgent(pool)
+
+			if _, err := tool.Execute(context.Background(), map[string]any{
+				"task_description": task,
+				"role":             "repo-auditor",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case got := <-seenTask:
+				for _, want := range []string{"Inspect/analyze only", "parent agent can save", "Original delegated context", task} {
+					if !strings.Contains(got, want) {
+						t.Fatalf("sanitized task missing %q:\n%s", want, got)
+					}
+				}
+			case <-time.After(time.Second):
+				t.Fatal("spawn function was not called")
+			}
+		})
 	}
 }
 

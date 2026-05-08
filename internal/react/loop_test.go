@@ -2241,7 +2241,7 @@ func TestRunnerStopsForcingToolsAfterDelegatedWait(t *testing.T) {
 
 func TestRunnerRestoresActionToolsAfterDelegatedWaitWhenUserAskedForFileWrite(t *testing.T) {
 	reg := agenttools.NewRegistry()
-	for _, name := range []string{"spawn_agent", "wait_agent", "write_file", "run_command", "git_status"} {
+	for _, name := range []string{"spawn_agent", "wait_agent", "write_file", "run_command", "git_status", "git_commit"} {
 		reg.Register(agenttools.Tool{Name: name, Description: name})
 	}
 	r := NewRunner(Config{Tools: reg})
@@ -2264,6 +2264,58 @@ func TestRunnerRestoresActionToolsAfterDelegatedWaitWhenUserAskedForFileWrite(t 
 		if containsString(names, blocked) {
 			t.Fatalf("post-delegation tools = %#v, should stop forcing %s", names, blocked)
 		}
+	}
+}
+
+func TestRunnerRestoresActionToolsAfterDelegatedWaitWhenChildReportsFileTarget(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"spawn_agent", "wait_agent", "write_file", "run_command", "git_status", "git_commit"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{
+		LastInput: "use repo-auditor to audit forge chat --model <compat-model>",
+		History: []llm.Message{
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "wait-1", Content: `{"status":"completed","result":"Intended report path would be: docs/reports/2026-05-07-best-of-claude-forge-plan-conformance.md and commit it."}`},
+		},
+	}
+
+	defs := r.selectToolDefs(snap)
+	names := toolDefNames(defs)
+	for _, want := range []string{"write_file", "git_commit"} {
+		if !containsString(names, want) {
+			t.Fatalf("post-delegation tools = %#v, want %s", names, want)
+		}
+	}
+	for _, blocked := range []string{"spawn_agent", "wait_agent"} {
+		if containsString(names, blocked) {
+			t.Fatalf("post-delegation tools = %#v, should stop forcing %s", names, blocked)
+		}
+	}
+}
+
+func TestRunnerDoesNotExposeCommandToolsFromIncidentalChildAuditText(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"spawn_agent", "wait_agent", "write_file", "run_command", "git_status"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{
+		LastInput: "use repo-auditor to audit this repo, then write docs/reports/live-agent-write.md with the findings. Do not commit.",
+		History: []llm.Message{
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "wait-1", Content: `{"status":"completed","result":"Audit findings mention run commands only as a reviewed capability. Intended report path: docs/reports/live-agent-write.md. Do not commit."}`},
+		},
+	}
+
+	defs := r.selectToolDefs(snap)
+	names := toolDefNames(defs)
+	if !containsString(names, "write_file") {
+		t.Fatalf("post-delegation tools = %#v, want write_file", names)
+	}
+	if containsString(names, "run_command") {
+		t.Fatalf("post-delegation tools = %#v, should not include incidental run_command", names)
 	}
 }
 
