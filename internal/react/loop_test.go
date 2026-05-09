@@ -1037,6 +1037,14 @@ func TestRunnerConsumesQueuedPendingInputWithinActiveLoop(t *testing.T) {
 			return "working tree clean", nil
 		},
 	})
+	reg.Register(agenttools.Tool{
+		Name:        "spawn_agent",
+		Description: "spawn agent",
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return "ok", nil
+		},
+	})
 	r := NewRunner(Config{
 		Driver:  driver,
 		Tools:   reg,
@@ -2315,7 +2323,10 @@ func TestRunnerReportsToolExposureDecision(t *testing.T) {
 		})
 	}
 	var decisions []ToolExposureDecision
-	driver := &nativeScriptedDriver{responses: []string{"delegating"}}
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "spawn-1", Name: "spawn_agent", ArgsJSON: `{}`}}},
+		{{Text: "delegating"}},
+	}}
 	r := NewRunner(Config{
 		Driver: driver,
 		Tools:  reg,
@@ -2375,7 +2386,10 @@ func TestRunnerBroadRepoAuditRestrictsParentToDelegationTools(t *testing.T) {
 }
 
 func TestRunnerRequiresToolCallBeforeDelegationCompletes(t *testing.T) {
-	driver := &nativeSequenceDriver{steps: [][]llm.Token{{{Text: "Which agents should I ask?"}}}}
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{"id":"agent-1"}`}}},
+		{{Text: "done"}},
+	}}
 	reg := agenttools.NewRegistry()
 	for _, name := range []string{"spawn_agent", "wait_agent"} {
 		toolName := name
@@ -2384,7 +2398,7 @@ func TestRunnerRequiresToolCallBeforeDelegationCompletes(t *testing.T) {
 			Description: toolName,
 			AutoApprove: true,
 			Execute: func(_ context.Context, _ map[string]any) (string, error) {
-				return "ok", nil
+				return `{"id":"agent-1","status":"completed"}`, nil
 			},
 		})
 	}
@@ -2402,6 +2416,130 @@ func TestRunnerRequiresToolCallBeforeDelegationCompletes(t *testing.T) {
 	}
 	if !driver.lastOpts[0].RequireToolCall {
 		t.Fatalf("RequireToolCall = false, want true for delegation intent")
+	}
+}
+
+func TestRunnerRetriesTextWhenToolCallRequired(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{Text: "Let me explore the repos first."}},
+		{{ToolCall: &llm.NativeToolCall{ID: "spawn-1", Name: "spawn_agent", ArgsJSON: `{"role":"explorer","task_description":"inspect repo"}`}}},
+		{{ToolCall: &llm.NativeToolCall{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{"id":"agent-1"}`}}},
+		{{Text: "delegation complete"}},
+	}}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "spawn_agent",
+		Description: "spawn child",
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return `{"id":"agent-1","role":"explorer","status":"running"}`, nil
+		},
+	})
+	reg.Register(agenttools.Tool{
+		Name:        "wait_agent",
+		Description: "wait child",
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return `{"id":"agent-1","role":"explorer","status":"completed","result":"done"}`, nil
+		},
+	})
+	session := NewSession()
+	r := NewRunner(Config{
+		Driver:  driver,
+		Tools:   reg,
+		Session: session,
+	})
+
+	if err := r.Run(context.Background(), "ask an agent to inspect the repo"); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callCount < 4 {
+		t.Fatalf("callCount = %d, want retry through tool calls and final answer", driver.callCount)
+	}
+	snap := session.Snapshot()
+	if !historyIncludesCompletedToolCall(snap, "wait_agent") {
+		t.Fatalf("history missing completed wait_agent: %#v", snap.History)
+	}
+	if got := snap.History[len(snap.History)-1].Content; got != "delegation complete" {
+		t.Fatalf("final content = %q", got)
+	}
+}
+
+func TestRunnerAllowsTextAfterRequiredToolCallInSameTurn(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "status-1", Name: "agent_status", ArgsJSON: `{}`}}},
+		{{Text: "agent-1 is running"}},
+	}}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "agent_status",
+		Description: "status",
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return `{"agents":[{"id":"agent-1","role":"explorer","status":"running"}]}`, nil
+		},
+	})
+	session := NewSession()
+	session.UpsertAgentTask(AgentTaskState{ID: "agent-1", Role: "explorer", Status: AgentStatusRunning})
+	r := NewRunner(Config{
+		Driver:  driver,
+		Tools:   reg,
+		Session: session,
+	})
+
+	if err := r.Run(context.Background(), "fix this bug after checking active agents"); err != nil {
+		t.Fatal(err)
+	}
+	snap := session.Snapshot()
+	if got := snap.History[len(snap.History)-1].Content; got != "agent-1 is running" {
+		t.Fatalf("final content = %q", got)
+	}
+}
+
+func TestRunnerRequiresToolCallForQueuedDelegationInput(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "status-1", Name: "git_status", ArgsJSON: `{}`}}},
+		{{Text: "I'll inspect first."}},
+		{{ToolCall: &llm.NativeToolCall{ID: "spawn-1", Name: "spawn_agent", ArgsJSON: `{"role":"explorer","task_description":"inspect repo"}`}}},
+		{{Text: "delegation complete"}},
+	}}
+	reg := agenttools.NewRegistry()
+	session := NewSession()
+	reg.Register(agenttools.Tool{
+		Name:        "git_status",
+		Description: "git status",
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			session.QueuePendingInput("ask agents to review the codebase")
+			return "working tree clean", nil
+		},
+	})
+	reg.Register(agenttools.Tool{
+		Name:        "spawn_agent",
+		Description: "spawn agent",
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return `{"id":"agent-1","status":"running"}`, nil
+		},
+	})
+	r := NewRunner(Config{
+		Driver:  driver,
+		Tools:   reg,
+		Session: session,
+	})
+
+	if err := r.Run(context.Background(), "inspect repo status"); err != nil {
+		t.Fatal(err)
+	}
+	if got := driver.callCount; got != 4 {
+		t.Fatalf("driver calls = %d, want 4", got)
+	}
+	snap := session.Snapshot()
+	if got := snap.LastInput; got != "ask agents to review the codebase" {
+		t.Fatalf("last input = %q, want queued delegation input", got)
+	}
+	if got := snap.History[len(snap.History)-1].Content; got != "delegation complete" {
+		t.Fatalf("final content = %q", got)
 	}
 }
 
