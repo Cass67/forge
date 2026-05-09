@@ -8,6 +8,7 @@ import (
 
 	"forge/internal/hooks"
 	"forge/internal/llm"
+	"forge/internal/secscan"
 )
 
 type TurnToolCall struct {
@@ -260,7 +261,7 @@ func (s *Session) AppendAssistantToolTurn(text string, calls []llm.NativeToolCal
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	text = strings.TrimSpace(text)
+	text = redactRuntimeText(strings.TrimSpace(text))
 	if len(s.turns) > 0 {
 		last := &s.turns[len(s.turns)-1]
 		last.ToolCalls = make([]TurnToolCall, 0, len(calls))
@@ -271,8 +272,21 @@ func (s *Session) AppendAssistantToolTurn(text string, calls []llm.NativeToolCal
 	s.history = append(s.history, llm.Message{
 		Content:   text,
 		Role:      llm.RoleAssistant,
-		ToolCalls: append([]llm.NativeToolCall(nil), calls...),
+		ToolCalls: redactNativeToolCalls(calls),
 	})
+}
+
+func redactNativeToolCalls(calls []llm.NativeToolCall) []llm.NativeToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	scanner := secscan.NewDefaultScanner()
+	redacted := make([]llm.NativeToolCall, 0, len(calls))
+	for _, call := range calls {
+		call.ArgsJSON = secscan.Redact(call.ArgsJSON, scanner.Scan(call.ArgsJSON))
+		redacted = append(redacted, call)
+	}
+	return redacted
 }
 
 func (s *Session) SetLastAssistantReasoning(reasoning string) {
@@ -283,7 +297,7 @@ func (s *Session) SetLastAssistantReasoning(reasoning string) {
 	defer s.mu.Unlock()
 	for i := len(s.history) - 1; i >= 0; i-- {
 		if s.history[i].Role == llm.RoleAssistant {
-			s.history[i].ReasoningContent = reasoning
+			s.history[i].ReasoningContent = redactRuntimeText(reasoning)
 			return
 		}
 	}

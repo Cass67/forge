@@ -574,15 +574,16 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 	if len(toolCalls) > 0 {
 		r.pendingRetryPrompt = ""
 		preamble := stripXMLToolCallMarkup(strings.TrimSpace(textBuf.String()))
+		safePreamble := redactRuntimeText(preamble)
 		reasoning := strings.TrimSpace(reasoningBuf.String())
-		r.session.AppendAssistantToolTurn(preamble, toolCalls)
+		r.session.AppendAssistantToolTurn(safePreamble, toolCalls)
 		if reasoning != "" {
 			r.session.SetLastAssistantReasoning(reasoning)
 		}
-		if streamVisible && r.renderer != nil && hasTools && preamble != "" {
-			r.renderer.AgentText(preamble)
-		} else if preamble != "" && r.renderer != nil && visibleEmitted < len(preamble) {
-			r.renderer.AgentText(preamble[visibleEmitted:])
+		if streamVisible && r.renderer != nil && hasTools && safePreamble != "" {
+			r.renderer.AgentText(safePreamble)
+		} else if safePreamble != "" && r.renderer != nil && visibleEmitted < len(safePreamble) {
+			r.renderer.AgentText(safePreamble[visibleEmitted:])
 		}
 		return toolCalls, nil
 	}
@@ -856,25 +857,25 @@ func (r *Runner) emitStats(start time.Time) {
 
 func reactToolSummary(args map[string]any) string {
 	if path, _ := args["path"].(string); strings.TrimSpace(path) != "" {
-		return strings.TrimSpace(path)
+		return redactRuntimeText(strings.TrimSpace(path))
 	}
 	if command, _ := args["command"].(string); strings.TrimSpace(command) != "" {
-		return strings.TrimSpace(command)
+		return redactRuntimeText(strings.TrimSpace(command))
 	}
 	if query, _ := args["query"].(string); strings.TrimSpace(query) != "" {
-		return strings.TrimSpace(query)
+		return redactRuntimeText(strings.TrimSpace(query))
 	}
 	if task, _ := args["task_description"].(string); strings.TrimSpace(task) != "" {
-		return strings.TrimSpace(task)
+		return redactRuntimeText(strings.TrimSpace(task))
 	}
 	if role, _ := args["role"].(string); strings.TrimSpace(role) != "" {
-		return strings.TrimSpace(role)
+		return redactRuntimeText(strings.TrimSpace(role))
 	}
 	if id, _ := args["id"].(string); strings.TrimSpace(id) != "" {
-		return strings.TrimSpace(id)
+		return redactRuntimeText(strings.TrimSpace(id))
 	}
 	if pattern, _ := args["pattern"].(string); strings.TrimSpace(pattern) != "" {
-		return strings.TrimSpace(pattern)
+		return redactRuntimeText(strings.TrimSpace(pattern))
 	}
 	return ""
 }
