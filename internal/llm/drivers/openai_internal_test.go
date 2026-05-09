@@ -940,6 +940,81 @@ func TestCustomCompatProviderFallsBackFromResponsesToolsToChatCompletions(t *tes
 	}
 }
 
+func TestOpenCodeGoDeepSeekReasonerOmitsRequiredToolChoice(t *testing.T) {
+	t.Parallel()
+
+	type chatRequestBody struct {
+		Model      string            `json:"model"`
+		ToolChoice json.RawMessage   `json:"tool_choice"`
+		Tools      []json.RawMessage `json:"tools"`
+	}
+
+	var chatBody chatRequestBody
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/chat/completions"; got != want {
+			t.Fatalf("path = %q, want %q", got, want)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&chatBody); err != nil {
+			t.Fatalf("decode chat body: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	d := NewCustomCompatProvider("opencode-go", "sk-test", srv.URL, "opencode-go/deepseek-v4-pro", "deepseek-reasoner", false, nil)
+	tools := []llm.ToolDef{{
+		Name:        "spawn_agent",
+		Description: "Spawn child agent",
+		Parameters: []llm.ToolParam{
+			{Name: "role", Type: "string", Description: "agent role", Required: true},
+		},
+	}}
+	out := make(chan llm.Token, 8)
+	if err := d.StreamWithToolsOptions(
+		context.Background(),
+		[]llm.Message{{Role: llm.RoleUser, Content: "delegate this task"}},
+		tools,
+		llm.NativeToolOptions{RequireToolCall: true},
+		out,
+	); err != nil {
+		t.Fatalf("StreamWithToolsOptions() error = %v", err)
+	}
+	for range out {
+	}
+
+	if got, want := chatBody.Model, "deepseek-reasoner"; got != want {
+		t.Fatalf("model = %q, want %q", got, want)
+	}
+	if len(chatBody.Tools) != 1 {
+		t.Fatalf("tools = %d, want 1", len(chatBody.Tools))
+	}
+	if len(chatBody.ToolChoice) != 0 {
+		t.Fatalf("tool_choice = %s, want omitted for opencode-go deepseek reasoner", string(chatBody.ToolChoice))
+	}
+}
+
+func TestRequiredToolChoiceScopeForDeepSeekWorkaround(t *testing.T) {
+	t.Parallel()
+
+	if providerSupportsRequiredChatToolChoice("other", "other/deepseek-reasoner", "deepseek-reasoner") {
+		// Non-opencode providers keep their existing behavior unless a provider-specific
+		// incompatibility is proven.
+	} else {
+		t.Fatal("non-opencode deepseek-reasoner should preserve required tool_choice")
+	}
+	if !providerSupportsRequiredChatToolChoice("opencode-go", "opencode-go/glm-5.1", "glm-5.1") {
+		t.Fatal("non-DeepSeek opencode-go model should preserve required tool_choice")
+	}
+	if !providerSupportsRequiredChatToolChoice("opencode-go", "opencode-go/deepseek-chat", "deepseek-chat") {
+		t.Fatal("unreported opencode-go DeepSeek chat model should preserve required tool_choice")
+	}
+	if providerSupportsRequiredChatToolChoice("opencode-go", "opencode-go/deepseek-v4-pro", "deepseek-reasoner") {
+		t.Fatal("reported opencode-go deepseek-v4-pro route should omit required tool_choice")
+	}
+}
+
 func TestToResponseInputPreservesNativeToolHistory(t *testing.T) {
 	msgs := []llm.Message{
 		{Role: llm.RoleUser, Content: "inspect the repo"},
