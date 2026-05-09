@@ -1,6 +1,7 @@
 package react
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -56,6 +57,62 @@ func TestAppendAssistantToolTurnPreservesPreamble(t *testing.T) {
 	}
 	if len(last.ToolCalls) != 1 || last.ToolCalls[0].Name != "read_file" {
 		t.Fatalf("tool calls = %#v", last.ToolCalls)
+	}
+}
+
+func TestAppendAssistantToolTurnRedactsSecretArgsInHistory(t *testing.T) {
+	s := NewSession()
+	s.RecordInput("write the file")
+	secret := "TOKEN=" + strings.Repeat("x", 24)
+	s.AppendAssistantToolTurn("", []llm.NativeToolCall{{
+		ID:       "c1",
+		Name:     "write_file",
+		ArgsJSON: `{"path":"note.txt","content":"` + secret + `"}`,
+	}})
+
+	snap := s.Snapshot()
+	if got := snap.History[1].ToolCalls[0].ArgsJSON; strings.Contains(got, secret) {
+		t.Fatalf("stored tool args leaked secret: %s", got)
+	}
+	if got := snap.History[1].ToolCalls[0].ArgsJSON; !strings.Contains(got, "<REDACTED:generic-token>") {
+		t.Fatalf("stored tool args missing redaction marker: %s", got)
+	}
+}
+
+func TestAppendAssistantToolTurnRedactsSecretPreambleInHistory(t *testing.T) {
+	s := NewSession()
+	s.RecordInput("write the file")
+	secret := "TOKEN=" + strings.Repeat("x", 24)
+	s.AppendAssistantToolTurn("using "+secret, []llm.NativeToolCall{{
+		ID:       "c1",
+		Name:     "write_file",
+		ArgsJSON: `{"path":"note.txt","content":"ok"}`,
+	}})
+
+	snap := s.Snapshot()
+	content := snap.History[1].Content
+	if strings.Contains(content, secret) {
+		t.Fatal("stored assistant preamble leaked secret")
+	}
+	if !strings.Contains(content, "<REDACTED:generic-token>") {
+		t.Fatal("stored assistant preamble missing redaction marker")
+	}
+}
+
+func TestSetLastAssistantReasoningRedactsSecrets(t *testing.T) {
+	s := NewSession()
+	s.RecordInput("write the file")
+	s.AppendAssistantToolTurn("", []llm.NativeToolCall{{ID: "c1", Name: "git_status", ArgsJSON: `{}`}})
+	secret := "TOKEN=" + strings.Repeat("x", 24)
+	s.SetLastAssistantReasoning("saw " + secret)
+
+	snap := s.Snapshot()
+	reasoning := snap.History[1].ReasoningContent
+	if strings.Contains(reasoning, secret) {
+		t.Fatal("stored assistant reasoning leaked secret")
+	}
+	if !strings.Contains(reasoning, "<REDACTED:generic-token>") {
+		t.Fatal("stored assistant reasoning missing redaction marker")
 	}
 }
 
