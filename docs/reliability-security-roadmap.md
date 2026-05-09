@@ -416,8 +416,13 @@ Note: the latest provider-backed dummy-secret live attempt timed out before prod
 - [x] `go test ./... -timeout 120s`
 - [x] `just build`
 - [x] `git diff --check`
-- [ ] No untracked generated artifacts unless intentionally documented.
-- [ ] No secrets in docs, tests, fixtures, debug logs, or commit messages.
+- [x] No untracked generated artifacts unless intentionally documented.
+- [x] No secrets in docs, tests, fixtures, debug logs, or commit messages.
+
+2026-05-09 repository follow-up:
+
+- `git status --short --branch` in `.worktrees/live-acceptance-20260509` showed no untracked artifacts.
+- `gitleaks git --redact` scanned 493 commits and reported no leaks found.
 
 ## Immediate Next Work Items
 
