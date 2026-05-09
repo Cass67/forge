@@ -303,12 +303,26 @@ func (d *OpenAIDriver) chatCompletionParamsWithTools(messages []llm.Message, opt
 	if d.providerLabel == "openrouter" {
 		params.PromptCacheKey = openai.String(responsePromptCacheKey(d.apiModel, chatPromptCacheSeed(messages)))
 	}
-	if opts.RequireToolCall {
+	if opts.RequireToolCall && d.supportsRequiredChatToolChoice() {
 		params.ToolChoice = openai.ChatCompletionToolChoiceOptionUnionParam{
 			OfAuto: openai.Opt(string(openai.ChatCompletionToolChoiceOptionAutoRequired)),
 		}
 	}
 	return params
+}
+
+func (d *OpenAIDriver) supportsRequiredChatToolChoice() bool {
+	return providerSupportsRequiredChatToolChoice(d.providerLabel, d.registryName, d.apiModel)
+}
+
+func providerSupportsRequiredChatToolChoice(providerLabel, registryName, apiModel string) bool {
+	provider := strings.TrimSpace(strings.ToLower(providerLabel))
+	registry := strings.TrimSpace(strings.ToLower(registryName))
+	model := strings.TrimSpace(strings.ToLower(apiModel))
+	if provider == "opencode-go" && registry == "opencode-go/deepseek-v4-pro" && model == "deepseek-reasoner" {
+		return false
+	}
+	return true
 }
 
 func (d *OpenAIDriver) chatCompletionsFallback(ctx context.Context, messages []llm.Message, out chan<- llm.Token) error {

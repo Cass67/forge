@@ -451,13 +451,15 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 
 	completionRetries := 0
 	reactiveCompacted := false
+	usedToolThisTurn := false
 	for range r.maxSteps {
 		if r.applyPendingInput() {
+			usedToolThisTurn = false
 			r.syncRuntimeNote()
 		}
 		snap := r.session.Snapshot()
 		toolDefs, toolDecision := r.selectToolDefsWithDecision(snap)
-		requireToolCall := shouldRequireToolCallForSnapshot(snap)
+		requireToolCall := shouldRequireToolCallForSnapshot(snap) && !usedToolThisTurn
 		toolDecision.RequireToolCall = requireToolCall
 		r.observeToolExposure(toolDecision)
 		if len(toolDefs) > 0 && !isNative {
@@ -499,6 +501,7 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 		if calls == nil {
 			// streamNativeTurn already recorded the final response
 			if r.applyPendingInput() {
+				usedToolThisTurn = false
 				continue
 			}
 			return nil
@@ -506,6 +509,7 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 		if err := r.executeNativeToolCalls(ctx, turn, calls); err != nil {
 			return err
 		}
+		usedToolThisTurn = true
 	}
 
 	err := fmt.Errorf("react runtime: safety step limit (%d) exceeded", r.maxSteps)
@@ -647,6 +651,12 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 		return nil, NewRetryableCompletionError(
 			"react runtime: provider returned deprecated XML tool-call markup",
 			"Use the provider's native tool-calling interface only. Do not emit prose, XML, or example markup in place of a tool call.",
+		)
+	}
+	if requireToolCall {
+		return nil, NewRetryableCompletionError(
+			"react runtime: required tool call missing",
+			"A tool call is required for this step. Use one of the available tools instead of answering with prose.",
 		)
 	}
 	reasoning := strings.TrimSpace(reasoningBuf.String())
@@ -882,7 +892,7 @@ func (r *Runner) applyPendingInput() bool {
 		return false
 	}
 	for _, text := range pending {
-		r.session.AppendUserMessage(text)
+		r.session.appendQueuedUserInput(text)
 	}
 	if r.progress != nil {
 		r.progress(fmt.Sprintf("react runtime: applying %d queued input message(s)", len(pending)))

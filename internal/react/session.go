@@ -247,6 +247,18 @@ func (s *Session) AppendUserMessage(text string) {
 	s.history = append(s.history, llm.Message{Role: llm.RoleUser, Content: strings.TrimSpace(text)})
 }
 
+func (s *Session) appendQueuedUserInput(text string) {
+	trimmed := strings.TrimSpace(text)
+	if s == nil || trimmed == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastInput = trimmed
+	s.recentInputs = append(s.recentInputs, trimmed)
+	s.history = append(s.history, llm.Message{Role: llm.RoleUser, Content: trimmed})
+}
+
 // AppendAssistantWithToolCalls records an assistant message that contains native
 // tool calls (may have empty text content). Used by the native tool calling path.
 func (s *Session) AppendAssistantWithToolCalls(calls []llm.NativeToolCall) {
