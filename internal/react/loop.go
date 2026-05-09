@@ -481,6 +481,18 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 				r.emitRetryNotice(retryNoticeText)
 				continue
 			}
+			if errors.As(err, &retryable) && isEmptyNativeResponseError(retryable) {
+				if fallback := r.activeAgentFallbackText(); fallback != "" {
+					r.pendingRetryPrompt = ""
+					r.session.AppendAssistantMessage(fallback)
+					r.session.CompleteTurn(turn, fallback, nil, nil)
+					r.notifyTurnComplete()
+					if r.renderer != nil {
+						r.renderer.AgentText(fallback)
+					}
+					return nil
+				}
+			}
 			r.session.CompleteTurn(turn, "", nil, err)
 			return err
 		}
@@ -499,6 +511,40 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 	err := fmt.Errorf("react runtime: safety step limit (%d) exceeded", r.maxSteps)
 	r.session.CompleteTurn(turn, "", nil, err)
 	return err
+}
+
+func isEmptyNativeResponseError(err *RetryableCompletionError) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Message), "empty native response")
+}
+
+func (r *Runner) activeAgentFallbackText() string {
+	if r == nil || r.session == nil {
+		return ""
+	}
+	agents := outstandingSpawnedAgents(r.session.Snapshot())
+	if len(agents) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(agents))
+	for _, agent := range agents {
+		id := strings.TrimSpace(agent.ID)
+		if id == "" {
+			continue
+		}
+		label := id
+		if role := strings.TrimSpace(agent.Role); role != "" {
+			label += " (" + role + ")"
+		}
+		status := strings.TrimSpace(string(agent.Status))
+		if status == "" {
+			status = string(AgentStatusRunning)
+		}
+		parts = append(parts, label+" is "+status)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "Child agent work is still in progress: " + strings.Join(parts, "; ") + ". Ask for status or tell me to continue waiting."
 }
 
 func (r *Runner) reactiveCompactForContextError(ctx context.Context, err error) bool {
