@@ -827,6 +827,33 @@ func (d *nativeToolCallWithPreambleDriver) StreamWithTools(_ context.Context, _ 
 	return nil
 }
 
+type nativeToolCallSecretPreambleDriver struct {
+	callCount int
+	secret    string
+}
+
+func (d *nativeToolCallSecretPreambleDriver) Name() string {
+	return "native-tool-driver-secret-preamble"
+}
+
+func (d *nativeToolCallSecretPreambleDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	close(out)
+	return errors.New("Stream should not be called on a NativeToolCaller driver")
+}
+
+func (d *nativeToolCallSecretPreambleDriver) StreamWithTools(_ context.Context, _ []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
+	defer close(out)
+	d.callCount++
+	switch d.callCount {
+	case 1:
+		out <- llm.Token{Text: "using " + d.secret}
+		out <- llm.Token{ToolCall: &llm.NativeToolCall{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"README.md"}`}}
+	default:
+		out <- llm.Token{Text: "done"}
+	}
+	return nil
+}
+
 func TestRunnerNativeToolCallingPath(t *testing.T) {
 	driver := &nativeToolCallDriver{}
 	reg := agenttools.NewRegistry()
@@ -914,6 +941,50 @@ func TestRunnerPreservesAssistantPreambleOnToolTurn(t *testing.T) {
 	}
 	if len(rec.fullTexts) == 0 || rec.fullTexts[0] != "I'll inspect the README first." {
 		t.Fatalf("renderer fullTexts = %#v", rec.fullTexts)
+	}
+}
+
+func TestRunnerRedactsSecretPreambleOnToolTurn(t *testing.T) {
+	secret := "TOKEN=" + strings.Repeat("x", 24)
+	driver := &nativeToolCallSecretPreambleDriver{secret: secret}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "read_file",
+		Description: "read file",
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return "Forge is a terminal-first coding agent.", nil
+		},
+	})
+	session := NewSession()
+	rec := &recordingRenderer{}
+	r := NewRunner(Config{
+		Driver:   driver,
+		Tools:    reg,
+		Session:  session,
+		Renderer: rec,
+	})
+
+	if err := r.Run(context.Background(), "tell me about this repo"); err != nil {
+		t.Fatal(err)
+	}
+
+	snap := session.Snapshot()
+	if strings.Contains(snap.History[1].Content, secret) {
+		t.Fatal("stored assistant preamble leaked secret")
+	}
+	if !strings.Contains(snap.History[1].Content, "<REDACTED:generic-token>") {
+		t.Fatal("stored assistant preamble missing redaction marker")
+	}
+	if len(rec.fullTexts) == 0 {
+		t.Fatal("renderer did not receive assistant preamble")
+	}
+	rendered := strings.Join(rec.fullTexts, "\n")
+	if strings.Contains(rendered, secret) {
+		t.Fatal("rendered assistant preamble leaked secret")
+	}
+	if !strings.Contains(rendered, "<REDACTED:generic-token>") {
+		t.Fatal("rendered assistant preamble missing redaction marker")
 	}
 }
 
@@ -1712,6 +1783,17 @@ func TestRepeatToolCallTargetCoversNoOpEditAndFailedWait(t *testing.T) {
 	}
 	if got := repeatToolCallTarget("wait_agent", map[string]any{"id": "agent-1"}); got != "agent-1" {
 		t.Fatalf("wait target = %q", got)
+	}
+}
+
+func TestReactToolSummaryRedactsSecretArguments(t *testing.T) {
+	secret := "TOKEN=" + strings.Repeat("x", 24)
+	summary := reactToolSummary(map[string]any{"command": "printf '%s' '" + secret + "'"})
+	if strings.Contains(summary, secret) {
+		t.Fatalf("tool summary leaked secret: %q", summary)
+	}
+	if !strings.Contains(summary, "<REDACTED:generic-token>") {
+		t.Fatalf("tool summary missing redaction marker: %q", summary)
 	}
 }
 
