@@ -2405,6 +2405,60 @@ func TestRunnerRequiresToolCallBeforeDelegationCompletes(t *testing.T) {
 	}
 }
 
+func TestRunnerDoesNotFailEmptyResponseWhileChildAgentRuns(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "spawn-1", Name: "spawn_agent", ArgsJSON: `{"role":"explorer","task_description":"inspect repo"}`}}},
+		{},
+		{},
+		{},
+		{},
+	}}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "spawn_agent",
+		Description: "spawn child",
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return `{"id":"agent-1","role":"explorer","status":"running"}`, nil
+		},
+	})
+	for _, name := range []string{"wait_agent", "agent_status", "kill_agent"} {
+		toolName := name
+		reg.Register(agenttools.Tool{
+			Name:        toolName,
+			Description: toolName,
+			AutoApprove: true,
+			Execute: func(_ context.Context, _ map[string]any) (string, error) {
+				return `{}`, nil
+			},
+		})
+	}
+	session := NewSession()
+	r := NewRunner(Config{
+		Driver:  driver,
+		Tools:   reg,
+		Session: session,
+	})
+
+	if err := r.Run(context.Background(), "ask an agent to inspect the repo"); err != nil {
+		t.Fatal(err)
+	}
+
+	snap := session.Snapshot()
+	if len(snap.History) == 0 {
+		t.Fatal("expected history entries")
+	}
+	last := snap.History[len(snap.History)-1]
+	for _, want := range []string{"agent-1", "running"} {
+		if !strings.Contains(last.Content, want) {
+			t.Fatalf("fallback content = %q, want %q", last.Content, want)
+		}
+	}
+	if len(outstandingSpawnedAgents(snap)) == 0 {
+		t.Fatal("expected child agent to remain outstanding")
+	}
+}
+
 func TestRunnerStopsForcingToolsAfterDelegatedWait(t *testing.T) {
 	reg := agenttools.NewRegistry()
 	for _, name := range []string{"spawn_agent", "wait_agent"} {
