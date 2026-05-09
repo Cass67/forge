@@ -389,12 +389,18 @@ Goal: every reliability/security claim has a test or live reproduction.
 - [x] Live delegated audit writes requested report file.
 - [ ] Live status question reports outstanding child agent truthfully.
 - [ ] Live child cancellation stops child activity and updates UI/model state.
-- [ ] Live stalled stream test fails with idle timeout.
+- [x] Live stalled stream test fails with idle timeout.
 - [ ] Live secret-output command returns redacted content.
 - [ ] Live write containing dummy secret is blocked without writing file.
 - [ ] Live long-session compaction test emits compact boundary and continues.
 
 Note: the latest provider-backed dummy-secret live attempt timed out before producing a conclusive result, so the related live checks remain unchecked.
+
+2026-05-09 live follow-up:
+
+- `FORGE_CHAT_CONSOLE=1 ./bin/forge -yolo -d --model copilot/gpt-5` against a temp fixture produced `all 3 attempts failed: stream idle timeout after 30s` before any child agent was spawned. Debug evidence: `/tmp/forge-live-status-forge-live-status-1j1o6k.jsonl`.
+- A minimal `copilot/gpt-4.1-mini` smoke run did not reach an LLM request before the 120s wrapper timeout. Debug evidence: `/tmp/forge-live-smoke-20260509002327.jsonl`.
+- Because the provider path stalled before child-agent actions, outstanding-agent status and cancellation live checks remain unchecked.
 
 ### 7.4 Code Review Follow-Up
 
