@@ -1767,7 +1767,7 @@ func TestChatModelHiddenToolsBufferDoesNotRenderByDefault(t *testing.T) {
 	}
 }
 
-func TestChatModelOpensSidePanelForSubAgentWork(t *testing.T) {
+func TestChatModelCollectsSubAgentWorkForAgentView(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 120
 	m.height = 24
@@ -1778,11 +1778,19 @@ func TestChatModelOpensSidePanelForSubAgentWork(t *testing.T) {
 	m = updated.(ChatModel)
 
 	if !m.toolsVisible {
-		t.Fatal("expected sub-agent work to open side panel")
+		t.Fatal("expected sub-agent work to mark agent work available")
 	}
 	view := m.View()
+	if strings.Contains(view, "read_file") {
+		t.Fatalf("normal transcript view should not render agent work beside chat, view = %q", view)
+	}
+	m.inputBuf = "/agentview"
+	m.inputPos = len(m.inputBuf)
+	updated, _ = m.submitInput()
+	m = updated.(ChatModel)
+	view = m.View()
 	if !strings.Contains(view, "repo doc editor") || !strings.Contains(view, "read_file") {
-		t.Fatalf("expected side panel to show sub-agent work, view = %q", view)
+		t.Fatalf("expected agent view to show sub-agent work, view = %q", view)
 	}
 }
 
@@ -1795,6 +1803,7 @@ func TestChatModelAgentPanelSkipsLegacyToolSections(t *testing.T) {
 		{buf: "legacy raw tool output\n"},
 		{role: "repo doc editor", buf: "read_file docs/file.md\n"},
 	}
+	m.agentViewVisible = true
 
 	view := m.View()
 	if strings.Contains(view, "legacy raw tool output") {
@@ -1867,7 +1876,7 @@ func TestChatModelSlashToggleToolsOnOffStaysDisabled(t *testing.T) {
 	}
 }
 
-func TestChatModelSlashPanelArmsAutoOpen(t *testing.T) {
+func TestChatModelSlashPanelIsNoLongerBuiltin(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 120
 	m.height = 24
@@ -1878,17 +1887,14 @@ func TestChatModelSlashPanelArmsAutoOpen(t *testing.T) {
 	m = updated.(ChatModel)
 
 	if m.toolsVisible {
-		t.Fatal("panel should not render until agent work exists")
+		t.Fatal("/panel should not affect agent work visibility")
 	}
-	if m.agentPanelHiddenByUser {
-		t.Fatal("/panel should allow future auto-open")
-	}
-	if !strings.Contains(m.flash, "panel will open when agent work starts") {
+	if !strings.Contains(m.flash, "unknown command: /panel") {
 		t.Fatalf("flash = %q", m.flash)
 	}
 }
 
-func TestChatModelSlashPanelOffSuppressesSubAgentAutoOpen(t *testing.T) {
+func TestChatModelSlashPanelOffIsNoLongerBuiltin(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 120
 	m.height = 24
@@ -1901,12 +1907,12 @@ func TestChatModelSlashPanelOffSuppressesSubAgentAutoOpen(t *testing.T) {
 	updated, _ = m.Update(llm.Event{Kind: llm.EventToolCall, Agent: "runtime", Text: "[repo doc editor] starting", SubAgent: "repo doc editor"})
 	m = updated.(ChatModel)
 
-	if m.toolsVisible {
-		t.Fatal("panel should stay hidden after /panel off")
+	if !m.toolsVisible {
+		t.Fatal("sub-agent work should still become available after removed /panel off command")
 	}
 }
 
-func TestChatModelSlashPanelOnShowsExistingAgentWork(t *testing.T) {
+func TestChatModelSlashPanelOnIsNoLongerBuiltin(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 120
 	m.height = 24
@@ -1918,11 +1924,187 @@ func TestChatModelSlashPanelOnShowsExistingAgentWork(t *testing.T) {
 	updated, _ := m.submitInput()
 	m = updated.(ChatModel)
 
-	if !m.toolsVisible {
-		t.Fatal("panel should show existing agent work after /panel on")
+	if m.agentViewVisible {
+		t.Fatal("/panel on should not open agent view")
 	}
-	if m.agentPanelHiddenByUser {
-		t.Fatal("/panel on should clear explicit hide")
+	if !strings.Contains(m.flash, "unknown command: /panel on") {
+		t.Fatalf("flash = %q", m.flash)
+	}
+}
+
+func TestChatModelSlashTogglePanelIsNoLongerBuiltin(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 120
+	m.height = 24
+	m.appendTools("repo doc editor", "read_file docs/file.md\n")
+
+	m.inputBuf = "/toggle panel"
+	m.inputPos = len(m.inputBuf)
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+
+	if m.agentViewVisible {
+		t.Fatal("/toggle panel should not open agent view")
+	}
+	if !strings.Contains(m.flash, "unknown command: /toggle panel") {
+		t.Fatalf("flash = %q", m.flash)
+	}
+}
+
+func TestChatModelSlashCompletionExposesAgentViewNotPanel(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+
+	matches := m.matchingSlashCommands("/agent")
+	foundAgentView := false
+	for _, match := range matches {
+		if match == "/agentview" {
+			foundAgentView = true
+		}
+	}
+	if !foundAgentView {
+		t.Fatalf("agent slash matches = %#v, want /agentview", matches)
+	}
+	for _, input := range []string{"/panel", "/panel ", "/toggle panel"} {
+		if matches := m.matchingSlashCommands(input); len(matches) != 0 {
+			t.Fatalf("matches for %q = %#v, want none", input, matches)
+		}
+	}
+}
+
+func TestChatModelNormalViewDoesNotRenderAgentWorkBesideTranscript(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 120
+	m.height = 24
+	m.toolsVisible = true
+	m.AddMessage(ChatMessage{Kind: MsgForge, Header: "Forge", Content: "main transcript text"})
+	m.appendTools("scout", "read_file docs/secret-plan.md\n")
+	m.refreshViewport()
+
+	view := m.View()
+	if !strings.Contains(view, "main transcript text") {
+		t.Fatalf("normal view missing transcript: %q", view)
+	}
+	if strings.Contains(view, "read_file docs/secret-plan.md") {
+		t.Fatalf("normal view leaked agent panel text into copyable rows: %q", view)
+	}
+	if got := m.chatPaneWidth(); got != m.width {
+		t.Fatalf("chat pane width = %d, want full width %d", got, m.width)
+	}
+}
+
+func TestChatModelAgentViewOpensFullWidthAndEscCloses(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 120
+	m.height = 24
+	m.AddMessage(ChatMessage{Kind: MsgForge, Header: "Forge", Content: "main transcript text"})
+	m.appendTools("scout", "read_file docs/plan.md\n")
+	m.refreshViewport()
+
+	m.inputBuf = "/agentview"
+	m.inputPos = len(m.inputBuf)
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+
+	if !m.agentViewVisible {
+		t.Fatal("/agentview should open the agent view")
+	}
+	view := m.View()
+	if !strings.Contains(view, "read_file docs/plan.md") {
+		t.Fatalf("agent view missing agent work: %q", view)
+	}
+	if strings.Contains(view, "main transcript text") {
+		t.Fatalf("agent view should replace transcript, got: %q", view)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m = updated.(ChatModel)
+	if m.agentViewVisible {
+		t.Fatal("Esc should close the agent view")
+	}
+	view = m.View()
+	if !strings.Contains(view, "main transcript text") {
+		t.Fatalf("transcript should return after closing agent view: %q", view)
+	}
+}
+
+func TestChatModelAgentViewTabCyclesActiveAgents(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 120
+	m.height = 24
+	m.agentTasks = []chatAgentTaskState{
+		{ID: "agent-1", Role: "scout", Status: "running"},
+		{ID: "agent-2", Role: "auditor", Status: "running"},
+	}
+	m.appendTools("scout", "scout read_file README.md\n")
+	m.appendTools("auditor", "auditor read_file SECURITY.md\n")
+
+	m.inputBuf = "/agentview"
+	m.inputPos = len(m.inputBuf)
+	updated, _ := m.submitInput()
+	m = updated.(ChatModel)
+
+	view := m.View()
+	if !strings.Contains(view, "agent-1") || strings.Contains(view, "agent-2") {
+		t.Fatalf("first agent view = %q", view)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(ChatModel)
+	view = m.View()
+	if !strings.Contains(view, "agent-2") || strings.Contains(view, "agent-1") {
+		t.Fatalf("second agent view = %q", view)
+	}
+}
+
+func TestChatModelAgentViewFitsAllocatedBodyHeight(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 16
+	m.appendTools("scout", strings.Repeat("agent output line\n", 20))
+	m.agentViewVisible = true
+	m.resizeChatViewport()
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+	if len(lines) > m.height {
+		t.Fatalf("view height = %d, want <= %d\n%s", len(lines), m.height, view)
+	}
+}
+
+func TestChatModelAgentViewScrollUsesSelectedFullWidthContent(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 120
+	m.height = 12
+	m.agentTasks = []chatAgentTaskState{{ID: "agent-1", Role: "scout", Status: "running"}}
+	m.appendTools("scout", strings.Repeat("scout output line\n", 30))
+	m.agentViewVisible = true
+	m.resizeChatViewport()
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	m = updated.(ChatModel)
+	if got, maxScroll := m.toolsScroll, m.agentViewMaxScroll(); got <= 0 || got > maxScroll {
+		t.Fatalf("toolsScroll = %d, want 1..%d", got, maxScroll)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	m = updated.(ChatModel)
+	if m.toolsScroll != 0 {
+		t.Fatalf("toolsScroll after PgUp = %d, want 0", m.toolsScroll)
+	}
+}
+
+func TestChatModelAgentViewCommandIsOpenOnly(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 120
+	m.height = 24
+	m.appendTools("scout", "read_file docs/plan.md\n")
+
+	for range 2 {
+		m.inputBuf = "/agentview"
+		m.inputPos = len(m.inputBuf)
+		updated, _ := m.submitInput()
+		m = updated.(ChatModel)
+	}
+	if !m.agentViewVisible {
+		t.Fatal("/agentview should keep the agent view open; Esc closes it")
 	}
 }
 

@@ -239,6 +239,8 @@ type ChatModel struct {
 	toolsVisible           bool
 	toolsWasShowing        bool
 	agentPanelHiddenByUser bool
+	agentViewVisible       bool
+	agentViewIndex         int
 	agentTasks             []chatAgentTaskState
 	lastToolResult         string
 	lastCodeBlock          string
@@ -995,9 +997,6 @@ func (m *ChatModel) resizeChatViewport() {
 }
 
 func (m ChatModel) chatPaneWidth() int {
-	if m.hasAgentWorkPane() && m.width >= 90 {
-		return max(40, m.width-m.toolsPaneWidth())
-	}
 	return m.width
 }
 
@@ -1009,7 +1008,7 @@ func (m ChatModel) toolsPaneWidth() int {
 }
 
 func (m ChatModel) hasAgentWorkPane() bool {
-	return m.toolsVisible && m.hasAgentWorkPaneContent()
+	return false
 }
 
 func (m ChatModel) hasAgentWorkPaneContent() bool {
@@ -1105,6 +1104,112 @@ func (m ChatModel) renderedAgentWorkBuf() string {
 		}
 	}
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+func (m ChatModel) activeAgentViewItems() []chatAgentTaskState {
+	items := make([]chatAgentTaskState, 0, len(m.agentTasks))
+	for _, task := range m.agentTasks {
+		if strings.TrimSpace(task.ID) == "" || isTerminalAgentTaskStatus(task.Status) {
+			continue
+		}
+		items = append(items, task)
+	}
+	return items
+}
+
+func (m ChatModel) selectedAgentViewTask() (chatAgentTaskState, bool) {
+	items := m.activeAgentViewItems()
+	if len(items) == 0 {
+		return chatAgentTaskState{}, false
+	}
+	idx := clamp(m.agentViewIndex, 0, len(items)-1)
+	return items[idx], true
+}
+
+func (m ChatModel) renderedAgentViewBuf() string {
+	if task, ok := m.selectedAgentViewTask(); ok {
+		role := strings.TrimSpace(task.Role)
+		var sb strings.Builder
+		if line := formatChatAgentTaskLine(task, time.Now()); line != "" {
+			sb.WriteString("Agent task\n")
+			sb.WriteString(line)
+			sb.WriteString("\n\n")
+		}
+		for _, sec := range m.toolsSections {
+			if role == "" || strings.TrimSpace(sec.role) != role {
+				continue
+			}
+			if sec.collapsed && sec.summary != "" {
+				sb.WriteString(sec.summary)
+				sb.WriteByte('\n')
+			} else {
+				sb.WriteString(sec.buf)
+			}
+		}
+		return strings.TrimRight(sb.String(), "\n")
+	}
+	return m.renderedAgentWorkBuf()
+}
+
+func (m ChatModel) renderAgentView(theme chatTheme, height int) string {
+	width := max(1, m.width)
+	visible := m.agentViewVisibleLineCount(height)
+	contentWidth := max(1, width-2)
+	lines := m.agentViewWrappedLines(contentWidth)
+	offset := clamp(m.toolsScroll, 0, m.agentViewMaxScrollForHeight(height))
+	end := min(len(lines), offset+visible)
+	bodyLines := append([]string(nil), lines[offset:end]...)
+	for len(bodyLines) < visible {
+		bodyLines = append(bodyLines, "")
+	}
+	scrollbar := scrollbarColumn(len(lines), visible, offset, visible)
+	body := joinWithScrollbar(bodyLines, scrollbar, contentWidth, visible)
+	title := " Agent view "
+	if task, ok := m.selectedAgentViewTask(); ok {
+		items := m.activeAgentViewItems()
+		title = fmt.Sprintf(" Agent view %d/%d: %s ", clamp(m.agentViewIndex, 0, max(0, len(items)-1))+1, len(items), strings.TrimSpace(task.ID))
+	}
+	footer := lipgloss.NewStyle().Foreground(theme.TextDim).Width(width).Render("Tab cycle agents • Esc close")
+	return lipgloss.NewStyle().Foreground(theme.Text).Width(width).Height(height).Render(lipgloss.JoinVertical(lipgloss.Left,
+		lipgloss.NewStyle().Foreground(theme.AccentPrimary).Bold(true).Width(width).Render(fitCell(title, width)),
+		body,
+		footer,
+	))
+}
+
+func (m ChatModel) agentViewVisibleLineCount(height int) int {
+	return max(1, height-2)
+}
+
+func (m ChatModel) agentViewWrappedLines(contentWidth int) []string {
+	lines := strings.Split(lipgloss.NewStyle().Width(max(1, contentWidth)).Render(strings.TrimSpace(m.renderedAgentViewBuf())), "\n")
+	if len(lines) == 1 && strings.TrimSpace(lines[0]) == "" {
+		return []string{"No agent work yet."}
+	}
+	return lines
+}
+
+func (m ChatModel) agentViewMaxScroll() int {
+	return m.agentViewMaxScrollForHeight(m.chatViewport.Height)
+}
+
+func (m ChatModel) agentViewMaxScrollForHeight(height int) int {
+	contentWidth := max(1, m.width-2)
+	lines := m.agentViewWrappedLines(contentWidth)
+	return max(0, len(lines)-m.agentViewVisibleLineCount(height))
+}
+
+func (m *ChatModel) cycleAgentView(delta int) {
+	items := m.activeAgentViewItems()
+	if len(items) == 0 {
+		m.agentViewIndex = 0
+		return
+	}
+	m.agentViewIndex = (m.agentViewIndex + delta) % len(items)
+	if m.agentViewIndex < 0 {
+		m.agentViewIndex += len(items)
+	}
+	m.toolsScroll = 0
 }
 
 func (m ChatModel) renderedAgentTaskStateBuf(now time.Time) string {
@@ -2355,6 +2460,32 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.sessionsVisible {
 		return m.handleSessionsKey(msg)
 	}
+	if m.agentViewVisible {
+		switch msg.Type {
+		case tea.KeyEscape:
+			m.agentViewVisible = false
+			m.flash = "agent view closed"
+			return m, nil
+		case tea.KeyTab:
+			m.cycleAgentView(1)
+			return m, nil
+		case tea.KeyShiftTab:
+			m.cycleAgentView(-1)
+			return m, nil
+		case tea.KeyPgUp:
+			m.toolsScroll = clamp(m.toolsScroll-max(1, m.chatViewport.Height/2), 0, m.agentViewMaxScroll())
+			return m, nil
+		case tea.KeyPgDown:
+			m.toolsScroll = clamp(m.toolsScroll+max(1, m.chatViewport.Height/2), 0, m.agentViewMaxScroll())
+			return m, nil
+		case tea.KeyUp:
+			m.toolsScroll = clamp(m.toolsScroll-1, 0, m.agentViewMaxScroll())
+			return m, nil
+		case tea.KeyDown:
+			m.toolsScroll = clamp(m.toolsScroll+1, 0, m.agentViewMaxScroll())
+			return m, nil
+		}
+	}
 
 	// Handle approval mode
 	if m.pendingApproval != nil {
@@ -2812,7 +2943,7 @@ var builtinCommands = []string{
 	"/new", "/clear", "/clear all", "/clear agent", "/clear tools",
 	"/help", "/stats", "/trace",
 	"/theme", "/theme low", "/theme default", "/theme light", "/theme dusk", "/theme midnight-ink", "/theme eclipse",
-	"/panel", "/panel on", "/panel off", "/toggle panel",
+	"/agentview",
 	"/tools", "/toggle tools", "/toggle tools on", "/toggle tools off",
 	"/models", "/model", "/provider",
 	"/skills", "/auto-skills", "/sessions", "/save", "/restore",
@@ -2912,6 +3043,16 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			break
 		}
 		m.applyTheme(name)
+	case input == "/agentview":
+		if !m.hasAgentWorkPaneContent() {
+			m.agentViewVisible = false
+			m.flash = "agent view has no agent work yet"
+			break
+		}
+		m.agentViewVisible = true
+		m.toolsScroll = 0
+		m.agentViewIndex = clamp(m.agentViewIndex, 0, max(0, len(m.activeAgentViewItems())-1))
+		m.flash = "agent view opened"
 	case input == "/sessions":
 		_ = m.saveSession("last-session")
 		if ok := m.refreshSessionsPicker(true); ok {
@@ -2962,39 +3103,6 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		} else {
 			m.flash = fmt.Sprintf("session restored: %s", name)
 		}
-	case input == "/panel" || input == "/toggle panel":
-		m.agentPanelHiddenByUser = false
-		if m.hasAgentWorkPaneContent() {
-			m.toolsVisible = !m.toolsVisible
-			if m.toolsVisible {
-				m.flash = "panel opened"
-			} else {
-				m.agentPanelHiddenByUser = true
-				m.flash = "panel closed"
-			}
-		} else {
-			m.toolsVisible = false
-			m.flash = "panel will open when agent work starts"
-		}
-		m.resizeChatViewport()
-		m.viewportDirty = true
-	case input == "/panel on":
-		m.agentPanelHiddenByUser = false
-		if m.hasAgentWorkPaneContent() {
-			m.toolsVisible = true
-			m.flash = "panel opened"
-		} else {
-			m.toolsVisible = false
-			m.flash = "panel will open when agent work starts"
-		}
-		m.resizeChatViewport()
-		m.viewportDirty = true
-	case input == "/panel off":
-		m.toolsVisible = false
-		m.agentPanelHiddenByUser = true
-		m.flash = "panel closed"
-		m.resizeChatViewport()
-		m.viewportDirty = true
 	case input == "/tools" || input == "/toggle tools":
 		m.toolsVisible = false
 		m.flash = "tools pane removed"
@@ -5104,8 +5212,8 @@ func (m ChatModel) View() string {
 		Width(m.chatPaneWidth()).
 		Height(chatBodyHeight).
 		Render(chatBody)
-	if toolsPane := m.renderToolsPane(theme, chatBodyHeight); toolsPane != "" {
-		chatPane = lipgloss.JoinHorizontal(lipgloss.Top, chatPane, toolsPane)
+	if m.agentViewVisible {
+		chatPane = m.renderAgentView(theme, chatBodyHeight)
 	}
 	debugDock := ""
 	if m.debugSurfaceActive() {
