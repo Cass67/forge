@@ -393,6 +393,7 @@ Goal: every reliability/security claim has a test or live reproduction.
 - [x] Live secret-output command returns redacted content.
 - [x] Live write containing dummy secret is blocked without writing file.
 - [x] Live manual compaction test emits compact boundary and continues.
+- [x] Live reactive context-error compaction test compacts, retries, and continues.
 
 Note: provider-backed smoke checks may still be inconclusive during external stalls; the local-provider harness below is the deterministic acceptance source for the live matrix.
 
@@ -406,6 +407,7 @@ Note: provider-backed smoke checks may still be inconclusive during external sta
 
 - `go test ./cmd/forge -run TestLiveAcceptance -count=1` builds a fresh `bin/forge`, runs console mode against a local OpenAI-compatible provider, and verifies spawn/wait/write-doc delegation, a read-only audit child without write/run tools, multi-agent status with one child still running, cancellation, secret command output redaction, blocked dummy-secret writes, debug-log secret boundaries, and manual compaction continuation.
 - This harness is deterministic and exercises the real CLI/runtime/tool loop without external provider stalls. The external Copilot-backed checks above remain useful provider smoke coverage, but no longer block the local acceptance matrix.
+- External provider smoke checks remain future non-blocking work: use them only to catch provider wire/API drift, not as a required release gate while provider stalls are outside Forge control.
 
 ### 7.4 Code Review Follow-Up
 

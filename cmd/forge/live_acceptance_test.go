@@ -140,6 +140,31 @@ func TestLiveAcceptanceManualCompactionContinuesWithLocalProvider(t *testing.T) 
 	}
 }
 
+func TestLiveAcceptanceReactiveCompactionRecoversWithLocalProvider(t *testing.T) {
+	server := newLiveAcceptanceMock(t)
+	defer server.Close()
+	bin := buildForgeBinary(t)
+	workDir := initLiveAcceptanceFixture(t)
+	configHome := writeLiveAcceptanceConfig(t, server.URL())
+
+	input := make([]string, 0, 25)
+	for i := range 22 {
+		input = append(input, fmt.Sprintf("LIVE_REACTIVE_COMPACTION_PRIMER %02d", i))
+	}
+	input = append(input,
+		`LIVE_REACTIVE_COMPACTION_CHECK: answer REACTIVE_COMPACTION_CONTINUED after any automatic recovery.`,
+		`/quit`,
+	)
+	output, _ := runForgeConsole(t, bin, configHome, workDir, strings.Join(input, "\n")+"\n")
+
+	for _, want := range []string{"react runtime: compacting after context window error", "REACTIVE_COMPACTION_CONTINUED"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("console output missing %q:\n%s", want, output)
+		}
+	}
+	server.AssertReactiveCompaction(t)
+}
+
 type liveAcceptanceMock struct {
 	t            *testing.T
 	server       *httptest.Server
@@ -161,6 +186,8 @@ type liveAcceptanceMock struct {
 	childAuditReadOnly bool
 	multipleSpawn      bool
 	multipleStatus     bool
+	reactiveError      bool
+	reactiveRetry      bool
 }
 
 func newLiveAcceptanceMock(t *testing.T) *liveAcceptanceMock {
@@ -331,6 +358,20 @@ func (m *liveAcceptanceMock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.secretWriteClean = !strings.Contains(body, m.secret) && strings.Contains(body, "blocked: content matched secret rule generic-token")
 		m.mu.Unlock()
 		writeTextSSE(w, "SECRET_WRITE_DONE")
+	case strings.Contains(body, "LIVE_REACTIVE_COMPACTION_CHECK") && strings.Contains(body, "Earlier conversation summary"):
+		m.mu.Lock()
+		m.reactiveRetry = true
+		m.mu.Unlock()
+		writeTextSSE(w, "REACTIVE_COMPACTION_CONTINUED")
+	case strings.Contains(body, "LIVE_REACTIVE_COMPACTION_CHECK"):
+		m.mu.Lock()
+		m.reactiveError = true
+		m.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"message":"maximum context length exceeded","type":"context_length_exceeded"}}`)
+	case strings.Contains(body, "LIVE_REACTIVE_COMPACTION_PRIMER"):
+		writeTextSSE(w, "reactive primer acknowledged")
 	case strings.Contains(body, "LIVE_COMPACTION_CONTINUE"):
 		writeTextSSE(w, "COMPACTION_CONTINUED")
 	case strings.Contains(body, "LIVE_COMPACTION_PRIMER"):
@@ -388,6 +429,18 @@ func (m *liveAcceptanceMock) AssertMultipleStatus(t *testing.T) {
 	}
 	if !m.multipleSpawn || !m.multipleStatus {
 		t.Fatalf("multi-agent flags = spawn:%v status:%v", m.multipleSpawn, m.multipleStatus)
+	}
+}
+
+func (m *liveAcceptanceMock) AssertReactiveCompaction(t *testing.T) {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.errs) > 0 {
+		t.Fatalf("mock server errors: %s", strings.Join(m.errs, "; "))
+	}
+	if !m.reactiveError || !m.reactiveRetry {
+		t.Fatalf("reactive compaction flags = error:%v retry:%v", m.reactiveError, m.reactiveRetry)
 	}
 }
 
