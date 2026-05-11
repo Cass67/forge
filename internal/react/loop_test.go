@@ -102,6 +102,7 @@ type recordingRenderer struct {
 	tokenTexts []string
 	fullTexts  []string
 	retryTexts []string
+	statsCalls int
 }
 
 func (r *recordingRenderer) AgentToken(text string) {
@@ -124,9 +125,13 @@ func (r *recordingRenderer) Retry(text string) {
 
 func (r *recordingRenderer) ToolCall(string, string)                 {}
 func (r *recordingRenderer) ToolResult(string, string, string, bool) {}
-func (r *recordingRenderer) Stats(time.Duration, llm.Usage)          {}
-func (r *recordingRenderer) Error(string)                            {}
-func (r *recordingRenderer) Info(string)                             {}
+func (r *recordingRenderer) Stats(time.Duration, llm.Usage) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.statsCalls++
+}
+func (r *recordingRenderer) Error(string) {}
+func (r *recordingRenderer) Info(string)  {}
 
 type errorDriver struct {
 	err error
@@ -765,6 +770,129 @@ func TestRunnerAllowsPlainChatWithoutNativeToolCaller(t *testing.T) {
 	}
 	if got := r.LastResponse(); got != "plain answer" {
 		t.Fatalf("last response = %q, want plain answer", got)
+	}
+}
+
+func TestRunnerWritesPreviousResponseToMarkdownWithoutModelCall(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("compare forge with competitors")
+	session.AppendAssistantMessage("### Bottom Line\nForge needs CI.")
+	session.CompleteTurn(turn, "### Bottom Line\nForge needs CI.", nil, nil)
+	reg := agenttools.NewRegistry()
+	var gotPath, gotContent string
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "write file",
+		AutoApprove: true,
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			gotPath, _ = args["path"].(string)
+			gotContent, _ = args["content"].(string)
+			return "wrote report", nil
+		},
+	})
+	r := NewRunner(Config{
+		Driver:  &errorDriver{err: errors.New("driver should not be called")},
+		Tools:   reg,
+		Session: session,
+	})
+
+	if err := r.Run(context.Background(), "write it to an md"); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "docs/reports/report.md" {
+		t.Fatalf("path = %q, want docs/reports/report.md", gotPath)
+	}
+	if gotContent != "### Bottom Line\nForge needs CI." {
+		t.Fatalf("content = %q", gotContent)
+	}
+	if got := r.LastResponse(); got != "wrote report" {
+		t.Fatalf("last response = %q, want wrote report", got)
+	}
+}
+
+func TestRunnerWritesPreviousResponseToExplicitMarkdownBasename(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("summarize this")
+	session.CompleteTurn(turn, "summary content", nil, nil)
+	reg := agenttools.NewRegistry()
+	var gotPath string
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "write file",
+		AutoApprove: true,
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			gotPath, _ = args["path"].(string)
+			return "wrote summary", nil
+		},
+	})
+	r := NewRunner(Config{
+		Driver:  &errorDriver{err: errors.New("driver should not be called")},
+		Tools:   reg,
+		Session: session,
+	})
+
+	if err := r.Run(context.Background(), "save that as summary.md"); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "summary.md" {
+		t.Fatalf("path = %q, want summary.md", gotPath)
+	}
+}
+
+func TestRunnerDoesNotBypassModelForAmbiguousReportCreation(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("what's broken?")
+	session.CompleteTurn(turn, "prior answer", nil, nil)
+	driver := &nativeScriptedDriver{responses: []string{"model handled it"}}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "write file",
+		AutoApprove: true,
+		Execute: func(context.Context, map[string]any) (string, error) {
+			t.Fatal("write_file should not be called directly")
+			return "", nil
+		},
+	})
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+	if err := r.Run(context.Background(), "create a report for that bug"); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callCount != 1 {
+		t.Fatalf("driver calls = %d, want 1", driver.callCount)
+	}
+	if got := r.LastResponse(); got != "model handled it" {
+		t.Fatalf("last response = %q, want model handled it", got)
+	}
+}
+
+func TestRunnerEmitsStatsForDirectMarkdownWrite(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("summarize this")
+	session.CompleteTurn(turn, "summary content", nil, nil)
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "write file",
+		AutoApprove: true,
+		Execute: func(context.Context, map[string]any) (string, error) {
+			return "wrote summary", nil
+		},
+	})
+	renderer := &recordingRenderer{}
+	r := NewRunner(Config{
+		Driver:   &errorDriver{err: errors.New("driver should not be called")},
+		Tools:    reg,
+		Session:  session,
+		Renderer: renderer,
+	})
+
+	if err := r.Run(context.Background(), "write it to an md"); err != nil {
+		t.Fatal(err)
+	}
+	if renderer.statsCalls != 1 {
+		t.Fatalf("stats calls = %d, want 1", renderer.statsCalls)
 	}
 }
 
