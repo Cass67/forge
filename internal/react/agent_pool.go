@@ -24,6 +24,7 @@ const (
 type SpawnFunc func(ctx context.Context, role, task string) (string, error)
 
 type agentIDContextKey struct{}
+type agentWorkDirContextKey struct{}
 
 func AgentIDFromContext(ctx context.Context) string {
 	if ctx == nil {
@@ -31,6 +32,21 @@ func AgentIDFromContext(ctx context.Context) string {
 	}
 	id, _ := ctx.Value(agentIDContextKey{}).(string)
 	return strings.TrimSpace(id)
+}
+
+func ContextWithWorkDir(ctx context.Context, workDir string) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return context.WithValue(ctx, agentWorkDirContextKey{}, strings.TrimSpace(workDir))
+}
+
+func WorkDirFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	dir, _ := ctx.Value(agentWorkDirContextKey{}).(string)
+	return strings.TrimSpace(dir)
 }
 
 type AgentResult struct {

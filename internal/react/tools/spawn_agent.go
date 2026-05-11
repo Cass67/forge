@@ -24,6 +24,7 @@ func NewSpawnAgent(pool *react.AgentPool) agenttools.Tool {
 		Parameters: []agenttools.ParameterDef{
 			{Name: "task_description", Type: "string", Description: "Task to delegate to the child agent", Required: true},
 			{Name: "role", Type: "string", Description: "Optional role hint for the child agent", Required: false},
+			{Name: "work_dir", Type: "string", Description: "Optional working directory for the child agent (default: parent project directory)", Required: false},
 		},
 		AutoApprove: true,
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
@@ -38,12 +39,19 @@ func NewSpawnAgent(pool *react.AgentPool) agenttools.Tool {
 			if strings.TrimSpace(role) == "" {
 				role = "default"
 			}
+			workDir, _ := args["work_dir"].(string)
+			workDir = strings.TrimSpace(workDir)
+
 			mappedRole := react.MapSpawnRole(role)
 			if agentDef, ok := pool.GetAgent(mappedRole); ok && agentDef != nil && readOnlyAgentShouldSanitizeTask(agentDef, task) {
 				task = sanitizeReadOnlyAgentTask(task)
 			}
 
-			id, err := pool.Spawn(ctx, role, task)
+			spawnCtx := ctx
+			if workDir != "" {
+				spawnCtx = react.ContextWithWorkDir(ctx, workDir)
+			}
+			id, err := pool.Spawn(spawnCtx, role, task)
 			if err != nil {
 				return "", err
 			}

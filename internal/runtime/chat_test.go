@@ -1461,6 +1461,80 @@ func (s *stubChatSessionControl) CompactionStatus() string {
 	return s.compactStatus
 }
 
+func TestNewChildAgentRegistryCreatesToolsWithCorrectWorkDir(t *testing.T) {
+	parentDir := t.TempDir()
+	childDir := t.TempDir()
+	cfg := &config.Config{}
+	approve := agent.YoloApproval()
+
+	// Write a marker file only in the child directory
+	if err := os.WriteFile(filepath.Join(childDir, "marker.txt"), []byte("child-content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	parentReg := tools.NewRegistry()
+	_, _ = registerTools(parentReg, parentDir, cfg, reactruntime.NewSession(), approve, nil, nil)
+	baseReg := parentReg.Filter(nil)
+
+	setup := &ChatSetup{Config: cfg, WorkDir: parentDir}
+	childReg := newChildAgentRegistry(childDir, nil, baseReg, setup, approve)
+
+	readTool, ok := childReg.Get("read_file")
+	if !ok {
+		t.Fatal("read_file missing from child registry")
+	}
+	result, err := readTool.Execute(context.Background(), map[string]any{
+		"path": filepath.Join(childDir, "marker.txt"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "child-content") {
+		t.Fatalf("read_file from child dir = %q, want child-content", result)
+	}
+
+	// Verify git tools also point at child dir
+	gitTool, ok := childReg.Get("git_status")
+	if !ok {
+		t.Fatal("git_status missing from child registry")
+	}
+	// Running git_status in the childDir (which has no git repo) should produce an error,
+	// but it should NOT return the parent dir's git status
+	result, err = gitTool.Execute(context.Background(), map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(result, "fatal: not a git repository") {
+		return // correct: child dir is not a git repo
+	}
+	if strings.Contains(result, "MarkerFile") || strings.Contains(result, "modified") || strings.Contains(result, "chat_test") {
+		t.Fatalf("git_status appears to have run in parent dir: %q", result)
+	}
+}
+
+func TestChildRegistryToolsUseAllowedToolsFilter(t *testing.T) {
+	parentDir := t.TempDir()
+	childDir := t.TempDir()
+	cfg := &config.Config{}
+	approve := agent.YoloApproval()
+
+	parentReg := tools.NewRegistry()
+	_, _ = registerTools(parentReg, parentDir, cfg, reactruntime.NewSession(), approve, nil, nil)
+	baseReg := parentReg.Filter(nil)
+
+	setup := &ChatSetup{Config: cfg, WorkDir: parentDir}
+	childReg := newChildAgentRegistry(childDir, []string{"read_file", "tool_help", "think"}, baseReg, setup, approve)
+
+	for _, name := range []string{"read_file", "tool_help", "think"} {
+		if _, ok := childReg.Get(name); !ok {
+			t.Fatalf("allowed tool %q missing from child registry", name)
+		}
+	}
+	if _, ok := childReg.Get("git_status"); ok {
+		t.Fatal("git_status should not be present when not in allowed tools")
+	}
+}
+
 type kernelMockDriver struct {
 	response  string
 	responses []string
