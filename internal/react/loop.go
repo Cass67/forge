@@ -486,14 +486,7 @@ func (r *Runner) tryDirectLastResponseMarkdownWrite(ctx context.Context, turn in
 }
 
 func directLastResponseMarkdownWritePath(input string) (string, bool) {
-	text := normalizeToolIntentText(input)
-	if text == "" || !directLastResponseWriteVerb(text) {
-		return "", false
-	}
-	if !directLastResponseReference(text) {
-		return "", false
-	}
-	if !directLastResponseFileTarget(text) {
+	if !directLastResponseMarkdownWriteIntent(directWriteTokens(input)) {
 		return "", false
 	}
 	if path := extractDelegationTargetPath(input); path != "" {
@@ -502,27 +495,119 @@ func directLastResponseMarkdownWritePath(input string) (string, bool) {
 	return "docs/reports/report.md", true
 }
 
-func directLastResponseWriteVerb(text string) bool {
-	return containsToolPhrase(text, "write ", "save ", "create ")
+func directWriteTokens(input string) []string {
+	fields := strings.Fields(normalizeToolIntentText(input))
+	tokens := make([]string, 0, len(fields))
+	for _, field := range fields {
+		token := strings.Trim(field, "`'\".,:;()[]{}<>!?\n\t")
+		token = strings.TrimPrefix(token, "path=")
+		token = strings.TrimPrefix(token, "target=")
+		if token != "" {
+			tokens = append(tokens, token)
+		}
+	}
+	return tokens
 }
 
-func directLastResponseReference(text string) bool {
-	return containsToolPhrase(text,
-		"write it to", "write it as", "save it to", "save it as", "create it as",
-		"write that to", "write that as", "save that to", "save that as", "create that as",
-		"write above", "save above", "write the above", "save the above",
-		"write previous response", "save previous response", "write the previous response", "save the previous response",
-		"write last response", "save last response", "write the last response", "save the last response",
-		"write the answer", "save the answer", "write this answer", "save this answer",
-		"write the md", "save the md", "write the markdown", "save the markdown",
-		"write bottom line", "save bottom line",
-	)
+func directLastResponseMarkdownWriteIntent(tokens []string) bool {
+	verb := firstDirectWriteVerb(tokens)
+	if verb < 0 {
+		return false
+	}
+	refEnd, ok := directLastResponseReferenceEnd(tokens, verb+1)
+	if !ok {
+		return false
+	}
+	marker := firstDirectWriteTargetMarker(tokens, refEnd)
+	return marker >= 0 && directWriteTargetAfterMarker(tokens[marker+1:])
 }
 
-func directLastResponseFileTarget(text string) bool {
-	return containsToolPhrase(text,
-		".md", " markdown", " md", " report", " doc", " docs", " document", " file", " memo", " note",
-	)
+func firstDirectWriteVerb(tokens []string) int {
+	for i, token := range tokens {
+		switch token {
+		case "write", "save", "create":
+			return i
+		}
+	}
+	return -1
+}
+
+func directLastResponseReferenceEnd(tokens []string, start int) (int, bool) {
+	if start >= len(tokens) {
+		return -1, false
+	}
+	switch tokens[start] {
+	case "it", "that", "above":
+		return start + 1, true
+	case "previous", "last":
+		if start+1 < len(tokens) && tokens[start+1] == "response" {
+			return start + 2, true
+		}
+	case "the":
+		if directTokenPair(tokens, start+1, "previous", "response") ||
+			directTokenPair(tokens, start+1, "last", "response") {
+			return start + 3, true
+		}
+		if start+1 < len(tokens) && (tokens[start+1] == "answer" || tokens[start+1] == "above") {
+			return start + 2, true
+		}
+	case "this":
+		if start+1 < len(tokens) && tokens[start+1] == "answer" {
+			return start + 2, true
+		}
+	}
+	return -1, false
+}
+
+func firstDirectWriteTargetMarker(tokens []string, start int) int {
+	for i := start; i < len(tokens); i++ {
+		switch tokens[i] {
+		case "to", "as", "into":
+			return i
+		}
+	}
+	return -1
+}
+
+func directWriteTargetAfterMarker(tokens []string) bool {
+	for _, token := range tokens {
+		if directArticleToken(token) {
+			continue
+		}
+		if directTargetToken(token) {
+			return true
+		}
+		return false
+	}
+	return false
+}
+
+func directTokenPair(tokens []string, index int, first, second string) bool {
+	return index+1 < len(tokens) && tokens[index] == first && tokens[index+1] == second
+}
+
+func directArticleToken(token string) bool {
+	switch token {
+	case "a", "an", "the":
+		return true
+	default:
+		return false
+	}
+}
+
+func directTargetToken(token string) bool {
+	if strings.HasSuffix(token, ".md") {
+		return true
+	}
+	if directArticleToken(token) {
+		return false
+	}
+	switch token {
+	case "md", "markdown", "file", "report", "doc", "docs", "document", "memo", "note":
+		return true
+	default:
+		return false
+	}
 }
 
 func toolResultForCallID(snapshot SessionSnapshot, id string) string {
