@@ -49,3 +49,14 @@ func TestEventErrorMessageDistillsGenericForbidden(t *testing.T) {
 		t.Fatalf("eventErrorMessage() = %q", got)
 	}
 }
+
+func TestEventErrorMessageDoesNotSayRetryingAfterExhaustedServerRetries(t *testing.T) {
+	ev := llm.Event{
+		Kind: llm.EventError,
+		Text: `all 3 attempts failed: provider stream: POST "https://example.com/v1/chat": 500 Internal Server Error`,
+	}
+
+	if got := eventErrorMessage(ev); got != "Server error after retries" {
+		t.Fatalf("eventErrorMessage() = %q", got)
+	}
+}

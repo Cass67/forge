@@ -656,15 +656,8 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 				continue
 			}
 			if shouldRetryTransientStreamError(ctx, err) {
-				if fallback := r.completedAgentResultFallbackText(); fallback != "" {
-					r.pendingRetryPrompt = ""
-					r.session.AppendAssistantMessage(fallback)
-					r.session.CompleteTurn(turn, fallback, nil, nil)
-					r.notifyTurnComplete()
-					if r.renderer != nil {
-						r.renderer.AgentText(fallback)
-					}
-					return nil
+				if handled, fallbackErr := r.tryCompletedAgentResultFallback(ctx, turn); handled {
+					return fallbackErr
 				}
 				if completionRetries < maxCompletionRetriesPerTurn {
 					completionRetries++
@@ -750,11 +743,56 @@ func (r *Runner) activeAgentFallbackText() string {
 	return "Child agent work is still in progress: " + strings.Join(parts, "; ") + ". Ask for status or tell me to continue waiting."
 }
 
-func (r *Runner) completedAgentResultFallbackText() string {
+func (r *Runner) tryCompletedAgentResultFallback(ctx context.Context, turn int) (bool, error) {
 	if r == nil || r.session == nil {
-		return ""
+		return false, nil
 	}
 	snap := r.session.Snapshot()
+	content := completedAgentResultFallbackContent(snap)
+	if content == "" {
+		return false, nil
+	}
+	if path, ok := completedAgentResultMarkdownWritePath(snap.LastInput); ok && r.tools != nil {
+		if _, ok := r.tools.Get("write_file"); ok {
+			return true, r.writeCompletedAgentResultFallback(ctx, turn, path, content)
+		}
+	}
+	fallback := "Parent model connection failed while composing the final response. Showing completed child-agent result instead.\n\n" + content
+	r.pendingRetryPrompt = ""
+	r.session.AppendAssistantMessage(fallback)
+	r.session.CompleteTurn(turn, fallback, nil, nil)
+	r.notifyTurnComplete()
+	if r.renderer != nil {
+		r.renderer.AgentText(fallback)
+	}
+	return true, nil
+}
+
+func (r *Runner) writeCompletedAgentResultFallback(ctx context.Context, turn int, path, content string) error {
+	args, err := json.Marshal(map[string]any{"path": path, "content": content})
+	if err != nil {
+		return err
+	}
+	call := llm.NativeToolCall{ID: "direct_write_completed_agents_1", Name: "write_file", ArgsJSON: string(args)}
+	r.pendingRetryPrompt = ""
+	r.session.AppendAssistantToolTurn("", []llm.NativeToolCall{call})
+	if err := r.executeNativeToolCalls(ctx, turn, []llm.NativeToolCall{call}); err != nil {
+		return err
+	}
+	final := strings.TrimSpace(toolResultForCallID(r.session.Snapshot(), call.ID))
+	if final == "" {
+		final = "wrote completed child-agent results to " + path
+	}
+	r.session.AppendAssistantMessage(final)
+	r.session.CompleteTurn(turn, final, nil, nil)
+	r.notifyTurnComplete()
+	if r.renderer != nil {
+		r.renderer.AgentText(final)
+	}
+	return nil
+}
+
+func completedAgentResultFallbackContent(snap SessionSnapshot) string {
 	if sameTurnAgentStillOutstanding(snap.AgentTasks, snap.Turn) {
 		return ""
 	}
@@ -779,7 +817,106 @@ func (r *Runner) completedAgentResultFallbackText() string {
 	if len(parts) == 0 {
 		return ""
 	}
-	return "Parent model connection failed while composing the final response. Showing completed child-agent result instead.\n\n" + strings.Join(parts, "\n\n")
+	return strings.Join(parts, "\n\n")
+}
+
+func completedAgentResultMarkdownWritePath(input string) (string, bool) {
+	tokens := directWriteTokens(input)
+	verb := firstDirectWriteVerb(tokens)
+	if verb < 0 {
+		return "", false
+	}
+	if path := extractDelegationTargetPath(input); path != "" {
+		return path, true
+	}
+	if completedAgentWriteTargetAfterVerb(tokens[verb+1:]) {
+		return "docs/reports/report.md", true
+	}
+	for i := verb + 1; i < len(tokens); i++ {
+		switch tokens[i] {
+		case "to", "as", "into", "in":
+			if completedAgentWriteTargetAfterMarker(tokens[i+1:]) {
+				return "docs/reports/report.md", true
+			}
+		}
+	}
+	return "", false
+}
+
+func completedAgentWriteTargetAfterVerb(tokens []string) bool {
+	nonTarget := 0
+	for i, token := range tokens {
+		switch token {
+		case "to", "as", "into", "in":
+			return false
+		}
+		if directArticleToken(token) || token == "markup" {
+			continue
+		}
+		if completedAgentWriteTargetAt(tokens, i) {
+			return true
+		}
+		nonTarget++
+		if nonTarget > 1 {
+			return false
+		}
+	}
+	return false
+}
+
+func completedAgentWriteTargetAfterMarker(tokens []string) bool {
+	for i, token := range tokens {
+		if directArticleToken(token) || token == "markup" {
+			continue
+		}
+		return completedAgentWriteTargetAt(tokens, i)
+	}
+	return false
+}
+
+func completedAgentWriteTargetAt(tokens []string, index int) bool {
+	if index < 0 || index >= len(tokens) {
+		return false
+	}
+	token := tokens[index]
+	if !directTargetToken(token) {
+		return false
+	}
+	for i := index + 1; i < len(tokens); i++ {
+		next := tokens[i]
+		if directArticleToken(next) || next == "markup" || next == "markdown" {
+			continue
+		}
+		if completedAgentTargetRelationToken(next) {
+			return true
+		}
+		if completedAgentCodeArtifactNoun(next) {
+			return false
+		}
+		if directTargetToken(next) {
+			continue
+		}
+		return true
+	}
+	return true
+}
+
+func completedAgentTargetRelationToken(token string) bool {
+	switch token {
+	case "about", "on", "for", "with", "from", "of", "containing", "including":
+		return true
+	default:
+		return false
+	}
+}
+
+func completedAgentCodeArtifactNoun(token string) bool {
+	switch token {
+	case "parser", "generator", "builder", "tool", "library", "package", "component", "function", "class", "module", "api", "cli", "command":
+		return true
+	default:
+		return false
+	}
 }
 
 func sameTurnAgentStillOutstanding(tasks []AgentTaskState, turn int) bool {

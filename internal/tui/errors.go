@@ -22,6 +22,23 @@ func eventErrorMessage(ev llm.Event) string {
 func distillErrorMessage(msg string) string {
 	fe := errors.ClassifyError(nil)
 	_ = fe
+	exhausted := containsLower(msg, "attempts failed")
+	if exhausted {
+		for _, check := range []struct {
+			pattern string
+			result  string
+		}{
+			{"500", "Server error after retries"},
+			{"502", "Bad gateway after retries"},
+			{"503", "Service unavailable after retries"},
+			{"timeout", "Request timed out after retries"},
+			{"connection reset", "Connection reset after retries"},
+		} {
+			if containsLower(msg, check.pattern) {
+				return check.result
+			}
+		}
+	}
 	// Use the resilience taxonomy for classification, but keep user-friendly formatting
 	// Check against known patterns
 	for _, check := range []struct {
