@@ -232,10 +232,16 @@ func (r *Runner) RunWithParts(ctx context.Context, input string, parts []llm.Mes
 	if prompt == "" && len(parts) == 0 {
 		return nil
 	}
+	priorResponse := r.LastResponse()
 	turn := r.session.RecordInputWithParts(prompt, parts)
 	r.pendingRetryPrompt = ""
 	r.syncRuntimeNote()
 	r.applyCompactionDecision(ctx, r.compactionManager.Decide(r.session.Snapshot()))
+	if len(parts) == 0 {
+		if handled, err := r.tryDirectLastResponseMarkdownWrite(ctx, turn, prompt, priorResponse); handled {
+			return err
+		}
+	}
 	if r.driver == nil {
 		err := fmt.Errorf("react runner: driver is nil")
 		r.session.CompleteTurn(turn, "", nil, err)
@@ -441,6 +447,96 @@ func (r *Runner) EmitResponse(text string) {
 	if r.renderer != nil {
 		r.renderer.AgentText(strings.TrimSpace(text))
 	}
+}
+
+func (r *Runner) tryDirectLastResponseMarkdownWrite(ctx context.Context, turn int, input, priorResponse string) (bool, error) {
+	priorResponse = strings.TrimSpace(priorResponse)
+	if r == nil || r.session == nil || r.tools == nil || priorResponse == "" {
+		return false, nil
+	}
+	path, ok := directLastResponseMarkdownWritePath(input)
+	if !ok {
+		return false, nil
+	}
+	if _, ok := r.tools.Get("write_file"); !ok {
+		return false, nil
+	}
+	start := time.Now()
+	defer r.emitStats(start)
+	args, err := json.Marshal(map[string]any{"path": path, "content": priorResponse})
+	if err != nil {
+		return true, err
+	}
+	call := llm.NativeToolCall{ID: "direct_write_last_response_1", Name: "write_file", ArgsJSON: string(args)}
+	r.session.AppendAssistantToolTurn("", []llm.NativeToolCall{call})
+	if err := r.executeNativeToolCalls(ctx, turn, []llm.NativeToolCall{call}); err != nil {
+		return true, err
+	}
+	final := strings.TrimSpace(toolResultForCallID(r.session.Snapshot(), call.ID))
+	if final == "" {
+		final = "wrote previous response to " + path
+	}
+	r.session.AppendAssistantMessage(final)
+	r.session.CompleteTurn(turn, final, nil, nil)
+	r.notifyTurnComplete()
+	if r.renderer != nil {
+		r.renderer.AgentText(final)
+	}
+	return true, nil
+}
+
+func directLastResponseMarkdownWritePath(input string) (string, bool) {
+	text := normalizeToolIntentText(input)
+	if text == "" || !directLastResponseWriteVerb(text) {
+		return "", false
+	}
+	if !directLastResponseReference(text) {
+		return "", false
+	}
+	if !directLastResponseFileTarget(text) {
+		return "", false
+	}
+	if path := extractDelegationTargetPath(input); path != "" {
+		return path, true
+	}
+	return "docs/reports/report.md", true
+}
+
+func directLastResponseWriteVerb(text string) bool {
+	return containsToolPhrase(text, "write ", "save ", "create ")
+}
+
+func directLastResponseReference(text string) bool {
+	return containsToolPhrase(text,
+		"write it to", "write it as", "save it to", "save it as", "create it as",
+		"write that to", "write that as", "save that to", "save that as", "create that as",
+		"write above", "save above", "write the above", "save the above",
+		"write previous response", "save previous response", "write the previous response", "save the previous response",
+		"write last response", "save last response", "write the last response", "save the last response",
+		"write the answer", "save the answer", "write this answer", "save this answer",
+		"write the md", "save the md", "write the markdown", "save the markdown",
+		"write bottom line", "save bottom line",
+	)
+}
+
+func directLastResponseFileTarget(text string) bool {
+	return containsToolPhrase(text,
+		".md", " markdown", " md", " report", " doc", " docs", " document", " file", " memo", " note",
+	)
+}
+
+func toolResultForCallID(snapshot SessionSnapshot, id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ""
+	}
+	for i := len(snapshot.History) - 1; i >= 0; i-- {
+		msg := snapshot.History[i]
+		if msg.Role == llm.RoleTool && msg.ToolCallID == id {
+			return msg.Content
+		}
+	}
+	return ""
 }
 
 func (r *Runner) runLoop(ctx context.Context, turn int) error {
@@ -1562,7 +1658,7 @@ func extractDelegationTargetPath(text string) string {
 		candidate := strings.Trim(field, "`'\".,:;()[]{}<>")
 		candidate = strings.TrimPrefix(candidate, "path=")
 		candidate = strings.TrimPrefix(candidate, "target=")
-		if strings.Contains(candidate, "/") && strings.HasSuffix(strings.ToLower(candidate), ".md") {
+		if strings.HasSuffix(strings.ToLower(candidate), ".md") {
 			return candidate
 		}
 	}
