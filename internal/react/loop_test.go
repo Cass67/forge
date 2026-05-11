@@ -1392,6 +1392,7 @@ func TestRunnerNativePathHandlesMalformedArgsJSON(t *testing.T) {
 
 type nativeSequenceDriver struct {
 	steps     [][]llm.Token
+	errs      []error
 	callCount int
 	allMsgs   [][]llm.Message
 	lastOpts  []llm.NativeToolOptions
@@ -1402,6 +1403,11 @@ func (d *nativeSequenceDriver) Name() string { return "native-sequence" }
 func (d *nativeSequenceDriver) Stream(_ context.Context, msgs []llm.Message, out chan<- llm.Token) error {
 	defer close(out)
 	d.allMsgs = append(d.allMsgs, append([]llm.Message(nil), msgs...))
+	if d.callCount < len(d.errs) && d.errs[d.callCount] != nil {
+		err := d.errs[d.callCount]
+		d.callCount++
+		return err
+	}
 	if d.callCount >= len(d.steps) {
 		return errors.New("no scripted step")
 	}
@@ -1423,6 +1429,11 @@ func (d *nativeSequenceDriver) StreamWithToolsOptions(_ context.Context, msgs []
 	defer close(out)
 	d.allMsgs = append(d.allMsgs, append([]llm.Message(nil), msgs...))
 	d.lastOpts = append(d.lastOpts, opts)
+	if d.callCount < len(d.errs) && d.errs[d.callCount] != nil {
+		err := d.errs[d.callCount]
+		d.callCount++
+		return err
+	}
 	if d.callCount >= len(d.steps) {
 		return errors.New("no scripted step")
 	}
@@ -2492,6 +2503,52 @@ func TestRunnerAllowsTextAfterRequiredToolCallInSameTurn(t *testing.T) {
 	}
 	snap := session.Snapshot()
 	if got := snap.History[len(snap.History)-1].Content; got != "agent-1 is running" {
+		t.Fatalf("final content = %q", got)
+	}
+}
+
+func TestRunnerRetriesTransientStreamErrorWhileAgentRuns(t *testing.T) {
+	driver := &nativeSequenceDriver{
+		errs: []error{errors.New("request timeout")},
+		steps: [][]llm.Token{
+			{},
+			{{ToolCall: &llm.NativeToolCall{ID: "status-1", Name: "agent_status", ArgsJSON: `{}`}}},
+			{{Text: "agent-1 is still running"}},
+		},
+	}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "agent_status",
+		Description: "status",
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return `{"agents":[{"id":"agent-1","role":"cci","status":"running"}]}`, nil
+		},
+	})
+	session := NewSession()
+	session.UpsertAgentTask(AgentTaskState{ID: "agent-1", Role: "cci", Status: AgentStatusRunning})
+	rec := &recordingRenderer{}
+	r := NewRunner(Config{
+		Driver:   driver,
+		Tools:    reg,
+		Session:  session,
+		Renderer: rec,
+	})
+
+	if err := r.Run(context.Background(), "ask agents to compare the repo and gather the cci report"); err != nil {
+		t.Fatal(err)
+	}
+	if got := driver.callCount; got != 3 {
+		t.Fatalf("driver calls = %d, want timeout retry, tool call, final text", got)
+	}
+	if len(rec.retryTexts) == 0 {
+		t.Fatal("expected retry notice after transient timeout")
+	}
+	snap := session.Snapshot()
+	if got := snap.Turns[len(snap.Turns)-1].Error; got != "" {
+		t.Fatalf("turn error = %q, want none", got)
+	}
+	if got := snap.History[len(snap.History)-1].Content; got != "agent-1 is still running" {
 		t.Fatalf("final content = %q", got)
 	}
 }
