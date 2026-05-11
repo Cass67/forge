@@ -229,9 +229,6 @@ func (p *AgentPool) Wait(ctx context.Context, id string, timeout time.Duration) 
 	case <-timer.C:
 		now := time.Now()
 		p.mu.Lock()
-		if !agentWaitStatusIsTerminal(job.status) {
-			job.status = AgentStatusTimeout
-		}
 		result := p.snapshotLocked(job)
 		p.mu.Unlock()
 		p.notifyAgentTask(AgentTaskState{ID: id, Role: result.Role, Status: result.Status, LastActivityAt: now})
