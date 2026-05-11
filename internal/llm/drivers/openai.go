@@ -322,6 +322,9 @@ func providerSupportsRequiredChatToolChoice(providerLabel, registryName, apiMode
 	if provider == "opencode-go" && registry == "opencode-go/deepseek-v4-pro" && model == "deepseek-reasoner" {
 		return false
 	}
+	if provider == "opencode-go" && registry == "opencode-go/kimi-k2.6" && model == "kimi-k2.6" {
+		return false
+	}
 	return true
 }
 
