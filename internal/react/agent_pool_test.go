@@ -84,7 +84,7 @@ func TestAgentPoolUpdatesSessionAgentTaskOnTimeoutFailureAndNotFound(t *testing.
 	if _, err := pool.Wait(context.Background(), id, 10*time.Millisecond); err != nil {
 		t.Fatal(err)
 	}
-	if task := session.Snapshot().AgentTasks[0]; task.Status != AgentStatusTimeout {
+	if task := session.Snapshot().AgentTasks[0]; task.Status != AgentStatusRunning {
 		t.Fatalf("task after timeout = %#v", task)
 	}
 	close(release)
@@ -122,10 +122,48 @@ func TestAgentPoolWaitTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != AgentStatusTimeout {
-		t.Fatalf("status = %q, want %q", result.Status, AgentStatusTimeout)
+	if result.Status != AgentStatusRunning {
+		t.Fatalf("status = %q, want %q", result.Status, AgentStatusRunning)
 	}
 	close(release)
+}
+
+func TestAgentPoolWaitTimeoutKeepsAgentRunning(t *testing.T) {
+	session := NewSession()
+	session.RecordInput("delegate work")
+	started := make(chan struct{})
+	release := make(chan struct{})
+	pool := NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+		close(started)
+		<-release
+		return "done", nil
+	})
+	pool.AttachSession(session)
+
+	id, err := pool.Spawn(context.Background(), "worker", "inspect large repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	result, err := pool.Wait(context.Background(), id, 10*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != AgentStatusRunning {
+		t.Fatalf("wait timeout status = %q, want %q", result.Status, AgentStatusRunning)
+	}
+	if task := session.Snapshot().AgentTasks[0]; task.Status != AgentStatusRunning {
+		t.Fatalf("task after wait timeout = %#v", task)
+	}
+
+	close(release)
+	result, err = pool.Wait(context.Background(), id, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != AgentStatusCompleted || result.Result != "done" {
+		t.Fatalf("result after completion = %#v", result)
+	}
 }
 
 func TestAgentPoolWaitFailed(t *testing.T) {

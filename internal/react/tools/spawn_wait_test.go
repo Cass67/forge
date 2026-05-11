@@ -48,6 +48,20 @@ func TestSpawnAgentToolAdvertisesDefaultAgents(t *testing.T) {
 	}
 }
 
+func TestWaitAgentTimeoutDescriptionSaysCurrentStatus(t *testing.T) {
+	tool := NewWaitAgent(nil)
+	for _, param := range tool.Parameters {
+		if param.Name != "timeout_seconds" {
+			continue
+		}
+		if !strings.Contains(strings.ToLower(param.Description), "current status") {
+			t.Fatalf("timeout_seconds description = %q, want current status wording", param.Description)
+		}
+		return
+	}
+	t.Fatal("timeout_seconds parameter not found")
+}
+
 func TestSpawnAgentSanitizesWriteTasksForReadOnlyAgents(t *testing.T) {
 	cases := []string{
 		"Audit the repo and create docs/superpowers/audits/2026-05-07-forge-plan-followup-audit.md",
@@ -316,7 +330,7 @@ func TestKillAgentToolRedactsTerminalResultErrorAndActivity(t *testing.T) {
 	}
 }
 
-func TestAgentStatusToolReflectsTimeoutAndProgress(t *testing.T) {
+func TestAgentStatusToolReflectsRunningAgentAfterWaitTimeout(t *testing.T) {
 	release := make(chan struct{})
 	pool := react.NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
 		<-release
@@ -353,7 +367,7 @@ func TestAgentStatusToolReflectsTimeoutAndProgress(t *testing.T) {
 	if err := json.Unmarshal([]byte(rawStatus), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if len(payload.Agents) != 1 || payload.Agents[0].Status != react.AgentStatusTimeout {
+	if len(payload.Agents) != 1 || payload.Agents[0].Status != react.AgentStatusRunning {
 		t.Fatalf("status payload = %#v", payload)
 	}
 	if payload.Agents[0].LastToolName != "read_file" || len(payload.Agents[0].RecentActivity) != 1 {
