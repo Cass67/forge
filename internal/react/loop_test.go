@@ -2771,6 +2771,84 @@ func TestRunnerRetriesTransientStreamErrorWhileAgentRuns(t *testing.T) {
 	}
 }
 
+func TestRunnerFallsBackToCompletedAgentResultWhenParentStreamTimesOut(t *testing.T) {
+	driver := &nativeSequenceDriver{errs: []error{errors.New("request timeout")}}
+	session := NewSession()
+	rec := &recordingRenderer{}
+	r := NewRunner(Config{Driver: driver, Session: session, Renderer: rec})
+	turn := session.RecordInput("compare forge with codex and opencode")
+	session.UpsertAgentTask(AgentTaskState{
+		ID:          "agent-1",
+		Role:        "explorer",
+		Status:      AgentStatusCompleted,
+		Result:      "complete comparison from child agent",
+		ParentTurn:  turn,
+		CompletedAt: time.Now(),
+	})
+
+	if err := r.runLoop(context.Background(), turn); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callCount != 1 {
+		t.Fatalf("driver calls = %d, want one failed synthesis attempt", driver.callCount)
+	}
+	if len(rec.retryTexts) != 0 {
+		t.Fatalf("retry notices = %#v, want none", rec.retryTexts)
+	}
+	if got := r.LastResponse(); !strings.Contains(got, "complete comparison from child agent") {
+		t.Fatalf("last response = %q, want completed child result", got)
+	}
+	snap := session.Snapshot()
+	if got := snap.Turns[len(snap.Turns)-1].Error; got != "" {
+		t.Fatalf("turn error = %q, want none", got)
+	}
+}
+
+func TestRunnerDoesNotUseCompletedAgentFallbackWhileSameTurnAgentStillRuns(t *testing.T) {
+	for _, status := range []AgentStatus{AgentStatusRunning, AgentStatusPending} {
+		t.Run(string(status), func(t *testing.T) {
+			driver := &nativeSequenceDriver{
+				errs: []error{errors.New("request timeout")},
+				steps: [][]llm.Token{
+					{},
+					{{Text: "agent-2 is still active"}},
+				},
+			}
+			session := NewSession()
+			rec := &recordingRenderer{}
+			r := NewRunner(Config{Driver: driver, Session: session, Renderer: rec})
+			turn := session.RecordInput("compare forge with codex and opencode")
+			session.UpsertAgentTask(AgentTaskState{
+				ID:          "agent-1",
+				Role:        "explorer",
+				Status:      AgentStatusCompleted,
+				Result:      "complete comparison from child agent",
+				ParentTurn:  turn,
+				CompletedAt: time.Now(),
+			})
+			session.UpsertAgentTask(AgentTaskState{
+				ID:         "agent-2",
+				Role:       "cci",
+				Status:     status,
+				ParentTurn: turn,
+			})
+
+			if err := r.runLoop(context.Background(), turn); err != nil {
+				t.Fatal(err)
+			}
+			if driver.callCount != 2 {
+				t.Fatalf("driver calls = %d, want retry then final status", driver.callCount)
+			}
+			if len(rec.retryTexts) == 0 {
+				t.Fatal("expected retry notice while same-turn agent remains active")
+			}
+			if got := r.LastResponse(); got != "agent-2 is still active" {
+				t.Fatalf("last response = %q, want active-agent status", got)
+			}
+		})
+	}
+}
+
 func TestRunnerRequiresToolCallForQueuedDelegationInput(t *testing.T) {
 	driver := &nativeSequenceDriver{steps: [][]llm.Token{
 		{{ToolCall: &llm.NativeToolCall{ID: "status-1", Name: "git_status", ArgsJSON: `{}`}}},
