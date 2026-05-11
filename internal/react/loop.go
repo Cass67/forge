@@ -655,11 +655,23 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 				completionRetries = 0
 				continue
 			}
-			if shouldRetryTransientStreamError(ctx, err) && completionRetries < maxCompletionRetriesPerTurn {
-				completionRetries++
-				r.pendingRetryPrompt = ""
-				r.emitRetryNotice(transientStreamRetryNotice(err))
-				continue
+			if shouldRetryTransientStreamError(ctx, err) {
+				if fallback := r.completedAgentResultFallbackText(); fallback != "" {
+					r.pendingRetryPrompt = ""
+					r.session.AppendAssistantMessage(fallback)
+					r.session.CompleteTurn(turn, fallback, nil, nil)
+					r.notifyTurnComplete()
+					if r.renderer != nil {
+						r.renderer.AgentText(fallback)
+					}
+					return nil
+				}
+				if completionRetries < maxCompletionRetriesPerTurn {
+					completionRetries++
+					r.pendingRetryPrompt = ""
+					r.emitRetryNotice(transientStreamRetryNotice(err))
+					continue
+				}
 			}
 			var retryable *RetryableCompletionError
 			if errors.As(err, &retryable) && completionRetries < maxCompletionRetriesPerTurn {
@@ -736,6 +748,54 @@ func (r *Runner) activeAgentFallbackText() string {
 		return ""
 	}
 	return "Child agent work is still in progress: " + strings.Join(parts, "; ") + ". Ask for status or tell me to continue waiting."
+}
+
+func (r *Runner) completedAgentResultFallbackText() string {
+	if r == nil || r.session == nil {
+		return ""
+	}
+	snap := r.session.Snapshot()
+	if sameTurnAgentStillOutstanding(snap.AgentTasks, snap.Turn) {
+		return ""
+	}
+	var parts []string
+	for _, task := range snap.AgentTasks {
+		if task.Status != AgentStatusCompleted || task.ParentTurn != snap.Turn {
+			continue
+		}
+		result := strings.TrimSpace(task.Result)
+		if result == "" {
+			continue
+		}
+		label := strings.TrimSpace(task.Role)
+		if label == "" {
+			label = strings.TrimSpace(task.ID)
+		}
+		if label == "" {
+			label = "child agent"
+		}
+		parts = append(parts, "## "+label+"\n"+result)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "Parent model connection failed while composing the final response. Showing completed child-agent result instead.\n\n" + strings.Join(parts, "\n\n")
+}
+
+func sameTurnAgentStillOutstanding(tasks []AgentTaskState, turn int) bool {
+	for _, task := range tasks {
+		if task.ParentTurn == turn && agentTaskFallbackOutstanding(task.Status) {
+			return true
+		}
+	}
+	return false
+}
+
+func agentTaskFallbackOutstanding(status AgentStatus) bool {
+	if status == AgentStatusPending {
+		return true
+	}
+	return agentStillOutstanding(status)
 }
 
 func shouldRetryTransientStreamError(ctx context.Context, err error) bool {
