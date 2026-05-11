@@ -801,7 +801,7 @@ func RunChatConsole(setup *ChatSetup) {
 	fmt.Println()
 }
 
-func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg *tools.Registry, _ tools.ApprovalFunc, renderer *agent.EventRenderer, pluginManager *pluginruntime.Manager, sessions ...*reactruntime.Session) {
+func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg *tools.Registry, approve tools.ApprovalFunc, renderer *agent.EventRenderer, pluginManager *pluginruntime.Manager, sessions ...*reactruntime.Session) {
 	if reg == nil || setup == nil || baseReg == nil {
 		return
 	}
@@ -840,7 +840,28 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 		if agentDef, ok := pool.GetAgent(role); ok && agentDef != nil && len(agentDef.Tools) > 0 {
 			allowedTools = append([]string(nil), agentDef.Tools...)
 		}
-		childTools := baseReg.Filter(allowedTools)
+		childWorkDir := reactruntime.WorkDirFromContext(ctx)
+		var childTools *tools.Registry
+		if childWorkDir != "" && childWorkDir != setup.WorkDir {
+			childTools = newChildAgentRegistry(childWorkDir, allowedTools, baseReg, setup, approve)
+		}
+		if childTools == nil {
+			childTools = baseReg.Filter(allowedTools)
+		}
+		workDirLabel := setup.WorkDir
+		if childWorkDir != "" {
+			workDirLabel = childWorkDir
+		}
+		if systemPrompt != nil {
+			origPrompt := systemPrompt
+			systemPrompt = func() string {
+				return origPrompt() + "\n\nWorking directory: " + workDirLabel
+			}
+		} else {
+			systemPrompt = func() string {
+				return agent.BuildNativeSystemPromptForMode(workDirLabel, "", false)
+			}
+		}
 		childRenderer := agent.NewSilentRenderer(nil)
 		if renderer != nil {
 			childRenderer = agent.NewSubAgentRenderer(renderer, role)
@@ -905,6 +926,48 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 	reg.Register(reacttools.NewWaitAgent(pool))
 	reg.Register(reacttools.NewAgentStatus(pool))
 	reg.Register(reacttools.NewKillAgent(pool))
+}
+
+// newChildAgentRegistry creates a registry for a child agent whose working
+// directory differs from the parent.  Tools that depend on a local working
+// directory (read, write, search, git, etc.) are re-created pointing at
+// childWorkDir.  Non-directory tools are copied from parentReg.
+func newChildAgentRegistry(childWorkDir string, allowedTools []string, parentReg *tools.Registry, setup *ChatSetup, approve tools.ApprovalFunc) *tools.Registry {
+	if childWorkDir == "" || setup == nil || setup.Config == nil {
+		return parentReg.Filter(allowedTools)
+	}
+	cfg := setup.Config
+	secretPolicy := tools.SecretPolicy{
+		Read:           tools.SecretPolicyMode(cfg.Security.Secrets.Read),
+		Write:          tools.SecretPolicyMode(cfg.Security.Secrets.Write),
+		CommandOutput:  tools.SecretPolicyMode(cfg.Security.Secrets.CommandOutput),
+		ApprovalDetail: tools.SecretPolicyMode(cfg.Security.Secrets.ApprovalDetail),
+	}
+	childReg := tools.NewRegistry()
+	childReg.Register(tools.NewReadFile(childWorkDir, secretPolicy))
+	childReg.Register(tools.NewListDir(childWorkDir, cfg.Chat.IgnoreDirs))
+	childReg.Register(tools.NewSearch(childWorkDir))
+	childReg.Register(tools.NewCodeSearch(childWorkDir))
+	childReg.Register(tools.NewGlob(childWorkDir, cfg.Chat.IgnoreDirs))
+	childReg.Register(tools.NewViewImage(childWorkDir))
+	childReg.Register(tools.NewLSPDefinition(childWorkDir))
+	childReg.Register(tools.NewLSPReferences(childWorkDir))
+	childReg.Register(tools.NewLSPHover(childWorkDir))
+	childReg.Register(tools.NewLSPDocumentSymbols(childWorkDir))
+	childReg.Register(tools.NewGitStatus(childWorkDir))
+	childReg.Register(tools.NewGitDiff(childWorkDir))
+	childReg.Register(tools.NewGitLog(childWorkDir))
+	childReg.Register(tools.NewGitBranchState(childWorkDir))
+	childReg.Register(tools.NewGitMergeStatus(childWorkDir))
+	childReg.Register(tools.NewToolHelp(childReg))
+	childReg.Register(tools.NewThink())
+
+	for _, tool := range parentReg.All() {
+		if _, exists := childReg.Get(tool.Name); !exists {
+			childReg.Register(tool)
+		}
+	}
+	return childReg.Filter(allowedTools)
 }
 
 type agentProgressRenderTarget struct {
