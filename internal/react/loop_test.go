@@ -867,6 +867,96 @@ func TestRunnerDoesNotBypassModelForAmbiguousReportCreation(t *testing.T) {
 	}
 }
 
+func TestRunnerDoesNotBypassModelWhenPriorAnswerReferenceHasNoSaveTarget(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("summarize report risks")
+	session.CompleteTurn(turn, "prior answer", nil, nil)
+	driver := &nativeScriptedDriver{responses: []string{"model handled it"}}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "write file",
+		AutoApprove: true,
+		Execute: func(context.Context, map[string]any) (string, error) {
+			t.Fatal("write_file should not be called directly")
+			return "", nil
+		},
+	})
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+	if err := r.Run(context.Background(), "write the answer about the report"); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callCount != 1 {
+		t.Fatalf("driver calls = %d, want 1", driver.callCount)
+	}
+}
+
+func TestRunnerDoesNotBypassModelWhenPriorAnswerReferenceIsNotWriteObject(t *testing.T) {
+	for _, input := range []string{
+		"write about it to report.md",
+		"write an answer to summary.md",
+	} {
+		t.Run(input, func(t *testing.T) {
+			session := NewSession()
+			turn := session.RecordInput("summarize report risks")
+			session.CompleteTurn(turn, "prior answer", nil, nil)
+			driver := &nativeScriptedDriver{responses: []string{"model handled it"}}
+			reg := agenttools.NewRegistry()
+			reg.Register(agenttools.Tool{
+				Name:        "write_file",
+				Description: "write file",
+				AutoApprove: true,
+				Execute: func(context.Context, map[string]any) (string, error) {
+					t.Fatal("write_file should not be called directly")
+					return "", nil
+				},
+			})
+			r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+			if err := r.Run(context.Background(), input); err != nil {
+				t.Fatal(err)
+			}
+			if driver.callCount != 1 {
+				t.Fatalf("driver calls = %d, want 1", driver.callCount)
+			}
+		})
+	}
+}
+
+func TestRunnerDoesNotBypassModelForMarkdownContentRequests(t *testing.T) {
+	for _, input := range []string{
+		"write markdown",
+		"write the markdown",
+		"write it to me in markdown",
+	} {
+		t.Run(input, func(t *testing.T) {
+			session := NewSession()
+			turn := session.RecordInput("summarize report risks")
+			session.CompleteTurn(turn, "prior answer", nil, nil)
+			driver := &nativeScriptedDriver{responses: []string{"model handled it"}}
+			reg := agenttools.NewRegistry()
+			reg.Register(agenttools.Tool{
+				Name:        "write_file",
+				Description: "write file",
+				AutoApprove: true,
+				Execute: func(context.Context, map[string]any) (string, error) {
+					t.Fatal("write_file should not be called directly")
+					return "", nil
+				},
+			})
+			r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+			if err := r.Run(context.Background(), input); err != nil {
+				t.Fatal(err)
+			}
+			if driver.callCount != 1 {
+				t.Fatalf("driver calls = %d, want 1", driver.callCount)
+			}
+		})
+	}
+}
+
 func TestRunnerEmitsStatsForDirectMarkdownWrite(t *testing.T) {
 	session := NewSession()
 	turn := session.RecordInput("summarize this")
