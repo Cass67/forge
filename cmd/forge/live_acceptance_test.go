@@ -66,6 +66,31 @@ func TestLiveAcceptanceDelegatedAuditWritesReportWithLocalProvider(t *testing.T)
 	server.AssertDelegatedWrite(t)
 }
 
+func TestLiveAcceptanceComparisonReposWritesMarkupAfterParentServerErrorWithLocalProvider(t *testing.T) {
+	server := newLiveAcceptanceMock(t)
+	defer server.Close()
+	bin := buildForgeBinary(t)
+	workDir := initLiveAcceptanceFixture(t)
+	configHome := writeLiveAcceptanceConfig(t, server.URL())
+	initLiveAcceptanceComparisonRepos(t, configHome)
+
+	output, _ := runForgeConsole(t, bin, configHome, workDir, strings.Join([]string{
+		`LIVE_COMPARISON_MARKUP_CHECK: let take a look at the cci, codex and opencode repo's in ~/git and analyse the features in this codebase and work out if there is anything remaining that would be helpful or interesting to use. write findings in markup doc`,
+		`/quit`,
+	}, "\n")+"\n")
+
+	if strings.Contains(output, "Server error — retrying") {
+		t.Fatalf("console output reported final server error as retrying:\n%s", output)
+	}
+	report := readTextFile(t, filepath.Join(workDir, "docs", "reports", "report.md"))
+	for _, want := range []string{"CCI checkpoints", "Codex sandbox", "OpenCode undo"} {
+		if !strings.Contains(report, want) {
+			t.Fatalf("report missing %q:\n%s", want, report)
+		}
+	}
+	server.AssertComparisonMarkup(t)
+}
+
 func TestLiveAcceptanceMultipleAgentsStatusWithLocalProvider(t *testing.T) {
 	server := newLiveAcceptanceMock(t)
 	defer server.Close()
@@ -188,6 +213,10 @@ type liveAcceptanceMock struct {
 	multipleStatus     bool
 	reactiveError      bool
 	reactiveRetry      bool
+	comparisonSpawn    bool
+	comparisonReadOnly int
+	comparisonWait     bool
+	comparison500      bool
 }
 
 func newLiveAcceptanceMock(t *testing.T) *liveAcceptanceMock {
@@ -301,6 +330,71 @@ func (m *liveAcceptanceMock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.delegatedWrite = strings.Contains(toolResultContent(body, "call_audit_write"), "wrote")
 		m.mu.Unlock()
 		writeTextSSE(w, "REPORT_WRITTEN")
+	case strings.Contains(body, "LIVE_COMPARISON_MARKUP_CHECK") && strings.Contains(body, "spawn_agent") && !strings.Contains(body, "call_compare_cci_spawn"):
+		m.mu.Lock()
+		m.comparisonSpawn = true
+		m.mu.Unlock()
+		writeToolCallsSSE(w,
+			liveToolCall{id: "call_compare_cci_spawn", name: "spawn_agent", args: map[string]any{
+				"role":             "cci explorer",
+				"task_description": "compare cci repo under ~/git/cci",
+			}},
+			liveToolCall{id: "call_compare_codex_spawn", name: "spawn_agent", args: map[string]any{
+				"role":             "codex explorer",
+				"task_description": "compare codex repo under ~/git/codex",
+			}},
+			liveToolCall{id: "call_compare_opencode_spawn", name: "spawn_agent", args: map[string]any{
+				"role":             "opencode explorer",
+				"task_description": "compare opencode repo under ~/git/opencode",
+			}},
+		)
+	case strings.Contains(body, "compare cci repo under ~/git/cci") && !strings.Contains(body, "LIVE_COMPARISON_MARKUP_CHECK") && !strings.Contains(body, "call_compare_cci_read"):
+		m.recordComparisonChildRequest(body)
+		writeToolCallSSE(w, "call_compare_cci_read", "read_file", map[string]any{"path": "~/git/cci/README.md"})
+	case strings.Contains(body, "call_compare_cci_read"):
+		if !strings.Contains(toolResultContent(body, "call_compare_cci_read"), "CCI fixture") {
+			m.recordError("cci child did not read ~/git/cci/README.md")
+		}
+		writeTextSSE(w, "CCI checkpoints and session recall")
+	case strings.Contains(body, "compare codex repo under ~/git/codex") && !strings.Contains(body, "LIVE_COMPARISON_MARKUP_CHECK") && !strings.Contains(body, "call_compare_codex_read"):
+		m.recordComparisonChildRequest(body)
+		writeToolCallSSE(w, "call_compare_codex_read", "read_file", map[string]any{"path": "~/git/codex/README.md"})
+	case strings.Contains(body, "call_compare_codex_read"):
+		if !strings.Contains(toolResultContent(body, "call_compare_codex_read"), "Codex fixture") {
+			m.recordError("codex child did not read ~/git/codex/README.md")
+		}
+		writeTextSSE(w, "Codex sandbox and exec policy")
+	case strings.Contains(body, "compare opencode repo under ~/git/opencode") && !strings.Contains(body, "LIVE_COMPARISON_MARKUP_CHECK") && !strings.Contains(body, "call_compare_opencode_read"):
+		m.recordComparisonChildRequest(body)
+		writeToolCallSSE(w, "call_compare_opencode_read", "read_file", map[string]any{"path": "~/git/opencode/README.md"})
+	case strings.Contains(body, "call_compare_opencode_read"):
+		if !strings.Contains(toolResultContent(body, "call_compare_opencode_read"), "OpenCode fixture") {
+			m.recordError("opencode child did not read ~/git/opencode/README.md")
+		}
+		writeTextSSE(w, "OpenCode undo and revert")
+	case strings.Contains(body, "call_compare_cci_spawn") && strings.Contains(body, "call_compare_codex_spawn") && strings.Contains(body, "call_compare_opencode_spawn") && !strings.Contains(body, "call_compare_cci_wait"):
+		writeToolCallsSSE(w,
+			liveToolCall{id: "call_compare_cci_wait", name: "wait_agent", args: map[string]any{"id": "agent-1", "timeout_seconds": 5}},
+			liveToolCall{id: "call_compare_codex_wait", name: "wait_agent", args: map[string]any{"id": "agent-2", "timeout_seconds": 5}},
+			liveToolCall{id: "call_compare_opencode_wait", name: "wait_agent", args: map[string]any{"id": "agent-3", "timeout_seconds": 5}},
+		)
+	case strings.Contains(body, "call_compare_cci_wait") && strings.Contains(body, "call_compare_codex_wait") && strings.Contains(body, "call_compare_opencode_wait"):
+		for _, item := range []struct{ callID, id string }{
+			{"call_compare_cci_wait", "agent-1"},
+			{"call_compare_codex_wait", "agent-2"},
+			{"call_compare_opencode_wait", "agent-3"},
+		} {
+			if !agentResultHasStatus(body, item.callID, item.id, "completed") {
+				m.recordError(item.callID + " did not report completed")
+			}
+		}
+		m.mu.Lock()
+		m.comparisonWait = true
+		m.comparison500 = true
+		m.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, `{"error":{"message":"server overloaded","code":500}}`)
 	case strings.Contains(body, "LIVE_MULTI_AGENT_STATUS_CHECK") && strings.Contains(body, "spawn_agent") && !strings.Contains(body, "call_multi_slow_spawn"):
 		m.mu.Lock()
 		m.multipleSpawn = true
@@ -420,6 +514,18 @@ func (m *liveAcceptanceMock) AssertDelegatedWrite(t *testing.T) {
 	}
 }
 
+func (m *liveAcceptanceMock) AssertComparisonMarkup(t *testing.T) {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.errs) > 0 {
+		t.Fatalf("mock server errors: %s", strings.Join(m.errs, "; "))
+	}
+	if !m.comparisonSpawn || !m.comparisonWait || !m.comparison500 || m.comparisonReadOnly != 3 {
+		t.Fatalf("comparison flags = spawn:%v wait:%v server500:%v readOnly:%d", m.comparisonSpawn, m.comparisonWait, m.comparison500, m.comparisonReadOnly)
+	}
+}
+
 func (m *liveAcceptanceMock) AssertMultipleStatus(t *testing.T) {
 	t.Helper()
 	m.mu.Lock()
@@ -448,6 +554,17 @@ func (m *liveAcceptanceMock) recordError(msg string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.errs = append(m.errs, msg)
+}
+
+func (m *liveAcceptanceMock) recordComparisonChildRequest(body string) {
+	readOnly := !requestToolsContain(body, "write_file", "run_command")
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if readOnly {
+		m.comparisonReadOnly++
+		return
+	}
+	m.errs = append(m.errs, "comparison child request included write/run tools")
 }
 
 func writeTextSSE(w http.ResponseWriter, text string) {
@@ -705,6 +822,23 @@ func initLiveAcceptanceFixture(t *testing.T) string {
 		t.Fatalf("git commit: %v\n%s", err, out)
 	}
 	return dir
+}
+
+func initLiveAcceptanceComparisonRepos(t *testing.T, configHome string) {
+	t.Helper()
+	for name, content := range map[string]string{
+		"cci":      "# CCI fixture\nFeature: checkpoints and session recall\n",
+		"codex":    "# Codex fixture\nFeature: sandbox and exec policy\n",
+		"opencode": "# OpenCode fixture\nFeature: undo and revert\n",
+	} {
+		dir := filepath.Join(configHome, "home", "git", name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func repoRoot(t *testing.T) string {

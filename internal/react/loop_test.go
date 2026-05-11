@@ -957,6 +957,41 @@ func TestRunnerDoesNotBypassModelForMarkdownContentRequests(t *testing.T) {
 	}
 }
 
+func TestCompletedAgentResultMarkdownWritePathRecognizesPathlessReportRequests(t *testing.T) {
+	for _, input := range []string{
+		"ask agents to inspect this and write a report",
+		"create a markdown document",
+		"write a nice doc",
+	} {
+		t.Run(input, func(t *testing.T) {
+			path, ok := completedAgentResultMarkdownWritePath(input)
+			if !ok {
+				t.Fatal("expected completed-agent fallback write intent")
+			}
+			if path != "docs/reports/report.md" {
+				t.Fatalf("path = %q", path)
+			}
+		})
+	}
+}
+
+func TestCompletedAgentResultMarkdownWritePathRejectsGeneratedReportContentRequest(t *testing.T) {
+	for _, input := range []string{
+		"write code that generates a report",
+		"ask agents to inspect this and create a markdown parser",
+		"write a report generator",
+		"create a doc builder",
+		"create a markdown doc builder",
+		"create a markdown report generator",
+	} {
+		t.Run(input, func(t *testing.T) {
+			if path, ok := completedAgentResultMarkdownWritePath(input); ok {
+				t.Fatalf("unexpected fallback write path %q", path)
+			}
+		})
+	}
+}
+
 func TestRunnerEmitsStatsForDirectMarkdownWrite(t *testing.T) {
 	session := NewSession()
 	turn := session.RecordInput("summarize this")
