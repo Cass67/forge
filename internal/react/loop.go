@@ -474,6 +474,12 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 				completionRetries = 0
 				continue
 			}
+			if shouldRetryTransientStreamError(ctx, err) && completionRetries < maxCompletionRetriesPerTurn {
+				completionRetries++
+				r.pendingRetryPrompt = ""
+				r.emitRetryNotice(transientStreamRetryNotice(err))
+				continue
+			}
 			var retryable *RetryableCompletionError
 			if errors.As(err, &retryable) && completionRetries < maxCompletionRetriesPerTurn {
 				completionRetries++
@@ -549,6 +555,34 @@ func (r *Runner) activeAgentFallbackText() string {
 		return ""
 	}
 	return "Child agent work is still in progress: " + strings.Join(parts, "; ") + ". Ask for status or tell me to continue waiting."
+}
+
+func shouldRetryTransientStreamError(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return false
+	}
+	classified := resilienceerrors.ClassifyError(err)
+	if !classified.Retryable {
+		return false
+	}
+	switch classified.Class {
+	case resilienceerrors.ErrorClassRetryable, resilienceerrors.ErrorClassServer, resilienceerrors.ErrorClassCapacity:
+		return true
+	default:
+		return false
+	}
+}
+
+func transientStreamRetryNotice(err error) string {
+	classified := resilienceerrors.ClassifyError(err)
+	message := strings.TrimSpace(classified.UserMessage)
+	if message == "" {
+		return retryNoticeText
+	}
+	return message
 }
 
 func (r *Runner) reactiveCompactForContextError(ctx context.Context, err error) bool {
