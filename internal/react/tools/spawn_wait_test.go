@@ -98,6 +98,52 @@ func TestSpawnAgentSanitizesWriteTasksForReadOnlyAgents(t *testing.T) {
 	}
 }
 
+func TestSpawnAgentWorkDirPassesThroughContext(t *testing.T) {
+	ctx := context.Background()
+	wantDir := "/some/target/dir"
+	gotCtx := make(chan context.Context, 1)
+	pool := react.NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+		gotCtx <- ctx
+		return "ok", nil
+	})
+	tool := NewSpawnAgent(pool)
+
+	_, err := tool.Execute(ctx, map[string]any{
+		"task_description": "inspect target",
+		"work_dir":         wantDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case ctxv := <-gotCtx:
+		if got := react.WorkDirFromContext(ctxv); got != wantDir {
+			t.Fatalf("WorkDirFromContext = %q, want %q", got, wantDir)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("spawn function never called")
+	}
+}
+
+func TestSpawnAgentOmitsWorkDirWhenNotProvided(t *testing.T) {
+	var gotCtx context.Context
+	pool := react.NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+		gotCtx = ctx
+		return "ok", nil
+	})
+	tool := NewSpawnAgent(pool)
+
+	_, err := tool.Execute(context.Background(), map[string]any{
+		"task_description": "inspect repo",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := react.WorkDirFromContext(gotCtx); got != "" {
+		t.Fatalf("WorkDirFromContext = %q, want empty", got)
+	}
+}
+
 func TestWaitAgentToolReturnsCompletionEnvelope(t *testing.T) {
 	pool := react.NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
 		return "result text", nil
