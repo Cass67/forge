@@ -87,6 +87,19 @@ func TestRuntimeResolveAutoDoesNotTreatAuditOfExistingPlanAsBrainstorming(t *tes
 	}
 }
 
+func TestRuntimeResolveAutoDoesNotTreatCrossRepoGapReportAsCodeReview(t *testing.T) {
+	t.Parallel()
+	loaded := []Skill{
+		{Name: "brainstorming", Description: "plan first", Body: "Plan first."},
+		{Name: "requesting-code-review", Description: "review work", Body: "Findings first."},
+	}
+
+	input := "Compare repos plus previous docs, reports, and plans to identify gaps and findings, then write the result as a markdown report"
+	if got, ok := DetectAuto(loaded, input); ok {
+		t.Fatalf("DetectAuto() = %#v, want no auto skill for research report", got)
+	}
+}
+
 func TestRuntimeLoadByNameSupportsKnownSkillNames(t *testing.T) {
 	t.Parallel()
 	rt := NewRuntime([]Skill{

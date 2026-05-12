@@ -12,9 +12,25 @@ import (
 )
 
 func NewWaitAgent(pool *react.AgentPool) agenttools.Tool {
+	return newAgentOutputTool(
+		"wait_agent",
+		"Wait for a spawned child agent to complete; if it is still running when the wait window ends, return its current status.",
+		pool,
+	)
+}
+
+func NewGetAgentOutput(pool *react.AgentPool) agenttools.Tool {
+	return newAgentOutputTool(
+		"get_agent_output",
+		"Get a spawned child agent's latest output. Alias for wait_agent; if the agent is still running when the wait window ends, return its current status.",
+		pool,
+	)
+}
+
+func newAgentOutputTool(name, description string, pool *react.AgentPool) agenttools.Tool {
 	return agenttools.Tool{
-		Name:        "wait_agent",
-		Description: "Wait for a spawned child agent to complete; if it is still running when the wait window ends, return its current status.",
+		Name:        name,
+		Description: description,
 		Parameters: []agenttools.ParameterDef{
 			{Name: "id", Type: "string", Description: "Child agent id from spawn_agent", Required: true},
 			{Name: "timeout_seconds", Type: "int", Description: "How long to wait before returning current status (default 30)", Required: false},

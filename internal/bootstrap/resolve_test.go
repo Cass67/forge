@@ -456,6 +456,91 @@ func TestAvailableModelsIncludesAuthBackedNVIDIAModels(t *testing.T) {
 	}
 }
 
+func TestAvailableModelsIncludesSupportedOpenCodeGoChatModels(t *testing.T) {
+	t.Setenv("FORGE_ENABLE_LIVE_COMPAT_MODELS", "0")
+	cfg := testConfig()
+	cfg.Keys.OpenCode = "opencode-key"
+
+	models := AvailableModels(cfg, &auth.Tokens{})
+
+	for _, want := range []string{
+		"opencode-go/glm-5.1",
+		"opencode-go/glm-5",
+		"opencode-go/kimi-k2.6",
+		"opencode-go/kimi-k2.5",
+		"opencode-go/deepseek-v4-pro",
+		"opencode-go/deepseek-v4-flash",
+		"opencode-go/mimo-v2.5-pro",
+		"opencode-go/mimo-v2.5",
+		"opencode-go/mimo-v2-pro",
+		"opencode-go/mimo-v2-omni",
+	} {
+		if !containsTestString(models, want) {
+			t.Fatalf("expected supported OpenCode Go model %q in available models, got %#v", want, models)
+		}
+	}
+
+	for _, unsupported := range []string{
+		"opencode-go/minimax-m2.7",
+		"opencode-go/minimax-m2.5",
+		"opencode-go/qwen3.6-plus",
+		"opencode-go/qwen3.5-plus",
+		"opencode-go/hy3-preview",
+	} {
+		if containsTestString(models, unsupported) {
+			t.Fatalf("unexpected unsupported OpenCode Go model %q in available models: %#v", unsupported, models)
+		}
+	}
+}
+
+func TestOpenCodeGoProviderFiltersUnsupportedSDKFamilies(t *testing.T) {
+	cfg := testConfig()
+	cfg.Keys.OpenCode = "opencode-key"
+	providers := BuildCompatProviders(cfg, &auth.Tokens{})
+	var provider *CompatProvider
+	for i := range providers {
+		if providers[i].Name == "opencode-go" {
+			provider = &providers[i]
+			break
+		}
+	}
+	if provider == nil {
+		t.Fatal("expected opencode-go provider")
+	}
+
+	for _, model := range []string{"glm-5.1", "kimi-k2.6", "deepseek-v4-flash", "mimo-v2.5"} {
+		if !provider.IsModel(model) {
+			t.Fatalf("opencode-go IsModel(%q) = false, want true", model)
+		}
+	}
+	for _, model := range []string{"minimax-m2.7", "minimax-m2.5", "qwen3.6-plus", "qwen3.5-plus", "hy3-preview"} {
+		if provider.IsModel(model) {
+			t.Fatalf("opencode-go IsModel(%q) = true, want false for unsupported SDK family", model)
+		}
+	}
+}
+
+func TestDriverForModelRejectsUnsupportedOpenCodeGoSDKFamilies(t *testing.T) {
+	cfg := testConfig()
+	cfg.Keys.OpenCode = "opencode-key"
+
+	if d := DriverForModel(cfg, &auth.Tokens{}, "opencode-go/kimi-k2.6"); d == nil {
+		t.Fatal("expected supported OpenCode Go chat model to resolve")
+	}
+
+	for _, model := range []string{
+		"opencode-go/minimax-m2.7",
+		"opencode-go/minimax-m2.5",
+		"opencode-go/qwen3.6-plus",
+		"opencode-go/qwen3.5-plus",
+		"opencode-go/hy3-preview",
+	} {
+		if d := DriverForModel(cfg, &auth.Tokens{}, model); d != nil {
+			t.Fatalf("DriverForModel(%q) resolved %T, want nil for unsupported SDK family", model, d)
+		}
+	}
+}
+
 func TestAvailableModelsUsesCuratedCompatCatalogByDefault(t *testing.T) {
 	t.Setenv("FORGE_ENABLE_LIVE_COMPAT_MODELS", "")
 	prevDiscover := discoverCompatModels

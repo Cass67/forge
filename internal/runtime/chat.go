@@ -924,6 +924,7 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 	}
 	reg.Register(reacttools.NewSpawnAgent(pool))
 	reg.Register(reacttools.NewWaitAgent(pool))
+	reg.Register(reacttools.NewGetAgentOutput(pool))
 	reg.Register(reacttools.NewAgentStatus(pool))
 	reg.Register(reacttools.NewKillAgent(pool))
 }

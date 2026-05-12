@@ -46,6 +46,18 @@ func TestSuggestPrefersReviewForAuditOfExistingPlan(t *testing.T) {
 	}
 }
 
+func TestSuggestDoesNotTreatCrossRepoGapReportAsCodeReview(t *testing.T) {
+	loaded := []Skill{
+		{Name: "brainstorming"},
+		{Name: "requesting-code-review"},
+	}
+
+	_, ok := Suggest(loaded, "", "Compare repos plus previous docs, reports, and plans to identify gaps and findings, then write the result as a markdown report", map[string]bool{})
+	if ok {
+		t.Fatal("did not expect skill suggestion for cross-repo research report")
+	}
+}
+
 func TestSuggestSkipsAlreadyActiveSkill(t *testing.T) {
 	loaded := []Skill{
 		{Name: "brainstorming"},
