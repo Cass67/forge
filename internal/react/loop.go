@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"strings"
+	"sync"
 	"time"
 
 	"forge/internal/agent"
@@ -1193,7 +1194,19 @@ func (r *Runner) emitRetryNotice(msg string) {
 
 // executeNativeToolCalls executes a batch of native tool calls and appends results
 // to the session. On unknown tool or execution error the call is recorded as a failed result and the loop aborts.
+// Tool executions are dispatched in parallel (matching Codex's FuturesOrdered model)
+// to reduce total wall-clock time when multiple independent tools are requested.
 func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []llm.NativeToolCall) error {
+	type toolExec struct {
+		call       llm.NativeToolCall
+		tool       agenttools.Tool
+		args       map[string]any
+		beforeTool hooks.ExecutionOutput
+		execute    func() (result string, diff string, execErr error)
+	}
+
+	// Phase 1: resolve tools, parse args, run pre-hooks (sequential, may have side effects)
+	execs := make([]toolExec, 0, len(calls))
 	for _, call := range calls {
 		tool, ok := r.tools.Get(call.Name)
 		if !ok {
@@ -1229,44 +1242,126 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 			continue
 		}
 
+		toolRef := tool // capture for closure
+		execs = append(execs, toolExec{
+			call:       call,
+			tool:       toolRef,
+			args:       args,
+			beforeTool: beforeTool,
+			execute: func() (string, string, error) {
+				res, execErr := toolRef.Execute(ctx, args)
+				diff := ""
+				if toolRef.LastDiff != nil && execErr == nil {
+					diff = toolRef.LastDiff()
+				}
+				return res, diff, execErr
+			},
+		})
+	}
+
+	// Phase 2: dispatch tool executions (parallel for safe tools, sequential for pool-mutating)
+	// Pool-related tools (spawn_agent, wait_agent, kill_agent) must run sequentially
+	// to avoid lifecycle ordering races. All other tools can run in parallel.
+	type execResult struct {
+		index  int
+		result string
+		diff   string
+		err    error
+	}
+	results := make([]execResult, 0, len(execs))
+	hasPoolTool := false
+	for _, exec := range execs {
+		if toolMutatesPool(exec.call.Name) {
+			hasPoolTool = true
+			break
+		}
+	}
+	if hasPoolTool {
+		// Sequential: execute tools one at a time, in order
+		for _, exec := range execs {
+			result, diff, err := exec.execute()
+			results = append(results, execResult{result: result, diff: diff, err: err})
+		}
+	} else {
+		// Parallel: dispatch all tools in goroutines, collect in order
+		type indexedResult struct {
+			index  int
+			result string
+			diff   string
+			err    error
+		}
+		ch := make(chan indexedResult, len(execs))
+		var wg sync.WaitGroup
+		for i, exec := range execs {
+			i, exec := i, exec
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				result, diff, err := exec.execute()
+				ch <- indexedResult{index: i, result: result, diff: diff, err: err}
+			}()
+		}
+		wg.Wait()
+		close(ch)
+
+		ordered := make([]execResult, len(execs))
+		for r := range ch {
+			ordered[r.index] = execResult(r)
+		}
+		results = append(results, ordered...)
+	}
+
+	// Phase 3: apply results in original call order (preserving history ordering)
+	for i, res := range results {
+		exec := execs[i]
+		call := exec.call
+		args := exec.args
+		beforeTool := exec.beforeTool
+
 		if r.renderer != nil {
 			r.renderer.ToolCall(call.Name, reactToolSummary(args))
 		}
 
-		result, err := tool.Execute(ctx, args)
-		diff := ""
-		if tool.LastDiff != nil {
-			diff = tool.LastDiff()
-		}
-		if err != nil {
-			errResult := fmt.Sprintf("error: %v", err)
+		if res.err != nil {
+			errResult := fmt.Sprintf("error: %v", res.err)
 			r.applyHookOutput(beforeTool)
 			r.applyHookOutput(r.afterToolHookOutput(ctx, call.Name, args, true, errResult))
 			if r.renderer != nil {
-				r.renderer.ToolResult(call.Name, errResult, diff, true)
+				r.renderer.ToolResult(call.Name, errResult, res.diff, true)
 			}
 			r.session.AppendNativeToolResult(call.ID, errResult)
 			r.updateGitWorkflow(call.Name, args, errResult)
 			r.updatePostDelegationWorkflow(call.Name, errResult, true)
-			r.session.CompleteTurn(turn, "", nil, err)
-			return err
+			r.session.CompleteTurn(turn, "", nil, res.err)
+			return res.err
 		}
 
-		display := truncateToolResult(result)
+		display := truncateToolResult(res.result)
 		if r.renderer != nil {
-			r.renderer.ToolResult(call.Name, display, diff, false)
+			r.renderer.ToolResult(call.Name, display, res.diff, false)
 		}
-		r.session.AppendNativeToolResult(call.ID, result)
-		r.updateGitWorkflow(call.Name, args, result)
-		r.updatePlanWorkflow(call.Name, args, result, false)
+		r.session.AppendNativeToolResult(call.ID, res.result)
+		r.updateGitWorkflow(call.Name, args, res.result)
+		r.updatePlanWorkflow(call.Name, args, res.result, false)
 		r.updateSameFileSearchWorkflow(call.Name, args, false)
-		r.updateValidationWorkflow(call.Name, args, result)
-		r.updateRepeatToolCallWorkflow(call.Name, args, result)
-		r.updatePostDelegationWorkflow(call.Name, result, false)
+		r.updateValidationWorkflow(call.Name, args, res.result)
+		r.updateRepeatToolCallWorkflow(call.Name, args, res.result)
+		r.updatePostDelegationWorkflow(call.Name, res.result, false)
 		r.applyHookOutput(beforeTool)
 		r.applyHookOutput(r.afterToolHookOutput(ctx, call.Name, args, false, ""))
 	}
 	return nil
+}
+
+// toolMutatesPool returns true for tools that modify agent pool state and must run
+// sequentially to avoid lifecycle ordering races.
+func toolMutatesPool(name string) bool {
+	switch name {
+	case "spawn_agent", "wait_agent", "kill_agent":
+		return true
+	default:
+		return false
+	}
 }
 
 func injectSystemMessageBeforeHistory(messages []llm.Message, content string) []llm.Message {
