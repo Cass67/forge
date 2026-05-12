@@ -3,6 +3,7 @@ package react
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -386,6 +387,15 @@ func TestDefaultSynthesizerDoesNotInspectRepos(t *testing.T) {
 	} {
 		if containsString(synthesizer.Tools, blocked) {
 			t.Fatalf("synthesizer tools = %#v, should not include repo inspection tool %q", synthesizer.Tools, blocked)
+		}
+	}
+	for _, want := range []string{
+		"Use only evidence included in the task prompt",
+		"Do not ask the user to paste files",
+		"Do not claim missing filesystem or search tools",
+	} {
+		if !strings.Contains(synthesizer.SystemPrompt, want) {
+			t.Fatalf("synthesizer prompt = %q, want %q", synthesizer.SystemPrompt, want)
 		}
 	}
 }
