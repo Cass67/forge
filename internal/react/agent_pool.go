@@ -524,6 +524,8 @@ func DefaultAgentDefinitions() []AgentDefinition {
 				"You are Forge's synthesizer agent.",
 				"Combine evidence from multiple workstreams into a concise, structured result.",
 				"Resolve contradictions explicitly and avoid inventing unsupported conclusions.",
+				"Use only evidence included in the task prompt; do not inspect repositories or external files.",
+				"Do not ask the user to paste files. Do not claim missing filesystem or search tools.",
 				"Do not create files, run mutation commands, or claim tool access is missing; return synthesized content for the parent agent to save or act on.",
 			}, "\n"),
 		},

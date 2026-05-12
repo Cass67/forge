@@ -3727,7 +3727,12 @@ func TestRunnerExposesSynthesisDelegationToolsForMultiAgentReportWrite(t *testin
 		}
 	}
 	got := hookOverlayContent(promptHookOutputForSnapshot(t, snap), "post_delegation_write")
-	for _, want := range []string{"Spawn a read-only synthesizer", "Do not write any single child-agent report"} {
+	for _, want := range []string{
+		"Spawn a read-only synthesizer",
+		"include the full completed child-agent results",
+		"The synthesizer has no filesystem or search tools",
+		"Do not write any single child-agent report",
+	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("post_delegation_write = %q, want %q", got, want)
 		}
