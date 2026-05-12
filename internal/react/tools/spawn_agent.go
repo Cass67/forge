@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	agenttools "forge/internal/agent/tools"
@@ -41,6 +43,9 @@ func NewSpawnAgent(pool *react.AgentPool) agenttools.Tool {
 			}
 			workDir, _ := args["work_dir"].(string)
 			workDir = strings.TrimSpace(workDir)
+			if workDir == "" {
+				workDir = inferWorkDirFromTask(task)
+			}
 
 			mappedRole := react.MapSpawnRole(role)
 			if agentDef, ok := pool.GetAgent(mappedRole); ok && agentDef != nil && readOnlyAgentShouldSanitizeTask(agentDef, task) {
@@ -67,6 +72,24 @@ func NewSpawnAgent(pool *react.AgentPool) agenttools.Tool {
 			return string(encoded), nil
 		},
 	}
+}
+
+func inferWorkDirFromTask(task string) string {
+	for _, field := range strings.Fields(task) {
+		path := strings.Trim(field, "`'\".,;:()[]{}<>")
+		if !filepath.IsAbs(path) {
+			continue
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		if info.IsDir() {
+			return path
+		}
+		return filepath.Dir(path)
+	}
+	return ""
 }
 
 func readOnlyAgentShouldSanitizeTask(agentDef *react.AgentDefinition, task string) bool {

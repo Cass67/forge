@@ -176,6 +176,9 @@ func DriverForModel(cfg *config.Config, tokens *auth.Tokens, model string) llm.D
 		return nil
 	}
 	if p, ambiguous := ResolveCompatProvider(BuildCompatProviders(cfg, tokens), model); p != nil {
+		if p.Name == "opencode-go" && !modelcatalog.OpenCodeGoModelSupportedByOpenAICompatibleChat(ref.Model) {
+			return nil
+		}
 		apiModel := compatAPIModel(p.Name, ref, resolvedModel)
 		baseURL := p.BaseURL
 		wireAPI := p.WireAPI
@@ -660,14 +663,8 @@ func BuildCompatProviders(cfg *config.Config, tokens *auth.Tokens) []CompatProvi
 			Label:   "OpenCode Go",
 			BaseURL: "https://opencode.ai/zen/go/v1",
 			KeyFn:   cfg.OpenCodeKey,
-			IsModel: func(m string) bool { return false },
-			Models: []string{
-				"opencode-go/glm-5.1",
-				"opencode-go/kimi-k2.6",
-				"opencode-go/deepseek-v4-pro",
-				"opencode-go/mimo-v2.5-pro",
-				"opencode-go/mimo-v2-omni",
-			},
+			IsModel: modelcatalog.OpenCodeGoModelSupportedByOpenAICompatibleChat,
+			Models:  modelcatalog.OpenCodeGoSupportedChatModels(),
 		},
 		{
 			Name:    "openrouter",

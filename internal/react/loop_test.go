@@ -669,6 +669,28 @@ func TestRunnerPromptHookOutputIncludesRuntimeGuidance(t *testing.T) {
 			t.Fatalf("repeat_loop = %q", got)
 		}
 	})
+
+	t.Run("post delegation write guidance", func(t *testing.T) {
+		snap := SessionSnapshot{
+			LastInput: "compare repos and write the result as a markdown report to docs/reports/report.md",
+			PendingDelegationAction: &DelegationActionState{
+				Kind:       DelegationActionWriteDoc,
+				TargetPath: "docs/reports/report.md",
+			},
+			History: []llm.Message{
+				{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{"id":"agent-1"}`}}},
+				{Role: llm.RoleTool, ToolCallID: "wait-1", Content: `{"id":"agent-1","status":"completed","result":"raw child report"}`},
+			},
+		}
+
+		output := promptHookOutputForSnapshot(t, snap)
+		got := hookOverlayContent(output, "post_delegation_write")
+		for _, want := range []string{"synthesize", "Do not paste raw child-agent outputs", "write_file", "docs/reports/report.md"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("post_delegation_write = %q, want %q", got, want)
+			}
+		}
+	})
 }
 
 func TestRunnerBeforeToolHookAllowsBroadAlternationSearch(t *testing.T) {
@@ -992,6 +1014,158 @@ func TestCompletedAgentResultMarkdownWritePathRejectsGeneratedReportContentReque
 				t.Fatalf("unexpected fallback write path %q", path)
 			}
 		})
+	}
+}
+
+func TestCompletedAgentResultMarkdownFallbackWritesSynthesizedReport(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("ask agents to audit gaps and write docs/reports/gaps.md")
+	session.SetPendingDelegationAction(DelegationActionState{
+		Kind:       DelegationActionWriteDoc,
+		TargetPath: "docs/reports/gaps.md",
+	})
+	session.UpsertAgentTask(AgentTaskState{
+		ID:         "agent-1",
+		Role:       "dispatching-parallel-agents",
+		Status:     AgentStatusCompleted,
+		Result:     "raw orchestration guidance",
+		ParentTurn: turn,
+	})
+	synthesized := "# Forge Consolidated Gap Analysis\n\n## Priority Findings\n\nSynthesized gap report."
+	session.UpsertAgentTask(AgentTaskState{
+		ID:         "agent-2",
+		Role:       "synthesizer",
+		Status:     AgentStatusCompleted,
+		Result:     synthesized,
+		ParentTurn: turn,
+	})
+
+	var writtenPath, writtenContent string
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "write file",
+		AutoApprove: true,
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			writtenPath, _ = args["path"].(string)
+			writtenContent, _ = args["content"].(string)
+			return "wrote " + writtenPath, nil
+		},
+	})
+	r := NewRunner(Config{Tools: reg, Session: session})
+
+	handled, err := r.tryCompletedAgentResultFallback(context.Background(), turn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("expected completed-agent fallback to handle report write")
+	}
+	if writtenPath != "docs/reports/gaps.md" {
+		t.Fatalf("path = %q", writtenPath)
+	}
+	if writtenContent != synthesized {
+		t.Fatalf("content = %q, want synthesized report", writtenContent)
+	}
+	for _, raw := range []string{"## dispatching-parallel-agents", "raw orchestration guidance", "## synthesizer"} {
+		if strings.Contains(writtenContent, raw) {
+			t.Fatalf("content should not contain raw child-agent output %q: %q", raw, writtenContent)
+		}
+	}
+}
+
+func TestCompletedAgentResultMarkdownFallbackDoesNotWriteRawSourceAgentReport(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("ask agents to audit gaps and write docs/reports/gaps.md")
+	session.SetPendingDelegationAction(DelegationActionState{
+		Kind:        DelegationActionWriteDoc,
+		TargetPath:  "docs/reports/gaps.md",
+		SourceAgent: "agent-1",
+	})
+	session.UpsertAgentTask(AgentTaskState{
+		ID:         "agent-1",
+		Role:       "repo-inspector",
+		Status:     AgentStatusCompleted,
+		Result:     "# Claude Code CLI - Architecture Analysis & Documentation\n\nRaw single-repo report.",
+		ParentTurn: turn,
+	})
+	session.UpsertAgentTask(AgentTaskState{
+		ID:         "agent-2",
+		Role:       "docs-analyzer",
+		Status:     AgentStatusCompleted,
+		Result:     "# Forge docs analysis\n\nRaw docs report.",
+		ParentTurn: turn,
+	})
+
+	writeCalls := 0
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "write file",
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			writeCalls++
+			return "unexpected write", nil
+		},
+	})
+	r := NewRunner(Config{Tools: reg, Session: session})
+
+	handled, err := r.tryCompletedAgentResultFallback(context.Background(), turn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handled {
+		t.Fatal("fallback should not handle multi-agent report writes without synthesized content")
+	}
+	if writeCalls != 0 {
+		t.Fatalf("write_file calls = %d, want 0", writeCalls)
+	}
+}
+
+func TestCompletedAgentResultMarkdownFallbackWritesConciseMultiAgentFindings(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("compare repos and write findings in markup doc")
+	for _, task := range []AgentTaskState{
+		{ID: "agent-1", Role: "cci explorer", Status: AgentStatusCompleted, Result: "CCI checkpoints and session recall", ParentTurn: turn},
+		{ID: "agent-2", Role: "codex explorer", Status: AgentStatusCompleted, Result: "Codex sandbox and exec policy", ParentTurn: turn},
+		{ID: "agent-3", Role: "opencode explorer", Status: AgentStatusCompleted, Result: "OpenCode undo and revert", ParentTurn: turn},
+	} {
+		session.UpsertAgentTask(task)
+	}
+
+	var writtenPath, writtenContent string
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "write file",
+		AutoApprove: true,
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			writtenPath, _ = args["path"].(string)
+			writtenContent, _ = args["content"].(string)
+			return "wrote " + writtenPath, nil
+		},
+	})
+	r := NewRunner(Config{Tools: reg, Session: session})
+
+	handled, err := r.tryCompletedAgentResultFallback(context.Background(), turn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("expected concise multi-agent fallback to handle report write")
+	}
+	if writtenPath != "docs/reports/report.md" {
+		t.Fatalf("path = %q", writtenPath)
+	}
+	for _, want := range []string{"CCI checkpoints", "Codex sandbox", "OpenCode undo"} {
+		if !strings.Contains(writtenContent, want) {
+			t.Fatalf("content missing %q: %q", want, writtenContent)
+		}
+	}
+	for _, raw := range []string{"## cci explorer", "## codex explorer", "## opencode explorer"} {
+		if strings.Contains(writtenContent, raw) {
+			t.Fatalf("content should not contain raw child heading %q: %q", raw, writtenContent)
+		}
 	}
 }
 
@@ -1643,6 +1817,38 @@ func TestRunnerNativePathHandlesMalformedArgsJSON(t *testing.T) {
 	}
 	if snap.Turns[0].Error == "" {
 		t.Fatal("expected recorded turn error for malformed args")
+	}
+}
+
+func TestRunnerReturnsUnknownNativeToolErrorToModel(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "bad-1", Name: "find docs -type f -name \"*.md\"</arg_value>", ArgsJSON: `{}`}}},
+		{{Text: "recovered after tool correction"}},
+	}}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "read_file", Description: "read file"})
+	session := NewSession()
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+	if err := r.Run(context.Background(), "inspect the repo"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if driver.callCount != 2 {
+		t.Fatalf("driver calls = %d, want recovery turn", driver.callCount)
+	}
+	if got := r.LastResponse(); got != "recovered after tool correction" {
+		t.Fatalf("LastResponse = %q", got)
+	}
+	snap := session.Snapshot()
+	found := false
+	for _, msg := range snap.History {
+		if msg.Role == llm.RoleTool && strings.Contains(msg.Content, "unknown tool") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("history missing unknown-tool feedback: %#v", snap.History)
 	}
 }
 
@@ -2576,6 +2782,43 @@ func TestRunnerDelegationIntentRestrictsParentToDelegationTools(t *testing.T) {
 	}
 }
 
+func TestRunnerMultiRootReportWriteRestrictsParentToDelegationTools(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"read_file", "list_dir", "search", "code_search", "glob", "write_file", "spawn_agent", "wait_agent"} {
+		toolName := name
+		reg.Register(agenttools.Tool{
+			Name:        toolName,
+			Description: toolName,
+			AutoApprove: true,
+			Execute: func(_ context.Context, _ map[string]any) (string, error) {
+				return "ok", nil
+			},
+		})
+	}
+	r := NewRunner(Config{Tools: reg})
+	input := "Inspect `/Users/cass/git/cci`, `/Users/cass/git/codex`, `/Users/cass/git/opencode`, and Forge docs under `/Users/cass/git/forge/docs` that mention Claude Code or claudecode analysis. Identify gaps and write the report to `docs/reports/2026-05-12-cross-repo-gap-analysis.md`."
+
+	defs, decision := r.selectToolDefsWithDecision(SessionSnapshot{LastInput: input})
+	names := toolDefNames(defs)
+
+	if decision.Reason != "delegation_intent" {
+		t.Fatalf("reason = %q, want delegation_intent (tools=%#v)", decision.Reason, names)
+	}
+	for _, want := range []string{"spawn_agent", "wait_agent"} {
+		if !containsString(names, want) {
+			t.Fatalf("multi-root report tools = %#v, want %s", names, want)
+		}
+	}
+	for _, blocked := range []string{"read_file", "list_dir", "search", "code_search", "glob", "write_file"} {
+		if containsString(names, blocked) {
+			t.Fatalf("multi-root report tools = %#v, should not include parent tool %s", names, blocked)
+		}
+	}
+	if !shouldRequireToolCallForSnapshot(SessionSnapshot{LastInput: input}) {
+		t.Fatal("multi-root report write should require delegation tool use before prose")
+	}
+}
+
 func TestRunnerReportsToolExposureDecision(t *testing.T) {
 	reg := agenttools.NewRegistry()
 	for _, name := range []string{"read_file", "spawn_agent", "wait_agent"} {
@@ -3452,6 +3695,42 @@ func TestRunnerRestoresWriteToolsFromPendingDelegationAction(t *testing.T) {
 	}
 	if containsString(names, "spawn_agent") || containsString(names, "wait_agent") {
 		t.Fatalf("pending action tools = %#v, should not force delegation", names)
+	}
+}
+
+func TestRunnerExposesSynthesisDelegationToolsForMultiAgentReportWrite(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"spawn_agent", "wait_agent", "write_file", "edit_file", "apply_patch", "git_status"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{
+		LastInput: "compare repos and write docs/reports/gaps.md",
+		PendingDelegationAction: &DelegationActionState{
+			Kind:       DelegationActionWriteDoc,
+			TargetPath: "docs/reports/gaps.md",
+		},
+		History: []llm.Message{
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "wait-1", Content: `{"status":"completed","result":"repo findings"}`},
+		},
+		AgentTasks: []AgentTaskState{
+			{ID: "agent-1", Role: "repo-auditor", Status: AgentStatusCompleted, Result: "repo findings"},
+			{ID: "agent-2", Role: "docs-analyzer", Status: AgentStatusCompleted, Result: "docs findings"},
+		},
+	}
+
+	names := toolDefNames(r.selectToolDefs(snap))
+	for _, want := range []string{"spawn_agent", "wait_agent", "write_file"} {
+		if !containsString(names, want) {
+			t.Fatalf("multi-agent report tools = %#v, want %s", names, want)
+		}
+	}
+	got := hookOverlayContent(promptHookOutputForSnapshot(t, snap), "post_delegation_write")
+	for _, want := range []string{"Spawn a read-only synthesizer", "Do not write any single child-agent report"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("post_delegation_write = %q, want %q", got, want)
+		}
 	}
 }
 

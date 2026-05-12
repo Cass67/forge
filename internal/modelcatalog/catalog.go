@@ -32,6 +32,14 @@ type ModelInfo struct {
 	SupportedImageMIMEs []string
 }
 
+type OpenCodeGoModelCapability struct {
+	WireAPI                         string
+	SDK                             string
+	InterleavedReasoningField       string
+	SupportsRequiredChatToolChoice  bool
+	SupportedByOpenAICompatibleChat bool
+}
+
 type CustomProviderRoute struct {
 	APIModel string `json:"api_model"`
 	APIBase  string `json:"api_base,omitempty"`
@@ -55,24 +63,98 @@ type modelEntry struct {
 
 // forgeToModelsDev maps forge provider labels to models.dev provider IDs.
 var forgeToModelsDev = map[string]string{
-	"openai":     "openai",
-	"chatgpt":    "openai",
-	"copilot":    "github-copilot",
-	"openrouter": "openrouter",
-	"nvidia":     "nvidia",
-	"xai":        "xai",
-	"mistral":    "mistral",
-	"perplexity": "perplexity",
-	"cerebras":   "cerebras",
-	"groq":       "groq",
-	"together":   "togetherai",
-	"deepinfra":  "deepinfra",
-	"anthropic":  "anthropic",
-	"deepseek":   "deepseek",
-	"google":     "google",
-	"cohere":     "cohere",
-	"fireworks":  "fireworks-ai",
-	"novita":     "novita-ai",
+	"openai":      "openai",
+	"chatgpt":     "openai",
+	"copilot":     "github-copilot",
+	"openrouter":  "openrouter",
+	"nvidia":      "nvidia",
+	"xai":         "xai",
+	"mistral":     "mistral",
+	"perplexity":  "perplexity",
+	"cerebras":    "cerebras",
+	"groq":        "groq",
+	"together":    "togetherai",
+	"deepinfra":   "deepinfra",
+	"anthropic":   "anthropic",
+	"deepseek":    "deepseek",
+	"google":      "google",
+	"cohere":      "cohere",
+	"fireworks":   "fireworks-ai",
+	"novita":      "novita-ai",
+	"opencode":    "opencode",
+	"opencode-go": "opencode-go",
+}
+
+var openCodeGoModelOrder = []string{
+	"glm-5.1",
+	"glm-5",
+	"kimi-k2.6",
+	"kimi-k2.5",
+	"deepseek-v4-pro",
+	"deepseek-v4-flash",
+	"mimo-v2.5-pro",
+	"mimo-v2.5",
+	"mimo-v2-pro",
+	"mimo-v2-omni",
+}
+
+var openCodeGoModelCapabilities = map[string]OpenCodeGoModelCapability{
+	"glm-5.1":           openCodeGoOpenAICompatibleReasoningModel(),
+	"glm-5":             openCodeGoOpenAICompatibleReasoningModel(),
+	"kimi-k2.6":         openCodeGoOpenAICompatibleReasoningModel(),
+	"kimi-k2.5":         openCodeGoOpenAICompatibleReasoningModel(),
+	"deepseek-v4-pro":   openCodeGoOpenAICompatibleReasoningModel(),
+	"deepseek-v4-flash": openCodeGoOpenAICompatibleReasoningModel(),
+	"mimo-v2.5-pro":     openCodeGoOpenAICompatibleReasoningModel(),
+	"mimo-v2.5":         openCodeGoOpenAICompatibleReasoningModel(),
+	"mimo-v2-pro":       openCodeGoOpenAICompatibleReasoningModel(),
+	"mimo-v2-omni":      openCodeGoOpenAICompatibleReasoningModel(),
+	"minimax-m2.7":      {WireAPI: "messages", SDK: "@ai-sdk/anthropic"},
+	"minimax-m2.5":      {WireAPI: "messages", SDK: "@ai-sdk/anthropic"},
+	"qwen3.6-plus":      {WireAPI: "chat", SDK: "@ai-sdk/alibaba"},
+	"qwen3.5-plus":      {WireAPI: "chat", SDK: "@ai-sdk/alibaba"},
+	"hy3-preview":       {},
+}
+
+func openCodeGoOpenAICompatibleReasoningModel() OpenCodeGoModelCapability {
+	return OpenCodeGoModelCapability{
+		WireAPI:                         "chat",
+		SDK:                             "@ai-sdk/openai-compatible",
+		InterleavedReasoningField:       "reasoning_content",
+		SupportsRequiredChatToolChoice:  false,
+		SupportedByOpenAICompatibleChat: true,
+	}
+}
+
+func OpenCodeGoSupportedChatModels() []string {
+	out := make([]string, 0, len(openCodeGoModelOrder))
+	for _, model := range openCodeGoModelOrder {
+		cap, ok := openCodeGoModelCapabilities[model]
+		if ok && cap.SupportedByOpenAICompatibleChat {
+			out = append(out, model)
+		}
+	}
+	return out
+}
+
+func OpenCodeGoModelCapabilityFor(model string) (OpenCodeGoModelCapability, bool) {
+	model = normalizeOpenCodeGoModel(model)
+	if model == "" {
+		return OpenCodeGoModelCapability{}, false
+	}
+	cap, ok := openCodeGoModelCapabilities[model]
+	return cap, ok
+}
+
+func OpenCodeGoModelSupportedByOpenAICompatibleChat(model string) bool {
+	cap, ok := OpenCodeGoModelCapabilityFor(model)
+	return ok && cap.SupportedByOpenAICompatibleChat
+}
+
+func normalizeOpenCodeGoModel(model string) string {
+	model = strings.TrimSpace(model)
+	model = strings.TrimPrefix(model, "opencode-go/")
+	return strings.TrimSpace(model)
 }
 
 var (

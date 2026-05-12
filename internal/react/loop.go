@@ -143,15 +143,16 @@ const maxCompletionRetriesPerTurn = 3
 const retryNoticeText = "Revising answer..."
 
 var loopHookOverlayKeys = map[string]struct{}{
-	"review_guidance":    {},
-	"preview_workflow":   {},
-	"plan_blocker":       {},
-	"synthesis_guidance": {},
-	"validation_failure": {},
-	"search_thrash":      {},
-	"git_workflow":       {},
-	"repeat_loop":        {},
-	"agent_status":       {},
+	"review_guidance":       {},
+	"preview_workflow":      {},
+	"plan_blocker":          {},
+	"synthesis_guidance":    {},
+	"post_delegation_write": {},
+	"validation_failure":    {},
+	"search_thrash":         {},
+	"git_workflow":          {},
+	"repeat_loop":           {},
+	"agent_status":          {},
 }
 
 type promptHookPayload struct {
@@ -755,7 +756,11 @@ func (r *Runner) tryCompletedAgentResultFallback(ctx context.Context, turn int) 
 	}
 	if path, ok := completedAgentResultMarkdownWritePath(snap.LastInput); ok && r.tools != nil {
 		if _, ok := r.tools.Get("write_file"); ok {
-			return true, r.writeCompletedAgentResultFallback(ctx, turn, path, content)
+			writeContent := completedAgentResultMarkdownWriteContent(snap)
+			if writeContent == "" {
+				return false, nil
+			}
+			return true, r.writeCompletedAgentResultFallback(ctx, turn, path, writeContent)
 		}
 	}
 	fallback := "Parent model connection failed while composing the final response. Showing completed child-agent result instead.\n\n" + content
@@ -819,6 +824,79 @@ func completedAgentResultFallbackContent(snap SessionSnapshot) string {
 		return ""
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+func completedAgentResultMarkdownWriteContent(snap SessionSnapshot) string {
+	if sameTurnAgentStillOutstanding(snap.AgentTasks, snap.Turn) {
+		return ""
+	}
+	if result := completedAgentResultByRole(snap, "synthesizer"); result != "" {
+		return result
+	}
+
+	var results []string
+	for _, task := range snap.AgentTasks {
+		if task.Status != AgentStatusCompleted || task.ParentTurn != snap.Turn {
+			continue
+		}
+		result := strings.TrimSpace(task.Result)
+		if result == "" {
+			continue
+		}
+		results = append(results, result)
+	}
+	if len(results) == 1 {
+		return results[0]
+	}
+	return conciseMultiAgentMarkdownSummary(results)
+}
+
+func conciseMultiAgentMarkdownSummary(results []string) string {
+	if len(results) < 2 {
+		return ""
+	}
+	bullets := make([]string, 0, len(results))
+	for _, result := range results {
+		if !isConciseAgentFinding(result) {
+			return ""
+		}
+		bullets = append(bullets, "- "+strings.ReplaceAll(strings.TrimSpace(result), "\n", " "))
+	}
+	return "# Consolidated Findings\n\n" + strings.Join(bullets, "\n") + "\n"
+}
+
+func isConciseAgentFinding(result string) bool {
+	result = strings.TrimSpace(result)
+	if result == "" || len(result) > 500 || strings.HasPrefix(result, "#") {
+		return false
+	}
+	lines := strings.Split(result, "\n")
+	if len(lines) > 3 {
+		return false
+	}
+	for _, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			return false
+		}
+	}
+	return true
+}
+
+func completedAgentResultByRole(snap SessionSnapshot, role string) string {
+	role = strings.TrimSpace(role)
+	if role == "" {
+		return ""
+	}
+	for i := len(snap.AgentTasks) - 1; i >= 0; i-- {
+		task := snap.AgentTasks[i]
+		if task.Status != AgentStatusCompleted || task.ParentTurn != snap.Turn || !strings.EqualFold(strings.TrimSpace(task.Role), role) {
+			continue
+		}
+		if result := strings.TrimSpace(task.Result); result != "" {
+			return result
+		}
+	}
+	return ""
 }
 
 func completedAgentResultMarkdownWritePath(input string) (string, bool) {
@@ -1208,7 +1286,8 @@ func (r *Runner) emitRetryNotice(msg string) {
 }
 
 // executeNativeToolCalls executes a batch of native tool calls and appends results
-// to the session. On unknown tool or execution error the call is recorded as a failed result and the loop aborts.
+// to the session. Unknown tools are returned to the model as tool errors so it can recover;
+// execution errors still abort the turn after recording the failed result.
 // Tool executions are dispatched in parallel (matching Codex's FuturesOrdered model)
 // to reduce total wall-clock time when multiple independent tools are requested.
 func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []llm.NativeToolCall) error {
@@ -1225,13 +1304,14 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 	for _, call := range calls {
 		tool, ok := r.tools.Get(call.Name)
 		if !ok {
-			errMsg := fmt.Sprintf("error: unknown tool %q", call.Name)
-			if r.renderer != nil {
-				r.renderer.Error(fmt.Sprintf("unknown tool %q", call.Name))
-			}
-			r.session.AppendNativeToolResult(call.ID, errMsg)
-			r.session.CompleteTurn(turn, "", nil, errors.New(errMsg))
-			return errors.New(errMsg)
+			errMsg := redactRuntimeText(fmt.Sprintf("error: unknown tool %q. Use one of the tools provided for this turn.", call.Name))
+			execs = append(execs, toolExec{
+				call: call,
+				execute: func() (string, string, error) {
+					return errMsg, "", nil
+				},
+			})
+			continue
 		}
 
 		var args map[string]any
@@ -1372,7 +1452,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 // sequentially to avoid lifecycle ordering races.
 func toolMutatesPool(name string) bool {
 	switch name {
-	case "spawn_agent", "wait_agent", "kill_agent":
+	case "spawn_agent", "wait_agent", "get_agent_output", "kill_agent":
 		return true
 	default:
 		return false
@@ -1481,7 +1561,7 @@ var (
 	planningToolNames    = []string{"think", "update_plan", "enter_plan_mode", "exit_plan_mode", "ask_user_question"}
 	webToolNames         = []string{"web_fetch", "web_search"}
 	delegateToolNames    = []string{"spawn_agent", "wait_agent"}
-	activeAgentToolNames = []string{"wait_agent", "agent_status", "kill_agent"}
+	activeAgentToolNames = []string{"wait_agent", "get_agent_output", "agent_status", "kill_agent"}
 	agentStatusToolNames = []string{"agent_status"}
 )
 
@@ -1538,6 +1618,9 @@ selectParentTools:
 		allowed = append(allowed, writeToolNames...)
 		allowed = append(allowed, gitReadToolNames...)
 		allowed = append(allowed, "tool_help")
+		if postDelegationNeedsSynthesisAgent(snapshot) {
+			allowed = append(allowed, delegateToolNames...)
+		}
 	}
 	pluginNames := r.pluginToolNames()
 	pluginIntent := inputSuggestsPluginTool(snapshot.LastInput, pluginNames)
@@ -2314,6 +2397,9 @@ func inputAsksGitPushStatus(text string) bool {
 }
 
 func inputSuggestsDelegation(text string) bool {
+	if inputSuggestsMultiRootDelegatedReport(text) {
+		return true
+	}
 	return containsToolPhrase(text,
 		"sub-agent", "sub agent", "delegate", "parallel agent", "parallel agents", "spawn agent",
 		"ask agent", "ask agents", "use agent", "use agents", "agent to", "agents to",
@@ -2321,6 +2407,47 @@ func inputSuggestsDelegation(text string) bool {
 		"audit this repo", "audit the repo", "audit repository", "audit this codebase", "audit the codebase",
 		"compare this repo", "compare the repo", "fall down compared to",
 	)
+}
+
+func inputSuggestsMultiRootDelegatedReport(text string) bool {
+	return inputSuggestsFileWrites(text) && len(absoluteWorkspaceRoots(text)) > 1
+}
+
+func absoluteWorkspaceRoots(text string) map[string]struct{} {
+	roots := make(map[string]struct{})
+	for _, field := range strings.Fields(text) {
+		path := strings.Trim(field, "`'\".,;:()[]{}<>")
+		if !strings.HasPrefix(path, "/") && !strings.HasPrefix(path, "~/") {
+			continue
+		}
+		root := absoluteWorkspaceRoot(path)
+		if root != "" {
+			roots[root] = struct{}{}
+		}
+	}
+	return roots
+}
+
+func absoluteWorkspaceRoot(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if strings.HasPrefix(path, "~/") {
+		parts := strings.Split(strings.Trim(path, "/"), "/")
+		if len(parts) < 3 {
+			return path
+		}
+		return strings.Join(parts[:3], "/")
+	}
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) < 2 {
+		return path
+	}
+	if len(parts) >= 4 && strings.EqualFold(parts[0], "users") {
+		return "/" + strings.Join(parts[:4], "/")
+	}
+	return "/" + strings.Join(parts[:2], "/")
 }
 
 func inputSuggestsPostDelegationAction(text string) bool {
@@ -2520,6 +2647,7 @@ func newLoopHookRegistry() *hooks.Registry {
 	registry.Register(hooks.PointPromptContext, "review_guidance", reviewPromptHook)
 	registry.Register(hooks.PointPromptContext, "preview_workflow", previewWorkflowPromptHook)
 	registry.Register(hooks.PointPromptContext, "plan_blocker", blockedPlanPromptHook)
+	registry.Register(hooks.PointPromptContext, "post_delegation_write", postDelegationWritePromptHook)
 	registry.Register(hooks.PointPromptContext, "synthesis_guidance", synthesisPromptHook)
 	registry.Register(hooks.PointPromptContext, "validation_failure", validationPromptHook)
 	registry.Register(hooks.PointPromptContext, "search_thrash", searchThrashPromptHook)
@@ -2789,6 +2917,47 @@ func blockedPlanPromptHook(_ context.Context, event hooks.Event) []hooks.Result 
 		Priority:   hooks.PriorityHigh,
 		Provenance: "runtime",
 	}}
+}
+
+func postDelegationWritePromptHook(_ context.Context, event hooks.Event) []hooks.Result {
+	snap, ok := event.Snapshot.(SessionSnapshot)
+	if !ok || !historyIncludesCompletedToolCall(snap, "wait_agent") {
+		return nil
+	}
+	if !pendingDelegationWriteAction(snap) && !pendingPostDelegationWriteAction(snap) {
+		return nil
+	}
+	target := "the requested document path"
+	if snap.PendingDelegationAction != nil && strings.TrimSpace(snap.PendingDelegationAction.TargetPath) != "" {
+		target = strings.TrimSpace(snap.PendingDelegationAction.TargetPath)
+	}
+	content := "Post-delegation document write active. Use completed child-agent results as source material, but synthesize the requested document instead of concatenating reports. Do not paste raw child-agent outputs or role headings such as `## explorer`. Write the final, user-facing document with write_file to " + target + ". Include prioritized findings, evidence paths, and concrete next steps when the user requested a gaps/findings report."
+	if postDelegationNeedsSynthesisAgent(snap) {
+		content += " Multiple completed child-agent results are available and no synthesizer result is recorded. Spawn a read-only synthesizer agent with the completed findings, wait for it, then write_file the synthesized result. Do not write any single child-agent report."
+	}
+	return []hooks.Result{hooks.OverlayResult{
+		Key:        "post_delegation_write",
+		Content:    content,
+		Priority:   hooks.PriorityHigh,
+		Provenance: "runtime",
+	}}
+}
+
+func postDelegationNeedsSynthesisAgent(snap SessionSnapshot) bool {
+	if !pendingDelegationWriteAction(snap) && !pendingPostDelegationWriteAction(snap) {
+		return false
+	}
+	completed := 0
+	for _, task := range snap.AgentTasks {
+		if task.Status != AgentStatusCompleted || task.ParentTurn != snap.Turn || strings.TrimSpace(task.Result) == "" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(task.Role), "synthesizer") {
+			return false
+		}
+		completed++
+	}
+	return completed > 1
 }
 
 func synthesisPromptHook(_ context.Context, event hooks.Event) []hooks.Result {
