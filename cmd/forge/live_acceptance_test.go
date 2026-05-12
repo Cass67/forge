@@ -143,6 +143,30 @@ func TestLiveAcceptanceSecretBoundariesWithLocalProvider(t *testing.T) {
 	server.AssertSecretChecks(t)
 }
 
+func TestLiveAcceptanceDebugLogIncludesRetryAttemptsWithLocalProvider(t *testing.T) {
+	server := newLiveAcceptanceMock(t)
+	defer server.Close()
+	bin := buildForgeBinary(t)
+	workDir := initLiveAcceptanceFixture(t)
+	configHome := writeLiveAcceptanceConfigWithRetryAttempts(t, server.URL(), 2)
+
+	output, debugLog := runForgeConsole(t, bin, configHome, workDir, strings.Join([]string{
+		`LIVE_RETRY_DEBUG_CHECK: answer RETRY_DEBUG_OK after any retry.`,
+		`/quit`,
+	}, "\n")+"\n")
+
+	if !strings.Contains(output, "RETRY_DEBUG_OK") {
+		t.Fatalf("console output missing retry success:\n%s", output)
+	}
+	debugText := readTextFile(t, debugLog)
+	for _, want := range []string{`"msg":"llm.retry_attempt"`, `"msg":"llm.retry_wait"`, `"next_attempt":2`} {
+		if !strings.Contains(debugText, want) {
+			t.Fatalf("debug log missing %q:\n%s", want, debugText)
+		}
+	}
+	server.AssertRetryDebug(t)
+}
+
 func TestLiveAcceptanceManualCompactionContinuesWithLocalProvider(t *testing.T) {
 	server := newLiveAcceptanceMock(t)
 	defer server.Close()
@@ -217,6 +241,8 @@ type liveAcceptanceMock struct {
 	comparisonReadOnly int
 	comparisonWait     bool
 	comparison500      bool
+	retryDebugRequests int
+	retryDebugSuccess  bool
 }
 
 func newLiveAcceptanceMock(t *testing.T) *liveAcceptanceMock {
@@ -255,6 +281,23 @@ func (m *liveAcceptanceMock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	body := string(bodyBytes)
 
 	switch {
+	case strings.Contains(body, "LIVE_RETRY_DEBUG_CHECK"):
+		m.mu.Lock()
+		m.retryDebugRequests++
+		requestCount := m.retryDebugRequests
+		// The OpenAI-compatible client retries 500s internally; fail enough HTTP
+		// requests for Forge's outer RetryDriver to observe and log a retry.
+		if requestCount > 3 {
+			m.retryDebugSuccess = true
+		}
+		m.mu.Unlock()
+		if requestCount <= 3 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"error":{"message":"debug retry overload","code":500}}`)
+			return
+		}
+		writeTextSSE(w, "RETRY_DEBUG_OK")
 	case strings.Contains(body, "child keeps running until canceled") && !strings.Contains(body, "LIVE_STATUS_CANCEL_CHECK"):
 		closeOnce(m.childStarted)
 		select {
@@ -499,6 +542,18 @@ func (m *liveAcceptanceMock) AssertSecretChecks(t *testing.T) {
 	}
 	if !m.secretWriteCalled || !m.secretWriteClean {
 		t.Fatalf("secret write flags = called:%v clean:%v", m.secretWriteCalled, m.secretWriteClean)
+	}
+}
+
+func (m *liveAcceptanceMock) AssertRetryDebug(t *testing.T) {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.errs) > 0 {
+		t.Fatalf("mock server errors: %s", strings.Join(m.errs, "; "))
+	}
+	if m.retryDebugRequests < 4 || !m.retryDebugSuccess {
+		t.Fatalf("retry debug flags = requests:%v success:%v", m.retryDebugRequests, m.retryDebugSuccess)
 	}
 }
 
@@ -767,6 +822,11 @@ func runForgeConsole(t *testing.T, bin, configHome, workDir, input string) (stri
 
 func writeLiveAcceptanceConfig(t *testing.T, baseURL string) string {
 	t.Helper()
+	return writeLiveAcceptanceConfigWithRetryAttempts(t, baseURL, 1)
+}
+
+func writeLiveAcceptanceConfigWithRetryAttempts(t *testing.T, baseURL string, maxAttempts int) string {
+	t.Helper()
 	configHome := t.TempDir()
 	forgeDir := filepath.Join(configHome, "forge")
 	if err := os.MkdirAll(forgeDir, 0o700); err != nil {
@@ -779,7 +839,7 @@ model = "mock/mock-model"
 auto_skills = "off"
 
 [retry]
-max_attempts = 1
+max_attempts = %d
 initial_wait_ms = 10
 max_wait_ms = 10
 timeout_seconds = 10
@@ -793,7 +853,7 @@ base_url = %q
 wire_api = "chat"
 default_model = "mock-model"
 models = ["mock-model"]
-`, baseURL)
+`, maxAttempts, baseURL)
 	if err := os.WriteFile(filepath.Join(forgeDir, "config.toml"), []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
