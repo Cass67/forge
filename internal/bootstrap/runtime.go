@@ -277,6 +277,7 @@ func AvailableModels(cfg *config.Config, tokens *auth.Tokens) []string {
 	for _, p := range BuildCompatProviders(cfg, tokens) {
 		if p.KeyFn() != "" {
 			if customModels := modelcatalog.CustomProviderModels(p.Name); len(customModels) > 0 {
+				customModels = filterCompatProviderModels(p.Name, customModels)
 				out = append(out, qualifyCompatibleModelList(p.Name, customModels)...)
 				continue
 			}
@@ -291,6 +292,19 @@ func AvailableModels(cfg *config.Config, tokens *auth.Tokens) []string {
 		out = append(out, CopilotModels(tokens.CopilotToken)...)
 	}
 	return sortModelsByHealth(uniqueStrings(out))
+}
+
+func filterCompatProviderModels(provider string, models []string) []string {
+	if strings.TrimSpace(provider) != "opencode-go" {
+		return models
+	}
+	out := make([]string, 0, len(models))
+	for _, model := range models {
+		if modelcatalog.OpenCodeGoModelSupportedByOpenAICompatibleChat(model) {
+			out = append(out, model)
+		}
+	}
+	return out
 }
 
 func useLiveCompatModelDiscoveryEnv() bool {
