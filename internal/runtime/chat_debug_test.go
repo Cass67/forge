@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,6 +45,51 @@ type debugNativeToolDriver struct {
 	lastMessages []llm.Message
 	lastTools    []llm.ToolDef
 	lastOpts     []llm.NativeToolOptions
+}
+
+type debugRetryDriver struct {
+	calls    int
+	firstErr error
+}
+
+type debugRetryNativeDriver struct {
+	calls int
+}
+
+func (d *debugRetryDriver) Name() string { return "debug-retry" }
+
+func (d *debugRetryDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	defer close(out)
+	d.calls++
+	if d.calls == 1 {
+		if d.firstErr != nil {
+			return d.firstErr
+		}
+		return errors.New("500 temporary provider failure")
+	}
+	out <- llm.Token{Text: "ok"}
+	return nil
+}
+
+func (d *debugRetryNativeDriver) Name() string { return "debug-retry-native" }
+
+func (d *debugRetryNativeDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	defer close(out)
+	return nil
+}
+
+func (d *debugRetryNativeDriver) StreamWithTools(ctx context.Context, messages []llm.Message, tools []llm.ToolDef, out chan<- llm.Token) error {
+	return d.StreamWithToolsOptions(ctx, messages, tools, llm.NativeToolOptions{}, out)
+}
+
+func (d *debugRetryNativeDriver) StreamWithToolsOptions(_ context.Context, _ []llm.Message, _ []llm.ToolDef, _ llm.NativeToolOptions, out chan<- llm.Token) error {
+	defer close(out)
+	d.calls++
+	if d.calls == 1 {
+		return errors.New("502 temporary tool stream failure")
+	}
+	out <- llm.Token{ToolCall: &llm.NativeToolCall{ID: "call_retry", Name: "agent_status", ArgsJSON: "{}"}}
+	return nil
 }
 
 func (d *debugNativeToolDriver) Name() string { return "debug-native-tool" }
@@ -300,6 +346,175 @@ func TestEnableChatDebugForwardsRequiredToolChoiceThroughRetryDriver(t *testing.
 	}
 	if len(inner.lastOpts) != 1 || !inner.lastOpts[0].RequireToolCall {
 		t.Fatalf("inner.lastOpts = %#v, want RequireToolCall=true", inner.lastOpts)
+	}
+}
+
+func TestEnableChatDebugLogsRetryAttemptsAndWaits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chat-debug.jsonl")
+	inner := &debugRetryDriver{}
+	setup := &ChatSetup{
+		ChatModel: "openai/gpt-5",
+		WorkDir:   t.TempDir(),
+		Driver:    llm.NewRetryDriver(inner, 2, 0, 0, 0),
+	}
+
+	if _, err := EnableChatDebug(setup, path); err != nil {
+		t.Fatal(err)
+	}
+
+	out := make(chan llm.Token, 4)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- setup.Driver.Stream(context.Background(), []llm.Message{{Role: llm.RoleUser, Content: "hi"}}, out)
+	}()
+	for range out {
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	if inner.calls != 2 {
+		t.Fatalf("inner calls = %d, want 2", inner.calls)
+	}
+
+	attempts := debugEntriesWithMessage(t, path, "llm.retry_attempt")
+	if len(attempts) != 2 {
+		t.Fatalf("retry attempts = %d, want 2", len(attempts))
+	}
+	secondFields, _ := attempts[1]["fields"].(map[string]any)
+	if got := secondFields["driver"]; got != "debug-retry" {
+		t.Fatalf("retry attempt driver = %#v, want debug-retry", got)
+	}
+	if got := secondFields["operation"]; got != "stream" {
+		t.Fatalf("retry attempt operation = %#v, want stream", got)
+	}
+	if got := secondFields["attempt"]; got != float64(2) {
+		t.Fatalf("retry attempt = %#v, want 2", got)
+	}
+
+	waits := debugEntriesWithMessage(t, path, "llm.retry_wait")
+	if len(waits) != 1 {
+		t.Fatalf("retry waits = %d, want 1", len(waits))
+	}
+	waitFields, _ := waits[0]["fields"].(map[string]any)
+	if got := waitFields["next_attempt"]; got != float64(2) {
+		t.Fatalf("retry wait next_attempt = %#v, want 2", got)
+	}
+	if got := waitFields["previous_error_class"]; got != "server" {
+		t.Fatalf("retry wait previous_error_class = %#v, want server", got)
+	}
+	if got := waitFields["previous_error_chars"]; got != float64(len("500 temporary provider failure")) {
+		t.Fatalf("retry wait previous_error_chars = %#v", got)
+	}
+}
+
+func TestEnableChatDebugLogsNativeToolRetryAttemptsAndWaits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chat-debug.jsonl")
+	inner := &debugRetryNativeDriver{}
+	setup := &ChatSetup{
+		ChatModel: "openai/gpt-5",
+		WorkDir:   t.TempDir(),
+		Driver:    llm.NewRetryDriver(inner, 2, 0, 0, 0),
+	}
+
+	if _, err := EnableChatDebug(setup, path); err != nil {
+		t.Fatal(err)
+	}
+
+	out := make(chan llm.Token, 4)
+	errCh := make(chan error, 1)
+	go func() {
+		native := setup.Driver.(llm.NativeToolCallerWithOptions)
+		errCh <- native.StreamWithToolsOptions(
+			context.Background(),
+			[]llm.Message{{Role: llm.RoleUser, Content: "check agents"}},
+			[]llm.ToolDef{{Name: "agent_status", Description: "show agents"}},
+			llm.NativeToolOptions{RequireToolCall: true},
+			out,
+		)
+	}()
+	for range out {
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	if inner.calls != 2 {
+		t.Fatalf("inner calls = %d, want 2", inner.calls)
+	}
+
+	attempts := debugEntriesWithMessage(t, path, "llm.retry_attempt")
+	if len(attempts) != 2 {
+		t.Fatalf("retry attempts = %d, want 2", len(attempts))
+	}
+	secondFields, _ := attempts[1]["fields"].(map[string]any)
+	if got := secondFields["driver"]; got != "debug-retry-native" {
+		t.Fatalf("retry attempt driver = %#v, want debug-retry-native", got)
+	}
+	if got := secondFields["operation"]; got != "stream_with_tools" {
+		t.Fatalf("retry attempt operation = %#v, want stream_with_tools", got)
+	}
+	if got := secondFields["attempt"]; got != float64(2) {
+		t.Fatalf("retry attempt = %#v, want 2", got)
+	}
+
+	waits := debugEntriesWithMessage(t, path, "llm.retry_wait")
+	if len(waits) != 1 {
+		t.Fatalf("retry waits = %d, want 1", len(waits))
+	}
+	waitFields, _ := waits[0]["fields"].(map[string]any)
+	if got := waitFields["next_attempt"]; got != float64(2) {
+		t.Fatalf("retry wait next_attempt = %#v, want 2", got)
+	}
+	if got := waitFields["previous_error_class"]; got != "server" {
+		t.Fatalf("retry wait previous_error_class = %#v, want server", got)
+	}
+	if got := waitFields["previous_error_chars"]; got != float64(len("502 temporary tool stream failure")) {
+		t.Fatalf("retry wait previous_error_chars = %#v", got)
+	}
+}
+
+func TestEnableChatDebugRedactsRetryPreviousError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "chat-debug.jsonl")
+	dummyToken := "TOKEN=" + strings.Repeat("x", 24)
+	inner := &debugRetryDriver{firstErr: errors.New("500 temporary provider failure " + dummyToken)}
+	setup := &ChatSetup{
+		ChatModel: "openai/gpt-5",
+		WorkDir:   t.TempDir(),
+		Driver:    llm.NewRetryDriver(inner, 2, 0, 0, 0),
+	}
+
+	if _, err := EnableChatDebug(setup, path); err != nil {
+		t.Fatal(err)
+	}
+
+	out := make(chan llm.Token, 4)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- setup.Driver.Stream(context.Background(), []llm.Message{{Role: llm.RoleUser, Content: "hi"}}, out)
+	}()
+	for range out {
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if strings.Contains(text, dummyToken) {
+		t.Fatalf("debug log leaked retry error token: %s", text)
+	}
+	waits := debugEntriesWithMessage(t, path, "llm.retry_wait")
+	if len(waits) != 1 {
+		t.Fatalf("retry waits = %d, want 1", len(waits))
+	}
+	waitFields, _ := waits[0]["fields"].(map[string]any)
+	if _, ok := waitFields["previous_error"]; ok {
+		t.Fatalf("retry wait should not include raw previous_error: %#v", waitFields)
+	}
+	if got := waitFields["previous_error_secret_rules"]; got != "generic-token" {
+		t.Fatalf("retry wait previous_error_secret_rules = %#v, want generic-token", got)
 	}
 }
 
@@ -737,4 +952,20 @@ func lastDebugEntryWithMessage(t *testing.T, path, msg string) map[string]any {
 	}
 	t.Fatalf("expected debug entry %q, got %v", msg, lines)
 	return nil
+}
+
+func debugEntriesWithMessage(t *testing.T, path, msg string) []map[string]any {
+	t.Helper()
+	lines := readDebugLines(t, path)
+	entries := make([]map[string]any, 0)
+	for _, line := range lines {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatal(err)
+		}
+		if entry["msg"] == msg {
+			entries = append(entries, entry)
+		}
+	}
+	return entries
 }

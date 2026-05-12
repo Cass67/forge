@@ -11,6 +11,7 @@ import (
 	"forge/internal/llm"
 	"forge/internal/logger"
 	reactruntime "forge/internal/react"
+	resilienceerrors "forge/internal/resilience/errors"
 	"forge/internal/secscan"
 	"forge/internal/version"
 )
@@ -125,6 +126,40 @@ func (r *chatDebugRecorder) logEvent(ev llm.Event) {
 	r.log.Debug("chat.event", fields)
 }
 
+func (r *chatDebugRecorder) logRetryEvent(ev llm.RetryEvent) {
+	if r == nil || r.log == nil {
+		return
+	}
+	fields := map[string]any{
+		"driver":              redactDebugString(ev.Driver),
+		"operation":           redactDebugString(ev.Operation),
+		"max_attempts":        ev.MaxAttempts,
+		"timeout":             ev.Timeout.String(),
+		"stream_idle_timeout": ev.StreamIdleTimeout.String(),
+	}
+	if ev.Attempt > 0 {
+		fields["attempt"] = ev.Attempt
+	}
+	if ev.NextAttempt > 0 {
+		fields["next_attempt"] = ev.NextAttempt
+	}
+	if ev.Kind == llm.RetryEventWait {
+		fields["wait_duration"] = ev.Wait.String()
+		fields["emitted_any"] = ev.EmittedAny
+		if ev.Err != nil {
+			classified := resilienceerrors.ClassifyError(ev.Err)
+			fields["previous_error_class"] = classified.Class.String()
+			fields["previous_error_type"] = classified.Type
+			fields["previous_error_retryable"] = classified.Retryable
+			fields["previous_error_chars"] = len(ev.Err.Error())
+			if rules := debugSecretRules(ev.Err.Error()); rules != "" {
+				fields["previous_error_secret_rules"] = rules
+			}
+		}
+	}
+	r.log.Debug("llm.retry_"+string(ev.Kind), fields)
+}
+
 func (r *chatDebugRecorder) logAgentTask(state reactruntime.AgentTaskState) {
 	if r == nil || r.log == nil {
 		return
@@ -195,6 +230,9 @@ func (r *chatDebugRecorder) logToolExposure(decision reactruntime.ToolExposureDe
 func (r *chatDebugRecorder) wrapDriver(inner llm.Driver) llm.Driver {
 	if inner == nil {
 		return nil
+	}
+	if setter, ok := inner.(interface{ SetRetryObserver(llm.RetryObserver) }); ok {
+		setter.SetRetryObserver(r.logRetryEvent)
 	}
 	return &chatDebugDriver{inner: inner, rec: r}
 }
