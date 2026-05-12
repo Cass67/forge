@@ -962,6 +962,7 @@ func TestCompletedAgentResultMarkdownWritePathRecognizesPathlessReportRequests(t
 		"ask agents to inspect this and write a report",
 		"create a markdown document",
 		"write a nice doc",
+		"write this to a proper checklist doc",
 	} {
 		t.Run(input, func(t *testing.T) {
 			path, ok := completedAgentResultMarkdownWritePath(input)
@@ -978,6 +979,8 @@ func TestCompletedAgentResultMarkdownWritePathRecognizesPathlessReportRequests(t
 func TestCompletedAgentResultMarkdownWritePathRejectsGeneratedReportContentRequest(t *testing.T) {
 	for _, input := range []string{
 		"write code that generates a report",
+		"write code to generate a report",
+		"write code to parse markdown",
 		"ask agents to inspect this and create a markdown parser",
 		"write a report generator",
 		"create a doc builder",
@@ -3001,6 +3004,34 @@ func TestRunnerStopsForcingToolsAfterDelegatedWait(t *testing.T) {
 
 	if defs := r.selectToolDefs(snap); len(defs) != 0 {
 		t.Fatalf("delegation should stop exposing tools after wait_agent result, got %#v", defs)
+	}
+}
+
+func TestRunnerDoesNotKeepPostDelegationWritePendingForUnrelatedFollowUp(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "write_file", Description: "write file"})
+	r := NewRunner(Config{Tools: reg})
+	r.postDelegation.pendingWrite = true
+	snap := SessionSnapshot{
+		LastInput: "what did we do so far?",
+		PendingDelegationAction: &DelegationActionState{
+			Kind: DelegationActionWriteDoc,
+		},
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "write this to a proper checklist doc"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "wait-1", Content: `{"id":"agent-1","status":"completed","result":"checklist content; intended report path docs/reports/report.md"}`},
+			{Role: llm.RoleAssistant, Content: "Parent model connection failed while composing the final response. Showing completed child-agent result instead."},
+			{Role: llm.RoleUser, Content: "what did we do so far?"},
+		},
+	}
+
+	defs, decision := r.selectToolDefsWithDecision(snap)
+	if decision.Reason == "post_delegation_pending_action" {
+		t.Fatalf("tool exposure reason = %q, want unrelated follow-up to clear stale write action", decision.Reason)
+	}
+	if names := toolDefNames(defs); containsString(names, "write_file") {
+		t.Fatalf("tools = %#v, unrelated follow-up should not keep write_file from old delegation", names)
 	}
 }
 

@@ -604,7 +604,7 @@ func directTargetToken(token string) bool {
 		return false
 	}
 	switch token {
-	case "md", "markdown", "file", "report", "doc", "docs", "document", "memo", "note":
+	case "md", "markdown", "file", "report", "doc", "docs", "document", "memo", "note", "checklist":
 		return true
 	default:
 		return false
@@ -866,11 +866,26 @@ func completedAgentWriteTargetAfterVerb(tokens []string) bool {
 }
 
 func completedAgentWriteTargetAfterMarker(tokens []string) bool {
+	sawArticle := false
 	for i, token := range tokens {
-		if directArticleToken(token) || token == "markup" {
+		if directArticleToken(token) {
+			sawArticle = true
 			continue
 		}
-		return completedAgentWriteTargetAt(tokens, i)
+		if token == "markup" {
+			continue
+		}
+		if completedAgentWriteTargetAt(tokens, i) {
+			return true
+		}
+		if !sawArticle {
+			return false
+		}
+		next := i + 1
+		if next >= len(tokens) || directArticleToken(tokens[next]) || tokens[next] == "markup" {
+			return false
+		}
+		return completedAgentWriteTargetAt(tokens, next)
 	}
 	return false
 }
@@ -1485,9 +1500,18 @@ func (r *Runner) selectToolDefsWithDecision(snapshot SessionSnapshot) ([]llm.Too
 		return defs, decision.withTools("active_agents", defs)
 	}
 	delegationComplete := historyIncludesCompletedToolCall(snapshot, "wait_agent")
-	pendingPostDelegationWrite := r.postDelegation.pendingWrite || pendingDelegationWriteAction(snapshot) || pendingPostDelegationWriteAction(snapshot)
+	currentPostDelegationAction := inputSuggestsPostDelegationAction(normalizeToolIntentText(snapshot.LastInput))
+	fallbackSettledWrite := completedAgentFallbackSettledWrite(snapshot) && !currentPostDelegationAction
+	pendingWorkflowWrite := r.postDelegation.pendingWrite || pendingDelegationWriteAction(snapshot)
+	if fallbackSettledWrite {
+		pendingWorkflowWrite = false
+	}
+	pendingPostDelegationWrite := pendingWorkflowWrite || pendingPostDelegationWriteAction(snapshot)
 	if delegationComplete {
-		postDelegationText := postDelegationToolIntentText(snapshot)
+		postDelegationText := snapshot.LastInput
+		if !fallbackSettledWrite {
+			postDelegationText = postDelegationToolIntentText(snapshot)
+		}
 		if !pendingPostDelegationWrite && !inputSuggestsPostDelegationAction(normalizeToolIntentText(postDelegationText)) {
 			return nil, decision
 		}
@@ -2047,6 +2071,10 @@ func pendingPostDelegationWriteAction(snapshot SessionSnapshot) bool {
 	if waitResultIndex < 0 {
 		return false
 	}
+	currentPostDelegationAction := inputSuggestsPostDelegationAction(normalizeToolIntentText(snapshot.LastInput))
+	if completedAgentFallbackAfterIndex(snapshot, waitResultIndex) && !currentPostDelegationAction {
+		return false
+	}
 	if successfulToolResultAfterIndex(snapshot, waitResultIndex, writeToolNames) {
 		return false
 	}
@@ -2055,6 +2083,24 @@ func pendingPostDelegationWriteAction(snapshot SessionSnapshot) bool {
 	}
 	for _, result := range completedToolCallResults(snapshot, "wait_agent") {
 		if inputSuggestsFileWrites(normalizeToolIntentText(result)) {
+			return true
+		}
+	}
+	return false
+}
+
+func completedAgentFallbackSettledWrite(snapshot SessionSnapshot) bool {
+	waitResultIndex := lastCompletedToolResultIndex(snapshot, "wait_agent")
+	return waitResultIndex >= 0 && completedAgentFallbackAfterIndex(snapshot, waitResultIndex)
+}
+
+func completedAgentFallbackAfterIndex(snapshot SessionSnapshot, index int) bool {
+	const fallbackPrefix = "Parent model connection failed while composing the final response. Showing completed child-agent result instead."
+	for i, msg := range snapshot.History {
+		if i <= index || msg.Role != llm.RoleAssistant {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSpace(msg.Content), fallbackPrefix) {
 			return true
 		}
 	}
