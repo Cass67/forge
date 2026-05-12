@@ -878,7 +878,7 @@ func TestRegisterToolsIncludesExecSessionLifecycleTools(t *testing.T) {
 	}
 }
 
-func TestRegisterReactDelegationToolsAddsSpawnAndWait(t *testing.T) {
+func TestRegisterReactDelegationToolsAddsSpawnWaitAndOutputAlias(t *testing.T) {
 	reg := tools.NewRegistry()
 	cfg := &config.Config{}
 	workDir := t.TempDir()
@@ -898,6 +898,9 @@ func TestRegisterReactDelegationToolsAddsSpawnAndWait(t *testing.T) {
 	}
 	if _, ok := reg.Get("wait_agent"); !ok {
 		t.Fatal("wait_agent tool not registered")
+	}
+	if _, ok := reg.Get("get_agent_output"); !ok {
+		t.Fatal("get_agent_output tool not registered")
 	}
 }
 

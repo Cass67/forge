@@ -144,6 +144,31 @@ func TestSpawnAgentOmitsWorkDirWhenNotProvided(t *testing.T) {
 	}
 }
 
+func TestSpawnAgentInfersWorkDirFromAbsoluteDelegatedPath(t *testing.T) {
+	wantDir := t.TempDir()
+	gotCtx := make(chan context.Context, 1)
+	pool := react.NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+		gotCtx <- ctx
+		return "ok", nil
+	})
+	tool := NewSpawnAgent(pool)
+
+	_, err := tool.Execute(context.Background(), map[string]any{
+		"task_description": "Inspect " + wantDir + " repository comprehensively and return findings.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case ctxv := <-gotCtx:
+		if got := react.WorkDirFromContext(ctxv); got != wantDir {
+			t.Fatalf("WorkDirFromContext = %q, want inferred %q", got, wantDir)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("spawn function never called")
+	}
+}
+
 func TestWaitAgentToolReturnsCompletionEnvelope(t *testing.T) {
 	pool := react.NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
 		return "result text", nil
@@ -188,6 +213,47 @@ func TestWaitAgentToolReturnsCompletionEnvelope(t *testing.T) {
 	}
 	if hint, _ := waitPayload["resume_hint"].(string); !strings.Contains(hint, "cannot be resumed") {
 		t.Fatalf("resume_hint = %#v, want explicit cannot-resume guidance", waitPayload["resume_hint"])
+	}
+}
+
+func TestGetAgentOutputToolReturnsCompletionEnvelope(t *testing.T) {
+	pool := react.NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+		return "result text", nil
+	})
+	spawn := NewSpawnAgent(pool)
+	output := NewGetAgentOutput(pool)
+
+	rawSpawn, err := spawn.Execute(context.Background(), map[string]any{
+		"task_description": "inspect repo",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spawnPayload map[string]any
+	if err := json.Unmarshal([]byte(rawSpawn), &spawnPayload); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := spawnPayload["id"].(string)
+	if id == "" {
+		t.Fatal("spawn id missing")
+	}
+
+	rawOutput, err := output.Execute(context.Background(), map[string]any{
+		"id":              id,
+		"timeout_seconds": 1.0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outputPayload map[string]any
+	if err := json.Unmarshal([]byte(rawOutput), &outputPayload); err != nil {
+		t.Fatal(err)
+	}
+	if outputPayload["status"] != string(react.AgentStatusCompleted) {
+		t.Fatalf("status = %#v", outputPayload["status"])
+	}
+	if outputPayload["result"] != "result text" {
+		t.Fatalf("result = %#v", outputPayload["result"])
 	}
 }
 

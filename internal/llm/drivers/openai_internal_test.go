@@ -717,7 +717,7 @@ func TestToOpenAIMessagesHandlesRoleTool(t *testing.T) {
 		}},
 		{Role: llm.RoleTool, ToolCallID: "c1", Content: "M internal/foo.go"},
 	}
-	out := toOpenAIMessages(msgs)
+	out := toOpenAIMessages(msgs, false)
 	if len(out) != 3 {
 		t.Fatalf("want 3 messages, got %d", len(out))
 	}
@@ -1050,7 +1050,145 @@ func TestOpenCodeGoKimiThinkingOmitsRequiredToolChoice(t *testing.T) {
 	}
 }
 
-func TestRequiredToolChoiceScopeForDeepSeekWorkaround(t *testing.T) {
+func TestOpenCodeGoKimiThinkingReplaysReasoningContentOnAssistantToolCalls(t *testing.T) {
+	t.Parallel()
+
+	type chatRequestBody struct {
+		Messages []map[string]any `json:"messages"`
+	}
+
+	var chatBody chatRequestBody
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/chat/completions"; got != want {
+			t.Fatalf("path = %q, want %q", got, want)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&chatBody); err != nil {
+			t.Fatalf("decode chat body: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	d := NewCustomCompatProvider("opencode-go", "sk-test", srv.URL, "opencode-go/kimi-k2.6", "kimi-k2.6", false, nil)
+	tools := []llm.ToolDef{{Name: "wait_agent", Description: "Wait for child agent"}}
+	out := make(chan llm.Token, 8)
+	if err := d.StreamWithToolsOptions(
+		context.Background(),
+		[]llm.Message{
+			{Role: llm.RoleUser, Content: "delegate this task"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "call_wait", Name: "wait_agent", ArgsJSON: `{"id":"agent-1"}`}}},
+			{Role: llm.RoleTool, ToolCallID: "call_wait", Content: `{"status":"completed"}`},
+			{Role: llm.RoleUser, Content: "continue"},
+		},
+		tools,
+		llm.NativeToolOptions{},
+		out,
+	); err != nil {
+		t.Fatalf("StreamWithToolsOptions() error = %v", err)
+	}
+	for range out {
+	}
+
+	for _, msg := range chatBody.Messages {
+		if msg["role"] != "assistant" || msg["tool_calls"] == nil {
+			continue
+		}
+		if _, ok := msg["reasoning_content"]; !ok {
+			t.Fatalf("assistant tool-call message missing reasoning_content: %#v", msg)
+		}
+		return
+	}
+	t.Fatalf("request missing assistant tool-call message: %#v", chatBody.Messages)
+}
+
+func TestOpenCodeGoSupportedChatModelsUseReasoningToolReplayCompatibility(t *testing.T) {
+	t.Parallel()
+
+	type chatRequestBody struct {
+		Model      string           `json:"model"`
+		Messages   []map[string]any `json:"messages"`
+		ToolChoice json.RawMessage  `json:"tool_choice"`
+	}
+
+	for _, model := range []string{
+		"glm-5.1",
+		"glm-5",
+		"kimi-k2.6",
+		"kimi-k2.5",
+		"deepseek-v4-pro",
+		"deepseek-v4-flash",
+		"mimo-v2.5-pro",
+		"mimo-v2.5",
+		"mimo-v2-pro",
+		"mimo-v2-omni",
+	} {
+		model := model
+		t.Run(model, func(t *testing.T) {
+			var chatBody chatRequestBody
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got, want := r.URL.Path, "/chat/completions"; got != want {
+					t.Fatalf("path = %q, want %q", got, want)
+				}
+				if err := json.NewDecoder(r.Body).Decode(&chatBody); err != nil {
+					t.Fatalf("decode chat body: %v", err)
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n"))
+				_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			}))
+			defer srv.Close()
+
+			d := NewCustomCompatProvider("opencode-go", "sk-test", srv.URL, "opencode-go/"+model, model, false, nil)
+			tools := []llm.ToolDef{{Name: "wait_agent", Description: "Wait for child agent"}}
+			out := make(chan llm.Token, 8)
+			if err := d.StreamWithToolsOptions(
+				context.Background(),
+				[]llm.Message{
+					{Role: llm.RoleUser, Content: "delegate this task"},
+					{Role: llm.RoleAssistant, Content: "I will inspect this first."},
+					{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "call_wait", Name: "wait_agent", ArgsJSON: `{"id":"agent-1"}`}}},
+					{Role: llm.RoleTool, ToolCallID: "call_wait", Content: `{"status":"completed"}`},
+					{Role: llm.RoleUser, Content: "continue"},
+				},
+				tools,
+				llm.NativeToolOptions{RequireToolCall: true},
+				out,
+			); err != nil {
+				t.Fatalf("StreamWithToolsOptions() error = %v", err)
+			}
+			for range out {
+			}
+
+			if got := chatBody.Model; got != model {
+				t.Fatalf("model = %q, want %q", got, model)
+			}
+			if len(chatBody.ToolChoice) != 0 {
+				t.Fatalf("tool_choice = %s, want omitted for opencode-go %s", string(chatBody.ToolChoice), model)
+			}
+			assistantMessages := 0
+			assistantToolMessages := 0
+			for _, msg := range chatBody.Messages {
+				if msg["role"] != "assistant" {
+					continue
+				}
+				assistantMessages++
+				if _, ok := msg["reasoning_content"]; !ok {
+					t.Fatalf("assistant message missing reasoning_content for %s: %#v", model, msg)
+				}
+				if msg["tool_calls"] != nil {
+					assistantToolMessages++
+				}
+			}
+			if assistantMessages != 2 || assistantToolMessages != 1 {
+				t.Fatalf("assistant messages = %d, tool-call assistant messages = %d for %s: %#v", assistantMessages, assistantToolMessages, model, chatBody.Messages)
+			}
+		})
+	}
+}
+
+func TestRequiredToolChoiceScopeForOpenCodeGoCompatibility(t *testing.T) {
 	t.Parallel()
 
 	if providerSupportsRequiredChatToolChoice("other", "other/deepseek-reasoner", "deepseek-reasoner") {
@@ -1059,17 +1197,24 @@ func TestRequiredToolChoiceScopeForDeepSeekWorkaround(t *testing.T) {
 	} else {
 		t.Fatal("non-opencode deepseek-reasoner should preserve required tool_choice")
 	}
-	if !providerSupportsRequiredChatToolChoice("opencode-go", "opencode-go/glm-5.1", "glm-5.1") {
-		t.Fatal("non-DeepSeek opencode-go model should preserve required tool_choice")
-	}
 	if !providerSupportsRequiredChatToolChoice("opencode-go", "opencode-go/deepseek-chat", "deepseek-chat") {
 		t.Fatal("unreported opencode-go DeepSeek chat model should preserve required tool_choice")
 	}
-	if providerSupportsRequiredChatToolChoice("opencode-go", "opencode-go/deepseek-v4-pro", "deepseek-reasoner") {
-		t.Fatal("reported opencode-go deepseek-v4-pro route should omit required tool_choice")
-	}
-	if providerSupportsRequiredChatToolChoice("opencode-go", "opencode-go/kimi-k2.6", "kimi-k2.6") {
-		t.Fatal("reported opencode-go kimi thinking route should omit required tool_choice")
+	for _, model := range []string{
+		"glm-5.1",
+		"glm-5",
+		"kimi-k2.6",
+		"kimi-k2.5",
+		"deepseek-v4-pro",
+		"deepseek-v4-flash",
+		"mimo-v2.5-pro",
+		"mimo-v2.5",
+		"mimo-v2-pro",
+		"mimo-v2-omni",
+	} {
+		if providerSupportsRequiredChatToolChoice("opencode-go", "opencode-go/"+model, model) {
+			t.Fatalf("opencode-go %s should omit required tool_choice", model)
+		}
 	}
 }
 

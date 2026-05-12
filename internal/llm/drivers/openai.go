@@ -283,7 +283,7 @@ func (d *OpenAIDriver) chatCompletionParams(messages []llm.Message) openai.ChatC
 func (d *OpenAIDriver) chatCompletionParamsWithTools(messages []llm.Message, opts llm.NativeToolOptions) openai.ChatCompletionNewParams {
 	params := openai.ChatCompletionNewParams{
 		Model:    shared.ChatModel(d.apiModel),
-		Messages: toOpenAIMessages(messages),
+		Messages: toOpenAIMessages(messages, d.requiresAssistantReasoningContent()),
 	}
 	if providerSupportsStreamUsageOptions(d.providerLabel) {
 		params.StreamOptions = openai.ChatCompletionStreamOptionsParam{
@@ -315,17 +315,38 @@ func (d *OpenAIDriver) supportsRequiredChatToolChoice() bool {
 	return providerSupportsRequiredChatToolChoice(d.providerLabel, d.registryName, d.apiModel)
 }
 
+func (d *OpenAIDriver) requiresAssistantReasoningContent() bool {
+	return providerRequiresAssistantReasoningContent(d.providerLabel, d.registryName, d.apiModel)
+}
+
 func providerSupportsRequiredChatToolChoice(providerLabel, registryName, apiModel string) bool {
 	provider := strings.TrimSpace(strings.ToLower(providerLabel))
-	registry := strings.TrimSpace(strings.ToLower(registryName))
-	model := strings.TrimSpace(strings.ToLower(apiModel))
-	if provider == "opencode-go" && registry == "opencode-go/deepseek-v4-pro" && model == "deepseek-reasoner" {
-		return false
-	}
-	if provider == "opencode-go" && registry == "opencode-go/kimi-k2.6" && model == "kimi-k2.6" {
-		return false
+	if provider == "opencode-go" {
+		if cap, ok := modelcatalog.OpenCodeGoModelCapabilityFor(openCodeGoCapabilityModel(registryName, apiModel)); ok {
+			return cap.SupportsRequiredChatToolChoice
+		}
 	}
 	return true
+}
+
+func providerRequiresAssistantReasoningContent(providerLabel, registryName, apiModel string) bool {
+	provider := strings.TrimSpace(strings.ToLower(providerLabel))
+	if provider != "opencode-go" {
+		return false
+	}
+	cap, ok := modelcatalog.OpenCodeGoModelCapabilityFor(openCodeGoCapabilityModel(registryName, apiModel))
+	return ok && cap.InterleavedReasoningField == "reasoning_content"
+}
+
+func openCodeGoCapabilityModel(registryName, apiModel string) string {
+	registryName = strings.TrimSpace(registryName)
+	if strings.HasPrefix(registryName, "opencode-go/") {
+		return registryName
+	}
+	if _, ok := modelcatalog.OpenCodeGoModelCapabilityFor(registryName); ok {
+		return registryName
+	}
+	return strings.TrimSpace(apiModel)
 }
 
 func (d *OpenAIDriver) chatCompletionsFallback(ctx context.Context, messages []llm.Message, out chan<- llm.Token) error {
@@ -817,7 +838,7 @@ func (d *OpenAIDriver) shouldFallbackToNonStreaming(err error) bool {
 	return strings.Contains(msg, "502") || strings.Contains(msg, "503") || strings.Contains(msg, "504") || strings.Contains(msg, "bad gateway") || strings.Contains(msg, "gateway timeout")
 }
 
-func toOpenAIMessages(msgs []llm.Message) []openai.ChatCompletionMessageParamUnion {
+func toOpenAIMessages(msgs []llm.Message, includeEmptyAssistantReasoning bool) []openai.ChatCompletionMessageParamUnion {
 	out := make([]openai.ChatCompletionMessageParamUnion, 0, len(msgs))
 	for _, m := range msgs {
 		switch m.Role {
@@ -876,12 +897,12 @@ func toOpenAIMessages(msgs []llm.Message) []openai.ChatCompletionMessageParamUni
 					},
 					ToolCalls: calls,
 				}
-				if m.ReasoningContent != "" {
+				if m.ReasoningContent != "" || includeEmptyAssistantReasoning {
 					assistantMsg.SetExtraFields(map[string]any{"reasoning_content": m.ReasoningContent})
 				}
 				out = append(out, openai.ChatCompletionMessageParamUnion{OfAssistant: &assistantMsg})
 			} else {
-				if m.ReasoningContent != "" {
+				if m.ReasoningContent != "" || includeEmptyAssistantReasoning {
 					amsg := openai.ChatCompletionAssistantMessageParam{
 						Content: openai.ChatCompletionAssistantMessageParamContentUnion{
 							OfString: param.NewOpt(m.Content),

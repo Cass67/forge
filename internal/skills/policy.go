@@ -42,6 +42,8 @@ func suggestionForMode(mode string) Suggestion {
 func suggestionForInput(input string) Suggestion {
 	lower := strings.ToLower(strings.TrimSpace(input))
 	switch {
+	case looksLikeCrossRepoGapReport(lower):
+		return Suggestion{}
 	case containsAny(lower, "debug", "bug", "failing", "failure", "regression", "root cause", "broken"):
 		return Suggestion{Name: "systematic-debugging", Reason: "the request looks like debugging work"}
 	case looksLikeReviewOrStatusAudit(lower):

@@ -366,6 +366,30 @@ func TestDefaultAgentDefinitionsIncludeNativeSpecialists(t *testing.T) {
 	}
 }
 
+func TestDefaultSynthesizerDoesNotInspectRepos(t *testing.T) {
+	defs := DefaultAgentDefinitions()
+	var synthesizer *AgentDefinition
+	for i := range defs {
+		if defs[i].Name == "synthesizer" {
+			synthesizer = &defs[i]
+			break
+		}
+	}
+	if synthesizer == nil {
+		t.Fatal("default agents missing synthesizer")
+	}
+
+	for _, blocked := range []string{
+		"read_file", "list_dir", "search", "code_search", "glob", "view_image",
+		"lsp_definition", "lsp_references", "lsp_hover", "lsp_document_symbols",
+		"git_status", "git_diff", "git_log", "git_branch_state", "git_merge_status",
+	} {
+		if containsString(synthesizer.Tools, blocked) {
+			t.Fatalf("synthesizer tools = %#v, should not include repo inspection tool %q", synthesizer.Tools, blocked)
+		}
+	}
+}
+
 func TestAgentPoolMatchesRegisteredAgentsWithSpacesOrHyphens(t *testing.T) {
 	pool := NewAgentPool(nil)
 	pool.RegisterAgents([]AgentDefinition{{Name: "repo-auditor", SystemPrompt: "audit"}})

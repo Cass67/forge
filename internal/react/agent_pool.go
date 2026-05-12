@@ -519,7 +519,7 @@ func DefaultAgentDefinitions() []AgentDefinition {
 		{
 			Name:        "synthesizer",
 			Description: "Combine multiple evidence streams into a clear final answer or plan.",
-			Tools:       readOnlyTools,
+			Tools:       []string{"think"},
 			SystemPrompt: strings.Join([]string{
 				"You are Forge's synthesizer agent.",
 				"Combine evidence from multiple workstreams into a concise, structured result.",
