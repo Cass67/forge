@@ -34,7 +34,31 @@ type RetryDriver struct {
 	maxWait           time.Duration
 	timeout           time.Duration
 	streamIdleTimeout time.Duration
+	observer          RetryObserver
 }
+
+type RetryEventKind string
+
+const (
+	RetryEventAttempt RetryEventKind = "attempt"
+	RetryEventWait    RetryEventKind = "wait"
+)
+
+type RetryEvent struct {
+	Kind              RetryEventKind
+	Driver            string
+	Operation         string
+	Attempt           int
+	NextAttempt       int
+	MaxAttempts       int
+	Wait              time.Duration
+	Timeout           time.Duration
+	StreamIdleTimeout time.Duration
+	EmittedAny        bool
+	Err               error
+}
+
+type RetryObserver func(RetryEvent)
 
 func NewRetryDriver(inner Driver, maxAttempts int, initialWait, maxWait, timeout time.Duration) *RetryDriver {
 	return NewRetryDriverWithIdleTimeout(inner, maxAttempts, initialWait, maxWait, timeout, 0)
@@ -55,6 +79,17 @@ func NewRetryDriverWithIdleTimeout(inner Driver, maxAttempts int, initialWait, m
 }
 
 func (d *RetryDriver) Name() string { return d.inner.Name() }
+
+func (d *RetryDriver) SetRetryObserver(observer RetryObserver) {
+	d.observer = observer
+}
+
+func (d *RetryDriver) observe(event RetryEvent) {
+	if d.observer == nil {
+		return
+	}
+	d.observer(event)
+}
 
 func (d *RetryDriver) SetParams(p Params) {
 	if c, ok := d.inner.(Configurable); ok {
@@ -93,10 +128,30 @@ func (d *RetryDriver) Stream(ctx context.Context, messages []Message, out chan<-
 	for attempt := 0; attempt < d.maxAttempts; attempt++ {
 		if attempt > 0 {
 			wait := d.backoff(attempt, lastErr)
+			d.observe(RetryEvent{
+				Kind:              RetryEventWait,
+				Driver:            d.Name(),
+				Operation:         "stream",
+				NextAttempt:       attempt + 1,
+				MaxAttempts:       d.maxAttempts,
+				Wait:              wait,
+				Timeout:           d.timeout,
+				StreamIdleTimeout: d.streamIdleTimeout,
+				Err:               lastErr,
+			})
 			if err := retrySleep(ctx, wait); err != nil {
 				return err
 			}
 		}
+		d.observe(RetryEvent{
+			Kind:              RetryEventAttempt,
+			Driver:            d.Name(),
+			Operation:         "stream",
+			Attempt:           attempt + 1,
+			MaxAttempts:       d.maxAttempts,
+			Timeout:           d.timeout,
+			StreamIdleTimeout: d.streamIdleTimeout,
+		})
 
 		callCtx := ctx
 		var cancel context.CancelFunc = func() {}
@@ -187,10 +242,30 @@ func (d *RetryDriver) StreamWithToolsOptions(ctx context.Context, messages []Mes
 	for attempt := 0; attempt < d.maxAttempts; attempt++ {
 		if attempt > 0 {
 			wait := d.backoff(attempt, lastErr)
+			d.observe(RetryEvent{
+				Kind:              RetryEventWait,
+				Driver:            d.Name(),
+				Operation:         "stream_with_tools",
+				NextAttempt:       attempt + 1,
+				MaxAttempts:       d.maxAttempts,
+				Wait:              wait,
+				Timeout:           d.timeout,
+				StreamIdleTimeout: d.streamIdleTimeout,
+				Err:               lastErr,
+			})
 			if err := retrySleep(ctx, wait); err != nil {
 				return err
 			}
 		}
+		d.observe(RetryEvent{
+			Kind:              RetryEventAttempt,
+			Driver:            d.Name(),
+			Operation:         "stream_with_tools",
+			Attempt:           attempt + 1,
+			MaxAttempts:       d.maxAttempts,
+			Timeout:           d.timeout,
+			StreamIdleTimeout: d.streamIdleTimeout,
+		})
 
 		callCtx := ctx
 		var cancel context.CancelFunc = func() {}
