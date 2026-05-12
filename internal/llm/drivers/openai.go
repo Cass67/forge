@@ -880,6 +880,7 @@ func toOpenAIMessages(msgs []llm.Message, includeEmptyAssistantReasoning bool) [
 		case llm.RoleTool:
 			out = append(out, openai.ToolMessage(m.Content, m.ToolCallID))
 		case llm.RoleAssistant:
+			reasoningContent := assistantReplayReasoningContent(m, includeEmptyAssistantReasoning)
 			if len(m.ToolCalls) > 0 {
 				calls := make([]openai.ChatCompletionMessageToolCallParam, 0, len(m.ToolCalls))
 				for _, tc := range m.ToolCalls {
@@ -897,18 +898,18 @@ func toOpenAIMessages(msgs []llm.Message, includeEmptyAssistantReasoning bool) [
 					},
 					ToolCalls: calls,
 				}
-				if m.ReasoningContent != "" || includeEmptyAssistantReasoning {
-					assistantMsg.SetExtraFields(map[string]any{"reasoning_content": m.ReasoningContent})
+				if reasoningContent != "" {
+					assistantMsg.SetExtraFields(map[string]any{"reasoning_content": reasoningContent})
 				}
 				out = append(out, openai.ChatCompletionMessageParamUnion{OfAssistant: &assistantMsg})
 			} else {
-				if m.ReasoningContent != "" || includeEmptyAssistantReasoning {
+				if reasoningContent != "" {
 					amsg := openai.ChatCompletionAssistantMessageParam{
 						Content: openai.ChatCompletionAssistantMessageParamContentUnion{
 							OfString: param.NewOpt(m.Content),
 						},
 					}
-					amsg.SetExtraFields(map[string]any{"reasoning_content": m.ReasoningContent})
+					amsg.SetExtraFields(map[string]any{"reasoning_content": reasoningContent})
 					out = append(out, openai.ChatCompletionMessageParamUnion{OfAssistant: &amsg})
 				} else {
 					out = append(out, openai.AssistantMessage(m.Content))
@@ -917,6 +918,16 @@ func toOpenAIMessages(msgs []llm.Message, includeEmptyAssistantReasoning bool) [
 		}
 	}
 	return out
+}
+
+func assistantReplayReasoningContent(m llm.Message, required bool) string {
+	if strings.TrimSpace(m.ReasoningContent) != "" {
+		return m.ReasoningContent
+	}
+	if !required {
+		return ""
+	}
+	return "No reasoning content was emitted for this assistant turn."
 }
 
 func extractReasoningContent(raw string) string {
