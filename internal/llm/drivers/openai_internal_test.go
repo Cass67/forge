@@ -1095,8 +1095,12 @@ func TestOpenCodeGoKimiThinkingReplaysReasoningContentOnAssistantToolCalls(t *te
 		if msg["role"] != "assistant" || msg["tool_calls"] == nil {
 			continue
 		}
-		if _, ok := msg["reasoning_content"]; !ok {
+		reasoning, ok := msg["reasoning_content"].(string)
+		if !ok {
 			t.Fatalf("assistant tool-call message missing reasoning_content: %#v", msg)
+		}
+		if strings.TrimSpace(reasoning) == "" {
+			t.Fatalf("assistant tool-call message reasoning_content is empty: %#v", msg)
 		}
 		return
 	}
@@ -1174,8 +1178,12 @@ func TestOpenCodeGoSupportedChatModelsUseReasoningToolReplayCompatibility(t *tes
 					continue
 				}
 				assistantMessages++
-				if _, ok := msg["reasoning_content"]; !ok {
+				reasoning, ok := msg["reasoning_content"].(string)
+				if !ok {
 					t.Fatalf("assistant message missing reasoning_content for %s: %#v", model, msg)
+				}
+				if strings.TrimSpace(reasoning) == "" {
+					t.Fatalf("assistant message reasoning_content is empty for %s: %#v", model, msg)
 				}
 				if msg["tool_calls"] != nil {
 					assistantToolMessages++
@@ -1185,6 +1193,15 @@ func TestOpenCodeGoSupportedChatModelsUseReasoningToolReplayCompatibility(t *tes
 				t.Fatalf("assistant messages = %d, tool-call assistant messages = %d for %s: %#v", assistantMessages, assistantToolMessages, model, chatBody.Messages)
 			}
 		})
+	}
+}
+
+func TestAssistantReplayReasoningContentPreservesCapturedReasoning(t *testing.T) {
+	t.Parallel()
+
+	got := assistantReplayReasoningContent(llm.Message{ReasoningContent: "actual reasoning"}, true)
+	if got != "actual reasoning" {
+		t.Fatalf("reasoning = %q, want captured reasoning", got)
 	}
 }
 
