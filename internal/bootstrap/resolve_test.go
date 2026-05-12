@@ -493,6 +493,42 @@ func TestAvailableModelsIncludesSupportedOpenCodeGoChatModels(t *testing.T) {
 	}
 }
 
+func TestAvailableModelsFiltersCachedOpenCodeGoUnsupportedSDKFamilies(t *testing.T) {
+	t.Setenv("FORGE_ENABLE_LIVE_COMPAT_MODELS", "0")
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	cacheDir := filepath.Join(configHome, "forge", "providers")
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cachePath := filepath.Join(cacheDir, "opencode-go-models.json")
+	content := `{
+		"order": ["kimi-k2.6", "minimax-m2.7", "qwen3.6-plus", "hy3-preview"],
+		"models": {
+			"kimi-k2.6": {"reasoning": true, "temperature": true, "tool_call": true, "limit": {"context": 262144, "output": 16384}},
+			"minimax-m2.7": {"reasoning": true, "temperature": true, "tool_call": true, "limit": {"context": 262144, "output": 16384}},
+			"qwen3.6-plus": {"reasoning": true, "temperature": true, "tool_call": true, "limit": {"context": 262144, "output": 16384}},
+			"hy3-preview": {"reasoning": true, "temperature": true, "tool_call": true, "limit": {"context": 262144, "output": 16384}}
+		}
+	}`
+	if err := os.WriteFile(cachePath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	cfg.Keys.OpenCode = "opencode-key"
+	models := AvailableModels(cfg, &auth.Tokens{})
+
+	if !containsTestString(models, "opencode-go/kimi-k2.6") {
+		t.Fatalf("expected supported cached OpenCode Go model, got %#v", models)
+	}
+	for _, unsupported := range []string{"opencode-go/minimax-m2.7", "opencode-go/qwen3.6-plus", "opencode-go/hy3-preview"} {
+		if containsTestString(models, unsupported) {
+			t.Fatalf("unexpected unsupported cached OpenCode Go model %q in available models: %#v", unsupported, models)
+		}
+	}
+}
+
 func TestOpenCodeGoProviderFiltersUnsupportedSDKFamilies(t *testing.T) {
 	cfg := testConfig()
 	cfg.Keys.OpenCode = "opencode-key"
