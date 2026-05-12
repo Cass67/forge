@@ -2933,7 +2933,7 @@ func postDelegationWritePromptHook(_ context.Context, event hooks.Event) []hooks
 	}
 	content := "Post-delegation document write active. Use completed child-agent results as source material, but synthesize the requested document instead of concatenating reports. Do not paste raw child-agent outputs or role headings such as `## explorer`. Write the final, user-facing document with write_file to " + target + ". Include prioritized findings, evidence paths, and concrete next steps when the user requested a gaps/findings report."
 	if postDelegationNeedsSynthesisAgent(snap) {
-		content += " Multiple completed child-agent results are available and no synthesizer result is recorded. Spawn a read-only synthesizer agent with the completed findings, wait for it, then write_file the synthesized result. Do not write any single child-agent report."
+		content += " Multiple completed child-agent results are available and no synthesizer result is recorded. Spawn a read-only synthesizer agent and include the full completed child-agent results in its task_description. The synthesizer has no filesystem or search tools; do not ask it to read files, search repositories, or inspect paths. Wait for it, then write_file the synthesized result. Do not write any single child-agent report."
 	}
 	return []hooks.Result{hooks.OverlayResult{
 		Key:        "post_delegation_write",
