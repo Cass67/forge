@@ -3390,6 +3390,107 @@ func TestRunnerDoesNotKeepPostDelegationWritePendingForUnrelatedFollowUp(t *test
 	}
 }
 
+func TestRunnerKeepsPostDelegationWritePendingForPassiveWrittenDocFollowUp(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"write_file", "edit_file", "apply_patch"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{
+		LastInput: "can we get this written in a next steps doc",
+		PendingDelegationAction: &DelegationActionState{
+			Kind:       DelegationActionWriteDoc,
+			TargetPath: "docs/reports/report.md",
+		},
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "ask agents to inspect gaps and write a next steps doc"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "wait-1", Content: `{"id":"agent-1","status":"completed","result":"next steps findings"}`},
+			{Role: llm.RoleAssistant, Content: "Parent model connection failed while composing the final response. Showing completed child-agent result instead."},
+			{Role: llm.RoleUser, Content: "can we get this written in a next steps doc"},
+		},
+	}
+
+	defs, decision := r.selectToolDefsWithDecision(snap)
+	if decision.Reason != "post_delegation_pending_action" {
+		t.Fatalf("tool exposure reason = %q, want post_delegation_pending_action", decision.Reason)
+	}
+	if names := toolDefNames(defs); !containsString(names, "write_file") {
+		t.Fatalf("tools = %#v, want write_file for passive written-doc follow-up", names)
+	}
+}
+
+func TestRunnerKeepsPostDelegationWritePendingForNaturalDocFollowUps(t *testing.T) {
+	for _, input := range []string{
+		"can we get this in a next steps doc",
+		"can you put it in a doc",
+		"make it a report",
+		"draft this as a document",
+		"produce a findings memo",
+		"turn that into markdown",
+		"export it to a memo",
+		"document this in a note",
+	} {
+		t.Run(input, func(t *testing.T) {
+			reg := agenttools.NewRegistry()
+			for _, name := range []string{"write_file", "edit_file", "apply_patch"} {
+				reg.Register(agenttools.Tool{Name: name, Description: name})
+			}
+			r := NewRunner(Config{Tools: reg})
+			snap := SessionSnapshot{
+				LastInput: input,
+				PendingDelegationAction: &DelegationActionState{
+					Kind:       DelegationActionWriteDoc,
+					TargetPath: "docs/reports/report.md",
+				},
+				History: []llm.Message{
+					{Role: llm.RoleUser, Content: "ask agents to inspect gaps and write a next steps doc"},
+					{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{}`}}},
+					{Role: llm.RoleTool, ToolCallID: "wait-1", Content: `{"id":"agent-1","status":"completed","result":"next steps findings"}`},
+					{Role: llm.RoleAssistant, Content: "Parent model connection failed while composing the final response. Showing completed child-agent result instead."},
+					{Role: llm.RoleUser, Content: input},
+				},
+			}
+
+			defs, decision := r.selectToolDefsWithDecision(snap)
+			if decision.Reason != "post_delegation_pending_action" {
+				t.Fatalf("tool exposure reason = %q, want post_delegation_pending_action", decision.Reason)
+			}
+			if names := toolDefNames(defs); !containsString(names, "write_file") {
+				t.Fatalf("tools = %#v, want write_file", names)
+			}
+		})
+	}
+}
+
+func TestRunnerDoesNotKeepPostDelegationWritePendingForReadOnlyFindingsFollowUp(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "write_file", Description: "write file"})
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{
+		LastInput: "can we get a summary of the findings?",
+		PendingDelegationAction: &DelegationActionState{
+			Kind:       DelegationActionWriteDoc,
+			TargetPath: "docs/reports/report.md",
+		},
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "ask agents to inspect gaps and write a next steps doc"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "wait-1", Content: `{"id":"agent-1","status":"completed","result":"next steps findings"}`},
+			{Role: llm.RoleAssistant, Content: "Parent model connection failed while composing the final response. Showing completed child-agent result instead."},
+			{Role: llm.RoleUser, Content: "can we get a summary of the findings?"},
+		},
+	}
+
+	defs, decision := r.selectToolDefsWithDecision(snap)
+	if decision.Reason == "post_delegation_pending_action" {
+		t.Fatalf("tool exposure reason = %q, want read-only follow-up to stay out of pending write flow", decision.Reason)
+	}
+	if names := toolDefNames(defs); containsString(names, "write_file") {
+		t.Fatalf("tools = %#v, read-only findings summary should not expose write_file", names)
+	}
+}
+
 func TestRunnerExposesSynthesizerForPriorTurnPendingDelegationWrite(t *testing.T) {
 	reg := agenttools.NewRegistry()
 	for _, name := range []string{"spawn_agent", "wait_agent", "write_file"} {
@@ -3729,6 +3830,52 @@ func TestRunnerRestoresActionToolsAfterDelegatedWaitWhenUserAskedForFileWrite(t 
 		if containsString(names, blocked) {
 			t.Fatalf("post-delegation tools = %#v, should stop forcing %s", names, blocked)
 		}
+	}
+}
+
+func TestRunnerExposesWriteToolsForValidateModeWriteRequest(t *testing.T) {
+	for _, input := range []string{
+		"run validation and write a report to docs/reports/validation.md",
+		"validate and report findings to docs/reports/validation.md",
+	} {
+		t.Run(input, func(t *testing.T) {
+			reg := agenttools.NewRegistry()
+			for _, name := range []string{"write_file", "run_command", "git_status", "tool_help"} {
+				reg.Register(agenttools.Tool{Name: name, Description: name})
+			}
+			r := NewRunner(Config{Tools: reg})
+			snap := SessionSnapshot{
+				LastInput: input,
+				TaskState: &TaskState{Operation: "validate"},
+			}
+
+			names := toolDefNames(r.selectToolDefs(snap))
+			for _, want := range []string{"run_command", "write_file"} {
+				if !containsString(names, want) {
+					t.Fatalf("validate write-request tools = %#v, want %s", names, want)
+				}
+			}
+		})
+	}
+}
+
+func TestRunnerDoesNotExposeWriteToolsForValidateModeReadOnlyReportPath(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"write_file", "run_command", "git_status", "tool_help"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{
+		LastInput: "validate docs/reports/audit.md",
+		TaskState: &TaskState{Operation: "validate"},
+	}
+
+	names := toolDefNames(r.selectToolDefs(snap))
+	if !containsString(names, "run_command") {
+		t.Fatalf("validate tools = %#v, want run_command", names)
+	}
+	if containsString(names, "write_file") {
+		t.Fatalf("validate read-only tools = %#v, should not expose write_file", names)
 	}
 }
 
