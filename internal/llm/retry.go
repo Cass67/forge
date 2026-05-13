@@ -60,6 +60,28 @@ type RetryEvent struct {
 
 type RetryObserver func(RetryEvent)
 
+type RetryAttemptsExhaustedError struct {
+	Attempts int
+	Err      error
+}
+
+func (e *RetryAttemptsExhaustedError) Error() string {
+	if e == nil {
+		return "retry attempts exhausted"
+	}
+	if e.Err == nil {
+		return fmt.Sprintf("all %d attempts failed", e.Attempts)
+	}
+	return fmt.Sprintf("all %d attempts failed: %v", e.Attempts, e.Err)
+}
+
+func (e *RetryAttemptsExhaustedError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
 func NewRetryDriver(inner Driver, maxAttempts int, initialWait, maxWait, timeout time.Duration) *RetryDriver {
 	return NewRetryDriverWithIdleTimeout(inner, maxAttempts, initialWait, maxWait, timeout, 0)
 }
@@ -218,7 +240,7 @@ func (d *RetryDriver) Stream(ctx context.Context, messages []Message, out chan<-
 			return lastErr
 		}
 	}
-	return fmt.Errorf("all %d attempts failed: %w", d.maxAttempts, lastErr)
+	return &RetryAttemptsExhaustedError{Attempts: d.maxAttempts, Err: lastErr}
 }
 
 func (d *RetryDriver) StreamWithTools(ctx context.Context, messages []Message, tools []ToolDef, out chan<- Token) error {
@@ -336,7 +358,7 @@ func (d *RetryDriver) StreamWithToolsOptions(ctx context.Context, messages []Mes
 			return lastErr
 		}
 	}
-	return fmt.Errorf("all %d attempts failed: %w", d.maxAttempts, lastErr)
+	return &RetryAttemptsExhaustedError{Attempts: d.maxAttempts, Err: lastErr}
 }
 
 func newStreamIdleTimer(timeout time.Duration) (*time.Timer, <-chan time.Time) {

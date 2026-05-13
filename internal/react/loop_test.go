@@ -1331,6 +1331,81 @@ func TestRunnerNativeToolCallingPath(t *testing.T) {
 	}
 }
 
+func TestRunnerDoesNotRetryAlreadyExhaustedStreamErrorAfterSuccessfulTool(t *testing.T) {
+	driver := &nativeSequenceDriver{
+		steps: [][]llm.Token{
+			{{ToolCall: &llm.NativeToolCall{ID: "c1", Name: "run_command", ArgsJSON: `{"command":"mkdir -p ~/git/panamanian_hats && git init"}`}}},
+		},
+		errs: []error{
+			nil,
+			&llm.RetryAttemptsExhaustedError{Attempts: 3, Err: errors.New("stream idle timeout after 30s")},
+			&llm.RetryAttemptsExhaustedError{Attempts: 3, Err: errors.New("stream idle timeout after 30s")},
+			&llm.RetryAttemptsExhaustedError{Attempts: 3, Err: errors.New("stream idle timeout after 30s")},
+			&llm.RetryAttemptsExhaustedError{Attempts: 3, Err: errors.New("stream idle timeout after 30s")},
+		},
+	}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "run_command",
+		Description: "run shell command",
+		Parameters:  []agenttools.ParameterDef{{Name: "command", Type: "string", Required: true}},
+		AutoApprove: true,
+		Execute: func(context.Context, map[string]any) (string, error) {
+			return "Initialized empty Git repository\nexit 0", nil
+		},
+	})
+	rec := &recordingRenderer{}
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: NewSession(), Renderer: rec})
+
+	err := r.Run(context.Background(), "run command to create a new git repo")
+	if err == nil {
+		t.Fatal("expected exhausted stream error")
+	}
+	if driver.callCount != 2 {
+		t.Fatalf("driver calls = %d, want one tool call and one exhausted post-tool completion", driver.callCount)
+	}
+	if len(rec.retryTexts) != 0 {
+		t.Fatalf("retry notices = %#v, want none after retry driver already exhausted attempts", rec.retryTexts)
+	}
+	snap := r.session.Snapshot()
+	foundToolResult := false
+	for _, msg := range snap.History {
+		if msg.Role == llm.RoleTool && strings.Contains(msg.Content, "Initialized empty Git repository") {
+			foundToolResult = true
+		}
+	}
+	if !foundToolResult {
+		t.Fatalf("history missing successful tool result: %#v", snap.History)
+	}
+}
+
+func TestRunnerStillRetriesExhaustedServerErrors(t *testing.T) {
+	driver := &nativeSequenceDriver{
+		steps: [][]llm.Token{
+			{},
+			{{Text: "recovered after server retry"}},
+		},
+		errs: []error{
+			&llm.RetryAttemptsExhaustedError{Attempts: 3, Err: errors.New("500 server overloaded")},
+		},
+	}
+	rec := &recordingRenderer{}
+	r := NewRunner(Config{Driver: driver, Session: NewSession(), Renderer: rec})
+
+	if err := r.Run(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callCount != 2 {
+		t.Fatalf("driver calls = %d, want exhausted server error plus retry", driver.callCount)
+	}
+	if got := r.LastResponse(); got != "recovered after server retry" {
+		t.Fatalf("last response = %q", got)
+	}
+	if len(rec.retryTexts) == 0 {
+		t.Fatal("expected retry notice for exhausted server error")
+	}
+}
+
 func TestRunnerPreservesAssistantPreambleOnToolTurn(t *testing.T) {
 	driver := &nativeToolCallWithPreambleDriver{}
 	reg := agenttools.NewRegistry()
@@ -2304,6 +2379,32 @@ func TestAllowedToolsForPlainBugReportIncludesImplementationTools(t *testing.T) 
 		if !containsString(tools, want) {
 			t.Fatalf("bug report tools = %#v, want %s", tools, want)
 		}
+	}
+}
+
+func TestAllowedToolsForNewGoRepoPricingCLIIncludesCommandAndWebTools(t *testing.T) {
+	input := "lets create a new git repo in ~/git/panamanian_hats for the purpose of finding out how much panama hats are in that part of the world. Id like a cli tool written in go and id like it to be as accurate as possible wrt pricing."
+	tools := allowedToolNamesForSnapshot(SessionSnapshot{LastInput: input})
+
+	for _, want := range []string{"write_file", "run_command", "web_fetch", "web_search"} {
+		if !containsString(tools, want) {
+			t.Fatalf("new Go pricing CLI tools = %#v, want %s", tools, want)
+		}
+	}
+}
+
+func TestAllowedToolsForReadOnlyGitRepoReviewDoesNotIncludeCommandTools(t *testing.T) {
+	for _, input := range []string{"review this git repo", "review this new git repo", "review this cli tool written in go"} {
+		t.Run(input, func(t *testing.T) {
+			tools := allowedToolNamesForSnapshot(SessionSnapshot{LastInput: input})
+
+			if containsString(tools, "run_command") {
+				t.Fatalf("read-only git repo review tools = %#v, should not include run_command", tools)
+			}
+			if !containsString(tools, "read_file") {
+				t.Fatalf("read-only git repo review tools = %#v, want read_file", tools)
+			}
+		})
 	}
 }
 

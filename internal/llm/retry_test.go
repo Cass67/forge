@@ -2,6 +2,7 @@ package llm_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -233,6 +234,13 @@ func TestRetryMaxAttemptsExhausted(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "all 3 attempts failed") {
 		t.Errorf("unexpected error: %v", err)
+	}
+	var exhausted *llm.RetryAttemptsExhaustedError
+	if !errors.As(err, &exhausted) {
+		t.Fatalf("error type = %T, want RetryAttemptsExhaustedError", err)
+	}
+	if exhausted.Attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", exhausted.Attempts)
 	}
 	if inner.called != 3 {
 		t.Errorf("expected 3 calls, got %d", inner.called)
