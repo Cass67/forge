@@ -3085,6 +3085,118 @@ func TestRunnerFallsBackToCompletedAgentResultWhenParentStreamTimesOut(t *testin
 	}
 }
 
+func TestRunnerWritesPriorTurnSynthesizerResultWhenPendingDelegationWriteTimesOut(t *testing.T) {
+	driver := &nativeSequenceDriver{errs: []error{
+		errors.New("request timeout"),
+		errors.New("request timeout"),
+		errors.New("request timeout"),
+		errors.New("request timeout"),
+	}}
+	session := NewSession()
+	delegationTurn := session.RecordInput("ask agents to audit the repo and write docs/reports/audit.md")
+	session.UpsertAgentTask(AgentTaskState{
+		ID:          "agent-1",
+		Role:        "explorer",
+		Status:      AgentStatusCompleted,
+		Result:      "raw explorer findings",
+		ParentTurn:  delegationTurn,
+		CompletedAt: time.Now(),
+	})
+	session.UpsertAgentTask(AgentTaskState{
+		ID:          "agent-2",
+		Role:        "synthesizer",
+		Status:      AgentStatusCompleted,
+		Result:      "# Synthesized Audit\n\nUse this report.",
+		ParentTurn:  delegationTurn,
+		CompletedAt: time.Now(),
+	})
+	session.SetPendingDelegationAction(DelegationActionState{
+		Kind:       DelegationActionWriteDoc,
+		TargetPath: "docs/reports/audit.md",
+	})
+	turn := session.RecordInput("continue")
+
+	reg := agenttools.NewRegistry()
+	var gotPath, gotContent string
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "write file",
+		AutoApprove: true,
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			gotPath, _ = args["path"].(string)
+			gotContent, _ = args["content"].(string)
+			return "wrote audit", nil
+		},
+	})
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+	if err := r.runLoop(context.Background(), turn); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callCount != 1 {
+		t.Fatalf("driver calls = %d, want one failed parent attempt before fallback write", driver.callCount)
+	}
+	if gotPath != "docs/reports/audit.md" {
+		t.Fatalf("path = %q, want docs/reports/audit.md", gotPath)
+	}
+	if gotContent != "# Synthesized Audit\n\nUse this report." {
+		t.Fatalf("content = %q", gotContent)
+	}
+	if got := r.LastResponse(); got != "wrote audit" {
+		t.Fatalf("last response = %q, want wrote audit", got)
+	}
+	if snap := session.Snapshot(); snap.PendingDelegationAction != nil {
+		t.Fatalf("pending delegation action = %#v, want cleared", snap.PendingDelegationAction)
+	}
+}
+
+func TestRunnerDoesNotFallbackWriteStaleDelegationResultForUnrelatedFollowUp(t *testing.T) {
+	driver := &nativeSequenceDriver{errs: []error{
+		errors.New("request timeout"),
+		errors.New("request timeout"),
+		errors.New("request timeout"),
+		errors.New("request timeout"),
+	}}
+	session := NewSession()
+	delegationTurn := session.RecordInput("ask agents to audit the repo and write docs/reports/audit.md")
+	session.AppendAssistantToolTurn("", []llm.NativeToolCall{{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{}`}})
+	session.AppendNativeToolResult("wait-1", `{"status":"completed"}`)
+	session.AppendAssistantMessage("Parent model connection failed while composing the final response. Showing completed child-agent result instead.\n\nold fallback")
+	session.UpsertAgentTask(AgentTaskState{
+		ID:          "agent-1",
+		Role:        "synthesizer",
+		Status:      AgentStatusCompleted,
+		Result:      "# Old Audit\n\nDo not write this for unrelated input.",
+		ParentTurn:  delegationTurn,
+		CompletedAt: time.Now(),
+	})
+	session.SetPendingDelegationAction(DelegationActionState{
+		Kind:       DelegationActionWriteDoc,
+		TargetPath: "docs/reports/audit.md",
+	})
+	turn := session.RecordInput("what did we do so far?")
+
+	reg := agenttools.NewRegistry()
+	writeCalls := 0
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "write file",
+		AutoApprove: true,
+		Execute: func(context.Context, map[string]any) (string, error) {
+			writeCalls++
+			return "wrote stale audit", nil
+		},
+	})
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+	if err := r.runLoop(context.Background(), turn); err == nil {
+		t.Fatal("expected parent timeout to surface instead of stale fallback write")
+	}
+	if writeCalls != 0 {
+		t.Fatalf("write_file calls = %d, want none for unrelated follow-up", writeCalls)
+	}
+}
+
 func TestRunnerDoesNotUseCompletedAgentFallbackWhileSameTurnAgentStillRuns(t *testing.T) {
 	for _, status := range []AgentStatus{AgentStatusRunning, AgentStatusPending} {
 		t.Run(string(status), func(t *testing.T) {
@@ -3275,6 +3387,37 @@ func TestRunnerDoesNotKeepPostDelegationWritePendingForUnrelatedFollowUp(t *test
 	}
 	if names := toolDefNames(defs); containsString(names, "write_file") {
 		t.Fatalf("tools = %#v, unrelated follow-up should not keep write_file from old delegation", names)
+	}
+}
+
+func TestRunnerExposesSynthesizerForPriorTurnPendingDelegationWrite(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"spawn_agent", "wait_agent", "write_file"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{
+		Turn:      2,
+		LastInput: "continue",
+		PendingDelegationAction: &DelegationActionState{
+			Kind:       DelegationActionWriteDoc,
+			TargetPath: "docs/reports/audit.md",
+		},
+		AgentTasks: []AgentTaskState{
+			{ID: "agent-1", Role: "explorer", Status: AgentStatusCompleted, Result: "first report", ParentTurn: 1},
+			{ID: "agent-2", Role: "repo-auditor", Status: AgentStatusCompleted, Result: "second report", ParentTurn: 1},
+		},
+		History: []llm.Message{
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "wait-1", Content: `{"status":"completed"}`},
+		},
+	}
+
+	names := toolDefNames(r.selectToolDefs(snap))
+	for _, want := range []string{"spawn_agent", "wait_agent", "write_file"} {
+		if !containsString(names, want) {
+			t.Fatalf("tools = %#v, want %s for prior-turn pending delegation write", names, want)
+		}
 	}
 }
 
