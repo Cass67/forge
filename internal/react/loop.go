@@ -750,11 +750,14 @@ func (r *Runner) tryCompletedAgentResultFallback(ctx context.Context, turn int) 
 		return false, nil
 	}
 	snap := r.session.Snapshot()
+	if completedAgentFallbackSettledWrite(snap) && !inputSuggestsPostDelegationAction(normalizeToolIntentText(snap.LastInput)) {
+		return false, nil
+	}
 	content := completedAgentResultFallbackContent(snap)
 	if content == "" {
 		return false, nil
 	}
-	if path, ok := completedAgentResultMarkdownWritePath(snap.LastInput); ok && r.tools != nil {
+	if path, ok := completedAgentResultMarkdownWritePathForSnapshot(snap); ok && r.tools != nil {
 		if _, ok := r.tools.Get("write_file"); ok {
 			writeContent := completedAgentResultMarkdownWriteContent(snap)
 			if writeContent == "" {
@@ -799,12 +802,13 @@ func (r *Runner) writeCompletedAgentResultFallback(ctx context.Context, turn int
 }
 
 func completedAgentResultFallbackContent(snap SessionSnapshot) string {
-	if sameTurnAgentStillOutstanding(snap.AgentTasks, snap.Turn) {
+	resultTurn := completedAgentResultTurn(snap)
+	if sameTurnAgentStillOutstanding(snap.AgentTasks, resultTurn) {
 		return ""
 	}
 	var parts []string
 	for _, task := range snap.AgentTasks {
-		if task.Status != AgentStatusCompleted || task.ParentTurn != snap.Turn {
+		if task.Status != AgentStatusCompleted || task.ParentTurn != resultTurn {
 			continue
 		}
 		result := strings.TrimSpace(task.Result)
@@ -827,7 +831,8 @@ func completedAgentResultFallbackContent(snap SessionSnapshot) string {
 }
 
 func completedAgentResultMarkdownWriteContent(snap SessionSnapshot) string {
-	if sameTurnAgentStillOutstanding(snap.AgentTasks, snap.Turn) {
+	resultTurn := completedAgentResultTurn(snap)
+	if sameTurnAgentStillOutstanding(snap.AgentTasks, resultTurn) {
 		return ""
 	}
 	if result := completedAgentResultByRole(snap, "synthesizer"); result != "" {
@@ -836,7 +841,7 @@ func completedAgentResultMarkdownWriteContent(snap SessionSnapshot) string {
 
 	var results []string
 	for _, task := range snap.AgentTasks {
-		if task.Status != AgentStatusCompleted || task.ParentTurn != snap.Turn {
+		if task.Status != AgentStatusCompleted || task.ParentTurn != resultTurn {
 			continue
 		}
 		result := strings.TrimSpace(task.Result)
@@ -882,14 +887,56 @@ func isConciseAgentFinding(result string) bool {
 	return true
 }
 
+func completedAgentResultTurn(snap SessionSnapshot) int {
+	if agentTaskCompletedResultForTurn(snap.AgentTasks, snap.Turn) || sameTurnAgentStillOutstanding(snap.AgentTasks, snap.Turn) {
+		return snap.Turn
+	}
+	if !pendingDelegationWriteAction(snap) && !pendingPostDelegationWriteAction(snap) {
+		return snap.Turn
+	}
+	if snap.PendingDelegationAction != nil {
+		sourceAgent := strings.TrimSpace(snap.PendingDelegationAction.SourceAgent)
+		if sourceAgent != "" {
+			for _, task := range snap.AgentTasks {
+				if task.ID == sourceAgent && task.ParentTurn != 0 {
+					return task.ParentTurn
+				}
+			}
+		}
+	}
+	latest := 0
+	for _, task := range snap.AgentTasks {
+		if task.Status != AgentStatusCompleted || strings.TrimSpace(task.Result) == "" || task.ParentTurn == 0 {
+			continue
+		}
+		if task.ParentTurn > latest {
+			latest = task.ParentTurn
+		}
+	}
+	if latest != 0 {
+		return latest
+	}
+	return snap.Turn
+}
+
+func agentTaskCompletedResultForTurn(tasks []AgentTaskState, turn int) bool {
+	for _, task := range tasks {
+		if task.ParentTurn == turn && task.Status == AgentStatusCompleted && strings.TrimSpace(task.Result) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func completedAgentResultByRole(snap SessionSnapshot, role string) string {
 	role = strings.TrimSpace(role)
 	if role == "" {
 		return ""
 	}
+	resultTurn := completedAgentResultTurn(snap)
 	for i := len(snap.AgentTasks) - 1; i >= 0; i-- {
 		task := snap.AgentTasks[i]
-		if task.Status != AgentStatusCompleted || task.ParentTurn != snap.Turn || !strings.EqualFold(strings.TrimSpace(task.Role), role) {
+		if task.Status != AgentStatusCompleted || task.ParentTurn != resultTurn || !strings.EqualFold(strings.TrimSpace(task.Role), role) {
 			continue
 		}
 		if result := strings.TrimSpace(task.Result); result != "" {
@@ -918,6 +965,21 @@ func completedAgentResultMarkdownWritePath(input string) (string, bool) {
 				return "docs/reports/report.md", true
 			}
 		}
+	}
+	return "", false
+}
+
+func completedAgentResultMarkdownWritePathForSnapshot(snap SessionSnapshot) (string, bool) {
+	if path, ok := completedAgentResultMarkdownWritePath(snap.LastInput); ok {
+		return path, true
+	}
+	if snap.PendingDelegationAction != nil && snap.PendingDelegationAction.Kind == DelegationActionWriteDoc {
+		if path := strings.TrimSpace(snap.PendingDelegationAction.TargetPath); path != "" {
+			return path, true
+		}
+	}
+	if path := extractDelegationTargetPath(postDelegationToolIntentText(snap)); path != "" {
+		return path, true
 	}
 	return "", false
 }
@@ -2947,9 +3009,10 @@ func postDelegationNeedsSynthesisAgent(snap SessionSnapshot) bool {
 	if !pendingDelegationWriteAction(snap) && !pendingPostDelegationWriteAction(snap) {
 		return false
 	}
+	resultTurn := completedAgentResultTurn(snap)
 	completed := 0
 	for _, task := range snap.AgentTasks {
-		if task.Status != AgentStatusCompleted || task.ParentTurn != snap.Turn || strings.TrimSpace(task.Result) == "" {
+		if task.Status != AgentStatusCompleted || task.ParentTurn != resultTurn || strings.TrimSpace(task.Result) == "" {
 			continue
 		}
 		if strings.EqualFold(strings.TrimSpace(task.Role), "synthesizer") {
