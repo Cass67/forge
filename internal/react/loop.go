@@ -1877,6 +1877,9 @@ func allowedToolNamesForSnapshot(snapshot SessionSnapshot) []string {
 		}
 	case "validate":
 		addAll(readOnlyToolNames, gitReadToolNames, commandToolNames, planningToolNames)
+		if inputSuggestsExplicitFileWrite(text) {
+			addAll(writeToolNames)
+		}
 	case "preview":
 		addAll(readOnlyToolNames, writeToolNames, previewToolNames, planningToolNames)
 	case "merge":
@@ -2384,16 +2387,42 @@ func inputSuggestsRepoContext(text string) bool {
 }
 
 func inputSuggestsFileWrites(text string) bool {
-	if !containsToolPhrase(text,
-		"write ", "save ", "create ", "update ", "edit ", "patch ", "append ",
-		"rewrite ", "modify ",
-	) {
+	if !inputSuggestsDocumentOutputAction(text) {
 		return inputSuggestsReportFileTarget(text)
 	}
-	return inputMentionsPathLikeText(text) || containsToolPhrase(text,
+	return inputSuggestsExplicitFileWrite(text)
+}
+
+func inputSuggestsExplicitFileWrite(text string) bool {
+	if !inputSuggestsDocumentOutputAction(text) {
+		return false
+	}
+	return inputMentionsPathLikeText(text) || inputSuggestsDocumentOutputTarget(text) || inputSuggestsStrongFindingsWrite(text)
+}
+
+func inputSuggestsDocumentOutputTarget(text string) bool {
+	return containsToolPhrase(text,
 		" file", " files", "markdown", ".md", "to a file", "into a file",
 		"readme", "config", "artifact", "html", "script",
-		" doc", " docs", "document", "spec", "report", "findings", "memo", "note",
+		" doc", " docs", "document", "spec", "report", "memo", "note",
+	)
+}
+
+func inputSuggestsDocumentOutputAction(text string) bool {
+	return containsToolPhrase(text,
+		"write ", "save ", "create ", "update ", "edit ", "patch ", "append ",
+		"rewrite ", "modify ", "written ", "wrote ", "put ", "make ", "turn ",
+		"convert ", "export ", "capture ", "record ", "document ", "get ",
+		"draft ", "produce ", "report ",
+	)
+}
+
+func inputSuggestsStrongFindingsWrite(text string) bool {
+	if !containsToolPhrase(text, "findings") {
+		return false
+	}
+	return containsToolPhrase(text,
+		"write ", "save ", "create ", "update ", "append ", "rewrite ", "written ", "wrote ",
 	)
 }
 
