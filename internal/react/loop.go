@@ -1095,6 +1095,9 @@ func shouldRetryTransientStreamError(ctx context.Context, err error) bool {
 	if err == nil {
 		return false
 	}
+	if retryDriverExhaustedTransientError(err) {
+		return false
+	}
 	if ctx != nil && ctx.Err() != nil {
 		return false
 	}
@@ -1108,6 +1111,15 @@ func shouldRetryTransientStreamError(ctx context.Context, err error) bool {
 	default:
 		return false
 	}
+}
+
+func retryDriverExhaustedTransientError(err error) bool {
+	var exhausted *llm.RetryAttemptsExhaustedError
+	if !errors.As(err, &exhausted) {
+		return false
+	}
+	classified := resilienceerrors.ClassifyError(exhausted.Err)
+	return classified.Class == resilienceerrors.ErrorClassRetryable
 }
 
 func transientStreamRetryNotice(err error) string {
@@ -2434,10 +2446,37 @@ func inputSuggestsReportFileTarget(text string) bool {
 }
 
 func inputSuggestsCommandWork(text string) bool {
+	if inputSuggestsRepoSetupCommandWork(text) || inputSuggestsGoBuildCommandWork(text) {
+		return true
+	}
 	return containsToolPhrase(text,
 		"run ", "command", "shell", "terminal", "test", "tests", "build", "lint",
 		"install", "compile", "benchmark", "start server", "restart server",
 		"dev server", "keep it running", "terminal session",
+		"git init", "go mod", "go test", "go build", "go run",
+		"initialize repo", "initialise repo", "init repo", "create directory", "create a directory",
+		"mkdir",
+	)
+}
+
+func inputSuggestsRepoSetupCommandWork(text string) bool {
+	if !containsToolPhrase(text, "repo", "repository") {
+		return false
+	}
+	return containsToolPhrase(text,
+		"create ", "make ", "set up", "setup", "init ", "initialize ", "initialise ",
+	)
+}
+
+func inputSuggestsGoBuildCommandWork(text string) bool {
+	if !containsToolPhrase(text, "go", "golang", "cli tool", "command line tool", "command-line tool") {
+		return false
+	}
+	if !containsToolPhrase(text, "cli tool", "command line tool", "command-line tool", "go project", "go module", "written in go") {
+		return false
+	}
+	return containsToolPhrase(text,
+		"create ", "make ", "build ", "implement ", "write ", "add ", "set up", "setup",
 	)
 }
 
@@ -2447,7 +2486,8 @@ func inputSuggestsWebResearch(text string) bool {
 	}
 	return containsToolPhrase(text,
 		"latest", "look up", "lookup", "search the web", "browse", "online",
-		"internet", "website", "url", "fetch", "news",
+		"internet", "website", "url", "fetch", "news", "price", "prices", "pricing",
+		"cost", "costs", "how much", "market rate", "current price",
 	)
 }
 
