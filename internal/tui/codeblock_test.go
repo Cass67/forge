@@ -97,6 +97,14 @@ func TestRenderMessageContentPreservesReadableBlankRowsBetweenProseBlocks(t *tes
 	}
 }
 
+func TestWrapProseLinesPreservesConsecutiveBlankLines(t *testing.T) {
+	got := strings.Join(wrapProseLines("First paragraph.\n\n\nSecond paragraph.", 80), "\n")
+	want := "First paragraph.\n\n\nSecond paragraph."
+	if got != want {
+		t.Fatalf("wrapped prose = %q, want %q", got, want)
+	}
+}
+
 func TestRenderMessageContentDropsBlankRowsInsideTextOutputBlocks(t *testing.T) {
 	theme := lookupThemeForTest(t, "default")
 	content := strings.Join([]string{
