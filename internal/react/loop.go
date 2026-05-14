@@ -1635,7 +1635,7 @@ var (
 	planningToolNames    = []string{"think", "update_plan", "enter_plan_mode", "exit_plan_mode", "ask_user_question"}
 	webToolNames         = []string{"web_fetch", "web_search"}
 	delegateToolNames    = []string{"spawn_agent", "wait_agent"}
-	activeAgentToolNames = []string{"wait_agent", "get_agent_output", "agent_status", "kill_agent"}
+	activeAgentToolNames = []string{"wait_agent", "get_agent_output", "agent_status"}
 	agentStatusToolNames = []string{"agent_status"}
 )
 
@@ -1650,10 +1650,11 @@ func (r *Runner) selectToolDefsWithDecision(snapshot SessionSnapshot) ([]llm.Too
 		return nil, decision
 	}
 	if len(outstandingSpawnedAgents(snapshot)) > 0 {
-		defs := r.tools.Filter(activeAgentToolNames).ToLLMToolDefs()
+		defs := r.tools.Filter(activeAgentToolNamesForSnapshot(snapshot)).ToLLMToolDefs()
 		return defs, decision.withTools("active_agents", defs)
 	}
 	delegationComplete := historyIncludesCompletedToolCall(snapshot, "wait_agent")
+	currentDelegationIntent := currentInputRequestsDelegation(snapshot)
 	currentPostDelegationAction := inputSuggestsPostDelegationAction(normalizeToolIntentText(snapshot.LastInput))
 	fallbackSettledWrite := completedAgentFallbackSettledWrite(snapshot) && !currentPostDelegationAction
 	pendingWorkflowWrite := r.postDelegation.pendingWrite || pendingDelegationWriteAction(snapshot)
@@ -1661,7 +1662,7 @@ func (r *Runner) selectToolDefsWithDecision(snapshot SessionSnapshot) ([]llm.Too
 		pendingWorkflowWrite = false
 	}
 	pendingPostDelegationWrite := pendingWorkflowWrite || pendingPostDelegationWriteAction(snapshot)
-	if delegationComplete {
+	if delegationComplete && !currentDelegationIntent {
 		postDelegationText := snapshot.LastInput
 		if !fallbackSettledWrite {
 			postDelegationText = postDelegationToolIntentText(snapshot)
@@ -1672,7 +1673,7 @@ func (r *Runner) selectToolDefsWithDecision(snapshot SessionSnapshot) ([]llm.Too
 		snapshot.LastInput = postDelegationText
 		goto selectParentTools
 	}
-	if shouldRouteParentThroughDelegation(snapshot) {
+	if currentDelegationIntent {
 		if defs := r.tools.Filter(delegateToolNames).ToLLMToolDefs(); len(defs) > 0 {
 			return defs, decision.withTools("delegation_intent", defs)
 		}
@@ -1698,6 +1699,9 @@ selectParentTools:
 	}
 	pluginNames := r.pluginToolNames()
 	pluginIntent := inputSuggestsPluginTool(snapshot.LastInput, pluginNames)
+	if len(allowed) == 0 && !pluginIntent && len(snapshot.AgentTasks) > 0 && len(outstandingSpawnedAgents(snapshot)) == 0 {
+		return nil, decision
+	}
 	if len(allowed) == 0 && !pluginIntent && len(snapshot.AgentTasks) > 0 {
 		if defs := r.tools.Filter(agentStatusToolNames).ToLLMToolDefs(); len(defs) > 0 {
 			return defs, decision.withTools("agent_status_state", defs)
@@ -1720,6 +1724,14 @@ selectParentTools:
 	}
 	defs := r.tools.Filter(allowed).ToLLMToolDefs()
 	return defs, decision.withTools(reason, defs)
+}
+
+func activeAgentToolNamesForSnapshot(snapshot SessionSnapshot) []string {
+	names := append([]string(nil), activeAgentToolNames...)
+	if inputSuggestsAgentCancellation(snapshot) {
+		names = append(names, "kill_agent")
+	}
+	return names
 }
 
 func newToolExposureDecision(snapshot SessionSnapshot) ToolExposureDecision {
@@ -2347,17 +2359,43 @@ func toolNameIn(name string, names []string) bool {
 func shouldRequireToolCallForSnapshot(snapshot SessionSnapshot) bool {
 	if len(outstandingSpawnedAgents(snapshot)) > 0 {
 		text := normalizeToolIntentText(snapshot.LastInput)
-		return shouldRouteParentThroughDelegation(snapshot) || inputSuggestsPostDelegationAction(text)
+		return currentInputRequestsDelegation(snapshot) || inputSuggestsPostDelegationAction(text)
 	}
-	return shouldRouteParentThroughDelegation(snapshot) && !historyIncludesCompletedToolCall(snapshot, "wait_agent")
+	return currentInputRequestsDelegation(snapshot)
 }
 
 func shouldRouteParentThroughDelegation(snapshot SessionSnapshot) bool {
-	if snapshot.TaskState != nil {
-		return false
-	}
 	text := normalizeToolIntentText(snapshot.LastInput)
 	return inputSuggestsDelegation(text)
+}
+
+func currentInputRequestsDelegation(snapshot SessionSnapshot) bool {
+	if !shouldRouteParentThroughDelegation(snapshot) {
+		return false
+	}
+	if !historyIncludesCompletedToolCall(snapshot, "wait_agent") {
+		return true
+	}
+	return latestUserInputAfterCompletedToolCall(snapshot, "wait_agent")
+}
+
+func latestUserInputAfterCompletedToolCall(snapshot SessionSnapshot, toolName string) bool {
+	index := lastCompletedToolResultIndex(snapshot, toolName)
+	if index < 0 {
+		return false
+	}
+	lastInput := normalizeToolIntentText(snapshot.LastInput)
+	if lastInput == "" {
+		return false
+	}
+	for i := len(snapshot.History) - 1; i > index; i-- {
+		msg := snapshot.History[i]
+		if msg.Role != llm.RoleUser {
+			continue
+		}
+		return normalizeToolIntentText(msg.Content) == lastInput
+	}
+	return false
 }
 
 func normalizeToolIntentText(text string) string {
@@ -2538,6 +2576,80 @@ func inputSuggestsDelegation(text string) bool {
 		"audit this repo", "audit the repo", "audit repository", "audit this codebase", "audit the codebase",
 		"compare this repo", "compare the repo", "fall down compared to",
 	)
+}
+
+func inputSuggestsAgentCancellation(snapshot SessionSnapshot) bool {
+	text := normalizeToolIntentText(snapshot.LastInput)
+	if strings.Contains(text, "kill_agent") {
+		return true
+	}
+	targets := activeAgentCancellationTargets(snapshot)
+	tokens := strings.Fields(text)
+	for i, token := range tokens {
+		if !agentCancellationVerb(token) {
+			continue
+		}
+		for j := i + 1; j < len(tokens) && j <= i+4; j++ {
+			if agentCancellationArticle(tokens[j]) {
+				continue
+			}
+			if agentCancellationTarget(tokens[j]) || mapContainsCleanToken(targets, tokens[j]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func activeAgentCancellationTargets(snapshot SessionSnapshot) map[string]struct{} {
+	targets := make(map[string]struct{})
+	for _, agent := range outstandingSpawnedAgents(snapshot) {
+		for _, value := range []string{agent.ID, agent.Role} {
+			if token := cleanIntentToken(value); token != "" {
+				targets[token] = struct{}{}
+			}
+		}
+	}
+	return targets
+}
+
+func mapContainsCleanToken(values map[string]struct{}, token string) bool {
+	if len(values) == 0 {
+		return false
+	}
+	_, ok := values[cleanIntentToken(token)]
+	return ok
+}
+
+func agentCancellationVerb(token string) bool {
+	switch cleanIntentToken(token) {
+	case "kill", "cancel", "stop", "terminate", "abort":
+		return true
+	default:
+		return false
+	}
+}
+
+func agentCancellationArticle(token string) bool {
+	switch cleanIntentToken(token) {
+	case "the", "this", "that", "running":
+		return true
+	default:
+		return false
+	}
+}
+
+func agentCancellationTarget(token string) bool {
+	switch cleanIntentToken(token) {
+	case "agent", "agents", "sub-agent", "subagent", "child", "it":
+		return true
+	default:
+		return false
+	}
+}
+
+func cleanIntentToken(token string) string {
+	return strings.Trim(strings.ToLower(strings.TrimSpace(token)), "`'\".,:;!?()[]{}<>")
 }
 
 func inputSuggestsMultiRootDelegatedReport(text string) bool {
