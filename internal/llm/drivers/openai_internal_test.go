@@ -940,6 +940,50 @@ func TestCustomCompatProviderFallsBackFromResponsesToolsToChatCompletions(t *tes
 	}
 }
 
+func TestChatCompletionsToolCallIDKeepsFirstRepeatedStreamValue(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/chat/completions"; got != want {
+			t.Fatalf("path = %q, want %q", got, want)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_write\",\"type\":\"function\",\"function\":{\"name\":\"write_file\",\"arguments\":\"{\\\"path\\\":\\\"\"}}]},\"finish_reason\":null}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_write\",\"type\":\"function\",\"function\":{\"arguments\":\"README.md\\\",\\\"content\\\":\\\"hi\\\"}\"}}]},\"finish_reason\":null}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	d := NewCustomCompatProvider("opencode-go", "sk-test", srv.URL, "opencode-go/kimi-k2.6", "kimi-k2.6", false, nil)
+	tools := []llm.ToolDef{{Name: "write_file", Description: "Write a file"}}
+	out := make(chan llm.Token, 8)
+	if err := d.StreamWithToolsOptions(
+		context.Background(),
+		[]llm.Message{{Role: llm.RoleUser, Content: "write file"}},
+		tools,
+		llm.NativeToolOptions{},
+		out,
+	); err != nil {
+		t.Fatalf("StreamWithToolsOptions() error = %v", err)
+	}
+
+	var toks []llm.Token
+	for tok := range out {
+		toks = append(toks, tok)
+	}
+
+	if len(toks) != 1 || toks[0].ToolCall == nil {
+		t.Fatalf("tokens = %#v, want one tool call token", toks)
+	}
+	if got, want := toks[0].ToolCall.ID, "call_write"; got != want {
+		t.Fatalf("tool call id = %q, want %q", got, want)
+	}
+	if got, want := toks[0].ToolCall.ArgsJSON, `{"path":"README.md","content":"hi"}`; got != want {
+		t.Fatalf("tool call args = %q, want %q", got, want)
+	}
+}
+
 func TestOpenCodeGoDeepSeekReasonerOmitsRequiredToolChoice(t *testing.T) {
 	t.Parallel()
 
