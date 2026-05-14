@@ -319,13 +319,7 @@ func wrapProseLines(text string, width int) []string {
 	}
 
 	out := make([]string, 0, 8)
-	prevBlank := false
 	for _, raw := range strings.Split(text, "\n") {
-		blank := raw == ""
-		if blank && prevBlank {
-			continue
-		}
-		prevBlank = blank
 		if raw == "" {
 			out = append(out, "")
 			continue

@@ -2920,6 +2920,78 @@ func TestRunnerMultiRootReportWriteRestrictsParentToDelegationTools(t *testing.T
 	}
 }
 
+func TestRunnerTaskStateDelegationIntentRestrictsParentToDelegationTools(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"read_file", "write_file", "run_command", "tool_help", "spawn_agent", "wait_agent"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{
+		LastInput: "ask agent to inspect internal/react/loop.go and report the routing fix",
+		TaskState: &TaskState{Operation: "implement"},
+	}
+
+	defs, decision := r.selectToolDefsWithDecision(snap)
+	names := toolDefNames(defs)
+
+	if decision.Reason != "delegation_intent" {
+		t.Fatalf("reason = %q, want delegation_intent (tools=%#v)", decision.Reason, names)
+	}
+	for _, want := range []string{"spawn_agent", "wait_agent"} {
+		if !containsString(names, want) {
+			t.Fatalf("task-state delegation tools = %#v, want %s", names, want)
+		}
+	}
+	for _, blocked := range []string{"read_file", "write_file", "run_command", "tool_help"} {
+		if containsString(names, blocked) {
+			t.Fatalf("task-state delegation tools = %#v, should not include parent tool %s", names, blocked)
+		}
+	}
+	if !shouldRequireToolCallForSnapshot(snap) {
+		t.Fatal("task-state delegation intent should require delegation tool use before prose")
+	}
+}
+
+func TestRunnerTaskStateDelegationIntentAfterCompletedWaitStartsNewDelegation(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"read_file", "write_file", "run_command", "tool_help", "spawn_agent", "wait_agent"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	input := "ask agent to inspect internal/react/loop.go and report the routing fix"
+	snap := SessionSnapshot{
+		LastInput: input,
+		TaskState: &TaskState{Operation: "implement"},
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: "ask agent to review an earlier issue"},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "wait-1", Content: `{"status":"completed","result":"done"}`},
+			{Role: llm.RoleAssistant, Content: "earlier delegation complete"},
+			{Role: llm.RoleUser, Content: input},
+		},
+	}
+
+	defs, decision := r.selectToolDefsWithDecision(snap)
+	names := toolDefNames(defs)
+
+	if decision.Reason != "delegation_intent" {
+		t.Fatalf("reason = %q, want delegation_intent (tools=%#v)", decision.Reason, names)
+	}
+	for _, want := range []string{"spawn_agent", "wait_agent"} {
+		if !containsString(names, want) {
+			t.Fatalf("new delegation tools = %#v, want %s", names, want)
+		}
+	}
+	for _, blocked := range []string{"read_file", "write_file", "run_command", "tool_help"} {
+		if containsString(names, blocked) {
+			t.Fatalf("new delegation tools = %#v, should not include parent tool %s", names, blocked)
+		}
+	}
+	if !shouldRequireToolCallForSnapshot(snap) {
+		t.Fatal("new delegation intent after a completed wait should require a delegation tool call")
+	}
+}
+
 func TestRunnerReportsToolExposureDecision(t *testing.T) {
 	reg := agenttools.NewRegistry()
 	for _, name := range []string{"read_file", "spawn_agent", "wait_agent"} {
@@ -3739,8 +3811,13 @@ func TestRunnerKilledAgentStateOverridesStaleTranscript(t *testing.T) {
 		},
 	}
 
-	if names := toolDefNames(r.selectToolDefs(snap)); containsString(names, "wait_agent") {
-		t.Fatalf("killed agent tools = %#v, should not expose wait_agent from stale transcript", names)
+	defs, decision := r.selectToolDefsWithDecision(snap)
+	names := toolDefNames(defs)
+	if decision.Reason == "agent_status_state" {
+		t.Fatalf("tool exposure reason = %q, want terminal agent state to allow a text answer", decision.Reason)
+	}
+	if len(names) != 0 {
+		t.Fatalf("killed agent tools = %#v, want no forced agent tools from stale state", names)
 	}
 	if shouldRequireToolCallForSnapshot(snap) {
 		t.Fatal("killed agent should not force wait_agent from stale transcript")
@@ -3799,9 +3876,9 @@ func TestRunnerAllowsRepeatedWaitForTimedOutAgentState(t *testing.T) {
 	}
 }
 
-func TestRunnerExposesStatusAndKillForOutstandingAgent(t *testing.T) {
+func TestRunnerExposesStatusButNotKillForOutstandingAgentWithoutCancelIntent(t *testing.T) {
 	reg := agenttools.NewRegistry()
-	for _, name := range []string{"spawn_agent", "wait_agent", "agent_status", "kill_agent", "read_file"} {
+	for _, name := range []string{"spawn_agent", "wait_agent", "get_agent_output", "agent_status", "kill_agent", "read_file"} {
 		reg.Register(agenttools.Tool{Name: name, Description: name})
 	}
 	r := NewRunner(Config{Tools: reg})
@@ -3815,13 +3892,72 @@ func TestRunnerExposesStatusAndKillForOutstandingAgent(t *testing.T) {
 	}
 
 	names := toolDefNames(r.selectToolDefs(snap))
-	for _, want := range []string{"wait_agent", "agent_status", "kill_agent"} {
+	for _, want := range []string{"wait_agent", "get_agent_output", "agent_status"} {
 		if !containsString(names, want) {
 			t.Fatalf("outstanding agent tools = %#v, want %s", names, want)
 		}
 	}
-	if containsString(names, "spawn_agent") {
-		t.Fatalf("outstanding agent tools = %#v, should not offer another spawn", names)
+	for _, blocked := range []string{"spawn_agent", "kill_agent"} {
+		if containsString(names, blocked) {
+			t.Fatalf("outstanding agent tools = %#v, should not offer %s", names, blocked)
+		}
+	}
+}
+
+func TestRunnerExposesKillForOutstandingAgentWhenUserAsksToCancel(t *testing.T) {
+	for _, input := range []string{
+		"cancel the child agent",
+		"cancel agent-1",
+		"stop repo-auditor",
+	} {
+		t.Run(input, func(t *testing.T) {
+			reg := agenttools.NewRegistry()
+			for _, name := range []string{"spawn_agent", "wait_agent", "get_agent_output", "agent_status", "kill_agent", "read_file"} {
+				reg.Register(agenttools.Tool{Name: name, Description: name})
+			}
+			r := NewRunner(Config{Tools: reg})
+			snap := SessionSnapshot{
+				LastInput: input,
+				AgentTasks: []AgentTaskState{{
+					ID:     "agent-1",
+					Role:   "repo-auditor",
+					Status: AgentStatusRunning,
+				}},
+			}
+
+			names := toolDefNames(r.selectToolDefs(snap))
+			if !containsString(names, "kill_agent") {
+				t.Fatalf("outstanding agent tools = %#v, want kill_agent for explicit cancel intent %q", names, input)
+			}
+		})
+	}
+}
+
+func TestRunnerDoesNotExposeKillForNonAgentCancelPhrases(t *testing.T) {
+	for _, input := range []string{
+		"cancel item 2",
+		"stop iteration after this check",
+	} {
+		t.Run(input, func(t *testing.T) {
+			reg := agenttools.NewRegistry()
+			for _, name := range []string{"spawn_agent", "wait_agent", "get_agent_output", "agent_status", "kill_agent", "read_file"} {
+				reg.Register(agenttools.Tool{Name: name, Description: name})
+			}
+			r := NewRunner(Config{Tools: reg})
+			snap := SessionSnapshot{
+				LastInput: input,
+				AgentTasks: []AgentTaskState{{
+					ID:     "agent-1",
+					Role:   "repo-auditor",
+					Status: AgentStatusRunning,
+				}},
+			}
+
+			names := toolDefNames(r.selectToolDefs(snap))
+			if containsString(names, "kill_agent") {
+				t.Fatalf("outstanding agent tools = %#v, should not expose kill_agent for %q", names, input)
+			}
+		})
 	}
 }
 
