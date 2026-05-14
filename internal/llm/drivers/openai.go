@@ -1190,7 +1190,7 @@ func (d *OpenAIDriver) streamChatCompletionsWithTools(ctx context.Context, messa
 					accs[idx] = &accumulator{}
 				}
 				a := accs[idx]
-				if tc.ID != "" {
+				if tc.ID != "" && a.id.Len() == 0 {
 					a.id.WriteString(tc.ID)
 				}
 				if tc.Function.Name != "" {
