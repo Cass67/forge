@@ -248,6 +248,62 @@ func TestRunnerSuccessfulCompactionResetsFailureCircuit(t *testing.T) {
 	}
 }
 
+func TestRunnerMicroCompactionDoesNotTripFailureCircuit(t *testing.T) {
+	var progress []string
+	r := NewRunner(Config{
+		Progress:              func(text string) { progress = append(progress, text) },
+		CompactionMaxFailures: 1,
+	})
+
+	r.applyCompactionDecision(context.Background(), CompactionDecision{Mode: CompactionMicro, Reason: "large tool result", KeepTurns: 40})
+
+	if r.compactionCircuitOpen() {
+		t.Fatal("micro compaction should not trip the failure circuit")
+	}
+	for _, msg := range progress {
+		if strings.Contains(strings.ToLower(msg), "compaction circuit breaker") {
+			t.Fatalf("unexpected circuit breaker progress for micro compaction: %#v", progress)
+		}
+	}
+}
+
+func TestRunnerCompactsBeforeRecordingTriggeringPrompt(t *testing.T) {
+	driver := &nativeScriptedDriver{responses: []string{"continued"}}
+	session := NewSession()
+	for i := 1; i <= 45; i++ {
+		turn := session.RecordInput(fmt.Sprintf("prompt %d", i))
+		session.AppendAssistantMessage(fmt.Sprintf("answer %d", i))
+		session.CompleteTurn(turn, fmt.Sprintf("answer %d", i), nil, nil)
+	}
+	var preCompactRecentInputs []string
+	r := NewRunner(Config{
+		Driver:  driver,
+		Session: session,
+		ConfigureHooks: func(registry *hooks.Registry) {
+			registry.Register(hooks.PointPreCompact, "capture:recent-inputs", func(context.Context, hooks.Event) []hooks.Result {
+				preCompactRecentInputs = session.Snapshot().RecentInputs
+				return nil
+			})
+		},
+	})
+
+	if err := r.Run(context.Background(), "continue"); err != nil {
+		t.Fatal(err)
+	}
+	snap := session.Snapshot()
+	if strings.Contains(snap.CompactionSummary, "continue") {
+		t.Fatalf("triggering prompt was compacted into summary: %q", snap.CompactionSummary)
+	}
+	for _, input := range preCompactRecentInputs {
+		if input == "continue" {
+			t.Fatalf("triggering prompt was recorded before compaction started: %#v", preCompactRecentInputs)
+		}
+	}
+	if len(snap.RecentInputs) == 0 || snap.RecentInputs[len(snap.RecentInputs)-1] != "continue" {
+		t.Fatalf("recent inputs should keep triggering prompt active, got %#v", snap.RecentInputs)
+	}
+}
+
 func TestRunnerReactiveCompactsAndRetriesOnceOnContextError(t *testing.T) {
 	driver := &contextErrorThenSuccessDriver{}
 	session := NewSession()
