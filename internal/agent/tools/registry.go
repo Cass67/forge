@@ -23,6 +23,7 @@ type Tool struct {
 	Name             string
 	Description      string
 	Parameters       []ParameterDef
+	Schema           *llm.ToolSchema
 	PromptVisibility PromptVisibility
 	AutoApprove      bool
 	Execute          func(ctx context.Context, args map[string]any) (string, error)
@@ -406,6 +407,7 @@ func (r *Registry) ToLLMToolDefs() []llm.ToolDef {
 			Name:        t.Name,
 			Description: t.Description,
 			Parameters:  params,
+			Schema:      t.Schema,
 		})
 	}
 	return defs

@@ -628,7 +628,6 @@ func toolResultForCallID(snapshot SessionSnapshot, id string) string {
 
 func (r *Runner) runLoop(ctx context.Context, turn int) error {
 	start := time.Now()
-	defer r.emitStats(start)
 
 	nativeCaller, isNative := r.driver.(llm.NativeToolCaller)
 
@@ -692,6 +691,7 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 			r.session.CompleteTurn(turn, "", nil, err)
 			return err
 		}
+		r.emitStats(start)
 		if calls == nil {
 			// streamNativeTurn already recorded the final response
 			if r.applyPendingInput() {
@@ -1398,11 +1398,22 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 			r.session.CompleteTurn(turn, "", nil, errors.New(parseErr))
 			return errors.New(parseErr)
 		}
+		if validationErr := validateToolArgs(tool, args); validationErr != "" {
+			if r.renderer != nil {
+				r.renderer.ToolCall(call.Name, reactToolSummary(args))
+				r.renderer.ToolResult(call.Name, validationErr, "", true)
+			}
+			r.session.AppendNativeToolResult(call.ID, validationErr)
+			r.updatePlanWorkflow(call.Name, args, "", true)
+			r.updateSameFileSearchWorkflow(call.Name, args, true)
+			continue
+		}
 
 		beforeTool := r.beforeToolHookOutput(ctx, call.Name, args)
 		if beforeTool.Block != nil {
 			blocked := strings.TrimSpace(beforeTool.Block.Message)
 			if r.renderer != nil {
+				r.renderer.ToolCall(call.Name, reactToolSummary(args))
 				r.renderer.ToolResult(call.Name, blocked, "", true)
 			}
 			r.session.AppendNativeToolResult(call.ID, blocked)
@@ -1426,6 +1437,9 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 				return res, diff, execErr
 			},
 		})
+		if r.renderer != nil {
+			r.renderer.ToolCall(call.Name, reactToolSummary(args))
+		}
 	}
 
 	// Phase 2: dispatch tool executions (parallel for safe tools, sequential for pool-mutating)
@@ -1487,10 +1501,6 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 		args := exec.args
 		beforeTool := exec.beforeTool
 
-		if r.renderer != nil {
-			r.renderer.ToolCall(call.Name, reactToolSummary(args))
-		}
-
 		if res.err != nil {
 			errResult := fmt.Sprintf("error: %v", res.err)
 			r.applyHookOutput(beforeTool)
@@ -1520,6 +1530,112 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 		r.applyHookOutput(r.afterToolHookOutput(ctx, call.Name, args, false, ""))
 	}
 	return nil
+}
+
+func validateToolArgs(tool agenttools.Tool, args map[string]any) string {
+	if tool.Schema != nil {
+		return validateToolSchema(tool.Name, tool.Schema, args)
+	}
+	for _, param := range tool.Parameters {
+		value, ok := args[param.Name]
+		if !ok || value == nil {
+			if param.Required {
+				return fmt.Sprintf("error: %s.%s is required", tool.Name, param.Name)
+			}
+			continue
+		}
+		switch param.Type {
+		case "string":
+			text, ok := value.(string)
+			if !ok {
+				return fmt.Sprintf("error: %s.%s must be a string", tool.Name, param.Name)
+			}
+			if param.Required && strings.TrimSpace(text) == "" {
+				return fmt.Sprintf("error: %s.%s is required", tool.Name, param.Name)
+			}
+		case "int":
+			number, ok := value.(float64)
+			if !ok || number != float64(int(number)) {
+				return fmt.Sprintf("error: %s.%s must be an integer", tool.Name, param.Name)
+			}
+		case "bool":
+			if _, ok := value.(bool); !ok {
+				return fmt.Sprintf("error: %s.%s must be a boolean", tool.Name, param.Name)
+			}
+		}
+	}
+	return ""
+}
+
+func validateToolSchema(path string, schema *llm.ToolSchema, value any) string {
+	if schema == nil {
+		return ""
+	}
+	switch schema.Type {
+	case "object":
+		obj, ok := value.(map[string]any)
+		if !ok {
+			return fmt.Sprintf("error: %s must be an object", path)
+		}
+		for _, required := range schema.Required {
+			v, ok := obj[required]
+			if !ok || v == nil {
+				return fmt.Sprintf("error: %s.%s is required", path, required)
+			}
+		}
+		if schema.AdditionalProperties != nil && !*schema.AdditionalProperties {
+			for name := range obj {
+				if _, ok := schema.Properties[name]; !ok {
+					return fmt.Sprintf("error: %s.%s is not allowed", path, name)
+				}
+			}
+		}
+		for name, prop := range schema.Properties {
+			v, ok := obj[name]
+			if !ok || v == nil {
+				continue
+			}
+			if err := validateToolSchema(path+"."+name, prop, v); err != "" {
+				return err
+			}
+		}
+	case "array":
+		items, ok := value.([]any)
+		if !ok {
+			return fmt.Sprintf("error: %s must be an array", path)
+		}
+		for i, item := range items {
+			if err := validateToolSchema(fmt.Sprintf("%s[%d]", path, i), schema.Items, item); err != "" {
+				return err
+			}
+		}
+	case "string":
+		text, ok := value.(string)
+		if !ok {
+			return fmt.Sprintf("error: %s must be a string", path)
+		}
+		if strings.TrimSpace(text) == "" {
+			return fmt.Sprintf("error: %s is required", path)
+		}
+		if len(schema.Enum) > 0 {
+			for _, allowed := range schema.Enum {
+				if text == allowed {
+					return ""
+				}
+			}
+			return fmt.Sprintf("error: %s must be one of: %s", path, strings.Join(schema.Enum, ", "))
+		}
+	case "integer":
+		number, ok := value.(float64)
+		if !ok || number != float64(int(number)) {
+			return fmt.Sprintf("error: %s must be an integer", path)
+		}
+	case "boolean":
+		if _, ok := value.(bool); !ok {
+			return fmt.Sprintf("error: %s must be a boolean", path)
+		}
+	}
+	return ""
 }
 
 // toolMutatesPool returns true for tools that modify agent pool state and must run

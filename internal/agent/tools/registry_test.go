@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"forge/internal/llm"
 )
 
 func TestRegistryRegisterAndGet(t *testing.T) {
@@ -201,6 +203,30 @@ func TestToLLMToolDefsBasic(t *testing.T) {
 	}
 	if d.Parameters[1].Name != "start_line" || d.Parameters[1].Required {
 		t.Fatal("second param should be start_line (optional)")
+	}
+}
+
+func TestToLLMToolDefsPreservesStructuredSchema(t *testing.T) {
+	additional := false
+	reg := NewRegistry()
+	reg.Register(Tool{
+		Name: "update_plan",
+		Schema: &llm.ToolSchema{
+			Type: "object",
+			Properties: map[string]*llm.ToolSchema{
+				"steps": {Type: "array", Items: &llm.ToolSchema{Type: "object"}},
+			},
+			Required:             []string{"steps"},
+			AdditionalProperties: &additional,
+		},
+	})
+
+	defs := reg.ToLLMToolDefs()
+	if len(defs) != 1 {
+		t.Fatalf("want 1 def, got %d", len(defs))
+	}
+	if defs[0].Schema == nil || defs[0].Schema.Properties["steps"].Type != "array" {
+		t.Fatalf("schema not preserved: %#v", defs[0].Schema)
 	}
 }
 

@@ -1318,6 +1318,20 @@ func TestChatModelViewKeepsTurnStatsOutOfCompactHeader(t *testing.T) {
 	}
 }
 
+func TestChatModelNormalStatsShowsLiveTokenRateBeforeFinalStats(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "copilot/gpt-5", WorkDir: "/tmp"})
+	m.width = 120
+	m.busy = true
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventToken, Text: "streaming response text"})
+	m = updated.(ChatModel)
+
+	line := m.renderNormalModeStatsLine(m.theme())
+	if !strings.Contains(line, "tok/s") {
+		t.Fatalf("normal stats line should show live token rate before final stats, got %q", line)
+	}
+}
+
 func TestChatModelViewKeepsContextSummaryOutOfCompactHeader(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{
 		Model:   "openai/gpt-5",
