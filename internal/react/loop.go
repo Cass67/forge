@@ -235,10 +235,10 @@ func (r *Runner) RunWithParts(ctx context.Context, input string, parts []llm.Mes
 		return nil
 	}
 	priorResponse := r.LastResponse()
-	turn := r.session.RecordInputWithParts(prompt, parts)
-	r.pendingRetryPrompt = ""
 	r.syncRuntimeNote()
 	r.applyCompactionDecision(ctx, r.compactionManager.Decide(r.session.Snapshot()))
+	turn := r.session.RecordInputWithParts(prompt, parts)
+	r.pendingRetryPrompt = ""
 	if len(parts) == 0 {
 		if handled, err := r.tryDirectLastResponseMarkdownWrite(ctx, turn, prompt, priorResponse); handled {
 			return err
@@ -286,7 +286,7 @@ func (r *Runner) applyCompactionDecision(ctx context.Context, decision Compactio
 	}
 	if changed {
 		r.compactionFailures = 0
-	} else if r.compactionMaxFailures > 0 {
+	} else if r.compactionMaxFailures > 0 && compactionDecisionAttempted(decision) {
 		r.compactionFailures++
 	}
 	if r.compactionCircuitOpen() {
@@ -314,6 +314,15 @@ func (r *Runner) dispatchCompactionHook(ctx context.Context, point hooks.Point, 
 			CircuitOpen:   r.compactionCircuitOpen(),
 		},
 	})
+}
+
+func compactionDecisionAttempted(decision CompactionDecision) bool {
+	switch decision.Mode {
+	case CompactionSummarize, CompactionReactive, CompactionUserPartial:
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *Runner) compactionCircuitOpen() bool {
