@@ -540,6 +540,19 @@ func compactStatusText(content string) string {
 	return truncate(content, 200)
 }
 
+func isRecoverableToolFeedback(ev llm.Event) bool {
+	if ev.Kind != llm.EventToolResult || !ev.IsError || ev.Agent == "" {
+		return false
+	}
+	message := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(ev.Text), "error: "))
+	if !strings.HasPrefix(message, ev.Agent+".") {
+		return false
+	}
+	return strings.Contains(message, " is required") ||
+		strings.Contains(message, " must be ") ||
+		strings.Contains(message, " is not allowed")
+}
+
 func sanitizeAssistantTokenForDisplay(text string) string {
 	if strings.TrimSpace(text) == "" {
 		return ""
@@ -1964,7 +1977,7 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 			m.pendingSubAgentSummary = nil
 		}
 		if !m.debugEnabled {
-			if ev.IsError {
+			if ev.IsError && !isRecoverableToolFeedback(ev) {
 				m.AddMessage(ChatMessage{
 					Kind:    MsgStatus,
 					Content: "Error: " + compactStatusText(ev.Text),
