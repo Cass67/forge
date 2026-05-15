@@ -5028,6 +5028,25 @@ func TestToolResultProgressLineKeepsErrors(t *testing.T) {
 	}
 }
 
+func TestRecoverableToolValidationResultDoesNotCreateChatError(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.debugEnabled = false
+
+	updated, _ := m.Update(llm.Event{
+		Kind:    llm.EventToolResult,
+		Agent:   "code_search",
+		Text:    "error: code_search.query is required",
+		IsError: true,
+	})
+	m = updated.(ChatModel)
+
+	for _, msg := range m.messages {
+		if msg.Kind == MsgStatus && strings.HasPrefix(strings.TrimSpace(msg.Content), "Error:") {
+			t.Fatalf("recoverable tool validation should not create chat error, got %#v", m.messages)
+		}
+	}
+}
+
 func TestToolCallProgressLineDescribesExecSessionStart(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	got := m.toolCallProgressLine(llm.Event{Kind: llm.EventToolCall, Agent: "exec_session_start", Text: "npm run dev"})
