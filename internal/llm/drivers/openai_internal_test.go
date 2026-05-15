@@ -860,6 +860,62 @@ func TestStreamWithToolsResponsesSendsToolsAndEmitsToolCalls(t *testing.T) {
 	}
 }
 
+func TestToolDefSchemaHonorsRequiredParameters(t *testing.T) {
+	schema := toolDefSchema(llm.ToolDef{
+		Name: "read_file",
+		Parameters: []llm.ToolParam{
+			{Name: "path", Type: "string", Required: true},
+			{Name: "start_line", Type: "integer", Required: false},
+			{Name: "end_line", Type: "integer", Required: false},
+		},
+	})
+
+	required, ok := schema["required"].([]string)
+	if !ok {
+		t.Fatalf("required = %#v, want []string", schema["required"])
+	}
+	if len(required) != 1 || required[0] != "path" {
+		t.Fatalf("required = %#v, want [path]", required)
+	}
+}
+
+func TestToolDefSchemaUsesStructuredSchema(t *testing.T) {
+	additional := false
+	schema := toolDefSchema(llm.ToolDef{
+		Name: "update_plan",
+		Schema: &llm.ToolSchema{
+			Type: "object",
+			Properties: map[string]*llm.ToolSchema{
+				"steps": {
+					Type: "array",
+					Items: &llm.ToolSchema{
+						Type: "object",
+						Properties: map[string]*llm.ToolSchema{
+							"step":   {Type: "string"},
+							"status": {Type: "string", Enum: []string{"pending", "in_progress", "blocked", "completed"}},
+						},
+						Required:             []string{"step", "status"},
+						AdditionalProperties: &additional,
+					},
+				},
+			},
+			Required:             []string{"steps"},
+			AdditionalProperties: &additional,
+		},
+	})
+
+	props := schema["properties"].(map[string]any)
+	steps := props["steps"].(map[string]any)
+	if steps["type"] != "array" {
+		t.Fatalf("steps.type = %#v, want array", steps["type"])
+	}
+	item := steps["items"].(map[string]any)
+	status := item["properties"].(map[string]any)["status"].(map[string]any)
+	if got := status["enum"].([]string); len(got) != 4 || got[1] != "in_progress" {
+		t.Fatalf("status enum = %#v", got)
+	}
+}
+
 func TestCustomCompatProviderFallsBackFromResponsesToolsToChatCompletions(t *testing.T) {
 	t.Parallel()
 
@@ -1337,8 +1393,8 @@ func TestRepairToolCallArgsJSON(t *testing.T) {
 					t.Fatalf("expected valid JSON, got %q", got)
 				}
 			} else {
-				if got != "" {
-					t.Fatalf("expected empty string for unrepaired garbage, got %q", got)
+				if got != tt.input {
+					t.Fatalf("expected unrepaired garbage to be preserved, got %q", got)
 				}
 			}
 		})

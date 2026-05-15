@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	agenttools "forge/internal/agent/tools"
+	"forge/internal/llm"
 	"forge/internal/react"
 )
 
@@ -15,12 +16,31 @@ type planToolSession interface {
 }
 
 func NewUpdatePlan(session planToolSession) agenttools.Tool {
+	additional := false
 	return agenttools.Tool{
 		Name:        "update_plan",
 		Description: "Track a short task plan with step statuses. Use for multi-step work and keep exactly one in_progress step until finished.",
-		Parameters: []agenttools.ParameterDef{
-			{Name: "steps_json", Type: "string", Description: "JSON array of plan steps: [{\"step\":\"Inspect files\",\"status\":\"in_progress\"}]", Required: true},
-			{Name: "explanation", Type: "string", Description: "optional short explanation for a plan change", Required: false},
+		Parameters:  []agenttools.ParameterDef{},
+		Schema: &llm.ToolSchema{
+			Type: "object",
+			Properties: map[string]*llm.ToolSchema{
+				"steps": {
+					Type: "array",
+					Items: &llm.ToolSchema{
+						Type: "object",
+						Properties: map[string]*llm.ToolSchema{
+							"step":    {Type: "string", Description: "short task description"},
+							"status":  {Type: "string", Enum: []string{"pending", "in_progress", "blocked", "completed"}},
+							"blocker": {Type: "string", Description: "required when status is blocked"},
+						},
+						Required:             []string{"step", "status"},
+						AdditionalProperties: &additional,
+					},
+				},
+				"explanation": {Type: "string", Description: "optional short explanation for a plan change"},
+			},
+			Required:             []string{"steps"},
+			AdditionalProperties: &additional,
 		},
 		AutoApprove: true,
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
@@ -28,14 +48,9 @@ func NewUpdatePlan(session planToolSession) agenttools.Tool {
 			if session == nil {
 				return "", fmt.Errorf("plan session unavailable")
 			}
-			raw, _ := args["steps_json"].(string)
-			raw = strings.TrimSpace(raw)
-			if raw == "" {
-				return "", fmt.Errorf("steps_json is required")
-			}
-			var steps []react.PlanStep
-			if err := json.Unmarshal([]byte(raw), &steps); err != nil {
-				return "", fmt.Errorf("invalid steps_json: %w", err)
+			steps, err := planStepsFromArgs(args)
+			if err != nil {
+				return "", err
 			}
 			for i := range steps {
 				steps[i].Step = strings.TrimSpace(steps[i].Step)
@@ -67,6 +82,22 @@ func NewUpdatePlan(session planToolSession) agenttools.Tool {
 			return react.FormatPlanState(state), nil
 		},
 	}
+}
+
+func planStepsFromArgs(args map[string]any) ([]react.PlanStep, error) {
+	rawSteps, ok := args["steps"]
+	if !ok || rawSteps == nil {
+		return nil, fmt.Errorf("steps is required")
+	}
+	data, err := json.Marshal(rawSteps)
+	if err != nil {
+		return nil, fmt.Errorf("invalid steps: %w", err)
+	}
+	var steps []react.PlanStep
+	if err := json.Unmarshal(data, &steps); err != nil {
+		return nil, fmt.Errorf("invalid steps: %w", err)
+	}
+	return steps, nil
 }
 
 // normalizePlanStatus lowercases the status and normalises spaces/hyphens to

@@ -998,6 +998,9 @@ func providerSupportsResponseFunctionTools(providerLabel string) bool {
 }
 
 func toolDefSchema(def llm.ToolDef) map[string]any {
+	if def.Schema != nil {
+		return toolSchemaToOpenAI(def.Schema)
+	}
 	properties := make(map[string]any, len(def.Parameters))
 	required := make([]string, 0, len(def.Parameters))
 	for _, p := range def.Parameters {
@@ -1006,7 +1009,9 @@ func toolDefSchema(def llm.ToolDef) map[string]any {
 			prop["description"] = p.Description
 		}
 		properties[p.Name] = prop
-		required = append(required, p.Name)
+		if p.Required {
+			required = append(required, p.Name)
+		}
 	}
 	schema := map[string]any{
 		"type":                 "object",
@@ -1015,6 +1020,39 @@ func toolDefSchema(def llm.ToolDef) map[string]any {
 		"additionalProperties": false,
 	}
 	return schema
+}
+
+func toolSchemaToOpenAI(schema *llm.ToolSchema) map[string]any {
+	if schema == nil {
+		return map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}
+	}
+	out := map[string]any{}
+	if schema.Type != "" {
+		out["type"] = schema.Type
+	}
+	if schema.Description != "" {
+		out["description"] = schema.Description
+	}
+	if len(schema.Properties) > 0 {
+		props := make(map[string]any, len(schema.Properties))
+		for name, prop := range schema.Properties {
+			props[name] = toolSchemaToOpenAI(prop)
+		}
+		out["properties"] = props
+	}
+	if schema.Items != nil {
+		out["items"] = toolSchemaToOpenAI(schema.Items)
+	}
+	if len(schema.Required) > 0 {
+		out["required"] = append([]string(nil), schema.Required...)
+	}
+	if len(schema.Enum) > 0 {
+		out["enum"] = append([]string(nil), schema.Enum...)
+	}
+	if schema.AdditionalProperties != nil {
+		out["additionalProperties"] = *schema.AdditionalProperties
+	}
+	return out
 }
 
 // driverAppendMissingJSONClosers appends missing closing braces/brackets to raw JSON.
@@ -1109,7 +1147,8 @@ func driverEscapeBareJSONStringControls(raw string) (string, bool) {
 }
 
 // repairToolCallArgsJSON normalizes potentially malformed JSON from streaming deltas.
-// Returns "{}" for empty input, empty string if repair fails.
+// Returns "{}" for empty input and preserves unrepairable input so execution can
+// report the real malformed-arguments error instead of silently dropping args.
 func repairToolCallArgsJSON(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -1124,7 +1163,7 @@ func repairToolCallArgsJSON(raw string) string {
 	if fixed, changed := driverEscapeBareJSONStringControls(raw); changed && json.Valid([]byte(fixed)) {
 		return fixed
 	}
-	return ""
+	return raw
 }
 
 // StreamWithTools implements llm.NativeToolCaller. It passes tool definitions via

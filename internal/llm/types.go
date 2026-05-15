@@ -23,11 +23,23 @@ type ToolParam struct {
 	Required    bool
 }
 
+// ToolSchema describes structured tool input for native tool calling.
+type ToolSchema struct {
+	Type                 string
+	Description          string
+	Properties           map[string]*ToolSchema
+	Items                *ToolSchema
+	Required             []string
+	Enum                 []string
+	AdditionalProperties *bool
+}
+
 // ToolDef describes a tool for native structured tool calling via the provider API.
 type ToolDef struct {
 	Name        string
 	Description string
 	Parameters  []ToolParam
+	Schema      *ToolSchema
 }
 
 // NativeToolCall is a completed tool call returned via the provider's native tool-calling API.

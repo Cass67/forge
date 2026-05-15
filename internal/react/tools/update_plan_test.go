@@ -12,7 +12,10 @@ func TestUpdatePlanStoresPlanInSession(t *testing.T) {
 	session := react.NewSession()
 	tool := NewUpdatePlan(session)
 	result, err := tool.Execute(context.Background(), map[string]any{
-		"steps_json":  `[{"step":"Inspect files","status":"completed"},{"step":"Patch runtime","status":"in_progress"}]`,
+		"steps": []any{
+			map[string]any{"step": "Inspect files", "status": "completed"},
+			map[string]any{"step": "Patch runtime", "status": "in_progress"},
+		},
 		"explanation": "Refining the runtime path",
 	})
 	if err != nil {
@@ -31,7 +34,10 @@ func TestUpdatePlanRejectsMultipleInProgressSteps(t *testing.T) {
 	session := react.NewSession()
 	tool := NewUpdatePlan(session)
 	_, err := tool.Execute(context.Background(), map[string]any{
-		"steps_json": `[{"step":"Inspect files","status":"in_progress"},{"step":"Patch runtime","status":"in_progress"}]`,
+		"steps": []any{
+			map[string]any{"step": "Inspect files", "status": "in_progress"},
+			map[string]any{"step": "Patch runtime", "status": "in_progress"},
+		},
 	})
 	if err == nil || !strings.Contains(err.Error(), "exactly one active step") {
 		t.Fatalf("err = %v", err)
@@ -42,7 +48,10 @@ func TestUpdatePlanAutoPromotesFirstPendingWhenNoInProgress(t *testing.T) {
 	session := react.NewSession()
 	tool := NewUpdatePlan(session)
 	result, err := tool.Execute(context.Background(), map[string]any{
-		"steps_json": `[{"step":"Inspect files","status":"completed"},{"step":"Patch runtime","status":"pending"}]`,
+		"steps": []any{
+			map[string]any{"step": "Inspect files", "status": "completed"},
+			map[string]any{"step": "Patch runtime", "status": "pending"},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -56,7 +65,11 @@ func TestUpdatePlanAutoPromotesFirstStepWhenAllPending(t *testing.T) {
 	session := react.NewSession()
 	tool := NewUpdatePlan(session)
 	result, err := tool.Execute(context.Background(), map[string]any{
-		"steps_json": `[{"step":"Remove stray files","status":"pending"},{"step":"Update .gitignore","status":"pending"},{"step":"Run lint","status":"pending"}]`,
+		"steps": []any{
+			map[string]any{"step": "Remove stray files", "status": "pending"},
+			map[string]any{"step": "Update .gitignore", "status": "pending"},
+			map[string]any{"step": "Run lint", "status": "pending"},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -73,7 +86,10 @@ func TestUpdatePlanAcceptsBlockedStepWithBlocker(t *testing.T) {
 	session := react.NewSession()
 	tool := NewUpdatePlan(session)
 	result, err := tool.Execute(context.Background(), map[string]any{
-		"steps_json": `[{"step":"Wait for approval on plan","status":"blocked","blocker":"need user sign-off before editing"},{"step":"Patch runtime","status":"pending"}]`,
+		"steps": []any{
+			map[string]any{"step": "Wait for approval on plan", "status": "blocked", "blocker": "need user sign-off before editing"},
+			map[string]any{"step": "Patch runtime", "status": "pending"},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -97,7 +113,7 @@ func TestUpdatePlanRejectsBlockedStepWithoutBlocker(t *testing.T) {
 	session := react.NewSession()
 	tool := NewUpdatePlan(session)
 	_, err := tool.Execute(context.Background(), map[string]any{
-		"steps_json": `[{"step":"Wait for approval on plan","status":"blocked"}]`,
+		"steps": []any{map[string]any{"step": "Wait for approval on plan", "status": "blocked"}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "blocked") || !strings.Contains(err.Error(), "blocker") {
 		t.Fatalf("err = %v", err)
