@@ -102,18 +102,22 @@ type recordingRenderer struct {
 	tokenTexts []string
 	fullTexts  []string
 	retryTexts []string
+	events     []string
 	statsCalls int
+	statsUsage []llm.Usage
 }
 
 func (r *recordingRenderer) AgentToken(text string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.events = append(r.events, "token")
 	r.tokenTexts = append(r.tokenTexts, text)
 }
 
 func (r *recordingRenderer) AgentText(text string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.events = append(r.events, "text")
 	r.fullTexts = append(r.fullTexts, text)
 }
 
@@ -123,12 +127,22 @@ func (r *recordingRenderer) Retry(text string) {
 	r.retryTexts = append(r.retryTexts, text)
 }
 
-func (r *recordingRenderer) ToolCall(string, string)                 {}
-func (r *recordingRenderer) ToolResult(string, string, string, bool) {}
-func (r *recordingRenderer) Stats(time.Duration, llm.Usage) {
+func (r *recordingRenderer) ToolCall(string, string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.events = append(r.events, "tool_call")
+}
+func (r *recordingRenderer) ToolResult(string, string, string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, "tool_result")
+}
+func (r *recordingRenderer) Stats(_ time.Duration, usage llm.Usage) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, "stats")
 	r.statsCalls++
+	r.statsUsage = append(r.statsUsage, usage)
 }
 func (r *recordingRenderer) Error(string) {}
 func (r *recordingRenderer) Info(string)  {}
@@ -1205,9 +1219,12 @@ type nativeToolCallDriver struct {
 	lastTools []llm.ToolDef
 	lastMsgs  []llm.Message
 	lastOpts  []llm.NativeToolOptions
+	usage     llm.Usage
 }
 
 func (d *nativeToolCallDriver) Name() string { return "native-tool-driver" }
+
+func (d *nativeToolCallDriver) LastUsage() llm.Usage { return d.usage }
 
 func (d *nativeToolCallDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
 	close(out)
@@ -1226,11 +1243,45 @@ func (d *nativeToolCallDriver) StreamWithToolsOptions(_ context.Context, msgs []
 	d.lastOpts = append(d.lastOpts, opts)
 	switch d.callCount {
 	case 1:
+		d.usage = llm.Usage{InputTokens: 100, OutputTokens: 20}
 		out <- llm.Token{ToolCall: &llm.NativeToolCall{ID: "c1", Name: "git_status", ArgsJSON: `{}`}}
 	default:
+		d.usage = llm.Usage{InputTokens: 120, OutputTokens: 30}
 		out <- llm.Token{Text: "No changes detected."}
 	}
 	return nil
+}
+
+func TestRunnerRendersToolCallAndStatsBeforeToolExecution(t *testing.T) {
+	driver := &nativeToolCallDriver{}
+	renderer := &recordingRenderer{}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "git_status",
+		Description: "git status",
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			renderer.mu.Lock()
+			defer renderer.mu.Unlock()
+			if !slices.Contains(renderer.events, "tool_call") {
+				t.Fatalf("tool execution started before tool_call was rendered; events=%v", renderer.events)
+			}
+			if !slices.Contains(renderer.events, "stats") {
+				t.Fatalf("tool execution started before stats were emitted; events=%v", renderer.events)
+			}
+			return "nothing to commit", nil
+		},
+	})
+	r := NewRunner(Config{
+		Driver:   driver,
+		Tools:    reg,
+		Session:  NewSession(),
+		Renderer: renderer,
+	})
+
+	if err := r.Run(context.Background(), "check the repo"); err != nil {
+		t.Fatal(err)
+	}
 }
 
 type nativeToolCallWithPreambleDriver struct {
@@ -1924,6 +1975,155 @@ func TestRunnerReturnsUnknownNativeToolErrorToModel(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("history missing unknown-tool feedback: %#v", snap.History)
+	}
+}
+
+func TestRunnerToolValidationFailureContinuesLoop(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "read-1", Name: "read_file", ArgsJSON: `{}`}}},
+		{{Text: "recovered after path feedback"}},
+	}}
+	reg := agenttools.NewRegistry()
+	executed := false
+	reg.Register(agenttools.Tool{
+		Name:        "read_file",
+		Description: "read file",
+		Parameters:  []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}},
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			executed = true
+			return "should not execute", nil
+		},
+	})
+	session := NewSession()
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+	if err := r.Run(context.Background(), "read the file"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if executed {
+		t.Fatal("tool executed despite missing required path")
+	}
+	if got := r.LastResponse(); got != "recovered after path feedback" {
+		t.Fatalf("LastResponse = %q", got)
+	}
+	if driver.callCount != 2 {
+		t.Fatalf("driver calls = %d, want recovery turn", driver.callCount)
+	}
+	found := false
+	for _, msg := range session.Snapshot().History {
+		if msg.Role == llm.RoleTool && strings.Contains(msg.Content, "read_file.path is required") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("history missing validation feedback: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerUpdatePlanMissingStepsContinuesLoop(t *testing.T) {
+	additional := false
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "plan-1", Name: "update_plan", ArgsJSON: `{"explanation":"start"}`}}},
+		{{Text: "recovered after plan feedback"}},
+	}}
+	reg := agenttools.NewRegistry()
+	executed := false
+	reg.Register(agenttools.Tool{
+		Name:        "update_plan",
+		Description: "update plan",
+		Schema: &llm.ToolSchema{
+			Type: "object",
+			Properties: map[string]*llm.ToolSchema{
+				"steps":       {Type: "array", Items: &llm.ToolSchema{Type: "object"}},
+				"explanation": {Type: "string"},
+			},
+			Required:             []string{"steps"},
+			AdditionalProperties: &additional,
+		},
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			executed = true
+			return "should not execute", nil
+		},
+	})
+	session := NewSession()
+	session.SetTaskState(TaskState{Objective: "make a plan", Operation: "plan"})
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+	if err := r.Run(context.Background(), "make a plan"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if executed {
+		t.Fatal("tool executed despite missing required steps")
+	}
+	if got := r.LastResponse(); got != "recovered after plan feedback" {
+		t.Fatalf("LastResponse = %q", got)
+	}
+	found := false
+	for _, msg := range session.Snapshot().History {
+		if msg.Role == llm.RoleTool && strings.Contains(msg.Content, "update_plan.steps is required") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("history missing validation feedback: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerStructuredSchemaValidationFailureContinuesLoop(t *testing.T) {
+	additional := false
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "plan-1", Name: "update_plan", ArgsJSON: `{"steps":[{"step":"Inspect","status":"doing"}]}`}}},
+		{{Text: "recovered after enum feedback"}},
+	}}
+	reg := agenttools.NewRegistry()
+	executed := false
+	reg.Register(agenttools.Tool{
+		Name: "update_plan",
+		Schema: &llm.ToolSchema{
+			Type: "object",
+			Properties: map[string]*llm.ToolSchema{
+				"steps": {
+					Type: "array",
+					Items: &llm.ToolSchema{
+						Type: "object",
+						Properties: map[string]*llm.ToolSchema{
+							"step":   {Type: "string"},
+							"status": {Type: "string", Enum: []string{"pending", "in_progress", "blocked", "completed"}},
+						},
+						Required:             []string{"step", "status"},
+						AdditionalProperties: &additional,
+					},
+				},
+			},
+			Required:             []string{"steps"},
+			AdditionalProperties: &additional,
+		},
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			executed = true
+			return "should not execute", nil
+		},
+	})
+	session := NewSession()
+	session.SetTaskState(TaskState{Objective: "make a plan", Operation: "plan"})
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+	if err := r.Run(context.Background(), "make a plan"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if executed {
+		t.Fatal("tool executed despite invalid nested enum")
+	}
+	found := false
+	for _, msg := range session.Snapshot().History {
+		if msg.Role == llm.RoleTool && strings.Contains(msg.Content, "update_plan.steps[0].status must be one of") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("history missing schema validation feedback: %#v", session.Snapshot().History)
 	}
 }
 

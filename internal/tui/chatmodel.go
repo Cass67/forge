@@ -257,6 +257,8 @@ type ChatModel struct {
 	lastProgressAt         time.Time
 	statsDuration          time.Duration
 	statsUsage             llm.Usage
+	liveStatsStartedAt     time.Time
+	liveStatsOutputChars   int
 	sessionUsage           llm.Usage
 	statusData             chatStatusData
 	recentActivityRole     string
@@ -1839,6 +1841,10 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		return m.handleAgentTaskEvent(ev)
 	case llm.EventToken:
 		if token := sanitizeAssistantTokenForDisplay(ev.Text); token != "" {
+			if m.liveStatsStartedAt.IsZero() {
+				m.liveStatsStartedAt = time.Now()
+			}
+			m.liveStatsOutputChars += len(token)
 			m.AppendToLastAgentLabeled(token, ev.Agent)
 		}
 	case llm.EventRetry:
@@ -2015,6 +2021,8 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 	case llm.EventStats:
 		m.statsDuration = ev.Duration
 		m.statsUsage = ev.Usage
+		m.liveStatsStartedAt = time.Time{}
+		m.liveStatsOutputChars = 0
 		m.sessionUsage.InputTokens += ev.Usage.InputTokens
 		m.sessionUsage.OutputTokens += ev.Usage.OutputTokens
 		m.syncStatusData()
@@ -2740,6 +2748,10 @@ submitChatInput:
 	m.resetProgressCheckpointState()
 
 	m.busy = true
+	m.statsDuration = 0
+	m.statsUsage = llm.Usage{}
+	m.liveStatsStartedAt = time.Now()
+	m.liveStatsOutputChars = 0
 	m.status = "running"
 	m.syncStatusData()
 
@@ -2926,6 +2938,10 @@ func (m ChatModel) submitSkillInput(s skills.Skill, turnLabel, msg string) (tea.
 	m.flash = fmt.Sprintf("skill: %s", s.Name)
 	m.resetProgressCheckpointState()
 	m.busy = true
+	m.statsDuration = 0
+	m.statsUsage = llm.Usage{}
+	m.liveStatsStartedAt = time.Now()
+	m.liveStatsOutputChars = 0
 	m.status = "running"
 	m.syncStatusData()
 
@@ -5244,6 +5260,15 @@ func (m ChatModel) View() string {
 		parts = append(parts, preview)
 	}
 	parts = append(parts, liveRegion, inputBox)
+	if !m.debugSurfaceActive() {
+		if statsLine := m.renderNormalModeStatsLine(theme); statsLine != "" {
+			sep := lipgloss.NewStyle().
+				Foreground(theme.Border).
+				Render(strings.Repeat("─", m.width))
+			parts = append(parts, sep)
+			parts = append(parts, statsLine)
+		}
+	}
 	base := lipgloss.NewStyle().
 		Foreground(theme.Text).
 		Width(m.width).
@@ -5355,6 +5380,41 @@ func (m ChatModel) renderPerformanceTraceLine() string {
 		return ""
 	}
 	return fmt.Sprintf("rendered %d • cache hits %d • misses %d • lines %d", stats.Rendered, stats.Hits, stats.Misses, stats.Lines)
+}
+
+func (m ChatModel) renderNormalModeStatsLine(theme chatTheme) string {
+	parts := make([]string, 0, 4)
+	if m.statsDuration > 0 && m.statsUsage.OutputTokens > 0 {
+		tokPerSec := float64(m.statsUsage.OutputTokens) / m.statsDuration.Seconds()
+		parts = append(parts, fmt.Sprintf("%.0f tok/s", tokPerSec))
+	} else if m.busy && !m.liveStatsStartedAt.IsZero() && m.liveStatsOutputChars > 0 {
+		if elapsed := time.Since(m.liveStatsStartedAt); elapsed > 0 {
+			approxOutputTokens := (m.liveStatsOutputChars + 3) / 4
+			tokPerSec := float64(approxOutputTokens) / elapsed.Seconds()
+			parts = append(parts, fmt.Sprintf("%.0f tok/s", tokPerSec))
+		}
+	}
+	if m.statsUsage.InputTokens > 0 || m.statsUsage.OutputTokens > 0 {
+		parts = append(parts, fmt.Sprintf("%d in / %d out", m.statsUsage.InputTokens, m.statsUsage.OutputTokens))
+	}
+	if m.lastRenderStats.Hits > 0 || m.lastRenderStats.Misses > 0 {
+		cachePart := fmt.Sprintf("cache %d hits", m.lastRenderStats.Hits)
+		if m.lastRenderStats.Misses > 0 {
+			cachePart += fmt.Sprintf(" / %d misses", m.lastRenderStats.Misses)
+		}
+		// Only show misses when both hits and misses are zero is not possible here (guard above).
+		// But when hits=0 and misses>0, we still want to show it:
+		// Actually the guard already handles this: if Hits>0 || Misses>0
+		parts = append(parts, cachePart)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	line := strings.Join(parts, " • ")
+	return lipgloss.NewStyle().
+		Foreground(theme.TextDim).
+		Width(m.width).
+		Render(fitCell(line, max(1, m.width)))
 }
 
 func (m ChatModel) transientStatusMessage() (string, bool) {
