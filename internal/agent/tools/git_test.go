@@ -156,6 +156,45 @@ func TestGitLogCount(t *testing.T) {
 	}
 }
 
+func TestGitLogPath(t *testing.T) {
+	dir := initGitRepo(t)
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@test.com")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v failed: %s\n%s", args, err, out)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "internal", "tui"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "internal", "tui", "chatstats.go"), []byte("package tui\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", ".")
+	run("commit", "-m", "touch tui stats")
+	if err := os.WriteFile(filepath.Join(dir, "other.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", ".")
+	run("commit", "-m", "touch other")
+
+	tool := NewGitLog(dir)
+	result, err := tool.Execute(context.Background(), map[string]any{"count": float64(10), "path": "internal/tui"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "touch tui stats") {
+		t.Fatalf("expected scoped log to include tui commit, got: %s", result)
+	}
+	if strings.Contains(result, "touch other") {
+		t.Fatalf("expected scoped log to omit unrelated commit, got: %s", result)
+	}
+}
+
 func TestGitCommit(t *testing.T) {
 	dir := initGitRepo(t)
 	os.WriteFile(filepath.Join(dir, "new.go"), []byte("package main\n"), 0o644)
