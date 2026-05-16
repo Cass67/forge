@@ -1340,6 +1340,31 @@ func TestChatModelFirstPromptKeepsExpandedHeader(t *testing.T) {
 	}
 }
 
+func TestChatModelStatsFooterFitsWithoutCroppingHeader(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "localllm/gpt", WorkDir: "/Users/cass/git/forge"})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 16})
+	m = updated.(ChatModel)
+	m.AddMessage(ChatMessage{Kind: MsgUser, Header: "You • 12:00:00", Content: "test"})
+	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Forge • 12:00:01", Content: "response"})
+
+	updated, _ = m.Update(llm.Event{
+		Kind:     llm.EventStats,
+		Duration: time.Second,
+		Usage:    llm.Usage{InputTokens: 100, OutputTokens: 20},
+	})
+	m = updated.(ChatModel)
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+	if len(lines) > m.height {
+		t.Fatalf("view height = %d, want <= %d\n%s", len(lines), m.height, strippedLine(view))
+	}
+	plain := strippedLine(view)
+	if !strings.Contains(plain, "FORGE") || !strings.Contains(plain, "model") || !strings.Contains(plain, "localllm/gpt") || !strings.Contains(plain, "dir") {
+		t.Fatalf("expected full header to remain visible with stats footer:\n%s", plain)
+	}
+}
+
 func TestChatModelNormalStatsShowsLiveTokenRateBeforeFinalStats(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "copilot/gpt-5", WorkDir: "/tmp"})
 	m.width = 120
@@ -1351,6 +1376,23 @@ func TestChatModelNormalStatsShowsLiveTokenRateBeforeFinalStats(t *testing.T) {
 	line := m.renderNormalModeStatsLine(m.theme())
 	if !strings.Contains(line, "tok/s") {
 		t.Fatalf("normal stats line should show live token rate before final stats, got %q", line)
+	}
+}
+
+func TestChatModelNormalStatsShowsContextUsage(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{
+		Model: "openai/gpt-5",
+		ModelInfo: func(model string) *modelcatalog.ModelInfo {
+			return &modelcatalog.ModelInfo{ContextWindow: 128000}
+		},
+	})
+	m.width = 120
+	m.sessionUsage = llm.Usage{InputTokens: 82225, OutputTokens: 806}
+	m.syncStatusData()
+
+	line := strippedLine(m.renderNormalModeStatsLine(m.theme()))
+	if !strings.Contains(line, "est ctx 83031/128000") {
+		t.Fatalf("normal stats line should show context usage, got %q", line)
 	}
 }
 
