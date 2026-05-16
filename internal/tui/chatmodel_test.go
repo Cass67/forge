@@ -1318,6 +1318,28 @@ func TestChatModelViewKeepsTurnStatsOutOfCompactHeader(t *testing.T) {
 	}
 }
 
+func TestChatModelFirstPromptKeepsExpandedHeader(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "copilot/gpt-5", WorkDir: "/tmp/forge"})
+	m.width = 80
+	m.height = 13
+	m.inputBuf = "hello forge"
+	m.inputPos = len([]rune(m.inputBuf))
+
+	updated, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(ChatModel)
+
+	lines := strings.Split(strippedLine(m.View()), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("expected expanded header lines, got:\n%s", strings.Join(lines, "\n"))
+	}
+	if !strings.Contains(lines[1], "model") || !strings.Contains(lines[1], "copilot/gpt-5") {
+		t.Fatalf("expected model line to remain visible after first prompt, got:\n%s", strings.Join(lines[:min(len(lines), 3)], "\n"))
+	}
+	if !strings.Contains(lines[2], "dir") || !strings.Contains(lines[2], "/tmp/forge") {
+		t.Fatalf("expected dir line to remain visible after first prompt, got:\n%s", strings.Join(lines[:min(len(lines), 3)], "\n"))
+	}
+}
+
 func TestChatModelNormalStatsShowsLiveTokenRateBeforeFinalStats(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "copilot/gpt-5", WorkDir: "/tmp"})
 	m.width = 120
