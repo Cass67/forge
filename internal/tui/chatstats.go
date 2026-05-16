@@ -331,9 +331,6 @@ func renderStatusHeader(theme chatTheme, data chatStatusData, width int) string 
 }
 
 func renderStatusHeaderForHeight(theme chatTheme, data chatStatusData, width, height int) string {
-	if height > 0 && height < 8 {
-		return renderCompactStatusHeader(theme, data, width)
-	}
 	return renderStatusHeader(theme, data, width)
 }
 
