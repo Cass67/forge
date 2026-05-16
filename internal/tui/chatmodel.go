@@ -963,6 +963,23 @@ func (m ChatModel) inputHeight() int {
 	return m.composer().Height(m.width) + 1
 }
 
+func (m ChatModel) normalModeStatsFooterHeight() int {
+	if !m.shouldShowNormalModeStatsFooter() {
+		return 0
+	}
+	return 2
+}
+
+func (m ChatModel) shouldShowNormalModeStatsFooter() bool {
+	if m.debugSurfaceActive() || m.height > 0 && m.height < 14 {
+		return false
+	}
+	if m.renderNormalModeStatsLine(m.theme()) == "" {
+		return false
+	}
+	return true
+}
+
 func (m ChatModel) debugSurfaceActive() bool {
 	surfaceKind := m.config.SurfaceKind
 	if surfaceKind == "" {
@@ -999,7 +1016,7 @@ func (m *ChatModel) resizeChatViewport() {
 		return
 	}
 	m.chatViewport.Width = m.chatContentWidth()
-	bodyH := max(3, m.height-m.headerHeight()-chatHeaderGapHeight-m.inputHeight()-m.debugDockHeight())
+	bodyH := max(3, m.height-m.headerHeight()-chatHeaderGapHeight-m.inputHeight()-m.debugDockHeight()-m.normalModeStatsFooterHeight())
 	if m.chatViewport.Height == bodyH {
 		return
 	}
@@ -2039,6 +2056,7 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		m.sessionUsage.InputTokens += ev.Usage.InputTokens
 		m.sessionUsage.OutputTokens += ev.Usage.OutputTokens
 		m.syncStatusData()
+		m.resizeChatViewport()
 		if !m.debugEnabled {
 			return m, m.beginProviderDiagnosticsFetch(false)
 		}
@@ -5273,7 +5291,7 @@ func (m ChatModel) View() string {
 		parts = append(parts, preview)
 	}
 	parts = append(parts, liveRegion, inputBox)
-	if !m.debugSurfaceActive() {
+	if m.shouldShowNormalModeStatsFooter() {
 		if statsLine := m.renderNormalModeStatsLine(theme); statsLine != "" {
 			sep := lipgloss.NewStyle().
 				Foreground(theme.Border).
@@ -5409,6 +5427,9 @@ func (m ChatModel) renderNormalModeStatsLine(theme chatTheme) string {
 	}
 	if m.statsUsage.InputTokens > 0 || m.statsUsage.OutputTokens > 0 {
 		parts = append(parts, fmt.Sprintf("%d in / %d out", m.statsUsage.InputTokens, m.statsUsage.OutputTokens))
+	}
+	if context := buildContextSummary(m.statusSnapshot()); context != "" {
+		parts = append(parts, context)
 	}
 	if m.lastRenderStats.Hits > 0 || m.lastRenderStats.Misses > 0 {
 		cachePart := fmt.Sprintf("cache %d hits", m.lastRenderStats.Hits)
