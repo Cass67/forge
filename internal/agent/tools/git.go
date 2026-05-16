@@ -67,6 +67,7 @@ func NewGitLog(workDir string) Tool {
 		Description: "Show recent commit history (git log --oneline).",
 		Parameters: []ParameterDef{
 			{Name: "count", Type: "int", Description: "number of commits to show (default 10)", Required: false},
+			{Name: "path", Type: "string", Description: "optional repository-relative path to scope history, e.g. internal/tui", Required: false},
 		},
 		AutoApprove: true,
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
@@ -74,7 +75,11 @@ func NewGitLog(workDir string) Tool {
 			if v, ok := args["count"].(float64); ok && v > 0 {
 				count = int(v)
 			}
-			cmd := exec.CommandContext(ctx, "git", "log", "--oneline", "-n", strconv.Itoa(count))
+			gitArgs := []string{"log", "--oneline", "-n", strconv.Itoa(count)}
+			if path, _ := args["path"].(string); strings.TrimSpace(path) != "" {
+				gitArgs = append(gitArgs, "--", strings.TrimSpace(path))
+			}
+			cmd := exec.CommandContext(ctx, "git", gitArgs...)
 			cmd.Dir = workDir
 			out, err := cmd.CombinedOutput()
 			if err != nil {
