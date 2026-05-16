@@ -147,6 +147,21 @@ func TestRenderStatusHeaderUsesAppBackgroundSurface(t *testing.T) {
 	}
 }
 
+func TestRenderStatusHeaderForHeightKeepsModelLineAtLowHeights(t *testing.T) {
+	rendered := renderStatusHeaderForHeight(chatTheme{}, chatStatusData{
+		Model:   "copilot/gpt-5",
+		WorkDir: "/tmp/work",
+	}, 42, 6)
+	plain := strippedLine(rendered)
+
+	if !strings.Contains(plain, "model") || !strings.Contains(plain, "copilot/gpt-5") {
+		t.Fatalf("height-aware header should keep model line, got:\n%s", plain)
+	}
+	if !strings.Contains(plain, "dir") || !strings.Contains(plain, "/tmp/work") {
+		t.Fatalf("height-aware header should keep dir line, got:\n%s", plain)
+	}
+}
+
 func TestRenderStatusHeaderDoesNotPaintInlineHeaderBlocks(t *testing.T) {
 	withTrueColorProfile(t)
 
