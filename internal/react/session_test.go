@@ -7,7 +7,30 @@ import (
 
 	"forge/internal/hooks"
 	"forge/internal/llm"
+	"forge/internal/protocol"
 )
+
+func TestSessionRecordsUserAndAssistantItemsOnce(t *testing.T) {
+	s := NewSession()
+	turn := s.RecordInput("hello")
+	s.AppendAssistantMessage("hi")
+	s.CompleteTurn(turn, "hi", nil, nil)
+	snap := s.Snapshot()
+	var user, assistant, terminal int
+	for _, item := range snap.Items {
+		switch item.Kind {
+		case protocol.ItemUserMessage:
+			user++
+		case protocol.ItemAssistantMessage:
+			assistant++
+		case protocol.ItemTurnComplete:
+			terminal++
+		}
+	}
+	if user != 1 || assistant != 1 || terminal != 1 {
+		t.Fatalf("item counts user=%d assistant=%d terminal=%d items=%#v", user, assistant, terminal, snap.Items)
+	}
+}
 
 func TestAppendAssistantWithToolCalls(t *testing.T) {
 	s := NewSession()

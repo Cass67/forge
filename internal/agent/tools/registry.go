@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"forge/internal/llm"
+	"forge/internal/protocol"
 )
 
 type PromptVisibility int
@@ -354,7 +355,7 @@ func exampleValueForParameter(param ParameterDef) any {
 	case strings.Contains(name, "path"):
 		return "README.md"
 	case strings.Contains(name, "pattern"):
-		return "TODO"
+		return "*.go"
 	case strings.Contains(name, "query"):
 		return "inspect repository"
 	case strings.Contains(name, "command"):
@@ -407,7 +408,7 @@ func (r *Registry) ToLLMToolDefs() []llm.ToolDef {
 			Name:        t.Name,
 			Description: t.Description,
 			Parameters:  params,
-			Schema:      t.Schema,
+			Schema:      protocol.SanitizeToolSchema(t.Schema),
 		})
 	}
 	return defs

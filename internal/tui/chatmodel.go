@@ -545,6 +545,9 @@ func isRecoverableToolFeedback(ev llm.Event) bool {
 		return false
 	}
 	message := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(ev.Text), "error: "))
+	if ev.Agent == "ask_user_question" {
+		return strings.Contains(message, "options") || strings.Contains(message, "question")
+	}
 	if !strings.HasPrefix(message, ev.Agent+".") {
 		return false
 	}
@@ -960,7 +963,7 @@ func (m ChatModel) inputHeight() int {
 	if m.pendingApproval != nil {
 		return strings.Count(m.pendingApproval.Summary, "\n") + 6
 	}
-	return m.composer().Height(m.width) + 1
+	return m.composer().Height(m.width)
 }
 
 func (m ChatModel) normalModeStatsFooterHeight() int {
@@ -970,12 +973,48 @@ func (m ChatModel) normalModeStatsFooterHeight() int {
 	return 2
 }
 
+func (m ChatModel) liveStatusSlotHeight() int {
+	return 1
+}
+
+func (m ChatModel) shouldShowPendingInputPreview() bool {
+	if len(m.pendingQueuedInput) == 0 {
+		return false
+	}
+	if m.height <= 0 {
+		return true
+	}
+	minRows := m.headerHeight() + chatHeaderGapHeight + m.pendingInputPreviewContentHeight() + m.liveStatusSlotHeight() + m.inputHeight() + 1
+	return minRows <= m.height
+}
+
+func (m ChatModel) pendingInputPreviewHeight() int {
+	if !m.shouldShowPendingInputPreview() {
+		return 0
+	}
+	return m.pendingInputPreviewContentHeight()
+}
+
+func (m ChatModel) pendingInputPreviewContentHeight() int {
+	lines := 1 + min(3, len(m.pendingQueuedInput))
+	if len(m.pendingQueuedInput) > 3 {
+		lines++
+	}
+	return lines + 2
+}
+
 func (m ChatModel) shouldShowNormalModeStatsFooter() bool {
 	if m.debugSurfaceActive() || m.height > 0 && m.height < 14 {
 		return false
 	}
 	if m.renderNormalModeStatsLine(m.theme()) == "" {
 		return false
+	}
+	if m.height > 0 {
+		minRows := m.headerHeight() + chatHeaderGapHeight + m.debugDockHeight() + m.pendingInputPreviewHeight() + m.liveStatusSlotHeight() + m.inputHeight() + 1 + 2
+		if minRows > m.height {
+			return false
+		}
 	}
 	return true
 }
@@ -1011,12 +1050,39 @@ func (m ChatModel) headerHeight() int {
 	return height
 }
 
+type normalChatLayoutBudget struct {
+	Header      int
+	HeaderGap   int
+	Chat        int
+	DebugDock   int
+	Pending     int
+	LiveStatus  int
+	Input       int
+	StatsFooter int
+	Total       int
+}
+
+func (m ChatModel) normalChatLayoutBudget() normalChatLayoutBudget {
+	b := normalChatLayoutBudget{
+		Header:      m.headerHeight(),
+		HeaderGap:   chatHeaderGapHeight,
+		DebugDock:   m.debugDockHeight(),
+		Pending:     m.pendingInputPreviewHeight(),
+		LiveStatus:  m.liveStatusSlotHeight(),
+		Input:       m.inputHeight(),
+		StatsFooter: m.normalModeStatsFooterHeight(),
+	}
+	b.Chat = max(1, m.height-b.Header-b.HeaderGap-b.DebugDock-b.Pending-b.LiveStatus-b.Input-b.StatsFooter)
+	b.Total = b.Header + b.HeaderGap + b.Chat + b.DebugDock + b.Pending + b.LiveStatus + b.Input + b.StatsFooter
+	return b
+}
+
 func (m *ChatModel) resizeChatViewport() {
 	if m.width <= 0 || m.height <= 0 {
 		return
 	}
 	m.chatViewport.Width = m.chatContentWidth()
-	bodyH := max(3, m.height-m.headerHeight()-chatHeaderGapHeight-m.inputHeight()-m.debugDockHeight()-m.normalModeStatsFooterHeight())
+	bodyH := m.normalChatLayoutBudget().Chat
 	if m.chatViewport.Height == bodyH {
 		return
 	}
@@ -2706,6 +2772,20 @@ func (m ChatModel) trySubmitText(input string, attachments []chatstate.ChatAttac
 submitChatInput:
 
 	if m.busy {
+		stamp := time.Now().Format("15:04:05")
+		displayText := input
+		if len(attachments) > 0 {
+			names := make([]string, len(attachments))
+			for i, att := range attachments {
+				names[i] = att.Name
+			}
+			displayText = fmt.Sprintf("[%s] %s", strings.Join(names, ", "), input)
+		}
+		m.AddMessage(ChatMessage{
+			Kind:    MsgUser,
+			Header:  "You • " + stamp,
+			Content: displayText,
+		})
 		m.flash = "queued steering"
 		m.pendingQueuedInput = append(m.pendingQueuedInput, input)
 		m.inputBuf = ""
@@ -5226,8 +5306,9 @@ func (m ChatModel) View() string {
 	theme := m.theme()
 	headerData := m.statusSnapshot()
 	header := renderStatusHeaderForHeight(theme, headerData, m.width, m.height)
+	budget := m.normalChatLayoutBudget()
 
-	chatBodyHeight := max(1, m.chatViewport.Height)
+	chatBodyHeight := budget.Chat
 	chatContentWidth := max(1, m.chatContentWidth())
 	chatView := m.chatViewport.View()
 	chatLines := strings.Split(chatView, "\n")
@@ -5364,7 +5445,7 @@ func (m ChatModel) renderLiveProgressSlot(theme chatTheme) string {
 }
 
 func (m ChatModel) renderPendingInputPreview(theme chatTheme) string {
-	if len(m.pendingQueuedInput) == 0 {
+	if !m.shouldShowPendingInputPreview() {
 		return ""
 	}
 	lines := []string{"Queued input"}
