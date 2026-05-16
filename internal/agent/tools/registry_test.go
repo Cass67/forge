@@ -2,11 +2,37 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"forge/internal/llm"
 )
+
+func TestExampleValueForPatternParameterIsConcrete(t *testing.T) {
+	got := exampleValueForParameter(ParameterDef{Name: "pattern", Type: "string", Required: true})
+	if got == "TODO" || got == "" {
+		t.Fatalf("pattern example = %q, want concrete glob-like example", got)
+	}
+	if got != "*.go" {
+		t.Fatalf("pattern example = %q, want *.go", got)
+	}
+}
+
+func TestToolExampleArgsNeverContainTODO(t *testing.T) {
+	tool := Tool{
+		Name:       "glob",
+		Parameters: []ParameterDef{{Name: "pattern", Type: "string", Required: true}},
+	}
+	args := toolExampleArgs(tool)
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "TODO") {
+		t.Fatalf("tool example args contain TODO: %s", encoded)
+	}
+}
 
 func TestRegistryRegisterAndGet(t *testing.T) {
 	reg := NewRegistry()

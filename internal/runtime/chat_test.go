@@ -20,6 +20,7 @@ import (
 	"forge/internal/hooks"
 	"forge/internal/llm"
 	"forge/internal/mcp"
+	"forge/internal/protocol"
 	reactruntime "forge/internal/react"
 	"forge/internal/skills"
 	"forge/internal/tui"
@@ -34,6 +35,129 @@ func (discardRuntimeRenderTarget) ToolResult(string, string, string, bool) {}
 func (discardRuntimeRenderTarget) Stats(time.Duration, llm.Usage)          {}
 func (discardRuntimeRenderTarget) Error(string)                            {}
 func (discardRuntimeRenderTarget) Info(string)                             {}
+
+func TestToolContractsDoNotUseJSONInStringParameters(t *testing.T) {
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "forge.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	session := reactruntime.NewSession()
+	approve := func(tools.Action) (bool, error) { return true, nil }
+	registerTools(reg, t.TempDir(), cfg, session, approve, nil, nil)
+
+	for _, tool := range reg.All() {
+		for _, param := range tool.Parameters {
+			name := strings.ToLower(param.Name)
+			desc := strings.ToLower(param.Description)
+			if strings.Contains(name, "json") || strings.Contains(desc, "json array") || strings.Contains(desc, "json object") {
+				t.Fatalf("tool %s parameter %s exposes JSON-in-string contract: %q", tool.Name, param.Name, param.Description)
+			}
+		}
+	}
+}
+
+func TestStructuredToolsExposeNativeSchema(t *testing.T) {
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "forge.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	session := reactruntime.NewSession()
+	approve := func(tools.Action) (bool, error) { return true, nil }
+	registerTools(reg, t.TempDir(), cfg, session, approve, nil, nil)
+
+	for _, name := range []string{"update_plan", "ask_user_question"} {
+		tool, ok := reg.Get(name)
+		if !ok {
+			t.Fatalf("missing tool %s", name)
+		}
+		if tool.Schema == nil {
+			t.Fatalf("tool %s has nil schema", name)
+		}
+	}
+}
+
+func TestModelVisibleToolContractsDoNotContainKnownBadPlaceholders(t *testing.T) {
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "forge.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	session := reactruntime.NewSession()
+	approve := func(tools.Action) (bool, error) { return true, nil }
+	registerTools(reg, t.TempDir(), cfg, session, approve, nil, nil)
+
+	bad := []string{"TODO", "steps_json", "options_json", "<tool_call>"}
+	for _, tool := range reg.All() {
+		contract := struct {
+			Name        string
+			Description string
+			Parameters  []tools.ParameterDef
+			Schema      any
+		}{
+			Name:        tool.Name,
+			Description: tool.Description,
+			Parameters:  tool.Parameters,
+			Schema:      tool.Schema,
+		}
+		blob, err := json.Marshal(contract)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(blob)
+		for _, needle := range bad {
+			if strings.Contains(text, needle) {
+				t.Fatalf("tool %s contract contains %q: %s", tool.Name, needle, text)
+			}
+		}
+	}
+}
+
+func TestToolSchemaFixtureMatchesGenerated(t *testing.T) {
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "forge.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	session := reactruntime.NewSession()
+	approve := func(tools.Action) (bool, error) { return true, nil }
+	registerTools(reg, t.TempDir(), cfg, session, approve, nil, nil)
+
+	generated := map[string]any{}
+	for _, tool := range reg.All() {
+		if tool.Schema == nil {
+			continue
+		}
+		generated[tool.Name] = protocol.ToolSchemaToJSONSchema(tool.Schema)
+	}
+	encoded, err := json.MarshalIndent(generated, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.ReadFile(filepath.Join("..", "protocol", "schemas", "forge_tools.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(expected) != string(encoded)+"\n" {
+		t.Fatalf("tool schema fixture differs; regenerate internal/protocol/schemas/forge_tools.schema.json\n%s", encoded)
+	}
+}
+
+func TestChatRuntimeCreatesDurableThreadStoreWhenOutputDirConfigured(t *testing.T) {
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "forge.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Session.OutputDir = t.TempDir()
+	reg := tools.NewRegistry()
+	session := reactruntime.NewSession()
+	approve := func(tools.Action) (bool, error) { return true, nil }
+	registerTools(reg, t.TempDir(), cfg, session, approve, nil, nil)
+	if session.DurableSink() == nil {
+		t.Fatal("expected durable sink to be configured")
+	}
+}
 
 func TestResolveModelExactAndIndexed(t *testing.T) {
 	models := []string{"alpha/model-a", "beta/model-b", "gamma/model-c"}

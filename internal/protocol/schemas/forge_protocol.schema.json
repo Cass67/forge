@@ -1,0 +1,220 @@
+{
+  "$id": "https://forge.local/schemas/forge_protocol.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "compaction": {
+      "additionalProperties": false,
+      "properties": {
+        "summary": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "failure": {
+      "additionalProperties": false,
+      "properties": {
+        "decision": {
+          "additionalProperties": false,
+          "properties": {
+            "class": {
+              "enum": [
+                "none",
+                "model_output_invalid",
+                "tool_args_invalid",
+                "policy_blocked",
+                "tool_runtime_failed",
+                "provider_unavailable",
+                "user_cancelled"
+              ],
+              "type": "string"
+            },
+            "feedback": {
+              "type": "string"
+            },
+            "recoverable": {
+              "type": "boolean"
+            },
+            "user_visible": {
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "id": {
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "session_meta",
+        "turn_context",
+        "user_message",
+        "assistant_message",
+        "tool_call",
+        "tool_result",
+        "retry",
+        "failure",
+        "stats",
+        "compaction",
+        "turn_complete"
+      ],
+      "type": "string"
+    },
+    "message": {
+      "additionalProperties": false,
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "retry": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt": {
+          "type": "integer"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "seq": {
+      "type": "integer"
+    },
+    "session_meta": {
+      "additionalProperties": false,
+      "properties": {
+        "cwd": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "stats": {
+      "additionalProperties": false,
+      "properties": {
+        "duration_ms": {
+          "type": "integer"
+        },
+        "usage": {
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "thread_id": {
+      "type": "string"
+    },
+    "tool_call": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "type": "object"
+        },
+        "tool_call_id": {
+          "type": "string"
+        },
+        "tool_name": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "tool_result": {
+      "additionalProperties": false,
+      "properties": {
+        "diff": {
+          "type": "string"
+        },
+        "is_error": {
+          "type": "boolean"
+        },
+        "original_bytes": {
+          "type": "integer"
+        },
+        "text": {
+          "type": "string"
+        },
+        "tool_call_id": {
+          "type": "string"
+        },
+        "tool_name": {
+          "type": "string"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "turn_complete": {
+      "additionalProperties": false,
+      "properties": {
+        "response_id": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "failed",
+            "interrupted"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "turn_context": {
+      "additionalProperties": false,
+      "properties": {
+        "input": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string"
+        },
+        "response_id": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "turn_id": {
+      "type": "string"
+    },
+    "version": {
+      "const": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version",
+    "id",
+    "thread_id",
+    "seq",
+    "kind",
+    "at"
+  ],
+  "title": "Forge Durable Runtime Protocol",
+  "type": "object"
+}

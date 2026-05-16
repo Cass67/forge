@@ -1329,6 +1329,14 @@ func TestChatModelFirstPromptKeepsExpandedHeader(t *testing.T) {
 	m = updated.(ChatModel)
 
 	lines := strings.Split(strippedLine(m.View()), "\n")
+	if len(lines) > m.height {
+		t.Fatalf("view height = %d, want <= %d\n%s", len(lines), m.height, strings.Join(lines, "\n"))
+	}
+	for i, line := range lines {
+		if width := ansiPrintableWidth(line); width > m.width {
+			t.Fatalf("line %d width = %d, want <= %d: %q", i, width, m.width, line)
+		}
+	}
 	if len(lines) < 3 {
 		t.Fatalf("expected expanded header lines, got:\n%s", strings.Join(lines, "\n"))
 	}
@@ -1362,6 +1370,156 @@ func TestChatModelStatsFooterFitsWithoutCroppingHeader(t *testing.T) {
 	plain := strippedLine(view)
 	if !strings.Contains(plain, "FORGE") || !strings.Contains(plain, "model") || !strings.Contains(plain, "localllm/gpt") || !strings.Contains(plain, "dir") {
 		t.Fatalf("expected full header to remain visible with stats footer:\n%s", plain)
+	}
+}
+
+func TestChatModelViewportReservesLiveStatusSlot(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "localllm/gpt", WorkDir: "/Users/cass/git/forge"})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 16})
+	m = updated.(ChatModel)
+
+	updated, _ = m.Update(llm.Event{
+		Kind:     llm.EventStats,
+		Duration: time.Second,
+		Usage:    llm.Usage{InputTokens: 100, OutputTokens: 20},
+	})
+	m = updated.(ChatModel)
+
+	want := m.height - m.headerHeight() - chatHeaderGapHeight - m.inputHeight() - m.normalModeStatsFooterHeight() - 1
+	if m.chatViewport.Height != want {
+		t.Fatalf("chat viewport height = %d, want %d", m.chatViewport.Height, want)
+	}
+}
+
+func TestChatModelNormalLayoutBudgetMatchesRenderedRows(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "localllm/gpt-oss-20b", WorkDir: "/Users/cass/git/forge"})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 10})
+	m = updated.(ChatModel)
+	m.AddMessage(ChatMessage{Kind: MsgUser, Header: "You • 12:00:00", Content: "test"})
+	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Forge • 12:00:01", Content: strings.Repeat("response ", 30)})
+	updated, _ = m.Update(llm.Event{Kind: llm.EventStats, Duration: time.Second, Usage: llm.Usage{InputTokens: 1200, OutputTokens: 300}})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{Kind: llm.EventDone})
+	m = updated.(ChatModel)
+
+	view := strippedLine(m.View())
+	lines := strings.Split(view, "\n")
+	if len(lines) > m.height {
+		t.Fatalf("view rows = %d, want <= %d\n%s", len(lines), m.height, view)
+	}
+	for i, line := range lines {
+		if width := ansiPrintableWidth(line); width > m.width {
+			t.Fatalf("line %d width = %d, want <= %d: %q", i, width, m.width, line)
+		}
+	}
+	if !strings.Contains(lines[0], "localllm/gpt-oss-20b") || !strings.Contains(lines[1], "model") || !strings.Contains(lines[2], "dir") {
+		t.Fatalf("header not preserved at top:\n%s", strings.Join(lines[:min(len(lines), 4)], "\n"))
+	}
+}
+
+func TestChatModelNormalLayoutBudgetReservesQueuedInputPreview(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "localllm/gpt", WorkDir: "/tmp"})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 14})
+	m = updated.(ChatModel)
+	m.pendingQueuedInput = []string{"first queued", "second queued", "third queued", "fourth queued"}
+	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Forge • 12:00:01", Content: strings.Repeat("response ", 20)})
+	m.resizeChatViewport()
+
+	view := strippedLine(m.View())
+	lines := strings.Split(view, "\n")
+	if len(lines) > m.height {
+		t.Fatalf("view rows = %d, want <= %d\n%s", len(lines), m.height, view)
+	}
+	if !strings.Contains(lines[0], "FORGE") || !strings.Contains(lines[1], "model") || !strings.Contains(lines[2], "dir") {
+		t.Fatalf("header not preserved with queued preview:\n%s", strings.Join(lines[:min(len(lines), 4)], "\n"))
+	}
+}
+
+func assertNormalViewFitsAndKeepsHeader(t *testing.T, m ChatModel) {
+	t.Helper()
+	view := strippedLine(m.View())
+	lines := strings.Split(view, "\n")
+	if len(lines) > m.height {
+		t.Fatalf("view rows = %d, want <= %d\n%s", len(lines), m.height, view)
+	}
+	for i, line := range lines {
+		if width := ansiPrintableWidth(line); width > m.width {
+			t.Fatalf("line %d width = %d, want <= %d: %q", i, width, m.width, line)
+		}
+	}
+	if len(lines) >= 3 {
+		if !strings.Contains(lines[0], "localllm/gpt") && !strings.Contains(lines[0], "FORGE") {
+			t.Fatalf("first row missing title/model:\n%s", strings.Join(lines[:min(len(lines), 4)], "\n"))
+		}
+		if !strings.Contains(lines[1], "model") {
+			t.Fatalf("second row missing model line:\n%s", strings.Join(lines[:min(len(lines), 4)], "\n"))
+		}
+		if !strings.Contains(lines[2], "dir") {
+			t.Fatalf("third row missing dir line:\n%s", strings.Join(lines[:min(len(lines), 4)], "\n"))
+		}
+	}
+}
+
+func TestChatModelNormalViewInvariantMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(ChatModel) ChatModel
+	}{
+		{name: "idle", setup: func(m ChatModel) ChatModel { return m }},
+		{name: "busy", setup: func(m ChatModel) ChatModel { m.busy = true; m.status = "working"; return m }},
+		{name: "done_with_stats", setup: func(m ChatModel) ChatModel {
+			m.statsUsage = llm.Usage{InputTokens: 100, OutputTokens: 20}
+			m.sessionUsage = llm.Usage{InputTokens: 100, OutputTokens: 20}
+			m.syncStatusData()
+			m.resizeChatViewport()
+			return m
+		}},
+		{name: "error_status", setup: func(m ChatModel) ChatModel { m.status = "error"; m.flash = "error: failed"; return m }},
+		{name: "queued_input", setup: func(m ChatModel) ChatModel {
+			m.pendingQueuedInput = []string{"queued one", "queued two"}
+			m.resizeChatViewport()
+			return m
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewChatModel(ChatLiveConfig{Model: "localllm/gpt", WorkDir: "/tmp/forge"})
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 14})
+			m = updated.(ChatModel)
+			m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Forge • 12:00:01", Content: strings.Repeat("response ", 20)})
+			m = tc.setup(m)
+			assertNormalViewFitsAndKeepsHeader(t, m)
+		})
+	}
+}
+
+func TestChatModelStatsFooterKeepsHeaderAtTopAfterSuccessfulChat(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "localllm/gpt-oss-20b", WorkDir: "/Users/cass/git/forge"})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 8})
+	m = updated.(ChatModel)
+	m.AddMessage(ChatMessage{Kind: MsgUser, Header: "You • 12:00:00", Content: "test"})
+	m.AddMessage(ChatMessage{Kind: MsgAgent, Header: "Forge • 12:00:01", Content: strings.Repeat("response ", 20)})
+
+	updated, _ = m.Update(llm.Event{
+		Kind:     llm.EventStats,
+		Duration: time.Second,
+		Usage:    llm.Usage{InputTokens: 1200, OutputTokens: 300},
+	})
+	m = updated.(ChatModel)
+	updated, _ = m.Update(llm.Event{Kind: llm.EventDone})
+	m = updated.(ChatModel)
+
+	lines := strings.Split(strippedLine(m.View()), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("view missing header lines:\n%s", strings.Join(lines, "\n"))
+	}
+	if !strings.Contains(lines[0], "FORGE") || !strings.Contains(lines[0], "localllm/gpt-oss-20b") {
+		t.Fatalf("first visible row should be header title/model, got:\n%s", strings.Join(lines[:min(len(lines), 4)], "\n"))
+	}
+	if !strings.Contains(lines[1], "model") || !strings.Contains(lines[1], "localllm/gpt-oss-20b") {
+		t.Fatalf("second visible row should be model line, got:\n%s", strings.Join(lines[:min(len(lines), 4)], "\n"))
+	}
+	if !strings.Contains(lines[2], "dir") || !strings.Contains(lines[2], "forge") {
+		t.Fatalf("third visible row should be dir line, got:\n%s", strings.Join(lines[:min(len(lines), 4)], "\n"))
 	}
 }
 
@@ -4233,8 +4391,11 @@ func TestChatModelEnterWhileBusyQueuesSteering(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected queued steering command while busy")
 	}
-	if got := len(m.messages); got != 2 {
+	if got := len(m.messages); got != 3 {
 		t.Fatalf("messages = %#v", m.messages)
+	}
+	if got := m.messages[len(m.messages)-1]; got.Kind != MsgUser || got.Content != "draft while running" {
+		t.Fatalf("queued user message = %#v", got)
 	}
 	if got := m.inputBuf; got != "" {
 		t.Fatalf("inputBuf = %q", got)
@@ -4257,6 +4418,22 @@ func TestChatModelEnterWhileBusyQueuesSteering(t *testing.T) {
 	}
 	if got := strippedLine(m.View()); !strings.Contains(got, "Queued input") || !strings.Contains(got, "draft while running") {
 		t.Fatalf("expected queued input preview, got:\n%s", got)
+	}
+
+	updated, _ = m.Update(llm.Event{Kind: llm.EventProgress, Text: "react runtime: applying 1 queued input message(s)"})
+	m = updated.(ChatModel)
+	if len(m.pendingQueuedInput) != 0 {
+		t.Fatalf("pending queued input should clear after runtime applies it: %#v", m.pendingQueuedInput)
+	}
+	foundQueuedUser := false
+	for _, msg := range m.messages {
+		if msg.Kind == MsgUser && msg.Content == "draft while running" {
+			foundQueuedUser = true
+			break
+		}
+	}
+	if !foundQueuedUser {
+		t.Fatalf("queued user message should remain in transcript after apply progress, got %#v", m.messages)
 	}
 }
 
@@ -5108,6 +5285,43 @@ func TestRecoverableToolValidationResultDoesNotCreateChatError(t *testing.T) {
 		if msg.Kind == MsgStatus && strings.HasPrefix(strings.TrimSpace(msg.Content), "Error:") {
 			t.Fatalf("recoverable tool validation should not create chat error, got %#v", m.messages)
 		}
+	}
+}
+
+func TestAskUserQuestionRecoverableResultDoesNotCreateChatError(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.debugEnabled = false
+
+	updated, _ := m.Update(llm.Event{
+		Kind:    llm.EventToolResult,
+		Agent:   "ask_user_question",
+		Text:    "error: at least two options are required",
+		IsError: true,
+	})
+	m = updated.(ChatModel)
+
+	for _, msg := range m.messages {
+		if msg.Kind == MsgStatus && strings.HasPrefix(strings.TrimSpace(msg.Content), "Error:") {
+			t.Fatalf("recoverable ask_user_question feedback should not create chat error, got %#v", m.messages)
+		}
+	}
+}
+
+func TestRetryableXMLMarkupErrorDoesNotCreateDuplicateChatError(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "localllm/gpt-oss-20b", WorkDir: "/tmp"})
+	m.debugEnabled = false
+
+	updated, _ := m.Update(llm.Event{Kind: llm.EventError, Text: "react runtime: provider returned deprecated XML tool-call markup"})
+	m = updated.(ChatModel)
+
+	count := 0
+	for _, msg := range m.messages {
+		if msg.Kind == MsgStatus && strings.Contains(msg.Content, "deprecated XML tool-call markup") {
+			count++
+		}
+	}
+	if count > 1 {
+		t.Fatalf("duplicate XML markup errors = %d, messages = %#v", count, m.messages)
 	}
 }
 

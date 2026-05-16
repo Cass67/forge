@@ -3,6 +3,7 @@ package runtime
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -33,6 +34,7 @@ import (
 	pluginruntime "forge/internal/plugins"
 	reactruntime "forge/internal/react"
 	reacttools "forge/internal/react/tools"
+	"forge/internal/sessionstore"
 	"forge/internal/skills"
 	"forge/internal/tui"
 )
@@ -187,6 +189,7 @@ func refreshChatSetupState(setup *ChatSetup) (*config.Config, *auth.Tokens) {
 }
 
 func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, session *reactruntime.Session, approve tools.ApprovalFunc, notify func(string), emitCommandStatus func(tools.ExecSessionStatus), forcePrompt ...tools.ApprovalFunc) (*tools.PreviewRuntime, *mcp.Manager) {
+	configureDurableSessionSink(cfg, session)
 	fp := approve
 	if len(forcePrompt) > 0 {
 		fp = forcePrompt[0]
@@ -281,6 +284,25 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 	webSearch.PromptVisibility = tools.PromptHidden
 	reg.Register(webSearch)
 	return previewRuntime, mcpManager
+}
+
+func configureDurableSessionSink(cfg *config.Config, session *reactruntime.Session) {
+	if cfg == nil || session == nil || strings.TrimSpace(cfg.Session.OutputDir) == "" {
+		return
+	}
+	store := sessionstore.NewJSONLThreadStore(filepath.Join(cfg.Session.OutputDir, "threads"))
+	live := sessionstore.NewLiveSession(durableThreadID(session), store, sessionstore.DefaultPersistencePolicy())
+	session.SetDurableSink(live)
+}
+
+func durableThreadID(session *reactruntime.Session) string {
+	if session != nil {
+		if snap := session.Snapshot(); strings.TrimSpace(snap.InitialInput) != "" {
+			sum := sha256.Sum256([]byte(snap.InitialInput))
+			return fmt.Sprintf("thread-%x", sum)[:24]
+		}
+	}
+	return fmt.Sprintf("thread-%d", time.Now().UTC().UnixNano())
 }
 
 func startChatPluginManager(cfg *config.Config, workDir string, notify func(string)) *pluginruntime.Manager {
