@@ -14,6 +14,7 @@ import (
 	agenttools "forge/internal/agent/tools"
 	"forge/internal/hooks"
 	"forge/internal/llm"
+	"forge/internal/protocol"
 	resilienceerrors "forge/internal/resilience/errors"
 	"forge/internal/secscan"
 )
@@ -1400,14 +1401,26 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 		var args map[string]any
 		if err := json.Unmarshal([]byte(call.ArgsJSON), &args); err != nil {
 			parseErr := fmt.Sprintf("error: malformed tool call arguments for %q: %v", call.Name, err)
+			r.session.AppendItem(protocol.Item{
+				Kind:     protocol.ItemFailure,
+				Failure:  &protocol.FailureItem{Decision: protocol.ClassifyToolArgFailure(parseErr)},
+				ToolCall: &protocol.ToolCallItem{ToolName: call.Name, ToolCallID: call.ID},
+			})
 			if r.renderer != nil {
-				r.renderer.Error(parseErr)
+				r.renderer.ToolCall(call.Name, "malformed arguments")
+				r.renderer.ToolResult(call.Name, parseErr, "", true)
 			}
 			r.session.AppendNativeToolResult(call.ID, parseErr)
-			r.session.CompleteTurn(turn, "", nil, errors.New(parseErr))
-			return errors.New(parseErr)
+			r.updatePlanWorkflow(call.Name, nil, "", true)
+			r.updateSameFileSearchWorkflow(call.Name, nil, true)
+			continue
 		}
 		if validationErr := validateToolArgs(tool, args); validationErr != "" {
+			r.session.AppendItem(protocol.Item{
+				Kind:     protocol.ItemFailure,
+				Failure:  &protocol.FailureItem{Decision: protocol.ClassifyToolArgFailure(validationErr)},
+				ToolCall: &protocol.ToolCallItem{ToolName: call.Name, ToolCallID: call.ID, Args: args},
+			})
 			if r.renderer != nil {
 				r.renderer.ToolCall(call.Name, reactToolSummary(args))
 				r.renderer.ToolResult(call.Name, validationErr, "", true)
@@ -1421,6 +1434,11 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 		beforeTool := r.beforeToolHookOutput(ctx, call.Name, args)
 		if beforeTool.Block != nil {
 			blocked := strings.TrimSpace(beforeTool.Block.Message)
+			r.session.AppendItem(protocol.Item{
+				Kind:     protocol.ItemFailure,
+				Failure:  &protocol.FailureItem{Decision: protocol.ClassifyPolicyBlocked(blocked)},
+				ToolCall: &protocol.ToolCallItem{ToolName: call.Name, ToolCallID: call.ID, Args: args},
+			})
 			if r.renderer != nil {
 				r.renderer.ToolCall(call.Name, reactToolSummary(args))
 				r.renderer.ToolResult(call.Name, blocked, "", true)
@@ -1449,6 +1467,10 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 		if r.renderer != nil {
 			r.renderer.ToolCall(call.Name, reactToolSummary(args))
 		}
+		r.session.AppendItem(protocol.Item{
+			Kind:     protocol.ItemToolCall,
+			ToolCall: &protocol.ToolCallItem{ToolName: call.Name, ToolCallID: call.ID, Args: args},
+		})
 	}
 
 	// Phase 2: dispatch tool executions (parallel for safe tools, sequential for pool-mutating)
@@ -1520,6 +1542,9 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 			r.session.AppendNativeToolResult(call.ID, errResult)
 			r.updateGitWorkflow(call.Name, args, errResult)
 			r.updatePostDelegationWorkflow(call.Name, errResult, true)
+			if isModelCorrectableToolExecutionError(call.Name, res.err) {
+				continue
+			}
 			r.session.CompleteTurn(turn, "", nil, res.err)
 			return res.err
 		}
@@ -1645,6 +1670,18 @@ func validateToolSchema(path string, schema *llm.ToolSchema, value any) string {
 		}
 	}
 	return ""
+}
+
+func isModelCorrectableToolExecutionError(name string, err error) bool {
+	if err == nil {
+		return false
+	}
+	switch name {
+	case "ask_user_question":
+		return true
+	default:
+		return false
+	}
 }
 
 // toolMutatesPool returns true for tools that modify agent pool state and must run

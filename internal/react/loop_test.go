@@ -13,6 +13,7 @@ import (
 	agenttools "forge/internal/agent/tools"
 	"forge/internal/hooks"
 	"forge/internal/llm"
+	"forge/internal/protocol"
 )
 
 // nativeScriptedDriver is a minimal NativeToolCaller driver for tests.
@@ -1786,6 +1787,36 @@ func TestRunnerRejectsLegacyXMLToolCallMarkupFromNativeProvider(t *testing.T) {
 	}
 }
 
+func TestRunnerRecoversFromLegacyXMLToolCallMarkupFromNativeProvider(t *testing.T) {
+	driver := &nativeScriptedDriver{responses: []string{
+		"<tool_call>\n{\"name\":\"list_dir\",\"args\":{\"path\":\".\"}}\n</tool_call>",
+		"recovered with native response",
+	}}
+	reg := agenttools.NewRegistry()
+	called := false
+	reg.Register(agenttools.Tool{
+		Name:        "list_dir",
+		Description: "list a directory",
+		Parameters:  []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}},
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			called = true
+			return "README.md\ninternal/", nil
+		},
+	})
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: NewSession()})
+
+	if err := r.Run(context.Background(), "whats this repo all about"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if called {
+		t.Fatal("legacy XML markup should not execute a tool")
+	}
+	if got := r.LastResponse(); got != "recovered with native response" {
+		t.Fatalf("LastResponse = %q", got)
+	}
+}
+
 func TestRunnerRejectsSelfClosingXMLToolCallMarkupFromNativeProvider(t *testing.T) {
 	responses := make([]string, maxCompletionRetriesPerTurn+1)
 	for i := range responses {
@@ -1908,41 +1939,43 @@ func (d *malformedArgsDriver) StreamWithTools(_ context.Context, _ []llm.Message
 	return nil
 }
 
-func TestRunnerNativePathHandlesMalformedArgsJSON(t *testing.T) {
-	driver := &malformedArgsDriver{}
+func TestRunnerNativePathHandlesMalformedArgsJSONAsToolFeedback(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "bad-json", Name: "read_file", ArgsJSON: `{"path":`}}},
+		{{Text: "recovered after malformed args feedback"}},
+	}}
 	reg := agenttools.NewRegistry()
+	executed := false
 	reg.Register(agenttools.Tool{
-		Name:        "git_status",
-		Description: "git status",
+		Name:        "read_file",
+		Description: "read file",
+		Parameters:  []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}},
 		AutoApprove: true,
-		Execute:     func(_ context.Context, _ map[string]any) (string, error) { return "ok", nil },
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			executed = true
+			return "should not execute", nil
+		},
 	})
 	session := NewSession()
-	session.SetTaskState(TaskState{
-		Objective:            "whats this repo all about",
-		Operation:            "overview",
-		RequiredVerification: "inspect the repository with read/search tools before answering",
-	})
-	r := NewRunner(Config{
-		Driver:  driver,
-		Tools:   reg,
-		Session: session,
-	})
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
 
-	err := r.Run(context.Background(), "whats this repo all about")
-	if err == nil {
-		t.Fatal("expected error for malformed args JSON")
+	if err := r.Run(context.Background(), "read README"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "malformed tool call arguments") {
-		t.Fatalf("error = %v, want mention of malformed tool call arguments", err)
+	if executed {
+		t.Fatal("tool executed despite malformed JSON args")
 	}
-
-	snap := session.Snapshot()
-	if len(snap.Turns) != 1 {
-		t.Fatalf("turns = %d, want 1", len(snap.Turns))
+	if got := r.LastResponse(); got != "recovered after malformed args feedback" {
+		t.Fatalf("LastResponse = %q", got)
 	}
-	if snap.Turns[0].Error == "" {
-		t.Fatal("expected recorded turn error for malformed args")
+	found := false
+	for _, msg := range session.Snapshot().History {
+		if msg.Role == llm.RoleTool && msg.ToolCallID == "bad-json" && strings.Contains(msg.Content, "malformed tool call arguments") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("history missing malformed-args feedback: %#v", session.Snapshot().History)
 	}
 }
 
@@ -1976,6 +2009,49 @@ func TestRunnerReturnsUnknownNativeToolErrorToModel(t *testing.T) {
 	if !found {
 		t.Fatalf("history missing unknown-tool feedback: %#v", snap.History)
 	}
+}
+
+func TestRunnerMalformedArgsEmitsDurableFailureItem(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "bad-json", Name: "read_file", ArgsJSON: `{"path":`}}},
+		{{Text: "recovered"}},
+	}}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "read_file", Description: "read file", Parameters: []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}}, AutoApprove: true, Execute: func(context.Context, map[string]any) (string, error) { return "", nil }})
+	session := NewSession()
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+	if err := r.Run(context.Background(), "read README"); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range session.Snapshot().Items {
+		if item.Kind == protocol.ItemFailure && item.Failure.Decision.Class == protocol.FailureToolArgsInvalid && item.Failure.Decision.Recoverable {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing recoverable failure item: %#v", session.Snapshot().Items)
+	}
+}
+
+func TestMalformedModelOutputAssertionsUseDurableItems(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "bad-json", Name: "read_file", ArgsJSON: `{"path":`}}},
+		{{Text: "recovered"}},
+	}}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "read_file", Description: "read file", Parameters: []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}}, AutoApprove: true, Execute: func(context.Context, map[string]any) (string, error) { return "", nil }})
+	session := NewSession()
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+	if err := r.Run(context.Background(), "read README"); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range session.Snapshot().Items {
+		if item.Kind == protocol.ItemFailure && item.Failure.Decision.Class == protocol.FailureToolArgsInvalid {
+			return
+		}
+	}
+	t.Fatalf("missing structured malformed-output failure item: %#v", session.Snapshot().Items)
 }
 
 func TestRunnerToolValidationFailureContinuesLoop(t *testing.T) {
@@ -2124,6 +2200,85 @@ func TestRunnerStructuredSchemaValidationFailureContinuesLoop(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("history missing schema validation feedback: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerAskUserQuestionExecutionErrorContinuesLoop(t *testing.T) {
+	additional := false
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "ask-1", Name: "ask_user_question", ArgsJSON: `{"question":"Pick one","options":[{"label":"Only one"}]}`}}},
+		{{Text: "recovered after ask feedback"}},
+	}}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "ask_user_question",
+		Description: "ask user",
+		Schema: &llm.ToolSchema{
+			Type: "object",
+			Properties: map[string]*llm.ToolSchema{
+				"question": {Type: "string"},
+				"options": {
+					Type: "array",
+					Items: &llm.ToolSchema{
+						Type: "object",
+						Properties: map[string]*llm.ToolSchema{
+							"label": {Type: "string"},
+						},
+						Required:             []string{"label"},
+						AdditionalProperties: &additional,
+					},
+				},
+			},
+			Required:             []string{"question", "options"},
+			AdditionalProperties: &additional,
+		},
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return "", fmt.Errorf("at least two options are required")
+		},
+	})
+	session := NewSession()
+	session.SetTaskState(TaskState{Objective: "ask", Operation: "plan"})
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+	if err := r.Run(context.Background(), "ask"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if got := r.LastResponse(); got != "recovered after ask feedback" {
+		t.Fatalf("LastResponse = %q", got)
+	}
+	found := false
+	for _, msg := range session.Snapshot().History {
+		if msg.Role == llm.RoleTool && strings.Contains(msg.Content, "at least two options are required") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("history missing ask_user_question feedback: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerFatalToolExecutionErrorStopsLoop(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "write-1", Name: "write_file", ArgsJSON: `{"path":"README.md","content":"x"}`}}},
+	}}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "write file",
+		Parameters: []agenttools.ParameterDef{
+			{Name: "path", Type: "string", Required: true},
+			{Name: "content", Type: "string", Required: true},
+		},
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return "", fmt.Errorf("disk unavailable")
+		},
+	})
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: NewSession()})
+
+	if err := r.Run(context.Background(), "write file"); err == nil || !strings.Contains(err.Error(), "disk unavailable") {
+		t.Fatalf("err = %v, want fatal disk error", err)
 	}
 }
 

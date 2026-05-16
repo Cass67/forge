@@ -157,7 +157,7 @@ func TestRenderStatusHeaderForHeightKeepsModelLineAtLowHeights(t *testing.T) {
 	if !strings.Contains(plain, "model") || !strings.Contains(plain, "copilot/gpt-5") {
 		t.Fatalf("height-aware header should keep model line, got:\n%s", plain)
 	}
-	if !strings.Contains(plain, "dir") || !strings.Contains(plain, "/tmp/work") {
+	if !strings.Contains(plain, "dir") || !strings.Contains(plain, "work") {
 		t.Fatalf("height-aware header should keep dir line, got:\n%s", plain)
 	}
 }

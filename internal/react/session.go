@@ -1,6 +1,7 @@
 package react
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -8,6 +9,7 @@ import (
 
 	"forge/internal/hooks"
 	"forge/internal/llm"
+	"forge/internal/protocol"
 	"forge/internal/secscan"
 )
 
@@ -132,6 +134,7 @@ type SessionSnapshot struct {
 	RecentInputs            []string
 	History                 []llm.Message
 	Turns                   []TurnRecord
+	Items                   []protocol.Item
 	CompactedTurns          int
 	CompactionSummary       string
 	MemorySummary           string
@@ -156,6 +159,7 @@ type Session struct {
 	recentInputs            []string
 	history                 []llm.Message
 	turns                   []TurnRecord
+	items                   []protocol.Item
 	compactedTurns          int
 	compactionSummary       string
 	memorySummary           string
@@ -171,10 +175,68 @@ type Session struct {
 	pendingDelegationAction *DelegationActionState
 	pendingInput            []string
 	interrupted             bool
+	durableSink             DurableSink
+}
+
+type DurableSink interface {
+	Append(context.Context, protocol.Item) error
 }
 
 func NewSession() *Session {
 	return &Session{mode: ModeChat}
+}
+
+func (s *Session) SetDurableSink(sink DurableSink) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.durableSink = sink
+}
+
+func (s *Session) DurableSink() DurableSink {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.durableSink
+}
+
+func (s *Session) AppendItem(item protocol.Item) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.appendItemLocked(item)
+	sink := s.durableSink
+	s.mu.Unlock()
+	if sink != nil {
+		_ = sink.Append(context.Background(), item)
+	}
+}
+
+func (s *Session) appendItemLocked(item protocol.Item) {
+	if item.Version == 0 {
+		item.Version = protocol.CurrentItemVersion
+	}
+	if item.ThreadID == "" {
+		item.ThreadID = "session"
+	}
+	if item.TurnID == "" && s.turn > 0 {
+		item.TurnID = fmt.Sprintf("turn-%d", s.turn)
+	}
+	if item.Seq == 0 {
+		item.Seq = int64(len(s.items) + 1)
+	}
+	if item.ID == "" {
+		item.ID = fmt.Sprintf("item-%d", len(s.items)+1)
+	}
+	if item.At.IsZero() {
+		item.At = time.Now().UTC()
+	}
+	s.items = append(s.items, item)
 }
 
 func (s *Session) RecordInput(input string) int {
@@ -202,6 +264,11 @@ func (s *Session) RecordInputWithParts(input string, parts []llm.MessageContentP
 		Number: s.turn,
 		Input:  input,
 	})
+	s.appendItemLocked(protocol.Item{
+		Kind:    protocol.ItemUserMessage,
+		TurnID:  fmt.Sprintf("turn-%d", s.turn),
+		Message: &protocol.MessageItem{Role: string(llm.RoleUser), Text: input},
+	})
 	return s.turn
 }
 
@@ -224,6 +291,19 @@ func (s *Session) CompleteTurn(turn int, response string, toolCalls []TurnToolCa
 		if err != nil {
 			s.turns[i].Error = strings.TrimSpace(err.Error())
 		}
+		if err != nil {
+			s.appendItemLocked(protocol.Item{
+				Kind:    protocol.ItemFailure,
+				TurnID:  fmt.Sprintf("turn-%d", turn),
+				Failure: &protocol.FailureItem{Decision: protocol.ClassifyToolExecutionFailure("runtime", err)},
+			})
+		} else {
+			s.appendItemLocked(protocol.Item{
+				Kind:         protocol.ItemTurnComplete,
+				TurnID:       fmt.Sprintf("turn-%d", turn),
+				TurnComplete: &protocol.TurnCompleteItem{Status: protocol.TurnStatusCompleted},
+			})
+		}
 		s.interrupted = false
 		return
 	}
@@ -235,7 +315,12 @@ func (s *Session) AppendAssistantMessage(text string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.history = append(s.history, llm.Message{Role: llm.RoleAssistant, Content: strings.TrimSpace(text)})
+	trimmed := strings.TrimSpace(text)
+	s.history = append(s.history, llm.Message{Role: llm.RoleAssistant, Content: trimmed})
+	s.appendItemLocked(protocol.Item{
+		Kind:    protocol.ItemAssistantMessage,
+		Message: &protocol.MessageItem{Role: string(llm.RoleAssistant), Text: trimmed},
+	})
 }
 
 func (s *Session) AppendUserMessage(text string) {
@@ -328,6 +413,10 @@ func (s *Session) AppendNativeToolResult(toolCallID, result string) {
 		ToolCallID: toolCallID,
 		Content:    result,
 	})
+	s.appendItemLocked(protocol.Item{
+		Kind:       protocol.ItemToolResult,
+		ToolResult: &protocol.ToolResultItem{ToolCallID: toolCallID, Text: result},
+	})
 }
 
 func (s *Session) Messages(systemPrompt string) []llm.Message {
@@ -347,6 +436,7 @@ func (s *Session) Snapshot() SessionSnapshot {
 		RecentInputs:            append([]string(nil), s.recentInputs...),
 		History:                 append([]llm.Message(nil), s.history...),
 		Turns:                   append([]TurnRecord(nil), s.turns...),
+		Items:                   append([]protocol.Item(nil), s.items...),
 		CompactedTurns:          s.compactedTurns,
 		CompactionSummary:       s.compactionSummary,
 		MemorySummary:           s.memorySummary,
