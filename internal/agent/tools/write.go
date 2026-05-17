@@ -18,7 +18,9 @@ func NewWriteFile(workDir string, approve ApprovalFunc, policies ...SecretPolicy
 			{Name: "path", Type: "string", Description: "file path", Required: true},
 			{Name: "content", Type: "string", Description: "full file content", Required: true},
 		},
-		AutoApprove: false,
+		AutoApprove:      false,
+		Concurrency:      ToolConcurrencySerial,
+		MutatesWorkspace: true,
 		LastDiff: func() string {
 			d := lastDiff
 			lastDiff = ""
@@ -65,6 +67,7 @@ func NewWriteFile(workDir string, approve ApprovalFunc, policies ...SecretPolicy
 				return "", err
 			}
 			if !approved {
+				lastDiff = ""
 				return "write_file denied by user", nil
 			}
 
@@ -73,6 +76,7 @@ func NewWriteFile(workDir string, approve ApprovalFunc, policies ...SecretPolicy
 			}
 
 			if err := os.WriteFile(resolved, []byte(content), 0o644); err != nil {
+				lastDiff = ""
 				return fmt.Sprintf("error writing file: %v", err), nil
 			}
 

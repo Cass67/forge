@@ -100,12 +100,12 @@ func TestBuildPromptTrimsInput(t *testing.T) {
 func TestSessionMessagesIncludeCompactionSummaryContext(t *testing.T) {
 	session := NewSession()
 	first := session.RecordInput("prompt 1")
-	session.AppendAssistantMessage("answer 1")
-	session.CompleteTurn(first, "answer 1", nil, nil)
+	mustAppendAssistantMessage(t, session, "answer 1")
+	mustCompleteTurn(t, session, first, "answer 1", nil, nil)
 
 	second := session.RecordInput("prompt 2")
-	session.AppendAssistantMessage("answer 2")
-	session.CompleteTurn(second, "answer 2", nil, nil)
+	mustAppendAssistantMessage(t, session, "answer 2")
+	mustCompleteTurn(t, session, second, "answer 2", nil, nil)
 
 	if !CompactSessionHistory(session, 1) {
 		t.Fatal("expected compaction")
@@ -163,10 +163,12 @@ func TestSessionMessagesIncludeInitialRequestAnchorForLongHistory(t *testing.T) 
 	session := NewSession()
 	initial := "how do we implement dragging of images into this pane then actioning them"
 	turn := session.RecordInput(initial)
-	session.AppendAssistantMessage("I'll inspect the image input flow.")
-	session.CompleteTurn(turn, "I'll inspect the image input flow.", nil, nil)
+	mustAppendAssistantMessage(t, session, "I'll inspect the image input flow.")
+	mustCompleteTurn(t, session, turn, "I'll inspect the image input flow.", nil, nil)
 	for i := 0; i < 18; i++ {
-		session.AppendUserMessage(fmt.Sprintf("tool result chunk %d", i))
+		if err := session.AppendUserMessage(fmt.Sprintf("tool result chunk %d", i)); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	messages := session.Messages("system prompt")

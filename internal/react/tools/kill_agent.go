@@ -18,6 +18,7 @@ func NewKillAgent(pool *react.AgentPool) agenttools.Tool {
 			{Name: "id", Type: "string", Description: "Child agent id from spawn_agent or agent_status", Required: true},
 		},
 		AutoApprove: true,
+		Concurrency: agenttools.ToolConcurrencySerial,
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			if pool == nil {
 				return "", fmt.Errorf("agent pool unavailable")

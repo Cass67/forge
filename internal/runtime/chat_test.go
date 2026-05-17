@@ -1044,6 +1044,21 @@ func TestRegisterToolsIncludesPreviewLifecycleTools(t *testing.T) {
 	}
 }
 
+func TestRegisterToolsIncludesHiddenReadOutputWhenOutputStoreConfigured(t *testing.T) {
+	reg := tools.NewRegistry()
+	cfg := &config.Config{}
+	cfg.Session.OutputDir = t.TempDir()
+	_, _ = registerTools(reg, t.TempDir(), cfg, reactruntime.NewSession(), agent.YoloApproval(), nil, nil)
+
+	tool, ok := reg.Get("read_output")
+	if !ok {
+		t.Fatal("read_output tool not registered")
+	}
+	if tool.PromptVisibility != tools.PromptHidden {
+		t.Fatalf("PromptVisibility = %v, want PromptHidden", tool.PromptVisibility)
+	}
+}
+
 func TestRegisterToolsIncludesExecSessionLifecycleTools(t *testing.T) {
 	reg := tools.NewRegistry()
 	cfg := &config.Config{}

@@ -20,12 +20,13 @@ type Replay struct {
 }
 
 type ReplayTurn struct {
-	TurnID    string
-	Input     string
-	Status    protocol.TurnStatus
-	Error     string
-	ToolCalls []protocol.ToolCallItem
-	Results   []protocol.ToolResultItem
+	TurnID        string
+	Input         string
+	FinalResponse string
+	Status        protocol.TurnStatus
+	Error         string
+	ToolCalls     []protocol.ToolCallItem
+	Results       []protocol.ToolResultItem
 }
 
 func ReplayItems(items []protocol.Item) (Replay, error) {
@@ -34,7 +35,9 @@ func ReplayItems(items []protocol.Item) (Replay, error) {
 	turns := map[string]*ReplayTurn{}
 	order := []string{}
 	terminal := map[string]bool{}
+	activity := map[string]bool{}
 	replay := Replay{}
+
 	for _, item := range sorted {
 		switch item.Kind {
 		case protocol.ItemCompaction:
@@ -42,46 +45,35 @@ func ReplayItems(items []protocol.Item) (Replay, error) {
 				replay.CompactionSummary = strings.TrimSpace(item.Compaction.Summary)
 			}
 			continue
-		case protocol.ItemSessionMeta, protocol.ItemStats, protocol.ItemRetry:
+		case protocol.ItemSessionMeta, protocol.ItemStats, protocol.ItemRetry, protocol.ItemCheckpoint:
 			continue
 		}
-		turnID := item.TurnID
-		if turnID == "" {
-			turnID = "session"
-		}
-		turn := turns[turnID]
-		if turn == nil {
-			turn = &ReplayTurn{TurnID: turnID}
-			turns[turnID] = turn
-			order = append(order, turnID)
-		}
+		turnID := replayTurnID(item.TurnID)
+		turn := ensureReplayTurn(turnID, turns, &order)
 		switch item.Kind {
 		case protocol.ItemUserMessage:
 			if item.Message != nil {
-				if strings.TrimSpace(turn.Input) == "" {
-					turn.Input = item.Message.Text
-				}
 				outRole := llm.Role(item.Message.Role)
 				if outRole == "" {
 					outRole = llm.RoleUser
 				}
-				replayMessage := llm.Message{Role: outRole, Content: item.Message.Text}
-				if outRole == llm.RoleUser {
-					recent := strings.TrimSpace(item.Message.Text)
-					if recent != "" && strings.TrimSpace(turn.Input) == "" {
-						// Recent inputs are replayed from durable user-message items.
-						// Queued input state is represented by turn_context items.
-						turn.Input = item.Message.Text
-					}
+				firstInput := outRole == llm.RoleUser && strings.TrimSpace(turn.Input) == ""
+				if firstInput {
+					turn.Input = item.Message.Text
 				}
-				replay.History = append(replay.History, replayMessage)
-				if outRole == llm.RoleUser && strings.TrimSpace(item.Message.Text) != "" {
+				replay.History = append(replay.History, llm.Message{Role: outRole, Content: item.Message.Text})
+				if firstInput && strings.TrimSpace(item.Message.Text) != "" {
 					replay.RecentInputs = append(replay.RecentInputs, item.Message.Text)
 				}
 			}
+			activity[turnID] = true
 		case protocol.ItemAssistantMessage:
 			if item.Message != nil {
+				text := strings.TrimSpace(item.Message.Text)
 				replay.History = append(replay.History, llm.Message{Role: llm.RoleAssistant, Content: item.Message.Text})
+				if text != "" {
+					turn.FinalResponse = text
+				}
 			}
 		case protocol.ItemTurnContext:
 			if item.TurnContext != nil && strings.TrimSpace(item.TurnContext.Input) != "" {
@@ -103,16 +95,19 @@ func ReplayItems(items []protocol.Item) (Replay, error) {
 					replay.History = append(replay.History, llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{call}})
 				}
 			}
+			activity[turnID] = true
 		case protocol.ItemToolResult:
 			if item.ToolResult != nil {
 				turn.Results = append(turn.Results, *item.ToolResult)
 				replay.History = append(replay.History, llm.Message{Role: llm.RoleTool, ToolCallID: item.ToolResult.ToolCallID, Content: item.ToolResult.Text})
 			}
+			activity[turnID] = true
 		case protocol.ItemTurnComplete:
 			if terminal[turnID] {
 				return Replay{}, fmt.Errorf("turn %s has multiple terminal items", turnID)
 			}
 			terminal[turnID] = true
+			turn.Status = protocol.TurnStatusCompleted
 			if item.TurnComplete != nil {
 				turn.Status = item.TurnComplete.Status
 				if item.TurnComplete.Status == protocol.TurnStatusInterrupted {
@@ -121,7 +116,8 @@ func ReplayItems(items []protocol.Item) (Replay, error) {
 				}
 			}
 		case protocol.ItemFailure:
-			if item.Failure != nil && item.Failure.Decision.Recoverable {
+			if !item.IsTerminal() {
+				activity[turnID] = true
 				continue
 			}
 			if terminal[turnID] {
@@ -135,6 +131,9 @@ func ReplayItems(items []protocol.Item) (Replay, error) {
 		}
 	}
 	for _, id := range order {
+		if !terminal[id] && activity[id] {
+			turns[id].Status = protocol.TurnStatusResumable
+		}
 		replay.Turns = append(replay.Turns, *turns[id])
 	}
 	return replay, nil
@@ -161,4 +160,22 @@ func replayNativeToolCall(call protocol.ToolCallItem) llm.NativeToolCall {
 		out.ArgsJSON = string(encoded)
 	}
 	return out
+}
+
+func replayTurnID(turnID string) string {
+	turnID = strings.TrimSpace(turnID)
+	if turnID == "" {
+		return "session"
+	}
+	return turnID
+}
+
+func ensureReplayTurn(turnID string, turns map[string]*ReplayTurn, order *[]string) *ReplayTurn {
+	turn := turns[turnID]
+	if turn == nil {
+		turn = &ReplayTurn{TurnID: turnID}
+		turns[turnID] = turn
+		*order = append(*order, turnID)
+	}
+	return turn
 }

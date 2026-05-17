@@ -4,33 +4,561 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"forge/internal/hooks"
 	"forge/internal/llm"
 	"forge/internal/protocol"
+	"forge/internal/sessionstore"
 )
 
-type failingDurableSink struct{ err error }
+type fakeDurableSink struct {
+	mu    sync.Mutex
+	items []protocol.Item
+}
 
-func (f failingDurableSink) Append(context.Context, protocol.Item) error { return f.err }
+func (f *fakeDurableSink) Append(_ context.Context, item protocol.Item) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.items = append(f.items, item)
+	return nil
+}
+
+func (f *fakeDurableSink) Items() []protocol.Item {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]protocol.Item(nil), f.items...)
+}
+
+type failingDurableSink struct {
+	err error
+}
+
+func (f failingDurableSink) Append(_ context.Context, _ protocol.Item) error {
+	return f.err
+}
 
 func TestSessionRecordsDurableAppendFailure(t *testing.T) {
 	s := NewSession()
 	s.SetDurableSink(failingDurableSink{err: errors.New("disk full")})
-	s.AppendItem(protocol.Item{Kind: protocol.ItemStats, Stats: &protocol.StatsItem{}})
+	if err := s.AppendItem(protocol.Item{Kind: protocol.ItemStats, Stats: &protocol.StatsItem{}}); err == nil {
+		t.Fatal("expected durable append error")
+	}
 	snap := s.Snapshot()
 	if snap.LastDurableError != "disk full" {
 		t.Fatalf("LastDurableError = %q", snap.LastDurableError)
 	}
 }
 
+func mustAppendAssistantMessage(t testing.TB, s *Session, text string) {
+	t.Helper()
+	if err := s.AppendAssistantMessage(text); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustCompleteTurn(t testing.TB, s *Session, turn int, response string, toolCalls []TurnToolCall, turnErr error) {
+	t.Helper()
+	if err := s.CompleteTurn(turn, response, toolCalls, turnErr); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSessionPersistsRecordInputDurableItems(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		record func(*testing.T, *Session) int
+	}{
+		{name: "RecordInput", record: func(t *testing.T, s *Session) int { return s.RecordInput("hello") }},
+		{name: "RecordInputWithParts", record: func(t *testing.T, s *Session) int {
+			turn, err := s.RecordInputWithParts("hello", []llm.MessageContentPart{{Type: "text", Text: "hello"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return turn
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sink := &fakeDurableSink{}
+			s := NewSession()
+			s.SetDurableSink(sink)
+
+			turn := tc.record(t, s)
+
+			items := sink.Items()
+			if turn != 1 {
+				t.Fatalf("turn = %d, want 1", turn)
+			}
+			assertPersistedItemKind(t, items, protocol.ItemUserMessage)
+		})
+	}
+}
+
+func TestSessionPersistsAssistantMessageDurableItem(t *testing.T) {
+	sink := &fakeDurableSink{}
+	s := NewSession()
+	s.SetDurableSink(sink)
+	s.RecordInput("hello")
+
+	if err := s.AppendAssistantMessage("hi"); err != nil {
+		t.Fatal(err)
+	}
+
+	items := sink.Items()
+	assertPersistedItemKind(t, items, protocol.ItemAssistantMessage)
+}
+
+func TestSessionPersistsNativeToolResultDurableItem(t *testing.T) {
+	sink := &fakeDurableSink{}
+	s := NewSession()
+	s.SetDurableSink(sink)
+	s.RecordInput("run ls")
+	s.AppendAssistantWithToolCalls([]llm.NativeToolCall{{ID: "c1", Name: "run_command", ArgsJSON: `{"command":"ls"}`}})
+
+	if err := s.AppendNativeToolResult("c1", "file1.go"); err != nil {
+		t.Fatal(err)
+	}
+
+	items := sink.Items()
+	assertPersistedItemKind(t, items, protocol.ItemToolResult)
+}
+
+func TestSessionAppendToolResultForTurnReturnsDurableAppendError(t *testing.T) {
+	sinkErr := errors.New("durable append failed")
+	s := NewSession()
+	s.RecordInput("run tool")
+	_, cancel, err := s.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	s.SetDurableSink(failingDurableSink{err: sinkErr})
+
+	err = s.AppendToolResultForTurn("turn-1", protocol.ToolResultItem{ToolCallID: "call-1", Text: "ok"})
+	if !errors.Is(err, sinkErr) {
+		t.Fatalf("AppendToolResultForTurn error = %v, want %v", err, sinkErr)
+	}
+}
+
+func TestSessionPersistsCompleteTurnDurableItems(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		kind protocol.ItemKind
+	}{
+		{name: "success", kind: protocol.ItemTurnComplete},
+		{name: "failure", err: errors.New("boom"), kind: protocol.ItemFailure},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sink := &fakeDurableSink{}
+			s := NewSession()
+			s.SetDurableSink(sink)
+			turn := s.RecordInput("hello")
+
+			if err := s.CompleteTurn(turn, "done", nil, tc.err); err != nil {
+				t.Fatal(err)
+			}
+
+			items := sink.Items()
+			assertPersistedItemKind(t, items, tc.kind)
+		})
+	}
+}
+
+func TestSessionAppendUserMessagePersistsWithoutReplacingTurnInputOnRestore(t *testing.T) {
+	s := NewSession()
+	s.RecordInput("write the file")
+	if err := s.AppendUserMessage("validation failed: gofmt changed files"); err != nil {
+		t.Fatal(err)
+	}
+
+	snap := s.Snapshot()
+	userMessages := 0
+	for _, item := range snap.Items {
+		if item.Kind == protocol.ItemUserMessage {
+			userMessages++
+		}
+	}
+	if userMessages != 2 {
+		t.Fatalf("user message items = %d, want original input and validation feedback", userMessages)
+	}
+
+	restored, err := RestoreSessionFromItems(snap.Items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoredSnap := restored.Snapshot()
+	if len(restoredSnap.Turns) != 1 || restoredSnap.Turns[0].Input != "write the file" {
+		t.Fatalf("restored turns = %#v, want original input preserved", restoredSnap.Turns)
+	}
+	if len(restoredSnap.History) != 2 || restoredSnap.History[1].Content != "validation failed: gofmt changed files" {
+		t.Fatalf("restored history = %#v, want validation feedback restored", restoredSnap.History)
+	}
+}
+
+func TestSessionDurableSinkOwnsPersistedThreadIdentity(t *testing.T) {
+	store := sessionstore.NewJSONLThreadStore(t.TempDir())
+	live := sessionstore.NewLiveSession("durable-thread-1", store, sessionstore.DefaultPersistencePolicy())
+	s := NewSession()
+	s.SetDurableSink(live)
+
+	turn := s.RecordInput("hello")
+	if err := s.AppendAssistantMessage("I'll run it."); err != nil {
+		t.Fatal(err)
+	}
+	s.AppendAssistantWithToolCalls([]llm.NativeToolCall{{ID: "c1", Name: "run_command", ArgsJSON: `{"command":"false"}`}})
+	if err := s.AppendNativeToolResult("c1", "exit status 1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CompleteTurn(turn, "", nil, errors.New("tool failed")); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := store.ReadItems(context.Background(), "durable-thread-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 5 {
+		t.Fatalf("persisted items = %#v, want user, assistant, tool call, tool result, and failure", items)
+	}
+	assertPersistedItemOrder(t, items, []protocol.ItemKind{
+		protocol.ItemUserMessage,
+		protocol.ItemAssistantMessage,
+		protocol.ItemToolCall,
+		protocol.ItemToolResult,
+		protocol.ItemFailure,
+	})
+	for _, item := range items {
+		if item.ThreadID != "durable-thread-1" {
+			t.Fatalf("persisted ThreadID = %q, want durable-thread-1 for item %#v", item.ThreadID, item)
+		}
+	}
+	for i, item := range items {
+		wantSeq := int64(i + 1)
+		if item.Seq != wantSeq {
+			t.Fatalf("persisted seq for item %d = %d, want %d", i, item.Seq, wantSeq)
+		}
+	}
+	if items[0].ID != "durable-thread-1-000001" || items[4].ID != "durable-thread-1-000005" {
+		t.Fatalf("persisted IDs start/end = %q, %q; want durable-thread IDs", items[0].ID, items[4].ID)
+	}
+	for _, item := range s.Snapshot().Items {
+		if item.ThreadID != "session" {
+			t.Fatalf("in-memory ThreadID = %q, want session for item %#v", item.ThreadID, item)
+		}
+	}
+}
+
+func TestSessionActiveTurnAllowsOnlyOneOwner(t *testing.T) {
+	s := NewSession()
+
+	turn, cancel, err := s.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	if turn.ID != "turn-1" || turn.Phase != TurnPhaseCreated {
+		t.Fatalf("active turn = %#v, want turn-1 in created phase", turn)
+	}
+
+	if _, _, err := s.BeginTurn(context.Background(), "turn-2"); err == nil || !strings.Contains(err.Error(), "active turn") {
+		t.Fatalf("overlap error = %v, want active turn error", err)
+	}
+
+	if err := s.EndTurn("turn-1", TurnEndReasonCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.ActiveTurnSnapshot(); ok {
+		t.Fatal("active turn still present after EndTurn")
+	}
+
+	turn, cancel, err = s.BeginTurn(context.Background(), "turn-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	if turn.ID != "turn-2" {
+		t.Fatalf("active turn ID = %q, want turn-2", turn.ID)
+	}
+}
+
+func TestSessionCancelActiveTurnCancelsContext(t *testing.T) {
+	s := NewSession()
+	turn, cancel, err := s.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	if err := s.CancelActiveTurn("user cancelled"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-turn.Context.Done():
+	case <-time.After(time.Second):
+		t.Fatal("active turn context was not cancelled")
+	}
+	if _, ok := s.ActiveTurnSnapshot(); !ok {
+		t.Fatal("CancelActiveTurn should cancel context without ending the active turn")
+	}
+}
+
+func TestSessionAppendToolResultForTurnRejectsStaleTurn(t *testing.T) {
+	s := NewSession()
+	s.RecordInput("run tool")
+	_, cancel, err := s.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	if err := s.EndTurn("turn-1", TurnEndReasonCancelled); err != nil {
+		t.Fatal(err)
+	}
+
+	err = s.AppendToolResultForTurn("turn-1", protocol.ToolResultItem{ToolCallID: "call-1", Text: "late"})
+	if !errors.Is(err, ErrStaleTurn) {
+		t.Fatalf("AppendToolResultForTurn error = %v, want ErrStaleTurn", err)
+	}
+
+	for _, item := range s.Snapshot().Items {
+		if item.Kind == protocol.ItemToolResult {
+			t.Fatalf("stale tool result was appended: %#v", item)
+		}
+	}
+}
+
+func TestSessionAppendToolResultForTurnRejectsCancelledActiveTurn(t *testing.T) {
+	s := NewSession()
+	s.RecordInput("run tool")
+	_, cancel, err := s.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	if err := s.CancelActiveTurn("user cancelled"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.ActiveTurnSnapshot(); !ok {
+		t.Fatal("cancelled turn should remain present until EndTurn")
+	}
+
+	err = s.AppendToolResultForTurn("turn-1", protocol.ToolResultItem{ToolCallID: "call-1", Text: "late"})
+	if !errors.Is(err, ErrStaleTurn) {
+		t.Fatalf("AppendToolResultForTurn error = %v, want ErrStaleTurn", err)
+	}
+
+	for _, item := range s.Snapshot().Items {
+		if item.Kind == protocol.ItemToolResult {
+			t.Fatalf("stale tool result was appended: %#v", item)
+		}
+	}
+}
+
+func TestSessionAppendToolResultForTurnChecksStaleBeforeEmptyToolCallID(t *testing.T) {
+	s := NewSession()
+	s.RecordInput("run tool")
+
+	err := s.AppendToolResultForTurn("turn-1", protocol.ToolResultItem{Text: "empty call id"})
+	if !errors.Is(err, ErrStaleTurn) {
+		t.Fatalf("AppendToolResultForTurn error = %v, want ErrStaleTurn", err)
+	}
+
+	_, cancel, err := s.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	err = s.AppendToolResultForTurn("turn-1", protocol.ToolResultItem{Text: "empty call id"})
+	if err != nil {
+		t.Fatalf("AppendToolResultForTurn live empty ToolCallID error = %v, want nil", err)
+	}
+	for _, item := range s.Snapshot().Items {
+		if item.Kind == protocol.ItemToolResult {
+			t.Fatalf("empty ToolCallID should be a no-op, appended: %#v", item)
+		}
+	}
+}
+
+func TestSessionAppendFailureForTurnRejectsStaleTurn(t *testing.T) {
+	s := NewSession()
+	s.RecordInput("run tool")
+
+	err := s.AppendFailureForTurn("turn-1", protocol.FailureItem{Decision: protocol.ClassifyToolArgFailure("bad args")})
+	if !errors.Is(err, ErrStaleTurn) {
+		t.Fatalf("AppendFailureForTurn error = %v, want ErrStaleTurn", err)
+	}
+
+	for _, item := range s.Snapshot().Items {
+		if item.Kind == protocol.ItemFailure {
+			t.Fatalf("stale failure was appended: %#v", item)
+		}
+	}
+}
+
+func TestSessionAppendFailureAndToolResultForTurnRejectsCancelledActiveTurn(t *testing.T) {
+	s := NewSession()
+	s.RecordInput("run tool")
+	_, cancel, err := s.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	if err := s.CancelActiveTurn("user cancelled"); err != nil {
+		t.Fatal(err)
+	}
+
+	err = s.AppendFailureAndToolResultForTurn(
+		"turn-1",
+		protocol.FailureItem{Decision: protocol.ClassifyToolArgFailure("bad args")},
+		protocol.ToolCallItem{ToolName: "custom_tool", ToolCallID: "call-1"},
+		protocol.ToolResultItem{ToolCallID: "call-1", Text: "bad args"},
+	)
+	if !errors.Is(err, ErrStaleTurn) {
+		t.Fatalf("AppendFailureAndToolResultForTurn error = %v, want ErrStaleTurn", err)
+	}
+
+	for _, item := range s.Snapshot().Items {
+		if item.Kind == protocol.ItemFailure || item.Kind == protocol.ItemToolResult {
+			t.Fatalf("stale item was appended: %#v", item)
+		}
+	}
+}
+
+func TestSessionAppendFailureAndToolResultForTurnChecksStaleBeforeEmptyToolCallID(t *testing.T) {
+	s := NewSession()
+	s.RecordInput("run tool")
+	failure := protocol.FailureItem{Decision: protocol.ClassifyToolArgFailure("bad args")}
+	toolCall := protocol.ToolCallItem{ToolName: "custom_tool", ToolCallID: "call-1"}
+
+	err := s.AppendFailureAndToolResultForTurn("turn-1", failure, toolCall, protocol.ToolResultItem{Text: "bad args"})
+	if !errors.Is(err, ErrStaleTurn) {
+		t.Fatalf("AppendFailureAndToolResultForTurn error = %v, want ErrStaleTurn", err)
+	}
+
+	_, cancel, err := s.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	err = s.AppendFailureAndToolResultForTurn("turn-1", failure, toolCall, protocol.ToolResultItem{Text: "bad args"})
+	if err != nil {
+		t.Fatalf("AppendFailureAndToolResultForTurn live empty ToolCallID error = %v, want nil", err)
+	}
+	for _, item := range s.Snapshot().Items {
+		if item.Kind == protocol.ItemFailure || item.Kind == protocol.ItemToolResult {
+			t.Fatalf("empty ToolCallID should be a no-op, appended: %#v", item)
+		}
+	}
+}
+
+func TestSessionAppendToolCallForTurnRejectsCancelledActiveTurn(t *testing.T) {
+	s := NewSession()
+	s.RecordInput("run tool")
+	_, cancel, err := s.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	if err := s.CancelActiveTurn("user cancelled"); err != nil {
+		t.Fatal(err)
+	}
+
+	err = s.AppendToolCallForTurn("turn-1", protocol.ToolCallItem{ToolName: "custom_tool", ToolCallID: "call-1"})
+	if !errors.Is(err, ErrStaleTurn) {
+		t.Fatalf("AppendToolCallForTurn error = %v, want ErrStaleTurn", err)
+	}
+
+	for _, item := range s.Snapshot().Items {
+		if item.Kind == protocol.ItemToolCall {
+			t.Fatalf("stale tool call was appended: %#v", item)
+		}
+	}
+}
+
+func TestSessionIsActiveTurnRequiresLiveMatchingTurn(t *testing.T) {
+	s := NewSession()
+	_, cancel, err := s.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	if !s.IsActiveTurn("turn-1") {
+		t.Fatal("turn-1 should be active")
+	}
+	if s.IsActiveTurn("turn-2") {
+		t.Fatal("turn-2 should not be active")
+	}
+	if err := s.CancelActiveTurn("user cancelled"); err != nil {
+		t.Fatal(err)
+	}
+	if s.IsActiveTurn("turn-1") {
+		t.Fatal("cancelled turn should not be active")
+	}
+}
+
+func TestSessionStoresTurnEndAndCancellationReasons(t *testing.T) {
+	s := NewSession()
+	_, cancel, err := s.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	if err := s.CancelActiveTurn("user cancelled"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.EndTurn("turn-1", TurnEndReasonCancelled); err != nil {
+		t.Fatal(err)
+	}
+	snap := s.Snapshot()
+	if snap.LastTurnEndReason != TurnEndReasonCancelled {
+		t.Fatalf("last end reason = %q, want %q", snap.LastTurnEndReason, TurnEndReasonCancelled)
+	}
+	if snap.LastTurnCancelReason != "user cancelled" {
+		t.Fatalf("cancel reason = %q, want user cancelled", snap.LastTurnCancelReason)
+	}
+}
+
+func assertPersistedItemOrder(t *testing.T, items []protocol.Item, kinds []protocol.ItemKind) {
+	t.Helper()
+	if len(items) != len(kinds) {
+		t.Fatalf("persisted item count = %d, want %d", len(items), len(kinds))
+	}
+	for i, kind := range kinds {
+		if items[i].Kind != kind {
+			t.Fatalf("persisted item %d kind = %q, want %q; items=%#v", i, items[i].Kind, kind, items)
+		}
+	}
+}
+
+func assertPersistedItemKind(t *testing.T, items []protocol.Item, kind protocol.ItemKind) {
+	t.Helper()
+	var matches []protocol.Item
+	for _, item := range items {
+		if item.Kind == kind {
+			matches = append(matches, item)
+		}
+	}
+	if len(matches) != 1 {
+		t.Fatalf("persisted items = %#v, want exactly one %s item", items, kind)
+	}
+	if matches[0].Version == 0 || matches[0].At.IsZero() {
+		t.Fatalf("persisted item was not normalized: %#v", matches[0])
+	}
+}
+
 func TestSessionRecordsUserAndAssistantItemsOnce(t *testing.T) {
 	s := NewSession()
 	turn := s.RecordInput("hello")
-	s.AppendAssistantMessage("hi")
-	s.CompleteTurn(turn, "hi", nil, nil)
+	if err := s.AppendAssistantMessage("hi"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CompleteTurn(turn, "hi", nil, nil); err != nil {
+		t.Fatal(err)
+	}
 	snap := s.Snapshot()
 	var user, assistant, terminal int
 	for _, item := range snap.Items {
@@ -371,7 +899,9 @@ func TestAppendNativeToolResult(t *testing.T) {
 	s.AppendAssistantWithToolCalls([]llm.NativeToolCall{
 		{ID: "c1", Name: "run_command", ArgsJSON: `{"command":"ls"}`},
 	})
-	s.AppendNativeToolResult("c1", "file1.go\nfile2.go")
+	if err := s.AppendNativeToolResult("c1", "file1.go\nfile2.go"); err != nil {
+		t.Fatal(err)
+	}
 
 	snap := s.Snapshot()
 	if len(snap.History) != 3 {
@@ -393,7 +923,9 @@ func TestAppendNativeToolResultGuardsEmptyID(t *testing.T) {
 	s := NewSession()
 	s.RecordInput("check")
 	s.AppendAssistantWithToolCalls([]llm.NativeToolCall{{ID: "c1", Name: "git_status", ArgsJSON: "{}"}})
-	s.AppendNativeToolResult("", "result")
+	if err := s.AppendNativeToolResult("", "result"); err != nil {
+		t.Fatal(err)
+	}
 	snap := s.Snapshot()
 	// Empty toolCallID should be ignored — only user+assistant in history
 	if len(snap.History) != 2 {
@@ -407,7 +939,9 @@ func TestMessagesIncludesToolRoleMessages(t *testing.T) {
 	s.AppendAssistantWithToolCalls([]llm.NativeToolCall{
 		{ID: "c1", Name: "git_status", ArgsJSON: `{}`},
 	})
-	s.AppendNativeToolResult("c1", "nothing to commit")
+	if err := s.AppendNativeToolResult("c1", "nothing to commit"); err != nil {
+		t.Fatal(err)
+	}
 
 	msgs := s.Messages("system prompt")
 	// system + user + assistant(tool_calls) + tool(result)
@@ -748,6 +1282,111 @@ func TestSessionSetHookOutputStoresNormalizedHookState(t *testing.T) {
 	}
 	if snap.RuntimeNote != "Runtime note from normalized hook output." {
 		t.Fatalf("runtime note = %q", snap.RuntimeNote)
+	}
+}
+
+func TestRestoreSessionFromItemsMarksUnterminatedTurnResumable(t *testing.T) {
+	items := []protocol.Item{
+		{Version: 1, ID: "item-1", ThreadID: "thread-1", TurnID: "turn-1", Seq: 1, Kind: protocol.ItemUserMessage, Message: &protocol.MessageItem{Role: "user", Text: "read README"}},
+		{Version: 1, ID: "item-2", ThreadID: "thread-1", TurnID: "turn-1", Seq: 2, Kind: protocol.ItemAssistantMessage, Message: &protocol.MessageItem{Role: "assistant", Text: "I'll inspect it."}},
+		{Version: 1, ID: "item-3", ThreadID: "thread-1", TurnID: "turn-1", Seq: 3, Kind: protocol.ItemToolCall, ToolCall: &protocol.ToolCallItem{ToolName: "read_file", ToolCallID: "c1"}},
+		{Version: 1, ID: "item-4", ThreadID: "thread-1", TurnID: "turn-1", Seq: 4, Kind: protocol.ItemToolResult, ToolResult: &protocol.ToolResultItem{ToolName: "read_file", ToolCallID: "c1", Text: "contents"}},
+	}
+
+	s, err := RestoreSessionFromItems(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := s.Snapshot()
+
+	if snap.Turn != 1 || snap.LastInput != "read README" || snap.InitialInput != "read README" {
+		t.Fatalf("restored inputs = turn %d last %q initial %q", snap.Turn, snap.LastInput, snap.InitialInput)
+	}
+	if len(snap.Items) != len(items) {
+		t.Fatalf("items = %#v, want original durable items", snap.Items)
+	}
+	if len(snap.History) != 3 {
+		t.Fatalf("history = %#v, want user, assistant, tool", snap.History)
+	}
+	if len(snap.Turns) != 1 || len(snap.Turns[0].ToolCalls) != 1 || snap.Turns[0].ToolCalls[0].Name != "read_file" {
+		t.Fatalf("turns = %#v, want reconstructed tool call", snap.Turns)
+	}
+	if !snap.Interrupted || !strings.Contains(strings.ToLower(snap.RuntimeNote), "resumable") {
+		t.Fatalf("interrupted/runtime note = %v/%q, want resumable interrupted state", snap.Interrupted, snap.RuntimeNote)
+	}
+	if _, ok := s.ActiveTurnSnapshot(); ok {
+		t.Fatal("restore should not create an active turn or restart tools")
+	}
+}
+
+func TestRestoreSessionFromItemsGroupsMissingTurnIDAsResumableSessionTurn(t *testing.T) {
+	items := []protocol.Item{
+		{Version: 1, ID: "item-1", ThreadID: "thread-1", Seq: 1, Kind: protocol.ItemUserMessage, Message: &protocol.MessageItem{Role: "user", Text: "recover this"}},
+		{Version: 1, ID: "item-2", ThreadID: "thread-1", TurnID: " ", Seq: 2, Kind: protocol.ItemToolCall, ToolCall: &protocol.ToolCallItem{ToolName: "read_file", ToolCallID: "c1"}},
+		{Version: 1, ID: "item-3", ThreadID: "thread-1", Seq: 3, Kind: protocol.ItemToolResult, ToolResult: &protocol.ToolResultItem{ToolName: "read_file", ToolCallID: "c1", Text: "contents"}},
+	}
+
+	s, err := RestoreSessionFromItems(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := s.Snapshot()
+
+	if len(snap.Turns) != 1 {
+		t.Fatalf("turns = %#v, want one grouped session turn", snap.Turns)
+	}
+	if snap.Turns[0].Input != "recover this" || len(snap.Turns[0].ToolCalls) != 1 {
+		t.Fatalf("turn = %#v, want input and tool call grouped together", snap.Turns[0])
+	}
+	if !snap.Interrupted || !strings.Contains(strings.ToLower(snap.RuntimeNote), "resumable") {
+		t.Fatalf("interrupted/runtime note = %v/%q, want resumable interrupted state", snap.Interrupted, snap.RuntimeNote)
+	}
+}
+
+func TestRestoreSessionFromItemsKeepsCompletedTurnComplete(t *testing.T) {
+	items := []protocol.Item{
+		{Version: 1, ID: "item-1", ThreadID: "thread-1", TurnID: "turn-1", Seq: 1, Kind: protocol.ItemUserMessage, Message: &protocol.MessageItem{Role: "user", Text: "hello"}},
+		{Version: 1, ID: "item-2", ThreadID: "thread-1", TurnID: "turn-1", Seq: 2, Kind: protocol.ItemAssistantMessage, Message: &protocol.MessageItem{Role: "assistant", Text: "hi there"}},
+		{Version: 1, ID: "item-3", ThreadID: "thread-1", TurnID: "turn-1", Seq: 3, Kind: protocol.ItemTurnComplete, TurnComplete: &protocol.TurnCompleteItem{Status: protocol.TurnStatusCompleted}},
+	}
+
+	s, err := RestoreSessionFromItems(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := s.Snapshot()
+
+	if snap.Turn != 1 || len(snap.Turns) != 1 || snap.Turns[0].FinalResponse != "hi there" {
+		t.Fatalf("snapshot = %#v, want completed turn with final response", snap)
+	}
+	if snap.Interrupted || snap.RuntimeNote != "" {
+		t.Fatalf("interrupted/runtime note = %v/%q, want no resumable marker", snap.Interrupted, snap.RuntimeNote)
+	}
+	if snap.LastTurnEndReason != TurnEndReasonCompleted {
+		t.Fatalf("last turn end reason = %q, want completed", snap.LastTurnEndReason)
+	}
+}
+
+func TestRestoreSessionFromItemsAllowsRecoverableFailureBeforeCompletion(t *testing.T) {
+	items := []protocol.Item{
+		{Version: 1, ID: "item-1", ThreadID: "thread-1", TurnID: "turn-1", Seq: 1, Kind: protocol.ItemUserMessage, Message: &protocol.MessageItem{Role: "user", Text: "read README"}},
+		{Version: 1, ID: "item-2", ThreadID: "thread-1", TurnID: "turn-1", Seq: 2, Kind: protocol.ItemFailure, Failure: &protocol.FailureItem{Decision: protocol.ClassifyToolArgFailure("bad args")}},
+		{Version: 1, ID: "item-3", ThreadID: "thread-1", TurnID: "turn-1", Seq: 3, Kind: protocol.ItemToolResult, ToolResult: &protocol.ToolResultItem{ToolCallID: "c1", Text: "bad args"}},
+		{Version: 1, ID: "item-4", ThreadID: "thread-1", TurnID: "turn-1", Seq: 4, Kind: protocol.ItemAssistantMessage, Message: &protocol.MessageItem{Role: "assistant", Text: "done"}},
+		{Version: 1, ID: "item-5", ThreadID: "thread-1", TurnID: "turn-1", Seq: 5, Kind: protocol.ItemTurnComplete, TurnComplete: &protocol.TurnCompleteItem{Status: protocol.TurnStatusCompleted}},
+	}
+
+	s, err := RestoreSessionFromItems(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := s.Snapshot()
+
+	if len(snap.Turns) != 1 || snap.Turns[0].FinalResponse != "done" {
+		t.Fatalf("turns = %#v, want completed turn after recoverable failure", snap.Turns)
+	}
+	if snap.Interrupted || snap.LastTurnEndReason != TurnEndReasonCompleted {
+		t.Fatalf("interrupted/end reason = %v/%q, want completed", snap.Interrupted, snap.LastTurnEndReason)
 	}
 }
 

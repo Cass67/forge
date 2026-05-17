@@ -10,29 +10,32 @@ import (
 )
 
 type LiveSession struct {
-	threadID string
-	store    ThreadStore
-	policy   PersistencePolicy
-	mu       sync.Mutex
-	nextSeq  int64
+	mu          sync.Mutex
+	threadID    string
+	store       ThreadStore
+	policy      PersistencePolicy
+	nextSeq     int64
+	initialized bool
 }
 
 func NewLiveSession(threadID string, store ThreadStore, policy PersistencePolicy) *LiveSession {
-	return &LiveSession{threadID: threadID, store: store, policy: policy}
+	return &LiveSession{threadID: threadID, store: store, policy: policy, nextSeq: 1}
 }
 
 func (l *LiveSession) Append(ctx context.Context, item protocol.Item) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if err := l.ensureNextSeq(ctx); err != nil {
+	if err := l.initNextSeqLocked(ctx); err != nil {
 		return err
 	}
+
 	if item.Version == 0 {
 		item.Version = protocol.CurrentItemVersion
 	}
 	item.ThreadID = l.threadID
 	if item.Seq == 0 {
 		item.Seq = l.nextSeq
+		l.nextSeq++
 	}
 	if item.Seq >= l.nextSeq {
 		l.nextSeq = item.Seq + 1
@@ -56,23 +59,23 @@ func (l *LiveSession) ThreadID() string {
 	return l.threadID
 }
 
-func (l *LiveSession) ensureNextSeq(ctx context.Context) error {
-	if l.nextSeq > 0 {
+func (l *LiveSession) initNextSeqLocked(ctx context.Context) error {
+	if l.initialized || l.store == nil {
+		l.initialized = true
 		return nil
 	}
 	items, err := l.store.ReadItems(ctx, l.threadID)
 	if err != nil {
 		return err
 	}
-	var maxSeq int64
-	for _, item := range items {
-		if item.Seq > maxSeq {
-			maxSeq = item.Seq
-		}
-	}
-	l.nextSeq = maxSeq + 1
 	if l.nextSeq <= 0 {
 		l.nextSeq = 1
 	}
+	for _, item := range items {
+		if item.Seq >= l.nextSeq {
+			l.nextSeq = item.Seq + 1
+		}
+	}
+	l.initialized = true
 	return nil
 }

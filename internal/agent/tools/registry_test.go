@@ -5,9 +5,67 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"forge/internal/llm"
 )
+
+func TestToolZeroValueIsParallelSafe(t *testing.T) {
+	var tool Tool
+
+	if !tool.ParallelSafe() {
+		t.Fatal("zero-value tool should be parallel-safe")
+	}
+}
+
+func TestToolEffectiveTimeoutDefaultsPositive(t *testing.T) {
+	var tool Tool
+
+	if got := tool.EffectiveTimeout(); got <= 0 {
+		t.Fatalf("zero-value effective timeout = %v, want positive", got)
+	}
+
+	configured := Tool{Timeout: 5 * time.Second}
+	if got := configured.EffectiveTimeout(); got != 5*time.Second {
+		t.Fatalf("configured effective timeout = %v, want 5s", got)
+	}
+}
+
+func TestMutableDiffToolsAreSerial(t *testing.T) {
+	approve := func(Action) (bool, error) { return true, nil }
+	previewRuntime := NewPreviewRuntime(t.TempDir(), approve)
+	t.Cleanup(func() { _ = previewRuntime.Close() })
+
+	for _, tool := range []Tool{
+		NewWriteFile(t.TempDir(), approve),
+		NewEditFile(t.TempDir(), approve),
+		NewApplyPatch(t.TempDir(), approve),
+		NewArtifactWrite(previewRuntime),
+	} {
+		if tool.ParallelSafe() {
+			t.Fatalf("%s ParallelSafe() = true, want false", tool.Name)
+		}
+	}
+}
+
+func TestMutatingToolsDeclareWorkspaceMutation(t *testing.T) {
+	approve := func(Action) (bool, error) { return true, nil }
+	previewRuntime := NewPreviewRuntime(t.TempDir(), approve)
+	t.Cleanup(func() { _ = previewRuntime.Close() })
+
+	for _, tool := range []Tool{
+		NewWriteFile(t.TempDir(), approve),
+		NewEditFile(t.TempDir(), approve),
+		NewApplyPatch(t.TempDir(), approve),
+		NewArtifactWrite(previewRuntime),
+		NewGitCommit(t.TempDir(), approve),
+		NewScratchpadWrite(t.TempDir()),
+	} {
+		if !tool.MutatesWorkspace {
+			t.Fatalf("%s MutatesWorkspace = false, want true", tool.Name)
+		}
+	}
+}
 
 func TestExampleValueForPatternParameterIsConcrete(t *testing.T) {
 	got := exampleValueForParameter(ParameterDef{Name: "pattern", Type: "string", Required: true})
