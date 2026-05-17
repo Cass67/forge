@@ -45,7 +45,7 @@ func ReplayItems(items []protocol.Item) (Replay, error) {
 				replay.CompactionSummary = strings.TrimSpace(item.Compaction.Summary)
 			}
 			continue
-		case protocol.ItemSessionMeta, protocol.ItemStats, protocol.ItemRetry, protocol.ItemCheckpoint:
+		case protocol.ItemSessionMeta, protocol.ItemStats, protocol.ItemRetry, protocol.ItemCheckpoint, protocol.ItemAgentHandoff:
 			continue
 		}
 		turnID := replayTurnID(item.TurnID)

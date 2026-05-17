@@ -1381,8 +1381,16 @@ func TestRegisterReactDelegationToolsGivesSanitizedAuditReadOnlyTools(t *testing
 			t.Fatalf("repo-auditor saw mutating tool %q in %#v", forbidden, driver.toolNames)
 		}
 	}
-	if !messagesContain(driver.messages, "You have repository access through these native tools") || !messagesContain(driver.messages, "git_status") || !messagesContain(driver.messages, "Do not tell the user to run git commands") {
-		t.Fatalf("repo-auditor prompt did not explain tool access: %#v", driver.messages)
+	for _, want := range []string{
+		"You have repository access through these native tools",
+		"git_status",
+		"Do not tell the user to run git commands",
+		"forge_handoff",
+		"parent/orchestrator owns writes, repairs, verification, commits, and user questions",
+	} {
+		if !messagesContain(driver.messages, want) {
+			t.Fatalf("repo-auditor prompt missing %q: %#v", want, driver.messages)
+		}
 	}
 }
 

@@ -86,3 +86,43 @@ func TestCheckpointItemJSON(t *testing.T) {
 		t.Fatalf("decoded checkpoint = %#v", decoded.Checkpoint)
 	}
 }
+
+func TestAgentHandoffItemJSON(t *testing.T) {
+	item := Item{
+		Version: 1,
+		Kind:    ItemAgentHandoff,
+		AgentHandoff: &AgentHandoffItem{
+			AgentID:  "agent-1",
+			Blocking: true,
+			RemainingActions: []AgentFollowupActionItem{{
+				Kind:        "write_file",
+				TargetPath:  "docs/audit.md",
+				Description: "Save report",
+				Blocking:    true,
+			}},
+			Incidents: []AgentWorkspaceIncidentItem{{
+				Kind:        "accidental_write",
+				Paths:       []string{"README.md"},
+				Description: "Child wrote report into README",
+				Blocking:    true,
+			}},
+		},
+	}
+	encoded, err := json.Marshal(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Item
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Kind != ItemAgentHandoff || decoded.AgentHandoff == nil {
+		t.Fatalf("decoded handoff item = %#v", decoded)
+	}
+	if decoded.AgentHandoff.AgentID != "agent-1" || !decoded.AgentHandoff.Blocking {
+		t.Fatalf("decoded handoff = %#v", decoded.AgentHandoff)
+	}
+	if decoded.AgentHandoff.RemainingActions[0].TargetPath != "docs/audit.md" || decoded.AgentHandoff.Incidents[0].Paths[0] != "README.md" {
+		t.Fatalf("decoded handoff details = %#v", decoded.AgentHandoff)
+	}
+}

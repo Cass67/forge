@@ -12,13 +12,14 @@ func GenerateProtocolSchema() JSONSchema {
 		"properties": JSONSchema{
 			"at":        JSONSchema{"format": "date-time", "type": "string"},
 			"id":        stringSchema(),
-			"kind":      JSONSchema{"enum": []string{string(ItemSessionMeta), string(ItemTurnContext), string(ItemUserMessage), string(ItemAssistantMessage), string(ItemToolCall), string(ItemToolResult), string(ItemRetry), string(ItemFailure), string(ItemStats), string(ItemCompaction), string(ItemCheckpoint), string(ItemTurnComplete)}, "type": "string"},
+			"kind":      JSONSchema{"enum": []string{string(ItemSessionMeta), string(ItemTurnContext), string(ItemUserMessage), string(ItemAssistantMessage), string(ItemToolCall), string(ItemToolResult), string(ItemRetry), string(ItemFailure), string(ItemStats), string(ItemCompaction), string(ItemCheckpoint), string(ItemAgentHandoff), string(ItemTurnComplete)}, "type": "string"},
 			"seq":       JSONSchema{"type": "integer"},
 			"thread_id": stringSchema(),
 			"turn_id":   stringSchema(),
 			"version":   JSONSchema{"const": CurrentItemVersion, "type": "integer"},
 
 			"compaction":    objectSchema(map[string]any{"summary": stringSchema()}),
+			"agent_handoff": objectSchema(map[string]any{"agent_id": stringSchema(), "blocking": JSONSchema{"type": "boolean"}, "incidents": JSONSchema{"items": agentIncidentSchema(), "type": "array"}, "remaining_actions": JSONSchema{"items": agentActionSchema(), "type": "array"}}),
 			"checkpoint":    objectSchema(map[string]any{"changed_files": JSONSchema{"items": stringSchema(), "type": "array"}, "error": stringSchema(), "id": stringSchema(), "phase": stringSchema()}),
 			"failure":       objectSchema(map[string]any{"decision": FailureDecisionSchema()}),
 			"message":       objectSchema(map[string]any{"role": stringSchema(), "text": stringSchema()}),
@@ -43,6 +44,14 @@ func FailureDecisionSchema() JSONSchema {
 		"recoverable":  JSONSchema{"type": "boolean"},
 		"user_visible": JSONSchema{"type": "boolean"},
 	})
+}
+
+func agentActionSchema() JSONSchema {
+	return objectSchema(map[string]any{"blocking": JSONSchema{"type": "boolean"}, "description": stringSchema(), "kind": stringSchema(), "suggested_command": stringSchema(), "target_path": stringSchema()})
+}
+
+func agentIncidentSchema() JSONSchema {
+	return objectSchema(map[string]any{"blocking": JSONSchema{"type": "boolean"}, "description": stringSchema(), "kind": stringSchema(), "paths": JSONSchema{"items": stringSchema(), "type": "array"}})
 }
 
 func ToolSchemaToJSONSchema(schema *llm.ToolSchema) JSONSchema {

@@ -65,6 +65,74 @@ func TestAgentPoolUpdatesSessionAgentTaskOnSpawnAndComplete(t *testing.T) {
 	}
 }
 
+func TestAgentPoolStoresParsedHandoffOnCompletion(t *testing.T) {
+	session := NewSession()
+	session.RecordInput("delegate audit")
+	pool := NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+		return "audit report\n\n```forge_handoff\n{" +
+			`"remaining_actions":[{"kind":"write_file","target_path":"docs/audit.md","description":"Save report","blocking":true}],` +
+			`"incidents":[{"kind":"accidental_write","paths":["README.md"],"description":"Child wrote report into README","blocking":true}]` +
+			"}\n```", nil
+	})
+	pool.AttachSession(session)
+
+	id, err := pool.Spawn(context.Background(), "repo-auditor", "inspect repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := pool.Wait(context.Background(), id, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Result != "audit report" {
+		t.Fatalf("result = %q, want sanitized report", result.Result)
+	}
+	if result.Handoff == nil || !result.Handoff.Blocking() {
+		t.Fatalf("result handoff = %#v, want blocking handoff", result.Handoff)
+	}
+	if result.Handoff.RemainingActions[0].TargetPath != "docs/audit.md" {
+		t.Fatalf("result handoff actions = %#v", result.Handoff.RemainingActions)
+	}
+
+	tasks := session.Snapshot().AgentTasks
+	if len(tasks) != 1 {
+		t.Fatalf("agent tasks = %#v", tasks)
+	}
+	if tasks[0].Result != "audit report" {
+		t.Fatalf("task result = %q, want sanitized report", tasks[0].Result)
+	}
+	if tasks[0].Handoff == nil || !tasks[0].Handoff.Blocking() {
+		t.Fatalf("task handoff = %#v, want blocking handoff", tasks[0].Handoff)
+	}
+}
+
+func TestAgentPoolHandoffRemovesUserRepairCommandFromReport(t *testing.T) {
+	pool := NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+		return "I accidentally overwrote README.md.\nTo fix this, run `git restore --source=HEAD -- README.md`.\n" +
+			"Do not run `rm README.md`.\n" +
+			"Do not execute apply_patch yourself.\n" +
+			"Do not run `git reset --hard`.\n\n```forge_handoff\n{" +
+			`"incidents":[{"kind":"accidental_write","paths":["README.md"],"description":"Child wrote report into README","blocking":true}],` +
+			`"remaining_actions":[{"kind":"restore_file","target_path":"README.md","suggested_command":"git restore --source=HEAD -- README.md","description":"Inspect diff, then restore if safe","blocking":true}]` +
+			"}\n```", nil
+	})
+
+	id, err := pool.Spawn(context.Background(), "repo-auditor", "audit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := pool.Wait(context.Background(), id, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(result.Result, "git restore") || strings.Contains(result.Result, "rm README") || strings.Contains(result.Result, "apply_patch") || strings.Contains(result.Result, "git reset") || strings.Contains(strings.ToLower(result.Result), "run `") {
+		t.Fatalf("result leaked user repair command: %q", result.Result)
+	}
+	if result.Handoff == nil || result.Handoff.RemainingActions[0].SuggestedCommand == "" {
+		t.Fatalf("handoff did not preserve parent repair action: %#v", result.Handoff)
+	}
+}
+
 func TestAgentPoolUpdatesSessionAgentTaskOnTimeoutFailureAndNotFound(t *testing.T) {
 	session := NewSession()
 	session.RecordInput("delegate work")
@@ -355,8 +423,16 @@ func TestDefaultAgentDefinitionsIncludeNativeSpecialists(t *testing.T) {
 	names := make(map[string]bool)
 	for _, def := range defs {
 		names[def.Name] = true
+		if !def.ReadOnly {
+			t.Fatalf("default agent %q should be read-only", def.Name)
+		}
 		if def.SystemPrompt == "" {
 			t.Fatalf("default agent %q missing system prompt", def.Name)
+		}
+		for _, blocked := range []string{"write_file", "edit_file", "apply_patch", "artifact_write", "run_command", "exec_session_start", "command_write_stdin"} {
+			if containsString(def.Tools, blocked) {
+				t.Fatalf("read-only default agent %q has mutation tool %q in %#v", def.Name, blocked, def.Tools)
+			}
 		}
 	}
 

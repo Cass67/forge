@@ -893,6 +893,9 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 		var allowedTools []string
 		if agentDef, ok := pool.GetAgent(role); ok && agentDef != nil && len(agentDef.Tools) > 0 {
 			allowedTools = append([]string(nil), agentDef.Tools...)
+			if agentDef.ReadOnly {
+				allowedTools = stripMutationTools(allowedTools)
+			}
 		}
 		childWorkDir := reactruntime.WorkDirFromContext(ctx)
 		var childTools *tools.Registry
@@ -985,6 +988,22 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 	reg.Register(reacttools.NewKillAgent(pool))
 }
 
+func stripMutationTools(names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		switch strings.TrimSpace(name) {
+		case "write_file", "edit_file", "apply_patch", "artifact_write", "run_command", "exec_session_start", "exec_session_write", "command_write_stdin", "git_commit":
+			continue
+		default:
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 func childAgentToolAccessPrompt(reg *tools.Registry) string {
 	if reg == nil {
 		return "You have repository access through native tools. Do not tell the user to run git commands because you lack access; use the available tools or report the exact tool/path failure."
@@ -1000,6 +1019,7 @@ func childAgentToolAccessPrompt(reg *tools.Registry) string {
 		"You have repository access through these native tools: " + strings.Join(names, ", ") + ".",
 		"Use read_file/list_dir/search/code_search/glob for repository inspection and git_status/git_diff/git_log/git_branch_state for Git state.",
 		"Do not tell the user to run git commands because you lack access; use the available native tools or report the exact tool/path failure.",
+		reactruntime.AgentHandoffInstructions(),
 	}, "\n")
 }
 
