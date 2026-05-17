@@ -1,6 +1,8 @@
 package react
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +11,20 @@ import (
 	"forge/internal/llm"
 	"forge/internal/protocol"
 )
+
+type failingDurableSink struct{ err error }
+
+func (f failingDurableSink) Append(context.Context, protocol.Item) error { return f.err }
+
+func TestSessionRecordsDurableAppendFailure(t *testing.T) {
+	s := NewSession()
+	s.SetDurableSink(failingDurableSink{err: errors.New("disk full")})
+	s.AppendItem(protocol.Item{Kind: protocol.ItemStats, Stats: &protocol.StatsItem{}})
+	snap := s.Snapshot()
+	if snap.LastDurableError != "disk full" {
+		t.Fatalf("LastDurableError = %q", snap.LastDurableError)
+	}
+}
 
 func TestSessionRecordsUserAndAssistantItemsOnce(t *testing.T) {
 	s := NewSession()
@@ -29,6 +45,216 @@ func TestSessionRecordsUserAndAssistantItemsOnce(t *testing.T) {
 	}
 	if user != 1 || assistant != 1 || terminal != 1 {
 		t.Fatalf("item counts user=%d assistant=%d terminal=%d items=%#v", user, assistant, terminal, snap.Items)
+	}
+}
+
+func TestSessionPersistsQueuedInput(t *testing.T) {
+	s := NewSession()
+	s.RecordInput("active turn")
+	s.QueuePendingInput("steer toward tests")
+
+	snap := s.Snapshot()
+	for _, item := range snap.Items {
+		if item.Kind == protocol.ItemTurnContext && item.TurnContext != nil && item.TurnContext.Mode == "queued_input" && item.TurnContext.Input == "steer toward tests" {
+			return
+		}
+	}
+	t.Fatalf("queued input item not found: %#v", snap.Items)
+}
+
+func TestSessionPersistsAssistantToolCalls(t *testing.T) {
+	s := NewSession()
+	s.RecordInput("inspect")
+	s.AppendAssistantToolTurn("checking", []llm.NativeToolCall{{ID: "call-1", Name: "read_file", ArgsJSON: `{"path":"README.md"}`}})
+
+	snap := s.Snapshot()
+	var foundAssistant, foundToolCall bool
+	for _, item := range snap.Items {
+		if item.Kind == protocol.ItemAssistantMessage && item.Message != nil && item.Message.Text == "checking" {
+			foundAssistant = true
+		}
+		if item.Kind == protocol.ItemToolCall && item.ToolCall != nil && item.ToolCall.ToolName == "read_file" && item.ToolCall.ToolCallID == "call-1" && item.ToolCall.Args["path"] == "README.md" {
+			foundToolCall = true
+		}
+	}
+	if !foundAssistant || !foundToolCall {
+		t.Fatalf("assistant=%v toolCall=%v items=%#v", foundAssistant, foundToolCall, snap.Items)
+	}
+}
+
+func TestSessionPersistsToolResultName(t *testing.T) {
+	s := NewSession()
+	s.RecordInput("inspect")
+	s.AppendAssistantToolTurn("", []llm.NativeToolCall{{ID: "call-1", Name: "read_file", ArgsJSON: `{"path":"README.md"}`}})
+	s.AppendNativeToolResult("call-1", "contents")
+
+	snap := s.Snapshot()
+	for _, item := range snap.Items {
+		if item.Kind == protocol.ItemToolResult && item.ToolResult != nil && item.ToolResult.ToolCallID == "call-1" && item.ToolResult.ToolName == "read_file" {
+			return
+		}
+	}
+	t.Fatalf("tool result with name not found: %#v", snap.Items)
+}
+
+func TestSessionPersistsInterruptedTerminal(t *testing.T) {
+	s := NewSession()
+	s.RecordInput("run long command")
+	s.MarkInterrupted()
+
+	snap := s.Snapshot()
+	if !snap.Interrupted {
+		t.Fatal("snapshot should remain interrupted")
+	}
+	for _, item := range snap.Items {
+		if item.Kind == protocol.ItemTurnComplete && item.TurnComplete != nil && item.TurnComplete.Status == protocol.TurnStatusInterrupted {
+			return
+		}
+	}
+	t.Fatalf("interrupted terminal item not found: %#v", snap.Items)
+}
+
+func TestSessionDoesNotAppendSecondTerminalAfterInterrupt(t *testing.T) {
+	s := NewSession()
+	turn := s.RecordInput("cancel me")
+	s.MarkInterrupted()
+	s.CompleteTurn(turn, "", nil, errors.New("context canceled"))
+
+	terminals := 0
+	for _, item := range s.Snapshot().Items {
+		if item.TurnID == "turn-1" && item.IsTerminal() {
+			terminals++
+		}
+	}
+	if terminals != 1 {
+		t.Fatalf("terminal items = %d, want 1; items=%#v", terminals, s.Snapshot().Items)
+	}
+}
+
+func TestRecoverableFailureDoesNotBlockCompletedTurn(t *testing.T) {
+	s := NewSession()
+	turn := s.RecordInput("recover from bad args")
+	s.AppendItem(protocol.Item{
+		Kind:    protocol.ItemFailure,
+		TurnID:  "turn-1",
+		Failure: &protocol.FailureItem{Decision: protocol.ClassifyToolArgFailure("bad args")},
+	})
+	s.CompleteTurn(turn, "recovered", nil, nil)
+
+	for _, item := range s.Snapshot().Items {
+		if item.Kind == protocol.ItemTurnComplete && item.TurnComplete != nil && item.TurnComplete.Status == protocol.TurnStatusCompleted {
+			return
+		}
+	}
+	t.Fatalf("completed terminal missing after recoverable failure: %#v", s.Snapshot().Items)
+}
+
+func TestSessionPersistsCompactionItem(t *testing.T) {
+	s := NewSession()
+	for _, input := range []string{"one", "two", "three"} {
+		turn := s.RecordInput(input)
+		s.AppendAssistantMessage("answer " + input)
+		s.CompleteTurn(turn, "answer "+input, nil, nil)
+	}
+	if !s.compact(1) {
+		t.Fatal("expected compaction to change state")
+	}
+
+	snap := s.Snapshot()
+	for _, item := range snap.Items {
+		if item.Kind == protocol.ItemCompaction && item.Compaction != nil && strings.TrimSpace(item.Compaction.Summary) != "" {
+			return
+		}
+	}
+	t.Fatalf("compaction item not found: %#v", snap.Items)
+}
+
+func TestNewSessionFromItemsRebuildsState(t *testing.T) {
+	items := []protocol.Item{
+		{TurnID: "turn-1", Seq: 1, Kind: protocol.ItemUserMessage, Message: &protocol.MessageItem{Role: string(llm.RoleUser), Text: "run tests"}},
+		{TurnID: "turn-1", Seq: 2, Kind: protocol.ItemAssistantMessage, Message: &protocol.MessageItem{Role: string(llm.RoleAssistant), Text: "running"}},
+		{TurnID: "turn-1", Seq: 3, Kind: protocol.ItemToolCall, ToolCall: &protocol.ToolCallItem{ToolName: "run_command", ToolCallID: "call-1"}},
+		{TurnID: "turn-1", Seq: 4, Kind: protocol.ItemToolResult, ToolResult: &protocol.ToolResultItem{ToolName: "run_command", ToolCallID: "call-1", Text: "ok"}},
+		{Seq: 5, Kind: protocol.ItemCompaction, Compaction: &protocol.CompactionItem{Summary: "compacted old turns"}},
+		{TurnID: "turn-1", Seq: 6, Kind: protocol.ItemTurnComplete, TurnComplete: &protocol.TurnCompleteItem{Status: protocol.TurnStatusInterrupted}},
+	}
+	s, err := NewSessionFromItems(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := s.Snapshot()
+	if snap.Turn != 1 || len(snap.History) != 3 || len(snap.Turns) != 1 || !snap.Interrupted {
+		t.Fatalf("snapshot = %#v", snap)
+	}
+	if snap.Turns[0].Input != "run tests" || snap.Turns[0].Error != "interrupted" {
+		t.Fatalf("turns = %#v", snap.Turns)
+	}
+	if snap.CompactionSummary != "compacted old turns" || len(snap.RecentInputs) != 1 || snap.RecentInputs[0] != "run tests" {
+		t.Fatalf("compaction/recent = %q %#v", snap.CompactionSummary, snap.RecentInputs)
+	}
+}
+
+func TestNewSessionFromItemsReplaysSessionEmittedToolTurnAsSingleTurn(t *testing.T) {
+	s := NewSession()
+	turn := s.RecordInput("inspect")
+	s.AppendAssistantToolTurn("checking", []llm.NativeToolCall{{ID: "call-1", Name: "read_file", ArgsJSON: `{"path":"README.md"}`}})
+	s.AppendNativeToolResult("call-1", "contents")
+	s.CompleteTurn(turn, "done", nil, nil)
+
+	replayed, err := NewSessionFromItems(s.Snapshot().Items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := replayed.Snapshot()
+	if len(snap.Turns) != 1 || snap.Turns[0].Input != "inspect" || len(snap.Turns[0].ToolCalls) != 1 || snap.Turns[0].ToolCalls[0].Name != "read_file" {
+		t.Fatalf("turns = %#v", snap.Turns)
+	}
+}
+
+func TestNewSessionFromItemsRestoresQueuedInputWithoutOverwritingTurnInput(t *testing.T) {
+	items := []protocol.Item{
+		{TurnID: "turn-1", Seq: 1, Kind: protocol.ItemUserMessage, Message: &protocol.MessageItem{Role: string(llm.RoleUser), Text: "original turn"}},
+		{TurnID: "turn-1", Seq: 2, Kind: protocol.ItemTurnContext, TurnContext: &protocol.TurnContextItem{Mode: "queued_input", Input: "queued steering"}},
+	}
+	s, err := NewSessionFromItems(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := s.Snapshot()
+	if len(snap.Turns) != 1 || snap.Turns[0].Input != "original turn" {
+		t.Fatalf("turns = %#v", snap.Turns)
+	}
+	if len(snap.PendingInput) != 1 || snap.PendingInput[0] != "queued steering" {
+		t.Fatalf("pending input = %#v", snap.PendingInput)
+	}
+}
+
+func TestNewSessionFromItemsDoesNotRestoreConsumedQueuedInput(t *testing.T) {
+	s := NewSession()
+	s.RecordInput("original turn")
+	s.QueuePendingInput("queued steering")
+	s.appendQueuedUserInput("queued steering")
+	replayed, err := NewSessionFromItems(s.Snapshot().Items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending := replayed.Snapshot().PendingInput; len(pending) != 0 {
+		t.Fatalf("pending input = %#v", pending)
+	}
+}
+
+func TestNewSessionFromItemsKeepsOriginalInputAfterAppliedQueuedMessage(t *testing.T) {
+	items := []protocol.Item{
+		{TurnID: "turn-1", Seq: 1, Kind: protocol.ItemUserMessage, Message: &protocol.MessageItem{Role: string(llm.RoleUser), Text: "original turn"}},
+		{TurnID: "turn-1", Seq: 2, Kind: protocol.ItemUserMessage, Message: &protocol.MessageItem{Role: string(llm.RoleUser), Text: "applied queued steering"}},
+	}
+	s, err := NewSessionFromItems(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := s.Snapshot()
+	if len(snap.Turns) != 1 || snap.Turns[0].Input != "original turn" {
+		t.Fatalf("turns = %#v", snap.Turns)
 	}
 }
 
