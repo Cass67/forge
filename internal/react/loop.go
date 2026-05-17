@@ -723,6 +723,7 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 			usedToolThisTurn = false
 			r.syncRuntimeNote()
 		}
+		r.applyProactivePromptCompaction(ctx)
 		snap := r.session.Snapshot()
 		toolDefs, toolDecision := r.selectToolDefsWithDecision(snap)
 		requireToolCall := shouldRequireToolCallForSnapshot(snap) && !usedToolThisTurn
@@ -796,6 +797,28 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 
 	err := fmt.Errorf("react runtime: safety step limit (%d) exceeded", r.maxSteps)
 	return r.completeTurn(turn, "", nil, err)
+}
+
+func (r *Runner) applyProactivePromptCompaction(ctx context.Context) bool {
+	if r == nil || r.session == nil || r.compactionManager == nil {
+		return false
+	}
+	changed := false
+	for range 3 {
+		messages := r.session.Messages(r.currentSystemPrompt())
+		decision := r.compactionManager.DecidePromptPressure(messages)
+		if decision.Mode == CompactionNone {
+			return changed
+		}
+		if r.progress != nil {
+			r.progress("react runtime: compacting prompt before provider call")
+		}
+		if !r.applyCompactionDecision(ctx, decision) {
+			return changed
+		}
+		changed = true
+	}
+	return changed
 }
 
 func isEmptyNativeResponseError(err *RetryableCompletionError) bool {
