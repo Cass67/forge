@@ -43,7 +43,7 @@ func TestSpawnAgentToolAdvertisesDefaultAgents(t *testing.T) {
 	pool.RegisterAgents(react.DefaultAgentDefinitions())
 	tool := NewSpawnAgent(pool)
 
-	for _, want := range []string{"repo-auditor", "code-reviewer", "oracle"} {
+	for _, want := range []string{"repo-auditor", "code-reviewer", "oracle", "forge_handoff", "parent/orchestrator"} {
 		if !strings.Contains(tool.Description, want) {
 			t.Fatalf("spawn_agent description missing %q: %s", want, tool.Description)
 		}
@@ -88,7 +88,7 @@ func TestSpawnAgentSanitizesWriteTasksForReadOnlyAgents(t *testing.T) {
 			}
 			select {
 			case got := <-seenTask:
-				for _, want := range []string{"Inspect/analyze only", "parent agent can save", "Original delegated context", task} {
+				for _, want := range []string{"Inspect/analyze only", "parent agent can save", "forge_handoff", "parent/orchestrator", "Original delegated context", task} {
 					if !strings.Contains(got, want) {
 						t.Fatalf("sanitized task missing %q:\n%s", want, got)
 					}
@@ -472,6 +472,38 @@ func TestAgentStatusToolRedactsResultErrorAndActivity(t *testing.T) {
 	}
 	if !strings.Contains(rawStatus, "REDACTED:generic-token") {
 		t.Fatalf("agent_status missing redaction marker: %s", rawStatus)
+	}
+}
+
+func TestWaitAgentRedactsHandoffPayload(t *testing.T) {
+	secret := "TOKEN=" + strings.Repeat("x", 24)
+	pool := react.NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+		return "report\n```forge_handoff\n{" +
+			`"remaining_actions":[{"kind":"restore_file","target_path":"README.md ` + secret + `","description":"restore ` + secret + `","suggested_command":"git restore README.md # ` + secret + `","blocking":true}],` +
+			`"incidents":[{"kind":"accidental_write","paths":["README.md ` + secret + `"],"description":"incident ` + secret + `","blocking":true}]` +
+			"}\n```", nil
+	})
+	spawn := NewSpawnAgent(pool)
+	wait := NewWaitAgent(pool)
+
+	rawSpawn, err := spawn.Execute(context.Background(), map[string]any{"task_description": "inspect repo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spawnPayload map[string]any
+	if err := json.Unmarshal([]byte(rawSpawn), &spawnPayload); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := spawnPayload["id"].(string)
+	rawWait, err := wait.Execute(context.Background(), map[string]any{"id": id, "timeout_seconds": 1.0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(rawWait, secret) {
+		t.Fatalf("wait_agent leaked handoff secret: %s", rawWait)
+	}
+	if !strings.Contains(rawWait, "REDACTED:generic-token") {
+		t.Fatalf("wait_agent missing redaction marker: %s", rawWait)
 	}
 }
 

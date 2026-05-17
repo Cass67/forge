@@ -2181,6 +2181,7 @@ func (r *Runner) selectToolDefsWithDecision(snapshot SessionSnapshot) ([]llm.Too
 		return defs, decision.withTools("active_agents", defs)
 	}
 	delegationComplete := historyIncludesCompletedToolCall(snapshot, "wait_agent")
+	blockingHandoff := blockingAgentHandoffs(snapshot)
 	currentDelegationIntent := currentInputRequestsDelegation(snapshot)
 	currentPostDelegationAction := inputSuggestsPostDelegationAction(normalizeToolIntentText(snapshot.LastInput))
 	fallbackSettledWrite := completedAgentFallbackSettledWrite(snapshot) && !currentPostDelegationAction
@@ -2190,6 +2191,10 @@ func (r *Runner) selectToolDefsWithDecision(snapshot SessionSnapshot) ([]llm.Too
 	}
 	pendingPostDelegationWrite := pendingWorkflowWrite || pendingPostDelegationWriteAction(snapshot)
 	if delegationComplete && !currentDelegationIntent {
+		if len(blockingHandoff) > 0 {
+			snapshot.LastInput = agentHandoffToolIntentText(blockingHandoff)
+			goto selectParentTools
+		}
 		postDelegationText := snapshot.LastInput
 		if !fallbackSettledWrite {
 			postDelegationText = postDelegationToolIntentText(snapshot)
@@ -2222,6 +2227,18 @@ selectParentTools:
 		allowed = append(allowed, "tool_help")
 		if postDelegationNeedsSynthesisAgent(snapshot) {
 			allowed = append(allowed, delegateToolNames...)
+		}
+	}
+	if len(blockingHandoff) > 0 {
+		reason = "agent_handoff_blocking"
+		allowed = append(allowed, readOnlyToolNames...)
+		allowed = append(allowed, gitReadToolNames...)
+		allowed = append(allowed, "tool_help")
+		if handoffTasksRequireWriteTools(blockingHandoff) {
+			allowed = append(allowed, writeToolNames...)
+		}
+		if handoffTasksRequireCommandTools(blockingHandoff) {
+			allowed = append(allowed, "run_command")
 		}
 	}
 	pluginNames := r.pluginToolNames()
@@ -2743,11 +2760,12 @@ func (r *Runner) updatePostDelegationWorkflow(toolName, result string, isError b
 				r.session.SetPendingDelegationAction(action)
 			}
 		}
-	case "write_file", "edit_file", "apply_patch":
+	case "write_file", "edit_file", "apply_patch", "run_command":
 		if !isError {
 			r.postDelegation.pendingWrite = false
 			if r.session != nil {
 				r.session.ClearPendingDelegationAction()
+				r.session.ClearBlockingAgentHandoffs()
 			}
 		}
 	}
@@ -2884,6 +2902,9 @@ func toolNameIn(name string, names []string) bool {
 }
 
 func shouldRequireToolCallForSnapshot(snapshot SessionSnapshot) bool {
+	if len(blockingAgentHandoffs(snapshot)) > 0 {
+		return true
+	}
 	if len(outstandingSpawnedAgents(snapshot)) > 0 {
 		text := normalizeToolIntentText(snapshot.LastInput)
 		return currentInputRequestsDelegation(snapshot) || inputSuggestsPostDelegationAction(text)
@@ -3418,6 +3439,7 @@ func newLoopHookRegistry() *hooks.Registry {
 	registry.Register(hooks.PointPromptContext, "preview_workflow", previewWorkflowPromptHook)
 	registry.Register(hooks.PointPromptContext, "plan_blocker", blockedPlanPromptHook)
 	registry.Register(hooks.PointPromptContext, "post_delegation_write", postDelegationWritePromptHook)
+	registry.Register(hooks.PointPromptContext, "agent_handoff", agentHandoffPromptHook)
 	registry.Register(hooks.PointPromptContext, "synthesis_guidance", synthesisPromptHook)
 	registry.Register(hooks.PointPromptContext, "validation_failure", validationPromptHook)
 	registry.Register(hooks.PointPromptContext, "search_thrash", searchThrashPromptHook)
@@ -3711,6 +3733,113 @@ func postDelegationWritePromptHook(_ context.Context, event hooks.Event) []hooks
 		Priority:   hooks.PriorityHigh,
 		Provenance: "runtime",
 	}}
+}
+
+func agentHandoffPromptHook(_ context.Context, event hooks.Event) []hooks.Result {
+	snap, ok := event.Snapshot.(SessionSnapshot)
+	if !ok {
+		return nil
+	}
+	tasks := blockingAgentHandoffs(snap)
+	if len(tasks) == 0 {
+		return nil
+	}
+	return []hooks.Result{hooks.OverlayResult{
+		Key:        "agent_handoff",
+		Content:    agentHandoffOverlayContent(tasks),
+		Priority:   hooks.PriorityHigh,
+		Provenance: "runtime",
+	}}
+}
+
+func blockingAgentHandoffs(snap SessionSnapshot) []AgentTaskState {
+	var out []AgentTaskState
+	for _, task := range snap.AgentTasks {
+		if task.Status != AgentStatusCompleted || task.Handoff == nil || !task.Handoff.Blocking() {
+			continue
+		}
+		out = append(out, task)
+	}
+	return out
+}
+
+func handoffTasksRequireWriteTools(tasks []AgentTaskState) bool {
+	for _, task := range tasks {
+		if task.Handoff == nil {
+			continue
+		}
+		for _, action := range task.Handoff.RemainingActions {
+			switch action.Kind {
+			case AgentActionWriteFile, AgentActionRestoreFile:
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func handoffTasksRequireCommandTools(tasks []AgentTaskState) bool {
+	for _, task := range tasks {
+		if task.Handoff == nil {
+			continue
+		}
+		for _, action := range task.Handoff.RemainingActions {
+			if action.Kind == AgentActionRunVerification {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func agentHandoffToolIntentText(tasks []AgentTaskState) string {
+	var b strings.Builder
+	b.WriteString("Resolve child-agent handoff before final response. ")
+	for _, task := range tasks {
+		if task.Handoff == nil {
+			continue
+		}
+		for _, action := range task.Handoff.RemainingActions {
+			fmt.Fprintf(&b, "Action %s %s %s. ", action.Kind, action.TargetPath, action.Description)
+		}
+		for _, incident := range task.Handoff.Incidents {
+			fmt.Fprintf(&b, "Incident %s %s %s. ", incident.Kind, strings.Join(incident.Paths, " "), incident.Description)
+		}
+	}
+	return b.String()
+}
+
+func agentHandoffOverlayContent(tasks []AgentTaskState) string {
+	var b strings.Builder
+	b.WriteString("Resolve child-agent handoff before final response. The parent/orchestrator owns remaining writes, repairs, verification, commits, and user questions. Do not ask the user to run repair commands.\n")
+	for _, task := range tasks {
+		role := strings.TrimSpace(task.Role)
+		if role == "" {
+			role = "unknown-role"
+		}
+		fmt.Fprintf(&b, "- %s (%s):\n", strings.TrimSpace(task.ID), role)
+		if task.Handoff == nil {
+			continue
+		}
+		for _, action := range task.Handoff.RemainingActions {
+			target := strings.TrimSpace(action.TargetPath)
+			if target == "" {
+				target = "no target path"
+			}
+			fmt.Fprintf(&b, "  action %s %s: %s\n", action.Kind, target, strings.TrimSpace(action.Description))
+		}
+		for _, incident := range task.Handoff.Incidents {
+			paths := strings.Join(incident.Paths, ", ")
+			if paths == "" {
+				paths = "no paths"
+			}
+			fmt.Fprintf(&b, "  incident %s %s: %s\n", incident.Kind, paths, strings.TrimSpace(incident.Description))
+			if incident.Kind == AgentIncidentAccidentalWrite {
+				b.WriteString("  Inspect git_diff/git_status and relevant file contents before any restore. If the diff may include user work, ask one concise question before changing it.\n")
+			}
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func postDelegationNeedsSynthesisAgent(snap SessionSnapshot) bool {

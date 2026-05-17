@@ -865,13 +865,25 @@ func TestChatDebugRecorderLogsAgentLifecycleWithoutRawPayloads(t *testing.T) {
 func TestRedactAgentTaskStateForEventPayload(t *testing.T) {
 	secret := "TOKEN=" + strings.Repeat("x", 24)
 	state := reactruntime.AgentTaskState{
-		ID:           "agent-1",
-		Role:         "repo-auditor",
-		Description:  "audit " + secret,
-		Prompt:       "inspect repo with " + secret,
-		Status:       reactruntime.AgentStatusFailed,
-		Result:       "findings mention " + secret,
-		Error:        "failed with " + secret,
+		ID:          "agent-1",
+		Role:        "repo-auditor",
+		Description: "audit " + secret,
+		Prompt:      "inspect repo with " + secret,
+		Status:      reactruntime.AgentStatusFailed,
+		Result:      "findings mention " + secret,
+		Error:       "failed with " + secret,
+		Handoff: &reactruntime.AgentHandoff{RemainingActions: []reactruntime.AgentFollowupAction{{
+			Kind:             reactruntime.AgentActionRestoreFile,
+			TargetPath:       "README.md " + secret,
+			Description:      "restore " + secret,
+			SuggestedCommand: "git restore README.md # " + secret,
+			Blocking:         true,
+		}}, Incidents: []reactruntime.AgentWorkspaceIncident{{
+			Kind:        reactruntime.AgentIncidentAccidentalWrite,
+			Paths:       []string{"README.md " + secret},
+			Description: "incident " + secret,
+			Blocking:    true,
+		}}},
 		LastToolName: "run_command",
 		RecentActivity: []reactruntime.AgentTaskActivity{{
 			ToolName: "run_command",

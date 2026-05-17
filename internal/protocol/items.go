@@ -22,6 +22,7 @@ const (
 	ItemStats            ItemKind = "stats"
 	ItemCompaction       ItemKind = "compaction"
 	ItemCheckpoint       ItemKind = "checkpoint"
+	ItemAgentHandoff     ItemKind = "agent_handoff"
 	ItemTurnComplete     ItemKind = "turn_complete"
 )
 
@@ -52,6 +53,7 @@ type Item struct {
 	Stats        *StatsItem        `json:"stats,omitempty"`
 	Compaction   *CompactionItem   `json:"compaction,omitempty"`
 	Checkpoint   *CheckpointItem   `json:"checkpoint,omitempty"`
+	AgentHandoff *AgentHandoffItem `json:"agent_handoff,omitempty"`
 	TurnComplete *TurnCompleteItem `json:"turn_complete,omitempty"`
 }
 
@@ -113,6 +115,28 @@ type CheckpointItem struct {
 	Phase        string   `json:"phase"`
 	ChangedFiles []string `json:"changed_files,omitempty"`
 	Error        string   `json:"error,omitempty"`
+}
+
+type AgentFollowupActionItem struct {
+	Kind             string `json:"kind"`
+	TargetPath       string `json:"target_path,omitempty"`
+	Description      string `json:"description,omitempty"`
+	SuggestedCommand string `json:"suggested_command,omitempty"`
+	Blocking         bool   `json:"blocking,omitempty"`
+}
+
+type AgentWorkspaceIncidentItem struct {
+	Kind        string   `json:"kind"`
+	Paths       []string `json:"paths,omitempty"`
+	Description string   `json:"description,omitempty"`
+	Blocking    bool     `json:"blocking,omitempty"`
+}
+
+type AgentHandoffItem struct {
+	AgentID          string                       `json:"agent_id"`
+	RemainingActions []AgentFollowupActionItem    `json:"remaining_actions,omitempty"`
+	Incidents        []AgentWorkspaceIncidentItem `json:"incidents,omitempty"`
+	Blocking         bool                         `json:"blocking,omitempty"`
 }
 
 type TurnCompleteItem struct {

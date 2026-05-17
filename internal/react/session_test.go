@@ -1408,6 +1408,85 @@ func TestRestoreSessionFromItemsAllowsRecoverableFailureBeforeCompletion(t *test
 	}
 }
 
+func TestRestoreSessionFromItemsPreservesBlockingAgentHandoff(t *testing.T) {
+	items := []protocol.Item{
+		{Version: 1, ID: "item-1", ThreadID: "thread-1", Seq: 1, Kind: protocol.ItemAgentHandoff, AgentHandoff: &protocol.AgentHandoffItem{
+			AgentID:  "agent-1",
+			Blocking: true,
+			RemainingActions: []protocol.AgentFollowupActionItem{{
+				Kind:        string(AgentActionWriteFile),
+				TargetPath:  "docs/audit.md",
+				Description: "Save report",
+				Blocking:    true,
+			}},
+			Incidents: []protocol.AgentWorkspaceIncidentItem{{
+				Kind:        string(AgentIncidentAccidentalWrite),
+				Paths:       []string{"README.md"},
+				Description: "Child wrote report into README",
+				Blocking:    true,
+			}},
+		}},
+	}
+
+	s, err := RestoreSessionFromItems(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := s.Snapshot()
+	if len(snap.AgentTasks) != 1 {
+		t.Fatalf("agent tasks = %#v", snap.AgentTasks)
+	}
+	task := snap.AgentTasks[0]
+	if task.ID != "agent-1" || task.Status != AgentStatusCompleted || task.Handoff == nil || !task.Handoff.Blocking() {
+		t.Fatalf("restored task = %#v", task)
+	}
+	if task.Handoff.RemainingActions[0].TargetPath != "docs/audit.md" || task.Handoff.Incidents[0].Paths[0] != "README.md" {
+		t.Fatalf("restored handoff = %#v", task.Handoff)
+	}
+}
+
+func TestRestoreSessionFromItemsClearsResolvedAgentHandoff(t *testing.T) {
+	items := []protocol.Item{
+		{Version: 1, ID: "item-1", ThreadID: "thread-1", Seq: 1, Kind: protocol.ItemAgentHandoff, AgentHandoff: &protocol.AgentHandoffItem{
+			AgentID:  "agent-1",
+			Blocking: true,
+			Incidents: []protocol.AgentWorkspaceIncidentItem{{
+				Kind:        string(AgentIncidentAccidentalWrite),
+				Paths:       []string{"README.md"},
+				Description: "Child wrote report into README",
+				Blocking:    true,
+			}},
+		}},
+		{Version: 1, ID: "item-2", ThreadID: "thread-1", Seq: 2, Kind: protocol.ItemAgentHandoff, AgentHandoff: &protocol.AgentHandoffItem{AgentID: "agent-1", Blocking: false}},
+	}
+
+	s, err := RestoreSessionFromItems(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := s.Snapshot()
+	if len(snap.AgentTasks) != 1 || snap.AgentTasks[0].Handoff != nil {
+		t.Fatalf("agent tasks = %#v, want resolved handoff cleared", snap.AgentTasks)
+	}
+}
+
+func TestClearBlockingAgentHandoffsPersistsResolution(t *testing.T) {
+	sink := &fakeDurableSink{}
+	s := NewSession()
+	s.SetDurableSink(sink)
+	s.UpsertAgentTask(AgentTaskState{ID: "agent-1", Status: AgentStatusCompleted, Handoff: &AgentHandoff{Incidents: []AgentWorkspaceIncident{{Kind: AgentIncidentAccidentalWrite, Blocking: true}}}})
+	s.ClearBlockingAgentHandoffs()
+
+	items := sink.Items()
+	if len(items) != 2 {
+		t.Fatalf("durable items = %#v, want set and clear handoff items", items)
+	}
+	clear := items[1]
+	if clear.Kind != protocol.ItemAgentHandoff || clear.AgentHandoff == nil || clear.AgentHandoff.AgentID != "agent-1" || clear.AgentHandoff.Blocking {
+		t.Fatalf("clear handoff item = %#v", clear)
+	}
+}
+
 func TestSessionSetRuntimeNoteReplacesTypedNoteMetadata(t *testing.T) {
 	s := NewSession()
 	s.SetHookOutput(hooks.ExecutionOutput{

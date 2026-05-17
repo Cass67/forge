@@ -77,6 +77,19 @@ The fireproof-stability work adds a compact recovery kernel around the React loo
 
 Together these changes make interrupted or long-running sessions observable, cancellable, and recoverable without relying on transcript guessing.
 
+## 2026-05-17 Agent Handoff Safety
+
+Delegated child agents now return control to the parent/orchestrator with structured handoff data when follow-up work remains. A child can still return a normal report, but blocking actions and incidents are parsed into `agent_handoff` state instead of being treated as user instructions.
+
+- Child outputs may include a `forge_handoff` block with `remaining_actions` and `incidents`.
+- `wait_agent` returns the sanitized report plus parsed handoff data.
+- Blocking handoffs keep parent tools available and prevent final synthesis until the parent resolves or asks about the remaining action.
+- Read-only built-in roles are marked explicitly and mutation tools are stripped from their registries.
+- Accidental-write incidents require the parent to inspect diff/status and relevant file content before any restore. The child must not tell the user to run repair commands.
+- Durable protocol items include `agent_handoff` so restart/replay preserves unresolved delegation safety state.
+
+This extends the fireproof kernel from runtime recovery into delegation control flow: child completion is evidence, not workflow completion.
+
 ## Roadmap Status Legend
 
 - `[ ]` not started
