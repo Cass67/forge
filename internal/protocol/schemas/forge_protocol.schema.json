@@ -3,6 +3,66 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "agent_handoff": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_id": {
+          "type": "string"
+        },
+        "blocking": {
+          "type": "boolean"
+        },
+        "incidents": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "blocking": {
+                "type": "boolean"
+              },
+              "description": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "paths": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "remaining_actions": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "blocking": {
+                "type": "boolean"
+              },
+              "description": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "suggested_command": {
+                "type": "string"
+              },
+              "target_path": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
     "at": {
       "format": "date-time",
       "type": "string"
@@ -86,6 +146,7 @@
         "stats",
         "compaction",
         "checkpoint",
+        "agent_handoff",
         "turn_complete"
       ],
       "type": "string"

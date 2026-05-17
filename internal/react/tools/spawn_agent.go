@@ -19,7 +19,7 @@ func NewSpawnAgent(pool *react.AgentPool) agenttools.Tool {
 			desc += " Available agents: " + strings.Join(names, ", ")
 		}
 	}
-	desc += " Read-only agents such as repo-auditor, code-reviewer, explorer, oracle, and synthesizer must only inspect/analyze and return content; the parent agent must create files, edit files, or run commands."
+	desc += " Read-only agents such as repo-auditor, code-reviewer, explorer, oracle, and synthesizer must only inspect/analyze and return content; the parent agent must create files, edit files, or run commands. If follow-up work remains, the child must return a forge_handoff block; the parent/orchestrator owns writes, repairs, verification, commits, and user questions."
 	return agenttools.Tool{
 		Name:        "spawn_agent",
 		Description: desc,
@@ -115,7 +115,13 @@ func expandHomePath(path string) string {
 }
 
 func readOnlyAgentShouldSanitizeTask(agentDef *react.AgentDefinition, task string) bool {
-	if agentDef == nil || len(agentDef.Tools) == 0 {
+	if agentDef == nil {
+		return false
+	}
+	if agentDef.ReadOnly {
+		return taskRequestsMutation(task)
+	}
+	if len(agentDef.Tools) == 0 {
 		return false
 	}
 	if agentHasMutationTools(agentDef.Tools) {
@@ -129,6 +135,7 @@ func sanitizeReadOnlyAgentTask(task string) string {
 	return strings.Join([]string{
 		"Inspect/analyze only. Do not create files, edit files, run shell commands, or commit changes.",
 		"If the request asks for a report or file, return the complete report content and the intended path so the parent agent can save it.",
+		react.AgentHandoffInstructions(),
 		"Original delegated context:",
 		task,
 	}, "\n")

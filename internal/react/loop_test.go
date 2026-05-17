@@ -5335,6 +5335,135 @@ func TestRunnerExposesSynthesisDelegationToolsForMultiAgentReportWrite(t *testin
 	}
 }
 
+func TestRunnerKeepsParentToolsForBlockingAgentHandoffWrite(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"spawn_agent", "wait_agent", "write_file", "edit_file", "apply_patch", "git_status", "git_diff", "read_file", "tool_help"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{
+		LastInput: "continue",
+		History: []llm.Message{
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "wait-1", Content: `{"id":"agent-1","status":"completed","result":"audit report"}`},
+		},
+		AgentTasks: []AgentTaskState{{
+			ID:     "agent-1",
+			Role:   "repo-auditor",
+			Status: AgentStatusCompleted,
+			Result: "audit report",
+			Handoff: &AgentHandoff{RemainingActions: []AgentFollowupAction{{
+				Kind:        AgentActionWriteFile,
+				TargetPath:  "docs/audit.md",
+				Description: "Save audit report",
+				Blocking:    true,
+			}}},
+		}},
+	}
+
+	names := toolDefNames(r.selectToolDefs(snap))
+	for _, want := range []string{"write_file", "read_file", "git_status", "tool_help"} {
+		if !containsString(names, want) {
+			t.Fatalf("handoff tools = %#v, want %s", names, want)
+		}
+	}
+	for _, blocked := range []string{"spawn_agent", "wait_agent"} {
+		if containsString(names, blocked) {
+			t.Fatalf("handoff tools = %#v, should not expose %s", names, blocked)
+		}
+	}
+	got := hookOverlayContent(promptHookOutputForSnapshot(t, snap), "agent_handoff")
+	for _, want := range []string{"Resolve child-agent handoff before final response", "docs/audit.md", "Save audit report"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("agent_handoff overlay = %q, want %q", got, want)
+		}
+	}
+}
+
+func TestRunnerKeepsRepairToolsForBlockingAccidentalWriteHandoff(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"spawn_agent", "wait_agent", "write_file", "edit_file", "apply_patch", "git_status", "git_diff", "read_file", "tool_help"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{
+		LastInput: "continue",
+		History: []llm.Message{
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "wait-1", Content: `{"id":"agent-1","status":"completed","result":"audit report"}`},
+		},
+		AgentTasks: []AgentTaskState{{
+			ID:     "agent-1",
+			Role:   "repo-auditor",
+			Status: AgentStatusCompleted,
+			Result: "audit report",
+			Handoff: &AgentHandoff{Incidents: []AgentWorkspaceIncident{{
+				Kind:        AgentIncidentAccidentalWrite,
+				Paths:       []string{"README.md"},
+				Description: "Child wrote report into README",
+				Blocking:    true,
+			}}},
+		}},
+	}
+
+	names := toolDefNames(r.selectToolDefs(snap))
+	for _, want := range []string{"read_file", "git_status", "git_diff", "tool_help"} {
+		if !containsString(names, want) {
+			t.Fatalf("handoff repair tools = %#v, want %s", names, want)
+		}
+	}
+	got := hookOverlayContent(promptHookOutputForSnapshot(t, snap), "agent_handoff")
+	for _, want := range []string{"README.md", "Inspect git_diff/git_status", "Do not ask the user to run repair commands"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("agent_handoff overlay = %q, want %q", got, want)
+		}
+	}
+}
+
+func TestRunnerClearsBlockingHandoffAfterParentWrite(t *testing.T) {
+	session := NewSession()
+	session.UpsertAgentTask(AgentTaskState{
+		ID:     "agent-1",
+		Role:   "repo-auditor",
+		Status: AgentStatusCompleted,
+		Result: "audit report",
+		Handoff: &AgentHandoff{RemainingActions: []AgentFollowupAction{{
+			Kind:        AgentActionWriteFile,
+			TargetPath:  "docs/audit.md",
+			Description: "Save audit report",
+			Blocking:    true,
+		}}},
+	})
+	r := NewRunner(Config{Session: session})
+
+	r.updatePostDelegationWorkflow("write_file", "wrote docs/audit.md", false)
+
+	tasks := session.Snapshot().AgentTasks
+	if len(tasks) != 1 || tasks[0].Handoff != nil {
+		t.Fatalf("agent tasks after parent write = %#v, want handoff cleared", tasks)
+	}
+}
+
+func TestRunnerRequiresToolCallForBlockingAgentHandoff(t *testing.T) {
+	snap := SessionSnapshot{
+		LastInput: "continue",
+		AgentTasks: []AgentTaskState{{
+			ID:     "agent-1",
+			Role:   "repo-auditor",
+			Status: AgentStatusCompleted,
+			Handoff: &AgentHandoff{Incidents: []AgentWorkspaceIncident{{
+				Kind:        AgentIncidentAccidentalWrite,
+				Paths:       []string{"README.md"},
+				Description: "Child wrote report into README",
+				Blocking:    true,
+			}}},
+		}},
+	}
+	if !shouldRequireToolCallForSnapshot(snap) {
+		t.Fatal("blocking agent handoff should require parent tool call")
+	}
+}
+
 func TestRunnerRecordsPendingDelegationWriteActionAfterWait(t *testing.T) {
 	session := NewSession()
 	session.RecordInput("use repo-auditor then write the report to docs/reports/audit.md")

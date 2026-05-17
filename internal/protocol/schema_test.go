@@ -35,11 +35,16 @@ func TestGeneratedSchemaIncludesDurableRuntimeItems(t *testing.T) {
 	schema := GenerateProtocolSchema()
 	props := schema["properties"].(JSONSchema)
 	kind := props["kind"].(JSONSchema)
-	if !containsString(kind["enum"].([]string), string(ItemCheckpoint)) {
-		t.Fatalf("kind enum missing %q: %#v", ItemCheckpoint, kind["enum"])
+	for _, want := range []ItemKind{ItemCheckpoint, ItemAgentHandoff} {
+		if !containsString(kind["enum"].([]string), string(want)) {
+			t.Fatalf("kind enum missing %q: %#v", want, kind["enum"])
+		}
 	}
 	if _, ok := props["checkpoint"]; !ok {
 		t.Fatalf("schema properties missing checkpoint: %#v", props)
+	}
+	if _, ok := props["agent_handoff"]; !ok {
+		t.Fatalf("schema properties missing agent_handoff: %#v", props)
 	}
 	toolResult := props["tool_result"].(JSONSchema)
 	toolResultProps := toolResult["properties"].(map[string]any)

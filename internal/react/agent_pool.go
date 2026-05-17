@@ -55,6 +55,7 @@ type AgentResult struct {
 	Status          AgentStatus         `json:"status"`
 	Result          string              `json:"result,omitempty"`
 	Error           string              `json:"error,omitempty"`
+	Handoff         *AgentHandoff       `json:"handoff,omitempty"`
 	ResumeSupported bool                `json:"resume_supported"`
 	ResumeHint      string              `json:"resume_hint,omitempty"`
 	LastToolName    string              `json:"last_tool_name,omitempty"`
@@ -62,13 +63,14 @@ type AgentResult struct {
 }
 
 type agentJob struct {
-	id     string
-	role   string
-	status AgentStatus
-	result string
-	err    error
-	cancel context.CancelFunc
-	done   chan struct{}
+	id      string
+	role    string
+	status  AgentStatus
+	result  string
+	err     error
+	handoff *AgentHandoff
+	cancel  context.CancelFunc
+	done    chan struct{}
 
 	lastToolName   string
 	recentActivity []AgentTaskActivity
@@ -82,6 +84,7 @@ type AgentDefinition struct {
 	Fallbacks    []string
 	ModelFamily  string
 	Tools        []string
+	ReadOnly     bool
 }
 
 type AgentPool struct {
@@ -184,10 +187,24 @@ func (p *AgentPool) SetLifecycleObserver(observer func(AgentTaskState)) {
 func (p *AgentPool) runSpawn(runCtx context.Context, job *agentJob, role, task string) {
 	result, err := p.spawn(runCtx, role, task)
 	completedAt := time.Now()
+	var handoff *AgentHandoff
+	if err == nil {
+		report, parsed, parseErr := ParseAgentHandoff(result)
+		if parseErr != nil {
+			err = parseErr
+		} else {
+			result = report
+			if !parsed.Empty() {
+				result = sanitizeAgentReportForHandoff(report, parsed)
+				handoff = &parsed
+			}
+		}
+	}
 
 	p.mu.Lock()
 	job.result = strings.TrimSpace(result)
 	job.err = err
+	job.handoff = cloneAgentHandoff(handoff)
 	if job.status == AgentStatusKilled {
 		job.result = ""
 	} else if err != nil {
@@ -202,6 +219,7 @@ func (p *AgentPool) runSpawn(runCtx context.Context, job *agentJob, role, task s
 		CompletedAt:    completedAt,
 		LastActivityAt: completedAt,
 		Result:         job.result,
+		Handoff:        cloneAgentHandoff(job.handoff),
 	}
 	if job.err != nil {
 		state.Error = job.err.Error()
@@ -402,6 +420,7 @@ func (p *AgentPool) snapshotLocked(job *agentJob) AgentResult {
 		Role:           job.role,
 		Status:         job.status,
 		Result:         job.result,
+		Handoff:        cloneAgentHandoff(job.handoff),
 		LastToolName:   job.lastToolName,
 		RecentActivity: cloneAgentTaskActivity(job.recentActivity),
 	}
@@ -475,6 +494,7 @@ func DefaultAgentDefinitions() []AgentDefinition {
 			Name:        "repo-auditor",
 			Description: "Audit repository architecture, workflows, UX, tests, and gaps against comparable tools.",
 			Tools:       readOnlyTools,
+			ReadOnly:    true,
 			SystemPrompt: strings.Join([]string{
 				"You are Forge's repo-auditor agent.",
 				"Inspect the repository for architecture, product, UX, testing, workflow, and maintainability evidence.",
@@ -487,6 +507,7 @@ func DefaultAgentDefinitions() []AgentDefinition {
 			Name:        "code-reviewer",
 			Description: "Review implementation quality, regressions, risks, and missing tests.",
 			Tools:       readOnlyTools,
+			ReadOnly:    true,
 			SystemPrompt: strings.Join([]string{
 				"You are Forge's code-reviewer agent.",
 				"Prioritize bugs, behavioral regressions, missing tests, and concrete risks.",
@@ -498,6 +519,7 @@ func DefaultAgentDefinitions() []AgentDefinition {
 			Name:        "explorer",
 			Description: "Gather codebase evidence quickly across files, symbols, and conventions.",
 			Tools:       readOnlyTools,
+			ReadOnly:    true,
 			SystemPrompt: strings.Join([]string{
 				"You are Forge's explorer agent.",
 				"Find relevant files, patterns, dependencies, and conventions with minimal speculation.",
@@ -509,6 +531,7 @@ func DefaultAgentDefinitions() []AgentDefinition {
 			Name:        "oracle",
 			Description: "Analyze hard architecture, debugging, or design questions with extra rigor.",
 			Tools:       readOnlyTools,
+			ReadOnly:    true,
 			SystemPrompt: strings.Join([]string{
 				"You are Forge's oracle agent.",
 				"Use rigorous reasoning for hard architecture, debugging, or design questions.",
@@ -520,6 +543,7 @@ func DefaultAgentDefinitions() []AgentDefinition {
 			Name:        "synthesizer",
 			Description: "Combine multiple evidence streams into a clear final answer or plan.",
 			Tools:       []string{"think"},
+			ReadOnly:    true,
 			SystemPrompt: strings.Join([]string{
 				"You are Forge's synthesizer agent.",
 				"Combine evidence from multiple workstreams into a concise, structured result.",

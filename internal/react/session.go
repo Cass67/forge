@@ -69,6 +69,7 @@ type AgentTaskState struct {
 	LastActivityAt time.Time           `json:"last_activity_at,omitempty"`
 	Result         string              `json:"result,omitempty"`
 	Error          string              `json:"error,omitempty"`
+	Handoff        *AgentHandoff       `json:"handoff,omitempty"`
 	ParentTurn     int                 `json:"parent_turn,omitempty"`
 	LastToolName   string              `json:"last_tool_name,omitempty"`
 	RecentActivity []AgentTaskActivity `json:"recent_activity,omitempty"`
@@ -262,6 +263,12 @@ func NewSessionFromItems(items []protocol.Item) (*Session, error) {
 		if n > s.turn {
 			s.turn = n
 		}
+	}
+	for _, item := range sorted {
+		if item.Kind != protocol.ItemAgentHandoff || item.AgentHandoff == nil {
+			continue
+		}
+		s.restoreAgentHandoffLocked(*item.AgentHandoff)
 	}
 	if s.turn == 0 {
 		s.turn = len(s.turns)
@@ -1021,6 +1028,31 @@ func (s *Session) ClearPendingDelegationAction() {
 	s.pendingDelegationAction = nil
 }
 
+func (s *Session) ClearBlockingAgentHandoffs() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	var items []protocol.Item
+	for id, task := range s.agentTasks {
+		if task.Handoff == nil || !task.Handoff.Blocking() {
+			continue
+		}
+		task.Handoff = nil
+		s.agentTasks[id] = task
+		items = append(items, s.appendItemLocked(protocol.Item{
+			Kind: protocol.ItemAgentHandoff,
+			AgentHandoff: &protocol.AgentHandoffItem{
+				AgentID:  id,
+				Blocking: false,
+			},
+		}))
+	}
+	sink := s.durableSink
+	s.mu.Unlock()
+	_ = s.persistDurableItems(items, sink)
+}
+
 func normalizeDelegationActionKind(kind DelegationActionKind) DelegationActionKind {
 	switch kind {
 	case DelegationActionWriteDoc, DelegationActionRunVerification, DelegationActionCommit, DelegationActionAskUser:
@@ -1040,7 +1072,6 @@ func (s *Session) UpsertAgentTask(state AgentTaskState) {
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.agentTasks == nil {
 		s.agentTasks = make(map[string]AgentTaskState)
 	}
@@ -1051,6 +1082,19 @@ func (s *Session) UpsertAgentTask(state AgentTaskState) {
 	}
 	merged := mergeAgentTaskState(existing, state)
 	s.agentTasks[state.ID] = merged
+	var item protocol.Item
+	var sink DurableSink
+	if state.Handoff != nil {
+		item = s.appendItemLocked(protocol.Item{
+			Kind:         protocol.ItemAgentHandoff,
+			AgentHandoff: agentHandoffToProtocol(state.ID, *state.Handoff),
+		})
+		sink = s.durableSink
+	}
+	s.mu.Unlock()
+	if item.Kind != "" {
+		_ = s.persistDurableItem(item, sink)
+	}
 }
 
 func (s *Session) RecordAgentTaskProgress(id, toolName, summary string, at time.Time) {
@@ -1117,6 +1161,9 @@ func mergeAgentTaskState(existing, next AgentTaskState) AgentTaskState {
 	}
 	if errText := strings.TrimSpace(next.Error); errText != "" {
 		merged.Error = errText
+	}
+	if next.Handoff != nil {
+		merged.Handoff = cloneAgentHandoff(next.Handoff)
 	}
 	if next.ParentTurn != 0 {
 		merged.ParentTurn = next.ParentTurn
@@ -1341,6 +1388,7 @@ func cloneAgentTasksLocked(order []string, tasks map[string]AgentTaskState) []Ag
 			continue
 		}
 		task.RecentActivity = cloneAgentTaskActivity(task.RecentActivity)
+		task.Handoff = cloneAgentHandoff(task.Handoff)
 		out = append(out, task)
 	}
 	return out
@@ -1351,6 +1399,94 @@ func cloneAgentTaskActivity(in []AgentTaskActivity) []AgentTaskActivity {
 		return nil
 	}
 	return append([]AgentTaskActivity(nil), in...)
+}
+
+func cloneAgentHandoff(in *AgentHandoff) *AgentHandoff {
+	if in == nil {
+		return nil
+	}
+	out := &AgentHandoff{
+		RemainingActions: append([]AgentFollowupAction(nil), in.RemainingActions...),
+		Incidents:        make([]AgentWorkspaceIncident, 0, len(in.Incidents)),
+	}
+	for _, incident := range in.Incidents {
+		incident.Paths = append([]string(nil), incident.Paths...)
+		out.Incidents = append(out.Incidents, incident)
+	}
+	if len(out.Incidents) == 0 {
+		out.Incidents = nil
+	}
+	return out
+}
+
+func (s *Session) restoreAgentHandoffLocked(item protocol.AgentHandoffItem) {
+	agentID := strings.TrimSpace(item.AgentID)
+	if agentID == "" {
+		return
+	}
+	if s.agentTasks == nil {
+		s.agentTasks = make(map[string]AgentTaskState)
+	}
+	if _, ok := s.agentTasks[agentID]; !ok {
+		s.agentTaskOrder = append(s.agentTaskOrder, agentID)
+	}
+	task := s.agentTasks[agentID]
+	task.ID = agentID
+	if task.Status == "" {
+		task.Status = AgentStatusCompleted
+	}
+	task.Handoff = agentHandoffFromProtocol(item)
+	s.agentTasks[agentID] = task
+}
+
+func agentHandoffToProtocol(agentID string, handoff AgentHandoff) *protocol.AgentHandoffItem {
+	out := &protocol.AgentHandoffItem{
+		AgentID:  strings.TrimSpace(agentID),
+		Blocking: handoff.Blocking(),
+	}
+	for _, action := range handoff.RemainingActions {
+		out.RemainingActions = append(out.RemainingActions, protocol.AgentFollowupActionItem{
+			Kind:             string(action.Kind),
+			TargetPath:       strings.TrimSpace(action.TargetPath),
+			Description:      strings.TrimSpace(action.Description),
+			SuggestedCommand: strings.TrimSpace(action.SuggestedCommand),
+			Blocking:         action.Blocking,
+		})
+	}
+	for _, incident := range handoff.Incidents {
+		out.Incidents = append(out.Incidents, protocol.AgentWorkspaceIncidentItem{
+			Kind:        string(incident.Kind),
+			Paths:       append([]string(nil), incident.Paths...),
+			Description: strings.TrimSpace(incident.Description),
+			Blocking:    incident.Blocking,
+		})
+	}
+	return out
+}
+
+func agentHandoffFromProtocol(item protocol.AgentHandoffItem) *AgentHandoff {
+	out := &AgentHandoff{}
+	for _, action := range item.RemainingActions {
+		out.RemainingActions = append(out.RemainingActions, AgentFollowupAction{
+			Kind:             AgentActionKind(action.Kind),
+			TargetPath:       strings.TrimSpace(action.TargetPath),
+			Description:      strings.TrimSpace(action.Description),
+			SuggestedCommand: strings.TrimSpace(action.SuggestedCommand),
+			Blocking:         action.Blocking,
+		})
+	}
+	for _, incident := range item.Incidents {
+		out.Incidents = append(out.Incidents, AgentWorkspaceIncident{
+			Kind:        AgentIncidentKind(incident.Kind),
+			Paths:       append([]string(nil), incident.Paths...),
+			Description: strings.TrimSpace(incident.Description),
+			Blocking:    incident.Blocking,
+		})
+	}
+	if out.Empty() && !item.Blocking {
+		return nil
+	}
+	return out
 }
 
 func cloneDelegationActionState(state *DelegationActionState) *DelegationActionState {
