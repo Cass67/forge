@@ -36,6 +36,7 @@ func newAgentOutputTool(name, description string, pool *react.AgentPool) agentto
 			{Name: "timeout_seconds", Type: "int", Description: "How long to wait before returning current status (default 30)", Required: false},
 		},
 		AutoApprove: true,
+		Concurrency: agenttools.ToolConcurrencySerial,
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			if pool == nil {
 				return "", fmt.Errorf("agent pool unavailable")

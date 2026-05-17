@@ -432,6 +432,7 @@ func NewExecSessionWrite(manager *ExecSessionManager) Tool {
 			{Name: "chars", Type: "string", Description: "text to write to the session", Required: true},
 		},
 		AutoApprove: true,
+		Concurrency: ToolConcurrencySerial,
 		Execute: func(_ context.Context, args map[string]any) (string, error) {
 			id, _ := args["session_id"].(int)
 			if id == 0 {
@@ -458,6 +459,8 @@ func NewExecSessionStart(workDir string, manager *ExecSessionManager, approve Ap
 			{Name: "rows", Type: "int", Description: "terminal height in rows", Required: false},
 		},
 		AutoApprove: false,
+		Concurrency: ToolConcurrencySerial,
+		Detached:    true,
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			command, _ := args["command"].(string)
 			command = normalizePseudoToolCommands(command)
@@ -505,6 +508,7 @@ func NewExecSessionResize(manager *ExecSessionManager) Tool {
 			{Name: "rows", Type: "int", Description: "terminal height in rows", Required: true},
 		},
 		AutoApprove: true,
+		Concurrency: ToolConcurrencySerial,
 		Execute: func(_ context.Context, args map[string]any) (string, error) {
 			id := intArg(args["session_id"], 0)
 			return manager.Resize(id, intArg(args["cols"], 0), intArg(args["rows"], 0))
@@ -520,6 +524,7 @@ func NewExecSessionStop(manager *ExecSessionManager) Tool {
 			{Name: "session_id", Type: "int", Description: "exec session id", Required: true},
 		},
 		AutoApprove: true,
+		Concurrency: ToolConcurrencySerial,
 		Execute: func(_ context.Context, args map[string]any) (string, error) {
 			return manager.Stop(intArg(args["session_id"], 0))
 		},

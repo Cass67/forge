@@ -16,7 +16,9 @@ func DefaultPersistencePolicy() PersistencePolicy {
 
 func (p PersistencePolicy) Apply(item protocol.Item) protocol.Item {
 	if item.ToolResult != nil && p.MaxToolResultBytes > 0 && len(item.ToolResult.Text) > p.MaxToolResultBytes {
-		item.ToolResult.OriginalBytes = len(item.ToolResult.Text)
+		if item.ToolResult.OriginalBytes == 0 {
+			item.ToolResult.OriginalBytes = len(item.ToolResult.Text)
+		}
 		item.ToolResult.Text = item.ToolResult.Text[:p.MaxToolResultBytes]
 		item.ToolResult.Truncated = true
 	}

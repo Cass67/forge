@@ -6,7 +6,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"forge/internal/agent/tools"
 	"forge/internal/gitutil"
@@ -90,6 +92,142 @@ func TestApprovalGateRedactsSecretSummaryAndDetailBeforePromptAndUpdates(t *test
 			t.Fatalf("approval update leaked secret: %#v", update)
 		}
 	}
+}
+
+func TestApprovalGateDeniesPromptApprovalAfterContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy: ApprovalOnRequest,
+		SandboxPolicy: SandboxWorkspaceWrite,
+	}, func(action tools.Action) (bool, error) {
+		cancel()
+		return true, nil
+	}, nil)
+
+	approved, err := gate.Approve(tools.Action{
+		Context: ctx,
+		Tool:    "write_file",
+		Summary: "write internal/app.go",
+		Detail:  "diff",
+		Path:    "internal/app.go",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved {
+		t.Fatal("approval after context cancellation should be denied")
+	}
+}
+
+func TestApprovalGatePromptReturnsWhenContextCancelledWhilePromptBlocked(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	promptStarted := make(chan struct{})
+	releasePrompt := make(chan struct{})
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy: ApprovalOnRequest,
+		SandboxPolicy: SandboxWorkspaceWrite,
+	}, func(action tools.Action) (bool, error) {
+		close(promptStarted)
+		<-releasePrompt
+		return true, nil
+	}, nil)
+	defer close(releasePrompt)
+
+	result := make(chan struct {
+		approved bool
+		err      error
+	}, 1)
+	go func() {
+		approved, err := gate.Approve(tools.Action{
+			Context: ctx,
+			Tool:    "write_file",
+			Summary: "write internal/app.go",
+			Detail:  "diff",
+			Path:    "internal/app.go",
+		})
+		result <- struct {
+			approved bool
+			err      error
+		}{approved: approved, err: err}
+	}()
+	<-promptStarted
+	cancel()
+
+	select {
+	case got := <-result:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if got.approved {
+			t.Fatal("approval should be denied after context cancellation")
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("approval did not return promptly after context cancellation")
+	}
+}
+
+func TestApprovalGateDeniesSecondContextPromptWhenCancelledPromptStillOwnsPrompt(t *testing.T) {
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondEntered := make(chan struct{}, 1)
+	var mu sync.Mutex
+	promptCalls := 0
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy: ApprovalOnRequest,
+		SandboxPolicy: SandboxWorkspaceWrite,
+	}, func(action tools.Action) (bool, error) {
+		mu.Lock()
+		promptCalls++
+		call := promptCalls
+		mu.Unlock()
+		if call == 1 {
+			close(firstStarted)
+			<-releaseFirst
+			return false, nil
+		}
+		secondEntered <- struct{}{}
+		return true, nil
+	}, nil)
+
+	firstResult := make(chan bool, 1)
+	go func() {
+		approved, err := gate.Approve(tools.Action{Context: firstCtx, Tool: "write_file", Summary: "write a", Detail: "diff"})
+		if err != nil {
+			t.Errorf("first approve: %v", err)
+		}
+		firstResult <- approved
+	}()
+	<-firstStarted
+	cancelFirst()
+	select {
+	case approved := <-firstResult:
+		if approved {
+			t.Fatal("cancelled first approval should be denied")
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("first approval did not return promptly after cancellation")
+	}
+
+	secondResult := make(chan bool, 1)
+	go func() {
+		approved, err := gate.Approve(tools.Action{Context: context.Background(), Tool: "write_file", Summary: "write b", Detail: "diff"})
+		if err != nil {
+			t.Errorf("second approve: %v", err)
+		}
+		secondResult <- approved
+	}()
+	select {
+	case approved := <-secondResult:
+		if approved {
+			t.Fatal("second approval should be denied while first prompt still owns prompt")
+		}
+	case <-secondEntered:
+		t.Fatal("second prompt entered while first prompt still blocked")
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("second approval blocked behind abandoned prompt")
+	}
+	close(releaseFirst)
 }
 
 func TestApprovalGateUnlessTrustedSkipsPromptForKnownSafe(t *testing.T) {

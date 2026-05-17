@@ -3,16 +3,19 @@ package sessionstore
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"forge/internal/protocol"
 )
 
 type LiveSession struct {
-	threadID string
-	store    ThreadStore
-	policy   PersistencePolicy
-	nextSeq  int64
+	mu          sync.Mutex
+	threadID    string
+	store       ThreadStore
+	policy      PersistencePolicy
+	nextSeq     int64
+	initialized bool
 }
 
 func NewLiveSession(threadID string, store ThreadStore, policy PersistencePolicy) *LiveSession {
@@ -20,6 +23,12 @@ func NewLiveSession(threadID string, store ThreadStore, policy PersistencePolicy
 }
 
 func (l *LiveSession) Append(ctx context.Context, item protocol.Item) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if err := l.initNextSeqLocked(ctx); err != nil {
+		return err
+	}
+
 	if item.Version == 0 {
 		item.Version = protocol.CurrentItemVersion
 	}
@@ -30,6 +39,9 @@ func (l *LiveSession) Append(ctx context.Context, item protocol.Item) error {
 		item.Seq = l.nextSeq
 		l.nextSeq++
 	}
+	if item.Seq >= l.nextSeq {
+		l.nextSeq = item.Seq + 1
+	}
 	if item.ID == "" {
 		item.ID = fmt.Sprintf("%s-%06d", l.threadID, item.Seq)
 	}
@@ -39,4 +51,22 @@ func (l *LiveSession) Append(ctx context.Context, item protocol.Item) error {
 	item = l.policy.Apply(item)
 	_, err := l.store.AppendItems(ctx, l.threadID, []protocol.Item{item})
 	return err
+}
+
+func (l *LiveSession) initNextSeqLocked(ctx context.Context) error {
+	if l.initialized || l.store == nil {
+		l.initialized = true
+		return nil
+	}
+	items, err := l.store.ReadItems(ctx, l.threadID)
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		if item.Seq >= l.nextSeq {
+			l.nextSeq = item.Seq + 1
+		}
+	}
+	l.initialized = true
+	return nil
 }

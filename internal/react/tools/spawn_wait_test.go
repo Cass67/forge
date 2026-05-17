@@ -125,6 +125,77 @@ func TestSpawnAgentWorkDirPassesThroughContext(t *testing.T) {
 	}
 }
 
+func TestSpawnAgentDetachesChildFromParentToolCancellation(t *testing.T) {
+	parentCtx, cancelParent := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	childCanceled := make(chan struct{})
+	pool := react.NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+		close(started)
+		<-ctx.Done()
+		close(childCanceled)
+		return "", ctx.Err()
+	})
+	tool := NewSpawnAgent(pool)
+
+	raw, err := tool.Execute(parentCtx, map[string]any{
+		"task_description": "inspect repo",
+		"work_dir":         "/some/target/dir",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := payload["id"].(string)
+	if id == "" {
+		t.Fatal("spawn id missing")
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("spawn function never started")
+	}
+
+	cancelParent()
+	select {
+	case <-childCanceled:
+		t.Fatal("child agent was canceled by parent tool context cancellation")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if result, err := pool.Kill(context.Background(), id); err != nil {
+		t.Fatal(err)
+	} else if result.Status != react.AgentStatusKilled {
+		t.Fatalf("kill status = %q, want %q", result.Status, react.AgentStatusKilled)
+	}
+	select {
+	case <-childCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("kill_agent did not cancel child agent")
+	}
+}
+
+func TestSpawnAgentDoesNotStartChildWhenParentToolContextAlreadyCanceled(t *testing.T) {
+	parentCtx, cancelParent := context.WithCancel(context.Background())
+	cancelParent()
+	called := make(chan struct{})
+	pool := react.NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+		close(called)
+		return "unexpected", nil
+	})
+	tool := NewSpawnAgent(pool)
+
+	if _, err := tool.Execute(parentCtx, map[string]any{"task_description": "inspect repo"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Execute error = %v, want %v", err, context.Canceled)
+	}
+	select {
+	case <-called:
+		t.Fatal("spawn function was called for already-canceled parent context")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func TestSpawnAgentOmitsWorkDirWhenNotProvided(t *testing.T) {
 	var gotCtx context.Context
 	pool := react.NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
