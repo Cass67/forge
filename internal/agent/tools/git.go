@@ -94,14 +94,22 @@ func NewGitLog(workDir string) Tool {
 
 func NewGitCommit(workDir string, approve ApprovalFunc) Tool {
 	secretPolicy := DefaultSecretPolicy()
+	var lastDiff string
 	return Tool{
 		Name:        "git_commit",
 		Description: "Stage all changes and commit. Shows you what will be committed for approval.",
 		Parameters: []ParameterDef{
 			{Name: "message", Type: "string", Description: "commit message", Required: true},
 		},
-		AutoApprove: false,
+		AutoApprove:      false,
+		MutatesWorkspace: true,
+		LastDiff: func() string {
+			diff := lastDiff
+			lastDiff = ""
+			return diff
+		},
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			lastDiff = ""
 			message, _ := args["message"].(string)
 
 			statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
@@ -145,6 +153,7 @@ func NewGitCommit(workDir string, approve ApprovalFunc) Tool {
 				return result, nil
 			}
 			result, _ := secretPolicy.ApplyCommandOutput(string(out))
+			lastDiff = strings.TrimSpace(string(statusOut))
 			return result, nil
 		},
 	}

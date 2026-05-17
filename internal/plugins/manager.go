@@ -196,6 +196,7 @@ func (m *Manager) RegisterTools(reg *agenttools.Registry, approve agenttools.App
 						return "", fmt.Errorf("plugin tool %s requires approval", namespacedName)
 					}
 					approved, err := approve(agenttools.Action{
+						Context: ctx,
 						Tool:    namespacedName,
 						Summary: "Run plugin tool " + namespacedName,
 						Detail:  pluginToolApprovalDetail(args),

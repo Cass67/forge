@@ -2,7 +2,9 @@ package react
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +37,8 @@ const (
 	HookPriorityNormal HookPriority = hooks.PriorityNormal
 	HookPriorityHigh   HookPriority = hooks.PriorityHigh
 )
+
+var ErrStaleTurn = errors.New("stale turn")
 
 type TaskState struct {
 	Objective            string
@@ -127,6 +131,33 @@ type TurnRecord struct {
 	Error         string
 }
 
+type TurnPhase string
+
+const (
+	TurnPhaseCreated         TurnPhase = "created"
+	TurnPhaseRunningModel    TurnPhase = "running_model"
+	TurnPhaseRunningTools    TurnPhase = "running_tools"
+	TurnPhaseWaitingApproval TurnPhase = "waiting_approval"
+	TurnPhaseValidating      TurnPhase = "validating"
+)
+
+type TurnEndReason string
+
+const (
+	TurnEndReasonCompleted TurnEndReason = "completed"
+	TurnEndReasonCancelled TurnEndReason = "cancelled"
+	TurnEndReasonFailed    TurnEndReason = "failed"
+)
+
+type ActiveTurn struct {
+	ID           string
+	Number       int
+	Phase        TurnPhase
+	Context      context.Context
+	CancelReason string
+	cancel       context.CancelFunc
+}
+
 type SessionSnapshot struct {
 	Turn                    int
 	LastInput               string
@@ -149,6 +180,8 @@ type SessionSnapshot struct {
 	PendingDelegationAction *DelegationActionState
 	PendingInput            []string
 	Interrupted             bool
+	LastTurnEndReason       TurnEndReason
+	LastTurnCancelReason    string
 }
 
 type Session struct {
@@ -175,7 +208,10 @@ type Session struct {
 	pendingDelegationAction *DelegationActionState
 	pendingInput            []string
 	interrupted             bool
+	lastTurnEndReason       TurnEndReason
+	lastTurnCancelReason    string
 	durableSink             DurableSink
+	activeTurn              *ActiveTurn
 }
 
 type DurableSink interface {
@@ -184,6 +220,145 @@ type DurableSink interface {
 
 func NewSession() *Session {
 	return &Session{mode: ModeChat}
+}
+
+func RestoreSessionFromItems(items []protocol.Item) (*Session, error) {
+	s := NewSession()
+	sorted := append([]protocol.Item(nil), items...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
+	s.items = append([]protocol.Item(nil), sorted...)
+
+	turnIndex := map[string]int{}
+	terminal := map[string]protocol.TurnStatus{}
+	activity := map[string]bool{}
+	lastTurnID := ""
+	ensureTurn := func(turnID string) *TurnRecord {
+		if idx, ok := turnIndex[turnID]; ok {
+			return &s.turns[idx]
+		}
+		number := turnNumberFromID(turnID)
+		if number == 0 {
+			number = len(s.turns) + 1
+		}
+		turnIndex[turnID] = len(s.turns)
+		s.turns = append(s.turns, TurnRecord{Number: number})
+		if number > s.turn {
+			s.turn = number
+		}
+		return &s.turns[len(s.turns)-1]
+	}
+
+	for _, item := range sorted {
+		turnID := restoreTurnID(item.TurnID)
+		switch item.Kind {
+		case protocol.ItemUserMessage:
+			if item.Message == nil {
+				continue
+			}
+			turn := ensureTurn(turnID)
+			text := item.Message.Text
+			if strings.TrimSpace(turn.Input) == "" {
+				turn.Input = text
+				s.lastInput = text
+				if strings.TrimSpace(s.initialInput) == "" {
+					s.initialInput = strings.TrimSpace(text)
+				}
+				s.recentInputs = append(s.recentInputs, text)
+			}
+			s.history = append(s.history, llm.Message{Role: llm.RoleUser, Content: text})
+			activity[turnID] = true
+			lastTurnID = turnID
+		case protocol.ItemAssistantMessage:
+			if item.Message == nil {
+				continue
+			}
+			text := strings.TrimSpace(item.Message.Text)
+			if text == "" {
+				continue
+			}
+			turn := ensureTurn(turnID)
+			turn.FinalResponse = text
+			s.history = append(s.history, llm.Message{Role: llm.RoleAssistant, Content: text})
+			lastTurnID = turnID
+		case protocol.ItemToolCall:
+			if item.ToolCall == nil {
+				continue
+			}
+			turn := ensureTurn(turnID)
+			turn.ToolCalls = append(turn.ToolCalls, TurnToolCall{Name: strings.TrimSpace(item.ToolCall.ToolName)})
+			call := llm.NativeToolCall{ID: item.ToolCall.ToolCallID, Name: item.ToolCall.ToolName}
+			if len(s.history) > 0 && s.history[len(s.history)-1].Role == llm.RoleAssistant {
+				s.history[len(s.history)-1].ToolCalls = append(s.history[len(s.history)-1].ToolCalls, call)
+			} else {
+				s.history = append(s.history, llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{call}})
+			}
+			activity[turnID] = true
+			lastTurnID = turnID
+		case protocol.ItemToolResult:
+			if item.ToolResult == nil {
+				continue
+			}
+			ensureTurn(turnID)
+			s.history = append(s.history, llm.Message{Role: llm.RoleTool, ToolCallID: item.ToolResult.ToolCallID, Content: item.ToolResult.Text})
+			activity[turnID] = true
+			lastTurnID = turnID
+		case protocol.ItemTurnComplete:
+			turn := ensureTurn(turnID)
+			if _, ok := terminal[turnID]; ok {
+				return nil, fmt.Errorf("turn %s has multiple terminal items", turnID)
+			}
+			status := protocol.TurnStatusCompleted
+			if item.TurnComplete != nil {
+				status = item.TurnComplete.Status
+			}
+			terminal[turnID] = status
+			if status == protocol.TurnStatusFailed {
+				turn.Error = string(status)
+			}
+			lastTurnID = turnID
+		case protocol.ItemFailure:
+			turn := ensureTurn(turnID)
+			if !item.IsTerminal() {
+				activity[turnID] = true
+				lastTurnID = turnID
+				continue
+			}
+			if _, ok := terminal[turnID]; ok {
+				return nil, fmt.Errorf("turn %s has multiple terminal items", turnID)
+			}
+			terminal[turnID] = protocol.TurnStatusFailed
+			if item.Failure != nil {
+				turn.Error = strings.TrimSpace(item.Failure.Decision.Feedback)
+			}
+			if turn.Error == "" {
+				turn.Error = string(protocol.TurnStatusFailed)
+			}
+			lastTurnID = turnID
+		}
+	}
+
+	if lastTurnID != "" {
+		status, ended := terminal[lastTurnID]
+		switch {
+		case !ended && activity[lastTurnID]:
+			s.interrupted = true
+			s.lastTurnEndReason = TurnEndReasonCancelled
+			s.runtimeNote = "Last restored turn is resumable; no tools were restarted."
+		case status == protocol.TurnStatusFailed:
+			s.lastTurnEndReason = TurnEndReasonFailed
+		default:
+			s.lastTurnEndReason = TurnEndReasonCompleted
+		}
+	}
+	return s, nil
+}
+
+func restoreTurnID(turnID string) string {
+	turnID = strings.TrimSpace(turnID)
+	if turnID == "" {
+		return "session"
+	}
+	return turnID
 }
 
 func (s *Session) SetDurableSink(sink DurableSink) {
@@ -204,20 +379,262 @@ func (s *Session) DurableSink() DurableSink {
 	return s.durableSink
 }
 
-func (s *Session) AppendItem(item protocol.Item) {
+func (s *Session) BeginTurn(parent context.Context, turnID string) (ActiveTurn, context.CancelFunc, error) {
 	if s == nil {
-		return
+		return ActiveTurn{}, nil, fmt.Errorf("react session: session is nil")
+	}
+	turnID = strings.TrimSpace(turnID)
+	if turnID == "" {
+		return ActiveTurn{}, nil, fmt.Errorf("react session: turn ID is empty")
+	}
+	if parent == nil {
+		parent = context.Background()
 	}
 	s.mu.Lock()
-	s.appendItemLocked(item)
-	sink := s.durableSink
-	s.mu.Unlock()
-	if sink != nil {
-		_ = sink.Append(context.Background(), item)
+	defer s.mu.Unlock()
+	if s.activeTurn != nil {
+		return ActiveTurn{}, nil, fmt.Errorf("react session: active turn %q overlaps %q", s.activeTurn.ID, turnID)
 	}
+	ctx, cancel := context.WithCancel(parent)
+	active := ActiveTurn{
+		ID:      turnID,
+		Number:  turnNumberFromID(turnID),
+		Phase:   TurnPhaseCreated,
+		Context: ctx,
+		cancel:  cancel,
+	}
+	s.activeTurn = &active
+	return active, cancel, nil
 }
 
-func (s *Session) appendItemLocked(item protocol.Item) {
+func turnNumberFromID(turnID string) int {
+	numberText := strings.TrimPrefix(strings.TrimSpace(turnID), "turn-")
+	var number int
+	if _, err := fmt.Sscanf(numberText, "%d", &number); err != nil {
+		return 0
+	}
+	return number
+}
+
+func (s *Session) SetActiveTurnPhase(turnID string, phase TurnPhase) error {
+	if s == nil {
+		return fmt.Errorf("react session: session is nil")
+	}
+	turnID = strings.TrimSpace(turnID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.activeTurn == nil {
+		return fmt.Errorf("react session: no active turn")
+	}
+	if s.activeTurn.ID != turnID {
+		return fmt.Errorf("react session: active turn %q does not match %q", s.activeTurn.ID, turnID)
+	}
+	s.activeTurn.Phase = phase
+	return nil
+}
+
+func (s *Session) EndTurn(turnID string, reason TurnEndReason) error {
+	if s == nil {
+		return fmt.Errorf("react session: session is nil")
+	}
+	turnID = strings.TrimSpace(turnID)
+	s.mu.Lock()
+	if s.activeTurn == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("react session: no active turn")
+	}
+	if s.activeTurn.ID != turnID {
+		activeID := s.activeTurn.ID
+		s.mu.Unlock()
+		return fmt.Errorf("react session: active turn %q does not match %q", activeID, turnID)
+	}
+	cancel := s.activeTurn.cancel
+	s.lastTurnEndReason = reason
+	s.lastTurnCancelReason = s.activeTurn.CancelReason
+	s.activeTurn = nil
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return nil
+}
+
+func (s *Session) CancelActiveTurn(reason string) error {
+	if s == nil {
+		return fmt.Errorf("react session: session is nil")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.activeTurn == nil {
+		return fmt.Errorf("react session: no active turn")
+	}
+	if s.activeTurn.cancel != nil {
+		s.activeTurn.cancel()
+	}
+	if reason = strings.TrimSpace(reason); reason != "" {
+		s.activeTurn.CancelReason = reason
+		s.lastTurnCancelReason = reason
+		s.interrupted = true
+	}
+	return nil
+}
+
+func (s *Session) ActiveTurnSnapshot() (ActiveTurn, bool) {
+	if s == nil {
+		return ActiveTurn{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.activeTurn == nil {
+		return ActiveTurn{}, false
+	}
+	return *s.activeTurn, true
+}
+
+func (s *Session) IsActiveTurn(turnID string) bool {
+	if s == nil {
+		return false
+	}
+	turnID = strings.TrimSpace(turnID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.activeTurnMatchesLocked(turnID)
+}
+
+func (s *Session) activeTurnMatchesLocked(turnID string) bool {
+	if s.activeTurn == nil || s.activeTurn.ID != turnID {
+		return false
+	}
+	return s.activeTurn.Context == nil || s.activeTurn.Context.Err() == nil
+}
+
+func staleTurnError(turnID string) error {
+	turnID = strings.TrimSpace(turnID)
+	if turnID == "" {
+		return fmt.Errorf("%w: empty turn ID", ErrStaleTurn)
+	}
+	return fmt.Errorf("%w: %s", ErrStaleTurn, turnID)
+}
+
+func (s *Session) AppendToolResultForTurn(turnID string, result protocol.ToolResultItem) error {
+	if s == nil {
+		return fmt.Errorf("%w: session is nil", ErrStaleTurn)
+	}
+	turnID = strings.TrimSpace(turnID)
+	s.mu.Lock()
+	if !s.activeTurnMatchesLocked(turnID) {
+		s.mu.Unlock()
+		return staleTurnError(turnID)
+	}
+	if strings.TrimSpace(result.ToolCallID) == "" {
+		s.mu.Unlock()
+		return nil
+	}
+	s.history = append(s.history, llm.Message{
+		Role:       llm.RoleTool,
+		ToolCallID: result.ToolCallID,
+		Content:    result.Text,
+	})
+	item := s.appendItemLocked(protocol.Item{
+		Kind:       protocol.ItemToolResult,
+		TurnID:     turnID,
+		ToolResult: &result,
+	})
+	sink := s.durableSink
+	s.mu.Unlock()
+	return appendDurableItem(sink, item)
+}
+
+func (s *Session) AppendFailureForTurn(turnID string, failure protocol.FailureItem) error {
+	if s == nil {
+		return fmt.Errorf("%w: session is nil", ErrStaleTurn)
+	}
+	turnID = strings.TrimSpace(turnID)
+	s.mu.Lock()
+	if !s.activeTurnMatchesLocked(turnID) {
+		s.mu.Unlock()
+		return staleTurnError(turnID)
+	}
+	item := s.appendItemLocked(protocol.Item{
+		Kind:    protocol.ItemFailure,
+		TurnID:  turnID,
+		Failure: &failure,
+	})
+	sink := s.durableSink
+	s.mu.Unlock()
+	return appendDurableItem(sink, item)
+}
+
+func (s *Session) AppendToolCallForTurn(turnID string, toolCall protocol.ToolCallItem) error {
+	if s == nil {
+		return fmt.Errorf("%w: session is nil", ErrStaleTurn)
+	}
+	turnID = strings.TrimSpace(turnID)
+	s.mu.Lock()
+	if !s.activeTurnMatchesLocked(turnID) {
+		s.mu.Unlock()
+		return staleTurnError(turnID)
+	}
+	item := s.appendItemLocked(protocol.Item{
+		Kind:     protocol.ItemToolCall,
+		TurnID:   turnID,
+		ToolCall: &toolCall,
+	})
+	sink := s.durableSink
+	s.mu.Unlock()
+	return appendDurableItem(sink, item)
+}
+
+func (s *Session) AppendFailureAndToolResultForTurn(turnID string, failure protocol.FailureItem, toolCall protocol.ToolCallItem, result protocol.ToolResultItem) error {
+	if s == nil {
+		return fmt.Errorf("%w: session is nil", ErrStaleTurn)
+	}
+	turnID = strings.TrimSpace(turnID)
+	s.mu.Lock()
+	if !s.activeTurnMatchesLocked(turnID) {
+		s.mu.Unlock()
+		return staleTurnError(turnID)
+	}
+	if strings.TrimSpace(result.ToolCallID) == "" {
+		s.mu.Unlock()
+		return nil
+	}
+	failureItem := s.appendItemLocked(protocol.Item{
+		Kind:     protocol.ItemFailure,
+		TurnID:   turnID,
+		Failure:  &failure,
+		ToolCall: &toolCall,
+	})
+	s.history = append(s.history, llm.Message{
+		Role:       llm.RoleTool,
+		ToolCallID: result.ToolCallID,
+		Content:    result.Text,
+	})
+	resultItem := s.appendItemLocked(protocol.Item{
+		Kind:       protocol.ItemToolResult,
+		TurnID:     turnID,
+		ToolResult: &result,
+	})
+	sink := s.durableSink
+	s.mu.Unlock()
+	if err := appendDurableItem(sink, failureItem); err != nil {
+		return err
+	}
+	return appendDurableItem(sink, resultItem)
+}
+
+func (s *Session) AppendItem(item protocol.Item) error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	item = s.appendItemLocked(item)
+	sink := s.durableSink
+	s.mu.Unlock()
+	return appendDurableItem(sink, item)
+}
+
+func (s *Session) appendItemLocked(item protocol.Item) protocol.Item {
 	if item.Version == 0 {
 		item.Version = protocol.CurrentItemVersion
 	}
@@ -237,19 +654,28 @@ func (s *Session) appendItemLocked(item protocol.Item) {
 		item.At = time.Now().UTC()
 	}
 	s.items = append(s.items, item)
+	return item
 }
 
 func (s *Session) RecordInput(input string) int {
-	return s.RecordInputWithParts(input, nil)
+	turn, _ := s.RecordInputWithParts(input, nil)
+	return turn
 }
 
-func (s *Session) RecordInputWithParts(input string, parts []llm.MessageContentPart) int {
+func (s *Session) RecordInputWithParts(input string, parts []llm.MessageContentPart) (int, error) {
 	if s == nil {
-		return 0
+		return 0, nil
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	turn, item := s.recordInputWithPartsLocked(input, parts)
+	sink := s.durableSink
+	s.mu.Unlock()
+	return turn, appendDurableItem(sink, item)
+}
+
+func (s *Session) recordInputWithPartsLocked(input string, parts []llm.MessageContentPart) (int, protocol.Item) {
 	s.turn++
+	turn := s.turn
 	s.lastInput = input
 	if strings.TrimSpace(s.initialInput) == "" {
 		s.initialInput = strings.TrimSpace(input)
@@ -261,23 +687,22 @@ func (s *Session) RecordInputWithParts(input string, parts []llm.MessageContentP
 	}
 	s.history = append(s.history, msg)
 	s.turns = append(s.turns, TurnRecord{
-		Number: s.turn,
+		Number: turn,
 		Input:  input,
 	})
-	s.appendItemLocked(protocol.Item{
+	item := s.appendItemLocked(protocol.Item{
 		Kind:    protocol.ItemUserMessage,
-		TurnID:  fmt.Sprintf("turn-%d", s.turn),
+		TurnID:  fmt.Sprintf("turn-%d", turn),
 		Message: &protocol.MessageItem{Role: string(llm.RoleUser), Text: input},
 	})
-	return s.turn
+	return turn, item
 }
 
-func (s *Session) CompleteTurn(turn int, response string, toolCalls []TurnToolCall, err error) {
+func (s *Session) CompleteTurn(turn int, response string, toolCalls []TurnToolCall, err error) error {
 	if s == nil {
-		return
+		return nil
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for i := range s.turns {
 		if s.turns[i].Number != turn {
 			continue
@@ -291,45 +716,59 @@ func (s *Session) CompleteTurn(turn int, response string, toolCalls []TurnToolCa
 		if err != nil {
 			s.turns[i].Error = strings.TrimSpace(err.Error())
 		}
+		var item protocol.Item
 		if err != nil {
-			s.appendItemLocked(protocol.Item{
+			item = s.appendItemLocked(protocol.Item{
 				Kind:    protocol.ItemFailure,
 				TurnID:  fmt.Sprintf("turn-%d", turn),
 				Failure: &protocol.FailureItem{Decision: protocol.ClassifyToolExecutionFailure("runtime", err)},
 			})
 		} else {
-			s.appendItemLocked(protocol.Item{
+			item = s.appendItemLocked(protocol.Item{
 				Kind:         protocol.ItemTurnComplete,
 				TurnID:       fmt.Sprintf("turn-%d", turn),
 				TurnComplete: &protocol.TurnCompleteItem{Status: protocol.TurnStatusCompleted},
 			})
 		}
+		sink := s.durableSink
 		s.interrupted = false
-		return
+		s.mu.Unlock()
+		return appendDurableItem(sink, item)
 	}
+	s.mu.Unlock()
+	return nil
 }
 
-func (s *Session) AppendAssistantMessage(text string) {
+func (s *Session) AppendAssistantMessage(text string) error {
 	if s == nil || strings.TrimSpace(text) == "" {
-		return
+		return nil
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	trimmed := strings.TrimSpace(text)
 	s.history = append(s.history, llm.Message{Role: llm.RoleAssistant, Content: trimmed})
-	s.appendItemLocked(protocol.Item{
+	item := s.appendItemLocked(protocol.Item{
 		Kind:    protocol.ItemAssistantMessage,
 		Message: &protocol.MessageItem{Role: string(llm.RoleAssistant), Text: trimmed},
 	})
+	sink := s.durableSink
+	s.mu.Unlock()
+	return appendDurableItem(sink, item)
 }
 
-func (s *Session) AppendUserMessage(text string) {
+func (s *Session) AppendUserMessage(text string) error {
 	if s == nil || strings.TrimSpace(text) == "" {
-		return
+		return nil
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.history = append(s.history, llm.Message{Role: llm.RoleUser, Content: strings.TrimSpace(text)})
+	trimmed := strings.TrimSpace(text)
+	s.history = append(s.history, llm.Message{Role: llm.RoleUser, Content: trimmed})
+	item := s.appendItemLocked(protocol.Item{
+		Kind:    protocol.ItemUserMessage,
+		Message: &protocol.MessageItem{Role: string(llm.RoleUser), Text: trimmed},
+	})
+	sink := s.durableSink
+	s.mu.Unlock()
+	return appendDurableItem(sink, item)
 }
 
 func (s *Session) appendQueuedUserInput(text string) {
@@ -402,21 +841,33 @@ func (s *Session) SetLastAssistantReasoning(reasoning string) {
 
 // AppendNativeToolResult records a tool execution result matched to a specific
 // tool call ID. Used by the native tool calling path.
-func (s *Session) AppendNativeToolResult(toolCallID, result string) {
+func (s *Session) AppendNativeToolResult(toolCallID, result string) error {
 	if s == nil || strings.TrimSpace(toolCallID) == "" {
-		return
+		return nil
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.history = append(s.history, llm.Message{
 		Role:       llm.RoleTool,
 		ToolCallID: toolCallID,
 		Content:    result,
 	})
-	s.appendItemLocked(protocol.Item{
+	item := s.appendItemLocked(protocol.Item{
 		Kind:       protocol.ItemToolResult,
 		ToolResult: &protocol.ToolResultItem{ToolCallID: toolCallID, Text: result},
 	})
+	sink := s.durableSink
+	s.mu.Unlock()
+	return appendDurableItem(sink, item)
+}
+
+func appendDurableItem(sink DurableSink, item protocol.Item) error {
+	if sink == nil {
+		return nil
+	}
+	item.ThreadID = ""
+	item.Seq = 0
+	item.ID = ""
+	return sink.Append(context.Background(), item)
 }
 
 func (s *Session) Messages(systemPrompt string) []llm.Message {
@@ -451,6 +902,8 @@ func (s *Session) Snapshot() SessionSnapshot {
 		PendingDelegationAction: cloneDelegationActionState(s.pendingDelegationAction),
 		PendingInput:            append([]string(nil), s.pendingInput...),
 		Interrupted:             s.interrupted,
+		LastTurnEndReason:       s.lastTurnEndReason,
+		LastTurnCancelReason:    s.lastTurnCancelReason,
 	}
 }
 
@@ -481,6 +934,9 @@ func (s *Session) Clear() {
 	s.pendingDelegationAction = nil
 	s.pendingInput = nil
 	s.interrupted = false
+	s.lastTurnEndReason = ""
+	s.lastTurnCancelReason = ""
+	s.activeTurn = nil
 }
 
 func (s *Session) SetPendingDelegationAction(state DelegationActionState) {

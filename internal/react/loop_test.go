@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,6 +18,7 @@ import (
 	"forge/internal/hooks"
 	"forge/internal/llm"
 	"forge/internal/protocol"
+	"forge/internal/sessionstore"
 )
 
 // nativeScriptedDriver is a minimal NativeToolCaller driver for tests.
@@ -186,6 +191,18 @@ func TestRunnerRunReturnsErrorWhenDriverMissing(t *testing.T) {
 	}
 }
 
+func TestRunnerRunReturnsDurableInputAppendError(t *testing.T) {
+	sinkErr := errors.New("durable append failed")
+	session := NewSession()
+	session.SetDurableSink(failingDurableSink{err: sinkErr})
+	r := NewRunner(Config{Session: session})
+
+	err := r.Run(context.Background(), "hello")
+	if !errors.Is(err, sinkErr) {
+		t.Fatalf("Run error = %v, want durable append error %v", err, sinkErr)
+	}
+}
+
 func TestRunnerRunSkipsEmptyInput(t *testing.T) {
 	driver := &nativeScriptedDriver{responses: []string{"ignored"}}
 	r := NewRunner(Config{Driver: driver})
@@ -218,6 +235,191 @@ func TestRunnerRunRecordsCompletedTurnDetails(t *testing.T) {
 	}
 	if len(snap.Turns[0].ToolCalls) != 0 {
 		t.Fatalf("tool calls = %d, want 0", len(snap.Turns[0].ToolCalls))
+	}
+}
+
+func TestRunnerRunUsesActiveTurnContextAndEndsTurn(t *testing.T) {
+	driver := &nativeToolCallDriver{}
+	session := NewSession()
+	toolCtx := make(chan context.Context, 1)
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "git_status",
+		Description: "git status",
+		AutoApprove: true,
+		Execute: func(ctx context.Context, _ map[string]any) (string, error) {
+			toolCtx <- ctx
+			return "nothing to commit", nil
+		},
+	})
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+	if err := r.Run(context.Background(), "check the repo"); err != nil {
+		t.Fatal(err)
+	}
+	if ctx := <-toolCtx; ctx == context.Background() {
+		t.Fatal("tool received original parent context, want active turn context")
+	}
+	if _, ok := session.ActiveTurnSnapshot(); ok {
+		t.Fatal("active turn still present after Run completed")
+	}
+}
+
+func TestRunnerRunRejectsOverlapWithoutRecordingSecondTurn(t *testing.T) {
+	driver := &nativeToolCallDriver{}
+	session := NewSession()
+	toolStarted := make(chan struct{})
+	releaseTool := make(chan struct{})
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "git_status",
+		Description: "git status",
+		AutoApprove: true,
+		Execute: func(ctx context.Context, _ map[string]any) (string, error) {
+			close(toolStarted)
+			select {
+			case <-releaseTool:
+				return "nothing to commit", nil
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		},
+	})
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+	firstErr := make(chan error, 1)
+	go func() {
+		firstErr <- r.Run(context.Background(), "check the repo")
+	}()
+	<-toolStarted
+
+	err := r.Run(context.Background(), "second run")
+	if err == nil || !strings.Contains(err.Error(), "active turn") {
+		t.Fatalf("Run error = %v, want active turn overlap error", err)
+	}
+	snap := session.Snapshot()
+	if snap.Turn != 1 {
+		t.Fatalf("turn = %d, want overlap rejection to leave turn at 1", snap.Turn)
+	}
+	var userMessages int
+	for _, msg := range snap.History {
+		if msg.Role == llm.RoleUser {
+			userMessages++
+		}
+	}
+	if userMessages != 1 {
+		t.Fatalf("user messages = %d, want only first run recorded", userMessages)
+	}
+
+	close(releaseTool)
+	if err := <-firstErr; err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range session.Snapshot().Items {
+		if item.TurnID != "turn-1" {
+			t.Fatalf("item %s has TurnID %q, want turn-1; item=%#v", item.Kind, item.TurnID, item)
+		}
+	}
+}
+
+func TestRunnerRunRejectsOverlapBeforeRuntimeNoteMutation(t *testing.T) {
+	session := NewSession()
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-existing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	r := NewRunner(Config{
+		Driver:  &nativeScriptedDriver{responses: []string{"unused"}},
+		Session: session,
+		ConfigureHooks: func(registry *hooks.Registry) {
+			registry.Register(hooks.PointPromptContext, "test:prompt", func(context.Context, hooks.Event) []hooks.Result {
+				return []hooks.Result{hooks.OverlayResult{
+					Key:        "test_overlap_overlay",
+					Content:    "must not be applied before overlap rejection",
+					Priority:   hooks.PriorityHigh,
+					Provenance: "test",
+				}}
+			})
+		},
+	})
+	before := session.Snapshot()
+
+	err = r.Run(context.Background(), "inspect repo")
+	if err == nil || !strings.Contains(err.Error(), "active turn") {
+		t.Fatalf("Run error = %v, want active turn overlap error", err)
+	}
+	after := session.Snapshot()
+	if after.RuntimeNote != before.RuntimeNote {
+		t.Fatalf("runtime note changed from %q to %q", before.RuntimeNote, after.RuntimeNote)
+	}
+	if after.HookOutputSet != before.HookOutputSet || len(after.HookOutput.Overlays) != len(before.HookOutput.Overlays) {
+		t.Fatalf("hook output changed from %#v to %#v", before.HookOutput, after.HookOutput)
+	}
+	if after.CompactedTurns != before.CompactedTurns || after.CompactionSummary != before.CompactionSummary {
+		t.Fatalf("compaction state changed from (%d, %q) to (%d, %q)", before.CompactedTurns, before.CompactionSummary, after.CompactedTurns, after.CompactionSummary)
+	}
+	if len(after.History) != len(before.History) || len(after.Turns) != len(before.Turns) || len(after.Items) != len(before.Items) {
+		t.Fatalf("session transcript changed: history %d->%d turns %d->%d items %d->%d", len(before.History), len(after.History), len(before.Turns), len(after.Turns), len(before.Items), len(after.Items))
+	}
+}
+
+func TestRunnerRunActiveTurnCancellationCancelsBlockedToolContext(t *testing.T) {
+	driver := &nativeToolCallDriver{}
+	session := NewSession()
+	toolStarted := make(chan struct{})
+	toolCancelled := make(chan struct{})
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "git_status",
+		Description: "git status",
+		AutoApprove: true,
+		Execute: func(ctx context.Context, _ map[string]any) (string, error) {
+			close(toolStarted)
+			<-ctx.Done()
+			close(toolCancelled)
+			return "", ctx.Err()
+		},
+	})
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- r.Run(context.Background(), "check the repo")
+	}()
+	<-toolStarted
+
+	if err := session.CancelActiveTurn("user cancelled"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-toolCancelled:
+	case <-time.After(time.Second):
+		t.Fatal("blocked tool context was not cancelled")
+	}
+	if err := <-runErr; err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want context canceled", err)
+	}
+	for _, item := range session.Snapshot().Items {
+		if item.Kind == protocol.ItemTurnComplete && item.TurnComplete != nil && item.TurnComplete.Status == protocol.TurnStatusCompleted {
+			t.Fatalf("cancelled turn recorded successful terminal item: %#v", item)
+		}
+	}
+}
+
+func TestRunnerRunReturnsOverlapErrorWhenTurnAlreadyActive(t *testing.T) {
+	session := NewSession()
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-existing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	r := NewRunner(Config{Driver: &nativeScriptedDriver{responses: []string{"unused"}}, Session: session})
+
+	err = r.Run(context.Background(), "inspect repo")
+	if err == nil || !strings.Contains(err.Error(), "active turn") {
+		t.Fatalf("Run error = %v, want active turn overlap error", err)
+	}
+	if session.Snapshot().Turn != 0 {
+		t.Fatalf("recorded turns = %d, want overlap rejection before recording input", session.Snapshot().Turn)
 	}
 }
 
@@ -314,8 +516,12 @@ func TestRunnerIncludesInterruptedGuidanceAfterExecSessionTurn(t *testing.T) {
 		Name:     "exec_session_start",
 		ArgsJSON: `{"command":"npm run dev","cols":120,"rows":40}`,
 	}})
-	session.AppendNativeToolResult("call-1", `{"status":"running","session_id":9,"command":"npm run dev","pty":true,"cols":120,"rows":40}`)
-	session.CompleteTurn(turn, "", []TurnToolCall{{Name: "exec_session_start"}}, nil)
+	if err := session.AppendNativeToolResult("call-1", `{"status":"running","session_id":9,"command":"npm run dev","pty":true,"cols":120,"rows":40}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.CompleteTurn(turn, "", []TurnToolCall{{Name: "exec_session_start"}}, nil); err != nil {
+		t.Fatal(err)
+	}
 	session.MarkInterrupted()
 
 	r := NewRunner(Config{
@@ -530,7 +736,9 @@ func TestRunnerPromptHookOutputIncludesRuntimeGuidance(t *testing.T) {
 		})
 		session.RecordInput("inspect the theme setup")
 		session.AppendAssistantWithToolCalls([]llm.NativeToolCall{{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"README.md"}`}})
-		session.AppendNativeToolResult("c1", "forge readme")
+		if err := session.AppendNativeToolResult("c1", "forge readme"); err != nil {
+			t.Fatal(err)
+		}
 		r := NewRunner(Config{Session: session})
 
 		output := r.promptHookOutput(context.Background())
@@ -549,7 +757,9 @@ func TestRunnerPromptHookOutputIncludesRuntimeGuidance(t *testing.T) {
 		})
 		session.RecordInput("whats this repo all about")
 		session.AppendAssistantWithToolCalls([]llm.NativeToolCall{{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"README.md"}`}})
-		session.AppendNativeToolResult("c1", "forge readme")
+		if err := session.AppendNativeToolResult("c1", "forge readme"); err != nil {
+			t.Fatal(err)
+		}
 		r := NewRunner(Config{Session: session})
 
 		output := r.promptHookOutput(context.Background())
@@ -584,7 +794,9 @@ func TestRunnerPromptHookOutputIncludesRuntimeGuidance(t *testing.T) {
 		})
 		session.RecordInput("show me 3 theme ideas and start a preview")
 		session.AppendAssistantWithToolCalls([]llm.NativeToolCall{{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"internal/tui/chattheme.go"}`}})
-		session.AppendNativeToolResult("c1", "theme source")
+		if err := session.AppendNativeToolResult("c1", "theme source"); err != nil {
+			t.Fatal(err)
+		}
 		r := NewRunner(Config{Session: session})
 		r.planWorkflow = planWorkflowState{
 			mode:              "preview",
@@ -813,8 +1025,8 @@ func TestRunnerAllowsPlainChatWithoutNativeToolCaller(t *testing.T) {
 func TestRunnerWritesPreviousResponseToMarkdownWithoutModelCall(t *testing.T) {
 	session := NewSession()
 	turn := session.RecordInput("compare forge with competitors")
-	session.AppendAssistantMessage("### Bottom Line\nForge needs CI.")
-	session.CompleteTurn(turn, "### Bottom Line\nForge needs CI.", nil, nil)
+	mustAppendAssistantMessage(t, session, "### Bottom Line\nForge needs CI.")
+	mustCompleteTurn(t, session, turn, "### Bottom Line\nForge needs CI.", nil, nil)
 	reg := agenttools.NewRegistry()
 	var gotPath, gotContent string
 	reg.Register(agenttools.Tool{
@@ -850,7 +1062,7 @@ func TestRunnerWritesPreviousResponseToMarkdownWithoutModelCall(t *testing.T) {
 func TestRunnerWritesPreviousResponseToExplicitMarkdownBasename(t *testing.T) {
 	session := NewSession()
 	turn := session.RecordInput("summarize this")
-	session.CompleteTurn(turn, "summary content", nil, nil)
+	mustCompleteTurn(t, session, turn, "summary content", nil, nil)
 	reg := agenttools.NewRegistry()
 	var gotPath string
 	reg.Register(agenttools.Tool{
@@ -879,7 +1091,7 @@ func TestRunnerWritesPreviousResponseToExplicitMarkdownBasename(t *testing.T) {
 func TestRunnerDoesNotBypassModelForAmbiguousReportCreation(t *testing.T) {
 	session := NewSession()
 	turn := session.RecordInput("what's broken?")
-	session.CompleteTurn(turn, "prior answer", nil, nil)
+	mustCompleteTurn(t, session, turn, "prior answer", nil, nil)
 	driver := &nativeScriptedDriver{responses: []string{"model handled it"}}
 	reg := agenttools.NewRegistry()
 	reg.Register(agenttools.Tool{
@@ -907,7 +1119,7 @@ func TestRunnerDoesNotBypassModelForAmbiguousReportCreation(t *testing.T) {
 func TestRunnerDoesNotBypassModelWhenPriorAnswerReferenceHasNoSaveTarget(t *testing.T) {
 	session := NewSession()
 	turn := session.RecordInput("summarize report risks")
-	session.CompleteTurn(turn, "prior answer", nil, nil)
+	mustCompleteTurn(t, session, turn, "prior answer", nil, nil)
 	driver := &nativeScriptedDriver{responses: []string{"model handled it"}}
 	reg := agenttools.NewRegistry()
 	reg.Register(agenttools.Tool{
@@ -937,7 +1149,7 @@ func TestRunnerDoesNotBypassModelWhenPriorAnswerReferenceIsNotWriteObject(t *tes
 		t.Run(input, func(t *testing.T) {
 			session := NewSession()
 			turn := session.RecordInput("summarize report risks")
-			session.CompleteTurn(turn, "prior answer", nil, nil)
+			mustCompleteTurn(t, session, turn, "prior answer", nil, nil)
 			driver := &nativeScriptedDriver{responses: []string{"model handled it"}}
 			reg := agenttools.NewRegistry()
 			reg.Register(agenttools.Tool{
@@ -970,7 +1182,7 @@ func TestRunnerDoesNotBypassModelForMarkdownContentRequests(t *testing.T) {
 		t.Run(input, func(t *testing.T) {
 			session := NewSession()
 			turn := session.RecordInput("summarize report risks")
-			session.CompleteTurn(turn, "prior answer", nil, nil)
+			mustCompleteTurn(t, session, turn, "prior answer", nil, nil)
 			driver := &nativeScriptedDriver{responses: []string{"model handled it"}}
 			reg := agenttools.NewRegistry()
 			reg.Register(agenttools.Tool{
@@ -1068,6 +1280,11 @@ func TestCompletedAgentResultMarkdownFallbackWritesSynthesizedReport(t *testing.
 		},
 	})
 	r := NewRunner(Config{Tools: reg, Session: session})
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
 
 	handled, err := r.tryCompletedAgentResultFallback(context.Background(), turn)
 	if err != nil {
@@ -1124,6 +1341,11 @@ func TestCompletedAgentResultMarkdownFallbackDoesNotWriteRawSourceAgentReport(t 
 		},
 	})
 	r := NewRunner(Config{Tools: reg, Session: session})
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
 
 	handled, err := r.tryCompletedAgentResultFallback(context.Background(), turn)
 	if err != nil {
@@ -1161,6 +1383,11 @@ func TestCompletedAgentResultMarkdownFallbackWritesConciseMultiAgentFindings(t *
 		},
 	})
 	r := NewRunner(Config{Tools: reg, Session: session})
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
 
 	handled, err := r.tryCompletedAgentResultFallback(context.Background(), turn)
 	if err != nil {
@@ -1187,7 +1414,7 @@ func TestCompletedAgentResultMarkdownFallbackWritesConciseMultiAgentFindings(t *
 func TestRunnerEmitsStatsForDirectMarkdownWrite(t *testing.T) {
 	session := NewSession()
 	turn := session.RecordInput("summarize this")
-	session.CompleteTurn(turn, "summary content", nil, nil)
+	mustCompleteTurn(t, session, turn, "summary content", nil, nil)
 	reg := agenttools.NewRegistry()
 	reg.Register(agenttools.Tool{
 		Name:        "write_file",
@@ -1381,6 +1608,471 @@ func TestRunnerNativeToolCallingPath(t *testing.T) {
 			t.Fatalf("history[%d] role = %q, want %q", i, roles[i], r)
 		}
 	}
+}
+
+func TestRunnerCreatesOneCheckpointBeforeMutatingTools(t *testing.T) {
+	root := initReactTestGitRepo(t)
+	t.Chdir(root)
+	writeReactTestFile(t, filepath.Join(root, "README.md"), "original\n")
+	runReactGit(t, root, "add", "README.md")
+	runReactGit(t, root, "commit", "-m", "initial")
+
+	reg := agenttools.NewRegistry()
+	var runCount atomic.Int32
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "write file",
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			runCount.Add(1)
+			return "ok", nil
+		},
+	})
+	session := NewSession()
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	r := NewRunner(Config{Tools: reg, Session: session})
+
+	err = r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{
+		{ID: "write-1", Name: "write_file", ArgsJSON: `{"path":"README.md","content":"one"}`},
+		{ID: "write-2", Name: "write_file", ArgsJSON: `{"path":"README.md","content":"two"}`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := runCount.Load(); got != 2 {
+		t.Fatalf("write_file executions = %d, want 2", got)
+	}
+
+	items := session.Snapshot().Items
+	checkpointCount := 0
+	firstToolCall := -1
+	firstCheckpoint := -1
+	for i, item := range items {
+		if item.Kind == protocol.ItemToolCall && firstToolCall < 0 {
+			firstToolCall = i
+		}
+		if item.Kind == protocol.ItemCheckpoint {
+			checkpointCount++
+			if firstCheckpoint < 0 {
+				firstCheckpoint = i
+			}
+			if item.Checkpoint == nil || item.Checkpoint.ID == "" || item.Checkpoint.Phase != "created" {
+				t.Fatalf("checkpoint item = %#v", item.Checkpoint)
+			}
+		}
+	}
+	if checkpointCount != 1 {
+		t.Fatalf("checkpoint items = %d, want 1; items=%#v", checkpointCount, items)
+	}
+	if firstCheckpoint < 0 || firstToolCall < 0 || firstCheckpoint > firstToolCall {
+		t.Fatalf("checkpoint index = %d, first tool call index = %d; want checkpoint before tool call", firstCheckpoint, firstToolCall)
+	}
+}
+
+func TestRunnerReportsCheckpointDurableAppendError(t *testing.T) {
+	root := initReactTestGitRepo(t)
+	t.Chdir(root)
+	writeReactTestFile(t, filepath.Join(root, "README.md"), "original\n")
+	runReactGit(t, root, "add", "README.md")
+	runReactGit(t, root, "commit", "-m", "initial")
+
+	session := NewSession()
+	session.SetDurableSink(failingDurableSink{err: errors.New("durable append failed")})
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	var progress []string
+	r := NewRunner(Config{
+		Session: session,
+		Progress: func(message string) {
+			progress = append(progress, message)
+		},
+	})
+
+	r.ensurePreMutationCheckpoint(context.Background(), active.Number)
+
+	if len(progress) != 1 || !strings.Contains(progress[0], "checkpoint item was not persisted") {
+		t.Fatalf("progress = %#v, want checkpoint persistence warning", progress)
+	}
+}
+
+func TestRunnerRecordsCheckpointScopeForWriteFile(t *testing.T) {
+	root := initReactTestGitRepo(t)
+	t.Chdir(root)
+	writeReactTestFile(t, filepath.Join(root, "a.txt"), "a original\n")
+	writeReactTestFile(t, filepath.Join(root, "b.txt"), "b original\n")
+	runReactGit(t, root, "add", "a.txt", "b.txt")
+	runReactGit(t, root, "commit", "-m", "initial")
+
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "write file",
+		AutoApprove: true,
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			path, _ := args["path"].(string)
+			content, _ := args["content"].(string)
+			writeReactTestFile(t, filepath.Join(root, path), content)
+			return "ok", nil
+		},
+	})
+	session := NewSession()
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	r := NewRunner(Config{Tools: reg, Session: session})
+
+	if err := r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{ID: "write-1", Name: "write_file", ArgsJSON: `{"path":"a.txt","content":"turn mutation\n"}`}}); err != nil {
+		t.Fatal(err)
+	}
+	writeReactTestFile(t, filepath.Join(root, "b.txt"), "unrelated user mutation\n")
+
+	var checkpointID string
+	for _, item := range session.Snapshot().Items {
+		if item.Checkpoint != nil {
+			checkpointID = item.Checkpoint.ID
+		}
+	}
+	if checkpointID == "" {
+		t.Fatal("missing checkpoint item")
+	}
+	if err := r.checkpointManager.Restore(context.Background(), checkpointID); err != nil {
+		t.Fatalf("Restore() error = %v", err)
+	}
+	if got := readReactTestFile(t, filepath.Join(root, "a.txt")); got != "a original\n" {
+		t.Fatalf("a.txt = %q, want checkpoint content", got)
+	}
+	if got := readReactTestFile(t, filepath.Join(root, "b.txt")); got != "unrelated user mutation\n" {
+		t.Fatalf("b.txt = %q, want unrelated post-checkpoint content", got)
+	}
+}
+
+func TestRunnerAppendsPostEditDiagnosticsAfterSuccessfulMutatingTool(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:             "write_file",
+		Description:      "write file",
+		AutoApprove:      true,
+		MutatesWorkspace: true,
+		LastDiff: func() string {
+			return "diff --git a/a.txt b/a.txt"
+		},
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return "ok", nil
+		},
+	})
+	session := NewSession()
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	r := NewRunner(Config{
+		Tools:   reg,
+		Session: session,
+		PostEditValidator: &PostEditValidator{
+			Command:        []string{"/bin/sh", "-c", "printf 'go test failed' >&2; exit 1"},
+			Timeout:        time.Second,
+			MaxOutputBytes: 1024,
+		},
+	})
+
+	if err := r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{ID: "write-1", Name: "write_file", ArgsJSON: `{"path":"a.txt","content":"x"}`}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var found bool
+	for _, msg := range session.Snapshot().History {
+		if msg.Role == llm.RoleUser && strings.Contains(msg.Content, "Runtime diagnostic feedback") && strings.Contains(msg.Content, "Post-edit validation failed") && strings.Contains(msg.Content, "go test failed") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("session history missing post-edit validation feedback: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerSkipsPostEditValidationWithoutMutationSignal(t *testing.T) {
+	root := t.TempDir()
+	marker := filepath.Join(root, "validator-ran")
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:             "edit_file",
+		Description:      "edit file",
+		AutoApprove:      true,
+		MutatesWorkspace: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return "edit_file failed: old_text not found in a.txt", nil
+		},
+	})
+	session := NewSession()
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	r := NewRunner(Config{
+		Tools:   reg,
+		Session: session,
+		PostEditValidator: &PostEditValidator{
+			Command:        []string{"/bin/sh", "-c", fmt.Sprintf("printf ran > %q; exit 1", marker)},
+			Timeout:        time.Second,
+			MaxOutputBytes: 1024,
+		},
+	})
+
+	if err := r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{ID: "edit-1", Name: "edit_file", ArgsJSON: `{"path":"a.txt","old_text":"old","new_text":"new"}`}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("validator marker stat error = %v, want not exist", err)
+	}
+}
+
+func TestRunnerRunsPostEditValidationWithMutationDiff(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:             "edit_file",
+		Description:      "edit file",
+		AutoApprove:      true,
+		MutatesWorkspace: true,
+		LastDiff: func() string {
+			return "diff --git a/a.txt b/a.txt"
+		},
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return "edited a.txt", nil
+		},
+	})
+	session := NewSession()
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	r := NewRunner(Config{
+		Tools:   reg,
+		Session: session,
+		PostEditValidator: &PostEditValidator{
+			Command:        []string{"/bin/sh", "-c", "printf validator-failed >&2; exit 1"},
+			Timeout:        time.Second,
+			MaxOutputBytes: 1024,
+		},
+	})
+
+	if err := r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{ID: "edit-1", Name: "edit_file", ArgsJSON: `{"path":"a.txt","old_text":"old","new_text":"new"}`}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var found bool
+	for _, msg := range session.Snapshot().History {
+		if msg.Role == llm.RoleUser && strings.Contains(msg.Content, "Runtime diagnostic feedback") && strings.Contains(msg.Content, "validator-failed") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("session history missing post-edit diagnostics: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerRunsPostEditValidationAfterScratchpadWriteSuccess(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.NewScratchpadWrite(t.TempDir()))
+	session := NewSession()
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	r := NewRunner(Config{
+		Tools:   reg,
+		Session: session,
+		PostEditValidator: &PostEditValidator{
+			Command:        []string{"/bin/sh", "-c", "printf scratchpad-validator >&2; exit 1"},
+			Timeout:        time.Second,
+			MaxOutputBytes: 1024,
+		},
+	})
+
+	if err := r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{ID: "scratch-1", Name: "scratchpad_write", ArgsJSON: `{"topic":"notes","content":"content"}`}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if !sessionHistoryContains(session, "Runtime diagnostic feedback", "scratchpad-validator") {
+		t.Fatalf("session history missing scratchpad validation diagnostics: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerSkipsPostEditValidationAfterScratchpadWriteArgError(t *testing.T) {
+	root := t.TempDir()
+	marker := filepath.Join(root, "validator-ran")
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.NewScratchpadWrite(root))
+	session := NewSession()
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	r := NewRunner(Config{
+		Tools:   reg,
+		Session: session,
+		PostEditValidator: &PostEditValidator{
+			Command:        []string{"/bin/sh", "-c", fmt.Sprintf("printf ran > %q; exit 1", marker)},
+			Timeout:        time.Second,
+			MaxOutputBytes: 1024,
+		},
+	})
+
+	if err := r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{ID: "scratch-1", Name: "scratchpad_write", ArgsJSON: `{"topic":"notes"}`}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("validator marker stat error = %v, want not exist", err)
+	}
+}
+
+func TestRunnerRunsPostEditValidationAfterGitCommitSuccess(t *testing.T) {
+	root := initReactTestGitRepo(t)
+	writeReactTestFile(t, filepath.Join(root, "a.txt"), "a\n")
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.NewGitCommit(root, func(agenttools.Action) (bool, error) { return true, nil }))
+	session := NewSession()
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	r := NewRunner(Config{
+		Tools:   reg,
+		Session: session,
+		PostEditValidator: &PostEditValidator{
+			Command:        []string{"/bin/sh", "-c", "printf git-validator >&2; exit 1"},
+			Timeout:        time.Second,
+			MaxOutputBytes: 1024,
+		},
+	})
+
+	if err := r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{ID: "commit-1", Name: "git_commit", ArgsJSON: `{"message":"initial"}`}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if !sessionHistoryContains(session, "Runtime diagnostic feedback", "git-validator") {
+		t.Fatalf("session history missing git commit validation diagnostics: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerSkipsPostEditValidationAfterGitCommitNoopAndDenied(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		prepare func(t *testing.T, root string)
+		approve bool
+	}{
+		{
+			name:    "nothing to commit",
+			prepare: func(t *testing.T, root string) {},
+			approve: true,
+		},
+		{
+			name: "denied",
+			prepare: func(t *testing.T, root string) {
+				writeReactTestFile(t, filepath.Join(root, "a.txt"), "a\n")
+			},
+			approve: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := initReactTestGitRepo(t)
+			marker := filepath.Join(root, "validator-ran")
+			tc.prepare(t, root)
+			reg := agenttools.NewRegistry()
+			reg.Register(agenttools.NewGitCommit(root, func(agenttools.Action) (bool, error) { return tc.approve, nil }))
+			session := NewSession()
+			active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cancel()
+			r := NewRunner(Config{
+				Tools:   reg,
+				Session: session,
+				PostEditValidator: &PostEditValidator{
+					Command:        []string{"/bin/sh", "-c", fmt.Sprintf("printf ran > %q; exit 1", marker)},
+					Timeout:        time.Second,
+					MaxOutputBytes: 1024,
+				},
+			})
+
+			if err := r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{ID: "commit-1", Name: "git_commit", ArgsJSON: `{"message":"initial"}`}}); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("validator marker stat error = %v, want not exist", err)
+			}
+		})
+	}
+}
+
+func initReactTestGitRepo(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	runReactGit(t, root, "init")
+	runReactGit(t, root, "config", "user.email", "test@example.com")
+	runReactGit(t, root, "config", "user.name", "Test User")
+	return root
+}
+
+func runReactGit(t *testing.T, root string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = root
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
+	}
+}
+
+func writeReactTestFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func readReactTestFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(b)
+}
+
+func sessionHistoryContains(session *Session, parts ...string) bool {
+	for _, msg := range session.Snapshot().History {
+		content := msg.Content
+		matched := true
+		for _, part := range parts {
+			if !strings.Contains(content, part) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRunnerDoesNotRetryAlreadyExhaustedStreamErrorAfterSuccessfulTool(t *testing.T) {
@@ -1920,23 +2612,6 @@ func TestRunnerSystemPromptIsPassedToDriver(t *testing.T) {
 	if !foundPrompt {
 		t.Fatalf("system prompt not found in messages: %#v", driver.lastMsgs)
 	}
-}
-
-// malformedArgsDriver returns a tool call with invalid JSON args on the first call.
-type malformedArgsDriver struct{ callCount int }
-
-func (d *malformedArgsDriver) Name() string { return "malformed-args-driver" }
-
-func (d *malformedArgsDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
-	close(out)
-	return errors.New("Stream should not be called on a NativeToolCaller driver")
-}
-
-func (d *malformedArgsDriver) StreamWithTools(_ context.Context, _ []llm.Message, _ []llm.ToolDef, out chan<- llm.Token) error {
-	defer close(out)
-	d.callCount++
-	out <- llm.Token{ToolCall: &llm.NativeToolCall{ID: "c1", Name: "git_status", ArgsJSON: `{bad json`}}
-	return nil
 }
 
 func TestRunnerNativePathHandlesMalformedArgsJSONAsToolFeedback(t *testing.T) {
@@ -3657,8 +4332,13 @@ func TestRunnerWritesPriorTurnSynthesizerResultWhenPendingDelegationWriteTimesOu
 		},
 	})
 	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
 
-	if err := r.runLoop(context.Background(), turn); err != nil {
+	if err := r.runLoop(active.Context, turn); err != nil {
 		t.Fatal(err)
 	}
 	if driver.callCount != 1 {
@@ -3688,8 +4368,12 @@ func TestRunnerDoesNotFallbackWriteStaleDelegationResultForUnrelatedFollowUp(t *
 	session := NewSession()
 	delegationTurn := session.RecordInput("ask agents to audit the repo and write docs/reports/audit.md")
 	session.AppendAssistantToolTurn("", []llm.NativeToolCall{{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{}`}})
-	session.AppendNativeToolResult("wait-1", `{"status":"completed"}`)
-	session.AppendAssistantMessage("Parent model connection failed while composing the final response. Showing completed child-agent result instead.\n\nold fallback")
+	if err := session.AppendNativeToolResult("wait-1", `{"status":"completed"}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AppendAssistantMessage("Parent model connection failed while composing the final response. Showing completed child-agent result instead.\n\nold fallback"); err != nil {
+		t.Fatal(err)
+	}
 	session.UpsertAgentTask(AgentTaskState{
 		ID:          "agent-1",
 		Role:        "synthesizer",
@@ -4363,7 +5047,9 @@ func TestRunnerPromptIncludesOutstandingAgentStatus(t *testing.T) {
 	session := NewSession()
 	session.RecordInput("ask three agents to review the codebase")
 	session.AppendAssistantWithToolCalls([]llm.NativeToolCall{{ID: "spawn-1", Name: "spawn_agent", ArgsJSON: `{}`}})
-	session.AppendNativeToolResult("spawn-1", `{"id":"agent-1","role":"code-reviewer","status":"running"}`)
+	if err := session.AppendNativeToolResult("spawn-1", `{"id":"agent-1","role":"code-reviewer","status":"running"}`); err != nil {
+		t.Fatal(err)
+	}
 	r := NewRunner(Config{Session: session})
 
 	output := r.promptHookOutput(context.Background())
@@ -4817,7 +5503,12 @@ func TestRunnerPreservesNonBlockingBeforeToolHookOutput(t *testing.T) {
 		},
 	})
 	turn := session.RecordInput("use the demo plugin")
-	if err := r.executeNativeToolCalls(context.Background(), turn, []llm.NativeToolCall{{
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	if err := r.executeNativeToolCalls(active.Context, turn, []llm.NativeToolCall{{
 		ID:       "c1",
 		Name:     "plugin__demo__echo",
 		ArgsJSON: `{"message":"hello"}`,
@@ -4834,4 +5525,626 @@ func TestRunnerPreservesNonBlockingBeforeToolHookOutput(t *testing.T) {
 	if !found {
 		t.Fatalf("expected before_tool overlay to persist, overlays=%#v", session.Snapshot().HookOutput.Overlays)
 	}
+}
+
+func TestRunnerExecuteNativeToolCallsRejectsResultAfterTurnEnd(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	session := NewSession()
+	reg.Register(agenttools.Tool{
+		Name:        "late_result",
+		Description: "ends the active turn before returning",
+		Execute: func(context.Context, map[string]any) (string, error) {
+			if err := session.EndTurn("turn-1", TurnEndReasonCancelled); err != nil {
+				return "", err
+			}
+			return "late success", nil
+		},
+	})
+	r := NewRunner(Config{Tools: reg, Session: session})
+	turn := session.RecordInput("run late tool")
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	err = r.executeNativeToolCalls(active.Context, turn, []llm.NativeToolCall{{ID: "c1", Name: "late_result", ArgsJSON: `{}`}})
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("executeNativeToolCalls error = %v, want nil or context canceled", err)
+	}
+
+	for _, item := range session.Snapshot().Items {
+		if item.Kind == protocol.ItemToolResult {
+			t.Fatalf("stale tool result was appended: %#v", item)
+		}
+	}
+}
+
+func TestRunnerExecuteNativeToolCallsRejectsResultWithoutActiveTurn(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	session := NewSession()
+	reg.Register(agenttools.Tool{
+		Name:        "late_result",
+		Description: "returns after turn is no longer active",
+		Execute: func(context.Context, map[string]any) (string, error) {
+			return "late success", nil
+		},
+	})
+	r := NewRunner(Config{Tools: reg, Session: session})
+	turn := session.RecordInput("run late tool")
+
+	err := r.executeNativeToolCalls(context.Background(), turn, []llm.NativeToolCall{{ID: "c1", Name: "late_result", ArgsJSON: `{}`}})
+	if !errors.Is(err, ErrStaleTurn) {
+		t.Fatalf("executeNativeToolCalls error = %v, want ErrStaleTurn", err)
+	}
+
+	for _, item := range session.Snapshot().Items {
+		if item.Kind == protocol.ItemToolResult {
+			t.Fatalf("stale tool result was appended: %#v", item)
+		}
+	}
+}
+
+func TestRunnerExecuteNativeToolCallsSkipsStaleResultSideEffectsAfterCancellation(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	session := NewSession()
+	renderer := &recordingRenderer{}
+	reg.Register(agenttools.Tool{
+		Name:        "late_result",
+		Description: "cancels the active turn before returning",
+		Execute: func(context.Context, map[string]any) (string, error) {
+			if err := session.CancelActiveTurn("user cancelled"); err != nil {
+				return "", err
+			}
+			return "late success", nil
+		},
+	})
+	r := NewRunner(Config{
+		Tools:    reg,
+		Session:  session,
+		Renderer: renderer,
+		ConfigureHooks: func(registry *hooks.Registry) {
+			registry.Register(hooks.PointAfterTool, "test:after", func(context.Context, hooks.Event) []hooks.Result {
+				return []hooks.Result{hooks.OverlayResult{Key: "late_after", Content: "should not apply", Provenance: "test"}}
+			})
+		},
+	})
+	turn := session.RecordInput("run late tool")
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	err = r.executeNativeToolCalls(active.Context, turn, []llm.NativeToolCall{{ID: "c1", Name: "late_result", ArgsJSON: `{}`}})
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("executeNativeToolCalls error = %v, want nil or context canceled", err)
+	}
+
+	for _, event := range renderer.events {
+		if event == "tool_result" {
+			t.Fatalf("stale tool result rendered: events=%#v", renderer.events)
+		}
+	}
+	snap := session.Snapshot()
+	if snap.HookOutputSet || len(snap.HookOutput.Overlays) != 0 {
+		t.Fatalf("stale hook output applied: %#v", snap.HookOutput)
+	}
+	for _, item := range snap.Items {
+		if item.Kind == protocol.ItemToolResult {
+			t.Fatalf("stale tool result was appended: %#v", item)
+		}
+	}
+}
+
+func TestRunnerExecuteNativeToolCallsSkipsPreExecutionBranchesAfterCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call llm.NativeToolCall
+		reg  func(*agenttools.Registry, *hooks.Registry)
+	}{
+		{
+			name: "malformed args",
+			call: llm.NativeToolCall{ID: "c1", Name: "custom_tool", ArgsJSON: `{`},
+			reg: func(reg *agenttools.Registry, _ *hooks.Registry) {
+				reg.Register(agenttools.Tool{Name: "custom_tool", Description: "custom"})
+			},
+		},
+		{
+			name: "validation failure",
+			call: llm.NativeToolCall{ID: "c1", Name: "custom_tool", ArgsJSON: `{}`},
+			reg: func(reg *agenttools.Registry, _ *hooks.Registry) {
+				reg.Register(agenttools.Tool{Name: "custom_tool", Description: "custom", Parameters: []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}}})
+			},
+		},
+		{
+			name: "blocked before hook",
+			call: llm.NativeToolCall{ID: "c1", Name: "custom_tool", ArgsJSON: `{}`},
+			reg: func(reg *agenttools.Registry, hooksReg *hooks.Registry) {
+				reg.Register(agenttools.Tool{Name: "custom_tool", Description: "custom"})
+				hooksReg.Register(hooks.PointBeforeTool, "test:block", func(context.Context, hooks.Event) []hooks.Result {
+					return []hooks.Result{hooks.BlockResult{Message: "blocked"}}
+				})
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := agenttools.NewRegistry()
+			session := NewSession()
+			r := NewRunner(Config{
+				Tools:   reg,
+				Session: session,
+				ConfigureHooks: func(hooksReg *hooks.Registry) {
+					tc.reg(reg, hooksReg)
+				},
+			})
+			turn := session.RecordInput("run tool")
+			active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cancel()
+			if err := session.CancelActiveTurn("user cancelled"); err != nil {
+				t.Fatal(err)
+			}
+
+			err = r.executeNativeToolCalls(active.Context, turn, []llm.NativeToolCall{tc.call})
+			if err != nil && !errors.Is(err, ErrStaleTurn) && !errors.Is(err, context.Canceled) {
+				t.Fatalf("executeNativeToolCalls error = %v, want stale/cancelled", err)
+			}
+
+			for _, item := range session.Snapshot().Items {
+				if item.Kind == protocol.ItemToolResult || item.Kind == protocol.ItemFailure {
+					t.Fatalf("stale pre-execution item was appended: %#v", item)
+				}
+			}
+		})
+	}
+}
+
+func TestRunnerExecuteNativeToolCallsSkipsToolCallRegistrationAfterBeforeHookCancellation(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	session := NewSession()
+	renderer := &recordingRenderer{}
+	reg.Register(agenttools.Tool{
+		Name:        "custom_tool",
+		Description: "custom",
+		Execute: func(context.Context, map[string]any) (string, error) {
+			return "should not execute", nil
+		},
+	})
+	r := NewRunner(Config{
+		Tools:    reg,
+		Session:  session,
+		Renderer: renderer,
+		ConfigureHooks: func(hooksReg *hooks.Registry) {
+			hooksReg.Register(hooks.PointBeforeTool, "test:cancel", func(context.Context, hooks.Event) []hooks.Result {
+				if err := session.CancelActiveTurn("user cancelled"); err != nil {
+					t.Fatalf("cancel active turn: %v", err)
+				}
+				return nil
+			})
+		},
+	})
+	turn := session.RecordInput("run tool")
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	err = r.executeNativeToolCalls(active.Context, turn, []llm.NativeToolCall{{ID: "c1", Name: "custom_tool", ArgsJSON: `{}`}})
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("executeNativeToolCalls error = %v, want nil or context canceled", err)
+	}
+
+	for _, event := range renderer.events {
+		if event == "tool_call" || event == "tool_result" {
+			t.Fatalf("stale tool event rendered: events=%#v", renderer.events)
+		}
+	}
+	for _, item := range session.Snapshot().Items {
+		if item.Kind == protocol.ItemToolCall || item.Kind == protocol.ItemToolResult {
+			t.Fatalf("stale tool item was appended: %#v", item)
+		}
+	}
+}
+
+func TestRunnerExecuteNativeToolCallsSkipsBeforeHookDispatchWhenTurnAlreadyCancelled(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	session := NewSession()
+	hookCalls := 0
+	reg.Register(agenttools.Tool{
+		Name:        "custom_tool",
+		Description: "custom",
+		Execute: func(context.Context, map[string]any) (string, error) {
+			return "should not execute", nil
+		},
+	})
+	r := NewRunner(Config{
+		Tools:   reg,
+		Session: session,
+		ConfigureHooks: func(hooksReg *hooks.Registry) {
+			hooksReg.Register(hooks.PointBeforeTool, "test:count", func(context.Context, hooks.Event) []hooks.Result {
+				hookCalls++
+				return nil
+			})
+		},
+	})
+	turn := session.RecordInput("run tool")
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	if err := session.CancelActiveTurn("user cancelled"); err != nil {
+		t.Fatal(err)
+	}
+
+	err = r.executeNativeToolCalls(active.Context, turn, []llm.NativeToolCall{{ID: "c1", Name: "custom_tool", ArgsJSON: `{}`}})
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("executeNativeToolCalls error = %v, want nil or context canceled", err)
+	}
+	if hookCalls != 0 {
+		t.Fatalf("before_tool hook calls = %d, want 0", hookCalls)
+	}
+	for _, item := range session.Snapshot().Items {
+		if item.Kind == protocol.ItemToolCall || item.Kind == protocol.ItemToolResult {
+			t.Fatalf("stale tool item was appended: %#v", item)
+		}
+	}
+}
+
+func TestRunnerExecutesSerialMetadataToolsSequentially(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	var mu sync.Mutex
+	events := []string{}
+	record := func(event string) {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, event)
+	}
+
+	reg.Register(agenttools.Tool{
+		Name:        "custom_serial",
+		Description: "serial test tool",
+		Concurrency: agenttools.ToolConcurrencySerial,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			record("serial:start")
+			time.Sleep(50 * time.Millisecond)
+			record("serial:end")
+			return "serial", nil
+		},
+	})
+	reg.Register(agenttools.Tool{
+		Name:        "custom_parallel",
+		Description: "parallel test tool",
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			record("parallel:start")
+			record("parallel:end")
+			return "parallel", nil
+		},
+	})
+	session := NewSession()
+	r := NewRunner(Config{Tools: reg, Session: session})
+	turn := session.RecordInput("run serial metadata tools")
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	if err := r.executeNativeToolCalls(active.Context, turn, []llm.NativeToolCall{
+		{ID: "c1", Name: "custom_serial", ArgsJSON: `{}`},
+		{ID: "c2", Name: "custom_parallel", ArgsJSON: `{}`},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{"serial:start", "serial:end", "parallel:start", "parallel:end"}
+	if !slices.Equal(events, want) {
+		t.Fatalf("events = %#v, want %#v", events, want)
+	}
+}
+
+func TestRunnerOutputHandleE2EStoresFullPayloadOutOfBand(t *testing.T) {
+	largePayload := "large-output-sentinel:" + strings.Repeat("abcdef", 64)
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "c1", Name: "read_file", ArgsJSON: `{"path":"large.txt"}`}}},
+		{{Text: "handled summarized tool output"}},
+	}}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "read_file",
+		Description: "large output test tool",
+		Parameters:  []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}},
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return largePayload, nil
+		},
+	})
+	session := NewSession()
+	session.SetTaskState(TaskState{Objective: "inspect large output", Operation: "inspect", RequiredVerification: "inspect with read tools before answering"})
+	store := sessionstore.NewFileOutputStore(t.TempDir())
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session, OutputStore: store, OutputStoreThresholdBytes: 16})
+
+	if err := r.Run(context.Background(), "run large output tool"); err != nil {
+		t.Fatal(err)
+	}
+
+	result := lastToolResult(t, session)
+	if result.Handle == "" || result.OriginalBytes != len(largePayload) || result.SHA256 == "" {
+		t.Fatalf("tool result metadata = %#v", result)
+	}
+	if strings.Contains(result.Text, largePayload) || !strings.Contains(result.Text, result.Handle) {
+		t.Fatalf("tool result summary = %q", result.Text)
+	}
+	stored, err := store.Read(context.Background(), sessionstore.OutputHandle{ID: result.Handle, Bytes: result.OriginalBytes, SHA256: result.SHA256}, 0, int64(len(largePayload)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stored) != largePayload {
+		t.Fatalf("stored output = %q, want full payload", stored)
+	}
+	if len(driver.allMsgs) < 2 {
+		t.Fatalf("driver messages = %#v", driver.allMsgs)
+	}
+	foundModelSafeToolResult := false
+	for _, msg := range driver.allMsgs[1] {
+		if msg.Role != llm.RoleTool {
+			continue
+		}
+		foundModelSafeToolResult = true
+		if strings.Contains(msg.Content, largePayload) {
+			t.Fatalf("model-visible tool result contained full payload: %q", msg.Content)
+		}
+		if !strings.Contains(msg.Content, result.Handle) {
+			t.Fatalf("model-visible tool result missing handle summary: %q", msg.Content)
+		}
+	}
+	if !foundModelSafeToolResult {
+		t.Fatalf("second model step missing tool result: %#v", driver.allMsgs[1])
+	}
+	for _, msg := range session.Snapshot().History {
+		if strings.Contains(msg.Content, largePayload) {
+			t.Fatalf("session history contained full payload: %#v", msg)
+		}
+	}
+}
+
+func TestRunnerPostEditDiagnosticsE2EFeedsNextModelStep(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "edit-1", Name: "edit_file", ArgsJSON: `{"path":"a.txt","old_text":"old","new_text":"new"}`}}},
+		{{Text: "fixed after diagnostics"}},
+	}}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:             "edit_file",
+		Description:      "edit file",
+		AutoApprove:      true,
+		MutatesWorkspace: true,
+		LastDiff: func() string {
+			return "diff --git a/a.txt b/a.txt"
+		},
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return "edited a.txt", nil
+		},
+	})
+	session := NewSession()
+	session.SetTaskState(TaskState{Objective: "edit a.txt", Operation: "implement", RequiredVerification: "edit and validate"})
+	r := NewRunner(Config{
+		Driver:  driver,
+		Tools:   reg,
+		Session: session,
+		PostEditValidator: &PostEditValidator{
+			Command:        []string{"/bin/sh", "-c", "printf post-edit-validator-failed >&2; exit 1"},
+			Timeout:        time.Second,
+			MaxOutputBytes: 1024,
+		},
+	})
+
+	if err := r.Run(context.Background(), "edit a.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(driver.allMsgs) < 2 {
+		t.Fatalf("driver messages = %#v", driver.allMsgs)
+	}
+	foundNextStepFeedback := false
+	for _, msg := range driver.allMsgs[1] {
+		if msg.Role == llm.RoleUser && strings.Contains(msg.Content, "Runtime diagnostic feedback") && strings.Contains(msg.Content, "post-edit-validator-failed") {
+			foundNextStepFeedback = true
+		}
+	}
+	if !foundNextStepFeedback {
+		t.Fatalf("next model step missing diagnostic feedback: %#v", driver.allMsgs[1])
+	}
+	if !sessionHistoryContains(session, "Runtime diagnostic feedback", "post-edit-validator-failed") {
+		t.Fatalf("session history missing diagnostics: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerCheckpointE2ERestoresOnlyPathMutatedByTool(t *testing.T) {
+	root := initReactTestGitRepo(t)
+	t.Chdir(root)
+	writeReactTestFile(t, filepath.Join(root, "a.txt"), "a original\n")
+	writeReactTestFile(t, filepath.Join(root, "b.txt"), "b original\n")
+	runReactGit(t, root, "add", "a.txt", "b.txt")
+	runReactGit(t, root, "commit", "-m", "initial")
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "write-1", Name: "write_file", ArgsJSON: `{"path":"a.txt","content":"tool mutation\n"}`}}},
+		{{Text: "wrote file"}},
+	}}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "write file",
+		AutoApprove: true,
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			path, _ := args["path"].(string)
+			content, _ := args["content"].(string)
+			writeReactTestFile(t, filepath.Join(root, path), content)
+			return "ok", nil
+		},
+	})
+	session := NewSession()
+	session.SetTaskState(TaskState{Objective: "write a.txt", Operation: "implement", RequiredVerification: "write the requested file"})
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+	if err := r.Run(context.Background(), "write a.txt"); err != nil {
+		t.Fatal(err)
+	}
+	writeReactTestFile(t, filepath.Join(root, "b.txt"), "unrelated user mutation\n")
+
+	items := session.Snapshot().Items
+	checkpointCount := 0
+	firstCheckpoint := -1
+	firstToolCall := -1
+	checkpointID := ""
+	for i, item := range items {
+		if item.Kind == protocol.ItemCheckpoint {
+			checkpointCount++
+			if firstCheckpoint < 0 {
+				firstCheckpoint = i
+				checkpointID = item.Checkpoint.ID
+			}
+		}
+		if item.Kind == protocol.ItemToolCall && firstToolCall < 0 {
+			firstToolCall = i
+		}
+	}
+	if checkpointCount != 1 {
+		t.Fatalf("checkpoint items = %d, want 1; items=%#v", checkpointCount, items)
+	}
+	if firstCheckpoint < 0 || firstToolCall < 0 || firstCheckpoint > firstToolCall {
+		t.Fatalf("checkpoint index = %d, first tool call index = %d; want checkpoint before tool call", firstCheckpoint, firstToolCall)
+	}
+	if err := r.checkpointManager.Restore(context.Background(), checkpointID); err != nil {
+		t.Fatalf("Restore() error = %v", err)
+	}
+	if got := readReactTestFile(t, filepath.Join(root, "a.txt")); got != "a original\n" {
+		t.Fatalf("a.txt = %q, want restored checkpoint content", got)
+	}
+	if got := readReactTestFile(t, filepath.Join(root, "b.txt")); got != "unrelated user mutation\n" {
+		t.Fatalf("b.txt = %q, want unrelated mutation preserved", got)
+	}
+}
+
+func TestExecuteNativeToolCallsStoresLargeOutputOutOfBand(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "large_output",
+		Description: "large output test tool",
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return "0123456789", nil
+		},
+	})
+	session := NewSession()
+	store := sessionstore.NewFileOutputStore(t.TempDir())
+	r := NewRunner(Config{Tools: reg, Session: session, OutputStore: store, OutputStoreThresholdBytes: 5})
+	turn := session.RecordInput("run large output tool")
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	if err := r.executeNativeToolCalls(active.Context, turn, []llm.NativeToolCall{{ID: "c1", Name: "large_output", ArgsJSON: `{}`}}); err != nil {
+		t.Fatal(err)
+	}
+
+	snap := session.Snapshot()
+	var result *protocol.ToolResultItem
+	for i := range snap.Items {
+		if snap.Items[i].ToolResult != nil {
+			result = snap.Items[i].ToolResult
+		}
+	}
+	if result == nil {
+		t.Fatal("missing tool result item")
+	}
+	if result.Handle == "" || result.OriginalBytes != 10 || result.SHA256 == "" {
+		t.Fatalf("stored metadata = %#v", result)
+	}
+	if result.Text == "0123456789" || !strings.Contains(result.Text, result.Handle) || !strings.Contains(result.Text, "10 bytes") {
+		t.Fatalf("summary text = %q", result.Text)
+	}
+	got, err := store.Read(context.Background(), sessionstore.OutputHandle{ID: result.Handle, Bytes: result.OriginalBytes, SHA256: result.SHA256}, 2, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "2345" {
+		t.Fatalf("stored output = %q, want 2345", got)
+	}
+}
+
+func TestExecuteNativeToolCallsKeepsLargeOutputInlineWhenOutputStoreNil(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "large_output",
+		Description: "large output test tool",
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return "0123456789", nil
+		},
+	})
+	session := NewSession()
+	r := NewRunner(Config{Tools: reg, Session: session, OutputStoreThresholdBytes: 5})
+	turn := session.RecordInput("run large output tool")
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	if err := r.executeNativeToolCalls(active.Context, turn, []llm.NativeToolCall{{ID: "c1", Name: "large_output", ArgsJSON: `{}`}}); err != nil {
+		t.Fatal(err)
+	}
+
+	result := lastToolResult(t, session)
+	if result.Text != "0123456789" || result.Handle != "" || result.OriginalBytes != 0 || result.SHA256 != "" {
+		t.Fatalf("tool result = %#v, want inline without handle metadata", result)
+	}
+}
+
+func TestExecuteNativeToolCallsKeepsSmallOutputInlineWhenOutputStoreConfigured(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "small_output",
+		Description: "small output test tool",
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return "0123", nil
+		},
+	})
+	session := NewSession()
+	r := NewRunner(Config{Tools: reg, Session: session, OutputStore: sessionstore.NewFileOutputStore(t.TempDir()), OutputStoreThresholdBytes: 5})
+	turn := session.RecordInput("run small output tool")
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	if err := r.executeNativeToolCalls(active.Context, turn, []llm.NativeToolCall{{ID: "c1", Name: "small_output", ArgsJSON: `{}`}}); err != nil {
+		t.Fatal(err)
+	}
+
+	result := lastToolResult(t, session)
+	if result.Text != "0123" || result.Handle != "" || result.OriginalBytes != 0 || result.SHA256 != "" {
+		t.Fatalf("tool result = %#v, want inline without handle metadata", result)
+	}
+}
+
+func lastToolResult(t *testing.T, session *Session) *protocol.ToolResultItem {
+	t.Helper()
+	var result *protocol.ToolResultItem
+	snap := session.Snapshot()
+	for i := range snap.Items {
+		if snap.Items[i].ToolResult != nil {
+			result = snap.Items[i].ToolResult
+		}
+	}
+	if result == nil {
+		t.Fatal("missing tool result item")
+	}
+	return result
 }

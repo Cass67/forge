@@ -29,6 +29,7 @@ func NewSpawnAgent(pool *react.AgentPool) agenttools.Tool {
 			{Name: "work_dir", Type: "string", Description: "Optional working directory for the child agent (default: parent project directory)", Required: false},
 		},
 		AutoApprove: true,
+		Concurrency: agenttools.ToolConcurrencySerial,
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			if pool == nil {
 				return "", fmt.Errorf("agent pool unavailable")
@@ -52,9 +53,15 @@ func NewSpawnAgent(pool *react.AgentPool) agenttools.Tool {
 				task = sanitizeReadOnlyAgentTask(task)
 			}
 
-			spawnCtx := ctx
+			spawnCtx := context.Background()
+			if ctx != nil {
+				if err := ctx.Err(); err != nil {
+					return "", err
+				}
+				spawnCtx = context.WithoutCancel(ctx)
+			}
 			if workDir != "" {
-				spawnCtx = react.ContextWithWorkDir(ctx, workDir)
+				spawnCtx = react.ContextWithWorkDir(spawnCtx, workDir)
 			}
 			id, err := pool.Spawn(spawnCtx, role, task)
 			if err != nil {

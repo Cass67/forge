@@ -17,22 +17,27 @@ import (
 	"forge/internal/protocol"
 	resilienceerrors "forge/internal/resilience/errors"
 	"forge/internal/secscan"
+	"forge/internal/sessionstore"
+	"forge/internal/workspace"
 )
 
 type Config struct {
-	Driver                   llm.Driver
-	Tools                    *agenttools.Registry
-	Renderer                 agent.RenderTarget
-	SystemPrompt             func() string
-	Session                  *Session
-	Progress                 func(string)
-	TurnComplete             func(SessionSnapshot)
-	ToolExposureObserver     func(ToolExposureDecision)
-	ConfigureHooks           func(*hooks.Registry)
-	CompactionMaxFailures    int
-	Interactive              bool
-	MaxSteps                 int
-	ToolThrashCircuitBreaker int
+	Driver                    llm.Driver
+	Tools                     *agenttools.Registry
+	Renderer                  agent.RenderTarget
+	SystemPrompt              func() string
+	Session                   *Session
+	Progress                  func(string)
+	TurnComplete              func(SessionSnapshot)
+	ToolExposureObserver      func(ToolExposureDecision)
+	ConfigureHooks            func(*hooks.Registry)
+	CompactionMaxFailures     int
+	Interactive               bool
+	MaxSteps                  int
+	ToolThrashCircuitBreaker  int
+	OutputStore               sessionstore.OutputStore
+	OutputStoreThresholdBytes int
+	PostEditValidator         *PostEditValidator
 }
 
 type ToolExposureDecision struct {
@@ -44,27 +49,33 @@ type ToolExposureDecision struct {
 }
 
 type Runner struct {
-	driver                   llm.Driver
-	tools                    *agenttools.Registry
-	renderer                 agent.RenderTarget
-	systemPrompt             func() string
-	session                  *Session
-	hooks                    *hooks.Registry
-	progress                 func(string)
-	compactionManager        *CompactionManager
-	compactionFailures       int
-	compactionMaxFailures    int
-	maxSteps                 int
-	gitWorkflow              gitWorkflowState
-	planWorkflow             planWorkflowState
-	searchWorkflow           sameFileSearchWorkflowState
-	validationWorkflow       validationWorkflowState
-	repeatWorkflow           repeatToolCallState
-	postDelegation           postDelegationWorkflowState
-	pendingRetryPrompt       string
-	turnComplete             func(SessionSnapshot)
-	toolExposureObserver     func(ToolExposureDecision)
-	toolThrashCircuitBreaker int
+	driver                    llm.Driver
+	tools                     *agenttools.Registry
+	renderer                  agent.RenderTarget
+	systemPrompt              func() string
+	session                   *Session
+	hooks                     *hooks.Registry
+	progress                  func(string)
+	compactionManager         *CompactionManager
+	compactionFailures        int
+	compactionMaxFailures     int
+	maxSteps                  int
+	gitWorkflow               gitWorkflowState
+	planWorkflow              planWorkflowState
+	searchWorkflow            sameFileSearchWorkflowState
+	validationWorkflow        validationWorkflowState
+	repeatWorkflow            repeatToolCallState
+	postDelegation            postDelegationWorkflowState
+	pendingRetryPrompt        string
+	turnComplete              func(SessionSnapshot)
+	toolExposureObserver      func(ToolExposureDecision)
+	toolThrashCircuitBreaker  int
+	outputStore               sessionstore.OutputStore
+	outputStoreThresholdBytes int
+	checkpointManager         *workspace.CheckpointManager
+	checkpointedTurns         map[string]bool
+	checkpointIDsByTurn       map[string]string
+	postEditValidator         *PostEditValidator
 }
 
 type gitCommitBlocker int
@@ -118,6 +129,15 @@ const analysisExplorationBudget = 15
 const previewExplorationBudget = 4
 const implementExplorationBudget = 12
 const inspectExplorationBudget = 8
+const defaultOutputStoreThresholdBytes = 10 * 1024
+
+func outputStoreThresholdBytes(configured int) int {
+	if configured > 0 {
+		return configured
+	}
+	return defaultOutputStoreThresholdBytes
+}
+
 const overviewExplorationBudget = 6
 const reviewExplorationBudget = 10
 const validateExplorationBudget = 6
@@ -206,11 +226,17 @@ func NewRunner(cfg Config) *Runner {
 			HistoryPressureTurns: 40,
 			MaxFailures:          cfg.CompactionMaxFailures,
 		}),
-		compactionMaxFailures:    cfg.CompactionMaxFailures,
-		turnComplete:             cfg.TurnComplete,
-		toolExposureObserver:     cfg.ToolExposureObserver,
-		maxSteps:                 maxLoopSteps(cfg.MaxSteps),
-		toolThrashCircuitBreaker: cfg.ToolThrashCircuitBreaker,
+		compactionMaxFailures:     cfg.CompactionMaxFailures,
+		turnComplete:              cfg.TurnComplete,
+		toolExposureObserver:      cfg.ToolExposureObserver,
+		maxSteps:                  maxLoopSteps(cfg.MaxSteps),
+		toolThrashCircuitBreaker:  cfg.ToolThrashCircuitBreaker,
+		outputStore:               cfg.OutputStore,
+		outputStoreThresholdBytes: outputStoreThresholdBytes(cfg.OutputStoreThresholdBytes),
+		checkpointManager:         workspace.NewCheckpointManager(""),
+		checkpointedTurns:         make(map[string]bool),
+		checkpointIDsByTurn:       make(map[string]string),
+		postEditValidator:         cfg.PostEditValidator,
 	}
 	if snap := session.Snapshot(); snap.TaskState != nil && isSynthesisGuardOperation(snap.TaskState.Operation) {
 		runner.planWorkflow.active = true
@@ -227,7 +253,7 @@ func (r *Runner) Run(ctx context.Context, input string) error {
 	return r.RunWithParts(ctx, input, nil)
 }
 
-func (r *Runner) RunWithParts(ctx context.Context, input string, parts []llm.MessageContentPart) error {
+func (r *Runner) RunWithParts(ctx context.Context, input string, parts []llm.MessageContentPart) (err error) {
 	if r == nil {
 		return fmt.Errorf("react runner: runner is nil")
 	}
@@ -236,9 +262,30 @@ func (r *Runner) RunWithParts(ctx context.Context, input string, parts []llm.Mes
 		return nil
 	}
 	priorResponse := r.LastResponse()
+	turnID := fmt.Sprintf("turn-%d", r.session.Snapshot().Turn+1)
+	activeTurn, _, err := r.session.BeginTurn(ctx, turnID)
+	if err != nil {
+		return err
+	}
+	ctx = activeTurn.Context
+	defer func() {
+		reason := TurnEndReasonCompleted
+		if err != nil {
+			reason = TurnEndReasonFailed
+		}
+		if ctx.Err() != nil {
+			reason = TurnEndReasonCancelled
+		}
+		if endErr := r.session.EndTurn(turnID, reason); endErr != nil && err == nil {
+			err = endErr
+		}
+	}()
 	r.syncRuntimeNote()
 	r.applyCompactionDecision(ctx, r.compactionManager.Decide(r.session.Snapshot()))
-	turn := r.session.RecordInputWithParts(prompt, parts)
+	turn, err := r.session.RecordInputWithParts(prompt, parts)
+	if err != nil {
+		return err
+	}
 	r.pendingRetryPrompt = ""
 	if len(parts) == 0 {
 		if handled, err := r.tryDirectLastResponseMarkdownWrite(ctx, turn, prompt, priorResponse); handled {
@@ -247,8 +294,7 @@ func (r *Runner) RunWithParts(ctx context.Context, input string, parts []llm.Mes
 	}
 	if r.driver == nil {
 		err := fmt.Errorf("react runner: driver is nil")
-		r.session.CompleteTurn(turn, "", nil, err)
-		return err
+		return r.completeTurn(turn, "", nil, err)
 	}
 	return r.runLoop(ctx, turn)
 }
@@ -387,7 +433,7 @@ func (r *Runner) AppendUserMessage(text string) {
 	if r == nil || r.session == nil {
 		return
 	}
-	r.session.AppendUserMessage(text)
+	_ = r.session.AppendUserMessage(text)
 }
 
 func (r *Runner) QueuePendingInput(text string) {
@@ -454,11 +500,31 @@ func (r *Runner) EmitResponse(text string) {
 		return
 	}
 	if r.session != nil {
-		r.session.AppendAssistantMessage(text)
+		_ = r.session.AppendAssistantMessage(text)
 	}
 	if r.renderer != nil {
 		r.renderer.AgentText(strings.TrimSpace(text))
 	}
+}
+
+func (r *Runner) appendAssistantMessage(text string) error {
+	if r == nil || r.session == nil {
+		return nil
+	}
+	return r.session.AppendAssistantMessage(text)
+}
+
+func (r *Runner) completeTurn(turn int, response string, toolCalls []TurnToolCall, turnErr error) error {
+	if r == nil || r.session == nil {
+		return turnErr
+	}
+	if err := r.session.CompleteTurn(turn, response, toolCalls, turnErr); err != nil {
+		if turnErr != nil {
+			return errors.Join(turnErr, err)
+		}
+		return err
+	}
+	return turnErr
 }
 
 func (r *Runner) tryDirectLastResponseMarkdownWrite(ctx context.Context, turn int, input, priorResponse string) (bool, error) {
@@ -488,8 +554,12 @@ func (r *Runner) tryDirectLastResponseMarkdownWrite(ctx context.Context, turn in
 	if final == "" {
 		final = "wrote previous response to " + path
 	}
-	r.session.AppendAssistantMessage(final)
-	r.session.CompleteTurn(turn, final, nil, nil)
+	if err := r.appendAssistantMessage(final); err != nil {
+		return true, err
+	}
+	if err := r.completeTurn(turn, final, nil, nil); err != nil {
+		return true, err
+	}
 	r.notifyTurnComplete()
 	if r.renderer != nil {
 		r.renderer.AgentText(final)
@@ -638,6 +708,7 @@ func toolResultForCallID(snapshot SessionSnapshot, id string) string {
 
 func (r *Runner) runLoop(ctx context.Context, turn int) error {
 	start := time.Now()
+	turnID := fmt.Sprintf("turn-%d", turn)
 
 	nativeCaller, isNative := r.driver.(llm.NativeToolCaller)
 
@@ -656,9 +727,9 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 		r.observeToolExposure(toolDecision)
 		if len(toolDefs) > 0 && !isNative {
 			err := fmt.Errorf("react runtime: driver %q does not support native tool calling", r.driver.Name())
-			r.session.CompleteTurn(turn, "", nil, err)
-			return err
+			return r.completeTurn(turn, "", nil, err)
 		}
+		_ = r.session.SetActiveTurnPhase(turnID, TurnPhaseRunningModel)
 		calls, err := r.streamNativeTurn(ctx, turn, nativeCaller, toolDefs, requireToolCall)
 		if err != nil {
 			if !reactiveCompacted && r.reactiveCompactForContextError(ctx, err) {
@@ -689,8 +760,12 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 			if errors.As(err, &retryable) && isEmptyNativeResponseError(retryable) {
 				if fallback := r.activeAgentFallbackText(); fallback != "" {
 					r.pendingRetryPrompt = ""
-					r.session.AppendAssistantMessage(fallback)
-					r.session.CompleteTurn(turn, fallback, nil, nil)
+					if err := r.appendAssistantMessage(fallback); err != nil {
+						return err
+					}
+					if err := r.completeTurn(turn, fallback, nil, nil); err != nil {
+						return err
+					}
 					r.notifyTurnComplete()
 					if r.renderer != nil {
 						r.renderer.AgentText(fallback)
@@ -698,8 +773,7 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 					return nil
 				}
 			}
-			r.session.CompleteTurn(turn, "", nil, err)
-			return err
+			return r.completeTurn(turn, "", nil, err)
 		}
 		r.emitStats(start)
 		if calls == nil {
@@ -710,6 +784,7 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 			}
 			return nil
 		}
+		_ = r.session.SetActiveTurnPhase(turnID, TurnPhaseRunningTools)
 		if err := r.executeNativeToolCalls(ctx, turn, calls); err != nil {
 			return err
 		}
@@ -717,8 +792,7 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 	}
 
 	err := fmt.Errorf("react runtime: safety step limit (%d) exceeded", r.maxSteps)
-	r.session.CompleteTurn(turn, "", nil, err)
-	return err
+	return r.completeTurn(turn, "", nil, err)
 }
 
 func isEmptyNativeResponseError(err *RetryableCompletionError) bool {
@@ -778,8 +852,12 @@ func (r *Runner) tryCompletedAgentResultFallback(ctx context.Context, turn int) 
 	}
 	fallback := "Parent model connection failed while composing the final response. Showing completed child-agent result instead.\n\n" + content
 	r.pendingRetryPrompt = ""
-	r.session.AppendAssistantMessage(fallback)
-	r.session.CompleteTurn(turn, fallback, nil, nil)
+	if err := r.appendAssistantMessage(fallback); err != nil {
+		return true, err
+	}
+	if err := r.completeTurn(turn, fallback, nil, nil); err != nil {
+		return true, err
+	}
 	r.notifyTurnComplete()
 	if r.renderer != nil {
 		r.renderer.AgentText(fallback)
@@ -802,8 +880,12 @@ func (r *Runner) writeCompletedAgentResultFallback(ctx context.Context, turn int
 	if final == "" {
 		final = "wrote completed child-agent results to " + path
 	}
-	r.session.AppendAssistantMessage(final)
-	r.session.CompleteTurn(turn, final, nil, nil)
+	if err := r.appendAssistantMessage(final); err != nil {
+		return err
+	}
+	if err := r.completeTurn(turn, final, nil, nil); err != nil {
+		return err
+	}
 	r.notifyTurnComplete()
 	if r.renderer != nil {
 		r.renderer.AgentText(final)
@@ -1152,7 +1234,10 @@ func (r *Runner) reactiveCompactForContextError(ctx context.Context, err error) 
 	if r.progress != nil {
 		r.progress("react runtime: compacting after context window error")
 	}
-	return r.applyCompactionDecision(ctx, r.compactionManager.Reactive(20, "context window exceeded"))
+	if r.applyCompactionDecision(ctx, r.compactionManager.Reactive(20, "context window exceeded")) {
+		return true
+	}
+	return r.applyCompactionDecision(ctx, CompactionDecision{Mode: CompactionMicro, Reason: "context window exceeded", KeepTurns: r.compactionManager.cfg.KeepTurns})
 }
 
 // streamNativeTurn runs one native tool calling step.
@@ -1250,11 +1335,15 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 		)
 	}
 	reasoning := strings.TrimSpace(reasoningBuf.String())
-	r.session.AppendAssistantMessage(finalText)
+	if err := r.appendAssistantMessage(finalText); err != nil {
+		return nil, err
+	}
 	if reasoning != "" {
 		r.session.SetLastAssistantReasoning(reasoning)
 	}
-	r.session.CompleteTurn(turn, finalText, nil, nil)
+	if err := r.completeTurn(turn, finalText, nil, nil); err != nil {
+		return nil, err
+	}
 	r.notifyTurnComplete()
 	if r.renderer != nil && visibleEmitted < len(finalText) {
 		r.renderer.AgentText(finalText[visibleEmitted:])
@@ -1302,8 +1391,12 @@ func (r *Runner) streamPlainTurn(ctx context.Context, turn int, messages []llm.M
 			"Use the provider's native tool-calling interface only. Do not emit prose, XML, or example markup in place of a tool call.",
 		)
 	}
-	r.session.AppendAssistantMessage(finalText)
-	r.session.CompleteTurn(turn, finalText, nil, nil)
+	if err := r.appendAssistantMessage(finalText); err != nil {
+		return nil, err
+	}
+	if err := r.completeTurn(turn, finalText, nil, nil); err != nil {
+		return nil, err
+	}
 	r.notifyTurnComplete()
 	if r.renderer != nil && visibleEmitted < len(finalText) {
 		r.renderer.AgentText(finalText[visibleEmitted:])
@@ -1380,7 +1473,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 		tool       agenttools.Tool
 		args       map[string]any
 		beforeTool hooks.ExecutionOutput
-		execute    func() (result string, diff string, execErr error)
+		execute    func() ToolRunResult
 	}
 
 	// Phase 1: resolve tools, parse args, run pre-hooks (sequential, may have side effects)
@@ -1391,8 +1484,8 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 			errMsg := redactRuntimeText(fmt.Sprintf("error: unknown tool %q. Use one of the tools provided for this turn.", call.Name))
 			execs = append(execs, toolExec{
 				call: call,
-				execute: func() (string, string, error) {
-					return errMsg, "", nil
+				execute: func() ToolRunResult {
+					return ToolRunResult{Status: ToolRunSucceeded, Result: errMsg}
 				},
 			})
 			continue
@@ -1401,105 +1494,115 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 		var args map[string]any
 		if err := json.Unmarshal([]byte(call.ArgsJSON), &args); err != nil {
 			parseErr := fmt.Sprintf("error: malformed tool call arguments for %q: %v", call.Name, err)
-			r.session.AppendItem(protocol.Item{
-				Kind:     protocol.ItemFailure,
-				Failure:  &protocol.FailureItem{Decision: protocol.ClassifyToolArgFailure(parseErr)},
-				ToolCall: &protocol.ToolCallItem{ToolName: call.Name, ToolCallID: call.ID},
-			})
+			if err := r.appendFailureAndToolResultForTurn(ctx, turn,
+				protocol.FailureItem{Decision: protocol.ClassifyToolArgFailure(parseErr)},
+				protocol.ToolCallItem{ToolName: call.Name, ToolCallID: call.ID},
+				protocol.ToolResultItem{ToolCallID: call.ID, Text: parseErr},
+			); err != nil {
+				return err
+			}
 			if r.renderer != nil {
 				r.renderer.ToolCall(call.Name, "malformed arguments")
 				r.renderer.ToolResult(call.Name, parseErr, "", true)
 			}
-			r.session.AppendNativeToolResult(call.ID, parseErr)
 			r.updatePlanWorkflow(call.Name, nil, "", true)
 			r.updateSameFileSearchWorkflow(call.Name, nil, true)
 			continue
 		}
 		if validationErr := validateToolArgs(tool, args); validationErr != "" {
-			r.session.AppendItem(protocol.Item{
-				Kind:     protocol.ItemFailure,
-				Failure:  &protocol.FailureItem{Decision: protocol.ClassifyToolArgFailure(validationErr)},
-				ToolCall: &protocol.ToolCallItem{ToolName: call.Name, ToolCallID: call.ID, Args: args},
-			})
+			if err := r.appendFailureAndToolResultForTurn(ctx, turn,
+				protocol.FailureItem{Decision: protocol.ClassifyToolArgFailure(validationErr)},
+				protocol.ToolCallItem{ToolName: call.Name, ToolCallID: call.ID, Args: args},
+				protocol.ToolResultItem{ToolCallID: call.ID, Text: validationErr},
+			); err != nil {
+				return err
+			}
 			if r.renderer != nil {
 				r.renderer.ToolCall(call.Name, reactToolSummary(args))
 				r.renderer.ToolResult(call.Name, validationErr, "", true)
 			}
-			r.session.AppendNativeToolResult(call.ID, validationErr)
 			r.updatePlanWorkflow(call.Name, args, "", true)
 			r.updateSameFileSearchWorkflow(call.Name, args, true)
 			continue
 		}
 
+		if err := r.ensureTurnCanMutate(ctx, turn); err != nil {
+			return err
+		}
+		if isCheckpointMutatingTool(call.Name) {
+			r.ensurePreMutationCheckpoint(ctx, turn)
+		}
 		beforeTool := r.beforeToolHookOutput(ctx, call.Name, args)
 		if beforeTool.Block != nil {
 			blocked := strings.TrimSpace(beforeTool.Block.Message)
-			r.session.AppendItem(protocol.Item{
-				Kind:     protocol.ItemFailure,
-				Failure:  &protocol.FailureItem{Decision: protocol.ClassifyPolicyBlocked(blocked)},
-				ToolCall: &protocol.ToolCallItem{ToolName: call.Name, ToolCallID: call.ID, Args: args},
-			})
+			if err := r.appendFailureAndToolResultForTurn(ctx, turn,
+				protocol.FailureItem{Decision: protocol.ClassifyPolicyBlocked(blocked)},
+				protocol.ToolCallItem{ToolName: call.Name, ToolCallID: call.ID, Args: args},
+				protocol.ToolResultItem{ToolCallID: call.ID, Text: blocked},
+			); err != nil {
+				return err
+			}
 			if r.renderer != nil {
 				r.renderer.ToolCall(call.Name, reactToolSummary(args))
 				r.renderer.ToolResult(call.Name, blocked, "", true)
 			}
-			r.session.AppendNativeToolResult(call.ID, blocked)
 			r.updatePlanWorkflow(call.Name, args, "", true)
 			r.updateSameFileSearchWorkflow(call.Name, args, true)
 			continue
 		}
 
 		toolRef := tool // capture for closure
+		orchestrator := ToolOrchestrator{}
 		execs = append(execs, toolExec{
 			call:       call,
 			tool:       toolRef,
 			args:       args,
 			beforeTool: beforeTool,
-			execute: func() (string, string, error) {
-				res, execErr := toolRef.Execute(ctx, args)
-				diff := ""
-				if toolRef.LastDiff != nil && execErr == nil {
-					diff = toolRef.LastDiff()
-				}
-				return res, diff, execErr
+			execute: func() ToolRunResult {
+				return orchestrator.Run(ctx, ToolRunRequest{
+					TurnID: turn,
+					CallID: call.ID,
+					Tool:   toolRef,
+					Args:   args,
+				})
 			},
 		})
+		if err := r.appendToolCallForTurn(ctx, turn, protocol.ToolCallItem{ToolName: call.Name, ToolCallID: call.ID, Args: args}); err != nil {
+			return err
+		}
 		if r.renderer != nil {
 			r.renderer.ToolCall(call.Name, reactToolSummary(args))
 		}
-		r.session.AppendItem(protocol.Item{
-			Kind:     protocol.ItemToolCall,
-			ToolCall: &protocol.ToolCallItem{ToolName: call.Name, ToolCallID: call.ID, Args: args},
-		})
 	}
 
-	// Phase 2: dispatch tool executions (parallel for safe tools, sequential for pool-mutating)
-	// Pool-related tools (spawn_agent, wait_agent, kill_agent) must run sequentially
-	// to avoid lifecycle ordering races. All other tools can run in parallel.
+	// Phase 2: dispatch tool executions (parallel for safe tools, sequential when
+	// any tool declares serial-only concurrency).
 	type execResult struct {
 		index  int
+		status ToolRunStatus
 		result string
 		diff   string
 		err    error
 	}
 	results := make([]execResult, 0, len(execs))
-	hasPoolTool := false
+	hasSerialTool := false
 	for _, exec := range execs {
-		if toolMutatesPool(exec.call.Name) {
-			hasPoolTool = true
+		if !exec.tool.ParallelSafe() {
+			hasSerialTool = true
 			break
 		}
 	}
-	if hasPoolTool {
+	if hasSerialTool {
 		// Sequential: execute tools one at a time, in order
 		for _, exec := range execs {
-			result, diff, err := exec.execute()
-			results = append(results, execResult{result: result, diff: diff, err: err})
+			run := exec.execute()
+			results = append(results, execResult{status: run.Status, result: run.Result, diff: run.Diff, err: run.Error})
 		}
 	} else {
 		// Parallel: dispatch all tools in goroutines, collect in order
 		type indexedResult struct {
 			index  int
+			status ToolRunStatus
 			result string
 			diff   string
 			err    error
@@ -1511,8 +1614,8 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				result, diff, err := exec.execute()
-				ch <- indexedResult{index: i, result: result, diff: diff, err: err}
+				run := exec.execute()
+				ch <- indexedResult{index: i, status: run.Status, result: run.Result, diff: run.Diff, err: run.Error}
 			}()
 		}
 		wg.Wait()
@@ -1526,44 +1629,278 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 	}
 
 	// Phase 3: apply results in original call order (preserving history ordering)
+	mutated := false
+	var changedFiles []string
 	for i, res := range results {
 		exec := execs[i]
 		call := exec.call
 		args := exec.args
 		beforeTool := exec.beforeTool
 
+		if res.err == nil && res.status != "" && res.status != ToolRunSucceeded {
+			res.err = context.Canceled
+			if res.status == ToolRunTimedOut {
+				res.err = context.DeadlineExceeded
+			}
+		}
 		if res.err != nil {
 			errResult := fmt.Sprintf("error: %v", res.err)
+			appended, appendErr := r.appendNativeToolResultForTurn(ctx, turn, call.ID, errResult)
+			if appendErr != nil {
+				return appendErr
+			}
+			if !appended {
+				if r.hasTurnSnapshot(turn) {
+					return res.err
+				}
+				return nil
+			}
 			r.applyHookOutput(beforeTool)
 			r.applyHookOutput(r.afterToolHookOutput(ctx, call.Name, args, true, errResult))
 			if r.renderer != nil {
 				r.renderer.ToolResult(call.Name, errResult, res.diff, true)
 			}
-			r.session.AppendNativeToolResult(call.ID, errResult)
 			r.updateGitWorkflow(call.Name, args, errResult)
 			r.updatePostDelegationWorkflow(call.Name, errResult, true)
 			if isModelCorrectableToolExecutionError(call.Name, res.err) {
 				continue
 			}
-			r.session.CompleteTurn(turn, "", nil, res.err)
-			return res.err
+			return r.completeTurn(turn, "", nil, res.err)
 		}
 
-		display := truncateToolResult(res.result)
+		toolResult, appendErr := r.toolResultItem(ctx, turn, call.ID, res.result)
+		if appendErr != nil {
+			return appendErr
+		}
+		display := truncateToolResult(toolResult.Text)
+		appended, appendErr := r.appendNativeToolResultItemForTurn(ctx, turn, toolResult)
+		if appendErr != nil {
+			return appendErr
+		}
+		if !appended {
+			return nil
+		}
 		if r.renderer != nil {
 			r.renderer.ToolResult(call.Name, display, res.diff, false)
 		}
-		r.session.AppendNativeToolResult(call.ID, res.result)
 		r.updateGitWorkflow(call.Name, args, res.result)
 		r.updatePlanWorkflow(call.Name, args, res.result, false)
 		r.updateSameFileSearchWorkflow(call.Name, args, false)
 		r.updateValidationWorkflow(call.Name, args, res.result)
 		r.updateRepeatToolCallWorkflow(call.Name, args, res.result)
 		r.updatePostDelegationWorkflow(call.Name, res.result, false)
+		r.recordCheckpointScope(ctx, turn, call.Name, args)
+		if exec.tool.MutatesWorkspace && strings.TrimSpace(res.diff) != "" {
+			mutated = true
+			changedFiles = append(changedFiles, checkpointScopePaths(call.Name, args)...)
+		}
 		r.applyHookOutput(beforeTool)
 		r.applyHookOutput(r.afterToolHookOutput(ctx, call.Name, args, false, ""))
 	}
+	r.runPostEditValidator(ctx, changedFiles, mutated)
 	return nil
+}
+
+func (r *Runner) runPostEditValidator(ctx context.Context, changedFiles []string, mutated bool) {
+	if r == nil || r.postEditValidator == nil || !mutated {
+		return
+	}
+	result := r.postEditValidator.Validate(ctx, PostEditValidationRequest{ChangedFiles: uniqueStrings(changedFiles)})
+	if result.Err == nil {
+		return
+	}
+	output := strings.TrimSpace(result.Output)
+	message := fmt.Sprintf("Runtime diagnostic feedback (not a user instruction): Post-edit validation failed after %s: %v", result.Duration.Round(time.Millisecond), result.Err)
+	if output != "" {
+		message += "\n\n" + output
+	}
+	if err := r.session.AppendUserMessage(message); err != nil && r.progress != nil {
+		r.progress("post-edit validation feedback was not persisted: " + err.Error())
+	}
+}
+
+func (r *Runner) ensurePreMutationCheckpoint(ctx context.Context, turn int) {
+	if r == nil || r.session == nil || r.checkpointManager == nil {
+		return
+	}
+	turnID := fmt.Sprintf("turn-%d", turn)
+	if r.checkpointedTurns == nil {
+		r.checkpointedTurns = make(map[string]bool)
+	}
+	if r.checkpointedTurns[turnID] {
+		return
+	}
+	r.checkpointedTurns[turnID] = true
+	cp, err := r.checkpointManager.Create(ctx, turnID)
+	if err != nil {
+		if r.progress != nil {
+			r.progress("workspace checkpoint skipped: " + err.Error())
+		}
+		return
+	}
+	if r.checkpointIDsByTurn == nil {
+		r.checkpointIDsByTurn = make(map[string]string)
+	}
+	r.checkpointIDsByTurn[turnID] = cp.ID
+	if err := r.session.AppendItem(protocol.Item{
+		Kind:   protocol.ItemCheckpoint,
+		TurnID: turnID,
+		Checkpoint: &protocol.CheckpointItem{
+			ID:           cp.ID,
+			Phase:        "created",
+			ChangedFiles: cp.ChangedFiles,
+		},
+	}); err != nil && r.progress != nil {
+		r.progress("workspace checkpoint item was not persisted: " + err.Error())
+	}
+}
+
+func (r *Runner) recordCheckpointScope(ctx context.Context, turn int, toolName string, args map[string]any) {
+	if r == nil || r.checkpointManager == nil || r.checkpointIDsByTurn == nil {
+		return
+	}
+	checkpointID := r.checkpointIDsByTurn[fmt.Sprintf("turn-%d", turn)]
+	if checkpointID == "" {
+		return
+	}
+	paths := checkpointScopePaths(toolName, args)
+	if len(paths) == 0 {
+		return
+	}
+	if err := r.checkpointManager.RecordChangedFiles(ctx, checkpointID, paths); err != nil && r.progress != nil {
+		r.progress("workspace checkpoint scope skipped: " + err.Error())
+	}
+}
+
+func checkpointScopePaths(toolName string, args map[string]any) []string {
+	switch toolName {
+	case "write_file", "edit_file", "artifact_write":
+		if path, _ := args["path"].(string); strings.TrimSpace(path) != "" {
+			return []string{strings.TrimSpace(path)}
+		}
+	case "apply_patch":
+		patch, _ := args["patch"].(string)
+		return pathsFromPatch(patch)
+	}
+	return nil
+}
+
+func pathsFromPatch(patch string) []string {
+	var paths []string
+	for _, line := range strings.Split(patch, "\n") {
+		for _, prefix := range []string{"+++ b/", "--- a/"} {
+			if strings.HasPrefix(line, prefix) {
+				path := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+				if path != "/dev/null" {
+					paths = append(paths, path)
+				}
+			}
+		}
+	}
+	return uniqueStrings(paths)
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	return result
+}
+
+func isCheckpointMutatingTool(name string) bool {
+	switch name {
+	case "write_file", "edit_file", "apply_patch", "artifact_write", "git_commit", "run_command", "exec_session_write", "command_write_stdin":
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *Runner) ensureTurnCanMutate(ctx context.Context, turn int) error {
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if r == nil || r.session == nil {
+		return nil
+	}
+	turnID := fmt.Sprintf("turn-%d", turn)
+	if !r.session.IsActiveTurn(turnID) {
+		return staleTurnError(turnID)
+	}
+	return nil
+}
+
+func (r *Runner) appendToolCallForTurn(ctx context.Context, turn int, toolCall protocol.ToolCallItem) error {
+	if err := r.ensureTurnCanMutate(ctx, turn); err != nil {
+		return err
+	}
+	if r == nil || r.session == nil {
+		return nil
+	}
+	return r.session.AppendToolCallForTurn(fmt.Sprintf("turn-%d", turn), toolCall)
+}
+
+func (r *Runner) appendFailureAndToolResultForTurn(ctx context.Context, turn int, failure protocol.FailureItem, toolCall protocol.ToolCallItem, result protocol.ToolResultItem) error {
+	if err := r.ensureTurnCanMutate(ctx, turn); err != nil {
+		return err
+	}
+	if r == nil || r.session == nil {
+		return nil
+	}
+	return r.session.AppendFailureAndToolResultForTurn(fmt.Sprintf("turn-%d", turn), failure, toolCall, result)
+}
+
+func (r *Runner) hasTurnSnapshot(turn int) bool {
+	if r.session == nil {
+		return false
+	}
+	active, ok := r.session.ActiveTurnSnapshot()
+	return ok && active.ID == fmt.Sprintf("turn-%d", turn)
+}
+
+func (r *Runner) appendNativeToolResultForTurn(ctx context.Context, turn int, toolCallID, result string) (bool, error) {
+	return r.appendNativeToolResultItemForTurn(ctx, turn, protocol.ToolResultItem{ToolCallID: toolCallID, Text: result})
+}
+
+func (r *Runner) appendNativeToolResultItemForTurn(ctx context.Context, turn int, result protocol.ToolResultItem) (bool, error) {
+	if r.session == nil {
+		return false, nil
+	}
+	turnID := fmt.Sprintf("turn-%d", turn)
+	if r.session.IsActiveTurn(turnID) {
+		err := r.session.AppendToolResultForTurn(turnID, result)
+		if errors.Is(err, ErrStaleTurn) {
+			return false, nil
+		}
+		return err == nil, err
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return false, nil
+	}
+	return false, staleTurnError(turnID)
+}
+
+func (r *Runner) toolResultItem(ctx context.Context, turn int, toolCallID, result string) (protocol.ToolResultItem, error) {
+	item := protocol.ToolResultItem{ToolCallID: toolCallID, Text: result}
+	if r == nil || r.outputStore == nil || len(result) <= r.outputStoreThresholdBytes {
+		return item, nil
+	}
+	handle, err := r.outputStore.Put(ctx, "session", []byte(result))
+	if err != nil {
+		return protocol.ToolResultItem{}, err
+	}
+	item.Handle = handle.ID
+	item.OriginalBytes = handle.Bytes
+	item.SHA256 = handle.SHA256
+	item.Text = fmt.Sprintf("Tool output stored out-of-band. Handle: %s. Size: %d bytes. SHA256: %s. Retrieval by handle will be available later.", handle.ID, handle.Bytes, handle.SHA256)
+	return item, nil
 }
 
 func validateToolArgs(tool agenttools.Tool, args map[string]any) string {
@@ -1678,17 +2015,6 @@ func isModelCorrectableToolExecutionError(name string, err error) bool {
 	}
 	switch name {
 	case "ask_user_question":
-		return true
-	default:
-		return false
-	}
-}
-
-// toolMutatesPool returns true for tools that modify agent pool state and must run
-// sequentially to avoid lifecycle ordering races.
-func toolMutatesPool(name string) bool {
-	switch name {
-	case "spawn_agent", "wait_agent", "get_agent_output", "kill_agent":
 		return true
 	default:
 		return false
