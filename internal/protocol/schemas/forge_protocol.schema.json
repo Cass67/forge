@@ -7,6 +7,27 @@
       "format": "date-time",
       "type": "string"
     },
+    "checkpoint": {
+      "additionalProperties": false,
+      "properties": {
+        "changed_files": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "error": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "phase": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "compaction": {
       "additionalProperties": false,
       "properties": {
@@ -64,6 +85,7 @@
         "failure",
         "stats",
         "compaction",
+        "checkpoint",
         "turn_complete"
       ],
       "type": "string"
@@ -146,11 +168,17 @@
         "diff": {
           "type": "string"
         },
+        "handle": {
+          "type": "string"
+        },
         "is_error": {
           "type": "boolean"
         },
         "original_bytes": {
           "type": "integer"
+        },
+        "sha256": {
+          "type": "string"
         },
         "text": {
           "type": "string"

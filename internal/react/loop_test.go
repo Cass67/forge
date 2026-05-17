@@ -5072,7 +5072,9 @@ func TestRunnerRequiresWaitForOutstandingAgentDuringDelegationTurn(t *testing.T)
 func TestRunnerPromptIncludesOutstandingAgentStatus(t *testing.T) {
 	session := NewSession()
 	session.RecordInput("ask three agents to review the codebase")
-	session.AppendAssistantWithToolCalls([]llm.NativeToolCall{{ID: "spawn-1", Name: "spawn_agent", ArgsJSON: `{}`}})
+	if err := session.AppendAssistantWithToolCalls([]llm.NativeToolCall{{ID: "spawn-1", Name: "spawn_agent", ArgsJSON: `{}`}}); err != nil {
+		t.Fatal(err)
+	}
 	if err := session.AppendNativeToolResult("spawn-1", `{"id":"agent-1","role":"code-reviewer","status":"running"}`); err != nil {
 		t.Fatal(err)
 	}
