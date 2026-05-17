@@ -547,7 +547,9 @@ func (r *Runner) tryDirectLastResponseMarkdownWrite(ctx context.Context, turn in
 	}
 	call := llm.NativeToolCall{ID: "direct_write_last_response_1", Name: "write_file", ArgsJSON: string(args)}
 	r.ensurePreMutationCheckpointForCalls(ctx, turn, []llm.NativeToolCall{call})
-	r.session.AppendAssistantToolTurn("", []llm.NativeToolCall{call})
+	if err := r.session.AppendAssistantToolTurn("", []llm.NativeToolCall{call}); err != nil {
+		return true, err
+	}
 	if err := r.executeNativeToolCalls(ctx, turn, []llm.NativeToolCall{call}); err != nil {
 		return true, err
 	}
@@ -874,7 +876,9 @@ func (r *Runner) writeCompletedAgentResultFallback(ctx context.Context, turn int
 	call := llm.NativeToolCall{ID: "direct_write_completed_agents_1", Name: "write_file", ArgsJSON: string(args)}
 	r.pendingRetryPrompt = ""
 	r.ensurePreMutationCheckpointForCalls(ctx, turn, []llm.NativeToolCall{call})
-	r.session.AppendAssistantToolTurn("", []llm.NativeToolCall{call})
+	if err := r.session.AppendAssistantToolTurn("", []llm.NativeToolCall{call}); err != nil {
+		return err
+	}
 	if err := r.executeNativeToolCalls(ctx, turn, []llm.NativeToolCall{call}); err != nil {
 		return err
 	}
@@ -1304,7 +1308,9 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 		safePreamble := redactRuntimeText(preamble)
 		reasoning := strings.TrimSpace(reasoningBuf.String())
 		r.ensurePreMutationCheckpointForCalls(ctx, turn, toolCalls)
-		r.session.AppendAssistantToolTurn(safePreamble, toolCalls)
+		if err := r.session.AppendAssistantToolTurn(safePreamble, toolCalls); err != nil {
+			return nil, err
+		}
 		if reasoning != "" {
 			r.session.SetLastAssistantReasoning(reasoning)
 		}

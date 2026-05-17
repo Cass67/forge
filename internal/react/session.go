@@ -774,15 +774,15 @@ func (s *Session) appendQueuedUserInput(text string) {
 
 // AppendAssistantWithToolCalls records an assistant message that contains native
 // tool calls (may have empty text content). Used by the native tool calling path.
-func (s *Session) AppendAssistantWithToolCalls(calls []llm.NativeToolCall) {
-	s.AppendAssistantToolTurn("", calls)
+func (s *Session) AppendAssistantWithToolCalls(calls []llm.NativeToolCall) error {
+	return s.AppendAssistantToolTurn("", calls)
 }
 
 // AppendAssistantToolTurn records an assistant message that may include both a
 // short natural-language preamble and native tool calls.
-func (s *Session) AppendAssistantToolTurn(text string, calls []llm.NativeToolCall) {
+func (s *Session) AppendAssistantToolTurn(text string, calls []llm.NativeToolCall) error {
 	if s == nil || len(calls) == 0 {
-		return
+		return nil
 	}
 	s.mu.Lock()
 	text = redactRuntimeText(strings.TrimSpace(text))
@@ -810,7 +810,7 @@ func (s *Session) AppendAssistantToolTurn(text string, calls []llm.NativeToolCal
 	}
 	sink := s.durableSink
 	s.mu.Unlock()
-	s.persistDurableItems(items, sink)
+	return s.persistDurableItems(items, sink)
 }
 
 func nativeToolCallItem(call llm.NativeToolCall) protocol.Item {

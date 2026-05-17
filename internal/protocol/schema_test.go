@@ -30,3 +30,31 @@ func TestGeneratedSchemasHaveStableEnvelopeFields(t *testing.T) {
 		}
 	}
 }
+
+func TestGeneratedSchemaIncludesDurableRuntimeItems(t *testing.T) {
+	schema := GenerateProtocolSchema()
+	props := schema["properties"].(JSONSchema)
+	kind := props["kind"].(JSONSchema)
+	if !containsString(kind["enum"].([]string), string(ItemCheckpoint)) {
+		t.Fatalf("kind enum missing %q: %#v", ItemCheckpoint, kind["enum"])
+	}
+	if _, ok := props["checkpoint"]; !ok {
+		t.Fatalf("schema properties missing checkpoint: %#v", props)
+	}
+	toolResult := props["tool_result"].(JSONSchema)
+	toolResultProps := toolResult["properties"].(map[string]any)
+	for _, field := range []string{"handle", "sha256", "original_bytes"} {
+		if _, ok := toolResultProps[field]; !ok {
+			t.Fatalf("tool_result schema missing %s: %#v", field, toolResultProps)
+		}
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}

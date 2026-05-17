@@ -52,6 +52,20 @@ func TestSessionRecordsDurableAppendFailure(t *testing.T) {
 	}
 }
 
+func TestAppendAssistantToolTurnReturnsDurableAppendFailure(t *testing.T) {
+	s := NewSession()
+	s.SetDurableSink(failingDurableSink{err: errors.New("disk full")})
+	s.RecordInput("inspect")
+
+	err := s.AppendAssistantToolTurn("checking", []llm.NativeToolCall{{ID: "call-1", Name: "read_file", ArgsJSON: `{"path":"README.md"}`}})
+	if err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("AppendAssistantToolTurn error = %v, want durable append failure", err)
+	}
+	if got := s.Snapshot().LastDurableError; got != "disk full" {
+		t.Fatalf("LastDurableError = %q, want disk full", got)
+	}
+}
+
 func mustAppendAssistantMessage(t testing.TB, s *Session, text string) {
 	t.Helper()
 	if err := s.AppendAssistantMessage(text); err != nil {
@@ -115,7 +129,9 @@ func TestSessionPersistsNativeToolResultDurableItem(t *testing.T) {
 	s := NewSession()
 	s.SetDurableSink(sink)
 	s.RecordInput("run ls")
-	s.AppendAssistantWithToolCalls([]llm.NativeToolCall{{ID: "c1", Name: "run_command", ArgsJSON: `{"command":"ls"}`}})
+	if err := s.AppendAssistantWithToolCalls([]llm.NativeToolCall{{ID: "c1", Name: "run_command", ArgsJSON: `{"command":"ls"}`}}); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := s.AppendNativeToolResult("c1", "file1.go"); err != nil {
 		t.Fatal(err)
@@ -208,7 +224,9 @@ func TestSessionDurableSinkOwnsPersistedThreadIdentity(t *testing.T) {
 	if err := s.AppendAssistantMessage("I'll run it."); err != nil {
 		t.Fatal(err)
 	}
-	s.AppendAssistantWithToolCalls([]llm.NativeToolCall{{ID: "c1", Name: "run_command", ArgsJSON: `{"command":"false"}`}})
+	if err := s.AppendAssistantWithToolCalls([]llm.NativeToolCall{{ID: "c1", Name: "run_command", ArgsJSON: `{"command":"false"}`}}); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.AppendNativeToolResult("c1", "exit status 1"); err != nil {
 		t.Fatal(err)
 	}
