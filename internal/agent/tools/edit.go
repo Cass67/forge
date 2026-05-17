@@ -18,7 +18,9 @@ func NewEditFile(workDir string, approve ApprovalFunc, policies ...SecretPolicy)
 			{Name: "old_text", Type: "string", Description: "exact text to find (must be unique in file)", Required: true},
 			{Name: "new_text", Type: "string", Description: "replacement text", Required: true},
 		},
-		AutoApprove: false,
+		AutoApprove:      false,
+		Concurrency:      ToolConcurrencySerial,
+		MutatesWorkspace: true,
 		LastDiff: func() string {
 			d := lastDiff
 			lastDiff = ""
@@ -76,10 +78,12 @@ func NewEditFile(workDir string, approve ApprovalFunc, policies ...SecretPolicy)
 				return "", err
 			}
 			if !approved {
+				lastDiff = ""
 				return "edit_file denied by user", nil
 			}
 
 			if err := os.WriteFile(resolved, []byte(newContent), 0o644); err != nil {
+				lastDiff = ""
 				return fmt.Sprintf("error writing file: %v", err), nil
 			}
 

@@ -232,6 +232,9 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 		CommandOutput:  tools.SecretPolicyMode(cfg.Security.Secrets.CommandOutput),
 		ApprovalDetail: tools.SecretPolicyMode(cfg.Security.Secrets.ApprovalDetail),
 	}
+	if outputStore := configuredOutputStore(cfg); outputStore != nil {
+		reg.Register(tools.NewReadOutput(outputStore, secretPolicy))
+	}
 	reg.Register(tools.NewReadFile(workDir, secretPolicy))
 	reg.Register(tools.NewWriteFile(workDir, approve, secretPolicy))
 	reg.Register(tools.NewEditFile(workDir, approve, secretPolicy))
@@ -313,6 +316,13 @@ func configureDurableSessionSink(cfg *config.Config, session *reactruntime.Sessi
 	if metadataErr != nil {
 		session.RecordDurableError(metadataErr)
 	}
+}
+
+func configuredOutputStore(cfg *config.Config) sessionstore.OutputStore {
+	if cfg == nil || strings.TrimSpace(cfg.Session.OutputDir) == "" {
+		return nil
+	}
+	return sessionstore.NewFileOutputStore(cfg.Session.OutputDir)
 }
 
 func durableThreadID(session *reactruntime.Session) string {
@@ -430,6 +440,7 @@ func RunChatLive(setup *ChatSetup) {
 		CompactionMaxFailures:    setup.Config.Resilience.CompactionMaxFailures,
 		Interactive:              true,
 		ToolThrashCircuitBreaker: setup.Config.Resilience.ToolThrashCircuitBreaker,
+		OutputStore:              configuredOutputStore(setup.Config),
 	})
 	registerReactDelegationTools(reg, setup, baseReg, approve, evRenderer, pluginManager, session)
 
@@ -761,6 +772,7 @@ func RunChatConsole(setup *ChatSetup) {
 		CompactionMaxFailures:    setup.Config.Resilience.CompactionMaxFailures,
 		Interactive:              true,
 		ToolThrashCircuitBreaker: setup.Config.Resilience.ToolThrashCircuitBreaker,
+		OutputStore:              configuredOutputStore(setup.Config),
 	})
 	registerReactDelegationTools(reg, setup, baseReg, approve, nil, pluginManager, session)
 
@@ -925,6 +937,7 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 			CompactionMaxFailures:    setup.Config.Resilience.CompactionMaxFailures,
 			Interactive:              false,
 			ToolThrashCircuitBreaker: setup.Config.Resilience.ToolThrashCircuitBreaker,
+			OutputStore:              configuredOutputStore(setup.Config),
 		})
 		if err := childRunner.Run(ctx, task); err != nil {
 			childRenderer.Info(fmt.Sprintf("[%s] cancelled", role))

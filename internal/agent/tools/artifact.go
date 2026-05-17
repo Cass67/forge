@@ -131,7 +131,9 @@ func NewArtifactWrite(runtime *PreviewRuntime) Tool {
 			{Name: "content", Type: "string", Description: "full file content", Required: true},
 			{Name: "mime_type", Type: "string", Description: "optional MIME type override", Required: false},
 		},
-		AutoApprove: false,
+		AutoApprove:      false,
+		Concurrency:      ToolConcurrencySerial,
+		MutatesWorkspace: true,
 		LastDiff: func() string {
 			diff := lastDiff
 			lastDiff = ""
@@ -178,14 +180,17 @@ func NewArtifactWrite(runtime *PreviewRuntime) Tool {
 					return "", err
 				}
 				if !approved {
+					lastDiff = ""
 					return "artifact_write denied by user", nil
 				}
 			}
 
 			if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
+				lastDiff = ""
 				return "", fmt.Errorf("create artifact directories: %w", err)
 			}
 			if err := os.WriteFile(resolved, []byte(content), 0o644); err != nil {
+				lastDiff = ""
 				return "", fmt.Errorf("write artifact: %w", err)
 			}
 

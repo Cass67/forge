@@ -152,6 +152,35 @@ func TestManagerPromptsForPluginToolApproval(t *testing.T) {
 	}
 }
 
+func TestManagerPluginToolApprovalCarriesExecutionContext(t *testing.T) {
+	m := newTestManager(t, config.PluginConfig{
+		ID:               "demo",
+		Command:          pluginHelperCommand(),
+		Env:              map[string]string{"FORGE_PLUGIN_HELPER": "1"},
+		StartupTimeoutMS: 1000,
+		RequestTimeoutMS: 1000,
+	})
+	defer func() { _ = m.Close() }()
+
+	reg := agenttools.NewRegistry()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.RegisterTools(reg, func(action agenttools.Action) (bool, error) {
+		if action.Context != ctx {
+			t.Fatalf("approval action context = %#v, want execution context", action.Context)
+		}
+		return false, nil
+	})
+	tool, ok := reg.Get("plugin__demo__echo")
+	if !ok {
+		t.Fatal("expected plugin echo tool to be registered")
+	}
+
+	if _, err := tool.Execute(ctx, map[string]any{"message": "hello"}); err != nil {
+		t.Fatalf("plugin tool call: %v", err)
+	}
+}
+
 func TestManagerExecutesApprovedPluginTool(t *testing.T) {
 	m := newTestManager(t, config.PluginConfig{
 		ID:               "demo",

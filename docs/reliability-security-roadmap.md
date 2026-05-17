@@ -63,6 +63,20 @@ Forge now has real foundations in place:
 
 The remaining gap is acceptance coverage. The core state machines now have unit coverage, but several live harness checks still need repeatable provider-backed evidence.
 
+## 2026-05-17 Fireproof Stability Kernel
+
+The fireproof-stability work adds a compact recovery kernel around the React loop and session store:
+
+- Active turn invariant: the runtime owns at most one active turn, propagates its context to model/tool work, and clears it only at terminal completion, failure, cancellation, or interruption.
+- Durable event log: ordered protocol items record turn context, messages, tool calls/results, retries, failures, stats, compactions, checkpoints, and turn-complete markers.
+- Tool timeout/cancellation: native tools run through a bounded orchestrator with explicit `succeeded`, `failed`, `timed_out`, and `cancelled` outcomes.
+- Output handles and `read_output`: large tool outputs are stored by verified handle with byte/hash metadata; `read_output` returns bounded, redacted slices without bloating the transcript.
+- Checkpoints: mutating tools create one pre-mutation checkpoint per turn and persist changed-file scope for targeted restore.
+- Post-edit diagnostics: configured validators run after mutating tools with timeout/output caps and feed failures back as runtime diagnostic feedback.
+- Resumable replay: session replay reconstructs completed turns and marks non-terminal turns with activity as `resumable`, while rejecting corrupt duplicate terminal records.
+
+Together these changes make interrupted or long-running sessions observable, cancellable, and recoverable without relying on transcript guessing.
+
 ## Roadmap Status Legend
 
 - `[ ]` not started
