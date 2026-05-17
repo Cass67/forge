@@ -77,6 +77,7 @@ func NewSpawnAgent(pool *react.AgentPool) agenttools.Tool {
 func inferWorkDirFromTask(task string) string {
 	for _, field := range strings.Fields(task) {
 		path := strings.Trim(field, "`'\".,;:()[]{}<>")
+		path = expandHomePath(path)
 		if !filepath.IsAbs(path) {
 			continue
 		}
@@ -90,6 +91,20 @@ func inferWorkDirFromTask(task string) string {
 		return filepath.Dir(path)
 	}
 	return ""
+}
+
+func expandHomePath(path string) string {
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil || strings.TrimSpace(home) == "" {
+			return path
+		}
+		if path == "~" {
+			return home
+		}
+		return filepath.Join(home, strings.TrimPrefix(path, "~/"))
+	}
+	return path
 }
 
 func readOnlyAgentShouldSanitizeTask(agentDef *react.AgentDefinition, task string) bool {
