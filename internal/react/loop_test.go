@@ -1480,6 +1480,48 @@ func (d *nativeToolCallDriver) StreamWithToolsOptions(_ context.Context, msgs []
 	return nil
 }
 
+type promptPressureDriver struct {
+	maxToolContentBytes int
+	sawCompactedTool    bool
+	callCount           int
+	toolCallsBeforeDone int
+}
+
+func (d *promptPressureDriver) Name() string { return "prompt-pressure-driver" }
+
+func (d *promptPressureDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
+	close(out)
+	return errors.New("Stream should not be called on a NativeToolCaller driver")
+}
+
+func (d *promptPressureDriver) StreamWithTools(_ context.Context, msgs []llm.Message, tools []llm.ToolDef, out chan<- llm.Token) error {
+	return d.StreamWithToolsOptions(context.Background(), msgs, tools, llm.NativeToolOptions{}, out)
+}
+
+func (d *promptPressureDriver) StreamWithToolsOptions(_ context.Context, msgs []llm.Message, _ []llm.ToolDef, _ llm.NativeToolOptions, out chan<- llm.Token) error {
+	defer close(out)
+	d.callCount++
+	toolBytes := 0
+	for _, msg := range msgs {
+		if msg.Role != llm.RoleTool {
+			continue
+		}
+		toolBytes += len(msg.Content)
+		if strings.Contains(msg.Content, "tool result compacted") {
+			d.sawCompactedTool = true
+		}
+	}
+	if toolBytes > d.maxToolContentBytes {
+		d.maxToolContentBytes = toolBytes
+	}
+	if d.callCount <= d.toolCallsBeforeDone {
+		out <- llm.Token{ToolCall: &llm.NativeToolCall{ID: fmt.Sprintf("status-%d", d.callCount), Name: "git_status", ArgsJSON: `{}`}}
+		return nil
+	}
+	out <- llm.Token{Text: "Finished after bounded tool context."}
+	return nil
+}
+
 func TestRunnerRendersToolCallAndStatsBeforeToolExecution(t *testing.T) {
 	driver := &nativeToolCallDriver{}
 	renderer := &recordingRenderer{}
@@ -1633,6 +1675,31 @@ func TestRunnerNativeToolCallingPath(t *testing.T) {
 		if roles[i] != r {
 			t.Fatalf("history[%d] role = %q, want %q", i, roles[i], r)
 		}
+	}
+}
+
+func TestRunnerProactivelyCompactsSameTurnToolResultsBeforeProviderCall(t *testing.T) {
+	driver := &promptPressureDriver{toolCallsBeforeDone: 12}
+	reg := agenttools.NewRegistry()
+	largeButBelowSingleResultThreshold := strings.Repeat("x", 40*1024)
+	reg.Register(agenttools.Tool{
+		Name:        "git_status",
+		Description: "git status",
+		AutoApprove: true,
+		Execute: func(context.Context, map[string]any) (string, error) {
+			return largeButBelowSingleResultThreshold, nil
+		},
+	})
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: NewSession()})
+
+	if err := r.Run(context.Background(), "check the repo repeatedly"); err != nil {
+		t.Fatal(err)
+	}
+	if !driver.sawCompactedTool {
+		t.Fatal("provider never saw compacted tool-result context during long same-turn loop")
+	}
+	if driver.maxToolContentBytes > 256*1024 {
+		t.Fatalf("max tool content sent to provider = %d bytes, want bounded below 256KiB", driver.maxToolContentBytes)
 	}
 }
 

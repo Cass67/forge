@@ -216,10 +216,25 @@ func TestBuildStatusLine2ShowsContextForOpenRouterModels(t *testing.T) {
 		},
 	})
 
-	for _, want := range []string{"ready", "session 150 tok", "est ctx 150/131072"} {
+	for _, want := range []string{"ready", "session 150 tok", "ctx max 131072"} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("status line missing %q: %s", want, line)
 		}
+	}
+	if strings.Contains(line, "est ctx") || strings.Contains(line, "150/131072") {
+		t.Fatalf("status line should not present cumulative session usage as current context: %s", line)
+	}
+}
+
+func TestBuildStatusLine2ShowsExplicitContextUsageWhenAvailable(t *testing.T) {
+	line := buildStatusLine2(chatStatusData{
+		Status:       "ready",
+		ContextUsed:  1200,
+		ContextLimit: 8000,
+	})
+
+	if !strings.Contains(line, "ctx 1200/8000") {
+		t.Fatalf("status line should show explicit context usage, got: %s", line)
 	}
 }
 

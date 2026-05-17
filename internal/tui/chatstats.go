@@ -129,10 +129,12 @@ func buildContextSummary(data chatStatusData) string {
 	used, limit := deriveContextUsage(data.SessionUsage, data.ModelInfo, data.ContextUsed, data.ContextLimit)
 	parts := make([]string, 0, 2)
 	switch {
+	case used > 0 && limit > 0:
+		parts = append(parts, fmt.Sprintf("ctx %d/%d", used, limit))
 	case limit > 0:
-		parts = append(parts, fmt.Sprintf("est ctx %d/%d", used, limit))
+		parts = append(parts, fmt.Sprintf("ctx max %d", limit))
 	case used > 0:
-		parts = append(parts, fmt.Sprintf("est ctx %d", used))
+		parts = append(parts, fmt.Sprintf("ctx %d", used))
 	}
 	if mode := strings.TrimSpace(data.RequestMode); mode != "" {
 		parts = append(parts, mode)
@@ -510,11 +512,8 @@ func (m ChatModel) statusSnapshot() chatStatusData {
 	return data
 }
 
-func deriveContextUsage(session llm.Usage, info *modelcatalog.ModelInfo, existingUsed, existingLimit int) (used, limit int) {
+func deriveContextUsage(_ llm.Usage, info *modelcatalog.ModelInfo, existingUsed, existingLimit int) (used, limit int) {
 	used = existingUsed
-	if approx := session.InputTokens + session.OutputTokens; approx > used {
-		used = approx
-	}
 	limit = existingLimit
 	if info != nil && info.ContextWindow > 0 {
 		limit = info.ContextWindow

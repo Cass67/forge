@@ -17,11 +17,12 @@ const (
 )
 
 type CompactionDecision struct {
-	Mode       CompactionMode
-	Reason     string
-	KeepTurns  int
-	DropTurns  int
-	SummaryLen int
+	Mode            CompactionMode
+	Reason          string
+	KeepTurns       int
+	DropTurns       int
+	SummaryLen      int
+	ToolResultBytes int
 }
 
 type CompactionHookPayload struct {
@@ -35,10 +36,12 @@ type CompactionHookPayload struct {
 }
 
 type CompactionConfig struct {
-	KeepTurns            int
-	HistoryPressureTurns int
-	LargeToolResultBytes int
-	MaxFailures          int
+	KeepTurns             int
+	HistoryPressureTurns  int
+	LargeToolResultBytes  int
+	PromptBudgetBytes     int
+	PromptToolResultBytes int
+	MaxFailures           int
 }
 
 type CompactionManager struct {
@@ -56,6 +59,12 @@ func NewCompactionManager(cfg CompactionConfig) *CompactionManager {
 	if cfg.LargeToolResultBytes < 1 {
 		cfg.LargeToolResultBytes = 64 * 1024
 	}
+	if cfg.PromptBudgetBytes < 1 {
+		cfg.PromptBudgetBytes = 256 * 1024
+	}
+	if cfg.PromptToolResultBytes < 1 {
+		cfg.PromptToolResultBytes = 4 * 1024
+	}
 	return &CompactionManager{cfg: cfg}
 }
 
@@ -72,6 +81,55 @@ func (m *CompactionManager) Decide(snapshot SessionSnapshot) CompactionDecision 
 		return CompactionDecision{Mode: CompactionSummarize, Reason: "history pressure", KeepTurns: m.cfg.KeepTurns}
 	}
 	return CompactionDecision{Mode: CompactionNone, Reason: "below threshold", KeepTurns: m.cfg.KeepTurns}
+}
+
+func (m *CompactionManager) DecidePromptPressure(messages []llm.Message) CompactionDecision {
+	if m == nil || m.CircuitOpen() || m.cfg.PromptBudgetBytes < 1 {
+		return CompactionDecision{Mode: CompactionNone, Reason: "compaction unavailable"}
+	}
+	if estimatePromptBytes(messages) <= m.cfg.PromptBudgetBytes {
+		return CompactionDecision{Mode: CompactionNone, Reason: "below prompt budget", KeepTurns: m.cfg.KeepTurns}
+	}
+	for _, msg := range messages {
+		if msg.Role == llm.RoleTool && len(msg.Content) > m.cfg.PromptToolResultBytes {
+			return CompactionDecision{Mode: CompactionMicro, Reason: "prompt budget", KeepTurns: m.cfg.KeepTurns, ToolResultBytes: m.cfg.PromptToolResultBytes}
+		}
+	}
+	if !promptHasOlderTurns(messages) {
+		return CompactionDecision{Mode: CompactionNone, Reason: "prompt budget current turn only", KeepTurns: m.cfg.KeepTurns}
+	}
+	return CompactionDecision{Mode: CompactionSummarize, Reason: "prompt budget", KeepTurns: m.cfg.KeepTurns}
+}
+
+func promptHasOlderTurns(messages []llm.Message) bool {
+	seenUsers := 0
+	for _, msg := range messages {
+		if msg.Role != llm.RoleUser {
+			continue
+		}
+		seenUsers++
+		if seenUsers > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func estimatePromptBytes(messages []llm.Message) int {
+	total := 0
+	for _, msg := range messages {
+		total += len(msg.Role) + len(msg.Content) + len(msg.ReasoningContent) + len(msg.ToolCallID) + 16
+		for _, part := range msg.ContentParts {
+			total += len(part.Type) + len(part.Text)
+			if part.Image != nil {
+				total += len(part.Image.Path) + len(part.Image.MIMEType) + 32
+			}
+		}
+		for _, call := range msg.ToolCalls {
+			total += len(call.ID) + len(call.Name) + len(call.ArgsJSON) + 16
+		}
+	}
+	return total
 }
 
 func (m *CompactionManager) Reactive(keep int, reason string) CompactionDecision {
@@ -106,7 +164,11 @@ func (m *CompactionManager) Apply(session *Session, decision CompactionDecision)
 		}
 		return changed
 	case CompactionMicro:
-		changed := MicroCompactLargeToolResults(session, m.cfg.LargeToolResultBytes)
+		maxBytes := decision.ToolResultBytes
+		if maxBytes < 1 {
+			maxBytes = m.cfg.LargeToolResultBytes
+		}
+		changed := MicroCompactLargeToolResults(session, maxBytes)
 		if changed {
 			m.failures = 0
 		}

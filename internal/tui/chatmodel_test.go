@@ -1537,7 +1537,7 @@ func TestChatModelNormalStatsShowsLiveTokenRateBeforeFinalStats(t *testing.T) {
 	}
 }
 
-func TestChatModelNormalStatsShowsContextUsage(t *testing.T) {
+func TestChatModelNormalStatsShowsContextLimitWithoutEstimatingUsage(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{
 		Model: "openai/gpt-5",
 		ModelInfo: func(model string) *modelcatalog.ModelInfo {
@@ -1549,8 +1549,11 @@ func TestChatModelNormalStatsShowsContextUsage(t *testing.T) {
 	m.syncStatusData()
 
 	line := strippedLine(m.renderNormalModeStatsLine(m.theme()))
-	if !strings.Contains(line, "est ctx 83031/128000") {
-		t.Fatalf("normal stats line should show context usage, got %q", line)
+	if !strings.Contains(line, "ctx max 128000") {
+		t.Fatalf("normal stats line should show context limit, got %q", line)
+	}
+	if strings.Contains(line, "est ctx") || strings.Contains(line, "83031/128000") {
+		t.Fatalf("normal stats line should not present cumulative usage as current context, got %q", line)
 	}
 }
 
@@ -1571,7 +1574,7 @@ func TestChatModelViewKeepsContextSummaryOutOfCompactHeader(t *testing.T) {
 	if len(lines) < 1 {
 		t.Fatalf("view missing header: %q", got)
 	}
-	if strings.Contains(lines[0], "session 120 tok") || strings.Contains(lines[0], "est ctx 120/8000") {
+	if strings.Contains(lines[0], "session 120 tok") || strings.Contains(lines[0], "est ctx 120/8000") || strings.Contains(lines[0], "ctx max 8000") {
 		t.Fatalf("compact header should omit context summary: %q", lines[0])
 	}
 }
@@ -1592,7 +1595,7 @@ func TestChatModelViewKeepsBaselineSessionStatsOutOfCompactHeader(t *testing.T) 
 	if len(lines) < 1 {
 		t.Fatalf("view missing header: %q", got)
 	}
-	if strings.Contains(lines[0], "session 0 tok") || strings.Contains(lines[0], "est ctx 0/8000") {
+	if strings.Contains(lines[0], "session 0 tok") || strings.Contains(lines[0], "est ctx 0/8000") || strings.Contains(lines[0], "ctx max 8000") {
 		t.Fatalf("compact header should omit baseline session stats: %q", lines[0])
 	}
 }
