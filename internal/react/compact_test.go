@@ -43,8 +43,8 @@ func TestCompactSessionHistoryTrimsOldTurns(t *testing.T) {
 	session := NewSession()
 	for i := 1; i <= 6; i++ {
 		turn := session.RecordInput(fmt.Sprintf("prompt %d", i))
-		session.AppendAssistantMessage(fmt.Sprintf("answer %d", i))
-		session.CompleteTurn(turn, fmt.Sprintf("answer %d", i), nil, nil)
+		mustAppendAssistantMessage(t, session, fmt.Sprintf("answer %d", i))
+		mustCompleteTurn(t, session, turn, fmt.Sprintf("answer %d", i), nil, nil)
 	}
 
 	changed := CompactSessionHistory(session, 3)
@@ -72,13 +72,15 @@ func TestCompactSessionHistoryTrimsOldTurns(t *testing.T) {
 func TestCompactSessionHistorySummarizesToolsAndErrors(t *testing.T) {
 	session := NewSession()
 	turn := session.RecordInput("inspect repo")
-	session.AppendUserMessage("[list_dir] README.md\ninternal")
-	session.AppendAssistantMessage("repo overview")
-	session.CompleteTurn(turn, "repo overview", []TurnToolCall{{Name: "list_dir"}}, fmt.Errorf("tool timeout"))
+	if err := session.AppendUserMessage("[list_dir] README.md\ninternal"); err != nil {
+		t.Fatal(err)
+	}
+	mustAppendAssistantMessage(t, session, "repo overview")
+	mustCompleteTurn(t, session, turn, "repo overview", []TurnToolCall{{Name: "list_dir"}}, fmt.Errorf("tool timeout"))
 
 	next := session.RecordInput("follow up")
-	session.AppendAssistantMessage("done")
-	session.CompleteTurn(next, "done", nil, nil)
+	mustAppendAssistantMessage(t, session, "done")
+	mustCompleteTurn(t, session, next, "done", nil, nil)
 
 	if !CompactSessionHistory(session, 1) {
 		t.Fatal("expected compaction")
@@ -125,8 +127,8 @@ func TestRunnerDispatchesCompactionHookPayloads(t *testing.T) {
 	session := NewSession()
 	for i := 1; i <= 45; i++ {
 		turn := session.RecordInput(fmt.Sprintf("prompt %d", i))
-		session.AppendAssistantMessage(fmt.Sprintf("answer %d", i))
-		session.CompleteTurn(turn, fmt.Sprintf("answer %d", i), nil, nil)
+		mustAppendAssistantMessage(t, session, fmt.Sprintf("answer %d", i))
+		mustCompleteTurn(t, session, turn, fmt.Sprintf("answer %d", i), nil, nil)
 	}
 	before := session.Snapshot()
 
@@ -235,8 +237,8 @@ func TestRunnerSuccessfulCompactionResetsFailureCircuit(t *testing.T) {
 
 	for i := 1; i <= 45; i++ {
 		turn := session.RecordInput(fmt.Sprintf("prompt %d", i))
-		session.AppendAssistantMessage(fmt.Sprintf("answer %d", i))
-		session.CompleteTurn(turn, fmt.Sprintf("answer %d", i), nil, nil)
+		mustAppendAssistantMessage(t, session, fmt.Sprintf("answer %d", i))
+		mustCompleteTurn(t, session, turn, fmt.Sprintf("answer %d", i), nil, nil)
 	}
 	if !r.applyCompactionDecision(context.Background(), CompactionDecision{Mode: CompactionSummarize, Reason: "success", KeepTurns: 40}) {
 		t.Fatal("expected successful compaction")
@@ -272,8 +274,8 @@ func TestRunnerCompactsBeforeRecordingTriggeringPrompt(t *testing.T) {
 	session := NewSession()
 	for i := 1; i <= 45; i++ {
 		turn := session.RecordInput(fmt.Sprintf("prompt %d", i))
-		session.AppendAssistantMessage(fmt.Sprintf("answer %d", i))
-		session.CompleteTurn(turn, fmt.Sprintf("answer %d", i), nil, nil)
+		mustAppendAssistantMessage(t, session, fmt.Sprintf("answer %d", i))
+		mustCompleteTurn(t, session, turn, fmt.Sprintf("answer %d", i), nil, nil)
 	}
 	var preCompactRecentInputs []string
 	r := NewRunner(Config{
@@ -309,8 +311,8 @@ func TestRunnerReactiveCompactsAndRetriesOnceOnContextError(t *testing.T) {
 	session := NewSession()
 	for i := 1; i <= 45; i++ {
 		turn := session.RecordInput(fmt.Sprintf("prompt %d", i))
-		session.AppendAssistantMessage(fmt.Sprintf("answer %d", i))
-		session.CompleteTurn(turn, fmt.Sprintf("answer %d", i), nil, nil)
+		mustAppendAssistantMessage(t, session, fmt.Sprintf("answer %d", i))
+		mustCompleteTurn(t, session, turn, fmt.Sprintf("answer %d", i), nil, nil)
 	}
 	r := NewRunner(Config{Driver: driver, Session: session})
 
@@ -334,8 +336,8 @@ func TestRunnerReactiveCompactionOnlyRetriesOnce(t *testing.T) {
 	session := NewSession()
 	for i := 1; i <= 45; i++ {
 		turn := session.RecordInput(fmt.Sprintf("prompt %d", i))
-		session.AppendAssistantMessage(fmt.Sprintf("answer %d", i))
-		session.CompleteTurn(turn, fmt.Sprintf("answer %d", i), nil, nil)
+		mustAppendAssistantMessage(t, session, fmt.Sprintf("answer %d", i))
+		mustCompleteTurn(t, session, turn, fmt.Sprintf("answer %d", i), nil, nil)
 	}
 	r := NewRunner(Config{Driver: driver, Session: session})
 
@@ -345,4 +347,42 @@ func TestRunnerReactiveCompactionOnlyRetriesOnce(t *testing.T) {
 	if driver.calls != 2 {
 		t.Fatalf("driver calls = %d, want one retry", driver.calls)
 	}
+}
+
+func TestRunnerContextErrorMicroCompactsLargeActiveToolResultAndRetriesOnce(t *testing.T) {
+	driver := &contextErrorThenSuccessDriver{}
+	session := NewSession()
+	active, _, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = session.EndTurn("turn-1", TurnEndReasonCompleted) }()
+	turn := session.RecordInput("continue after large tool result")
+	if err := session.AppendNativeToolResult("call-1", "Tool output stored out-of-band. Handle: output-ctx. Size: 131072 bytes. SHA256: def456.\n"+strings.Repeat("large output\n", 7000)); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRunner(Config{Driver: driver, Session: session})
+
+	if err := r.runLoop(active.Context, turn); err != nil {
+		t.Fatal(err)
+	}
+	if driver.calls != 2 {
+		t.Fatalf("driver calls = %d, want one context error and one retry", driver.calls)
+	}
+	if got := r.LastResponse(); got != "recovered after compaction" {
+		t.Fatalf("last response = %q", got)
+	}
+	for _, msg := range session.Snapshot().History {
+		if msg.Role != llm.RoleTool || msg.ToolCallID != "call-1" {
+			continue
+		}
+		if len(msg.Content) >= 512 {
+			t.Fatalf("tool result length = %d, want compacted summary", len(msg.Content))
+		}
+		if !strings.Contains(msg.Content, "Handle: output-ctx") {
+			t.Fatalf("tool result = %q, want preserved handle metadata", msg.Content)
+		}
+		return
+	}
+	t.Fatal("compacted tool result not found")
 }

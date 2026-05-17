@@ -21,6 +21,7 @@ const (
 	ItemFailure          ItemKind = "failure"
 	ItemStats            ItemKind = "stats"
 	ItemCompaction       ItemKind = "compaction"
+	ItemCheckpoint       ItemKind = "checkpoint"
 	ItemTurnComplete     ItemKind = "turn_complete"
 )
 
@@ -30,6 +31,7 @@ const (
 	TurnStatusCompleted   TurnStatus = "completed"
 	TurnStatusFailed      TurnStatus = "failed"
 	TurnStatusInterrupted TurnStatus = "interrupted"
+	TurnStatusResumable   TurnStatus = "resumable"
 )
 
 type Item struct {
@@ -49,6 +51,7 @@ type Item struct {
 	Failure      *FailureItem      `json:"failure,omitempty"`
 	Stats        *StatsItem        `json:"stats,omitempty"`
 	Compaction   *CompactionItem   `json:"compaction,omitempty"`
+	Checkpoint   *CheckpointItem   `json:"checkpoint,omitempty"`
 	TurnComplete *TurnCompleteItem `json:"turn_complete,omitempty"`
 }
 
@@ -80,6 +83,8 @@ type ToolResultItem struct {
 	ToolCallID    string `json:"tool_call_id"`
 	Text          string `json:"text,omitempty"`
 	Diff          string `json:"diff,omitempty"`
+	Handle        string `json:"handle,omitempty"`
+	SHA256        string `json:"sha256,omitempty"`
 	IsError       bool   `json:"is_error,omitempty"`
 	Truncated     bool   `json:"truncated,omitempty"`
 	OriginalBytes int    `json:"original_bytes,omitempty"`
@@ -103,11 +108,21 @@ type CompactionItem struct {
 	Summary string `json:"summary,omitempty"`
 }
 
+type CheckpointItem struct {
+	ID           string   `json:"id"`
+	Phase        string   `json:"phase"`
+	ChangedFiles []string `json:"changed_files,omitempty"`
+	Error        string   `json:"error,omitempty"`
+}
+
 type TurnCompleteItem struct {
 	Status     TurnStatus `json:"status"`
 	ResponseID string     `json:"response_id,omitempty"`
 }
 
 func (i Item) IsTerminal() bool {
-	return i.Kind == ItemTurnComplete || i.Kind == ItemFailure
+	if i.Kind == ItemTurnComplete {
+		return true
+	}
+	return i.Kind == ItemFailure && (i.Failure == nil || !i.Failure.Decision.Recoverable)
 }

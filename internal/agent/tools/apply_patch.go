@@ -18,7 +18,9 @@ func NewApplyPatch(workDir string, approve ApprovalFunc, policies ...SecretPolic
 		Parameters: []ParameterDef{
 			{Name: "patch", Type: "string", Description: "unified diff patch to apply", Required: true},
 		},
-		AutoApprove: false,
+		AutoApprove:      false,
+		Concurrency:      ToolConcurrencySerial,
+		MutatesWorkspace: true,
 		LastDiff: func() string {
 			diff := lastDiff
 			lastDiff = ""
@@ -48,6 +50,7 @@ func NewApplyPatch(workDir string, approve ApprovalFunc, policies ...SecretPolic
 				return "", err
 			}
 			if !approved {
+				lastDiff = ""
 				return "apply_patch denied by user", nil
 			}
 
@@ -68,12 +71,14 @@ func NewApplyPatch(workDir string, approve ApprovalFunc, policies ...SecretPolic
 			check := exec.CommandContext(ctx, "git", "apply", "--check", "--recount", "--whitespace=nowarn", tmpPath)
 			check.Dir = workDir
 			if out, err := check.CombinedOutput(); err != nil {
+				lastDiff = ""
 				return fmt.Sprintf("apply_patch failed: %s", strings.TrimSpace(string(out))), nil
 			}
 
 			apply := exec.CommandContext(ctx, "git", "apply", "--recount", "--whitespace=nowarn", tmpPath)
 			apply.Dir = workDir
 			if out, err := apply.CombinedOutput(); err != nil {
+				lastDiff = ""
 				return fmt.Sprintf("apply_patch failed: %s", strings.TrimSpace(string(out))), nil
 			}
 

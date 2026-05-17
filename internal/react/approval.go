@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"forge/internal/agent/tools"
@@ -83,6 +84,8 @@ type ApprovalGate struct {
 	guardianObserve func(GuardianEvent)
 	classifierCtx   func() context.Context
 	updates         []ApprovalUpdate
+	promptMu        sync.Mutex
+	promptOwner     chan struct{}
 	progress        func(string)
 	now             func() time.Time
 	originalBranch  string
@@ -96,11 +99,12 @@ func NewApprovalGate(workDir string, cfg ApprovalConfig, prompt tools.ApprovalFu
 		}
 	}
 	return &ApprovalGate{
-		workDir:  strings.TrimSpace(workDir),
-		cfg:      normalizeApprovalConfig(cfg),
-		prompt:   prompt,
-		progress: progress,
-		now:      time.Now,
+		workDir:     strings.TrimSpace(workDir),
+		cfg:         normalizeApprovalConfig(cfg),
+		prompt:      prompt,
+		promptOwner: make(chan struct{}, 1),
+		progress:    progress,
+		now:         time.Now,
 	}
 }
 
@@ -438,10 +442,16 @@ func (g *ApprovalGate) scopedRuleDecision(action tools.Action) (RuleDecision, bo
 }
 
 func (g *ApprovalGate) promptWithRecordedOutcome(source ApprovalDecisionSource, detail string, action tools.Action) (bool, error) {
+	if action.Context != nil && action.Context.Err() != nil {
+		return false, nil
+	}
 	g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionPrompt, source, detail))
-	approved, err := g.prompt(action)
+	approved, err := g.promptWithContext(action)
 	if err != nil {
 		return false, err
+	}
+	if action.Context != nil && action.Context.Err() != nil {
+		return false, nil
 	}
 	finalDecision := ApprovalDecisionForbidden
 	if approved {
@@ -449,6 +459,80 @@ func (g *ApprovalGate) promptWithRecordedOutcome(source ApprovalDecisionSource, 
 	}
 	g.recordApprovalUpdate(NewApprovalUpdate(finalDecision, ApprovalDecisionSourceUser, detail))
 	return approved, nil
+}
+
+func (g *ApprovalGate) promptWithContext(action tools.Action) (bool, error) {
+	if action.Context == nil {
+		g.acquirePromptOwner()
+		defer g.releasePromptOwner()
+		return g.prompt(action)
+	}
+	if !g.tryAcquirePromptOwner() {
+		return false, nil
+	}
+	type promptResult struct {
+		approved bool
+		err      error
+	}
+	done := make(chan promptResult, 1)
+	go func() {
+		defer g.releasePromptOwner()
+		approved, err := g.prompt(action)
+		done <- promptResult{approved: approved, err: err}
+	}()
+	select {
+	case result := <-done:
+		return result.approved, result.err
+	case <-action.Context.Done():
+		return false, nil
+	}
+}
+
+func (g *ApprovalGate) acquirePromptOwner() {
+	if g == nil {
+		return
+	}
+	g.promptMu.Lock()
+	if g.promptOwner == nil {
+		g.promptOwner = make(chan struct{}, 1)
+	}
+	owner := g.promptOwner
+	g.promptMu.Unlock()
+	owner <- struct{}{}
+}
+
+func (g *ApprovalGate) tryAcquirePromptOwner() bool {
+	if g == nil {
+		return true
+	}
+	g.promptMu.Lock()
+	if g.promptOwner == nil {
+		g.promptOwner = make(chan struct{}, 1)
+	}
+	owner := g.promptOwner
+	g.promptMu.Unlock()
+	select {
+	case owner <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (g *ApprovalGate) releasePromptOwner() {
+	if g == nil {
+		return
+	}
+	g.promptMu.Lock()
+	owner := g.promptOwner
+	g.promptMu.Unlock()
+	if owner == nil {
+		return
+	}
+	select {
+	case <-owner:
+	default:
+	}
 }
 
 func (g *ApprovalGate) emitGuardianEvent(event GuardianEvent) {

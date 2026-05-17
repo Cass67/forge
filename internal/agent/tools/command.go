@@ -38,6 +38,7 @@ func newRunCommand(workDir string, timeoutSecs int, manager *ExecSessionManager,
 			{Name: "command", Type: "string", Description: "command to run", Required: true},
 		},
 		AutoApprove: false,
+		Timeout:     time.Duration(timeoutSecs) * time.Second,
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			command, _ := args["command"].(string)
 			command = normalizePseudoToolCommands(command)

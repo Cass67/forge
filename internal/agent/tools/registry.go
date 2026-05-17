@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"forge/internal/llm"
 	"forge/internal/protocol"
@@ -19,6 +20,15 @@ const (
 	PromptHidden
 )
 
+type ToolConcurrency string
+
+const (
+	ToolConcurrencyParallel ToolConcurrency = "parallel"
+	ToolConcurrencySerial   ToolConcurrency = "serial"
+
+	DefaultToolTimeout = 2 * time.Minute
+)
+
 // Tool defines a single tool the agent can call.
 type Tool struct {
 	Name             string
@@ -27,8 +37,23 @@ type Tool struct {
 	Schema           *llm.ToolSchema
 	PromptVisibility PromptVisibility
 	AutoApprove      bool
+	Concurrency      ToolConcurrency
+	Timeout          time.Duration
+	Detached         bool
+	MutatesWorkspace bool
 	Execute          func(ctx context.Context, args map[string]any) (string, error)
 	LastDiff         func() string // optional: returns diff from last execution, nil if not applicable
+}
+
+func (t Tool) ParallelSafe() bool {
+	return t.Concurrency == "" || t.Concurrency == ToolConcurrencyParallel
+}
+
+func (t Tool) EffectiveTimeout() time.Duration {
+	if t.Timeout > 0 {
+		return t.Timeout
+	}
+	return DefaultToolTimeout
 }
 
 // ParameterDef describes one parameter.

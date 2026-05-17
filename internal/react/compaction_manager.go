@@ -1,6 +1,10 @@
 package react
 
-import "fmt"
+import (
+	"fmt"
+
+	"forge/internal/llm"
+)
 
 type CompactionMode string
 
@@ -60,7 +64,7 @@ func (m *CompactionManager) Decide(snapshot SessionSnapshot) CompactionDecision 
 		return CompactionDecision{Mode: CompactionNone, Reason: "compaction circuit open"}
 	}
 	for _, msg := range snapshot.History {
-		if len(msg.Content) > m.cfg.LargeToolResultBytes {
+		if msg.Role == llm.RoleTool && len(msg.Content) > m.cfg.LargeToolResultBytes {
 			return CompactionDecision{Mode: CompactionMicro, Reason: "large tool result", KeepTurns: m.cfg.KeepTurns}
 		}
 	}
@@ -102,7 +106,11 @@ func (m *CompactionManager) Apply(session *Session, decision CompactionDecision)
 		}
 		return changed
 	case CompactionMicro:
-		return false
+		changed := MicroCompactLargeToolResults(session, m.cfg.LargeToolResultBytes)
+		if changed {
+			m.failures = 0
+		}
+		return changed
 	default:
 		return false
 	}
