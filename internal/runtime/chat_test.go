@@ -1366,6 +1366,18 @@ func TestRegisterReactDelegationToolsGivesSanitizedAuditReadOnlyTools(t *testing
 			t.Fatalf("repo-auditor saw mutating tool %q in %#v", forbidden, driver.toolNames)
 		}
 	}
+	if !messagesContain(driver.messages, "You have repository access through these native tools") || !messagesContain(driver.messages, "git_status") || !messagesContain(driver.messages, "Do not tell the user to run git commands") {
+		t.Fatalf("repo-auditor prompt did not explain tool access: %#v", driver.messages)
+	}
+}
+
+func messagesContain(messages []llm.Message, needle string) bool {
+	for _, msg := range messages {
+		if strings.Contains(msg.Content, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // ── Integration hardening (Task 10) ──────────────────────────────────────────
@@ -1756,6 +1768,7 @@ func (d *kernelNativeTextDriver) StreamWithTools(_ context.Context, _ []llm.Mess
 type captureToolDefsDriver struct {
 	response  string
 	toolNames []string
+	messages  []llm.Message
 }
 
 func (d *captureToolDefsDriver) Name() string { return "capture-tool-defs" }
@@ -1766,8 +1779,9 @@ func (d *captureToolDefsDriver) Stream(_ context.Context, _ []llm.Message, out c
 	return nil
 }
 
-func (d *captureToolDefsDriver) StreamWithTools(_ context.Context, _ []llm.Message, defs []llm.ToolDef, out chan<- llm.Token) error {
+func (d *captureToolDefsDriver) StreamWithTools(_ context.Context, messages []llm.Message, defs []llm.ToolDef, out chan<- llm.Token) error {
 	defer close(out)
+	d.messages = append([]llm.Message(nil), messages...)
 	d.toolNames = d.toolNames[:0]
 	for _, def := range defs {
 		d.toolNames = append(d.toolNames, def.Name)

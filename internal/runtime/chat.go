@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -889,6 +890,7 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 		if childTools == nil {
 			childTools = baseReg.Filter(allowedTools)
 		}
+		toolAccessPrompt := childAgentToolAccessPrompt(childTools)
 		workDirLabel := setup.WorkDir
 		if childWorkDir != "" {
 			workDirLabel = childWorkDir
@@ -896,11 +898,11 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 		if systemPrompt != nil {
 			origPrompt := systemPrompt
 			systemPrompt = func() string {
-				return origPrompt() + "\n\nWorking directory: " + workDirLabel
+				return origPrompt() + "\n\n" + toolAccessPrompt + "\n\nWorking directory: " + workDirLabel
 			}
 		} else {
 			systemPrompt = func() string {
-				return agent.BuildNativeSystemPromptForMode(workDirLabel, "", false)
+				return agent.BuildNativeSystemPromptForMode(workDirLabel, "", false) + "\n\n" + toolAccessPrompt
 			}
 		}
 		childRenderer := agent.NewSilentRenderer(nil)
@@ -968,6 +970,24 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 	reg.Register(reacttools.NewGetAgentOutput(pool))
 	reg.Register(reacttools.NewAgentStatus(pool))
 	reg.Register(reacttools.NewKillAgent(pool))
+}
+
+func childAgentToolAccessPrompt(reg *tools.Registry) string {
+	if reg == nil {
+		return "You have repository access through native tools. Do not tell the user to run git commands because you lack access; use the available tools or report the exact tool/path failure."
+	}
+	names := make([]string, 0, len(reg.All()))
+	for _, tool := range reg.All() {
+		if strings.TrimSpace(tool.Name) != "" {
+			names = append(names, strings.TrimSpace(tool.Name))
+		}
+	}
+	sort.Strings(names)
+	return strings.Join([]string{
+		"You have repository access through these native tools: " + strings.Join(names, ", ") + ".",
+		"Use read_file/list_dir/search/code_search/glob for repository inspection and git_status/git_diff/git_log/git_branch_state for Git state.",
+		"Do not tell the user to run git commands because you lack access; use the available native tools or report the exact tool/path failure.",
+	}, "\n")
 }
 
 // newChildAgentRegistry creates a registry for a child agent whose working
