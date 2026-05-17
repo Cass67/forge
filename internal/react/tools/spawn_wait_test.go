@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -155,6 +157,36 @@ func TestSpawnAgentInfersWorkDirFromAbsoluteDelegatedPath(t *testing.T) {
 
 	_, err := tool.Execute(context.Background(), map[string]any{
 		"task_description": "Inspect " + wantDir + " repository comprehensively and return findings.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case ctxv := <-gotCtx:
+		if got := react.WorkDirFromContext(ctxv); got != wantDir {
+			t.Fatalf("WorkDirFromContext = %q, want inferred %q", got, wantDir)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("spawn function never called")
+	}
+}
+
+func TestSpawnAgentInfersWorkDirFromTildeDelegatedPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	wantDir := filepath.Join(home, "git", "deepseek")
+	if err := os.MkdirAll(wantDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gotCtx := make(chan context.Context, 1)
+	pool := react.NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
+		gotCtx <- ctx
+		return "ok", nil
+	})
+	tool := NewSpawnAgent(pool)
+
+	_, err := tool.Execute(context.Background(), map[string]any{
+		"task_description": "review forge UI and compare against ~/git/deepseek",
 	})
 	if err != nil {
 		t.Fatal(err)
