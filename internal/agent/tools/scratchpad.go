@@ -25,6 +25,7 @@ func sanitizeTopic(topic string) string {
 
 // NewScratchpadWrite creates a tool for writing to the shared scratchpad.
 func NewScratchpadWrite(workDir string) Tool {
+	var lastDiff string
 	return Tool{
 		Name:        "scratchpad_write",
 		Description: "Write findings to the shared scratchpad (.forge/scratchpad/) for context across agent delegations.",
@@ -32,8 +33,15 @@ func NewScratchpadWrite(workDir string) Tool {
 			{Name: "topic", Type: "string", Description: "Topic name (becomes filename)", Required: true},
 			{Name: "content", Type: "string", Description: "Content to write", Required: true},
 		},
-		AutoApprove: true,
+		AutoApprove:      true,
+		MutatesWorkspace: true,
+		LastDiff: func() string {
+			diff := lastDiff
+			lastDiff = ""
+			return diff
+		},
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			lastDiff = ""
 			topic, _ := args["topic"].(string)
 			content, _ := args["content"].(string)
 			if topic == "" || content == "" {
@@ -47,6 +55,7 @@ func NewScratchpadWrite(workDir string) Tool {
 			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 				return "", fmt.Errorf("write scratchpad: %w", err)
 			}
+			lastDiff = fmt.Sprintf("scratchpad_write: %s", path)
 			return fmt.Sprintf("written to %s", path), nil
 		},
 	}

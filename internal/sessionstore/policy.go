@@ -36,14 +36,14 @@ func (p PersistencePolicy) Apply(item protocol.Item) protocol.Item {
 		rawBytes := len(item.ToolResult.Text)
 		redacted := redact(item.ToolResult.Text)
 		if p.MaxToolResultBytes > 0 && len(redacted) > p.MaxToolResultBytes {
-			item.ToolResult.OriginalBytes = rawBytes
+			if item.ToolResult.OriginalBytes == 0 {
+				item.ToolResult.OriginalBytes = rawBytes
+			}
 			item.ToolResult.Text = redacted[:p.MaxToolResultBytes]
 			item.ToolResult.Truncated = true
 		} else {
 			item.ToolResult.Text = redacted
 		}
-	}
-	if item.ToolResult != nil {
 		item.ToolResult.Diff = redact(item.ToolResult.Diff)
 	}
 	if item.ToolCall != nil && len(item.ToolCall.Args) > 0 {

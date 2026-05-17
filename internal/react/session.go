@@ -3,6 +3,7 @@ package react
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -39,6 +40,8 @@ const (
 	HookPriorityNormal HookPriority = hooks.PriorityNormal
 	HookPriorityHigh   HookPriority = hooks.PriorityHigh
 )
+
+var ErrStaleTurn = errors.New("stale turn")
 
 type TaskState struct {
 	Objective            string
@@ -131,6 +134,33 @@ type TurnRecord struct {
 	Error         string
 }
 
+type TurnPhase string
+
+const (
+	TurnPhaseCreated         TurnPhase = "created"
+	TurnPhaseRunningModel    TurnPhase = "running_model"
+	TurnPhaseRunningTools    TurnPhase = "running_tools"
+	TurnPhaseWaitingApproval TurnPhase = "waiting_approval"
+	TurnPhaseValidating      TurnPhase = "validating"
+)
+
+type TurnEndReason string
+
+const (
+	TurnEndReasonCompleted TurnEndReason = "completed"
+	TurnEndReasonCancelled TurnEndReason = "cancelled"
+	TurnEndReasonFailed    TurnEndReason = "failed"
+)
+
+type ActiveTurn struct {
+	ID           string
+	Number       int
+	Phase        TurnPhase
+	Context      context.Context
+	CancelReason string
+	cancel       context.CancelFunc
+}
+
 type SessionSnapshot struct {
 	Turn                    int
 	LastInput               string
@@ -154,6 +184,8 @@ type SessionSnapshot struct {
 	PendingInput            []string
 	Interrupted             bool
 	LastDurableError        string
+	LastTurnEndReason       TurnEndReason
+	LastTurnCancelReason    string
 }
 
 type Session struct {
@@ -180,8 +212,11 @@ type Session struct {
 	pendingDelegationAction *DelegationActionState
 	pendingInput            []string
 	interrupted             bool
+	lastTurnEndReason       TurnEndReason
+	lastTurnCancelReason    string
 	durableSink             DurableSink
 	lastDurableError        string
+	activeTurn              *ActiveTurn
 }
 
 type DurableSink interface {
@@ -217,7 +252,7 @@ func NewSessionFromItems(items []protocol.Item) (*Session, error) {
 		if n == 0 {
 			n = idx + 1
 		}
-		turn := TurnRecord{Number: n, Input: replayTurn.Input, Error: strings.TrimSpace(replayTurn.Error)}
+		turn := TurnRecord{Number: n, Input: replayTurn.Input, FinalResponse: replayTurn.FinalResponse, Error: strings.TrimSpace(replayTurn.Error)}
 		for _, call := range replayTurn.ToolCalls {
 			if strings.TrimSpace(call.ToolName) != "" {
 				turn.ToolCalls = append(turn.ToolCalls, TurnToolCall{Name: call.ToolName})
@@ -231,7 +266,24 @@ func NewSessionFromItems(items []protocol.Item) (*Session, error) {
 	if s.turn == 0 {
 		s.turn = len(s.turns)
 	}
+	if len(replay.Turns) > 0 {
+		last := replay.Turns[len(replay.Turns)-1]
+		switch last.Status {
+		case protocol.TurnStatusFailed:
+			s.lastTurnEndReason = TurnEndReasonFailed
+		case protocol.TurnStatusResumable, protocol.TurnStatusInterrupted:
+			s.interrupted = true
+			s.lastTurnEndReason = TurnEndReasonCancelled
+			s.runtimeNote = "Last restored turn is resumable; no tools were restarted."
+		default:
+			s.lastTurnEndReason = TurnEndReasonCompleted
+		}
+	}
 	return s, nil
+}
+
+func RestoreSessionFromItems(items []protocol.Item) (*Session, error) {
+	return NewSessionFromItems(items)
 }
 
 func turnNumberFromID(turnID string) int {
@@ -264,30 +316,277 @@ func (s *Session) DurableSink() DurableSink {
 	return s.durableSink
 }
 
-func (s *Session) AppendItem(item protocol.Item) {
+func (s *Session) BeginTurn(parent context.Context, turnID string) (ActiveTurn, context.CancelFunc, error) {
 	if s == nil {
-		return
+		return ActiveTurn{}, nil, fmt.Errorf("react session: session is nil")
+	}
+	turnID = strings.TrimSpace(turnID)
+	if turnID == "" {
+		return ActiveTurn{}, nil, fmt.Errorf("react session: turn ID is empty")
+	}
+	if parent == nil {
+		parent = context.Background()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.activeTurn != nil {
+		return ActiveTurn{}, nil, fmt.Errorf("react session: active turn %q overlaps %q", s.activeTurn.ID, turnID)
+	}
+	ctx, cancel := context.WithCancel(parent)
+	active := ActiveTurn{
+		ID:      turnID,
+		Number:  turnNumberFromID(turnID),
+		Phase:   TurnPhaseCreated,
+		Context: ctx,
+		cancel:  cancel,
+	}
+	s.activeTurn = &active
+	return active, cancel, nil
+}
+
+func (s *Session) persistDurableItem(item protocol.Item, sink DurableSink) error {
+	if sink == nil {
+		s.recordDurableAppendResult(nil)
+		return nil
+	}
+	err := appendDurableItem(sink, item)
+	s.recordDurableAppendResult(err)
+	return err
+}
+
+func (s *Session) persistDurableItems(items []protocol.Item, sink DurableSink) error {
+	for _, item := range items {
+		if err := s.persistDurableItem(item, sink); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Session) SetActiveTurnPhase(turnID string, phase TurnPhase) error {
+	if s == nil {
+		return fmt.Errorf("react session: session is nil")
+	}
+	turnID = strings.TrimSpace(turnID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.activeTurn == nil {
+		return fmt.Errorf("react session: no active turn")
+	}
+	if s.activeTurn.ID != turnID {
+		return fmt.Errorf("react session: active turn %q does not match %q", s.activeTurn.ID, turnID)
+	}
+	s.activeTurn.Phase = phase
+	return nil
+}
+
+func (s *Session) EndTurn(turnID string, reason TurnEndReason) error {
+	if s == nil {
+		return fmt.Errorf("react session: session is nil")
+	}
+	turnID = strings.TrimSpace(turnID)
+	s.mu.Lock()
+	if s.activeTurn == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("react session: no active turn")
+	}
+	if s.activeTurn.ID != turnID {
+		activeID := s.activeTurn.ID
+		s.mu.Unlock()
+		return fmt.Errorf("react session: active turn %q does not match %q", activeID, turnID)
+	}
+	cancel := s.activeTurn.cancel
+	s.lastTurnEndReason = reason
+	s.lastTurnCancelReason = s.activeTurn.CancelReason
+	s.activeTurn = nil
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return nil
+}
+
+func (s *Session) CancelActiveTurn(reason string) error {
+	if s == nil {
+		return fmt.Errorf("react session: session is nil")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.activeTurn == nil {
+		return fmt.Errorf("react session: no active turn")
+	}
+	if s.activeTurn.cancel != nil {
+		s.activeTurn.cancel()
+	}
+	if reason = strings.TrimSpace(reason); reason != "" {
+		s.activeTurn.CancelReason = reason
+		s.lastTurnCancelReason = reason
+		s.interrupted = true
+	}
+	return nil
+}
+
+func (s *Session) ActiveTurnSnapshot() (ActiveTurn, bool) {
+	if s == nil {
+		return ActiveTurn{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.activeTurn == nil {
+		return ActiveTurn{}, false
+	}
+	return *s.activeTurn, true
+}
+
+func (s *Session) IsActiveTurn(turnID string) bool {
+	if s == nil {
+		return false
+	}
+	turnID = strings.TrimSpace(turnID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.activeTurnMatchesLocked(turnID)
+}
+
+func (s *Session) activeTurnMatchesLocked(turnID string) bool {
+	if s.activeTurn == nil || s.activeTurn.ID != turnID {
+		return false
+	}
+	return s.activeTurn.Context == nil || s.activeTurn.Context.Err() == nil
+}
+
+func staleTurnError(turnID string) error {
+	turnID = strings.TrimSpace(turnID)
+	if turnID == "" {
+		return fmt.Errorf("%w: empty turn ID", ErrStaleTurn)
+	}
+	return fmt.Errorf("%w: %s", ErrStaleTurn, turnID)
+}
+
+func (s *Session) AppendToolResultForTurn(turnID string, result protocol.ToolResultItem) error {
+	if s == nil {
+		return fmt.Errorf("%w: session is nil", ErrStaleTurn)
+	}
+	turnID = strings.TrimSpace(turnID)
+	s.mu.Lock()
+	if !s.activeTurnMatchesLocked(turnID) {
+		s.mu.Unlock()
+		return staleTurnError(turnID)
+	}
+	if strings.TrimSpace(result.ToolCallID) == "" {
+		s.mu.Unlock()
+		return nil
+	}
+	s.history = append(s.history, llm.Message{
+		Role:       llm.RoleTool,
+		ToolCallID: result.ToolCallID,
+		Content:    result.Text,
+	})
+	item := s.appendItemLocked(protocol.Item{
+		Kind:       protocol.ItemToolResult,
+		TurnID:     turnID,
+		ToolResult: &result,
+	})
+	sink := s.durableSink
+	s.mu.Unlock()
+	return s.persistDurableItem(item, sink)
+}
+
+func (s *Session) AppendFailureForTurn(turnID string, failure protocol.FailureItem) error {
+	if s == nil {
+		return fmt.Errorf("%w: session is nil", ErrStaleTurn)
+	}
+	turnID = strings.TrimSpace(turnID)
+	s.mu.Lock()
+	if !s.activeTurnMatchesLocked(turnID) {
+		s.mu.Unlock()
+		return staleTurnError(turnID)
+	}
+	item := s.appendItemLocked(protocol.Item{
+		Kind:    protocol.ItemFailure,
+		TurnID:  turnID,
+		Failure: &failure,
+	})
+	sink := s.durableSink
+	s.mu.Unlock()
+	return s.persistDurableItem(item, sink)
+}
+
+func (s *Session) AppendToolCallForTurn(turnID string, toolCall protocol.ToolCallItem) error {
+	if s == nil {
+		return fmt.Errorf("%w: session is nil", ErrStaleTurn)
+	}
+	turnID = strings.TrimSpace(turnID)
+	s.mu.Lock()
+	if !s.activeTurnMatchesLocked(turnID) {
+		s.mu.Unlock()
+		return staleTurnError(turnID)
+	}
+	if callID := strings.TrimSpace(toolCall.ToolCallID); callID != "" {
+		for _, item := range s.items {
+			if item.TurnID == turnID && item.ToolCall != nil && item.ToolCall.ToolCallID == callID {
+				s.mu.Unlock()
+				return nil
+			}
+		}
+	}
+	item := s.appendItemLocked(protocol.Item{
+		Kind:     protocol.ItemToolCall,
+		TurnID:   turnID,
+		ToolCall: &toolCall,
+	})
+	sink := s.durableSink
+	s.mu.Unlock()
+	return s.persistDurableItem(item, sink)
+}
+
+func (s *Session) AppendFailureAndToolResultForTurn(turnID string, failure protocol.FailureItem, toolCall protocol.ToolCallItem, result protocol.ToolResultItem) error {
+	if s == nil {
+		return fmt.Errorf("%w: session is nil", ErrStaleTurn)
+	}
+	turnID = strings.TrimSpace(turnID)
+	s.mu.Lock()
+	if !s.activeTurnMatchesLocked(turnID) {
+		s.mu.Unlock()
+		return staleTurnError(turnID)
+	}
+	if strings.TrimSpace(result.ToolCallID) == "" {
+		s.mu.Unlock()
+		return nil
+	}
+	failureItem := s.appendItemLocked(protocol.Item{
+		Kind:     protocol.ItemFailure,
+		TurnID:   turnID,
+		Failure:  &failure,
+		ToolCall: &toolCall,
+	})
+	s.history = append(s.history, llm.Message{
+		Role:       llm.RoleTool,
+		ToolCallID: result.ToolCallID,
+		Content:    result.Text,
+	})
+	resultItem := s.appendItemLocked(protocol.Item{
+		Kind:       protocol.ItemToolResult,
+		TurnID:     turnID,
+		ToolResult: &result,
+	})
+	sink := s.durableSink
+	s.mu.Unlock()
+	if err := s.persistDurableItem(failureItem, sink); err != nil {
+		return err
+	}
+	return s.persistDurableItem(resultItem, sink)
+}
+
+func (s *Session) AppendItem(item protocol.Item) error {
+	if s == nil {
+		return nil
 	}
 	s.mu.Lock()
 	item = s.appendItemLocked(item)
 	sink := s.durableSink
 	s.mu.Unlock()
-	if sink != nil {
-		s.recordDurableAppendResult(sink.Append(context.Background(), item))
-	}
-}
-
-func (s *Session) persistDurableItem(item protocol.Item, sink DurableSink) {
-	if sink == nil {
-		return
-	}
-	s.recordDurableAppendResult(sink.Append(context.Background(), item))
-}
-
-func (s *Session) persistDurableItems(items []protocol.Item, sink DurableSink) {
-	for _, item := range items {
-		s.persistDurableItem(item, sink)
-	}
+	return s.persistDurableItem(item, sink)
 }
 
 func (s *Session) appendItemLocked(item protocol.Item) protocol.Item {
@@ -334,14 +633,22 @@ func (s *Session) RecordDurableError(err error) {
 }
 
 func (s *Session) RecordInput(input string) int {
-	return s.RecordInputWithParts(input, nil)
+	turn, _ := s.RecordInputWithParts(input, nil)
+	return turn
 }
 
-func (s *Session) RecordInputWithParts(input string, parts []llm.MessageContentPart) int {
+func (s *Session) RecordInputWithParts(input string, parts []llm.MessageContentPart) (int, error) {
 	if s == nil {
-		return 0
+		return 0, nil
 	}
 	s.mu.Lock()
+	turn, item := s.recordInputWithPartsLocked(input, parts)
+	sink := s.durableSink
+	s.mu.Unlock()
+	return turn, s.persistDurableItem(item, sink)
+}
+
+func (s *Session) recordInputWithPartsLocked(input string, parts []llm.MessageContentPart) (int, protocol.Item) {
 	s.turn++
 	turn := s.turn
 	s.lastInput = input
@@ -363,15 +670,12 @@ func (s *Session) RecordInputWithParts(input string, parts []llm.MessageContentP
 		TurnID:  fmt.Sprintf("turn-%d", turn),
 		Message: &protocol.MessageItem{Role: string(llm.RoleUser), Text: input},
 	})
-	sink := s.durableSink
-	s.mu.Unlock()
-	s.persistDurableItem(item, sink)
-	return turn
+	return turn, item
 }
 
-func (s *Session) CompleteTurn(turn int, response string, toolCalls []TurnToolCall, err error) {
+func (s *Session) CompleteTurn(turn int, response string, toolCalls []TurnToolCall, err error) error {
 	if s == nil {
-		return
+		return nil
 	}
 	s.mu.Lock()
 	for i := range s.turns {
@@ -384,13 +688,13 @@ func (s *Session) CompleteTurn(turn int, response string, toolCalls []TurnToolCa
 		if toolCalls != nil {
 			s.turns[i].ToolCalls = append([]TurnToolCall(nil), toolCalls...)
 		}
-		if err != nil {
-			s.turns[i].Error = strings.TrimSpace(err.Error())
-		}
 		turnID := fmt.Sprintf("turn-%d", turn)
 		if s.turnHasTerminalLocked(turnID) {
 			s.mu.Unlock()
-			return
+			return nil
+		}
+		if err != nil {
+			s.turns[i].Error = strings.TrimSpace(err.Error())
 		}
 		var item protocol.Item
 		if err != nil {
@@ -406,18 +710,18 @@ func (s *Session) CompleteTurn(turn int, response string, toolCalls []TurnToolCa
 				TurnComplete: &protocol.TurnCompleteItem{Status: protocol.TurnStatusCompleted},
 			})
 		}
-		s.interrupted = false
 		sink := s.durableSink
+		s.interrupted = false
 		s.mu.Unlock()
-		s.persistDurableItem(item, sink)
-		return
+		return s.persistDurableItem(item, sink)
 	}
 	s.mu.Unlock()
+	return nil
 }
 
-func (s *Session) AppendAssistantMessage(text string) {
+func (s *Session) AppendAssistantMessage(text string) error {
 	if s == nil || strings.TrimSpace(text) == "" {
-		return
+		return nil
 	}
 	s.mu.Lock()
 	trimmed := strings.TrimSpace(text)
@@ -428,12 +732,12 @@ func (s *Session) AppendAssistantMessage(text string) {
 	})
 	sink := s.durableSink
 	s.mu.Unlock()
-	s.persistDurableItem(item, sink)
+	return s.persistDurableItem(item, sink)
 }
 
-func (s *Session) AppendUserMessage(text string) {
+func (s *Session) AppendUserMessage(text string) error {
 	if s == nil || strings.TrimSpace(text) == "" {
-		return
+		return nil
 	}
 	s.mu.Lock()
 	trimmed := strings.TrimSpace(text)
@@ -444,7 +748,7 @@ func (s *Session) AppendUserMessage(text string) {
 	})
 	sink := s.durableSink
 	s.mu.Unlock()
-	s.persistDurableItem(item, sink)
+	return s.persistDurableItem(item, sink)
 }
 
 func (s *Session) appendQueuedUserInput(text string) {
@@ -465,7 +769,7 @@ func (s *Session) appendQueuedUserInput(text string) {
 	})}
 	sink := s.durableSink
 	s.mu.Unlock()
-	s.persistDurableItems(items, sink)
+	_ = s.persistDurableItems(items, sink)
 }
 
 // AppendAssistantWithToolCalls records an assistant message that contains native
@@ -557,9 +861,9 @@ func (s *Session) SetLastAssistantReasoning(reasoning string) {
 
 // AppendNativeToolResult records a tool execution result matched to a specific
 // tool call ID. Used by the native tool calling path.
-func (s *Session) AppendNativeToolResult(toolCallID, result string) {
+func (s *Session) AppendNativeToolResult(toolCallID, result string) error {
 	if s == nil || strings.TrimSpace(toolCallID) == "" {
-		return
+		return nil
 	}
 	s.mu.Lock()
 	toolName := s.toolNameForCallIDLocked(toolCallID)
@@ -574,7 +878,7 @@ func (s *Session) AppendNativeToolResult(toolCallID, result string) {
 	})
 	sink := s.durableSink
 	s.mu.Unlock()
-	s.persistDurableItem(item, sink)
+	return s.persistDurableItem(item, sink)
 }
 
 func (s *Session) AppendStats(duration time.Duration, usage llm.Usage) {
@@ -588,7 +892,7 @@ func (s *Session) AppendStats(duration time.Duration, usage llm.Usage) {
 	})
 	sink := s.durableSink
 	s.mu.Unlock()
-	s.persistDurableItem(item, sink)
+	_ = s.persistDurableItem(item, sink)
 }
 
 func (s *Session) toolNameForCallIDLocked(toolCallID string) string {
@@ -606,6 +910,16 @@ func (s *Session) toolNameForCallIDLocked(toolCallID string) string {
 		}
 	}
 	return ""
+}
+
+func appendDurableItem(sink DurableSink, item protocol.Item) error {
+	if sink == nil {
+		return nil
+	}
+	item.ThreadID = ""
+	item.Seq = 0
+	item.ID = ""
+	return sink.Append(context.Background(), item)
 }
 
 func (s *Session) Messages(systemPrompt string) []llm.Message {
@@ -641,6 +955,8 @@ func (s *Session) Snapshot() SessionSnapshot {
 		PendingInput:            append([]string(nil), s.pendingInput...),
 		Interrupted:             s.interrupted,
 		LastDurableError:        s.lastDurableError,
+		LastTurnEndReason:       s.lastTurnEndReason,
+		LastTurnCancelReason:    s.lastTurnCancelReason,
 	}
 }
 
@@ -672,6 +988,9 @@ func (s *Session) Clear() {
 	s.pendingInput = nil
 	s.interrupted = false
 	s.lastDurableError = ""
+	s.lastTurnEndReason = ""
+	s.lastTurnCancelReason = ""
+	s.activeTurn = nil
 }
 
 func (s *Session) SetPendingDelegationAction(state DelegationActionState) {

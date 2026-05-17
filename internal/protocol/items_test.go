@@ -33,7 +33,56 @@ func TestItemEnvelopeRoundTrips(t *testing.T) {
 func TestTerminalItemsAreExplicit(t *testing.T) {
 	complete := Item{Version: 1, Kind: ItemTurnComplete, TurnComplete: &TurnCompleteItem{Status: TurnStatusCompleted}}
 	failure := Item{Version: 1, Kind: ItemFailure, Failure: &FailureItem{Decision: FailureDecision{Class: FailureToolRuntimeFailed}}}
-	if !complete.IsTerminal() || !failure.IsTerminal() {
-		t.Fatalf("terminal checks failed: complete=%v failure=%v", complete.IsTerminal(), failure.IsTerminal())
+	recoverable := Item{Version: 1, Kind: ItemFailure, Failure: &FailureItem{Decision: FailureDecision{Class: FailureToolArgsInvalid, Recoverable: true}}}
+	if !complete.IsTerminal() || !failure.IsTerminal() || recoverable.IsTerminal() {
+		t.Fatalf("terminal checks failed: complete=%v failure=%v recoverable=%v", complete.IsTerminal(), failure.IsTerminal(), recoverable.IsTerminal())
+	}
+}
+
+func TestToolResultOutputHandleMetadataJSON(t *testing.T) {
+	plain, err := json.Marshal(ToolResultItem{ToolCallID: "call-1", Text: "ok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(plain) != `{"tool_name":"","tool_call_id":"call-1","text":"ok"}` {
+		t.Fatalf("plain tool result JSON = %s", plain)
+	}
+
+	withHandle, err := json.Marshal(ToolResultItem{ToolCallID: "call-1", Text: "summary", Handle: "thread-1/abc123", OriginalBytes: 10, SHA256: "abc123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded ToolResultItem
+	if err := json.Unmarshal(withHandle, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Handle != "thread-1/abc123" || decoded.OriginalBytes != 10 || decoded.SHA256 != "abc123" {
+		t.Fatalf("decoded metadata = %#v", decoded)
+	}
+}
+
+func TestCheckpointItemJSON(t *testing.T) {
+	item := Item{
+		Version: 1,
+		Kind:    ItemCheckpoint,
+		Checkpoint: &CheckpointItem{
+			ID:           "checkpoint-1",
+			Phase:        "created",
+			ChangedFiles: []string{"README.md"},
+		},
+	}
+	encoded, err := json.Marshal(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Item
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Kind != ItemCheckpoint || decoded.Checkpoint == nil {
+		t.Fatalf("decoded checkpoint item = %#v", decoded)
+	}
+	if decoded.Checkpoint.ID != "checkpoint-1" || decoded.Checkpoint.Phase != "created" || len(decoded.Checkpoint.ChangedFiles) != 1 {
+		t.Fatalf("decoded checkpoint = %#v", decoded.Checkpoint)
 	}
 }

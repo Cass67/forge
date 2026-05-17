@@ -27,6 +27,15 @@ func TestRunCommandBasic(t *testing.T) {
 	}
 }
 
+func TestRunCommandTimeoutMetadataReflectsConfiguredTimeout(t *testing.T) {
+	dir := t.TempDir()
+	tool := NewRunCommand(dir, 300, nil, func(a Action) (bool, error) { return true, nil })
+
+	if got := tool.Timeout; got != 300*time.Second {
+		t.Fatalf("run_command timeout metadata = %v, want 5m0s", got)
+	}
+}
+
 func TestRunCommandFailure(t *testing.T) {
 	dir := t.TempDir()
 	tool := NewRunCommand(dir, 60, nil, func(a Action) (bool, error) { return true, nil })
