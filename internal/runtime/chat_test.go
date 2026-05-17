@@ -22,6 +22,7 @@ import (
 	"forge/internal/mcp"
 	"forge/internal/protocol"
 	reactruntime "forge/internal/react"
+	"forge/internal/sessionstore"
 	"forge/internal/skills"
 	"forge/internal/tui"
 )
@@ -156,6 +157,59 @@ func TestChatRuntimeCreatesDurableThreadStoreWhenOutputDirConfigured(t *testing.
 	registerTools(reg, t.TempDir(), cfg, session, approve, nil, nil)
 	if session.DurableSink() == nil {
 		t.Fatal("expected durable sink to be configured")
+	}
+}
+
+func TestChatRuntimeCreatesDurableThreadFiles(t *testing.T) {
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "forge.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	outputDir := t.TempDir()
+	cfg.Session.OutputDir = outputDir
+	cfg.Chat.Model = "test/model"
+	workDir := t.TempDir()
+	reg := tools.NewRegistry()
+	session := reactruntime.NewSession()
+	approve := func(tools.Action) (bool, error) { return true, nil }
+	registerTools(reg, workDir, cfg, session, approve, nil, nil)
+	session.RecordInput("hello durable runtime")
+
+	threadsDir := filepath.Join(outputDir, "threads")
+	entries, err := os.ReadDir(threadsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var threadID string
+	var hasMeta bool
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasSuffix(name, ".jsonl") {
+			threadID = strings.TrimSuffix(name, ".jsonl")
+		}
+		if strings.HasSuffix(name, ".meta.json") {
+			hasMeta = true
+		}
+	}
+	if threadID == "" || !hasMeta {
+		t.Fatalf("threadID=%q hasMeta=%v entries=%#v", threadID, hasMeta, entries)
+	}
+	store := sessionstore.NewJSONLThreadStore(threadsDir)
+	items, err := store.ReadItems(context.Background(), threadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var foundMeta, foundInput bool
+	for _, item := range items {
+		if item.Kind == protocol.ItemSessionMeta && item.SessionMeta != nil && item.SessionMeta.CWD == workDir && item.SessionMeta.Model == "test/model" {
+			foundMeta = true
+		}
+		if item.Kind == protocol.ItemUserMessage && item.Message != nil && item.Message.Text == "hello durable runtime" {
+			foundInput = true
+		}
+	}
+	if !foundMeta || !foundInput {
+		t.Fatalf("foundMeta=%v foundInput=%v items=%#v", foundMeta, foundInput, items)
 	}
 }
 

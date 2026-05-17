@@ -109,5 +109,8 @@ type TurnCompleteItem struct {
 }
 
 func (i Item) IsTerminal() bool {
-	return i.Kind == ItemTurnComplete || i.Kind == ItemFailure
+	if i.Kind == ItemTurnComplete {
+		return true
+	}
+	return i.Kind == ItemFailure && (i.Failure == nil || !i.Failure.Decision.Recoverable)
 }
