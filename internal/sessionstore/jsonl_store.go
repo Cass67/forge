@@ -5,9 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"forge/internal/protocol"
 )
@@ -15,6 +19,8 @@ import (
 type JSONLThreadStore struct {
 	root string
 }
+
+var jsonlThreadLocks sync.Map
 
 func NewJSONLThreadStore(root string) *JSONLThreadStore {
 	return &JSONLThreadStore{root: root}
@@ -24,12 +30,63 @@ func (s *JSONLThreadStore) threadPath(threadID string) string {
 	return filepath.Join(s.root, threadID+".jsonl")
 }
 
+func (s *JSONLThreadStore) metadataPath(threadID string) string {
+	return filepath.Join(s.root, threadID+".meta.json")
+}
+
+func (s *JSONLThreadStore) lockThread(threadID string) func() {
+	key := s.threadPath(threadID)
+	value, _ := jsonlThreadLocks.LoadOrStore(key, &sync.Mutex{})
+	mu := value.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
 func (s *JSONLThreadStore) AppendItems(ctx context.Context, threadID string, items []protocol.Item) (result AppendResult, err error) {
 	if err := ctx.Err(); err != nil {
 		return AppendResult{}, err
 	}
+	unlock := s.lockThread(threadID)
+	defer unlock()
 	if err := os.MkdirAll(s.root, 0o700); err != nil {
 		return AppendResult{}, err
+	}
+	existing, err := s.readItemsNoLock(ctx, threadID)
+	if err != nil {
+		return AppendResult{}, err
+	}
+	var maxSeq int64
+	for _, item := range existing {
+		if item.Seq > maxSeq {
+			maxSeq = item.Seq
+		}
+	}
+	normalized := make([]protocol.Item, len(items))
+	nextSeq := maxSeq + 1
+	if nextSeq <= 0 {
+		nextSeq = 1
+	}
+	for i, item := range items {
+		originalSeq := item.Seq
+		if item.Version == 0 {
+			item.Version = protocol.CurrentItemVersion
+		}
+		if item.ThreadID == "" {
+			item.ThreadID = threadID
+		}
+		if item.At.IsZero() {
+			item.At = time.Now().UTC()
+		}
+		if item.Seq <= maxSeq {
+			item.Seq = nextSeq
+			nextSeq++
+		} else if item.Seq >= nextSeq {
+			nextSeq = item.Seq + 1
+		}
+		if item.ID == "" || item.Seq != originalSeq {
+			item.ID = fmt.Sprintf("%s-%06d", threadID, item.Seq)
+		}
+		normalized[i] = item
 	}
 	f, err := os.OpenFile(s.threadPath(threadID), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -41,7 +98,7 @@ func (s *JSONLThreadStore) AppendItems(ctx context.Context, threadID string, ite
 		}
 	}()
 	enc := json.NewEncoder(f)
-	for _, item := range items {
+	for _, item := range normalized {
 		if err := enc.Encode(item); err != nil {
 			return AppendResult{}, err
 		}
@@ -50,14 +107,20 @@ func (s *JSONLThreadStore) AppendItems(ctx context.Context, threadID string, ite
 		return AppendResult{}, err
 	}
 	var first, last int64
-	if len(items) > 0 {
-		first = items[0].Seq
-		last = items[len(items)-1].Seq
+	if len(normalized) > 0 {
+		first = normalized[0].Seq
+		last = normalized[len(normalized)-1].Seq
 	}
 	return AppendResult{ThreadID: threadID, FirstSeq: first, LastSeq: last}, nil
 }
 
 func (s *JSONLThreadStore) ReadItems(ctx context.Context, threadID string) (items []protocol.Item, err error) {
+	unlock := s.lockThread(threadID)
+	defer unlock()
+	return s.readItemsNoLock(ctx, threadID)
+}
+
+func (s *JSONLThreadStore) readItemsNoLock(ctx context.Context, threadID string) (items []protocol.Item, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -74,10 +137,12 @@ func (s *JSONLThreadStore) ReadItems(ctx context.Context, threadID string) (item
 		}
 	}()
 	scanner := bufio.NewScanner(f)
+	line := 0
 	for scanner.Scan() {
+		line++
 		var item protocol.Item
 		if err := json.Unmarshal(scanner.Bytes(), &item); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%s: line %d: %w", threadID, line, err)
 		}
 		items = append(items, item)
 	}
@@ -85,7 +150,40 @@ func (s *JSONLThreadStore) ReadItems(ctx context.Context, threadID string) (item
 }
 
 func (s *JSONLThreadStore) UpdateThreadMetadata(ctx context.Context, threadID string, patch ThreadMetadataPatch) error {
-	return ctx.Err()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	unlock := s.lockThread(threadID)
+	defer unlock()
+	if err := os.MkdirAll(s.root, 0o700); err != nil {
+		return err
+	}
+	if patch.UpdatedAt.IsZero() {
+		patch.UpdatedAt = time.Now().UTC()
+	}
+	data, err := json.MarshalIndent(patch, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	f, err := os.CreateTemp(s.root, threadID+".meta.*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := f.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, s.metadataPath(threadID))
 }
 
 func (s *JSONLThreadStore) ReadThread(ctx context.Context, threadID string) (ThreadRecord, error) {
@@ -93,7 +191,11 @@ func (s *JSONLThreadStore) ReadThread(ctx context.Context, threadID string) (Thr
 	if err != nil {
 		return ThreadRecord{}, err
 	}
-	return ThreadRecord{ThreadID: threadID, ItemCount: len(items)}, nil
+	metadata, err := s.readThreadMetadata(ctx, threadID)
+	if err != nil {
+		return ThreadRecord{}, err
+	}
+	return ThreadRecord{ThreadID: threadID, Metadata: metadata, ItemCount: len(items)}, nil
 }
 
 func (s *JSONLThreadStore) ForkThread(ctx context.Context, sourceThreadID, newThreadID string, opts ForkOptions) error {
@@ -132,20 +234,60 @@ func (s *JSONLThreadStore) ListThreads(ctx context.Context, opts ListOptions) ([
 	if limit <= 0 {
 		limit = len(entries)
 	}
+	seen := map[string]bool{}
 	records := []ThreadRecord{}
 	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".jsonl" {
+		if entry.IsDir() {
 			continue
 		}
-		threadID := strings.TrimSuffix(entry.Name(), ".jsonl")
-		items, err := s.ReadItems(ctx, threadID)
+		name := entry.Name()
+		threadID := ""
+		switch {
+		case strings.HasSuffix(name, ".jsonl"):
+			threadID = strings.TrimSuffix(name, ".jsonl")
+		case strings.HasSuffix(name, ".meta.json"):
+			threadID = strings.TrimSuffix(name, ".meta.json")
+		default:
+			continue
+		}
+		if seen[threadID] {
+			continue
+		}
+		seen[threadID] = true
+		record, err := s.ReadThread(ctx, threadID)
 		if err != nil {
 			return nil, err
 		}
-		records = append(records, ThreadRecord{ThreadID: threadID, ItemCount: len(items)})
-		if len(records) >= limit {
-			break
+		records = append(records, record)
+	}
+	sort.SliceStable(records, func(i, j int) bool {
+		iUpdated := records[i].Metadata.UpdatedAt
+		jUpdated := records[j].Metadata.UpdatedAt
+		if !iUpdated.Equal(jUpdated) {
+			return iUpdated.After(jUpdated)
 		}
+		return records[i].ThreadID < records[j].ThreadID
+	})
+	if len(records) > limit {
+		records = records[:limit]
 	}
 	return records, nil
+}
+
+func (s *JSONLThreadStore) readThreadMetadata(ctx context.Context, threadID string) (ThreadMetadataPatch, error) {
+	if err := ctx.Err(); err != nil {
+		return ThreadMetadataPatch{}, err
+	}
+	data, err := os.ReadFile(s.metadataPath(threadID))
+	if errors.Is(err, os.ErrNotExist) {
+		return ThreadMetadataPatch{}, nil
+	}
+	if err != nil {
+		return ThreadMetadataPatch{}, err
+	}
+	var metadata ThreadMetadataPatch
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return ThreadMetadataPatch{}, fmt.Errorf("%s metadata: %w", threadID, err)
+	}
+	return metadata, nil
 }

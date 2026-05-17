@@ -1467,10 +1467,6 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 		if r.renderer != nil {
 			r.renderer.ToolCall(call.Name, reactToolSummary(args))
 		}
-		r.session.AppendItem(protocol.Item{
-			Kind:     protocol.ItemToolCall,
-			ToolCall: &protocol.ToolCallItem{ToolName: call.Name, ToolCallID: call.ID, Args: args},
-		})
 	}
 
 	// Phase 2: dispatch tool executions (parallel for safe tools, sequential for pool-mutating)
@@ -1739,14 +1735,20 @@ func (r *Runner) applyPendingInput() bool {
 }
 
 func (r *Runner) emitStats(start time.Time) {
-	if r == nil || r.renderer == nil {
+	if r == nil {
 		return
 	}
 	var usage llm.Usage
 	if reporter, ok := r.driver.(llm.UsageReporter); ok {
 		usage = reporter.LastUsage()
 	}
-	r.renderer.Stats(time.Since(start), usage)
+	duration := time.Since(start)
+	if r.session != nil {
+		r.session.AppendStats(duration, usage)
+	}
+	if r.renderer != nil {
+		r.renderer.Stats(duration, usage)
+	}
 }
 
 func reactToolSummary(args map[string]any) string {

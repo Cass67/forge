@@ -32,6 +32,7 @@ import (
 	"forge/internal/modelcatalog"
 	"forge/internal/permissions"
 	pluginruntime "forge/internal/plugins"
+	"forge/internal/protocol"
 	reactruntime "forge/internal/react"
 	reacttools "forge/internal/react/tools"
 	"forge/internal/sessionstore"
@@ -189,7 +190,7 @@ func refreshChatSetupState(setup *ChatSetup) (*config.Config, *auth.Tokens) {
 }
 
 func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, session *reactruntime.Session, approve tools.ApprovalFunc, notify func(string), emitCommandStatus func(tools.ExecSessionStatus), forcePrompt ...tools.ApprovalFunc) (*tools.PreviewRuntime, *mcp.Manager) {
-	configureDurableSessionSink(cfg, session)
+	configureDurableSessionSink(cfg, session, workDir)
 	fp := approve
 	if len(forcePrompt) > 0 {
 		fp = forcePrompt[0]
@@ -286,13 +287,31 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 	return previewRuntime, mcpManager
 }
 
-func configureDurableSessionSink(cfg *config.Config, session *reactruntime.Session) {
+func configureDurableSessionSink(cfg *config.Config, session *reactruntime.Session, workDir string) {
 	if cfg == nil || session == nil || strings.TrimSpace(cfg.Session.OutputDir) == "" {
 		return
 	}
 	store := sessionstore.NewJSONLThreadStore(filepath.Join(cfg.Session.OutputDir, "threads"))
+	model := strings.TrimSpace(cfg.Chat.Model)
+	if model == "" {
+		model = strings.TrimSpace(cfg.Chat.LastModel)
+	}
 	live := sessionstore.NewLiveSession(durableThreadID(session), store, sessionstore.DefaultPersistencePolicy())
+	metadataErr := live.UpdateMetadata(context.Background(), sessionstore.ThreadMetadataPatch{
+		Title:     "Forge chat",
+		Preview:   strings.TrimSpace(session.Snapshot().InitialInput),
+		CWD:       strings.TrimSpace(workDir),
+		Model:     model,
+		UpdatedAt: time.Now().UTC(),
+	})
 	session.SetDurableSink(live)
+	session.AppendItem(protocol.Item{
+		Kind:        protocol.ItemSessionMeta,
+		SessionMeta: &protocol.SessionMetaItem{Source: "runtime", CWD: strings.TrimSpace(workDir), Model: model},
+	})
+	if metadataErr != nil {
+		session.RecordDurableError(metadataErr)
+	}
 }
 
 func durableThreadID(session *reactruntime.Session) string {

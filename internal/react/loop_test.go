@@ -1285,6 +1285,32 @@ func TestRunnerRendersToolCallAndStatsBeforeToolExecution(t *testing.T) {
 	}
 }
 
+func TestRunnerPersistsStatsItem(t *testing.T) {
+	driver := &nativeToolCallDriver{}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "git_status", Description: "git status", AutoApprove: true, Execute: func(context.Context, map[string]any) (string, error) {
+		return "nothing to commit", nil
+	}})
+	session := NewSession()
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session, Renderer: &recordingRenderer{}})
+	if err := r.Run(context.Background(), "check the repo"); err != nil {
+		t.Fatal(err)
+	}
+	toolCalls := 0
+	for _, item := range session.Snapshot().Items {
+		if item.Kind == protocol.ItemToolCall {
+			toolCalls++
+		}
+		if item.Kind == protocol.ItemStats && item.Stats != nil && item.Stats.Usage.InputTokens > 0 {
+			if toolCalls != 1 {
+				t.Fatalf("tool call items = %d, want 1; items=%#v", toolCalls, session.Snapshot().Items)
+			}
+			return
+		}
+	}
+	t.Fatalf("stats item not found: %#v", session.Snapshot().Items)
+}
+
 type nativeToolCallWithPreambleDriver struct {
 	callCount int
 }

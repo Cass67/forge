@@ -2,7 +2,9 @@ package sessionstore
 
 import (
 	"context"
+	"sync"
 	"testing"
+	"time"
 
 	"forge/internal/protocol"
 )
@@ -35,5 +37,120 @@ func TestLiveSessionAssignsIDsAndSequence(t *testing.T) {
 	}
 	if items[0].ID == "" || items[0].Seq != 1 || items[0].ThreadID != "thread-1" {
 		t.Fatalf("item identity not assigned: %#v", items[0])
+	}
+}
+
+func TestLiveSessionContinuesSequenceAfterStoreReopen(t *testing.T) {
+	dir := t.TempDir()
+	store := NewJSONLThreadStore(dir)
+	live := NewLiveSession("thread-1", store, DefaultPersistencePolicy())
+	if err := live.Append(context.Background(), protocol.Item{Kind: protocol.ItemRetry, Retry: &protocol.RetryItem{Attempt: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	reopened := NewLiveSession("thread-1", NewJSONLThreadStore(dir), DefaultPersistencePolicy())
+	if err := reopened.Append(context.Background(), protocol.Item{Kind: protocol.ItemRetry, Retry: &protocol.RetryItem{Attempt: 2}}); err != nil {
+		t.Fatal(err)
+	}
+	items, err := store.ReadItems(context.Background(), "thread-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 || items[0].Seq != 1 || items[1].Seq != 2 {
+		t.Fatalf("items = %#v", items)
+	}
+}
+
+type barrierThreadStore struct {
+	mu        sync.Mutex
+	readers   int
+	items     []protocol.Item
+	releaseCh chan struct{}
+}
+
+func newBarrierThreadStore() *barrierThreadStore {
+	return &barrierThreadStore{releaseCh: make(chan struct{})}
+}
+
+func (s *barrierThreadStore) AppendItems(_ context.Context, _ string, items []protocol.Item) (AppendResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.items = append(s.items, items...)
+	return AppendResult{}, nil
+}
+
+func (s *barrierThreadStore) ReadItems(ctx context.Context, _ string) ([]protocol.Item, error) {
+	s.mu.Lock()
+	s.readers++
+	if s.readers == 2 {
+		close(s.releaseCh)
+	}
+	s.mu.Unlock()
+	select {
+	case <-s.releaseCh:
+	case <-time.After(20 * time.Millisecond):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]protocol.Item(nil), s.items...), nil
+}
+
+func (s *barrierThreadStore) UpdateThreadMetadata(context.Context, string, ThreadMetadataPatch) error {
+	return nil
+}
+
+func (s *barrierThreadStore) ReadThread(context.Context, string) (ThreadRecord, error) {
+	return ThreadRecord{}, nil
+}
+
+func TestLiveSessionConcurrentAppendsUseUniqueSequence(t *testing.T) {
+	store := newBarrierThreadStore()
+	live := NewLiveSession("thread-1", store, DefaultPersistencePolicy())
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := live.Append(context.Background(), protocol.Item{Kind: protocol.ItemRetry, Retry: &protocol.RetryItem{Attempt: 1}}); err != nil {
+				t.Errorf("append failed: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if len(store.items) != 2 || store.items[0].Seq == store.items[1].Seq {
+		t.Fatalf("items = %#v", store.items)
+	}
+}
+
+func TestLiveSessionConcurrentInstancesUseUniqueSequence(t *testing.T) {
+	dir := t.TempDir()
+	store := NewJSONLThreadStore(dir)
+	first := NewLiveSession("thread-1", store, DefaultPersistencePolicy())
+	second := NewLiveSession("thread-1", NewJSONLThreadStore(dir), DefaultPersistencePolicy())
+	var wg sync.WaitGroup
+	for _, live := range []*LiveSession{first, second} {
+		wg.Add(1)
+		go func(live *LiveSession) {
+			defer wg.Done()
+			if err := live.Append(context.Background(), protocol.Item{Kind: protocol.ItemRetry, Retry: &protocol.RetryItem{Attempt: 1}}); err != nil {
+				t.Errorf("append failed: %v", err)
+			}
+		}(live)
+	}
+	wg.Wait()
+	items, err := store.ReadItems(context.Background(), "thread-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[int64]bool{}
+	for _, item := range items {
+		if seen[item.Seq] {
+			t.Fatalf("duplicate seq in items: %#v", items)
+		}
+		seen[item.Seq] = true
+	}
+	if len(items) != 2 || !seen[1] || !seen[2] {
+		t.Fatalf("items = %#v", items)
 	}
 }
