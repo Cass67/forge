@@ -46,6 +46,31 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Models.Summarizer != "claude-haiku-4-5" {
 		t.Fatalf("default summarizer = %q, want %q", cfg.Models.Summarizer, "claude-haiku-4-5")
 	}
+	if cfg.Resilience.StreamIdleTimeoutMS != 120000 {
+		t.Fatalf("default stream idle timeout = %d, want %d", cfg.Resilience.StreamIdleTimeoutMS, 120000)
+	}
+}
+
+func TestLoadMigratesLegacyDefaultStreamIdleTimeout(t *testing.T) {
+	path := writeTemp(t, "[resilience]\nstream_idle_timeout_ms = 30000\n")
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Resilience.StreamIdleTimeoutMS != 120000 {
+		t.Fatalf("stream idle timeout = %d, want migrated default %d", cfg.Resilience.StreamIdleTimeoutMS, 120000)
+	}
+}
+
+func TestLoadPreservesCustomStreamIdleTimeout(t *testing.T) {
+	path := writeTemp(t, "[resilience]\nstream_idle_timeout_ms = 5000\n")
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Resilience.StreamIdleTimeoutMS != 5000 {
+		t.Fatalf("stream idle timeout = %d, want custom value %d", cfg.Resilience.StreamIdleTimeoutMS, 5000)
+	}
 }
 
 func TestLoadExplicit(t *testing.T) {
