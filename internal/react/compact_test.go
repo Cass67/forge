@@ -122,6 +122,36 @@ func TestRunnerRunEmitsCompactionProgress(t *testing.T) {
 	}
 }
 
+func TestRunnerCompactionProgressIncludesContextDelta(t *testing.T) {
+	session := NewSession()
+	for i := 1; i <= 45; i++ {
+		turn := session.RecordInput(fmt.Sprintf("prompt %d %s", i, strings.Repeat("x", 256)))
+		mustAppendAssistantMessage(t, session, fmt.Sprintf("answer %d %s", i, strings.Repeat("y", 256)))
+		mustCompleteTurn(t, session, turn, fmt.Sprintf("answer %d", i), nil, nil)
+	}
+	var progress []string
+	r := NewRunner(Config{
+		Session:  session,
+		Progress: func(text string) { progress = append(progress, text) },
+	})
+
+	if !r.applyCompactionDecision(context.Background(), CompactionDecision{Mode: CompactionSummarize, Reason: "history pressure", KeepTurns: 40}) {
+		t.Fatal("expected compaction to change session")
+	}
+
+	found := false
+	for _, msg := range progress {
+		lower := strings.ToLower(msg)
+		if strings.Contains(lower, "compacted context") && strings.Contains(msg, "->") && strings.Contains(lower, "history pressure") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected compaction progress with context delta, got %#v", progress)
+	}
+}
+
 func TestRunnerDispatchesCompactionHookPayloads(t *testing.T) {
 	driver := &nativeScriptedDriver{responses: []string{"done"}}
 	session := NewSession()

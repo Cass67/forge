@@ -111,6 +111,7 @@ type recordingRenderer struct {
 	events     []string
 	statsCalls int
 	statsUsage []llm.Usage
+	statsCtx   []int
 }
 
 func (r *recordingRenderer) AgentToken(text string) {
@@ -149,6 +150,14 @@ func (r *recordingRenderer) Stats(_ time.Duration, usage llm.Usage) {
 	r.events = append(r.events, "stats")
 	r.statsCalls++
 	r.statsUsage = append(r.statsUsage, usage)
+}
+func (r *recordingRenderer) StatsWithContext(_ time.Duration, usage llm.Usage, contextUsed int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, "stats")
+	r.statsCalls++
+	r.statsUsage = append(r.statsUsage, usage)
+	r.statsCtx = append(r.statsCtx, contextUsed)
 }
 func (r *recordingRenderer) Error(string) {}
 func (r *recordingRenderer) Info(string)  {}
@@ -1674,6 +1683,40 @@ func TestRunnerNativeToolCallingPath(t *testing.T) {
 	for i, r := range want {
 		if roles[i] != r {
 			t.Fatalf("history[%d] role = %q, want %q", i, roles[i], r)
+		}
+	}
+}
+
+func TestRunnerStatsIncludePromptContextEstimate(t *testing.T) {
+	driver := &nativeToolCallDriver{}
+	renderer := &recordingRenderer{}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "git_status",
+		Description: "git status",
+		AutoApprove: true,
+		Execute: func(context.Context, map[string]any) (string, error) {
+			return "clean", nil
+		},
+	})
+	r := NewRunner(Config{
+		Driver:   driver,
+		Tools:    reg,
+		Renderer: renderer,
+		SystemPrompt: func() string {
+			return "system prompt with enough content to estimate"
+		},
+	})
+
+	if err := r.Run(context.Background(), "inspect repository state"); err != nil {
+		t.Fatal(err)
+	}
+	if len(renderer.statsCtx) == 0 {
+		t.Fatal("expected stats events to include prompt context estimates")
+	}
+	for i, got := range renderer.statsCtx {
+		if got <= 0 {
+			t.Fatalf("stats context estimate %d = %d, want positive", i, got)
 		}
 	}
 }

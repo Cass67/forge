@@ -2117,6 +2117,13 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 	case llm.EventStats:
 		m.statsDuration = ev.Duration
 		m.statsUsage = ev.Usage
+		if ev.ContextUsed > 0 {
+			m.statusData.ContextUsed = ev.ContextUsed
+			m.statusData.ContextEstimated = ev.ContextEstimated
+		}
+		if ev.ContextLimit > 0 {
+			m.statusData.ContextLimit = ev.ContextLimit
+		}
 		m.liveStatsStartedAt = time.Time{}
 		m.liveStatsOutputChars = 0
 		m.sessionUsage.InputTokens += ev.Usage.InputTokens
@@ -2139,6 +2146,9 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 			m.pendingQueuedInput = nil
 		}
 		if line := m.progressEventLine(ev); line != "" {
+			if isCompactionProgressLine(line) {
+				m.emitProgressCheckpoint("compaction:"+line, line)
+			}
 			m.UpdateRecentActivity(ev.Agent, line)
 		}
 	}
@@ -5995,6 +6005,10 @@ func isGenericProgressLine(content string) bool {
 func normalizeRuntimeProgressMessage(content string) (string, bool) {
 	raw := strings.TrimSpace(content)
 	lower := strings.ToLower(raw)
+	const compactPrefix = "react runtime: compacted context "
+	if strings.HasPrefix(lower, compactPrefix) {
+		return "Compacted context " + strings.TrimSpace(raw[len(compactPrefix):]), true
+	}
 	if strings.HasPrefix(lower, "react runtime: executing turn ") {
 		turnText := strings.TrimSpace(strings.TrimPrefix(lower, "react runtime: executing turn "))
 		return fmt.Sprintf("Starting analysis pass %s", turnText), true
@@ -6003,6 +6017,10 @@ func normalizeRuntimeProgressMessage(content string) (string, bool) {
 		return "I stopped this run on request", true
 	}
 	return "", false
+}
+
+func isCompactionProgressLine(content string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(content)), "compacted context ")
 }
 
 func (m ChatModel) toolResultProgressLine(ev llm.Event) string {
