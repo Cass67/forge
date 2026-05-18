@@ -879,6 +879,138 @@ func TestToolDefSchemaHonorsRequiredParameters(t *testing.T) {
 	}
 }
 
+func TestToolDefsToResponsesStrictSchemaRequiresOptionalNullableParams(t *testing.T) {
+	defs := []llm.ToolDef{{
+		Name: "spawn_agent",
+		Parameters: []llm.ToolParam{
+			{Name: "task_description", Type: "string", Required: true},
+			{Name: "role", Type: "string", Required: false},
+			{Name: "work_dir", Type: "string", Required: false},
+		},
+	}}
+	tools := toolDefsToResponses(defs)
+	if len(tools) != 1 {
+		t.Fatalf("tools = %#v, want one", tools)
+	}
+	b, err := json.Marshal(tools[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	params := got["parameters"].(map[string]any)
+	required := stringSliceFromAny(params["required"])
+	for _, want := range []string{"task_description", "role", "work_dir"} {
+		if !stringSliceContains(required, want) {
+			t.Fatalf("required = %#v, want %s", required, want)
+		}
+	}
+	props := params["properties"].(map[string]any)
+	for _, optional := range []string{"role", "work_dir"} {
+		prop := props[optional].(map[string]any)
+		if !typeAllowsNull(prop["type"]) {
+			t.Fatalf("%s type = %#v, want nullable", optional, prop["type"])
+		}
+	}
+}
+
+func TestToolDefsToResponsesStrictSchemaHandlesEmptyObjectsAndNullableEnums(t *testing.T) {
+	defs := []llm.ToolDef{{
+		Name: "audit_repo",
+		Schema: &llm.ToolSchema{
+			Type:     "object",
+			Required: []string{"path"},
+			Properties: map[string]*llm.ToolSchema{
+				"path":    {Type: "string"},
+				"mode":    {Type: "string", Enum: []string{"quick", "deep"}},
+				"options": {Type: "object"},
+			},
+		},
+	}}
+	tools := toolDefsToResponses(defs)
+	if len(tools) != 1 {
+		t.Fatalf("tools = %#v, want one", tools)
+	}
+	b, err := json.Marshal(tools[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	params := got["parameters"].(map[string]any)
+	if params["additionalProperties"] != false {
+		t.Fatalf("root additionalProperties = %#v, want false", params["additionalProperties"])
+	}
+	props := params["properties"].(map[string]any)
+	options := props["options"].(map[string]any)
+	if !typeAllowsNull(options["type"]) {
+		t.Fatalf("options type = %#v, want nullable", options["type"])
+	}
+	if options["additionalProperties"] != false {
+		t.Fatalf("options additionalProperties = %#v, want false", options["additionalProperties"])
+	}
+	mode := props["mode"].(map[string]any)
+	if !typeAllowsNull(mode["type"]) {
+		t.Fatalf("mode type = %#v, want nullable", mode["type"])
+	}
+	if !anySliceContainsNull(mode["enum"]) {
+		t.Fatalf("mode enum = %#v, want nullable enum", mode["enum"])
+	}
+}
+
+func stringSliceFromAny(v any) []string {
+	raw, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		if s, ok := item.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func typeAllowsNull(v any) bool {
+	raw, ok := v.([]any)
+	if !ok {
+		return false
+	}
+	for _, item := range raw {
+		if item == "null" {
+			return true
+		}
+	}
+	return false
+}
+
+func anySliceContainsNull(v any) bool {
+	raw, ok := v.([]any)
+	if !ok {
+		return false
+	}
+	for _, item := range raw {
+		if item == nil {
+			return true
+		}
+	}
+	return false
+}
+
 func TestToolDefSchemaUsesStructuredSchema(t *testing.T) {
 	additional := false
 	schema := toolDefSchema(llm.ToolDef{

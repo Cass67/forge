@@ -67,6 +67,8 @@ func (r *Runtime) UseRecords() []UseRecord {
 func resolveRequiredSkillName(input string) string {
 	lower := strings.ToLower(strings.TrimSpace(input))
 	switch {
+	case looksLikeCrossRepoComparisonDoc(lower):
+		return ""
 	case looksLikeCrossRepoGapReport(lower):
 		return ""
 	case looksLikeReviewOrStatusAudit(lower):
@@ -128,4 +130,10 @@ func looksLikeCrossRepoGapReport(input string) bool {
 		containsAny(input, "gap", "gaps", "findings", "missing", "incomplete") &&
 		containsAny(input, "report", "doc", "document", "markdown") &&
 		containsAny(input, "compare", "cross-repo", "previous docs", "documentation")
+}
+
+func looksLikeCrossRepoComparisonDoc(input string) bool {
+	return containsAny(input, "repo", "repos", "repository", "repositories") &&
+		containsAny(input, "compare", "comparison", "tier 1", "claude", "codex", "opencode", "deepseek") &&
+		containsAny(input, "report", "doc", "document", "markdown")
 }

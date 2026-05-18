@@ -100,6 +100,19 @@ func TestRuntimeResolveAutoDoesNotTreatCrossRepoGapReportAsCodeReview(t *testing
 	}
 }
 
+func TestRuntimeResolveAutoDoesNotInjectTDDForCrossRepoComparisonDoc(t *testing.T) {
+	t.Parallel()
+	loaded := []Skill{
+		{Name: "test-driven-development", Description: "write tests first", Body: "Start with a failing test."},
+		{Name: "requesting-code-review", Description: "review work", Body: "Findings first."},
+	}
+	input := "take a look at this repo and compare it to claude, codex, opencode, deepseek. look at forge features and give a deep comparison. Write me a nice doc when done"
+
+	if got, ok := DetectAuto(loaded, input); ok {
+		t.Fatalf("DetectAuto() = %#v, want no auto skill for cross-repo comparison doc", got)
+	}
+}
+
 func TestRuntimeLoadByNameSupportsKnownSkillNames(t *testing.T) {
 	t.Parallel()
 	rt := NewRuntime([]Skill{
