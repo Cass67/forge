@@ -1089,6 +1089,13 @@ func (r agentProgressRenderTarget) ToolResult(name, output, diff string, isError
 func (r agentProgressRenderTarget) Stats(duration time.Duration, usage llm.Usage) {
 	r.target.Stats(duration, usage)
 }
+func (r agentProgressRenderTarget) StatsWithContext(duration time.Duration, usage llm.Usage, contextUsed int) {
+	if target, ok := r.target.(agent.ContextStatsTarget); ok {
+		target.StatsWithContext(duration, usage, contextUsed)
+		return
+	}
+	r.target.Stats(duration, usage)
+}
 func (r agentProgressRenderTarget) Error(msg string) { r.target.Error(msg) }
 func (r agentProgressRenderTarget) Info(msg string)  { r.target.Info(msg) }
 

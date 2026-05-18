@@ -37,6 +37,17 @@ func (discardRuntimeRenderTarget) Stats(time.Duration, llm.Usage)          {}
 func (discardRuntimeRenderTarget) Error(string)                            {}
 func (discardRuntimeRenderTarget) Info(string)                             {}
 
+type contextRuntimeRenderTarget struct {
+	discardRuntimeRenderTarget
+	contextUsed int
+	usage       llm.Usage
+}
+
+func (r *contextRuntimeRenderTarget) StatsWithContext(_ time.Duration, usage llm.Usage, contextUsed int) {
+	r.usage = usage
+	r.contextUsed = contextUsed
+}
+
 func TestToolContractsDoNotUseJSONInStringParameters(t *testing.T) {
 	cfg, err := config.Load(filepath.Join(t.TempDir(), "forge.toml"))
 	if err != nil {
@@ -234,6 +245,24 @@ func TestAgentProgressRendererRecordsToolCalls(t *testing.T) {
 
 	if gotName != "read_file" || gotSummary != "README.md" {
 		t.Fatalf("recorded progress = %q %q", gotName, gotSummary)
+	}
+}
+
+func TestAgentProgressRendererForwardsContextStats(t *testing.T) {
+	target := &contextRuntimeRenderTarget{}
+	renderer := newAgentProgressRenderTarget(target, func(name, summary string) {})
+	contextRenderer, ok := renderer.(agent.ContextStatsTarget)
+	if !ok {
+		t.Fatalf("wrapped renderer should preserve ContextStatsTarget support")
+	}
+
+	contextRenderer.StatsWithContext(time.Second, llm.Usage{InputTokens: 12, OutputTokens: 3}, 456)
+
+	if target.contextUsed != 456 {
+		t.Fatalf("contextUsed = %d, want 456", target.contextUsed)
+	}
+	if target.usage.InputTokens != 12 || target.usage.OutputTokens != 3 {
+		t.Fatalf("usage = %#v", target.usage)
 	}
 }
 

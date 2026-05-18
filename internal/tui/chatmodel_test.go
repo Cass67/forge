@@ -1557,6 +1557,43 @@ func TestChatModelNormalStatsShowsContextLimitWithoutEstimatingUsage(t *testing.
 	}
 }
 
+func TestChatModelEventStatsShowsEstimatedContextUsage(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{
+		Model: "openai/gpt-5",
+		ModelInfo: func(model string) *modelcatalog.ModelInfo {
+			return &modelcatalog.ModelInfo{ContextWindow: 200000}
+		},
+	})
+	m.width = 120
+	updated, _ := m.Update(llm.Event{
+		Kind:             llm.EventStats,
+		Duration:         time.Second,
+		Usage:            llm.Usage{InputTokens: 5000, OutputTokens: 100},
+		ContextUsed:      12345,
+		ContextEstimated: true,
+	})
+	m = updated.(ChatModel)
+
+	line := strippedLine(m.renderNormalModeStatsLine(m.theme()))
+	if !strings.Contains(line, "ctx ~12345/200000") {
+		t.Fatalf("normal stats line should show current prompt context estimate, got %q", line)
+	}
+}
+
+func TestChatModelCompactionProgressIsPersisted(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	updated, _ := m.Update(llm.Event{Kind: llm.EventProgress, Text: "react runtime: compacted context ~50000 -> ~12000 (prompt budget)"})
+	m = updated.(ChatModel)
+
+	for _, msg := range m.messages {
+		if msg.Kind == MsgStatus && strings.Contains(msg.Content, "Compacted context ~50000 -> ~12000") {
+			return
+		}
+	}
+	t.Fatalf("expected persisted compaction status message, got %#v", m.messages)
+}
+
 func TestChatModelViewKeepsContextSummaryOutOfCompactHeader(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{
 		Model:   "openai/gpt-5",

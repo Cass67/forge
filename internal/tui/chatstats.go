@@ -16,20 +16,21 @@ import (
 )
 
 type chatStatusData struct {
-	Model        string
-	ThemeID      string
-	WorkDir      string
-	Status       string
-	Duration     time.Duration
-	LastUsage    llm.Usage
-	SessionUsage llm.Usage
-	RequestMode  string
-	ContextUsed  int
-	ContextLimit int
-	CopilotLive  *copilot.UserQuota
-	CodexUsage   *codexusage.Snapshot
-	ModelInfo    *modelcatalog.ModelInfo
-	AgentMode    string // non-empty mode badge e.g. "[plan]" surfaced by runtime nudges
+	Model            string
+	ThemeID          string
+	WorkDir          string
+	Status           string
+	Duration         time.Duration
+	LastUsage        llm.Usage
+	SessionUsage     llm.Usage
+	RequestMode      string
+	ContextUsed      int
+	ContextLimit     int
+	ContextEstimated bool
+	CopilotLive      *copilot.UserQuota
+	CodexUsage       *codexusage.Snapshot
+	ModelInfo        *modelcatalog.ModelInfo
+	AgentMode        string // non-empty mode badge e.g. "[plan]" surfaced by runtime nudges
 }
 
 type chatStatsData struct {
@@ -130,11 +131,19 @@ func buildContextSummary(data chatStatusData) string {
 	parts := make([]string, 0, 2)
 	switch {
 	case used > 0 && limit > 0:
-		parts = append(parts, fmt.Sprintf("ctx %d/%d", used, limit))
+		if data.ContextEstimated {
+			parts = append(parts, fmt.Sprintf("ctx ~%d/%d", used, limit))
+		} else {
+			parts = append(parts, fmt.Sprintf("ctx %d/%d", used, limit))
+		}
 	case limit > 0:
 		parts = append(parts, fmt.Sprintf("ctx max %d", limit))
 	case used > 0:
-		parts = append(parts, fmt.Sprintf("ctx %d", used))
+		if data.ContextEstimated {
+			parts = append(parts, fmt.Sprintf("ctx ~%d", used))
+		} else {
+			parts = append(parts, fmt.Sprintf("ctx %d", used))
+		}
 	}
 	if mode := strings.TrimSpace(data.RequestMode); mode != "" {
 		parts = append(parts, mode)

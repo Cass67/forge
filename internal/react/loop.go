@@ -59,6 +59,7 @@ type Runner struct {
 	compactionManager         *CompactionManager
 	compactionFailures        int
 	compactionMaxFailures     int
+	lastPromptContextTokens   int
 	maxSteps                  int
 	gitWorkflow               gitWorkflowState
 	planWorkflow              planWorkflowState
@@ -321,18 +322,25 @@ func (r *Runner) applyCompactionDecision(ctx context.Context, decision Compactio
 	if r == nil || r.compactionManager == nil || decision.Mode == CompactionNone {
 		return false
 	}
+	beforeContext := 0
 	before := SessionSnapshot{}
 	if r.session != nil {
 		before = r.session.Snapshot()
+		beforeContext = estimatePromptTokens(r.session.Messages(r.currentSystemPrompt()))
 	}
 	r.dispatchCompactionHook(ctx, hooks.PointPreCompact, decision, before, false, 0)
 	changed := r.compactionManager.Apply(r.session, decision)
+	afterContext := 0
 	after := SessionSnapshot{}
 	if r.session != nil {
 		after = r.session.Snapshot()
+		afterContext = estimatePromptTokens(r.session.Messages(r.currentSystemPrompt()))
 	}
 	if changed {
 		r.compactionFailures = 0
+		if r.progress != nil && beforeContext > 0 && afterContext > 0 {
+			r.progress(fmt.Sprintf("react runtime: compacted context ~%d -> ~%d (%s)", beforeContext, afterContext, decision.Reason))
+		}
 	} else if r.compactionMaxFailures > 0 && compactionDecisionAttempted(decision) {
 		r.compactionFailures++
 	}
@@ -1277,6 +1285,7 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 	if prompt := strings.TrimSpace(r.pendingRetryPrompt); prompt != "" {
 		messages = injectSystemMessageBeforeHistory(messages, "Runtime correction for the previous attempt:\n"+prompt)
 	}
+	r.lastPromptContextTokens = estimatePromptTokens(messages)
 	opts := llm.NativeToolOptions{RequireToolCall: requireToolCall}
 	if len(toolDefs) == 0 {
 		return r.streamPlainTurn(ctx, turn, messages)
@@ -2133,6 +2142,14 @@ func (r *Runner) emitStats(start time.Time) {
 		r.session.AppendStats(duration, usage)
 	}
 	if r.renderer != nil {
+		contextUsed := r.lastPromptContextTokens
+		r.lastPromptContextTokens = 0
+		if contextUsed > 0 {
+			if renderer, ok := r.renderer.(agent.ContextStatsTarget); ok {
+				renderer.StatsWithContext(duration, usage, contextUsed)
+				return
+			}
+		}
 		r.renderer.Stats(duration, usage)
 	}
 }

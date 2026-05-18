@@ -21,6 +21,10 @@ type RenderTarget interface {
 	Info(msg string)
 }
 
+type ContextStatsTarget interface {
+	StatsWithContext(duration time.Duration, usage llm.Usage, contextUsed int)
+}
+
 // RetryNotifier is optionally implemented by renderers that can explicitly
 // retract or reset a provisional assistant draft before the next attempt.
 type RetryNotifier interface {

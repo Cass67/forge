@@ -198,5 +198,10 @@ type Event struct {
 	Content  string        // diff content or full tool output
 	Duration time.Duration // turn duration (EventStats)
 	Usage    Usage         // token usage (EventStats)
-	SubAgent string        // non-empty when event comes from a delegated sub-agent
+	// ContextUsed is the estimated current prompt context sent to the model for
+	// this stats event. It is not cumulative session usage.
+	ContextUsed      int
+	ContextLimit     int
+	ContextEstimated bool
+	SubAgent         string // non-empty when event comes from a delegated sub-agent
 }
