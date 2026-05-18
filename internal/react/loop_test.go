@@ -4136,6 +4136,38 @@ func TestAllowedToolsForNewGoRepoPricingCLIIncludesCommandAndWebTools(t *testing
 	}
 }
 
+func TestAllowedToolsForCurrentExternalFactPromptsIncludesWebTools(t *testing.T) {
+	for _, input := range []string{
+		"whats teh weather in edinburgh",
+		"whats on at the edinburgh playhouse tonight",
+		"are trains running between glasgow and edinburgh",
+	} {
+		t.Run(input, func(t *testing.T) {
+			tools := allowedToolNamesForSnapshot(SessionSnapshot{LastInput: input})
+
+			for _, want := range []string{"web_fetch", "web_search"} {
+				if !containsString(tools, want) {
+					t.Fatalf("external fact tools = %#v, want %s", tools, want)
+				}
+			}
+		})
+	}
+}
+
+func TestCurrentExternalFactPromptRequiresToolCall(t *testing.T) {
+	for _, input := range []string{
+		"whats teh weather in edinburgh",
+		"whats on at the edinburgh playhouse tonight",
+		"are trains running between glasgow and edinburgh",
+	} {
+		t.Run(input, func(t *testing.T) {
+			if !shouldRequireToolCallForSnapshot(SessionSnapshot{LastInput: input}) {
+				t.Fatal("current external fact prompt should require a web tool call before answering")
+			}
+		})
+	}
+}
+
 func TestAllowedToolsForReadOnlyGitRepoReviewDoesNotIncludeCommandTools(t *testing.T) {
 	for _, input := range []string{"review this git repo", "review this new git repo", "review this cli tool written in go"} {
 		t.Run(input, func(t *testing.T) {

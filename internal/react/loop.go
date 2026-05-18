@@ -3204,7 +3204,8 @@ func shouldRequireToolCallForSnapshot(snapshot SessionSnapshot) bool {
 		text := normalizeToolIntentText(snapshot.LastInput)
 		return currentInputRequestsDelegation(snapshot) || shouldExposeSpawnWhileAgentsActive(snapshot, outstanding) || inputSuggestsPostDelegationAction(text)
 	}
-	return currentInputRequestsDelegation(snapshot)
+	text := normalizeToolIntentText(snapshot.LastInput)
+	return currentInputRequestsDelegation(snapshot) || inputSuggestsWebResearch(text)
 }
 
 func shouldRouteParentThroughDelegation(snapshot SessionSnapshot) bool {
@@ -3369,7 +3370,40 @@ func inputSuggestsWebResearch(text string) bool {
 		"latest", "look up", "lookup", "search the web", "browse", "online",
 		"internet", "website", "url", "fetch", "news", "price", "prices", "pricing",
 		"cost", "costs", "how much", "market rate", "current price",
-	)
+	) || inputAsksExternalFactQuestion(text)
+}
+
+func inputAsksExternalFactQuestion(text string) bool {
+	if text == "" || inputSuggestsRepoContext(text) || inputMentionsPathLikeText(text) {
+		return false
+	}
+	if !startsWithFactQuestion(text) {
+		return false
+	}
+	return containsExternalLocator(text)
+}
+
+func startsWithFactQuestion(text string) bool {
+	for _, prefix := range []string{
+		"what ", "what's ", "whats ", "what is ", "what are ",
+		"when ", "where ", "who ", "which ", "how ",
+		"is ", "are ", "do ", "does ", "can ", "will ",
+	} {
+		if strings.HasPrefix(text, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsExternalLocator(text string) bool {
+	padded := " " + text + " "
+	for _, marker := range []string{" in ", " at ", " near ", " around ", " between ", " from ", " for "} {
+		if strings.Contains(padded, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func inputSuggestsGitCommit(text string) bool {
