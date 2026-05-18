@@ -2,6 +2,7 @@ package react
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -268,6 +269,12 @@ func (p *AgentPool) Wait(ctx context.Context, id string, timeout time.Duration) 
 		p.notifyAgentTask(AgentTaskState{ID: id, Role: result.Role, Status: result.Status, LastActivityAt: now})
 		return result, nil
 	case <-ctx.Done():
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			p.mu.Lock()
+			result := p.snapshotLocked(job)
+			p.mu.Unlock()
+			return result, nil
+		}
 		return AgentResult{}, ctx.Err()
 	}
 }

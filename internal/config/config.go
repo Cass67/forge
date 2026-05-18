@@ -206,6 +206,11 @@ type Config struct {
 // Copilot device-flow auth when the user does not provide an override.
 const defaultCopilotClientID = "Ov23liEz8seIOGdwNY9R"
 
+const (
+	defaultStreamIdleTimeoutMS       = 120000
+	legacyDefaultStreamIdleTimeoutMS = 30000
+)
+
 func Load(path string) (*Config, error) {
 	cfg := &Config{}
 	setDefaults(cfg)
@@ -213,9 +218,16 @@ func Load(path string) (*Config, error) {
 	if _, err := toml.DecodeFile(path, cfg); err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
+	normalizeLegacyDefaults(cfg)
 
 	expandTilde(&cfg.Session.OutputDir)
 	return cfg, nil
+}
+
+func normalizeLegacyDefaults(c *Config) {
+	if c.Resilience.StreamIdleTimeoutMS == legacyDefaultStreamIdleTimeoutMS {
+		c.Resilience.StreamIdleTimeoutMS = defaultStreamIdleTimeoutMS
+	}
 }
 
 func Save(path string, cfg *Config) error {
@@ -316,7 +328,7 @@ func setDefaults(c *Config) {
 	c.Resilience.TokenDiminishingThreshold = 500
 	c.Resilience.TokenDiminishingChecks = 2
 	c.Resilience.ToolThrashCircuitBreaker = 8
-	c.Resilience.StreamIdleTimeoutMS = 30000
+	c.Resilience.StreamIdleTimeoutMS = defaultStreamIdleTimeoutMS
 	c.Security.Secrets.Read = "redact"
 	c.Security.Secrets.Write = "block"
 	c.Security.Secrets.CommandOutput = "redact"

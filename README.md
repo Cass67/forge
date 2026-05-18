@@ -175,7 +175,7 @@ Long-session resilience settings live under `[resilience]`:
 
 ```toml
 [resilience]
-stream_idle_timeout_ms = 30000
+stream_idle_timeout_ms = 120000
 compaction_max_failures = 3
 tool_thrash_circuit_breaker = 8
 token_diminishing_threshold = 500

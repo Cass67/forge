@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	agenttools "forge/internal/agent/tools"
 	"forge/internal/react"
 )
 
@@ -62,6 +63,39 @@ func TestWaitAgentTimeoutDescriptionSaysCurrentStatus(t *testing.T) {
 		return
 	}
 	t.Fatal("timeout_seconds parameter not found")
+}
+
+func TestWaitAgentToolTimeoutExceedsDefaultToolTimeout(t *testing.T) {
+	tool := NewWaitAgent(nil)
+	if tool.Timeout <= agenttools.DefaultToolTimeout {
+		t.Fatalf("wait_agent timeout = %v, want greater than default tool timeout %v", tool.Timeout, agenttools.DefaultToolTimeout)
+	}
+}
+
+func TestWaitAgentReturnsRunningStatusWhenContextDeadlineWins(t *testing.T) {
+	pool := react.NewAgentPool(func(ctx context.Context, _, _ string) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	})
+	id, err := pool.Spawn(context.Background(), "explorer", "keep running")
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	wait := NewWaitAgent(pool)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	raw, err := wait.Execute(ctx, map[string]any{"id": id, "timeout_seconds": 30.0})
+	if err != nil {
+		t.Fatalf("wait_agent returned error: %v", err)
+	}
+	var result react.AgentResult
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatalf("json.Unmarshal(%q): %v", raw, err)
+	}
+	if result.Status != react.AgentStatusRunning {
+		t.Fatalf("status = %q, want running (raw=%s)", result.Status, raw)
+	}
 }
 
 func TestSpawnAgentSanitizesWriteTasksForReadOnlyAgents(t *testing.T) {

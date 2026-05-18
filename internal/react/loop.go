@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"forge/internal/agent"
 	agenttools "forge/internal/agent/tools"
@@ -131,6 +132,12 @@ const previewExplorationBudget = 4
 const implementExplorationBudget = 12
 const inspectExplorationBudget = 8
 const defaultOutputStoreThresholdBytes = 10 * 1024
+
+const (
+	postDelegationReadOutputAggregateLimitBytes = 40 * 1024
+	postDelegationReadOutputMinLimitBytes       = 4 * 1024
+	postDelegationReadOutputCallBudget          = 10
+)
 
 func outputStoreThresholdBytes(configured int) int {
 	if configured > 0 {
@@ -734,7 +741,7 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 		r.applyProactivePromptCompaction(ctx)
 		snap := r.session.Snapshot()
 		toolDefs, toolDecision := r.selectToolDefsWithDecision(snap)
-		requireToolCall := shouldRequireToolCallForSnapshot(snap) && !usedToolThisTurn
+		requireToolCall := shouldRequireToolCallForSnapshot(snap) && (!usedToolThisTurn || pendingDelegationWriteAction(snap) || pendingPostDelegationWriteAction(snap))
 		toolDecision.RequireToolCall = requireToolCall
 		r.observeToolExposure(toolDecision)
 		if len(toolDefs) > 0 && !isNative {
@@ -750,14 +757,16 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 				continue
 			}
 			if shouldRetryTransientStreamError(ctx, err) {
-				if handled, fallbackErr := r.tryCompletedAgentResultFallback(ctx, turn); handled {
-					return fallbackErr
-				}
 				if completionRetries < maxCompletionRetriesPerTurn {
 					completionRetries++
 					r.pendingRetryPrompt = ""
 					r.emitRetryNotice(transientStreamRetryNotice(err))
 					continue
+				}
+			}
+			if ctx.Err() == nil {
+				if handled, fallbackErr := r.tryCompletedAgentResultFallbackAfterError(ctx, turn); handled {
+					return fallbackErr
 				}
 			}
 			var retryable *RetryableCompletionError
@@ -797,9 +806,15 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 			return nil
 		}
 		_ = r.session.SetActiveTurnPhase(turnID, TurnPhaseRunningTools)
-		if err := r.executeNativeToolCalls(ctx, turn, calls); err != nil {
+		if err := r.executeNativeToolCalls(ctx, turn, calls, toolDecision.ToolNames); err != nil {
+			if ctx.Err() == nil {
+				if handled, fallbackErr := r.tryCompletedAgentResultFallbackAfterError(ctx, turn); handled {
+					return fallbackErr
+				}
+			}
 			return err
 		}
+		completionRetries = 0
 		usedToolThisTurn = true
 	}
 
@@ -864,6 +879,14 @@ func (r *Runner) activeAgentFallbackText() string {
 }
 
 func (r *Runner) tryCompletedAgentResultFallback(ctx context.Context, turn int) (bool, error) {
+	return r.tryCompletedAgentResultFallbackWithOptions(ctx, turn, false)
+}
+
+func (r *Runner) tryCompletedAgentResultFallbackAfterError(ctx context.Context, turn int) (bool, error) {
+	return r.tryCompletedAgentResultFallbackWithOptions(ctx, turn, true)
+}
+
+func (r *Runner) tryCompletedAgentResultFallbackWithOptions(ctx context.Context, turn int, allowBoundedMultiAgent bool) (bool, error) {
 	if r == nil || r.session == nil {
 		return false, nil
 	}
@@ -877,7 +900,7 @@ func (r *Runner) tryCompletedAgentResultFallback(ctx context.Context, turn int) 
 	}
 	if path, ok := completedAgentResultMarkdownWritePathForSnapshot(snap); ok && r.tools != nil {
 		if _, ok := r.tools.Get("write_file"); ok {
-			writeContent := completedAgentResultMarkdownWriteContent(snap)
+			writeContent := completedAgentResultMarkdownWriteContentWithOptions(snap, allowBoundedMultiAgent)
 			if writeContent == "" {
 				return false, nil
 			}
@@ -960,6 +983,10 @@ func completedAgentResultFallbackContent(snap SessionSnapshot) string {
 }
 
 func completedAgentResultMarkdownWriteContent(snap SessionSnapshot) string {
+	return completedAgentResultMarkdownWriteContentWithOptions(snap, false)
+}
+
+func completedAgentResultMarkdownWriteContentWithOptions(snap SessionSnapshot, allowBoundedMultiAgent bool) string {
 	resultTurn := completedAgentResultTurn(snap)
 	if sameTurnAgentStillOutstanding(snap.AgentTasks, resultTurn) {
 		return ""
@@ -982,7 +1009,13 @@ func completedAgentResultMarkdownWriteContent(snap SessionSnapshot) string {
 	if len(results) == 1 {
 		return results[0]
 	}
-	return conciseMultiAgentMarkdownSummary(results)
+	if summary := conciseMultiAgentMarkdownSummary(results); summary != "" {
+		return summary
+	}
+	if allowBoundedMultiAgent {
+		return boundedMultiAgentMarkdownSummary(snap, resultTurn)
+	}
+	return ""
 }
 
 func conciseMultiAgentMarkdownSummary(results []string) string {
@@ -997,6 +1030,66 @@ func conciseMultiAgentMarkdownSummary(results []string) string {
 		bullets = append(bullets, "- "+strings.ReplaceAll(strings.TrimSpace(result), "\n", " "))
 	}
 	return "# Consolidated Findings\n\n" + strings.Join(bullets, "\n") + "\n"
+}
+
+const (
+	boundedMultiAgentMaxSections      = 5
+	boundedMultiAgentSectionByteLimit = 3000
+)
+
+func boundedMultiAgentMarkdownSummary(snap SessionSnapshot, resultTurn int) string {
+	sections := []string{
+		"# Consolidated Findings",
+		"Parent synthesis failed after delegated agents completed. This fallback preserves bounded child-agent findings so the requested document is still written.",
+	}
+	included := 0
+	omitted := 0
+	for _, task := range snap.AgentTasks {
+		if task.Status != AgentStatusCompleted || task.ParentTurn != resultTurn {
+			continue
+		}
+		result := strings.TrimSpace(task.Result)
+		if result == "" {
+			continue
+		}
+		if included >= boundedMultiAgentMaxSections {
+			omitted++
+			continue
+		}
+		label := strings.TrimSpace(task.Role)
+		if label == "" {
+			label = strings.TrimSpace(task.ID)
+		}
+		if label == "" {
+			label = "child agent"
+		}
+		if len(result) > boundedMultiAgentSectionByteLimit {
+			result = truncateStringToValidUTF8Bytes(result, boundedMultiAgentSectionByteLimit) + "\n\n[truncated]"
+		}
+		sections = append(sections, "## "+label+"\n\n"+result)
+		included++
+	}
+	if len(sections) <= 2 {
+		return ""
+	}
+	if omitted > 0 {
+		sections = append(sections, fmt.Sprintf("_%d additional child-agent result(s) omitted by bounded fallback._", omitted))
+	}
+	return strings.Join(sections, "\n\n") + "\n"
+}
+
+func truncateStringToValidUTF8Bytes(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(s) <= limit {
+		return strings.TrimSpace(s)
+	}
+	cut := limit
+	for cut > 0 && !utf8.ValidString(s[:cut]) {
+		cut--
+	}
+	return strings.TrimSpace(s[:cut])
 }
 
 func isConciseAgentFinding(result string) bool {
@@ -1120,7 +1213,7 @@ func completedAgentWriteTargetAfterVerb(tokens []string) bool {
 		case "to", "as", "into", "in":
 			return false
 		}
-		if directArticleToken(token) || token == "markup" {
+		if directArticleToken(token) || token == "markup" || token == "me" || token == "us" {
 			continue
 		}
 		if completedAgentWriteTargetAt(tokens, i) {
@@ -1339,6 +1432,7 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 		preamble := stripXMLToolCallMarkup(strings.TrimSpace(textBuf.String()))
 		safePreamble := redactRuntimeText(preamble)
 		reasoning := strings.TrimSpace(reasoningBuf.String())
+		toolCalls = r.boundPostDelegationReadOutputCalls(toolCalls)
 		r.ensurePreMutationCheckpointForCalls(ctx, turn, toolCalls)
 		if err := r.session.AppendAssistantToolTurn(safePreamble, toolCalls); err != nil {
 			return nil, err
@@ -1508,13 +1602,24 @@ func (r *Runner) emitRetryNotice(msg string) {
 // execution errors still abort the turn after recording the failed result.
 // Tool executions are dispatched in parallel (matching Codex's FuturesOrdered model)
 // to reduce total wall-clock time when multiple independent tools are requested.
-func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []llm.NativeToolCall) error {
+func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []llm.NativeToolCall, allowedToolNames ...[]string) error {
 	type toolExec struct {
 		call       llm.NativeToolCall
 		tool       agenttools.Tool
 		args       map[string]any
 		beforeTool hooks.ExecutionOutput
 		execute    func() ToolRunResult
+	}
+	var allowed map[string]struct{}
+	var allowedList []string
+	if len(allowedToolNames) > 0 {
+		allowedList = uniqueStrings(allowedToolNames[0])
+		if len(allowedList) > 0 {
+			allowed = make(map[string]struct{}, len(allowedList))
+			for _, name := range allowedList {
+				allowed[name] = struct{}{}
+			}
+		}
 	}
 
 	// Phase 1: resolve tools, parse args, run pre-hooks (sequential, may have side effects)
@@ -1530,6 +1635,18 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 				},
 			})
 			continue
+		}
+		if len(allowed) > 0 {
+			if _, ok := allowed[strings.TrimSpace(call.Name)]; !ok {
+				errMsg := redactRuntimeText(fmt.Sprintf("error: tool %q is not available for this turn. Use one of the tools provided for this turn: %s.", call.Name, strings.Join(allowedList, ", ")))
+				execs = append(execs, toolExec{
+					call: call,
+					execute: func() ToolRunResult {
+						return ToolRunResult{Status: ToolRunSucceeded, Result: errMsg}
+					},
+				})
+				continue
+			}
 		}
 
 		var args map[string]any
@@ -1709,7 +1826,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 			return r.completeTurn(turn, "", nil, res.err)
 		}
 
-		toolResult, appendErr := r.toolResultItem(ctx, turn, call.ID, res.result)
+		toolResult, appendErr := r.toolResultItem(ctx, turn, call.Name, call.ID, res.result)
 		if appendErr != nil {
 			return appendErr
 		}
@@ -1952,8 +2069,80 @@ func (r *Runner) appendNativeToolResultItemForTurn(ctx context.Context, turn int
 	return false, staleTurnError(turnID)
 }
 
-func (r *Runner) toolResultItem(ctx context.Context, turn int, toolCallID, result string) (protocol.ToolResultItem, error) {
+func (r *Runner) boundPostDelegationReadOutputCalls(calls []llm.NativeToolCall) []llm.NativeToolCall {
+	if r == nil || r.session == nil || len(calls) < 2 {
+		return calls
+	}
+	snap := r.session.Snapshot()
+	if !pendingDelegationWriteAction(snap) && !pendingPostDelegationWriteAction(snap) {
+		return calls
+	}
+	readCount := 0
+	for _, call := range calls {
+		if strings.TrimSpace(call.Name) == "read_output" {
+			readCount++
+		}
+	}
+	if readCount < 2 {
+		return calls
+	}
+	limit := postDelegationReadOutputAggregateLimitBytes / readCount
+	if limit < postDelegationReadOutputMinLimitBytes {
+		limit = postDelegationReadOutputMinLimitBytes
+	}
+
+	bounded := append([]llm.NativeToolCall(nil), calls...)
+	changed := false
+	for i := range bounded {
+		if strings.TrimSpace(bounded[i].Name) != "read_output" {
+			continue
+		}
+		var args map[string]any
+		if err := json.Unmarshal([]byte(bounded[i].ArgsJSON), &args); err != nil {
+			continue
+		}
+		if args == nil {
+			args = map[string]any{}
+		}
+		if current, ok := readOutputLimitArg(args["limit"]); ok && current > 0 && current <= int64(limit) {
+			continue
+		}
+		args["limit"] = limit
+		encoded, err := json.Marshal(args)
+		if err != nil {
+			continue
+		}
+		bounded[i].ArgsJSON = string(encoded)
+		changed = true
+	}
+	if !changed {
+		return calls
+	}
+	return bounded
+}
+
+func readOutputLimitArg(value any) (int64, bool) {
+	switch v := value.(type) {
+	case int:
+		return int64(v), true
+	case int64:
+		return v, true
+	case int32:
+		return int64(v), true
+	case float64:
+		return int64(v), true
+	case json.Number:
+		n, err := v.Int64()
+		return n, err == nil
+	}
+	return 0, false
+}
+
+func (r *Runner) toolResultItem(ctx context.Context, turn int, toolName, toolCallID, result string) (protocol.ToolResultItem, error) {
 	item := protocol.ToolResultItem{ToolCallID: toolCallID, Text: result}
+	if strings.TrimSpace(toolName) == "read_output" {
+		return item, nil
+	}
 	if r == nil || r.outputStore == nil || len(result) <= r.outputStoreThresholdBytes {
 		return item, nil
 	}
@@ -2192,8 +2381,9 @@ var (
 		"read_file", "list_dir", "search", "code_search", "glob", "view_image",
 		"lsp_definition", "lsp_references", "lsp_hover", "lsp_document_symbols",
 	}
-	writeToolNames   = []string{"write_file", "edit_file", "apply_patch"}
-	commandToolNames = []string{
+	outputReadToolNames = []string{"read_output"}
+	writeToolNames      = []string{"write_file", "edit_file", "apply_patch"}
+	commandToolNames    = []string{
 		"run_command", "exec_session_start", "exec_session_status", "exec_session_write",
 		"exec_session_resize", "exec_session_stop", "command_status", "command_write_stdin",
 	}
@@ -2216,11 +2406,14 @@ func (r *Runner) selectToolDefsWithDecision(snapshot SessionSnapshot) ([]llm.Too
 	if r == nil || r.tools == nil {
 		return nil, decision
 	}
-	if len(outstandingSpawnedAgents(snapshot)) > 0 {
-		defs := r.tools.Filter(activeAgentToolNamesForSnapshot(snapshot)).ToLLMToolDefs()
+	if outstanding := len(outstandingSpawnedAgents(snapshot)); outstanding > 0 {
+		activeNames := activeAgentToolNamesForSnapshot(snapshot)
+		if shouldExposeSpawnWhileAgentsActive(snapshot, outstanding) {
+			activeNames = append(activeNames, "spawn_agent")
+		}
+		defs := r.tools.Filter(activeNames).ToLLMToolDefs()
 		return defs, decision.withTools("active_agents", defs)
 	}
-	delegationComplete := historyIncludesCompletedToolCall(snapshot, "wait_agent")
 	blockingHandoff := blockingAgentHandoffs(snapshot)
 	currentDelegationIntent := currentInputRequestsDelegation(snapshot)
 	currentPostDelegationAction := inputSuggestsPostDelegationAction(normalizeToolIntentText(snapshot.LastInput))
@@ -2230,6 +2423,11 @@ func (r *Runner) selectToolDefsWithDecision(snapshot SessionSnapshot) ([]llm.Too
 		pendingWorkflowWrite = false
 	}
 	pendingPostDelegationWrite := pendingWorkflowWrite || pendingPostDelegationWriteAction(snapshot)
+	completedStateDelegation := pendingPostDelegationWrite && completedDelegationAgentResultsAvailable(snapshot)
+	delegationComplete := historyIncludesCompletedToolCall(snapshot, "wait_agent") || completedStateDelegation
+	if completedStateDelegation {
+		currentDelegationIntent = false
+	}
 	if delegationComplete && !currentDelegationIntent {
 		if len(blockingHandoff) > 0 {
 			snapshot.LastInput = agentHandoffToolIntentText(blockingHandoff)
@@ -2261,13 +2459,22 @@ selectParentTools:
 	}
 	if pendingPostDelegationWrite {
 		reason = "post_delegation_pending_action"
-		allowed = append(allowed, readOnlyToolNames...)
-		allowed = append(allowed, writeToolNames...)
-		allowed = append(allowed, gitReadToolNames...)
-		allowed = append(allowed, "tool_help")
-		if postDelegationNeedsSynthesisAgent(snapshot) {
-			allowed = append(allowed, delegateToolNames...)
+		if postDelegationWriteDocMode(snapshot) {
+			allowed = nil
+			if !postDelegationReadOutputBudgetExhausted(snapshot) {
+				allowed = append(allowed, outputReadToolNames...)
+			}
+			allowed = append(allowed, writeToolNames...)
+			if inputSuggestsGitCommit(normalizeToolIntentText(postDelegationToolIntentText(snapshot))) {
+				allowed = append(allowed, gitReadToolNames...)
+				allowed = append(allowed, "git_commit")
+			}
+		} else {
+			allowed = append(allowed, readOnlyToolNames...)
+			allowed = append(allowed, writeToolNames...)
+			allowed = append(allowed, gitReadToolNames...)
 		}
+		allowed = append(allowed, "tool_help")
 	}
 	if len(blockingHandoff) > 0 {
 		reason = "agent_handoff_blocking"
@@ -2316,6 +2523,20 @@ func activeAgentToolNamesForSnapshot(snapshot SessionSnapshot) []string {
 		names = append(names, "kill_agent")
 	}
 	return names
+}
+
+func shouldExposeSpawnWhileAgentsActive(snapshot SessionSnapshot, outstanding int) bool {
+	if outstanding >= 5 || !shouldRouteParentThroughDelegation(snapshot) {
+		return false
+	}
+	return inputSuggestsMultiRootDelegatedReport(normalizeToolIntentText(snapshot.LastInput))
+}
+
+func postDelegationWriteDocMode(snapshot SessionSnapshot) bool {
+	if pendingDelegationWriteAction(snapshot) {
+		return true
+	}
+	return inputSuggestsFileWrites(normalizeToolIntentText(snapshot.LastInput))
 }
 
 func newToolExposureDecision(snapshot SessionSnapshot) ToolExposureDecision {
@@ -2868,6 +3089,37 @@ func pendingDelegationWriteAction(snapshot SessionSnapshot) bool {
 	return snapshot.PendingDelegationAction != nil && snapshot.PendingDelegationAction.Kind == DelegationActionWriteDoc
 }
 
+func postDelegationReadOutputBudgetExhausted(snapshot SessionSnapshot) bool {
+	start := lastCompletedToolResultIndex(snapshot, "wait_agent")
+	if start < 0 {
+		if !pendingDelegationWriteAction(snapshot) || !completedDelegationAgentResultsAvailable(snapshot) {
+			return false
+		}
+		start = -1
+	}
+	readCalls := 0
+	for i, msg := range snapshot.History {
+		if i <= start || msg.Role != llm.RoleAssistant {
+			continue
+		}
+		for _, call := range msg.ToolCalls {
+			if strings.TrimSpace(call.Name) == "read_output" {
+				readCalls++
+			}
+		}
+	}
+	return readCalls >= postDelegationReadOutputCallBudget
+}
+
+func completedDelegationAgentResultsAvailable(snapshot SessionSnapshot) bool {
+	for _, task := range snapshot.AgentTasks {
+		if task.Status == AgentStatusCompleted && strings.TrimSpace(task.Result) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func lastCompletedToolResultIndex(snapshot SessionSnapshot, toolName string) int {
 	ids := make(map[string]struct{})
 	last := -1
@@ -2945,9 +3197,12 @@ func shouldRequireToolCallForSnapshot(snapshot SessionSnapshot) bool {
 	if len(blockingAgentHandoffs(snapshot)) > 0 {
 		return true
 	}
-	if len(outstandingSpawnedAgents(snapshot)) > 0 {
+	if pendingDelegationWriteAction(snapshot) || pendingPostDelegationWriteAction(snapshot) {
+		return true
+	}
+	if outstanding := len(outstandingSpawnedAgents(snapshot)); outstanding > 0 {
 		text := normalizeToolIntentText(snapshot.LastInput)
-		return currentInputRequestsDelegation(snapshot) || inputSuggestsPostDelegationAction(text)
+		return currentInputRequestsDelegation(snapshot) || shouldExposeSpawnWhileAgentsActive(snapshot, outstanding) || inputSuggestsPostDelegationAction(text)
 	}
 	return currentInputRequestsDelegation(snapshot)
 }
@@ -3241,7 +3496,39 @@ func cleanIntentToken(token string) string {
 }
 
 func inputSuggestsMultiRootDelegatedReport(text string) bool {
-	return inputSuggestsFileWrites(text) && len(absoluteWorkspaceRoots(text)) > 1
+	return inputSuggestsFileWrites(text) && (len(absoluteWorkspaceRoots(text)) > 1 || sharedGitRepoListCount(text) > 1)
+}
+
+func sharedGitRepoListCount(text string) int {
+	if !mentionsSharedGitRoot(text) {
+		return 0
+	}
+	wanted := map[string]struct{}{
+		"cci":      {},
+		"codex":    {},
+		"deepseek": {},
+		"opencode": {},
+	}
+	count := 0
+	for _, field := range strings.Fields(text) {
+		token := cleanIntentToken(field)
+		if _, ok := wanted[token]; !ok {
+			continue
+		}
+		delete(wanted, token)
+		count++
+	}
+	return count
+}
+
+func mentionsSharedGitRoot(text string) bool {
+	for _, field := range strings.Fields(text) {
+		token := cleanIntentToken(field)
+		if token == "~/git" || strings.HasSuffix(token, "/git") {
+			return true
+		}
+	}
+	return false
 }
 
 func absoluteWorkspaceRoots(text string) map[string]struct{} {
@@ -3764,9 +4051,6 @@ func postDelegationWritePromptHook(_ context.Context, event hooks.Event) []hooks
 		target = strings.TrimSpace(snap.PendingDelegationAction.TargetPath)
 	}
 	content := "Post-delegation document write active. Use completed child-agent results as source material, but synthesize the requested document instead of concatenating reports. Do not paste raw child-agent outputs or role headings such as `## explorer`. Write the final, user-facing document with write_file to " + target + ". Include prioritized findings, evidence paths, and concrete next steps when the user requested a gaps/findings report."
-	if postDelegationNeedsSynthesisAgent(snap) {
-		content += " Multiple completed child-agent results are available and no synthesizer result is recorded. Spawn a read-only synthesizer agent and include the full completed child-agent results in its task_description. The synthesizer has no filesystem or search tools; do not ask it to read files, search repositories, or inspect paths. Wait for it, then write_file the synthesized result. Do not write any single child-agent report."
-	}
 	return []hooks.Result{hooks.OverlayResult{
 		Key:        "post_delegation_write",
 		Content:    content,
@@ -3884,6 +4168,9 @@ func agentHandoffOverlayContent(tasks []AgentTaskState) string {
 
 func postDelegationNeedsSynthesisAgent(snap SessionSnapshot) bool {
 	if !pendingDelegationWriteAction(snap) && !pendingPostDelegationWriteAction(snap) {
+		return false
+	}
+	if historyIncludesCompletedToolCall(snap, "read_output") {
 		return false
 	}
 	resultTurn := completedAgentResultTurn(snap)

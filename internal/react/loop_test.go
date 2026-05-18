@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	agenttools "forge/internal/agent/tools"
 	"forge/internal/hooks"
@@ -1220,6 +1221,7 @@ func TestCompletedAgentResultMarkdownWritePathRecognizesPathlessReportRequests(t
 		"ask agents to inspect this and write a report",
 		"create a markdown document",
 		"write a nice doc",
+		"write me a nice doc when your done",
 		"write this to a proper checklist doc",
 	} {
 		t.Run(input, func(t *testing.T) {
@@ -1250,6 +1252,24 @@ func TestCompletedAgentResultMarkdownWritePathRejectsGeneratedReportContentReque
 				t.Fatalf("unexpected fallback write path %q", path)
 			}
 		})
+	}
+}
+
+func TestRunnerRequiresToolCallForPendingDelegationWrite(t *testing.T) {
+	snap := SessionSnapshot{
+		LastInput: "continue",
+		PendingDelegationAction: &DelegationActionState{
+			Kind:       DelegationActionWriteDoc,
+			TargetPath: "docs/reports/audit.md",
+		},
+		History: []llm.Message{
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "wait-1", Content: `{"status":"completed","result":"findings returned"}`},
+		},
+	}
+
+	if !shouldRequireToolCallForSnapshot(snap) {
+		t.Fatal("pending delegation document write should require write_file before prose")
 	}
 }
 
@@ -1312,6 +1332,563 @@ func TestCompletedAgentResultMarkdownFallbackWritesSynthesizedReport(t *testing.
 		if strings.Contains(writtenContent, raw) {
 			t.Fatalf("content should not contain raw child-agent output %q: %q", raw, writtenContent)
 		}
+	}
+}
+
+func TestRunnerWritesCompletedAgentResultFallbackOnQuotaFailure(t *testing.T) {
+	session := NewSession()
+	session.SetPendingDelegationAction(DelegationActionState{
+		Kind:       DelegationActionWriteDoc,
+		TargetPath: "docs/reports/gaps.md",
+	})
+	session.UpsertAgentTask(AgentTaskState{
+		ID:         "agent-1",
+		Role:       "synthesizer",
+		Status:     AgentStatusCompleted,
+		Result:     "# Forge Gap Report\n\nCompleted child-agent synthesis.",
+		ParentTurn: 1,
+	})
+	var writtenPath, writtenContent string
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "write file",
+		AutoApprove: true,
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			writtenPath, _ = args["path"].(string)
+			writtenContent, _ = args["content"].(string)
+			return "wrote " + writtenPath, nil
+		},
+	})
+	driver := &nativeSequenceDriver{errs: []error{errors.New(`copilot stream: 402 Payment Required {"message":"You have no quota","code":"quota_exceeded"}`)}}
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+	if err := r.Run(context.Background(), "continue"); err != nil {
+		t.Fatal(err)
+	}
+	if writtenPath != "docs/reports/gaps.md" {
+		t.Fatalf("path = %q, want docs/reports/gaps.md", writtenPath)
+	}
+	if writtenContent != "# Forge Gap Report\n\nCompleted child-agent synthesis." {
+		t.Fatalf("content = %q", writtenContent)
+	}
+	if got := r.LastResponse(); got != "wrote docs/reports/gaps.md" {
+		t.Fatalf("last response = %q, want wrote docs/reports/gaps.md", got)
+	}
+}
+
+func TestRunnerWritesCompletedAgentResultFallbackOnPostDelegationToolError(t *testing.T) {
+	session := NewSession()
+	session.SetPendingDelegationAction(DelegationActionState{
+		Kind:       DelegationActionWriteDoc,
+		TargetPath: "docs/reports/gaps.md",
+	})
+	session.UpsertAgentTask(AgentTaskState{
+		ID:         "agent-1",
+		Role:       "synthesizer",
+		Status:     AgentStatusCompleted,
+		Result:     "# Forge Gap Report\n\nCompleted child-agent synthesis.",
+		ParentTurn: 1,
+	})
+	var writtenPath, writtenContent string
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "read_output",
+		Description: "read output",
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return "", errors.New("output handle missing")
+		},
+	})
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "write file",
+		AutoApprove: true,
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			writtenPath, _ = args["path"].(string)
+			writtenContent, _ = args["content"].(string)
+			return "wrote " + writtenPath, nil
+		},
+	})
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{{{
+		ToolCall: &llm.NativeToolCall{ID: "read-1", Name: "read_output", ArgsJSON: `{"handle":"session/missing"}`},
+	}}}}
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+	if err := r.Run(context.Background(), "continue"); err != nil {
+		t.Fatal(err)
+	}
+	if writtenPath != "docs/reports/gaps.md" {
+		t.Fatalf("path = %q, want docs/reports/gaps.md", writtenPath)
+	}
+	if writtenContent != "# Forge Gap Report\n\nCompleted child-agent synthesis." {
+		t.Fatalf("content = %q", writtenContent)
+	}
+}
+
+func TestRunnerBoundsBulkPostDelegationReadOutputCalls(t *testing.T) {
+	session := NewSession()
+	session.SetPendingDelegationAction(DelegationActionState{
+		Kind:       DelegationActionWriteDoc,
+		TargetPath: "docs/reports/gaps.md",
+	})
+
+	var readLimits []int
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "read_output",
+		Description: "read output",
+		Concurrency: agenttools.ToolConcurrencySerial,
+		AutoApprove: true,
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			limit, ok := numericArgForTest(args["limit"])
+			if !ok {
+				limit = 0
+			}
+			readLimits = append(readLimits, int(limit))
+			return fmt.Sprintf(`{"handle":%q,"offset":0,"limit":%d,"bytes_read":5,"content":"chunk"}`, args["handle"], limit), nil
+		},
+	})
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "write file",
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return "wrote docs/reports/gaps.md", nil
+		},
+	})
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{
+			{ToolCall: &llm.NativeToolCall{ID: "read-1", Name: "read_output", ArgsJSON: `{"handle":"session/out-1"}`}},
+			{ToolCall: &llm.NativeToolCall{ID: "read-2", Name: "read_output", ArgsJSON: `{"handle":"session/out-2"}`}},
+			{ToolCall: &llm.NativeToolCall{ID: "read-3", Name: "read_output", ArgsJSON: `{"handle":"session/out-3"}`}},
+			{ToolCall: &llm.NativeToolCall{ID: "read-4", Name: "read_output", ArgsJSON: `{"handle":"session/out-4"}`}},
+			{ToolCall: &llm.NativeToolCall{ID: "read-5", Name: "read_output", ArgsJSON: `{"handle":"session/out-5"}`}},
+		},
+		{{ToolCall: &llm.NativeToolCall{ID: "write-1", Name: "write_file", ArgsJSON: `{"path":"docs/reports/gaps.md","content":"# Report\n\nok"}`}}},
+		{{Text: "wrote synthesized report"}},
+	}}
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+	if err := r.Run(context.Background(), "continue"); err != nil {
+		t.Fatal(err)
+	}
+	if len(readLimits) != 5 {
+		t.Fatalf("read_output calls = %d, want 5", len(readLimits))
+	}
+	for _, limit := range readLimits {
+		if limit <= 0 || limit > 8*1024 {
+			t.Fatalf("read_output limit = %d, want bounded bulk read limit", limit)
+		}
+	}
+}
+
+func TestRunnerDoesNotExecuteUnavailablePostDelegationTools(t *testing.T) {
+	session := NewSession()
+	session.SetPendingDelegationAction(DelegationActionState{
+		Kind:       DelegationActionWriteDoc,
+		TargetPath: "docs/reports/gaps.md",
+	})
+	session.UpsertAgentTask(AgentTaskState{
+		ID:         "agent-1",
+		Role:       "explorer",
+		Status:     AgentStatusCompleted,
+		Result:     "Forge and competitor findings are ready.",
+		ParentTurn: 1,
+	})
+
+	readCalls := 0
+	var writtenContent string
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "read_file",
+		Description: "read file",
+		Parameters:  []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}},
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			readCalls++
+			return "unexpected read", nil
+		},
+	})
+	reg.Register(agenttools.Tool{
+		Name:        "read_output",
+		Description: "read output",
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return `{"content":"delegated findings"}`, nil
+		},
+	})
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "write file",
+		Parameters: []agenttools.ParameterDef{
+			{Name: "path", Type: "string", Required: true},
+			{Name: "content", Type: "string", Required: true},
+		},
+		AutoApprove: true,
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			writtenContent, _ = args["content"].(string)
+			return "wrote docs/reports/gaps.md", nil
+		},
+	})
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "read-1", Name: "read_file", ArgsJSON: `{"path":"docs/forge-competitive-gap-findings.md"}`}}},
+		{{ToolCall: &llm.NativeToolCall{ID: "write-1", Name: "write_file", ArgsJSON: `{"path":"docs/reports/gaps.md","content":"# Parent Report\n\nSynthesized."}`}}},
+		{{Text: "wrote synthesized report"}},
+	}}
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+	if err := r.Run(context.Background(), "continue"); err != nil {
+		t.Fatal(err)
+	}
+	if readCalls != 0 {
+		t.Fatalf("read_file calls = %d, want unavailable tool not executed", readCalls)
+	}
+	if writtenContent != "# Parent Report\n\nSynthesized." {
+		t.Fatalf("written content = %q", writtenContent)
+	}
+	if len(driver.allMsgs) < 2 || !messagesContainText(driver.allMsgs[1], `tool "read_file" is not available for this turn`) {
+		t.Fatalf("second model call did not include unavailable-tool correction: %#v", driver.allMsgs)
+	}
+}
+
+func TestRunnerRequiresToolCallUntilPostDelegationWriteCompletes(t *testing.T) {
+	session := NewSession()
+	session.SetPendingDelegationAction(DelegationActionState{
+		Kind:       DelegationActionWriteDoc,
+		TargetPath: "docs/reports/gaps.md",
+	})
+	session.UpsertAgentTask(AgentTaskState{
+		ID:         "agent-1",
+		Role:       "explorer",
+		Status:     AgentStatusCompleted,
+		Result:     "Forge and competitor findings are ready.",
+		ParentTurn: 1,
+	})
+
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "read_output",
+		Description: "read output",
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return `{"content":"delegated findings"}`, nil
+		},
+	})
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "write file",
+		Parameters: []agenttools.ParameterDef{
+			{Name: "path", Type: "string", Required: true},
+			{Name: "content", Type: "string", Required: true},
+		},
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return "wrote docs/reports/gaps.md", nil
+		},
+	})
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "read-1", Name: "read_output", ArgsJSON: `{"handle":"session/agent-1"}`}}},
+		{{ToolCall: &llm.NativeToolCall{ID: "write-1", Name: "write_file", ArgsJSON: `{"path":"docs/reports/gaps.md","content":"# Parent Report\n\nSynthesized."}`}}},
+		{{Text: "wrote synthesized report"}},
+	}}
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+	if err := r.Run(context.Background(), "continue"); err != nil {
+		t.Fatal(err)
+	}
+	if len(driver.lastOpts) < 2 {
+		t.Fatalf("native tool options = %d, want at least 2", len(driver.lastOpts))
+	}
+	if !driver.lastOpts[0].RequireToolCall {
+		t.Fatal("first post-delegation step should require a tool call")
+	}
+	if !driver.lastOpts[1].RequireToolCall {
+		t.Fatal("post-delegation write should still require a tool call after read_output")
+	}
+}
+
+func TestRunnerStopsOfferingReadOutputAfterPostDelegationReadBudget(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"read_output", "write_file"} {
+		toolName := name
+		reg.Register(agenttools.Tool{
+			Name:        toolName,
+			Description: toolName,
+			AutoApprove: true,
+			Execute: func(_ context.Context, _ map[string]any) (string, error) {
+				return "ok", nil
+			},
+		})
+	}
+	r := NewRunner(Config{Tools: reg})
+
+	snapshotWithReads := func(readCalls int) SessionSnapshot {
+		history := []llm.Message{
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{"id":"agent-1"}`}}},
+			{Role: llm.RoleTool, ToolCallID: "wait-1", Content: `{"id":"agent-1","status":"completed","result":"handle session/out"}`},
+		}
+		for i := range readCalls {
+			id := fmt.Sprintf("read-%d", i)
+			history = append(history,
+				llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: id, Name: "read_output", ArgsJSON: `{"handle":"session/out"}`}}},
+				llm.Message{Role: llm.RoleTool, ToolCallID: id, Content: `{"content":"chunk"}`},
+			)
+		}
+		return SessionSnapshot{
+			LastInput: "compare repos and write docs/reports/gaps.md",
+			PendingDelegationAction: &DelegationActionState{
+				Kind:       DelegationActionWriteDoc,
+				TargetPath: "docs/reports/gaps.md",
+			},
+			History: history,
+		}
+	}
+
+	beforeBudget := toolDefNames(r.selectToolDefs(snapshotWithReads(postDelegationReadOutputCallBudget - 1)))
+	if !containsString(beforeBudget, "read_output") {
+		t.Fatalf("tools before budget = %#v, want read_output", beforeBudget)
+	}
+	if !containsString(beforeBudget, "write_file") {
+		t.Fatalf("tools before budget = %#v, want write_file", beforeBudget)
+	}
+
+	afterBudget := toolDefNames(r.selectToolDefs(snapshotWithReads(postDelegationReadOutputCallBudget)))
+	if containsString(afterBudget, "read_output") {
+		t.Fatalf("tools after budget = %#v, should not include read_output", afterBudget)
+	}
+	if !containsString(afterBudget, "write_file") {
+		t.Fatalf("tools after budget = %#v, want write_file", afterBudget)
+	}
+}
+
+func numericArgForTest(value any) (int64, bool) {
+	switch v := value.(type) {
+	case int:
+		return int64(v), true
+	case int64:
+		return v, true
+	case float64:
+		return int64(v), true
+	}
+	return 0, false
+}
+
+func messagesContainText(messages []llm.Message, want string) bool {
+	for _, msg := range messages {
+		if strings.Contains(msg.Content, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestRunnerRetriesTransientPostDelegationModelErrorBeforeFallback(t *testing.T) {
+	session := NewSession()
+	session.SetPendingDelegationAction(DelegationActionState{
+		Kind:       DelegationActionWriteDoc,
+		TargetPath: "docs/reports/gaps.md",
+	})
+	session.UpsertAgentTask(AgentTaskState{
+		ID:         "agent-1",
+		Role:       "synthesizer",
+		Status:     AgentStatusCompleted,
+		Result:     "# Child Agent Findings\n\nEvidence for the parent report.",
+		ParentTurn: 1,
+	})
+	var writtenPath, writtenContent string
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "write file",
+		Parameters: []agenttools.ParameterDef{
+			{Name: "path", Type: "string", Required: true},
+			{Name: "content", Type: "string", Required: true},
+		},
+		AutoApprove: true,
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			writtenPath, _ = args["path"].(string)
+			writtenContent, _ = args["content"].(string)
+			return "wrote " + writtenPath, nil
+		},
+	})
+	driver := &nativeSequenceDriver{
+		steps: [][]llm.Token{
+			nil,
+			{{ToolCall: &llm.NativeToolCall{ID: "write-1", Name: "write_file", ArgsJSON: `{"path":"docs/reports/gaps.md","content":"# Parent Synthesized Report\n\nPolished comparison."}`}}},
+			{{Text: "wrote synthesized report"}},
+		},
+		errs: []error{errors.New("stream idle timeout after 30s")},
+	}
+	rec := &recordingRenderer{}
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session, Renderer: rec})
+
+	if err := r.Run(context.Background(), "continue"); err != nil {
+		t.Fatal(err)
+	}
+	if driver.callCount != 3 {
+		t.Fatalf("driver calls = %d, want transient error, retry write_file, final text", driver.callCount)
+	}
+	if len(rec.retryTexts) == 0 {
+		t.Fatal("expected retry notice before fallback")
+	}
+	if writtenPath != "docs/reports/gaps.md" {
+		t.Fatalf("path = %q, want docs/reports/gaps.md", writtenPath)
+	}
+	if writtenContent != "# Parent Synthesized Report\n\nPolished comparison." {
+		t.Fatalf("content = %q, want parent-authored report", writtenContent)
+	}
+	if strings.Contains(writtenContent, "Parent synthesis failed") || strings.Contains(writtenContent, "Child Agent Findings") {
+		t.Fatalf("content used fallback instead of parent synthesis: %q", writtenContent)
+	}
+}
+
+func TestRunnerResetsTransientRetryBudgetAfterPostDelegationToolCall(t *testing.T) {
+	session := NewSession()
+	session.SetPendingDelegationAction(DelegationActionState{
+		Kind:       DelegationActionWriteDoc,
+		TargetPath: "docs/reports/gaps.md",
+	})
+	session.UpsertAgentTask(AgentTaskState{
+		ID:         "agent-1",
+		Role:       "explorer",
+		Status:     AgentStatusCompleted,
+		Result:     "# Child Agent Findings\n\nEvidence for the parent report.",
+		ParentTurn: 1,
+	})
+	var writtenContent string
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "read_output",
+		Description: "read output",
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return `{"content":"delegated findings"}`, nil
+		},
+	})
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "write file",
+		Parameters: []agenttools.ParameterDef{
+			{Name: "path", Type: "string", Required: true},
+			{Name: "content", Type: "string", Required: true},
+		},
+		AutoApprove: true,
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			writtenContent, _ = args["content"].(string)
+			return "wrote docs/reports/gaps.md", nil
+		},
+	})
+	driver := &nativeSequenceDriver{
+		steps: [][]llm.Token{
+			nil,
+			nil,
+			{{ToolCall: &llm.NativeToolCall{ID: "read-1", Name: "read_output", ArgsJSON: `{"handle":"session/agent-1"}`}}},
+			nil,
+			nil,
+			nil,
+			{{ToolCall: &llm.NativeToolCall{ID: "write-1", Name: "write_file", ArgsJSON: `{"path":"docs/reports/gaps.md","content":"# Parent Synthesized Report\n\nPolished comparison."}`}}},
+			{{Text: "wrote synthesized report"}},
+		},
+		errs: []error{
+			errors.New("stream idle timeout after 30s"),
+			errors.New("stream idle timeout after 30s"),
+			nil,
+			errors.New("stream idle timeout after 30s"),
+			errors.New("stream idle timeout after 30s"),
+			errors.New("stream idle timeout after 30s"),
+		},
+	}
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+	if err := r.Run(context.Background(), "continue"); err != nil {
+		t.Fatal(err)
+	}
+	if writtenContent != "# Parent Synthesized Report\n\nPolished comparison." {
+		t.Fatalf("content = %q, want parent-authored report", writtenContent)
+	}
+	if strings.Contains(writtenContent, "Parent synthesis failed") || strings.Contains(writtenContent, "Child Agent Findings") {
+		t.Fatalf("content used fallback instead of parent synthesis: %q", writtenContent)
+	}
+}
+
+func TestRunnerWritesBoundedMultiAgentFallbackOnPostDelegationModelError(t *testing.T) {
+	session := NewSession()
+	session.SetPendingDelegationAction(DelegationActionState{
+		Kind:       DelegationActionWriteDoc,
+		TargetPath: "docs/reports/gaps.md",
+	})
+	for _, task := range []AgentTaskState{
+		{ID: "agent-1", Role: "forge-auditor", Status: AgentStatusCompleted, Result: "# Forge Audit\n\n" + strings.Repeat("Forge feature evidence. ", 80), ParentTurn: 1},
+		{ID: "agent-2", Role: "competitor-auditor", Status: AgentStatusCompleted, Result: "# Competitor Audit\n\n" + strings.Repeat("Competitor feature evidence. ", 80), ParentTurn: 1},
+	} {
+		session.UpsertAgentTask(task)
+	}
+	var writtenPath, writtenContent string
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "write file",
+		AutoApprove: true,
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			writtenPath, _ = args["path"].(string)
+			writtenContent, _ = args["content"].(string)
+			return "wrote " + writtenPath, nil
+		},
+	})
+	driver := &nativeSequenceDriver{errs: []error{errors.New("stream idle timeout after 30s")}}
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+	if err := r.Run(context.Background(), "continue"); err != nil {
+		t.Fatal(err)
+	}
+	if writtenPath != "docs/reports/gaps.md" {
+		t.Fatalf("path = %q, want docs/reports/gaps.md", writtenPath)
+	}
+	for _, want := range []string{"# Consolidated Findings", "Forge Audit", "Competitor Audit"} {
+		if !strings.Contains(writtenContent, want) {
+			t.Fatalf("content missing %q: %q", want, writtenContent)
+		}
+	}
+}
+
+func TestBoundedMultiAgentFallbackLimitsSectionCount(t *testing.T) {
+	var tasks []AgentTaskState
+	for i := 1; i <= 6; i++ {
+		tasks = append(tasks, AgentTaskState{
+			ID:         fmt.Sprintf("agent-%d", i),
+			Role:       fmt.Sprintf("agent-%d", i),
+			Status:     AgentStatusCompleted,
+			Result:     fmt.Sprintf("report %d", i),
+			ParentTurn: 1,
+		})
+	}
+
+	content := boundedMultiAgentMarkdownSummary(SessionSnapshot{AgentTasks: tasks}, 1)
+	if !strings.Contains(content, "## agent-5") {
+		t.Fatalf("content missing fifth bounded section: %q", content)
+	}
+	if strings.Contains(content, "## agent-6") {
+		t.Fatalf("content includes unbounded sixth section: %q", content)
+	}
+}
+
+func TestBoundedMultiAgentFallbackTruncatesUTF8Safely(t *testing.T) {
+	result := strings.Repeat("a", boundedMultiAgentSectionByteLimit-1) + "é" + "tail"
+	snap := SessionSnapshot{AgentTasks: []AgentTaskState{{
+		ID:         "agent-1",
+		Role:       "agent-1",
+		Status:     AgentStatusCompleted,
+		Result:     result,
+		ParentTurn: 1,
+	}}}
+
+	content := boundedMultiAgentMarkdownSummary(snap, 1)
+	if !strings.Contains(content, "[truncated]") {
+		t.Fatalf("content missing truncation marker: %q", content)
+	}
+	if !utf8.ValidString(content) {
+		t.Fatalf("content contains invalid UTF-8 after truncation: %q", content)
 	}
 }
 
@@ -4086,6 +4663,35 @@ func TestRunnerMultiRootReportWriteRestrictsParentToDelegationTools(t *testing.T
 	}
 }
 
+func TestRunnerSharedGitRepoListReportWriteRestrictsParentToDelegationTools(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"read_file", "list_dir", "search", "code_search", "glob", "write_file", "spawn_agent", "wait_agent"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	input := "take a look at this repo and compare it to the tier 1 operators out there like claude, codex, opencode, deepseek etc, there will be more. The code for the first four is in ~/git, codex, cci, opencode, deepseek. look at forges features and give a deep comparison where we sit compared to those other options. Write me a nice doc when your done"
+
+	defs, decision := r.selectToolDefsWithDecision(SessionSnapshot{LastInput: input})
+	names := toolDefNames(defs)
+
+	if decision.Reason != "delegation_intent" {
+		t.Fatalf("reason = %q, want delegation_intent (tools=%#v)", decision.Reason, names)
+	}
+	for _, want := range []string{"spawn_agent", "wait_agent"} {
+		if !containsString(names, want) {
+			t.Fatalf("shared-git report tools = %#v, want %s", names, want)
+		}
+	}
+	for _, blocked := range []string{"read_file", "list_dir", "search", "code_search", "glob", "write_file"} {
+		if containsString(names, blocked) {
+			t.Fatalf("shared-git report tools = %#v, should not include parent tool %s", names, blocked)
+		}
+	}
+	if !shouldRequireToolCallForSnapshot(SessionSnapshot{LastInput: input}) {
+		t.Fatal("shared-git report write should require delegation tool use before prose")
+	}
+}
+
 func TestRunnerTaskStateDelegationIntentRestrictsParentToDelegationTools(t *testing.T) {
 	reg := agenttools.NewRegistry()
 	for _, name := range []string{"read_file", "write_file", "run_command", "tool_help", "spawn_agent", "wait_agent"} {
@@ -4392,7 +4998,7 @@ func TestRunnerRetriesTransientStreamErrorWhileAgentRuns(t *testing.T) {
 }
 
 func TestRunnerFallsBackToCompletedAgentResultWhenParentStreamTimesOut(t *testing.T) {
-	driver := &nativeSequenceDriver{errs: []error{errors.New("request timeout")}}
+	driver := &nativeSequenceDriver{errs: []error{&llm.RetryAttemptsExhaustedError{Attempts: 3, Err: errors.New("stream idle timeout after 30s")}}}
 	session := NewSession()
 	rec := &recordingRenderer{}
 	r := NewRunner(Config{Driver: driver, Session: session, Renderer: rec})
@@ -4410,7 +5016,7 @@ func TestRunnerFallsBackToCompletedAgentResultWhenParentStreamTimesOut(t *testin
 		t.Fatal(err)
 	}
 	if driver.callCount != 1 {
-		t.Fatalf("driver calls = %d, want one failed synthesis attempt", driver.callCount)
+		t.Fatalf("driver calls = %d, want one exhausted synthesis attempt", driver.callCount)
 	}
 	if len(rec.retryTexts) != 0 {
 		t.Fatalf("retry notices = %#v, want none", rec.retryTexts)
@@ -4477,8 +5083,8 @@ func TestRunnerWritesPriorTurnSynthesizerResultWhenPendingDelegationWriteTimesOu
 	if err := r.runLoop(active.Context, turn); err != nil {
 		t.Fatal(err)
 	}
-	if driver.callCount != 1 {
-		t.Fatalf("driver calls = %d, want one failed parent attempt before fallback write", driver.callCount)
+	if driver.callCount != maxCompletionRetriesPerTurn+1 {
+		t.Fatalf("driver calls = %d, want retries exhausted before fallback write", driver.callCount)
 	}
 	if gotPath != "docs/reports/audit.md" {
 		t.Fatalf("path = %q, want docs/reports/audit.md", gotPath)
@@ -4839,7 +5445,7 @@ func TestRunnerDoesNotKeepPostDelegationWritePendingForReadOnlyFindingsFollowUp(
 	}
 }
 
-func TestRunnerExposesSynthesizerForPriorTurnPendingDelegationWrite(t *testing.T) {
+func TestRunnerKeepsParentWriteForPriorTurnPendingDelegationWrite(t *testing.T) {
 	reg := agenttools.NewRegistry()
 	for _, name := range []string{"spawn_agent", "wait_agent", "write_file"} {
 		reg.Register(agenttools.Tool{Name: name, Description: name})
@@ -4863,9 +5469,12 @@ func TestRunnerExposesSynthesizerForPriorTurnPendingDelegationWrite(t *testing.T
 	}
 
 	names := toolDefNames(r.selectToolDefs(snap))
-	for _, want := range []string{"spawn_agent", "wait_agent", "write_file"} {
-		if !containsString(names, want) {
-			t.Fatalf("tools = %#v, want %s for prior-turn pending delegation write", names, want)
+	if !containsString(names, "write_file") {
+		t.Fatalf("tools = %#v, want write_file for prior-turn pending delegation write", names)
+	}
+	for _, blocked := range []string{"spawn_agent", "wait_agent"} {
+		if containsString(names, blocked) {
+			t.Fatalf("tools = %#v, should keep synthesis in parent instead of %s", names, blocked)
 		}
 	}
 }
@@ -4890,6 +5499,36 @@ func TestRunnerKeepsWaitToolAvailableForOutstandingSpawnedAgent(t *testing.T) {
 	}
 	if shouldRequireToolCallForSnapshot(snap) {
 		t.Fatal("status follow-up should not force a wait_agent tool call")
+	}
+}
+
+func TestRunnerKeepsSpawnAvailableForMultiRootDelegationAfterRunningWait(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"spawn_agent", "wait_agent", "get_agent_output", "agent_status", "read_file"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{
+		LastInput: "take a look at this repo and compare it to tier 1 operators. The code is in ~/git, codex, cci, opencode, deepseek. Write me a nice doc when done",
+		AgentTasks: []AgentTaskState{{
+			ID:     "agent-1",
+			Role:   "repo-auditor",
+			Status: AgentStatusRunning,
+		}},
+		History: []llm.Message{
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{"id":"agent-1"}`}}},
+			{Role: llm.RoleTool, ToolCallID: "wait-1", Content: `{"id":"agent-1","role":"repo-auditor","status":"running"}`},
+		},
+	}
+
+	names := toolDefNames(r.selectToolDefs(snap))
+	for _, want := range []string{"spawn_agent", "wait_agent"} {
+		if !containsString(names, want) {
+			t.Fatalf("tools after running wait_agent result = %#v, want %s", names, want)
+		}
+	}
+	if !shouldRequireToolCallForSnapshot(snap) {
+		t.Fatal("multi-root delegation with running agents should still require a tool call")
 	}
 }
 
@@ -5404,9 +6043,9 @@ func TestRunnerRestoresWriteToolsFromPendingDelegationAction(t *testing.T) {
 	}
 }
 
-func TestRunnerExposesSynthesisDelegationToolsForMultiAgentReportWrite(t *testing.T) {
+func TestRunnerKeepsParentSynthesisForMultiAgentReportWrite(t *testing.T) {
 	reg := agenttools.NewRegistry()
-	for _, name := range []string{"spawn_agent", "wait_agent", "write_file", "edit_file", "apply_patch", "git_status"} {
+	for _, name := range []string{"spawn_agent", "wait_agent", "read_output", "read_file", "list_dir", "write_file", "edit_file", "apply_patch", "git_status"} {
 		reg.Register(agenttools.Tool{Name: name, Description: name})
 	}
 	r := NewRunner(Config{Tools: reg})
@@ -5427,20 +6066,126 @@ func TestRunnerExposesSynthesisDelegationToolsForMultiAgentReportWrite(t *testin
 	}
 
 	names := toolDefNames(r.selectToolDefs(snap))
-	for _, want := range []string{"spawn_agent", "wait_agent", "write_file"} {
+	for _, want := range []string{"read_output", "write_file", "edit_file", "apply_patch"} {
 		if !containsString(names, want) {
 			t.Fatalf("multi-agent report tools = %#v, want %s", names, want)
 		}
 	}
+	for _, blocked := range []string{"spawn_agent", "wait_agent", "read_file", "list_dir", "git_status"} {
+		if containsString(names, blocked) {
+			t.Fatalf("multi-agent report tools = %#v, should keep synthesis in parent instead of %s", names, blocked)
+		}
+	}
 	got := hookOverlayContent(promptHookOutputForSnapshot(t, snap), "post_delegation_write")
-	for _, want := range []string{
-		"Spawn a read-only synthesizer",
-		"include the full completed child-agent results",
-		"The synthesizer has no filesystem or search tools",
-		"Do not write any single child-agent report",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("post_delegation_write = %q, want %q", got, want)
+	if strings.Contains(got, "Spawn a read-only synthesizer") {
+		t.Fatalf("post_delegation_write = %q, should not route synthesis through a child agent", got)
+	}
+}
+
+func TestRunnerCompletedAgentStateStartsPostDelegationWriteWithoutWaitAgent(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"spawn_agent", "wait_agent", "read_output", "read_file", "list_dir", "write_file", "edit_file", "apply_patch", "git_status"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	input := "take a look at this repo and compare it to the tier 1 operators out there like claude, codex, opencode, deepseek etc, there will be more. The code for the first four is in ~/git, codex, cci, opencode, deepseek. look at forges features and give a deep comparison where we sit compared to those other options. Write me a nice doc when your done"
+	snap := SessionSnapshot{
+		LastInput: input,
+		PendingDelegationAction: &DelegationActionState{
+			Kind:       DelegationActionWriteDoc,
+			TargetPath: "docs/reports/report.md",
+		},
+		History: []llm.Message{
+			{Role: llm.RoleUser, Content: input},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "spawn-1", Name: "spawn_agent", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "spawn-1", Content: `{"id":"agent-1","status":"running"}`},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "poll-1", Name: "get_agent_output", ArgsJSON: `{"id":"agent-1"}`}}},
+			{Role: llm.RoleTool, ToolCallID: "poll-1", Content: `Tool output stored out-of-band. Handle: session/out-1. Size: 20000 bytes.`},
+		},
+		AgentTasks: []AgentTaskState{
+			{ID: "agent-1", Role: "explorer", Status: AgentStatusCompleted, Result: "forge findings", ParentTurn: 0},
+			{ID: "agent-2", Role: "explorer", Status: AgentStatusCompleted, Result: "competitor findings", ParentTurn: 0},
+		},
+	}
+
+	defs, decision := r.selectToolDefsWithDecision(snap)
+	names := toolDefNames(defs)
+
+	if decision.Reason != "post_delegation_pending_action" {
+		t.Fatalf("reason = %q, want post_delegation_pending_action (tools=%#v)", decision.Reason, names)
+	}
+	for _, want := range []string{"read_output", "write_file", "edit_file", "apply_patch"} {
+		if !containsString(names, want) {
+			t.Fatalf("completed-state post-delegation tools = %#v, want %s", names, want)
+		}
+	}
+	for _, blocked := range []string{"spawn_agent", "wait_agent", "read_file", "list_dir", "git_status"} {
+		if containsString(names, blocked) {
+			t.Fatalf("completed-state post-delegation tools = %#v, should not include %s", names, blocked)
+		}
+	}
+}
+
+func TestRunnerKeepsParentWriteToolsAfterPostDelegationReadOutput(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"spawn_agent", "wait_agent", "read_output", "write_file", "edit_file", "apply_patch"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{
+		LastInput: "compare repos and write docs/reports/gaps.md",
+		PendingDelegationAction: &DelegationActionState{
+			Kind:       DelegationActionWriteDoc,
+			TargetPath: "docs/reports/gaps.md",
+		},
+		History: []llm.Message{
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "wait-1", Content: `{"status":"completed","result":"repo findings"}`},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "read-1", Name: "read_output", ArgsJSON: `{"handle":"session/out-1","limit":8192}`}}},
+			{Role: llm.RoleTool, ToolCallID: "read-1", Content: `{"handle":"session/out-1","bytes_read":8192,"content":"repo evidence"}`},
+		},
+		AgentTasks: []AgentTaskState{
+			{ID: "agent-1", Role: "repo-auditor", Status: AgentStatusCompleted, Result: "repo findings"},
+			{ID: "agent-2", Role: "docs-analyzer", Status: AgentStatusCompleted, Result: "docs findings"},
+		},
+	}
+
+	names := toolDefNames(r.selectToolDefs(snap))
+	for _, want := range []string{"read_output", "write_file", "edit_file", "apply_patch"} {
+		if !containsString(names, want) {
+			t.Fatalf("post-read report tools = %#v, want %s", names, want)
+		}
+	}
+	for _, blocked := range []string{"spawn_agent", "wait_agent"} {
+		if containsString(names, blocked) {
+			t.Fatalf("post-read report tools = %#v, should keep synthesis in parent instead of %s", names, blocked)
+		}
+	}
+	got := hookOverlayContent(promptHookOutputForSnapshot(t, snap), "post_delegation_write")
+	if strings.Contains(got, "Spawn a read-only synthesizer") {
+		t.Fatalf("post_delegation_write = %q, should not ask for a synthesizer after read_output evidence", got)
+	}
+}
+
+func TestRunnerOutstandingMultiRootDelegationCanSpawnAdditionalAgents(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"spawn_agent", "wait_agent", "get_agent_output", "agent_status"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{
+		LastInput: "Inspect `/Users/cass/git/cci`, `/Users/cass/git/codex`, `/Users/cass/git/opencode`, and `/Users/cass/git/deepseek`, compare them with Forge, and write a report to docs/reports/comparison.md.",
+		AgentTasks: []AgentTaskState{{
+			ID:     "agent-1",
+			Role:   "explorer",
+			Status: AgentStatusRunning,
+		}},
+	}
+
+	names := toolDefNames(r.selectToolDefs(snap))
+	for _, want := range []string{"spawn_agent", "wait_agent", "agent_status"} {
+		if !containsString(names, want) {
+			t.Fatalf("active multi-root delegation tools = %#v, want %s", names, want)
 		}
 	}
 }
@@ -6349,6 +7094,38 @@ func TestExecuteNativeToolCallsStoresLargeOutputOutOfBand(t *testing.T) {
 	}
 	if string(got) != "2345" {
 		t.Fatalf("stored output = %q, want 2345", got)
+	}
+}
+
+func TestExecuteNativeToolCallsKeepsReadOutputInlineWhenLarge(t *testing.T) {
+	store := sessionstore.NewFileOutputStore(t.TempDir())
+	largePayload := "read-output-sentinel:" + strings.Repeat("abcdef", 64)
+	handle, err := store.Put(context.Background(), "session", []byte(largePayload))
+	if err != nil {
+		t.Fatalf("store output: %v", err)
+	}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.NewReadOutput(store))
+	session := NewSession()
+	r := NewRunner(Config{Tools: reg, Session: session, OutputStore: store, OutputStoreThresholdBytes: 5})
+	turn := session.RecordInput("read stored output")
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	args := fmt.Sprintf(`{"handle":%q,"limit":%d,"offset":0}`, handle.ID, len(largePayload))
+	if err := r.executeNativeToolCalls(active.Context, turn, []llm.NativeToolCall{{ID: "c1", Name: "read_output", ArgsJSON: args}}); err != nil {
+		t.Fatal(err)
+	}
+
+	result := lastToolResult(t, session)
+	if result.Handle != "" || result.OriginalBytes != 0 || result.SHA256 != "" {
+		t.Fatalf("read_output result was re-stored out of band: %#v", result)
+	}
+	if !strings.Contains(result.Text, "read-output-sentinel:") || !strings.Contains(result.Text, `"content":`) {
+		t.Fatalf("read_output result = %q, want inline JSON content", result.Text)
 	}
 }
 

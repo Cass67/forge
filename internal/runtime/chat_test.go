@@ -786,6 +786,18 @@ func TestSuggestedSkillNudgeSkipsActiveSkill(t *testing.T) {
 	}
 }
 
+func TestSuggestedSkillNudgeSkipsCrossRepoComparisonDoc(t *testing.T) {
+	loaded := []skills.Skill{
+		{Name: "test-driven-development"},
+	}
+	state := chatstate.New()
+	input := "take a look at this repo and compare it to the tier 1 operators like claude, codex, opencode, deepseek. The code is in ~/git, codex, cci, opencode, deepseek. look at forges features and write me a nice doc when your done"
+
+	if got := suggestedSkillNudge(input, loaded, state); got != "" {
+		t.Fatalf("nudge = %q, want empty", got)
+	}
+}
+
 func TestChatSuggestedSkillHookProducesOverlay(t *testing.T) {
 	results := suggestedSkillPromptHook(context.Background(), hooks.Event{
 		Point: hooks.PointPromptContext,

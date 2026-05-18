@@ -975,7 +975,7 @@ func toolDefsToOpenAI(defs []llm.ToolDef) []openai.ChatCompletionToolParam {
 func toolDefsToResponses(defs []llm.ToolDef) []responses.ToolUnionParam {
 	tools := make([]responses.ToolUnionParam, 0, len(defs))
 	for _, d := range defs {
-		schema := toolDefSchema(d)
+		schema := strictToolDefSchema(d)
 		tools = append(tools, responses.ToolUnionParam{
 			OfFunction: &responses.FunctionToolParam{
 				Name:        d.Name,
@@ -986,6 +986,126 @@ func toolDefsToResponses(defs []llm.ToolDef) []responses.ToolUnionParam {
 		})
 	}
 	return tools
+}
+
+func strictToolDefSchema(def llm.ToolDef) map[string]any {
+	schema := toolDefSchema(def)
+	makeSchemaStrictNullable(schema)
+	return schema
+}
+
+func makeSchemaStrictNullable(schema map[string]any) {
+	if schema == nil {
+		return
+	}
+	if items, ok := schema["items"].(map[string]any); ok {
+		makeSchemaStrictNullable(items)
+	}
+	if schemaTypeAllowsObject(schema["type"]) {
+		if _, ok := schema["properties"]; !ok {
+			schema["properties"] = map[string]any{}
+		}
+		if _, ok := schema["additionalProperties"]; !ok {
+			schema["additionalProperties"] = false
+		}
+	}
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		return
+	}
+	if len(properties) == 0 {
+		schema["required"] = []string{}
+		return
+	}
+	requiredSet := map[string]struct{}{}
+	if required, ok := schema["required"].([]string); ok {
+		for _, name := range required {
+			requiredSet[name] = struct{}{}
+		}
+	}
+	required := make([]string, 0, len(properties))
+	for name, rawProp := range properties {
+		required = append(required, name)
+		prop, ok := rawProp.(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, wasRequired := requiredSet[name]; !wasRequired {
+			makeSchemaTypeNullable(prop)
+		}
+		makeSchemaStrictNullable(prop)
+	}
+	sort.Strings(required)
+	schema["required"] = required
+	if _, ok := schema["additionalProperties"]; !ok {
+		schema["additionalProperties"] = false
+	}
+}
+
+func schemaTypeAllowsObject(value any) bool {
+	switch typ := value.(type) {
+	case string:
+		return typ == "object"
+	case []any:
+		for _, item := range typ {
+			if item == "object" {
+				return true
+			}
+		}
+	case []string:
+		for _, item := range typ {
+			if item == "object" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func makeSchemaTypeNullable(schema map[string]any) {
+	if schema == nil {
+		return
+	}
+	switch typ := schema["type"].(type) {
+	case string:
+		if typ != "null" {
+			schema["type"] = []string{typ, "null"}
+		}
+	case []any:
+		for _, item := range typ {
+			if item == "null" {
+				return
+			}
+		}
+		schema["type"] = append(typ, "null")
+	case []string:
+		for _, item := range typ {
+			if item == "null" {
+				makeSchemaEnumNullable(schema)
+				return
+			}
+		}
+		schema["type"] = append(typ, "null")
+	}
+	makeSchemaEnumNullable(schema)
+}
+
+func makeSchemaEnumNullable(schema map[string]any) {
+	switch enum := schema["enum"].(type) {
+	case []any:
+		for _, item := range enum {
+			if item == nil {
+				return
+			}
+		}
+		schema["enum"] = append(enum, nil)
+	case []string:
+		values := make([]any, 0, len(enum)+1)
+		for _, item := range enum {
+			values = append(values, item)
+		}
+		schema["enum"] = append(values, nil)
+	}
 }
 
 func providerSupportsResponseFunctionTools(providerLabel string) bool {
