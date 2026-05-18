@@ -238,6 +238,19 @@ func TestBuildStatusLine2ShowsExplicitContextUsageWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestBuildStatusLine2MarksEstimatedContextUsage(t *testing.T) {
+	line := buildStatusLine2(chatStatusData{
+		Status:           "ready",
+		ContextUsed:      1200,
+		ContextLimit:     8000,
+		ContextEstimated: true,
+	})
+
+	if !strings.Contains(line, "ctx ~1200/8000") {
+		t.Fatalf("status line should mark estimated context usage, got: %s", line)
+	}
+}
+
 func TestRenderStatusHeaderUsesSplitRailCardAtWideWidths(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {

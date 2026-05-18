@@ -132,6 +132,14 @@ func estimatePromptBytes(messages []llm.Message) int {
 	return total
 }
 
+func estimatePromptTokens(messages []llm.Message) int {
+	bytes := estimatePromptBytes(messages)
+	if bytes <= 0 {
+		return 0
+	}
+	return (bytes + 3) / 4
+}
+
 func (m *CompactionManager) Reactive(keep int, reason string) CompactionDecision {
 	if keep < 1 {
 		keep = m.cfg.KeepTurns
