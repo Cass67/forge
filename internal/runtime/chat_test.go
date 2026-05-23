@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -126,6 +127,170 @@ func TestModelVisibleToolContractsDoNotContainKnownBadPlaceholders(t *testing.T)
 	}
 }
 
+func TestRegisteredGitCommitUsesSideEffectIntentAllowlist(t *testing.T) {
+	workDir := t.TempDir()
+	runRuntimeGit(t, workDir, "init")
+	runRuntimeGit(t, workDir, "config", "user.email", "test@example.com")
+	runRuntimeGit(t, workDir, "config", "user.name", "Test User")
+	writeRuntimeTestFile(t, filepath.Join(workDir, "main.go"), "package main\n")
+	runRuntimeGit(t, workDir, "add", "main.go")
+	runRuntimeGit(t, workDir, "commit", "-m", "initial")
+	runRuntimeGit(t, workDir, "branch", "-M", "main")
+	writeRuntimeTestFile(t, filepath.Join(workDir, "FORGE_VS_CODEX.md"), "doc\n")
+	writeRuntimeTestFile(t, filepath.Join(workDir, "unrelated.go"), "package main\n")
+
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "forge.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	session := reactruntime.NewSession()
+	approve := func(tools.Action) (bool, error) { return true, nil }
+	registerTools(reg, workDir, cfg, session, approve, nil, nil)
+	session.SetSideEffectIntent(reactruntime.SideEffectIntent{AllowedPaths: []string{"FORGE_VS_CODEX.md"}, TargetBranch: "main", Remote: "origin"})
+
+	tool, ok := reg.Get("git_commit")
+	if !ok {
+		t.Fatal("git_commit not registered")
+	}
+	result, err := tool.Execute(context.Background(), map[string]any{"message": "add comparison"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "commit") {
+		t.Fatalf("result = %q", result)
+	}
+	files := runtimeGitOut(t, workDir, "show", "--name-only", "--format=", "HEAD")
+	if !strings.Contains(files, "FORGE_VS_CODEX.md") || strings.Contains(files, "unrelated.go") {
+		t.Fatalf("commit files = %q", files)
+	}
+}
+
+func TestRegisteredGitPushUsesSideEffectIntentRemoteAndTarget(t *testing.T) {
+	workDir := t.TempDir()
+	runRuntimeGit(t, workDir, "init")
+	runRuntimeGit(t, workDir, "config", "user.email", "test@example.com")
+	runRuntimeGit(t, workDir, "config", "user.name", "Test User")
+	writeRuntimeTestFile(t, filepath.Join(workDir, "main.go"), "package main\n")
+	runRuntimeGit(t, workDir, "add", "main.go")
+	runRuntimeGit(t, workDir, "commit", "-m", "initial")
+	runRuntimeGit(t, workDir, "branch", "-M", "main")
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	runRuntimeGit(t, t.TempDir(), "init", "--bare", remote)
+	runRuntimeGit(t, workDir, "remote", "add", "origin", remote)
+
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "forge.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	session := reactruntime.NewSession()
+	approve := func(tools.Action) (bool, error) { return true, nil }
+	registerTools(reg, workDir, cfg, session, approve, nil, nil)
+	session.SetSideEffectIntent(reactruntime.SideEffectIntent{AllowedPaths: []string{"main.go"}, TargetBranch: "main", Remote: "origin"})
+
+	tool, ok := reg.Get("git_push")
+	if !ok {
+		t.Fatal("git_push not registered")
+	}
+	result, err := tool.Execute(context.Background(), map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "remote contains") {
+		t.Fatalf("result = %q", result)
+	}
+}
+
+func TestGitScopeProviderRequiresBranchWhenTargetBranchPresent(t *testing.T) {
+	session := reactruntime.NewSession()
+	session.SetSideEffectIntent(reactruntime.SideEffectIntent{
+		AllowedPaths: []string{"FORGE_VS_CODEX.md"},
+		TargetBranch: "main",
+		Remote:       "origin",
+		RequiredActions: []reactruntime.SideEffectAction{
+			reactruntime.SideEffectActionCommit,
+			reactruntime.SideEffectActionPush,
+		},
+	})
+
+	scope := gitScopeProviderForSession(session)()
+	if !scope.RequireBranch {
+		t.Fatalf("RequireBranch = false, want true when target branch is present")
+	}
+}
+
+func TestScopedIntentBypassesSafeBranchOnlyForCompleteCommitPushTransaction(t *testing.T) {
+	session := reactruntime.NewSession()
+	session.SetSideEffectIntent(reactruntime.SideEffectIntent{
+		AllowedPaths:    []string{"FORGE_VS_CODEX.md"},
+		TargetBranch:    "main",
+		Remote:          "origin",
+		RequiredActions: []reactruntime.SideEffectAction{reactruntime.SideEffectActionCommit, reactruntime.SideEffectActionPush},
+		ArtifactPaths:   []string{"FORGE_VS_CODEX.md"},
+		WorkspaceRoot:   t.TempDir(),
+	})
+
+	for _, action := range []tools.Action{
+		{Tool: "git_commit"},
+		{Tool: "git_push"},
+		{Tool: "write_file", Path: "FORGE_VS_CODEX.md"},
+	} {
+		if !scopedIntentBypassesSafeBranch(session, action) {
+			t.Fatalf("scopedIntentBypassesSafeBranch(%#v) = false, want true", action)
+		}
+	}
+	if scopedIntentBypassesSafeBranch(session, tools.Action{Tool: "write_file", Path: "unrelated.md"}) {
+		t.Fatal("bypassed safe branch for write outside scoped artifact paths")
+	}
+}
+
+func TestScopedIntentDoesNotBypassSafeBranchForIncompleteCommitOnlyIntent(t *testing.T) {
+	session := reactruntime.NewSession()
+	session.SetSideEffectIntent(reactruntime.SideEffectIntent{
+		AllowedPaths:    []string{"FORGE_VS_CODEX.md"},
+		RequiredActions: []reactruntime.SideEffectAction{reactruntime.SideEffectActionCommit},
+		ArtifactPaths:   []string{"FORGE_VS_CODEX.md"},
+	})
+
+	for _, action := range []tools.Action{
+		{Tool: "git_commit"},
+		{Tool: "git_push"},
+		{Tool: "write_file", Path: "FORGE_VS_CODEX.md"},
+	} {
+		if scopedIntentBypassesSafeBranch(session, action) {
+			t.Fatalf("scopedIntentBypassesSafeBranch(%#v) = true, want false", action)
+		}
+	}
+}
+
+func writeRuntimeTestFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func runtimeGitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
+		"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %s\n%s", args, err, out)
+	}
+	return string(out)
+}
+
+func runRuntimeGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	_ = runtimeGitOut(t, dir, args...)
+}
+
 func TestToolSchemaFixtureMatchesGenerated(t *testing.T) {
 	cfg, err := config.Load(filepath.Join(t.TempDir(), "forge.toml"))
 	if err != nil {
@@ -168,6 +333,241 @@ func TestChatRuntimeCreatesDurableThreadStoreWhenOutputDirConfigured(t *testing.
 	registerTools(reg, t.TempDir(), cfg, session, approve, nil, nil)
 	if session.DurableSink() == nil {
 		t.Fatal("expected durable sink to be configured")
+	}
+}
+
+func TestRegisterToolsWriteFileUsesActiveWorkspaceRoot(t *testing.T) {
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "forge.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := t.TempDir()
+	workspace := filepath.Join(t.TempDir(), "arkanoid")
+	reg := tools.NewRegistry()
+	session := reactruntime.NewSession()
+	session.SetActiveWorkspaceRoot(workspace)
+	approve := func(tools.Action) (bool, error) { return true, nil }
+	registerTools(reg, base, cfg, session, approve, nil, nil)
+
+	tool, ok := reg.Get("write_file")
+	if !ok {
+		t.Fatal("missing write_file tool")
+	}
+	_, err = tool.Execute(context.Background(), map[string]any{
+		"path": filepath.Join(workspace, "index.html"), "content": "game",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(workspace, "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "game" {
+		t.Fatalf("file content = %q, want game", string(data))
+	}
+}
+
+func TestRegisterToolsEditFileUsesActiveWorkspaceRoot(t *testing.T) {
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "forge.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := t.TempDir()
+	workspace := filepath.Join(t.TempDir(), "arkanoid")
+	path := filepath.Join(workspace, "index.html")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("old game"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	session := reactruntime.NewSession()
+	session.SetActiveWorkspaceRoot(workspace)
+	approve := func(tools.Action) (bool, error) { return true, nil }
+	registerTools(reg, base, cfg, session, approve, nil, nil)
+
+	tool, ok := reg.Get("edit_file")
+	if !ok {
+		t.Fatal("missing edit_file tool")
+	}
+	_, err = tool.Execute(context.Background(), map[string]any{
+		"path": path, "old_text": "old game", "new_text": "new game",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "new game" {
+		t.Fatalf("file content = %q, want new game", string(data))
+	}
+}
+
+func TestRegisterToolsApplyPatchUsesActiveWorkspaceRoot(t *testing.T) {
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "forge.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := t.TempDir()
+	workspace := filepath.Join(t.TempDir(), "arkanoid")
+	reg := tools.NewRegistry()
+	session := reactruntime.NewSession()
+	session.SetActiveWorkspaceRoot(workspace)
+	approve := func(tools.Action) (bool, error) { return true, nil }
+	registerTools(reg, base, cfg, session, approve, nil, nil)
+
+	tool, ok := reg.Get("apply_patch")
+	if !ok {
+		t.Fatal("missing apply_patch tool")
+	}
+	_, err = tool.Execute(context.Background(), map[string]any{"patch": `diff --git a/index.html b/index.html
+new file mode 100644
+--- /dev/null
++++ b/index.html
+@@ -0,0 +1 @@
++game`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(workspace, "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "game\n" {
+		t.Fatalf("file content = %q", string(data))
+	}
+}
+
+func TestRegisterToolsRunCommandUsesActiveWorkspaceRoot(t *testing.T) {
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "forge.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := t.TempDir()
+	workspace := filepath.Join(t.TempDir(), "arkanoid")
+	reg := tools.NewRegistry()
+	session := reactruntime.NewSession()
+	session.SetActiveWorkspaceRoot(workspace)
+	approve := func(tools.Action) (bool, error) { return true, nil }
+	registerTools(reg, base, cfg, session, approve, nil, nil)
+
+	tool, ok := reg.Get("run_command")
+	if !ok {
+		t.Fatal("missing run_command tool")
+	}
+	result, err := tool.Execute(context.Background(), map[string]any{"command": "pwd"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, workspace) || !strings.Contains(result, "exit 0") {
+		t.Fatalf("run_command result = %q, want active workspace pwd", result)
+	}
+}
+
+func TestRegisterToolsGitStatusUsesActiveWorkspaceRoot(t *testing.T) {
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "forge.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := t.TempDir()
+	workspace := filepath.Join(t.TempDir(), "arkanoid")
+	mustRunChatGit(t, base, "init")
+	if err := os.WriteFile(filepath.Join(base, "base.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustRunChatGit(t, workspace, "init")
+	if err := os.WriteFile(filepath.Join(workspace, "active.txt"), []byte("active\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	session := reactruntime.NewSession()
+	session.SetActiveWorkspaceRoot(workspace)
+	approve := func(tools.Action) (bool, error) { return true, nil }
+	registerTools(reg, base, cfg, session, approve, nil, nil)
+
+	tool, ok := reg.Get("git_status")
+	if !ok {
+		t.Fatal("missing git_status tool")
+	}
+	result, err := tool.Execute(context.Background(), map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "active.txt") || strings.Contains(result, "base.txt") {
+		t.Fatalf("git_status result = %q, want active workspace only", result)
+	}
+}
+
+func mustRunChatGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, out)
+	}
+}
+
+func TestRegisterToolsExecSessionStartUsesActiveWorkspaceRoot(t *testing.T) {
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "forge.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := t.TempDir()
+	workspace := filepath.Join(t.TempDir(), "arkanoid")
+	reg := tools.NewRegistry()
+	session := reactruntime.NewSession()
+	session.SetActiveWorkspaceRoot(workspace)
+	approve := func(tools.Action) (bool, error) { return true, nil }
+	registerTools(reg, base, cfg, session, approve, nil, nil)
+
+	startTool, ok := reg.Get("exec_session_start")
+	if !ok {
+		t.Fatal("missing exec_session_start tool")
+	}
+	statusTool, ok := reg.Get("exec_session_status")
+	if !ok {
+		t.Fatal("missing exec_session_status tool")
+	}
+	startResult, err := startTool.Execute(context.Background(), map[string]any{"command": "pwd", "cols": 80, "rows": 24})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var started struct {
+		SessionID int `json:"session_id"`
+	}
+	if err := json.Unmarshal([]byte(startResult), &started); err != nil {
+		t.Fatalf("start payload = %q: %v", startResult, err)
+	}
+	if started.SessionID == 0 {
+		t.Fatalf("start payload = %q, missing session id", startResult)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		statusResult, err := statusTool.Execute(context.Background(), map[string]any{"session_id": started.SessionID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var status struct {
+			Output string `json:"output"`
+		}
+		if err := json.Unmarshal([]byte(statusResult), &status); err != nil {
+			t.Fatalf("status payload = %q: %v", statusResult, err)
+		}
+		if strings.Contains(status.Output, workspace) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for exec session pwd in workspace, last status: %s", statusResult)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
@@ -1432,6 +1832,217 @@ func TestRegisterReactDelegationToolsGivesSanitizedAuditReadOnlyTools(t *testing
 		if !messagesContain(driver.messages, want) {
 			t.Fatalf("repo-auditor prompt missing %q: %#v", want, driver.messages)
 		}
+	}
+}
+
+func TestRegisterDelegationToolsStripsGitMutationFromChildren(t *testing.T) {
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "forge.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	session := reactruntime.NewSession()
+	approve := func(tools.Action) (bool, error) { return true, nil }
+	registerTools(reg, t.TempDir(), cfg, session, approve, nil, nil)
+
+	childReg := childRegistryForRole(reg, "repo-auditor", session.Snapshot())
+	for _, forbidden := range []string{"write_file", "edit_file", "apply_patch", "run_command", "git_commit", "git_push"} {
+		if _, ok := childReg.Get(forbidden); ok {
+			t.Fatalf("child registry includes forbidden tool %s", forbidden)
+		}
+	}
+}
+
+func TestChildRegistryForResearchRolesStripsMutationTools(t *testing.T) {
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "forge.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	session := reactruntime.NewSession()
+	approve := func(tools.Action) (bool, error) { return true, nil }
+	registerTools(reg, t.TempDir(), cfg, session, approve, nil, nil)
+
+	for _, role := range []string{"research", "audit", "explore", "review"} {
+		t.Run(role, func(t *testing.T) {
+			childReg := childRegistryForRole(reg, role, session.Snapshot())
+			for _, forbidden := range []string{"write_file", "edit_file", "apply_patch", "run_command", "git_commit", "git_push"} {
+				if _, ok := childReg.Get(forbidden); ok {
+					t.Fatalf("child registry includes forbidden tool %s", forbidden)
+				}
+			}
+		})
+	}
+}
+
+func TestChildRegistryForImplementerRolesRequiresAllowedPathsForWrites(t *testing.T) {
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "forge.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	approve := func(tools.Action) (bool, error) { return true, nil }
+	registerTools(reg, t.TempDir(), cfg, reactruntime.NewSession(), approve, nil, nil)
+
+	for _, tc := range []struct {
+		name       string
+		snap       reactruntime.SessionSnapshot
+		wantWrites bool
+	}{
+		{name: "empty allowed paths", snap: reactruntime.SessionSnapshot{SideEffectIntent: &reactruntime.SideEffectIntent{}}, wantWrites: false},
+		{name: "non-empty allowed paths", snap: reactruntime.SessionSnapshot{SideEffectIntent: &reactruntime.SideEffectIntent{AllowedPaths: []string{"docs/report.md"}}}, wantWrites: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			childReg := childRegistryForRole(reg, "implementer", tc.snap)
+			for _, name := range []string{"write_file", "edit_file", "apply_patch", "artifact_write"} {
+				_, ok := childReg.Get(name)
+				if ok != tc.wantWrites {
+					t.Fatalf("tool %s present = %v, want %v", name, ok, tc.wantWrites)
+				}
+			}
+			for _, forbidden := range []string{"run_command", "git_commit", "git_push"} {
+				if _, ok := childReg.Get(forbidden); ok {
+					t.Fatalf("implementer child registry includes parent-owned tool %s", forbidden)
+				}
+			}
+		})
+	}
+}
+
+func TestChildRegistryForImplementerRolesScopesWriteToolsToAllowedPaths(t *testing.T) {
+	workDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workDir, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for path, content := range map[string]string{
+		"docs/allowed-edit.md":     "old allowed",
+		"docs/disallowed-edit.md":  "old disallowed",
+		"docs/disallowed-write.md": "original",
+	} {
+		if err := os.WriteFile(filepath.Join(workDir, path), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "forge.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	approve := func(tools.Action) (bool, error) { return true, nil }
+	registerTools(reg, workDir, cfg, reactruntime.NewSession(), approve, nil, nil)
+	childReg := childRegistryForRole(reg, "implementer", reactruntime.SessionSnapshot{SideEffectIntent: &reactruntime.SideEffectIntent{
+		AllowedPaths:  []string{"docs/allowed-write.md", "docs/allowed-edit.md", "docs/allowed-patch.md"},
+		ArtifactPaths: []string{"docs/allowed-artifact.md"},
+		WorkspaceRoot: workDir,
+	}})
+
+	for _, tc := range []struct {
+		name           string
+		tool           string
+		allowedArgs    map[string]any
+		disallowedArgs map[string]any
+		allowedPath    string
+		disallowedPath string
+	}{
+		{
+			name:           "write_file",
+			tool:           "write_file",
+			allowedArgs:    map[string]any{"path": "docs/allowed-write.md", "content": "allowed"},
+			disallowedArgs: map[string]any{"path": "docs/disallowed-write.md", "content": "blocked"},
+			allowedPath:    "docs/allowed-write.md",
+			disallowedPath: "docs/disallowed-write.md",
+		},
+		{
+			name:           "edit_file",
+			tool:           "edit_file",
+			allowedArgs:    map[string]any{"path": "docs/allowed-edit.md", "old_text": "old allowed", "new_text": "new allowed"},
+			disallowedArgs: map[string]any{"path": "docs/disallowed-edit.md", "old_text": "old disallowed", "new_text": "blocked"},
+			allowedPath:    "docs/allowed-edit.md",
+			disallowedPath: "docs/disallowed-edit.md",
+		},
+		{
+			name:           "artifact_write",
+			tool:           "artifact_write",
+			allowedArgs:    map[string]any{"path": "docs/allowed-artifact.md", "content": "allowed"},
+			disallowedArgs: map[string]any{"path": "docs/disallowed-artifact.md", "content": "blocked"},
+			allowedPath:    "docs/allowed-artifact.md",
+			disallowedPath: "docs/disallowed-artifact.md",
+		},
+		{
+			name: "apply_patch",
+			tool: "apply_patch",
+			allowedArgs: map[string]any{"patch": `diff --git a/docs/allowed-patch.md b/docs/allowed-patch.md
+new file mode 100644
+--- /dev/null
++++ b/docs/allowed-patch.md
+@@ -0,0 +1 @@
++allowed`},
+			disallowedArgs: map[string]any{"patch": `diff --git a/docs/disallowed-patch.md b/docs/disallowed-patch.md
+new file mode 100644
+--- /dev/null
++++ b/docs/disallowed-patch.md
+@@ -0,0 +1 @@
++blocked`},
+			allowedPath:    "docs/allowed-patch.md",
+			disallowedPath: "docs/disallowed-patch.md",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tool, ok := childReg.Get(tc.tool)
+			if !ok {
+				t.Fatalf("%s missing from implementer child registry", tc.tool)
+			}
+			if _, err := tool.Execute(context.Background(), tc.allowedArgs); err != nil {
+				t.Fatalf("allowed %s failed: %v", tc.tool, err)
+			}
+			result, err := tool.Execute(context.Background(), tc.disallowedArgs)
+			if err != nil {
+				t.Fatalf("disallowed %s returned error: %v", tc.tool, err)
+			}
+			if !strings.Contains(strings.ToLower(result), "blocked") {
+				t.Fatalf("disallowed %s result = %q, want blocked", tc.tool, result)
+			}
+			if _, err := os.Stat(filepath.Join(workDir, tc.allowedPath)); err != nil {
+				t.Fatalf("allowed path was not written: %v", err)
+			}
+			if data, err := os.ReadFile(filepath.Join(workDir, tc.disallowedPath)); err == nil && strings.Contains(string(data), "blocked") {
+				t.Fatalf("disallowed path was mutated: %s", data)
+			} else if err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestChildRegistryCompoundReadOnlyRolesWinOverImplementerTokens(t *testing.T) {
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "forge.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	approve := func(tools.Action) (bool, error) { return true, nil }
+	registerTools(reg, t.TempDir(), cfg, reactruntime.NewSession(), approve, nil, nil)
+	snap := reactruntime.SessionSnapshot{SideEffectIntent: &reactruntime.SideEffectIntent{AllowedPaths: []string{"docs/report.md"}}}
+
+	for _, role := range []string{"implementation-review", "developer-review", "research-worker"} {
+		t.Run(role, func(t *testing.T) {
+			childReg := childRegistryForRole(reg, role, snap)
+			for _, forbidden := range []string{"write_file", "edit_file", "apply_patch", "run_command", "git_commit", "git_push"} {
+				if _, ok := childReg.Get(forbidden); ok {
+					t.Fatalf("child registry includes forbidden tool %s", forbidden)
+				}
+			}
+		})
+	}
+}
+
+func TestChildAgentToolAccessPromptIncludesChildMutationBoundary(t *testing.T) {
+	reg := tools.NewRegistry()
+	reg.Register(tools.Tool{Name: "read_file"})
+	prompt := childAgentToolAccessPrompt(reg)
+	want := "Child agents must not commit or push. Return findings and proposed artifact content. Parent/orchestrator owns write, commit, push, and verification gates."
+	if !strings.Contains(prompt, want) {
+		t.Fatalf("child tool access prompt missing %q:\n%s", want, prompt)
 	}
 }
 

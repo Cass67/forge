@@ -11,6 +11,10 @@ import (
 )
 
 func NewGitMergeStatus(workDir string) Tool {
+	return NewGitMergeStatusWithWorkDirProvider(workDir, FixedWorkDirProvider(workDir))
+}
+
+func NewGitMergeStatusWithWorkDirProvider(fallbackWorkDir string, provider WorkDirProvider) Tool {
 	return Tool{
 		Name:        "git_merge_status",
 		Description: "Inspect merge/rebase/cherry-pick conflict state, list unresolved files, include focused conflict previews, and suggest the next merge-resolution step.",
@@ -19,6 +23,7 @@ func NewGitMergeStatus(workDir string) Tool {
 		},
 		AutoApprove: true,
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			workDir := currentWorkDir(provider, fallbackWorkDir)
 			gitDir, err := resolveGitDir(ctx, workDir)
 			if err != nil {
 				return fmt.Sprintf("error resolving git dir: %v", err), nil

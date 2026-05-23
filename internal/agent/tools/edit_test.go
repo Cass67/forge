@@ -99,6 +99,47 @@ func TestEditFileDenied(t *testing.T) {
 	}
 }
 
+func TestEditFileUsesActiveWorkspaceProviderForExternalNewRepo(t *testing.T) {
+	base := t.TempDir()
+	workspace := filepath.Join(t.TempDir(), "arkanoid")
+	path := filepath.Join(workspace, "index.html")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("old game"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tool := NewEditFileWithWorkDirProvider(base, func() string { return workspace }, func(a Action) (bool, error) { return true, nil })
+
+	_, err := tool.Execute(context.Background(), map[string]any{
+		"path": path, "old_text": "old game", "new_text": "new game",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "new game" {
+		t.Fatalf("file content = %q, want new game", string(data))
+	}
+}
+
+func TestEditFileUsesActiveWorkspaceProviderRejectsOutsidePath(t *testing.T) {
+	base := t.TempDir()
+	workspace := filepath.Join(t.TempDir(), "arkanoid")
+	outside := filepath.Join(t.TempDir(), "outside.html")
+	tool := NewEditFileWithWorkDirProvider(base, func() string { return workspace }, func(a Action) (bool, error) { return true, nil })
+
+	_, err := tool.Execute(context.Background(), map[string]any{
+		"path": outside, "old_text": "old", "new_text": "new",
+	})
+	if err == nil || !strings.Contains(err.Error(), "escapes working directory") {
+		t.Fatalf("error = %v, want escapes working directory", err)
+	}
+}
+
 func TestEditFileBlocksSecretByDefault(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "main.go")

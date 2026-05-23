@@ -17,6 +17,7 @@ type Replay struct {
 	PendingInput      []string
 	CompactionSummary string
 	Interrupted       bool
+	SideEffectIntent  *protocol.SideEffectIntentItem
 }
 
 type ReplayTurn struct {
@@ -40,6 +41,13 @@ func ReplayItems(items []protocol.Item) (Replay, error) {
 
 	for _, item := range sorted {
 		switch item.Kind {
+		case protocol.ItemSideEffectIntent:
+			if item.SideEffectIntent == nil || item.SideEffectIntent.ID == "" {
+				replay.SideEffectIntent = nil
+			} else {
+				replay.SideEffectIntent = copyProtocolSideEffectIntent(item.SideEffectIntent)
+			}
+			continue
 		case protocol.ItemCompaction:
 			if item.Compaction != nil {
 				replay.CompactionSummary = strings.TrimSpace(item.Compaction.Summary)
@@ -137,6 +145,18 @@ func ReplayItems(items []protocol.Item) (Replay, error) {
 		replay.Turns = append(replay.Turns, *turns[id])
 	}
 	return replay, nil
+}
+
+func copyProtocolSideEffectIntent(intent *protocol.SideEffectIntentItem) *protocol.SideEffectIntentItem {
+	if intent == nil {
+		return nil
+	}
+	copy := *intent
+	copy.ArtifactPaths = append([]string(nil), intent.ArtifactPaths...)
+	copy.AllowedPaths = append([]string(nil), intent.AllowedPaths...)
+	copy.RequiredActions = append([]string(nil), intent.RequiredActions...)
+	copy.Gates = append([]protocol.SideEffectGateItem(nil), intent.Gates...)
+	return &copy
 }
 
 func removeFirstPendingInput(inputs []string, consumed string) []string {

@@ -9,6 +9,10 @@ import (
 )
 
 func NewWriteFile(workDir string, approve ApprovalFunc, policies ...SecretPolicy) Tool {
+	return NewWriteFileWithWorkDirProvider(workDir, FixedWorkDirProvider(workDir), approve, policies...)
+}
+
+func NewWriteFileWithWorkDirProvider(fallbackWorkDir string, provider WorkDirProvider, approve ApprovalFunc, policies ...SecretPolicy) Tool {
 	var lastDiff string
 	secretPolicy := secretPolicyFromOptions(policies)
 	return Tool{
@@ -36,7 +40,8 @@ func NewWriteFile(workDir string, approve ApprovalFunc, policies ...SecretPolicy
 			}
 			content = checkedContent
 
-			resolved, err := ResolvePath(workDir, path)
+			activeWorkDir := currentWorkDir(provider, fallbackWorkDir)
+			resolved, err := ResolvePath(activeWorkDir, path)
 			if err != nil {
 				return "", err
 			}

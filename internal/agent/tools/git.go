@@ -9,6 +9,10 @@ import (
 )
 
 func NewGitStatus(workDir string) Tool {
+	return NewGitStatusWithWorkDirProvider(workDir, FixedWorkDirProvider(workDir))
+}
+
+func NewGitStatusWithWorkDirProvider(fallbackWorkDir string, provider WorkDirProvider) Tool {
 	secretPolicy := DefaultSecretPolicy()
 	return Tool{
 		Name:        "git_status",
@@ -17,7 +21,7 @@ func NewGitStatus(workDir string) Tool {
 		AutoApprove: true,
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
-			cmd.Dir = workDir
+			cmd.Dir = currentWorkDir(provider, fallbackWorkDir)
 			out, err := cmd.CombinedOutput()
 			if err != nil {
 				result, _ := secretPolicy.ApplyCommandOutput(fmt.Sprintf("error: %s\n%s", err, out))
@@ -30,6 +34,10 @@ func NewGitStatus(workDir string) Tool {
 }
 
 func NewGitDiff(workDir string) Tool {
+	return NewGitDiffWithWorkDirProvider(workDir, FixedWorkDirProvider(workDir))
+}
+
+func NewGitDiffWithWorkDirProvider(fallbackWorkDir string, provider WorkDirProvider) Tool {
 	secretPolicy := DefaultSecretPolicy()
 	return Tool{
 		Name:        "git_diff",
@@ -45,7 +53,7 @@ func NewGitDiff(workDir string) Tool {
 			}
 			gitArgs := []string{"diff", ref}
 			cmd := exec.CommandContext(ctx, "git", gitArgs...)
-			cmd.Dir = workDir
+			cmd.Dir = currentWorkDir(provider, fallbackWorkDir)
 			out, err := cmd.CombinedOutput()
 			if err != nil {
 				result, _ := secretPolicy.ApplyCommandOutput(fmt.Sprintf("error: %s\n%s", err, out))
@@ -61,6 +69,10 @@ func NewGitDiff(workDir string) Tool {
 }
 
 func NewGitLog(workDir string) Tool {
+	return NewGitLogWithWorkDirProvider(workDir, FixedWorkDirProvider(workDir))
+}
+
+func NewGitLogWithWorkDirProvider(fallbackWorkDir string, provider WorkDirProvider) Tool {
 	secretPolicy := DefaultSecretPolicy()
 	return Tool{
 		Name:        "git_log",
@@ -80,7 +92,7 @@ func NewGitLog(workDir string) Tool {
 				gitArgs = append(gitArgs, "--", strings.TrimSpace(path))
 			}
 			cmd := exec.CommandContext(ctx, "git", gitArgs...)
-			cmd.Dir = workDir
+			cmd.Dir = currentWorkDir(provider, fallbackWorkDir)
 			out, err := cmd.CombinedOutput()
 			if err != nil {
 				result, _ := secretPolicy.ApplyCommandOutput(fmt.Sprintf("error: %s\n%s", err, out))
@@ -93,68 +105,5 @@ func NewGitLog(workDir string) Tool {
 }
 
 func NewGitCommit(workDir string, approve ApprovalFunc) Tool {
-	secretPolicy := DefaultSecretPolicy()
-	var lastDiff string
-	return Tool{
-		Name:        "git_commit",
-		Description: "Stage all changes and commit. Shows you what will be committed for approval.",
-		Parameters: []ParameterDef{
-			{Name: "message", Type: "string", Description: "commit message", Required: true},
-		},
-		AutoApprove:      false,
-		MutatesWorkspace: true,
-		LastDiff: func() string {
-			diff := lastDiff
-			lastDiff = ""
-			return diff
-		},
-		Execute: func(ctx context.Context, args map[string]any) (string, error) {
-			lastDiff = ""
-			message, _ := args["message"].(string)
-
-			statusCmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
-			statusCmd.Dir = workDir
-			statusOut, err := statusCmd.Output()
-			if err != nil {
-				return fmt.Sprintf("error checking status: %s", err), nil
-			}
-
-			if len(strings.TrimSpace(string(statusOut))) == 0 {
-				return "nothing to commit", nil
-			}
-
-			summary := secretPolicy.RedactApprovalDetail(fmt.Sprintf("git commit -m %q", message))
-			detail := secretPolicy.RedactApprovalDetail(fmt.Sprintf("Files to be committed:\n%s", statusOut))
-			approved, err := approve(Action{
-				Context: ctx,
-				Tool:    "git_commit",
-				Summary: summary,
-				Detail:  detail,
-			})
-			if err != nil {
-				return "", err
-			}
-			if !approved {
-				return "git_commit denied by user", nil
-			}
-
-			addCmd := exec.CommandContext(ctx, "git", "add", "-A")
-			addCmd.Dir = workDir
-			if out, err := addCmd.CombinedOutput(); err != nil {
-				result, _ := secretPolicy.ApplyCommandOutput(fmt.Sprintf("error staging: %s\n%s", err, out))
-				return result, nil
-			}
-
-			commitCmd := exec.CommandContext(ctx, "git", "commit", "-m", message)
-			commitCmd.Dir = workDir
-			out, err := commitCmd.CombinedOutput()
-			if err != nil {
-				result, _ := secretPolicy.ApplyCommandOutput(fmt.Sprintf("error committing: %s\n%s", err, out))
-				return result, nil
-			}
-			result, _ := secretPolicy.ApplyCommandOutput(string(out))
-			lastDiff = strings.TrimSpace(string(statusOut))
-			return result, nil
-		},
-	}
+	return NewGitCommitScopedWithWorkDirProvider(workDir, FixedWorkDirProvider(workDir), approve, nil)
 }

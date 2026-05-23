@@ -10,6 +10,10 @@ import (
 )
 
 func NewApplyPatch(workDir string, approve ApprovalFunc, policies ...SecretPolicy) Tool {
+	return NewApplyPatchWithWorkDirProvider(workDir, FixedWorkDirProvider(workDir), approve, policies...)
+}
+
+func NewApplyPatchWithWorkDirProvider(fallbackWorkDir string, provider WorkDirProvider, approve ApprovalFunc, policies ...SecretPolicy) Tool {
 	var lastDiff string
 	secretPolicy := secretPolicyFromOptions(policies)
 	return Tool{
@@ -68,15 +72,21 @@ func NewApplyPatch(workDir string, approve ApprovalFunc, policies ...SecretPolic
 				return "", err
 			}
 
+			activeWorkDir := currentWorkDir(provider, fallbackWorkDir)
+			if err := os.MkdirAll(activeWorkDir, 0o755); err != nil {
+				lastDiff = ""
+				return "", err
+			}
+
 			check := exec.CommandContext(ctx, "git", "apply", "--check", "--recount", "--whitespace=nowarn", tmpPath)
-			check.Dir = workDir
+			check.Dir = activeWorkDir
 			if out, err := check.CombinedOutput(); err != nil {
 				lastDiff = ""
 				return fmt.Sprintf("apply_patch failed: %s", strings.TrimSpace(string(out))), nil
 			}
 
 			apply := exec.CommandContext(ctx, "git", "apply", "--recount", "--whitespace=nowarn", tmpPath)
-			apply.Dir = workDir
+			apply.Dir = activeWorkDir
 			if out, err := apply.CombinedOutput(); err != nil {
 				lastDiff = ""
 				return fmt.Sprintf("apply_patch failed: %s", strings.TrimSpace(string(out))), nil

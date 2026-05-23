@@ -24,6 +24,62 @@ func TestReplayBuildsTurnFromDurableItems(t *testing.T) {
 	}
 }
 
+func TestReplayRestoresLatestSideEffectIntent(t *testing.T) {
+	items := []protocol.Item{{
+		Version:  protocol.CurrentItemVersion,
+		ThreadID: "thread-1",
+		TurnID:   "turn-1",
+		Seq:      1,
+		Kind:     protocol.ItemSideEffectIntent,
+		SideEffectIntent: &protocol.SideEffectIntentItem{
+			ID:              "intent-1",
+			AllowedPaths:    []string{"FORGE_VS_CODEX.md"},
+			ArtifactPaths:   []string{"FORGE_VS_CODEX.md"},
+			RequiredActions: []string{"write", "commit", "push"},
+			TargetBranch:    "main",
+			Remote:          "origin",
+		},
+	}}
+	replay, err := ReplayItems(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay.SideEffectIntent == nil || replay.SideEffectIntent.AllowedPaths[0] != "FORGE_VS_CODEX.md" {
+		t.Fatalf("SideEffectIntent = %#v", replay.SideEffectIntent)
+	}
+}
+
+func TestReplayClearsSideEffectIntent(t *testing.T) {
+	items := []protocol.Item{
+		{
+			Version:  protocol.CurrentItemVersion,
+			ThreadID: "thread-1",
+			TurnID:   "turn-1",
+			Seq:      1,
+			Kind:     protocol.ItemSideEffectIntent,
+			SideEffectIntent: &protocol.SideEffectIntentItem{
+				ID:           "intent-1",
+				AllowedPaths: []string{"FORGE_VS_CODEX.md"},
+			},
+		},
+		{
+			Version:          protocol.CurrentItemVersion,
+			ThreadID:         "thread-1",
+			TurnID:           "turn-1",
+			Seq:              2,
+			Kind:             protocol.ItemSideEffectIntent,
+			SideEffectIntent: &protocol.SideEffectIntentItem{Reason: "cleared"},
+		},
+	}
+	replay, err := ReplayItems(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay.SideEffectIntent != nil {
+		t.Fatalf("SideEffectIntent = %#v, want nil", replay.SideEffectIntent)
+	}
+}
+
 func TestReplayRebuildsHistoryRecentInputsAndCompaction(t *testing.T) {
 	items := []protocol.Item{
 		{TurnID: "turn-1", Seq: 1, Kind: protocol.ItemUserMessage, Message: &protocol.MessageItem{Role: string(llm.RoleUser), Text: "inspect"}},

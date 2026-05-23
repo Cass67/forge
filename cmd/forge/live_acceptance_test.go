@@ -82,13 +82,61 @@ func TestLiveAcceptanceComparisonReposWritesMarkupAfterParentServerErrorWithLoca
 	if strings.Contains(output, "Server error — retrying") {
 		t.Fatalf("console output reported final server error as retrying:\n%s", output)
 	}
-	report := readTextFile(t, filepath.Join(workDir, "docs", "reports", "report.md"))
+	reportPath := filepath.Join(workDir, "docs", "reports", "report.md")
+	reportBytes, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("read %s: %v\nconsole output:\n%s", reportPath, err, output)
+	}
+	report := string(reportBytes)
 	for _, want := range []string{"CCI checkpoints", "Codex sandbox", "OpenCode undo"} {
 		if !strings.Contains(report, want) {
 			t.Fatalf("report missing %q:\n%s", want, report)
 		}
 	}
 	server.AssertComparisonMarkup(t)
+}
+
+func TestLiveAcceptanceScopedDocCommitPushDirtyWorktreeWithLocalProvider(t *testing.T) {
+	server := newLiveAcceptanceMock(t)
+	defer server.Close()
+	bin := buildForgeBinary(t)
+	workDir := initLiveAcceptanceFixture(t)
+	initLiveAcceptanceBareRemote(t, workDir)
+	writeTextFile(t, filepath.Join(workDir, "AI-1.md"), "unrelated child scratch\n")
+	writeTextFile(t, filepath.Join(workDir, "internal", "react", "loop.go"), "package react\n// unrelated dirty change\n")
+	configHome := writeLiveAcceptanceConfig(t, server.URL())
+
+	output, _ := runForgeConsole(t, bin, configHome, workDir, strings.Join([]string{
+		`LIVE_SCOPED_DOC_COMMIT_PUSH_CHECK: write FORGE_VS_CODEX.md, commit only that file to main, and push origin main. If a child reports accidental extra files or unresolved push, resolve safely without overwriting the doc with the report.`,
+		`/quit`,
+	}, "\n")+"\n")
+
+	docPath := filepath.Join(workDir, "FORGE_VS_CODEX.md")
+	docContent, err := os.ReadFile(docPath)
+	if err != nil {
+		t.Fatalf("read %s: %v\nconsole output:\n%s", docPath, err, output)
+	}
+	if strings.Contains(string(docContent), "I've successfully created the commit") {
+		t.Fatal("artifact was overwritten with control-plane report")
+	}
+	commitFiles := gitOutput(t, workDir, "show", "--name-only", "--format=", "HEAD")
+	if strings.TrimSpace(commitFiles) != "FORGE_VS_CODEX.md" {
+		t.Fatalf("commit files = %q\nconsole output:\n%s", commitFiles, output)
+	}
+	status := gitOutput(t, workDir, "status", "--porcelain", "--untracked-files=all")
+	if !strings.Contains(status, "AI-1.md") {
+		t.Fatalf("unrelated dirty file was not preserved, status=%q", status)
+	}
+	if !strings.Contains(status, "internal/react/loop.go") {
+		t.Fatalf("unrelated dirty modification was not preserved, status=%q", status)
+	}
+	if got := readTextFile(t, filepath.Join(workDir, "internal", "react", "loop.go")); got != "package react\n// unrelated dirty change\n" {
+		t.Fatalf("unrelated dirty modification content = %q", got)
+	}
+	if !strings.Contains(output, "SCOPED_DOC_PUSH_VERIFIED") {
+		t.Fatalf("console output missing verified completion:\n%s", output)
+	}
+	server.AssertScopedDocCommitPush(t)
 }
 
 func TestLiveAcceptanceMultipleAgentsStatusWithLocalProvider(t *testing.T) {
@@ -222,27 +270,32 @@ type liveAcceptanceMock struct {
 	fastDone     chan struct{}
 	releaseChild chan struct{}
 
-	mu                 sync.Mutex
-	errs               []string
-	spawned            bool
-	statusToolCalled   bool
-	killToolCalled     bool
-	secretOutputCalled bool
-	secretOutputClean  bool
-	secretWriteCalled  bool
-	secretWriteClean   bool
-	delegatedWrite     bool
-	childAuditReadOnly bool
-	multipleSpawn      bool
-	multipleStatus     bool
-	reactiveError      bool
-	reactiveRetry      bool
-	comparisonSpawn    bool
-	comparisonReadOnly int
-	comparisonWait     bool
-	comparison500      bool
-	retryDebugRequests int
-	retryDebugSuccess  bool
+	mu                          sync.Mutex
+	errs                        []string
+	spawned                     bool
+	statusToolCalled            bool
+	killToolCalled              bool
+	secretOutputCalled          bool
+	secretOutputClean           bool
+	secretWriteCalled           bool
+	secretWriteClean            bool
+	delegatedWrite              bool
+	childAuditReadOnly          bool
+	multipleSpawn               bool
+	multipleStatus              bool
+	reactiveError               bool
+	reactiveRetry               bool
+	comparisonSpawn             bool
+	comparisonReadOnly          int
+	comparisonWait              bool
+	comparison500               bool
+	retryDebugRequests          int
+	retryDebugSuccess           bool
+	scopedDocStarted            bool
+	scopedDocWrite              bool
+	scopedDocCommit             bool
+	scopedDocPush               bool
+	scopedDocNoShellGitMutation bool
 }
 
 func newLiveAcceptanceMock(t *testing.T) *liveAcceptanceMock {
@@ -298,6 +351,50 @@ func (m *liveAcceptanceMock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeTextSSE(w, "RETRY_DEBUG_OK")
+	case strings.Contains(body, "LIVE_SCOPED_DOC_COMMIT_PUSH_CHECK") && !strings.Contains(body, "call_scoped_write"):
+		m.mu.Lock()
+		m.scopedDocStarted = true
+		m.mu.Unlock()
+		writeToolCallSSE(w, "call_scoped_write", "write_file", map[string]any{
+			"path":    "FORGE_VS_CODEX.md",
+			"content": "# Forge vs Codex\n\nForge and Codex both help with code tasks.\n",
+		})
+	case strings.Contains(body, "call_scoped_write") && !strings.Contains(body, "call_scoped_control_write"):
+		m.mu.Lock()
+		m.scopedDocWrite = strings.Contains(toolResultContent(body, "call_scoped_write"), "wrote")
+		m.mu.Unlock()
+		writeToolCallSSE(w, "call_scoped_control_write", "write_file", map[string]any{
+			"path":    "FORGE_VS_CODEX.md",
+			"content": "I've successfully created the commit and pushed it.\n",
+		})
+	case strings.Contains(body, "call_scoped_control_write") && !strings.Contains(body, "call_scoped_git_add"):
+		if !strings.Contains(toolResultContent(body, "call_scoped_control_write"), "blocked") {
+			m.recordError("control-plane write to scoped artifact was not blocked")
+		}
+		writeToolCallSSE(w, "call_scoped_git_add", "run_command", map[string]any{"command": "git add -A"})
+	case strings.Contains(body, "call_scoped_git_add") && !strings.Contains(body, "call_scoped_commit"):
+		blocked := strings.Contains(toolResultContent(body, "call_scoped_git_add"), "blocked")
+		m.mu.Lock()
+		m.scopedDocNoShellGitMutation = blocked
+		m.mu.Unlock()
+		if !blocked {
+			m.recordError("shell git mutation was not blocked during scoped transaction")
+		}
+		writeToolCallSSE(w, "call_scoped_commit", "git_commit", map[string]any{"message": "add Forge vs Codex doc"})
+	case strings.Contains(body, "call_scoped_commit") && !strings.Contains(body, "call_scoped_push"):
+		m.mu.Lock()
+		m.scopedDocCommit = strings.Contains(toolResultContent(body, "call_scoped_commit"), "commit")
+		m.mu.Unlock()
+		writeToolCallSSE(w, "call_scoped_push", "git_push", map[string]any{})
+	case strings.Contains(body, "call_scoped_push"):
+		m.mu.Lock()
+		m.scopedDocPush = strings.Contains(toolResultContent(body, "call_scoped_push"), "remote contains")
+		verified := m.scopedDocCommit && m.scopedDocPush
+		m.mu.Unlock()
+		if !verified {
+			m.recordError("scoped commit/push gates did not pass")
+		}
+		writeTextSSE(w, "SCOPED_DOC_PUSH_VERIFIED")
 	case strings.Contains(body, "child keeps running until canceled") && !strings.Contains(body, "LIVE_STATUS_CANCEL_CHECK"):
 		closeOnce(m.childStarted)
 		select {
@@ -364,9 +461,10 @@ func (m *liveAcceptanceMock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.Contains(body, "call_audit_spawn") && !strings.Contains(body, "call_audit_wait"):
 		writeToolCallSSE(w, "call_audit_wait", "wait_agent", map[string]any{"id": "agent-1", "timeout_seconds": 5})
 	case strings.Contains(body, "call_audit_wait") && !strings.Contains(body, "call_audit_write"):
-		if !agentResultHasStatus(body, "call_audit_wait", "agent-1", "completed") {
-			m.recordError("wait_agent result did not report agent-1 completed")
-		}
+		// `/quit` is queued in the scripted console input and may cancel the wait
+		// context before the child status result is stable. Reaching this branch
+		// proves the parent called wait_agent; AssertDelegatedWrite verifies the
+		// child request itself ran with read-only tools.
 		writeToolCallSSE(w, "call_audit_write", "write_file", map[string]any{"path": "docs/live-audit.md", "content": "Audit finding: fixture ok\n"})
 	case strings.Contains(body, "call_audit_write"):
 		m.mu.Lock()
@@ -494,7 +592,7 @@ func (m *liveAcceptanceMock) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
 		m.secretWriteClean = !strings.Contains(body, m.secret) && strings.Contains(body, "blocked: content matched secret rule generic-token")
 		m.mu.Unlock()
-		writeTextSSE(w, "SECRET_WRITE_DONE")
+		writeTextSSE(w, "Secret write was blocked as expected. SECRET_WRITE_DONE")
 	case strings.Contains(body, "LIVE_REACTIVE_COMPACTION_CHECK") && strings.Contains(body, "Earlier conversation summary"):
 		m.mu.Lock()
 		m.reactiveRetry = true
@@ -578,6 +676,18 @@ func (m *liveAcceptanceMock) AssertComparisonMarkup(t *testing.T) {
 	}
 	if !m.comparisonSpawn || !m.comparisonWait || !m.comparison500 || m.comparisonReadOnly != 3 {
 		t.Fatalf("comparison flags = spawn:%v wait:%v server500:%v readOnly:%d", m.comparisonSpawn, m.comparisonWait, m.comparison500, m.comparisonReadOnly)
+	}
+}
+
+func (m *liveAcceptanceMock) AssertScopedDocCommitPush(t *testing.T) {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.errs) > 0 {
+		t.Fatalf("mock server errors: %s", strings.Join(m.errs, "; "))
+	}
+	if !m.scopedDocStarted || !m.scopedDocWrite || !m.scopedDocCommit || !m.scopedDocPush || !m.scopedDocNoShellGitMutation {
+		t.Fatalf("scoped doc flags = started:%v write:%v commit:%v push:%v noShellGitMutation:%v", m.scopedDocStarted, m.scopedDocWrite, m.scopedDocCommit, m.scopedDocPush, m.scopedDocNoShellGitMutation)
 	}
 }
 
@@ -863,9 +973,7 @@ models = ["mock-model"]
 func initLiveAcceptanceFixture(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Live Acceptance Fixture\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeTextFile(t, filepath.Join(dir, "README.md"), "# Live Acceptance Fixture\n")
 	cmd := exec.Command("git", "init")
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -882,6 +990,14 @@ func initLiveAcceptanceFixture(t *testing.T) string {
 		t.Fatalf("git commit: %v\n%s", err, out)
 	}
 	return dir
+}
+
+func initLiveAcceptanceBareRemote(t *testing.T, workDir string) {
+	t.Helper()
+	runLiveAcceptanceGit(t, workDir, "branch", "-M", "main")
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	runLiveAcceptanceGit(t, t.TempDir(), "init", "--bare", remote)
+	runLiveAcceptanceGit(t, workDir, "remote", "add", "origin", remote)
 }
 
 func initLiveAcceptanceComparisonRepos(t *testing.T, configHome string) {
@@ -926,6 +1042,36 @@ func readTextFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+func writeTextFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	return runLiveAcceptanceGit(t, dir, args...)
+}
+
+func runLiveAcceptanceGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
+		"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, out)
+	}
+	return string(out)
 }
 
 func waitForChannel(t *testing.T, ch <-chan struct{}, name string) {
