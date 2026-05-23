@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -94,6 +95,41 @@ func TestLiveAcceptanceComparisonReposWritesMarkupAfterParentServerErrorWithLoca
 		}
 	}
 	server.AssertComparisonMarkup(t)
+}
+
+func TestFailureFixtureTermWranglerWouldNotPassContract(t *testing.T) {
+	path := filepath.Join("testdata", "failure_threads", "term_wrangler_unknown_tool_dsml.jsonl")
+	result := analyzeFailureThreadContract(t, path)
+
+	if result.status != "failed_contract" {
+		t.Fatalf("status = %q, want failed_contract; violations=%v", result.status, result.violations)
+	}
+	for _, want := range []string{"unknown_tool", "raw_tool_markup", "missing_artifact"} {
+		if !containsString(result.violations, want) {
+			t.Fatalf("violations = %v, want %q", result.violations, want)
+		}
+	}
+}
+
+func TestFailureFixtureAnalyzerIgnoresUnrelatedWriteFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "thread.jsonl")
+	writeTextFile(t, path, strings.Join([]string{
+		`{"kind":"tool_call","tool_call":{"tool_name":"bash"}}`,
+		`{"kind":"tool_call","tool_call":{"tool_name":"write_file","args":{"path":"notes.txt"}}}`,
+		`{"kind":"tool_result","tool_result":{"text":"error: unknown tool \"bash\". Use one of the tools provided for this turn."}}`,
+		`{"kind":"tool_result","tool_result":{"text":"{\"status\":\"failed\"}"}}`,
+		`{"kind":"assistant_message","message":{"text":"<｜｜DSML｜｜tool_calls></｜｜DSML｜｜tool_calls>"}}`,
+		`{"kind":"turn_complete","turn_complete":{"status":"completed"}}`,
+	}, "\n")+"\n")
+
+	result := analyzeFailureThreadContract(t, path)
+
+	if result.status != "failed_contract" {
+		t.Fatalf("status = %q, want failed_contract; violations=%v", result.status, result.violations)
+	}
+	if !containsString(result.violations, "missing_artifact") {
+		t.Fatalf("violations = %v, want missing_artifact", result.violations)
+	}
 }
 
 func TestLiveAcceptanceScopedDocCommitPushDirtyWorktreeWithLocalProvider(t *testing.T) {
@@ -1086,4 +1122,118 @@ func waitForChannel(t *testing.T, ch <-chan struct{}, name string) {
 func closeOnce(ch chan struct{}) {
 	defer func() { _ = recover() }()
 	close(ch)
+}
+
+type failureThreadContractResult struct {
+	status     string
+	violations []string
+}
+
+func analyzeFailureThreadContract(t *testing.T, path string) failureThreadContractResult {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := file.Close(); err != nil {
+			t.Fatalf("close fixture: %v", err)
+		}
+	}()
+
+	type threadEvent struct {
+		Kind     string `json:"kind"`
+		ToolCall struct {
+			ToolName string `json:"tool_name"`
+			Args     struct {
+				Path string `json:"path"`
+				File string `json:"file"`
+			} `json:"args"`
+		} `json:"tool_call"`
+		ToolResult struct {
+			Text string `json:"text"`
+		} `json:"tool_result"`
+		Message struct {
+			Text string `json:"text"`
+		} `json:"message"`
+		TurnComplete struct {
+			Status string `json:"status"`
+		} `json:"turn_complete"`
+	}
+
+	var (
+		bashToolCalled  bool
+		unknownBashTool bool
+		childFailed     bool
+		rawToolMarkup   bool
+		artifactWritten bool
+		finalStatus     string
+	)
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 1024), 4*1024*1024)
+	for scanner.Scan() {
+		var event threadEvent
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			t.Fatalf("parse fixture JSONL: %v", err)
+		}
+		switch event.Kind {
+		case "tool_call":
+			if event.ToolCall.ToolName == "bash" {
+				bashToolCalled = true
+			}
+			if event.ToolCall.ToolName == "write_file" && isTermWranglerDesignArtifactPath(event.ToolCall.Args.Path, event.ToolCall.Args.File) {
+				artifactWritten = true
+			}
+		case "tool_result":
+			if bashToolCalled && strings.Contains(event.ToolResult.Text, `unknown tool "bash"`) {
+				unknownBashTool = true
+			}
+			if strings.Contains(event.ToolResult.Text, `"status":"failed"`) || strings.Contains(event.ToolResult.Text, `"status": "failed"`) {
+				childFailed = true
+			}
+		case "assistant_message":
+			if strings.Contains(event.Message.Text, "DSML") && strings.Contains(event.Message.Text, "tool_calls") {
+				rawToolMarkup = true
+			}
+		case "turn_complete":
+			finalStatus = event.TurnComplete.Status
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("read fixture JSONL: %v", err)
+	}
+
+	result := failureThreadContractResult{status: finalStatus}
+	if unknownBashTool {
+		result.violations = append(result.violations, "unknown_tool")
+	}
+	if rawToolMarkup {
+		result.violations = append(result.violations, "raw_tool_markup")
+	}
+	if finalStatus == "completed" && !artifactWritten {
+		result.violations = append(result.violations, "missing_artifact")
+	}
+	if unknownBashTool && childFailed && rawToolMarkup && finalStatus == "completed" && !artifactWritten {
+		result.status = "failed_contract"
+	}
+	return result
+}
+
+func isTermWranglerDesignArtifactPath(values ...string) bool {
+	for _, value := range values {
+		if strings.HasSuffix(value, "docs/superpowers/specs/2025-07-15-term-wrangler-design.md") ||
+			strings.HasSuffix(value, "docs/superpowers/specs/2026-05-23-term-wrangler-design.md") {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }
