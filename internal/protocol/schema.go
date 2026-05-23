@@ -12,7 +12,7 @@ func GenerateProtocolSchema() JSONSchema {
 		"properties": JSONSchema{
 			"at":        JSONSchema{"format": "date-time", "type": "string"},
 			"id":        stringSchema(),
-			"kind":      JSONSchema{"enum": []string{string(ItemSessionMeta), string(ItemTurnContext), string(ItemUserMessage), string(ItemAssistantMessage), string(ItemToolCall), string(ItemToolResult), string(ItemRetry), string(ItemFailure), string(ItemStats), string(ItemCompaction), string(ItemCheckpoint), string(ItemAgentHandoff), string(ItemSkillContext), string(ItemSideEffectIntent), string(ItemTurnComplete)}, "type": "string"},
+			"kind":      JSONSchema{"enum": []string{string(ItemSessionMeta), string(ItemTurnContext), string(ItemUserMessage), string(ItemAssistantMessage), string(ItemToolCall), string(ItemToolResult), string(ItemRetry), string(ItemFailure), string(ItemStats), string(ItemCompaction), string(ItemCheckpoint), string(ItemAgentHandoff), string(ItemSkillContext), string(ItemSideEffectIntent), string(ItemTurnContract), string(ItemTurnComplete)}, "type": "string"},
 			"seq":       JSONSchema{"type": "integer"},
 			"thread_id": stringSchema(),
 			"turn_id":   stringSchema(),
@@ -30,6 +30,7 @@ func GenerateProtocolSchema() JSONSchema {
 			"stats":              objectSchema(map[string]any{"duration_ms": JSONSchema{"type": "integer"}, "usage": JSONSchema{"type": "object"}}),
 			"tool_call":          objectSchema(map[string]any{"args": JSONSchema{"type": "object"}, "tool_call_id": stringSchema(), "tool_name": stringSchema()}),
 			"tool_result":        objectSchema(map[string]any{"diff": stringSchema(), "handle": stringSchema(), "is_error": JSONSchema{"type": "boolean"}, "original_bytes": JSONSchema{"type": "integer"}, "sha256": stringSchema(), "text": stringSchema(), "tool_call_id": stringSchema(), "tool_name": stringSchema(), "truncated": JSONSchema{"type": "boolean"}}),
+			"turn_contract":      turnContractSchema(),
 			"turn_complete":      objectSchema(map[string]any{"response_id": stringSchema(), "status": JSONSchema{"enum": []string{string(TurnStatusCompleted), string(TurnStatusFailed), string(TurnStatusInterrupted)}, "type": "string"}}),
 			"turn_context":       objectSchema(map[string]any{"input": stringSchema(), "mode": stringSchema(), "response_id": stringSchema()}),
 		},
@@ -76,6 +77,37 @@ func sideEffectGateSchema() JSONSchema {
 	return objectSchema(map[string]any{"evidence": stringSchema(), "name": stringSchema(), "status": stringSchema()})
 }
 
+func turnContractSchema() JSONSchema {
+	return objectSchemaRequired(map[string]any{
+		"evidence": JSONSchema{"items": objectSchemaRequired(map[string]any{
+			"kind":    enumStringSchema("test", "tool", "note"),
+			"summary": stringSchema(),
+		}, []string{"kind"}), "type": "array"},
+		"gates": JSONSchema{"items": objectSchemaRequired(map[string]any{
+			"evidence": stringSchema(),
+			"name":     stringSchema(),
+			"status":   enumStringSchema("pending", "passed", "failed"),
+		}, []string{"name", "status"}), "type": "array"},
+		"id":     stringSchema(),
+		"intent": enumStringSchema("implement", "verify"),
+		"reason": stringSchema(),
+		"required_actions": JSONSchema{"items": objectSchemaRequired(map[string]any{
+			"description": stringSchema(),
+			"kind":        enumStringSchema("edit", "run", "report"),
+		}, []string{"kind"}), "type": "array"},
+		"required_artifacts": JSONSchema{"items": objectSchemaRequired(map[string]any{
+			"description": stringSchema(),
+			"path":        stringSchema(),
+		}, []string{"path"}), "type": "array"},
+		"required_verification": JSONSchema{"items": objectSchemaRequired(map[string]any{
+			"command":     stringSchema(),
+			"description": stringSchema(),
+		}, []string{"command"}), "type": "array"},
+		"source_turn": JSONSchema{"type": "integer"},
+		"status":      enumStringSchema("active", "satisfied", "cleared"),
+	}, []string{"id", "status"})
+}
+
 func ToolSchemaToJSONSchema(schema *llm.ToolSchema) JSONSchema {
 	if schema == nil {
 		return nil
@@ -110,6 +142,16 @@ func objectSchema(properties map[string]any) JSONSchema {
 	return JSONSchema{"additionalProperties": false, "properties": properties, "type": "object"}
 }
 
+func objectSchemaRequired(properties map[string]any, required []string) JSONSchema {
+	out := objectSchema(properties)
+	out["required"] = required
+	return out
+}
+
 func stringSchema() JSONSchema {
 	return JSONSchema{"type": "string"}
+}
+
+func enumStringSchema(values ...string) JSONSchema {
+	return JSONSchema{"enum": values, "type": "string"}
 }

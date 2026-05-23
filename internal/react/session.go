@@ -189,6 +189,7 @@ type SessionSnapshot struct {
 	LastTurnCancelReason    string
 	ActiveWorkspaceRoot     string
 	SideEffectIntent        *SideEffectIntent
+	TurnContract            *TurnContract
 }
 
 type Session struct {
@@ -219,6 +220,7 @@ type Session struct {
 	lastTurnCancelReason    string
 	activeWorkspaceRoot     string
 	sideEffectIntent        *SideEffectIntent
+	turnContract            *TurnContract
 	durableSink             DurableSink
 	lastDurableError        string
 	activeTurn              *ActiveTurn
@@ -254,6 +256,10 @@ func NewSessionFromItems(items []protocol.Item) (*Session, error) {
 		if strings.TrimSpace(intent.WorkspaceRoot) != "" {
 			s.activeWorkspaceRoot = strings.TrimSpace(intent.WorkspaceRoot)
 		}
+	}
+	if replay.TurnContract != nil {
+		contract := turnContractFromProtocol(*replay.TurnContract)
+		s.turnContract = copyTurnContract(&contract)
 	}
 	if len(s.recentInputs) > 0 {
 		s.initialInput = strings.TrimSpace(s.recentInputs[0])
@@ -978,7 +984,7 @@ func (s *Session) Snapshot() SessionSnapshot {
 		RecentInputs:            append([]string(nil), s.recentInputs...),
 		History:                 append([]llm.Message(nil), s.history...),
 		Turns:                   append([]TurnRecord(nil), s.turns...),
-		Items:                   append([]protocol.Item(nil), s.items...),
+		Items:                   cloneProtocolItems(s.items),
 		CompactedTurns:          s.compactedTurns,
 		CompactionSummary:       s.compactionSummary,
 		MemorySummary:           s.memorySummary,
@@ -998,7 +1004,88 @@ func (s *Session) Snapshot() SessionSnapshot {
 		LastTurnCancelReason:    s.lastTurnCancelReason,
 		ActiveWorkspaceRoot:     s.activeWorkspaceRoot,
 		SideEffectIntent:        copySideEffectIntent(s.sideEffectIntent),
+		TurnContract:            copyTurnContract(s.turnContract),
 	}
+}
+
+func (s *Session) SetTurnContract(contract TurnContract) {
+	if s == nil {
+		return
+	}
+	if strings.TrimSpace(contract.ID) == "" {
+		return
+	}
+	s.mu.Lock()
+	copy := normalizeTurnContract(copyTurnContract(&contract))
+	s.turnContract = copy
+	protocolContract := turnContractToProtocol(*copy)
+	item := s.appendItemLocked(protocol.Item{Kind: protocol.ItemTurnContract, TurnContract: &protocolContract})
+	sink := s.durableSink
+	s.mu.Unlock()
+	_ = s.persistDurableItem(item, sink)
+}
+
+func (s *Session) UpdateTurnContract(update func(*TurnContract)) {
+	if s == nil || update == nil {
+		return
+	}
+	s.mu.Lock()
+	next := copyTurnContract(s.turnContract)
+	if next == nil {
+		s.mu.Unlock()
+		return
+	}
+	update(next)
+	stored := normalizeTurnContract(copyTurnContract(next))
+	if strings.TrimSpace(stored.ID) == "" {
+		s.mu.Unlock()
+		return
+	}
+	s.turnContract = stored
+	protocolContract := turnContractToProtocol(*stored)
+	item := s.appendItemLocked(protocol.Item{Kind: protocol.ItemTurnContract, TurnContract: &protocolContract})
+	sink := s.durableSink
+	s.mu.Unlock()
+	_ = s.persistDurableItem(item, sink)
+}
+
+func (s *Session) ClearTurnContract(reason string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	protocolContract := protocol.TurnContractItem{ID: "cleared", Status: string(ContractStatusCleared), Reason: strings.TrimSpace(reason)}
+	if protocolContract.Reason == "" {
+		protocolContract.Reason = "cleared"
+	}
+	item := s.appendItemLocked(protocol.Item{Kind: protocol.ItemTurnContract, TurnContract: &protocolContract})
+	s.turnContract = nil
+	sink := s.durableSink
+	s.mu.Unlock()
+	_ = s.persistDurableItem(item, sink)
+}
+
+func cloneProtocolItems(items []protocol.Item) []protocol.Item {
+	out := append([]protocol.Item(nil), items...)
+	for i := range out {
+		if out[i].TurnContract != nil {
+			out[i].TurnContract = cloneProtocolTurnContract(out[i].TurnContract)
+		}
+	}
+	return out
+}
+
+func cloneProtocolTurnContract(contract *protocol.TurnContractItem) *protocol.TurnContractItem {
+	if contract == nil {
+		return nil
+	}
+	copy := *contract
+	copy.RequiredActions = append([]protocol.ContractActionItem(nil), contract.RequiredActions...)
+	copy.RequiredArtifacts = append([]protocol.ArtifactRequirementItem(nil), contract.RequiredArtifacts...)
+	copy.RequiredVerification = append([]protocol.VerificationRequirementItem(nil), contract.RequiredVerification...)
+	copy.Evidence = append([]protocol.EvidenceRecordItem(nil), contract.Evidence...)
+	copy.Gates = append([]protocol.ContractGateItem(nil), contract.Gates...)
+	return &copy
 }
 
 func (s *Session) SetActiveWorkspaceRoot(root string) {

@@ -25,6 +25,7 @@ const (
 	ItemAgentHandoff     ItemKind = "agent_handoff"
 	ItemSkillContext     ItemKind = "skill_context"
 	ItemSideEffectIntent ItemKind = "side_effect_intent"
+	ItemTurnContract     ItemKind = "turn_contract"
 	ItemTurnComplete     ItemKind = "turn_complete"
 )
 
@@ -58,6 +59,7 @@ type Item struct {
 	AgentHandoff     *AgentHandoffItem     `json:"agent_handoff,omitempty"`
 	SkillContext     *SkillContextItem     `json:"skill_context,omitempty"`
 	SideEffectIntent *SideEffectIntentItem `json:"side_effect_intent,omitempty"`
+	TurnContract     *TurnContractItem     `json:"turn_contract,omitempty"`
 	TurnComplete     *TurnCompleteItem     `json:"turn_complete,omitempty"`
 }
 
@@ -166,6 +168,45 @@ type SideEffectIntentItem struct {
 	Gates           []SideEffectGateItem `json:"gates,omitempty"`
 	IncidentMode    bool                 `json:"incident_mode,omitempty"`
 	Reason          string               `json:"reason,omitempty"`
+}
+
+type ContractActionItem struct {
+	Kind        string `json:"kind"`
+	Description string `json:"description,omitempty"`
+}
+
+type ArtifactRequirementItem struct {
+	Path        string `json:"path"`
+	Description string `json:"description,omitempty"`
+}
+
+type VerificationRequirementItem struct {
+	Command     string `json:"command"`
+	Description string `json:"description,omitempty"`
+}
+
+type EvidenceRecordItem struct {
+	Kind    string `json:"kind"`
+	Summary string `json:"summary,omitempty"`
+}
+
+type ContractGateItem struct {
+	Name     string `json:"name"`
+	Status   string `json:"status"`
+	Evidence string `json:"evidence,omitempty"`
+}
+
+type TurnContractItem struct {
+	ID                   string                        `json:"id"`
+	SourceTurn           int                           `json:"source_turn,omitempty"`
+	Intent               string                        `json:"intent,omitempty"`
+	RequiredActions      []ContractActionItem          `json:"required_actions,omitempty"`
+	RequiredArtifacts    []ArtifactRequirementItem     `json:"required_artifacts,omitempty"`
+	RequiredVerification []VerificationRequirementItem `json:"required_verification,omitempty"`
+	Evidence             []EvidenceRecordItem          `json:"evidence,omitempty"`
+	Gates                []ContractGateItem            `json:"gates,omitempty"`
+	Status               string                        `json:"status,omitempty"`
+	Reason               string                        `json:"reason,omitempty"`
 }
 
 type TurnCompleteItem struct {
