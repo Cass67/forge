@@ -149,6 +149,7 @@
         "agent_handoff",
         "skill_context",
         "side_effect_intent",
+        "turn_contract",
         "turn_complete"
       ],
       "type": "string"
@@ -363,6 +364,149 @@
           "type": "string"
         }
       },
+      "type": "object"
+    },
+    "turn_contract": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "test",
+                  "tool",
+                  "note"
+                ],
+                "type": "string"
+              },
+              "summary": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "gates": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "evidence": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "pending",
+                  "passed",
+                  "failed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "status"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "intent": {
+          "enum": [
+            "implement",
+            "verify"
+          ],
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "required_actions": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "description": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "edit",
+                  "run",
+                  "report"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "required_artifacts": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "description": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "required_verification": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "command": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "source_turn": {
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "active",
+            "satisfied",
+            "cleared"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "status"
+      ],
       "type": "object"
     },
     "turn_id": {
