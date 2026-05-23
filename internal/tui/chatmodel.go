@@ -2769,7 +2769,7 @@ func (m ChatModel) trySubmitText(input string, attachments []chatstate.ChatAttac
 			return updated.(ChatModel), submitCmd, true
 		}
 		if s, ok := skills.Get(m.skills, cmd); ok {
-			updated, submitCmd := m.submitSkillInput(s, fmt.Sprintf("/%s", s.Name), skills.SkillMessage(s))
+			updated, submitCmd := m.submitSkillInput(s, fmt.Sprintf("/%s", s.Name), "")
 			return updated.(ChatModel), submitCmd, true
 		}
 		if looksLikeAbsolutePathInput(input) {
@@ -2832,7 +2832,7 @@ submitChatInput:
 				if m.state != nil && m.state.SkillActivated(s.Name) {
 					break
 				}
-				updated, submitCmd := m.submitSkillInput(s, input, skills.SkillMessageWithUserInput(s, input))
+				updated, submitCmd := m.submitSkillInput(s, input, input)
 				return updated.(ChatModel), submitCmd, true
 			}
 		case "", skills.AutoSkillsSuggest:
@@ -3069,7 +3069,7 @@ func (m ChatModel) submitSkillInput(s skills.Skill, turnLabel, msg string) (tea.
 	if m.inputCh != nil {
 		ch := m.inputCh
 		return m, func() tea.Msg {
-			ch <- msg
+			ch <- chatUserInputToString(chatstate.ChatUserInput{IsInput: true, Text: msg, SkillName: s.Name, SkillBody: s.Body})
 			return nil
 		}
 	}

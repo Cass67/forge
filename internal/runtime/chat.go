@@ -570,6 +570,9 @@ func RunChatLive(setup *ChatSetup) {
 					if setup != nil && setup.debugRec != nil {
 						setup.debugRec.logInput("queued", ui.Text)
 					}
+					if strings.TrimSpace(ui.SkillName) != "" || strings.TrimSpace(ui.SkillBody) != "" {
+						reactRunner.AppendSkillContext(ui.SkillName, ui.SkillBody)
+					}
 					reactRunner.QueuePendingInput(ui.Text)
 					evRenderer.Info(fmt.Sprintf("queued steering: %s", ui.Text))
 					continue
@@ -895,11 +898,11 @@ func RunChatConsole(setup *ChatSetup) {
 				continue
 			}
 		}
+		ui := chatstate.ChatUserInput{IsInput: true, Text: input}
 		if setup.Config.Chat.AutoSkills == skills.AutoSkillsAuto {
-			if s, ok := skills.DetectAuto(loadedSkills, input); ok {
-				state.ActivateSkill(s.Name)
-				renderer.Info(fmt.Sprintf("skill activated: %s", s.Name))
-				input = skills.SkillMessageWithUserInput(s, input)
+			if skillInput, ok := autoSkillChatInput(loadedSkills, state, input); ok {
+				renderer.Info(fmt.Sprintf("skill activated: %s", skillInput.SkillName))
+				ui = skillInput
 			}
 		}
 		applySuggestedSkillOverlay(session, input, loadedSkills, state)
@@ -908,7 +911,7 @@ func RunChatConsole(setup *ChatSetup) {
 		}
 		turnCtx, tc := context.WithCancel(ctx)
 		turnCancel.Store(tc)
-		err := runChatTurn(turnCtx, reactRunner, chatstate.ChatUserInput{IsInput: true, Text: input})
+		err := runChatTurn(turnCtx, reactRunner, ui)
 		if err != nil {
 			renderer.Error(err.Error())
 		}
@@ -1361,6 +1364,7 @@ func resolveChatRuntimeMode() chatRuntimeMode {
 type chatTurnRunner interface {
 	Run(context.Context, string) error
 	RunWithParts(context.Context, string, []llm.MessageContentPart) error
+	AppendSkillContext(name, body string)
 	EmitResponse(string)
 	SetTaskState(reactruntime.TaskState)
 	TaskState() *reactruntime.TaskState
@@ -1373,6 +1377,12 @@ const promptBoundaryRefusal = "I can't provide hidden system/developer prompts o
 
 func runChatTurn(ctx context.Context, reactRunner chatTurnRunner, input chatstate.ChatUserInput) error {
 	text := input.Text
+	if strings.TrimSpace(input.SkillName) != "" || strings.TrimSpace(input.SkillBody) != "" {
+		reactRunner.AppendSkillContext(input.SkillName, input.SkillBody)
+		if strings.TrimSpace(text) == "" {
+			return nil
+		}
+	}
 	if isPromptBoundaryQuestion(text) {
 		if reactRunner != nil {
 			reactRunner.EmitResponse(promptBoundaryRefusal)
@@ -1402,6 +1412,17 @@ func runChatTurn(ctx context.Context, reactRunner chatTurnRunner, input chatstat
 		return reactRunner.RunWithParts(ctx, text, parts)
 	}
 	return reactRunner.Run(ctx, text)
+}
+
+func autoSkillChatInput(loadedSkills []skills.Skill, state *chatstate.State, input string) (chatstate.ChatUserInput, bool) {
+	s, ok := skills.DetectAuto(loadedSkills, input)
+	if !ok {
+		return chatstate.ChatUserInput{}, false
+	}
+	if state != nil {
+		state.ActivateSkill(s.Name)
+	}
+	return chatstate.ChatUserInput{IsInput: true, Text: input, SkillName: s.Name, SkillBody: s.Body}, true
 }
 
 func chatInputToContentParts(attachments []chatstate.ChatAttachment) []llm.MessageContentPart {
@@ -1735,6 +1756,7 @@ type chatSessionControl interface {
 	SetDriver(llm.Driver)
 	ClearHistory()
 	AppendUserMessage(string)
+	AppendSkillContext(name, body string)
 	EmitResponse(string)
 	SetTaskState(reactruntime.TaskState)
 	CompactHistory(keep int) bool
@@ -1855,7 +1877,7 @@ func handleChatSlashCommand(input string, renderer *agent.Renderer, loadedSkills
 				state.ActivateSkill(s.Name)
 			}
 			if session != nil {
-				session.AppendUserMessage(fmt.Sprintf("[Skill: %s]\n\n%s", s.Name, s.Body))
+				session.AppendSkillContext(s.Name, s.Body)
 			}
 			renderer.Info(fmt.Sprintf("skill activated: %s", s.Name))
 			return true
