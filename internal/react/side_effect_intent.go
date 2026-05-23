@@ -101,6 +101,9 @@ func looksLikeControlPlaneArtifactContent(content string) bool {
 }
 
 func deriveSideEffectIntentFromText(turn int, text string) *SideEffectIntent {
+	if inputLooksLikeInjectedSkillPayload(text) {
+		return nil
+	}
 	paths := extractMarkdownAndNamedPaths(text)
 	if len(paths) == 0 {
 		return nil
@@ -131,6 +134,11 @@ func deriveSideEffectIntentFromText(turn int, text string) *SideEffectIntent {
 	}
 	intent.Gates = initialGatesForActions(intent.RequiredActions)
 	return intent
+}
+
+func inputLooksLikeInjectedSkillPayload(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	return strings.HasPrefix(trimmed, "[Skill:") && strings.Contains(trimmed, "]")
 }
 
 func extractMarkdownAndNamedPaths(text string) []string {

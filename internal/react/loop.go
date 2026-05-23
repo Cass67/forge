@@ -3955,6 +3955,9 @@ func toolNameIn(name string, names []string) bool {
 }
 
 func shouldRequireToolCallForSnapshot(snapshot SessionSnapshot) bool {
+	if inputLooksLikeInjectedSkillPayload(snapshot.LastInput) {
+		return false
+	}
 	if len(blockingAgentHandoffs(snapshot)) > 0 {
 		return true
 	}
