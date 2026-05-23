@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -23,10 +24,14 @@ func NewRunCommand(workDir string, timeoutSecs int, manager *ExecSessionManager,
 }
 
 func NewRunCommandWithSecretPolicy(workDir string, timeoutSecs int, manager *ExecSessionManager, approve ApprovalFunc, policy SecretPolicy, forcePrompt ...ApprovalFunc) Tool {
-	return newRunCommand(workDir, timeoutSecs, manager, approve, policy, forcePrompt...)
+	return NewRunCommandWithWorkDirProvider(workDir, FixedWorkDirProvider(workDir), timeoutSecs, manager, approve, policy, forcePrompt...)
 }
 
 func newRunCommand(workDir string, timeoutSecs int, manager *ExecSessionManager, approve ApprovalFunc, policy SecretPolicy, forcePrompt ...ApprovalFunc) Tool {
+	return NewRunCommandWithWorkDirProvider(workDir, FixedWorkDirProvider(workDir), timeoutSecs, manager, approve, policy, forcePrompt...)
+}
+
+func NewRunCommandWithWorkDirProvider(fallbackWorkDir string, provider WorkDirProvider, timeoutSecs int, manager *ExecSessionManager, approve ApprovalFunc, policy SecretPolicy, forcePrompt ...ApprovalFunc) Tool {
 	if manager == nil {
 		manager = NewExecSessionManager()
 	}
@@ -71,7 +76,11 @@ func newRunCommand(workDir string, timeoutSecs int, manager *ExecSessionManager,
 				return "run_command denied by user", nil
 			}
 			if background {
-				sessionID, err := manager.Start(workDir, command)
+				activeWorkDir := currentWorkDir(provider, fallbackWorkDir)
+				if err := os.MkdirAll(activeWorkDir, 0o755); err != nil {
+					return "", err
+				}
+				sessionID, err := manager.Start(activeWorkDir, command)
 				if err != nil {
 					return "", err
 				}
@@ -91,7 +100,11 @@ func newRunCommand(workDir string, timeoutSecs int, manager *ExecSessionManager,
 			defer cancel()
 
 			cmd := exec.CommandContext(cmdCtx, "sh", "-c", command)
-			cmd.Dir = workDir
+			activeWorkDir := currentWorkDir(provider, fallbackWorkDir)
+			if err := os.MkdirAll(activeWorkDir, 0o755); err != nil {
+				return "", err
+			}
+			cmd.Dir = activeWorkDir
 			out, err := cmd.CombinedOutput()
 
 			result, blocked := secretPolicy.ApplyCommandOutput(string(out))

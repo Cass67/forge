@@ -187,6 +187,8 @@ type SessionSnapshot struct {
 	LastDurableError        string
 	LastTurnEndReason       TurnEndReason
 	LastTurnCancelReason    string
+	ActiveWorkspaceRoot     string
+	SideEffectIntent        *SideEffectIntent
 }
 
 type Session struct {
@@ -215,6 +217,8 @@ type Session struct {
 	interrupted             bool
 	lastTurnEndReason       TurnEndReason
 	lastTurnCancelReason    string
+	activeWorkspaceRoot     string
+	sideEffectIntent        *SideEffectIntent
 	durableSink             DurableSink
 	lastDurableError        string
 	activeTurn              *ActiveTurn
@@ -244,6 +248,13 @@ func NewSessionFromItems(items []protocol.Item) (*Session, error) {
 	s.pendingInput = append([]string(nil), replay.PendingInput...)
 	s.compactionSummary = replay.CompactionSummary
 	s.interrupted = replay.Interrupted
+	if replay.SideEffectIntent != nil {
+		intent := sideEffectIntentFromProtocol(*replay.SideEffectIntent)
+		s.sideEffectIntent = copySideEffectIntent(&intent)
+		if strings.TrimSpace(intent.WorkspaceRoot) != "" {
+			s.activeWorkspaceRoot = strings.TrimSpace(intent.WorkspaceRoot)
+		}
+	}
 	if len(s.recentInputs) > 0 {
 		s.initialInput = strings.TrimSpace(s.recentInputs[0])
 		s.lastInput = strings.TrimSpace(s.recentInputs[len(s.recentInputs)-1])
@@ -964,7 +975,85 @@ func (s *Session) Snapshot() SessionSnapshot {
 		LastDurableError:        s.lastDurableError,
 		LastTurnEndReason:       s.lastTurnEndReason,
 		LastTurnCancelReason:    s.lastTurnCancelReason,
+		ActiveWorkspaceRoot:     s.activeWorkspaceRoot,
+		SideEffectIntent:        copySideEffectIntent(s.sideEffectIntent),
 	}
+}
+
+func (s *Session) SetActiveWorkspaceRoot(root string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.activeWorkspaceRoot = strings.TrimSpace(root)
+}
+
+func (s *Session) SetSideEffectIntent(intent SideEffectIntent) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	copy := copySideEffectIntent(&intent)
+	if copy.WorkspaceRoot == "" {
+		copy.WorkspaceRoot = strings.TrimSpace(s.activeWorkspaceRoot)
+	}
+	if strings.TrimSpace(copy.WorkspaceRoot) != "" {
+		s.activeWorkspaceRoot = strings.TrimSpace(copy.WorkspaceRoot)
+		copy.WorkspaceRoot = s.activeWorkspaceRoot
+	}
+	s.sideEffectIntent = copy
+	protocolIntent := sideEffectIntentToProtocol(*copy)
+	item := s.appendItemLocked(protocol.Item{Kind: protocol.ItemSideEffectIntent, SideEffectIntent: &protocolIntent})
+	sink := s.durableSink
+	s.mu.Unlock()
+	_ = s.persistDurableItem(item, sink)
+}
+
+func (s *Session) UpdateSideEffectIntent(update func(*SideEffectIntent)) {
+	if s == nil || update == nil {
+		return
+	}
+	s.mu.Lock()
+	next := copySideEffectIntent(s.sideEffectIntent)
+	if next == nil {
+		next = &SideEffectIntent{}
+	}
+	if next.WorkspaceRoot == "" {
+		next.WorkspaceRoot = strings.TrimSpace(s.activeWorkspaceRoot)
+	}
+	s.mu.Unlock()
+
+	update(next)
+
+	s.mu.Lock()
+	stored := copySideEffectIntent(next)
+	if stored.WorkspaceRoot == "" {
+		stored.WorkspaceRoot = strings.TrimSpace(s.activeWorkspaceRoot)
+	}
+	if strings.TrimSpace(stored.WorkspaceRoot) != "" {
+		s.activeWorkspaceRoot = strings.TrimSpace(stored.WorkspaceRoot)
+		stored.WorkspaceRoot = s.activeWorkspaceRoot
+	}
+	s.sideEffectIntent = stored
+	protocolIntent := sideEffectIntentToProtocol(*stored)
+	item := s.appendItemLocked(protocol.Item{Kind: protocol.ItemSideEffectIntent, SideEffectIntent: &protocolIntent})
+	sink := s.durableSink
+	s.mu.Unlock()
+	_ = s.persistDurableItem(item, sink)
+}
+
+func (s *Session) ClearSideEffectIntent() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	protocolIntent := protocol.SideEffectIntentItem{Reason: "cleared"}
+	item := s.appendItemLocked(protocol.Item{Kind: protocol.ItemSideEffectIntent, SideEffectIntent: &protocolIntent})
+	s.sideEffectIntent = nil
+	sink := s.durableSink
+	s.mu.Unlock()
+	_ = s.persistDurableItem(item, sink)
 }
 
 func (s *Session) Clear() {
@@ -997,6 +1086,8 @@ func (s *Session) Clear() {
 	s.lastDurableError = ""
 	s.lastTurnEndReason = ""
 	s.lastTurnCancelReason = ""
+	s.activeWorkspaceRoot = ""
+	s.sideEffectIntent = nil
 	s.activeTurn = nil
 }
 

@@ -40,6 +40,34 @@ func TestApplyPatchAppliesUnifiedDiff(t *testing.T) {
 	}
 }
 
+func TestApplyPatchUsesActiveWorkspaceProviderForExternalNewRepo(t *testing.T) {
+	base := t.TempDir()
+	workspace := filepath.Join(t.TempDir(), "arkanoid")
+	tool := NewApplyPatchWithWorkDirProvider(base, func() string { return workspace }, func(a Action) (bool, error) { return true, nil })
+
+	result, err := tool.Execute(context.Background(), map[string]any{
+		"patch": `diff --git a/index.html b/index.html
+new file mode 100644
+--- /dev/null
++++ b/index.html
+@@ -0,0 +1 @@
++game`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "applied patch") {
+		t.Fatalf("result = %q", result)
+	}
+	data, err := os.ReadFile(filepath.Join(workspace, "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "game\n" {
+		t.Fatalf("file content = %q", string(data))
+	}
+}
+
 func TestApplyPatchBlocksSecretByDefault(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hello.txt")

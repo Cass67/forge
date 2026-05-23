@@ -447,6 +447,10 @@ func NewExecSessionWrite(manager *ExecSessionManager) Tool {
 }
 
 func NewExecSessionStart(workDir string, manager *ExecSessionManager, approve ApprovalFunc) Tool {
+	return NewExecSessionStartWithWorkDirProvider(workDir, FixedWorkDirProvider(workDir), manager, approve)
+}
+
+func NewExecSessionStartWithWorkDirProvider(fallbackWorkDir string, provider WorkDirProvider, manager *ExecSessionManager, approve ApprovalFunc) Tool {
 	if manager == nil {
 		manager = NewExecSessionManager()
 	}
@@ -478,7 +482,11 @@ func NewExecSessionStart(workDir string, manager *ExecSessionManager, approve Ap
 			}
 			cols := intArg(args["cols"], 80)
 			rows := intArg(args["rows"], 24)
-			sessionID, err := manager.StartPTY(workDir, command, cols, rows)
+			activeWorkDir := currentWorkDir(provider, fallbackWorkDir)
+			if err := os.MkdirAll(activeWorkDir, 0o755); err != nil {
+				return "", err
+			}
+			sessionID, err := manager.StartPTY(activeWorkDir, command, cols, rows)
 			if err != nil {
 				return "", err
 			}

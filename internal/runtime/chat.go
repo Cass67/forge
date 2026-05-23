@@ -232,13 +232,22 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 		CommandOutput:  tools.SecretPolicyMode(cfg.Security.Secrets.CommandOutput),
 		ApprovalDetail: tools.SecretPolicyMode(cfg.Security.Secrets.ApprovalDetail),
 	}
+	workDirProvider := tools.FixedWorkDirProvider(workDir)
+	if session != nil {
+		workDirProvider = func() string {
+			if root := session.Snapshot().ActiveWorkspaceRoot; root != "" {
+				return root
+			}
+			return workDir
+		}
+	}
 	if outputStore := configuredOutputStore(cfg); outputStore != nil {
 		reg.Register(tools.NewReadOutput(outputStore, secretPolicy))
 	}
 	reg.Register(tools.NewReadFile(workDir, secretPolicy))
-	reg.Register(tools.NewWriteFile(workDir, approve, secretPolicy))
-	reg.Register(tools.NewEditFile(workDir, approve, secretPolicy))
-	reg.Register(tools.NewApplyPatch(workDir, approve, secretPolicy))
+	reg.Register(tools.NewWriteFileWithWorkDirProvider(workDir, workDirProvider, approve, secretPolicy))
+	reg.Register(tools.NewEditFileWithWorkDirProvider(workDir, workDirProvider, approve, secretPolicy))
+	reg.Register(tools.NewApplyPatchWithWorkDirProvider(workDir, workDirProvider, approve, secretPolicy))
 	reg.Register(tools.NewArtifactWrite(previewRuntime))
 	reg.Register(tools.NewArtifactRead(previewRuntime))
 	reg.Register(tools.NewPreviewServerEnsure(previewRuntime))
@@ -250,8 +259,8 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 	reg.Register(tools.NewLSPReferences(workDir))
 	reg.Register(tools.NewLSPHover(workDir))
 	reg.Register(tools.NewLSPDocumentSymbols(workDir))
-	reg.Register(tools.NewRunCommandWithSecretPolicy(workDir, cfg.Chat.CommandTimeout, execManager, approve, secretPolicy, fp))
-	reg.Register(tools.NewExecSessionStart(workDir, execManager, approve))
+	reg.Register(tools.NewRunCommandWithWorkDirProvider(workDir, workDirProvider, cfg.Chat.CommandTimeout, execManager, approve, secretPolicy, fp))
+	reg.Register(tools.NewExecSessionStartWithWorkDirProvider(workDir, workDirProvider, execManager, approve))
 	reg.Register(tools.NewExecSessionStatus(execManager))
 	reg.Register(tools.NewExecSessionWrite(execManager))
 	reg.Register(tools.NewExecSessionResize(execManager))
@@ -260,11 +269,11 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 	reg.Register(tools.NewCommandWriteStdin(execManager))
 	reg.Register(tools.NewThink())
 	reg.Register(tools.NewGlob(workDir, cfg.Chat.IgnoreDirs))
-	reg.Register(tools.NewGitStatus(workDir))
-	reg.Register(tools.NewGitDiff(workDir))
-	reg.Register(tools.NewGitLog(workDir))
-	reg.Register(tools.NewGitBranchState(workDir))
-	reg.Register(tools.NewGitMergeStatus(workDir))
+	reg.Register(tools.NewGitStatusWithWorkDirProvider(workDir, workDirProvider))
+	reg.Register(tools.NewGitDiffWithWorkDirProvider(workDir, workDirProvider))
+	reg.Register(tools.NewGitLogWithWorkDirProvider(workDir, workDirProvider))
+	reg.Register(tools.NewGitBranchStateWithWorkDirProvider(workDir, workDirProvider))
+	reg.Register(tools.NewGitMergeStatusWithWorkDirProvider(workDir, workDirProvider))
 	reg.Register(tools.NewViewImage(workDir))
 	reg.Register(tools.NewToolHelp(reg))
 	reg.Register(reacttools.NewUpdatePlan(session))
@@ -279,9 +288,12 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 			reg.Register(tools.NewMCPDynamicTool(def, mcpManager))
 		}
 	}
-	gitCommit := tools.NewGitCommit(workDir, approve)
+	gitCommit := tools.NewGitCommitScopedWithWorkDirProvider(workDir, workDirProvider, approve, gitScopeProviderForSession(session))
 	gitCommit.PromptVisibility = tools.PromptHidden
 	reg.Register(gitCommit)
+	gitPush := tools.NewGitPushScopedWithWorkDirProvider(workDir, workDirProvider, approve, gitScopeProviderForSession(session))
+	gitPush.PromptVisibility = tools.PromptHidden
+	reg.Register(gitPush)
 	webFetch := tools.NewWebFetch()
 	webFetch.PromptVisibility = tools.PromptHidden
 	reg.Register(webFetch)
@@ -289,6 +301,49 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 	webSearch.PromptVisibility = tools.PromptHidden
 	reg.Register(webSearch)
 	return previewRuntime, mcpManager
+}
+
+func gitScopeProviderForSession(session *reactruntime.Session) tools.GitScopeProvider {
+	if session == nil {
+		return nil
+	}
+	return func() tools.GitScope {
+		intent := session.Snapshot().SideEffectIntent
+		if intent == nil {
+			return tools.GitScope{}
+		}
+		return tools.GitScope{
+			AllowedPaths:  intent.AllowedPaths,
+			TargetBranch:  intent.TargetBranch,
+			Remote:        intent.Remote,
+			RequireBranch: strings.TrimSpace(intent.TargetBranch) != "",
+		}
+	}
+}
+
+func scopedIntentBypassesSafeBranch(session *reactruntime.Session, action tools.Action) bool {
+	if session == nil {
+		return false
+	}
+	intent := session.Snapshot().SideEffectIntent
+	if intent == nil || len(intent.AllowedPaths) == 0 {
+		return false
+	}
+	if strings.TrimSpace(intent.TargetBranch) == "" || strings.TrimSpace(intent.Remote) == "" {
+		return false
+	}
+	if !slices.Contains(intent.RequiredActions, reactruntime.SideEffectActionCommit) || !slices.Contains(intent.RequiredActions, reactruntime.SideEffectActionPush) {
+		return false
+	}
+	switch strings.TrimSpace(action.Tool) {
+	case "git_commit", "git_push":
+		return true
+	case "write_file", "edit_file", "artifact_write":
+		path := filepath.ToSlash(filepath.Clean(strings.TrimSpace(action.Path)))
+		return slices.Contains(intent.AllowedPaths, path) || slices.Contains(intent.ArtifactPaths, path)
+	default:
+		return false
+	}
 }
 
 func configureDurableSessionSink(cfg *config.Config, session *reactruntime.Session, workDir string) {
@@ -369,6 +424,9 @@ func RunChatLive(setup *ChatSetup) {
 	var approve tools.ApprovalFunc
 	gate := reactruntime.NewApprovalGate(setup.WorkDir, loadChatApprovalConfig(setup), nil, func(text string) {
 		evRenderer.Info(text)
+	})
+	gate.SetSafeBranchBypass(func(action tools.Action) bool {
+		return scopedIntentBypassesSafeBranch(session, action)
 	})
 	gate.SetGuardianReviewer(func(transcript string, action tools.Action) tools.GuardianReview {
 		return tools.ReviewApprovalAction(transcript, action)
@@ -702,6 +760,9 @@ func RunChatConsole(setup *ChatSetup) {
 	gate := reactruntime.NewApprovalGate(setup.WorkDir, loadChatApprovalConfig(setup), approve, func(text string) {
 		_, _ = fmt.Fprintln(os.Stdout, text)
 	})
+	gate.SetSafeBranchBypass(func(action tools.Action) bool {
+		return scopedIntentBypassesSafeBranch(session, action)
+	})
 	gate.SetGuardianReviewer(func(transcript string, action tools.Action) tools.GuardianReview {
 		return tools.ReviewApprovalAction(transcript, action)
 	})
@@ -859,6 +920,10 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 	if reg == nil || setup == nil || baseReg == nil {
 		return
 	}
+	var parentSession *reactruntime.Session
+	if len(sessions) > 0 {
+		parentSession = sessions[0]
+	}
 	var pool *reactruntime.AgentPool
 	pool = reactruntime.NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
 		driver := setup.Driver
@@ -898,13 +963,18 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 			}
 		}
 		childWorkDir := reactruntime.WorkDirFromContext(ctx)
-		var childTools *tools.Registry
+		childBaseReg := baseReg
 		if childWorkDir != "" && childWorkDir != setup.WorkDir {
-			childTools = newChildAgentRegistry(childWorkDir, allowedTools, baseReg, setup, approve)
+			childBaseReg = newChildAgentRegistry(childWorkDir, nil, baseReg, setup, approve)
 		}
-		if childTools == nil {
-			childTools = baseReg.Filter(allowedTools)
+		if len(allowedTools) > 0 {
+			childBaseReg = childBaseReg.Filter(allowedTools)
 		}
+		var snap reactruntime.SessionSnapshot
+		if parentSession != nil {
+			snap = parentSession.Snapshot()
+		}
+		childTools := childRegistryForRole(childBaseReg, role, snap)
 		toolAccessPrompt := childAgentToolAccessPrompt(childTools)
 		workDirLabel := setup.WorkDir
 		if childWorkDir != "" {
@@ -949,8 +1019,8 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 		childRenderer.Info(fmt.Sprintf("[%s] done", role))
 		return childRunner.LastResponse(), nil
 	})
-	if len(sessions) > 0 {
-		pool.AttachSession(sessions[0])
+	if parentSession != nil {
+		pool.AttachSession(parentSession)
 	}
 	if setup.debugRec != nil || renderer != nil {
 		pool.SetLifecycleObserver(func(state reactruntime.AgentTaskState) {
@@ -995,10 +1065,177 @@ func stripMutationTools(names []string) []string {
 	out := make([]string, 0, len(names))
 	for _, name := range names {
 		switch strings.TrimSpace(name) {
-		case "write_file", "edit_file", "apply_patch", "artifact_write", "run_command", "exec_session_start", "exec_session_write", "command_write_stdin", "git_commit":
+		case "write_file", "edit_file", "apply_patch", "artifact_write", "run_command", "exec_session_start", "exec_session_write", "command_write_stdin", "git_commit", "git_push":
 			continue
 		default:
 			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func childRegistryForRole(base *tools.Registry, role string, snap reactruntime.SessionSnapshot) *tools.Registry {
+	if base == nil {
+		return tools.NewRegistry()
+	}
+	allowed := childReadOnlyToolNames()
+	if isChildImplementerRole(role) && snap.SideEffectIntent != nil && len(snap.SideEffectIntent.AllowedPaths) > 0 {
+		allowed = append(append([]string(nil), allowed...), childWriteToolNames()...)
+	}
+	childReg := base.Filter(allowed)
+	if isChildImplementerRole(role) && snap.SideEffectIntent != nil && len(snap.SideEffectIntent.AllowedPaths) > 0 {
+		childReg = scopeChildMutationRegistry(childReg, snap)
+	}
+	return childReg
+}
+
+func childReadOnlyToolNames() []string {
+	return []string{
+		"read_file", "read_output", "artifact_read", "list_dir", "search", "code_search", "glob", "view_image",
+		"lsp_definition", "lsp_references", "lsp_hover", "lsp_document_symbols",
+		"git_status", "git_diff", "git_log", "git_branch_state", "git_merge_status",
+		"tool_help", "think",
+	}
+}
+
+func childWriteToolNames() []string {
+	return []string{
+		"write_file", "edit_file", "apply_patch", "artifact_write",
+	}
+}
+
+func isChildImplementerRole(role string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(reactruntime.MapSpawnRole(role)))
+	normalized = strings.NewReplacer("-", " ", "_", " ").Replace(normalized)
+	fields := strings.Fields(normalized)
+	for _, field := range fields {
+		switch field {
+		case "research", "audit", "auditor", "explore", "explorer", "review", "reviewer":
+			return false
+		}
+	}
+	for _, field := range fields {
+		switch field {
+		case "worker", "implementer", "implementation", "developer", "coder":
+			return true
+		}
+	}
+	return false
+}
+
+func scopeChildMutationRegistry(reg *tools.Registry, snap reactruntime.SessionSnapshot) *tools.Registry {
+	if reg == nil {
+		return reg
+	}
+	scoped := tools.NewRegistry()
+	for _, tool := range reg.All() {
+		scoped.Register(scopeChildMutationTool(tool, snap))
+	}
+	return scoped
+}
+
+func scopeChildMutationTool(tool tools.Tool, snap reactruntime.SessionSnapshot) tools.Tool {
+	origExecute := tool.Execute
+	if origExecute == nil {
+		return tool
+	}
+	switch tool.Name {
+	case "write_file", "edit_file", "artifact_write":
+		tool.Execute = func(ctx context.Context, args map[string]any) (string, error) {
+			path, _ := args["path"].(string)
+			if !childMutationPathAllowed(path, snap) {
+				return fmt.Sprintf("blocked: child write outside delegated side-effect paths: %s", strings.TrimSpace(path)), nil
+			}
+			return origExecute(ctx, args)
+		}
+	case "apply_patch":
+		tool.Execute = func(ctx context.Context, args map[string]any) (string, error) {
+			patch, _ := args["patch"].(string)
+			paths := childPatchMutationPaths(patch)
+			if len(paths) == 0 {
+				return "blocked: child patch has no scoped file paths", nil
+			}
+			for _, path := range paths {
+				if !childMutationPathAllowed(path, snap) {
+					return fmt.Sprintf("blocked: child write outside delegated side-effect paths: %s", strings.TrimSpace(path)), nil
+				}
+			}
+			return origExecute(ctx, args)
+		}
+	}
+	return tool
+}
+
+func childMutationPathAllowed(path string, snap reactruntime.SessionSnapshot) bool {
+	intent := snap.SideEffectIntent
+	if intent == nil {
+		return false
+	}
+	target := childNormalizeMutationPath(path, snap)
+	if target == "" {
+		return false
+	}
+	for _, allowed := range append(append([]string(nil), intent.AllowedPaths...), intent.ArtifactPaths...) {
+		if childNormalizeMutationPath(allowed, snap) == target {
+			return true
+		}
+	}
+	return false
+}
+
+func childNormalizeMutationPath(path string, snap reactruntime.SessionSnapshot) string {
+	path = strings.Trim(path, " `\t\r\n\"'")
+	if path == "" || path == "/dev/null" {
+		return ""
+	}
+	if filepath.IsAbs(path) {
+		for _, root := range []string{snap.ActiveWorkspaceRoot, sideEffectWorkspaceRoot(snap.SideEffectIntent)} {
+			root = strings.TrimSpace(root)
+			if root == "" {
+				continue
+			}
+			rel, err := filepath.Rel(root, path)
+			if err == nil && rel != "." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".." {
+				return filepath.ToSlash(filepath.Clean(rel))
+			}
+		}
+		return ""
+	}
+	cleaned := filepath.Clean(filepath.FromSlash(path))
+	if cleaned == "." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) || cleaned == ".." {
+		return ""
+	}
+	return filepath.ToSlash(cleaned)
+}
+
+func sideEffectWorkspaceRoot(intent *reactruntime.SideEffectIntent) string {
+	if intent == nil {
+		return ""
+	}
+	return intent.WorkspaceRoot
+}
+
+func childPatchMutationPaths(patch string) []string {
+	var paths []string
+	for _, line := range strings.Split(patch, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "diff --git "):
+			parts := strings.Fields(line)
+			if len(parts) >= 4 {
+				paths = append(paths, strings.TrimPrefix(parts[2], "a/"), strings.TrimPrefix(parts[3], "b/"))
+			}
+		case strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "+++ "):
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				paths = append(paths, strings.TrimPrefix(strings.TrimPrefix(parts[1], "a/"), "b/"))
+			}
+		}
+	}
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if path != "" && path != "/dev/null" && !slices.Contains(out, path) {
+			out = append(out, path)
 		}
 	}
 	return out
@@ -1019,6 +1256,7 @@ func childAgentToolAccessPrompt(reg *tools.Registry) string {
 		"You have repository access through these native tools: " + strings.Join(names, ", ") + ".",
 		"Use read_file/list_dir/search/code_search/glob for repository inspection and git_status/git_diff/git_log/git_branch_state for Git state.",
 		"Do not tell the user to run git commands because you lack access; use the available native tools or report the exact tool/path failure.",
+		"Child agents must not commit or push. Return findings and proposed artifact content. Parent/orchestrator owns write, commit, push, and verification gates.",
 		reactruntime.AgentHandoffInstructions(),
 	}, "\n")
 }

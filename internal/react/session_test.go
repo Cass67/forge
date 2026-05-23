@@ -3,6 +3,7 @@ package react
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +14,247 @@ import (
 	"forge/internal/protocol"
 	"forge/internal/sessionstore"
 )
+
+func TestSessionStoresActiveWorkspaceRootInSnapshot(t *testing.T) {
+	s := NewSession()
+	s.SetActiveWorkspaceRoot("/Users/cass/git/arkanoid")
+
+	if got := s.Snapshot().ActiveWorkspaceRoot; got != "/Users/cass/git/arkanoid" {
+		t.Fatalf("ActiveWorkspaceRoot = %q, want /Users/cass/git/arkanoid", got)
+	}
+}
+
+func TestSessionStoresSideEffectIntentInSnapshot(t *testing.T) {
+	s := NewSession()
+	intent := SideEffectIntent{
+		ID:            "intent-1",
+		ArtifactPaths: []string{"FORGE_VS_CODEX.md"},
+		AllowedPaths:  []string{"FORGE_VS_CODEX.md"},
+		RequiredActions: []SideEffectAction{
+			SideEffectActionWrite,
+			SideEffectActionCommit,
+			SideEffectActionPush,
+		},
+		TargetBranch: "main",
+		Remote:       "origin",
+	}
+	s.SetSideEffectIntent(intent)
+
+	snap := s.Snapshot()
+	if snap.SideEffectIntent == nil {
+		t.Fatal("missing side-effect intent")
+	}
+	if got := snap.SideEffectIntent.AllowedPaths; len(got) != 1 || got[0] != "FORGE_VS_CODEX.md" {
+		t.Fatalf("AllowedPaths = %#v", got)
+	}
+}
+
+func TestSessionClearsSideEffectIntent(t *testing.T) {
+	s := NewSession()
+	s.SetSideEffectIntent(SideEffectIntent{ID: "intent-1", AllowedPaths: []string{"a.md"}})
+	s.ClearSideEffectIntent()
+	if got := s.Snapshot().SideEffectIntent; got != nil {
+		t.Fatalf("SideEffectIntent = %#v, want nil", got)
+	}
+}
+
+func TestSessionPersistsSideEffectIntent(t *testing.T) {
+	sink := &fakeDurableSink{}
+	s := NewSession()
+	s.SetDurableSink(sink)
+
+	s.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		ArtifactPaths:   []string{"FORGE_VS_CODEX.md"},
+		AllowedPaths:    []string{"FORGE_VS_CODEX.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite, SideEffectActionCommit, SideEffectActionPush},
+		TargetBranch:    "main",
+		Remote:          "origin",
+		Gates:           []SideEffectGate{{Name: "tests", Status: SideEffectGatePending, Evidence: "pending"}},
+	})
+
+	items := sink.Items()
+	assertPersistedItemKind(t, items, protocol.ItemSideEffectIntent)
+	got := items[len(items)-1].SideEffectIntent
+	if got == nil || got.ID != "intent-1" || len(got.RequiredActions) != 3 || got.RequiredActions[2] != "push" || len(got.Gates) != 1 || got.Gates[0].Status != "pending" {
+		t.Fatalf("SideEffectIntent = %#v", got)
+	}
+}
+
+func TestSessionPersistsSideEffectIntentClear(t *testing.T) {
+	sink := &fakeDurableSink{}
+	s := NewSession()
+	s.SetDurableSink(sink)
+	s.SetSideEffectIntent(SideEffectIntent{ID: "intent-1", AllowedPaths: []string{"a.md"}})
+
+	s.ClearSideEffectIntent()
+
+	items := sink.Items()
+	if len(items) != 2 || items[len(items)-1].Kind != protocol.ItemSideEffectIntent {
+		t.Fatalf("persisted items = %#v, want clear side-effect intent item", items)
+	}
+	got := items[len(items)-1].SideEffectIntent
+	if got == nil || got.ID != "" || got.Reason != "cleared" {
+		t.Fatalf("SideEffectIntent clear item = %#v", got)
+	}
+	if snap := s.Snapshot(); snap.SideEffectIntent != nil {
+		t.Fatalf("SideEffectIntent = %#v, want nil", snap.SideEffectIntent)
+	}
+}
+
+func TestNewSessionFromItemsRestoresSideEffectIntent(t *testing.T) {
+	s, err := NewSessionFromItems([]protocol.Item{{
+		Version:  protocol.CurrentItemVersion,
+		ID:       "item-1",
+		ThreadID: "thread-1",
+		Seq:      1,
+		Kind:     protocol.ItemSideEffectIntent,
+		SideEffectIntent: &protocol.SideEffectIntentItem{
+			ID:              "intent-1",
+			AllowedPaths:    []string{"FORGE_VS_CODEX.md"},
+			ArtifactPaths:   []string{"FORGE_VS_CODEX.md"},
+			RequiredActions: []string{"write", "commit", "push"},
+			TargetBranch:    "main",
+			Remote:          "origin",
+			Gates:           []protocol.SideEffectGateItem{{Name: "tests", Status: "passed", Evidence: "go test"}},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := s.Snapshot().SideEffectIntent
+	if got == nil || got.AllowedPaths[0] != "FORGE_VS_CODEX.md" || got.RequiredActions[2] != SideEffectActionPush || got.Gates[0].Status != SideEffectGatePassed {
+		t.Fatalf("SideEffectIntent = %#v", got)
+	}
+}
+
+func TestSessionSideEffectIntentSnapshotDeepCopy(t *testing.T) {
+	s := NewSession()
+	s.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		ArtifactPaths:   []string{"a.md"},
+		AllowedPaths:    []string{"b.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite},
+		Gates:           []SideEffectGate{{Name: "tests", Status: SideEffectGatePending}},
+	})
+
+	snap := s.Snapshot()
+	snap.SideEffectIntent.ArtifactPaths[0] = "changed.md"
+	snap.SideEffectIntent.AllowedPaths[0] = "changed.md"
+	snap.SideEffectIntent.RequiredActions[0] = SideEffectActionPush
+	snap.SideEffectIntent.Gates[0].Name = "changed"
+
+	got := s.Snapshot().SideEffectIntent
+	if got.ArtifactPaths[0] != "a.md" || got.AllowedPaths[0] != "b.md" || got.RequiredActions[0] != SideEffectActionWrite || got.Gates[0].Name != "tests" {
+		t.Fatalf("SideEffectIntent was mutated through snapshot: %#v", got)
+	}
+}
+
+func TestSessionUpdateSideEffectIntentDoesNotExposeInternalPointer(t *testing.T) {
+	s := NewSession()
+	var leaked *SideEffectIntent
+
+	s.UpdateSideEffectIntent(func(intent *SideEffectIntent) {
+		intent.ID = "intent-1"
+		intent.AllowedPaths = []string{"a.md"}
+		leaked = intent
+	})
+	leaked.ID = "changed"
+	leaked.AllowedPaths[0] = "changed.md"
+
+	got := s.Snapshot().SideEffectIntent
+	if got.ID != "intent-1" || got.AllowedPaths[0] != "a.md" {
+		t.Fatalf("SideEffectIntent was mutated through leaked update pointer: %#v", got)
+	}
+}
+
+func TestSessionUpdateSideEffectIntentPersistsDurableItem(t *testing.T) {
+	sink := &fakeDurableSink{}
+	s := NewSession()
+	s.SetDurableSink(sink)
+
+	s.UpdateSideEffectIntent(func(intent *SideEffectIntent) {
+		intent.ID = "intent-1"
+		intent.AllowedPaths = []string{"a.md"}
+	})
+
+	items := sink.Items()
+	if len(items) != 1 || items[0].Kind != protocol.ItemSideEffectIntent || items[0].SideEffectIntent == nil {
+		t.Fatalf("durable items = %#v, want side-effect intent item", items)
+	}
+	if items[0].SideEffectIntent.ID != "intent-1" || items[0].SideEffectIntent.AllowedPaths[0] != "a.md" {
+		t.Fatalf("SideEffectIntent item = %#v", items[0].SideEffectIntent)
+	}
+}
+
+func TestSessionUpdateSideEffectIntentCallbackCanSnapshot(t *testing.T) {
+	s := NewSession()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.UpdateSideEffectIntent(func(intent *SideEffectIntent) {
+			_ = s.Snapshot()
+			intent.ID = "intent-1"
+		})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("UpdateSideEffectIntent callback deadlocked when calling Snapshot")
+	}
+}
+
+func TestNewSessionFromItemsRestoresSideEffectWorkspaceRoot(t *testing.T) {
+	s := NewSession()
+	s.SetActiveWorkspaceRoot("/Users/cass/git/arkanoid")
+	s.SetSideEffectIntent(SideEffectIntent{ID: "intent-1", AllowedPaths: []string{"index.html"}})
+
+	items := s.Snapshot().Items
+	if len(items) == 0 || items[len(items)-1].SideEffectIntent == nil || items[len(items)-1].SideEffectIntent.WorkspaceRoot != "/Users/cass/git/arkanoid" {
+		t.Fatalf("last side-effect intent item = %#v, want workspace root", items[len(items)-1].SideEffectIntent)
+	}
+	restored, err := NewSessionFromItems(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := restored.Snapshot().ActiveWorkspaceRoot; got != "/Users/cass/git/arkanoid" {
+		t.Fatalf("ActiveWorkspaceRoot = %q, want /Users/cass/git/arkanoid", got)
+	}
+}
+
+func TestDeriveActiveWorkspaceRootFromNewRepoRequest(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	for _, input := range []string{
+		"create me a new repo in ~/git/Arkanoid and build a game",
+		"create me a new repo in ~/git/Arkanoid and put the game in it",
+	} {
+		t.Run(input, func(t *testing.T) {
+			got := deriveActiveWorkspaceRoot(input)
+			want := filepath.Join(home, "git", "Arkanoid")
+			if got != want {
+				t.Fatalf("deriveActiveWorkspaceRoot = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestDeriveActiveWorkspaceRootRejectsAmbiguousRelativePath(t *testing.T) {
+	for _, input := range []string{
+		"create me a new repo there and build a game",
+		"create me a new repo in . and build a game",
+		"create me a new repo in ../arkanoid and build a game",
+	} {
+		t.Run(input, func(t *testing.T) {
+			if got := deriveActiveWorkspaceRoot(input); got != "" {
+				t.Fatalf("deriveActiveWorkspaceRoot = %q, want empty", got)
+			}
+		})
+	}
+}
 
 type fakeDurableSink struct {
 	mu    sync.Mutex

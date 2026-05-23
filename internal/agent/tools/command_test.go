@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -378,6 +379,49 @@ func TestRunCommandRejectsInteractiveCommandsInFavorOfExecSession(t *testing.T) 
 	}
 	if !strings.Contains(result, "exec_session_start") {
 		t.Fatalf("expected exec_session_start guidance, got: %s", result)
+	}
+}
+
+func TestRunCommandBackgroundUsesActiveWorkspaceProvider(t *testing.T) {
+	base := t.TempDir()
+	workspace := filepath.Join(t.TempDir(), "arkanoid")
+	manager := NewExecSessionManager()
+	defer manager.Close()
+	tool := NewRunCommandWithWorkDirProvider(base, func() string { return workspace }, 60, manager, func(a Action) (bool, error) { return true, nil }, DefaultSecretPolicy())
+
+	result, err := tool.Execute(context.Background(), map[string]any{"command": "pwd &"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var started struct {
+		SessionID int `json:"session_id"`
+	}
+	if err := json.Unmarshal([]byte(result), &started); err != nil {
+		t.Fatalf("start payload = %q: %v", result, err)
+	}
+	if started.SessionID == 0 {
+		t.Fatalf("start payload = %q, missing session id", result)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		statusResult, err := manager.Status(started.SessionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var status struct {
+			Output string `json:"output"`
+		}
+		if err := json.Unmarshal([]byte(statusResult), &status); err != nil {
+			t.Fatalf("status payload = %q: %v", statusResult, err)
+		}
+		if strings.Contains(status.Output, workspace) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for background pwd in workspace, last status: %s", statusResult)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
