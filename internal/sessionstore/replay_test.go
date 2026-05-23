@@ -81,6 +81,121 @@ func TestReplayClearsSideEffectIntent(t *testing.T) {
 	}
 }
 
+func TestReplayRestoresLatestActiveTurnContract(t *testing.T) {
+	items := []protocol.Item{
+		{
+			Version:  protocol.CurrentItemVersion,
+			ThreadID: "thread-1",
+			Seq:      1,
+			Kind:     protocol.ItemTurnContract,
+			TurnContract: &protocol.TurnContractItem{
+				ID:     "contract-1",
+				Intent: "implement",
+				Status: "active",
+			},
+		},
+		{
+			Version:  protocol.CurrentItemVersion,
+			ThreadID: "thread-1",
+			Seq:      2,
+			Kind:     protocol.ItemTurnContract,
+			TurnContract: &protocol.TurnContractItem{
+				ID:     "contract-2",
+				Intent: "verify",
+				RequiredVerification: []protocol.VerificationRequirementItem{{
+					Command: "go test ./internal/react",
+				}},
+				Status: "active",
+			},
+		},
+	}
+	replay, err := ReplayItems(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay.TurnContract == nil || replay.TurnContract.ID != "contract-2" || replay.TurnContract.RequiredVerification[0].Command != "go test ./internal/react" {
+		t.Fatalf("TurnContract = %#v", replay.TurnContract)
+	}
+}
+
+func TestReplayClearsTurnContractWithLegacyEmptyIDEmptyStatus(t *testing.T) {
+	items := []protocol.Item{
+		{
+			Version:      protocol.CurrentItemVersion,
+			ThreadID:     "thread-1",
+			Seq:          1,
+			Kind:         protocol.ItemTurnContract,
+			TurnContract: &protocol.TurnContractItem{ID: "contract-1", Status: "active"},
+		},
+		{
+			Version:      protocol.CurrentItemVersion,
+			ThreadID:     "thread-1",
+			Seq:          2,
+			Kind:         protocol.ItemTurnContract,
+			TurnContract: &protocol.TurnContractItem{Reason: "cleared"},
+		},
+	}
+	replay, err := ReplayItems(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay.TurnContract != nil {
+		t.Fatalf("TurnContract = %#v, want nil", replay.TurnContract)
+	}
+}
+
+func TestReplayEmptyIDNonClearedTurnContractDoesNotClearActiveContract(t *testing.T) {
+	items := []protocol.Item{
+		{
+			Version:      protocol.CurrentItemVersion,
+			ThreadID:     "thread-1",
+			Seq:          1,
+			Kind:         protocol.ItemTurnContract,
+			TurnContract: &protocol.TurnContractItem{ID: "contract-1", Status: "active"},
+		},
+		{
+			Version:      protocol.CurrentItemVersion,
+			ThreadID:     "thread-1",
+			Seq:          2,
+			Kind:         protocol.ItemTurnContract,
+			TurnContract: &protocol.TurnContractItem{Status: "active"},
+		},
+	}
+	replay, err := ReplayItems(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay.TurnContract == nil || replay.TurnContract.ID != "contract-1" {
+		t.Fatalf("TurnContract = %#v, want prior active contract", replay.TurnContract)
+	}
+}
+
+func TestReplayClearsTurnContractWithExplicitClearedStatus(t *testing.T) {
+	items := []protocol.Item{
+		{
+			Version:      protocol.CurrentItemVersion,
+			ThreadID:     "thread-1",
+			Seq:          1,
+			Kind:         protocol.ItemTurnContract,
+			TurnContract: &protocol.TurnContractItem{ID: "contract-1", Status: "active"},
+		},
+		{
+			Version:      protocol.CurrentItemVersion,
+			ThreadID:     "thread-1",
+			Seq:          2,
+			Kind:         protocol.ItemTurnContract,
+			TurnContract: &protocol.TurnContractItem{ID: "contract-1", Status: "cleared", Reason: "user changed task"},
+		},
+	}
+	replay, err := ReplayItems(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay.TurnContract != nil {
+		t.Fatalf("TurnContract = %#v, want nil", replay.TurnContract)
+	}
+}
+
 func TestReplaySkillContextDoesNotCreateTurn(t *testing.T) {
 	replay, err := ReplayItems([]protocol.Item{{
 		Version:      protocol.CurrentItemVersion,

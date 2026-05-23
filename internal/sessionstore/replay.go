@@ -18,6 +18,7 @@ type Replay struct {
 	CompactionSummary string
 	Interrupted       bool
 	SideEffectIntent  *protocol.SideEffectIntentItem
+	TurnContract      *protocol.TurnContractItem
 }
 
 type ReplayTurn struct {
@@ -46,6 +47,15 @@ func ReplayItems(items []protocol.Item) (Replay, error) {
 				replay.SideEffectIntent = nil
 			} else {
 				replay.SideEffectIntent = copyProtocolSideEffectIntent(item.SideEffectIntent)
+			}
+			continue
+		case protocol.ItemTurnContract:
+			if item.TurnContract == nil || strings.EqualFold(strings.TrimSpace(item.TurnContract.Status), "cleared") || (item.TurnContract.ID == "" && strings.TrimSpace(item.TurnContract.Status) == "") {
+				replay.TurnContract = nil
+			} else if item.TurnContract.ID == "" {
+				continue
+			} else {
+				replay.TurnContract = copyProtocolTurnContract(item.TurnContract)
 			}
 			continue
 		case protocol.ItemCompaction:
@@ -165,6 +175,19 @@ func copyProtocolSideEffectIntent(intent *protocol.SideEffectIntentItem) *protoc
 	copy.AllowedPaths = append([]string(nil), intent.AllowedPaths...)
 	copy.RequiredActions = append([]string(nil), intent.RequiredActions...)
 	copy.Gates = append([]protocol.SideEffectGateItem(nil), intent.Gates...)
+	return &copy
+}
+
+func copyProtocolTurnContract(contract *protocol.TurnContractItem) *protocol.TurnContractItem {
+	if contract == nil {
+		return nil
+	}
+	copy := *contract
+	copy.RequiredActions = append([]protocol.ContractActionItem(nil), contract.RequiredActions...)
+	copy.RequiredArtifacts = append([]protocol.ArtifactRequirementItem(nil), contract.RequiredArtifacts...)
+	copy.RequiredVerification = append([]protocol.VerificationRequirementItem(nil), contract.RequiredVerification...)
+	copy.Evidence = append([]protocol.EvidenceRecordItem(nil), contract.Evidence...)
+	copy.Gates = append([]protocol.ContractGateItem(nil), contract.Gates...)
 	return &copy
 }
 
