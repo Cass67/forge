@@ -53,6 +53,11 @@ func ReplayItems(items []protocol.Item) (Replay, error) {
 				replay.CompactionSummary = strings.TrimSpace(item.Compaction.Summary)
 			}
 			continue
+		case protocol.ItemSkillContext:
+			if item.SkillContext != nil {
+				replay.History = append(replay.History, llm.Message{Role: llm.RoleSystem, Content: skillContextContent(item.SkillContext.Name, item.SkillContext.Body)})
+			}
+			continue
 		case protocol.ItemSessionMeta, protocol.ItemStats, protocol.ItemRetry, protocol.ItemCheckpoint, protocol.ItemAgentHandoff:
 			continue
 		}
@@ -145,6 +150,10 @@ func ReplayItems(items []protocol.Item) (Replay, error) {
 		replay.Turns = append(replay.Turns, *turns[id])
 	}
 	return replay, nil
+}
+
+func skillContextContent(name, body string) string {
+	return fmt.Sprintf("[Skill: %s]\n\n%s", strings.TrimSpace(name), strings.TrimSpace(body))
 }
 
 func copyProtocolSideEffectIntent(intent *protocol.SideEffectIntentItem) *protocol.SideEffectIntentItem {

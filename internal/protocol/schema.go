@@ -12,7 +12,7 @@ func GenerateProtocolSchema() JSONSchema {
 		"properties": JSONSchema{
 			"at":        JSONSchema{"format": "date-time", "type": "string"},
 			"id":        stringSchema(),
-			"kind":      JSONSchema{"enum": []string{string(ItemSessionMeta), string(ItemTurnContext), string(ItemUserMessage), string(ItemAssistantMessage), string(ItemToolCall), string(ItemToolResult), string(ItemRetry), string(ItemFailure), string(ItemStats), string(ItemCompaction), string(ItemCheckpoint), string(ItemAgentHandoff), string(ItemSideEffectIntent), string(ItemTurnComplete)}, "type": "string"},
+			"kind":      JSONSchema{"enum": []string{string(ItemSessionMeta), string(ItemTurnContext), string(ItemUserMessage), string(ItemAssistantMessage), string(ItemToolCall), string(ItemToolResult), string(ItemRetry), string(ItemFailure), string(ItemStats), string(ItemCompaction), string(ItemCheckpoint), string(ItemAgentHandoff), string(ItemSkillContext), string(ItemSideEffectIntent), string(ItemTurnComplete)}, "type": "string"},
 			"seq":       JSONSchema{"type": "integer"},
 			"thread_id": stringSchema(),
 			"turn_id":   stringSchema(),
@@ -25,6 +25,7 @@ func GenerateProtocolSchema() JSONSchema {
 			"message":            objectSchema(map[string]any{"role": stringSchema(), "text": stringSchema()}),
 			"retry":              objectSchema(map[string]any{"attempt": JSONSchema{"type": "integer"}, "reason": stringSchema()}),
 			"session_meta":       objectSchema(map[string]any{"cwd": stringSchema(), "model": stringSchema(), "source": stringSchema()}),
+			"skill_context":      objectSchema(map[string]any{"body": stringSchema(), "name": stringSchema()}),
 			"side_effect_intent": sideEffectIntentSchema(),
 			"stats":              objectSchema(map[string]any{"duration_ms": JSONSchema{"type": "integer"}, "usage": JSONSchema{"type": "object"}}),
 			"tool_call":          objectSchema(map[string]any{"args": JSONSchema{"type": "object"}, "tool_call_id": stringSchema(), "tool_name": stringSchema()}),

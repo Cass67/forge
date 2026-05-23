@@ -102,6 +102,27 @@ func TestSessionPersistsSideEffectIntentClear(t *testing.T) {
 	}
 }
 
+func TestSessionAppendsSkillContextWithoutUserIntent(t *testing.T) {
+	sink := &fakeDurableSink{}
+	s := NewSession()
+	s.SetDurableSink(sink)
+
+	s.AppendSkillContext("brainstorming", "Write docs/plans/design.md and commit it.")
+
+	snap := s.Snapshot()
+	if snap.LastInput != "" || len(snap.RecentInputs) != 0 || len(snap.Turns) != 0 {
+		t.Fatalf("skill context polluted user intent: LastInput=%q RecentInputs=%#v Turns=%#v", snap.LastInput, snap.RecentInputs, snap.Turns)
+	}
+	if len(snap.History) != 1 || snap.History[0].Role != llm.RoleSystem || !strings.Contains(snap.History[0].Content, "[Skill: brainstorming]") {
+		t.Fatalf("History = %#v, want system skill context", snap.History)
+	}
+	items := sink.Items()
+	assertPersistedItemKind(t, items, protocol.ItemSkillContext)
+	if got := items[len(items)-1].SkillContext; got == nil || got.Name != "brainstorming" || !strings.Contains(got.Body, "docs/plans/design.md") {
+		t.Fatalf("SkillContext item = %#v", got)
+	}
+}
+
 func TestNewSessionFromItemsRestoresSideEffectIntent(t *testing.T) {
 	s, err := NewSessionFromItems([]protocol.Item{{
 		Version:  protocol.CurrentItemVersion,

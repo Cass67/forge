@@ -655,6 +655,27 @@ func (s *Session) RecordInput(input string) int {
 	return turn
 }
 
+func (s *Session) AppendSkillContext(name, body string) {
+	if s == nil {
+		return
+	}
+	name = strings.TrimSpace(name)
+	body = strings.TrimSpace(body)
+	if name == "" && body == "" {
+		return
+	}
+	content := fmt.Sprintf("[Skill: %s]\n\n%s", name, body)
+	s.mu.Lock()
+	s.history = append(s.history, llm.Message{Role: llm.RoleSystem, Content: content})
+	item := s.appendItemLocked(protocol.Item{
+		Kind:         protocol.ItemSkillContext,
+		SkillContext: &protocol.SkillContextItem{Name: name, Body: body},
+	})
+	sink := s.durableSink
+	s.mu.Unlock()
+	_ = s.persistDurableItem(item, sink)
+}
+
 func (s *Session) RecordInputWithParts(input string, parts []llm.MessageContentPart) (int, error) {
 	if s == nil {
 		return 0, nil

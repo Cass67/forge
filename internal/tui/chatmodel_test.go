@@ -3958,11 +3958,54 @@ func TestChatModelAutoSkillsDoesNotBrainstormExistingPlanAudit(t *testing.T) {
 		if strings.Contains(raw, "[Skill: brainstorming]") {
 			t.Fatalf("audit input should not activate brainstorming: %q", raw)
 		}
-		if !strings.Contains(raw, "[Skill: requesting-code-review]") {
-			t.Fatalf("audit input should use review-oriented skill: %q", raw)
+		var ui chatstate.ChatUserInput
+		if err := json.Unmarshal([]byte(raw), &ui); err != nil {
+			t.Fatal(err)
+		}
+		if ui.SkillName != "requesting-code-review" || !strings.Contains(ui.SkillBody, "Findings first.") {
+			t.Fatalf("audit input should use typed review-oriented skill: %#v", ui)
 		}
 	default:
 		t.Fatal("expected queued chat input")
+	}
+}
+
+func TestChatModelSlashSkillSubmitsTypedSkillContext(t *testing.T) {
+	inputCh := make(chan string, 1)
+	m := NewChatModel(ChatLiveConfig{
+		Model:          "test",
+		WorkDir:        "/tmp",
+		Skills:         []skills.Skill{{Name: "brainstorming", Description: "Plan first", Body: "Brainstorm before coding."}},
+		AutoSkillsMode: skills.AutoSkillsSuggest,
+		State:          chatstate.New(),
+	})
+	m.inputCh = inputCh
+	m.width = 100
+	m.height = 24
+	m.inputBuf = "/brainstorming"
+	m.inputPos = len(m.inputBuf)
+
+	updated, cmd := m.submitInput()
+	m = updated.(ChatModel)
+
+	if cmd == nil {
+		t.Fatal("expected slash skill activation to submit")
+	}
+	cmd()
+	select {
+	case raw := <-inputCh:
+		if strings.Contains(raw, "[Skill: brainstorming]") {
+			t.Fatalf("skill context should be typed, not injected into text: %q", raw)
+		}
+		var ui chatstate.ChatUserInput
+		if err := json.Unmarshal([]byte(raw), &ui); err != nil {
+			t.Fatal(err)
+		}
+		if !ui.IsInput || ui.Text != "" || ui.SkillName != "brainstorming" || ui.SkillBody != "Brainstorm before coding." {
+			t.Fatalf("skill input = %#v", ui)
+		}
+	default:
+		t.Fatal("expected queued skill input")
 	}
 }
 
