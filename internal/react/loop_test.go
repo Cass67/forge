@@ -284,6 +284,22 @@ func TestDeriveSideEffectIntentIgnoresURLTokens(t *testing.T) {
 	}
 }
 
+func TestDeriveSideEffectIntentIgnoresInjectedSkillPayload(t *testing.T) {
+	payload := "[Skill: requesting-code-review]\n\n# Requesting Code Review\n\nUse Task tool with `general-purpose` type, fill template at `code-reviewer.md`.\n\nPLAN_OR_REQUIREMENTS: docs/superpowers/plans/deployment-plan.md\n\nFix Important issues before proceeding."
+	if intent := deriveSideEffectIntentFromText(3, payload); intent != nil {
+		t.Fatalf("intent = %#v, want nil for injected skill context", intent)
+	}
+}
+
+func TestRunnerDoesNotRequireToolCallForInjectedSkillPayload(t *testing.T) {
+	snap := SessionSnapshot{
+		LastInput: "[Skill: requesting-code-review]\n\n# Requesting Code Review\n\nDispatch a code reviewer subagent. Fill template at `code-reviewer.md` and write findings.",
+	}
+	if shouldRequireToolCallForSnapshot(snap) {
+		t.Fatal("injected skill context should not require a tool call")
+	}
+}
+
 func TestDeriveSideEffectIntentRejectsInvalidBranchRefSyntax(t *testing.T) {
 	for _, input := range []string{
 		"write docs/good.md, commit it to main@{1} and push",
