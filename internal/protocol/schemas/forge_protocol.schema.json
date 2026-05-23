@@ -147,6 +147,7 @@
         "compaction",
         "checkpoint",
         "agent_handoff",
+        "side_effect_intent",
         "turn_complete"
       ],
       "type": "string"
@@ -188,6 +189,69 @@
           "type": "string"
         },
         "source": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "side_effect_intent": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "artifact_paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "gates": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "evidence": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "incident_mode": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "remote": {
+          "type": "string"
+        },
+        "required_actions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "source_turn": {
+          "type": "integer"
+        },
+        "target_branch": {
+          "type": "string"
+        },
+        "workspace_root": {
           "type": "string"
         }
       },

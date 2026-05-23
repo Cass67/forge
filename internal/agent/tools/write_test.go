@@ -72,6 +72,41 @@ func TestWriteFileEscape(t *testing.T) {
 	}
 }
 
+func TestWriteFileUsesActiveWorkspaceProviderForExternalNewRepo(t *testing.T) {
+	base := t.TempDir()
+	workspace := filepath.Join(t.TempDir(), "arkanoid")
+	tool := NewWriteFileWithWorkDirProvider(base, func() string { return workspace }, func(a Action) (bool, error) { return true, nil })
+
+	_, err := tool.Execute(context.Background(), map[string]any{
+		"path": filepath.Join(workspace, "index.html"), "content": "game",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(workspace, "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "game" {
+		t.Fatalf("file content = %q, want game", string(data))
+	}
+}
+
+func TestWriteFileUsesActiveWorkspaceProviderRejectsOutsidePath(t *testing.T) {
+	base := t.TempDir()
+	workspace := filepath.Join(t.TempDir(), "arkanoid")
+	outside := filepath.Join(t.TempDir(), "outside.html")
+	tool := NewWriteFileWithWorkDirProvider(base, func() string { return workspace }, func(a Action) (bool, error) { return true, nil })
+
+	_, err := tool.Execute(context.Background(), map[string]any{
+		"path": outside, "content": "bad",
+	})
+	if err == nil || !strings.Contains(err.Error(), "escapes working directory") {
+		t.Fatalf("error = %v, want escapes working directory", err)
+	}
+}
+
 func TestWriteFileBlocksSecretByDefault(t *testing.T) {
 	dir := t.TempDir()
 	approved := false

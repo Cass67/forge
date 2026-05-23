@@ -90,6 +90,18 @@ Delegated child agents now return control to the parent/orchestrator with struct
 
 This extends the fireproof kernel from runtime recovery into delegation control flow: child completion is evidence, not workflow completion.
 
+## 2026-05-18 Side-Effect Transaction Kernel
+
+Forge now binds scoped write/commit/push requests to runtime side-effect intent contracts. Artifact paths, allowed commit paths, required git actions, target branch, remote, and verification gates are runtime state. Child reports and handoffs are control-plane data and cannot overwrite requested artifacts. Git mutation flows use scoped tools that stage only allowed paths, verify commit file lists, verify remote refs after push, and block final success until required gates pass.
+
+Verification evidence:
+
+- `go test -count=1 ./internal/agent/tools ./internal/react ./internal/runtime ./internal/sessionstore ./internal/protocol` passed.
+- `go test -count=1 ./cmd/forge -run 'TestLiveAcceptance(DelegatedAuditWritesReport|ComparisonReposWritesMarkup|ScopedDocCommitPush|StatusAndCancellation|MultipleAgentsStatus)'` passed.
+- `go test -count=1 ./...` passed.
+- `just build` passed.
+- `git diff --check` passed.
+
 ## Roadmap Status Legend
 
 - `[ ]` not started

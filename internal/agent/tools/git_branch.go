@@ -8,6 +8,10 @@ import (
 )
 
 func NewGitBranchState(workDir string) Tool {
+	return NewGitBranchStateWithWorkDirProvider(workDir, FixedWorkDirProvider(workDir))
+}
+
+func NewGitBranchStateWithWorkDirProvider(fallbackWorkDir string, provider WorkDirProvider) Tool {
 	return Tool{
 		Name:        "git_branch_state",
 		Description: "Inspect current branch, optional target branch containment, and whether the repository is in an in-progress git operation.",
@@ -17,7 +21,7 @@ func NewGitBranchState(workDir string) Tool {
 		AutoApprove: true,
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			targetBranch, _ := args["target_branch"].(string)
-			state, err := inspectGitBranchState(ctx, workDir, strings.TrimSpace(targetBranch))
+			state, err := inspectGitBranchState(ctx, currentWorkDir(provider, fallbackWorkDir), strings.TrimSpace(targetBranch))
 			if err != nil {
 				return fmt.Sprintf("error inspecting git branch state: %v", err), nil
 			}
@@ -63,7 +67,9 @@ func inspectGitBranchState(ctx context.Context, workDir, targetBranch string) (g
 		return state, nil
 	}
 
-	if err := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "--quiet", targetBranch).Run(); err == nil {
+	verify := exec.CommandContext(ctx, "git", "rev-parse", "--verify", "--quiet", targetBranch)
+	verify.Dir = workDir
+	if err := verify.Run(); err == nil {
 		state.targetExists = true
 		state.headContainsTarget = boolString(gitMergeBaseIsAncestor(ctx, workDir, targetBranch, "HEAD"))
 		state.targetContainsHead = boolString(gitMergeBaseIsAncestor(ctx, workDir, "HEAD", targetBranch))

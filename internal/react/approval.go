@@ -76,20 +76,21 @@ type GuardianEvent struct {
 }
 
 type ApprovalGate struct {
-	workDir         string
-	cfg             ApprovalConfig
-	prompt          tools.ApprovalFunc
-	guardian        func(string, tools.Action) tools.GuardianReview
-	guardianContext func() string
-	guardianObserve func(GuardianEvent)
-	classifierCtx   func() context.Context
-	updates         []ApprovalUpdate
-	promptMu        sync.Mutex
-	promptOwner     chan struct{}
-	progress        func(string)
-	now             func() time.Time
-	originalBranch  string
-	didSwitchBranch bool
+	workDir          string
+	cfg              ApprovalConfig
+	prompt           tools.ApprovalFunc
+	guardian         func(string, tools.Action) tools.GuardianReview
+	guardianContext  func() string
+	guardianObserve  func(GuardianEvent)
+	classifierCtx    func() context.Context
+	updates          []ApprovalUpdate
+	promptMu         sync.Mutex
+	promptOwner      chan struct{}
+	progress         func(string)
+	now              func() time.Time
+	originalBranch   string
+	didSwitchBranch  bool
+	bypassSafeBranch func(tools.Action) bool
 }
 
 func NewApprovalGate(workDir string, cfg ApprovalConfig, prompt tools.ApprovalFunc, progress func(string)) *ApprovalGate {
@@ -114,6 +115,10 @@ func (g *ApprovalGate) SetPrompt(prompt tools.ApprovalFunc) {
 	if prompt != nil {
 		g.prompt = prompt
 	}
+}
+
+func (g *ApprovalGate) SetSafeBranchBypass(fn func(tools.Action) bool) {
+	g.bypassSafeBranch = fn
 }
 
 func (g *ApprovalGate) SetGuardianReviewer(reviewer func(string, tools.Action) tools.GuardianReview) {
@@ -200,7 +205,7 @@ func (g *ApprovalGate) Approve(action tools.Action) (bool, error) {
 	evaluationAction := action
 
 	mutating := actionMutates(action)
-	if mutating {
+	if mutating && (g.bypassSafeBranch == nil || !g.bypassSafeBranch(action)) {
 		if err := g.ensureSafeBranch(action); err != nil {
 			return false, err
 		}

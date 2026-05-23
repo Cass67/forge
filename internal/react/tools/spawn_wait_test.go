@@ -44,7 +44,7 @@ func TestSpawnAgentToolAdvertisesDefaultAgents(t *testing.T) {
 	pool.RegisterAgents(react.DefaultAgentDefinitions())
 	tool := NewSpawnAgent(pool)
 
-	for _, want := range []string{"repo-auditor", "code-reviewer", "oracle", "forge_handoff", "parent/orchestrator"} {
+	for _, want := range []string{"repo-auditor", "code-reviewer", "oracle", "forge_handoff", "parent/orchestrator", "must not commit or push"} {
 		if !strings.Contains(tool.Description, want) {
 			t.Fatalf("spawn_agent description missing %q: %s", want, tool.Description)
 		}

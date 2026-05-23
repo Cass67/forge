@@ -19,7 +19,7 @@ func NewSpawnAgent(pool *react.AgentPool) agenttools.Tool {
 			desc += " Available agents: " + strings.Join(names, ", ")
 		}
 	}
-	desc += " Read-only agents such as repo-auditor, code-reviewer, explorer, oracle, and synthesizer must only inspect/analyze and return content; the parent agent must create files, edit files, or run commands. If follow-up work remains, the child must return a forge_handoff block; the parent/orchestrator owns writes, repairs, verification, commits, and user questions."
+	desc += " Read-only agents such as repo-auditor, code-reviewer, explorer, oracle, and synthesizer must only inspect/analyze and return content. Child agents must not commit or push. Return findings and proposed artifact content. Parent/orchestrator owns write, commit, push, and verification gates. If follow-up work remains, the child must return a forge_handoff block; the parent/orchestrator owns writes, repairs, verification, commits, and user questions."
 	return agenttools.Tool{
 		Name:        "spawn_agent",
 		Description: desc,
@@ -133,7 +133,8 @@ func readOnlyAgentShouldSanitizeTask(agentDef *react.AgentDefinition, task strin
 func sanitizeReadOnlyAgentTask(task string) string {
 	task = strings.TrimSpace(task)
 	return strings.Join([]string{
-		"Inspect/analyze only. Do not create files, edit files, run shell commands, or commit changes.",
+		"Inspect/analyze only. Do not create files, edit files, run shell commands, commit changes, or push changes.",
+		"Child agents must not commit or push. Return findings and proposed artifact content. Parent/orchestrator owns write, commit, push, and verification gates.",
 		"If the request asks for a report or file, return the complete report content and the intended path so the parent agent can save it.",
 		react.AgentHandoffInstructions(),
 		"Original delegated context:",

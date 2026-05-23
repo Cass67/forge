@@ -8,6 +8,10 @@ import (
 )
 
 func NewEditFile(workDir string, approve ApprovalFunc, policies ...SecretPolicy) Tool {
+	return NewEditFileWithWorkDirProvider(workDir, FixedWorkDirProvider(workDir), approve, policies...)
+}
+
+func NewEditFileWithWorkDirProvider(fallbackWorkDir string, provider WorkDirProvider, approve ApprovalFunc, policies ...SecretPolicy) Tool {
 	var lastDiff string
 	secretPolicy := secretPolicyFromOptions(policies)
 	return Tool{
@@ -37,7 +41,7 @@ func NewEditFile(workDir string, approve ApprovalFunc, policies ...SecretPolicy)
 			}
 			newText = checkedNewText
 
-			resolved, err := ResolvePath(workDir, path)
+			resolved, err := ResolvePath(currentWorkDir(provider, fallbackWorkDir), path)
 			if err != nil {
 				return "", err
 			}

@@ -12,24 +12,25 @@ func GenerateProtocolSchema() JSONSchema {
 		"properties": JSONSchema{
 			"at":        JSONSchema{"format": "date-time", "type": "string"},
 			"id":        stringSchema(),
-			"kind":      JSONSchema{"enum": []string{string(ItemSessionMeta), string(ItemTurnContext), string(ItemUserMessage), string(ItemAssistantMessage), string(ItemToolCall), string(ItemToolResult), string(ItemRetry), string(ItemFailure), string(ItemStats), string(ItemCompaction), string(ItemCheckpoint), string(ItemAgentHandoff), string(ItemTurnComplete)}, "type": "string"},
+			"kind":      JSONSchema{"enum": []string{string(ItemSessionMeta), string(ItemTurnContext), string(ItemUserMessage), string(ItemAssistantMessage), string(ItemToolCall), string(ItemToolResult), string(ItemRetry), string(ItemFailure), string(ItemStats), string(ItemCompaction), string(ItemCheckpoint), string(ItemAgentHandoff), string(ItemSideEffectIntent), string(ItemTurnComplete)}, "type": "string"},
 			"seq":       JSONSchema{"type": "integer"},
 			"thread_id": stringSchema(),
 			"turn_id":   stringSchema(),
 			"version":   JSONSchema{"const": CurrentItemVersion, "type": "integer"},
 
-			"compaction":    objectSchema(map[string]any{"summary": stringSchema()}),
-			"agent_handoff": objectSchema(map[string]any{"agent_id": stringSchema(), "blocking": JSONSchema{"type": "boolean"}, "incidents": JSONSchema{"items": agentIncidentSchema(), "type": "array"}, "remaining_actions": JSONSchema{"items": agentActionSchema(), "type": "array"}}),
-			"checkpoint":    objectSchema(map[string]any{"changed_files": JSONSchema{"items": stringSchema(), "type": "array"}, "error": stringSchema(), "id": stringSchema(), "phase": stringSchema()}),
-			"failure":       objectSchema(map[string]any{"decision": FailureDecisionSchema()}),
-			"message":       objectSchema(map[string]any{"role": stringSchema(), "text": stringSchema()}),
-			"retry":         objectSchema(map[string]any{"attempt": JSONSchema{"type": "integer"}, "reason": stringSchema()}),
-			"session_meta":  objectSchema(map[string]any{"cwd": stringSchema(), "model": stringSchema(), "source": stringSchema()}),
-			"stats":         objectSchema(map[string]any{"duration_ms": JSONSchema{"type": "integer"}, "usage": JSONSchema{"type": "object"}}),
-			"tool_call":     objectSchema(map[string]any{"args": JSONSchema{"type": "object"}, "tool_call_id": stringSchema(), "tool_name": stringSchema()}),
-			"tool_result":   objectSchema(map[string]any{"diff": stringSchema(), "handle": stringSchema(), "is_error": JSONSchema{"type": "boolean"}, "original_bytes": JSONSchema{"type": "integer"}, "sha256": stringSchema(), "text": stringSchema(), "tool_call_id": stringSchema(), "tool_name": stringSchema(), "truncated": JSONSchema{"type": "boolean"}}),
-			"turn_complete": objectSchema(map[string]any{"response_id": stringSchema(), "status": JSONSchema{"enum": []string{string(TurnStatusCompleted), string(TurnStatusFailed), string(TurnStatusInterrupted)}, "type": "string"}}),
-			"turn_context":  objectSchema(map[string]any{"input": stringSchema(), "mode": stringSchema(), "response_id": stringSchema()}),
+			"compaction":         objectSchema(map[string]any{"summary": stringSchema()}),
+			"agent_handoff":      objectSchema(map[string]any{"agent_id": stringSchema(), "blocking": JSONSchema{"type": "boolean"}, "incidents": JSONSchema{"items": agentIncidentSchema(), "type": "array"}, "remaining_actions": JSONSchema{"items": agentActionSchema(), "type": "array"}}),
+			"checkpoint":         objectSchema(map[string]any{"changed_files": JSONSchema{"items": stringSchema(), "type": "array"}, "error": stringSchema(), "id": stringSchema(), "phase": stringSchema()}),
+			"failure":            objectSchema(map[string]any{"decision": FailureDecisionSchema()}),
+			"message":            objectSchema(map[string]any{"role": stringSchema(), "text": stringSchema()}),
+			"retry":              objectSchema(map[string]any{"attempt": JSONSchema{"type": "integer"}, "reason": stringSchema()}),
+			"session_meta":       objectSchema(map[string]any{"cwd": stringSchema(), "model": stringSchema(), "source": stringSchema()}),
+			"side_effect_intent": sideEffectIntentSchema(),
+			"stats":              objectSchema(map[string]any{"duration_ms": JSONSchema{"type": "integer"}, "usage": JSONSchema{"type": "object"}}),
+			"tool_call":          objectSchema(map[string]any{"args": JSONSchema{"type": "object"}, "tool_call_id": stringSchema(), "tool_name": stringSchema()}),
+			"tool_result":        objectSchema(map[string]any{"diff": stringSchema(), "handle": stringSchema(), "is_error": JSONSchema{"type": "boolean"}, "original_bytes": JSONSchema{"type": "integer"}, "sha256": stringSchema(), "text": stringSchema(), "tool_call_id": stringSchema(), "tool_name": stringSchema(), "truncated": JSONSchema{"type": "boolean"}}),
+			"turn_complete":      objectSchema(map[string]any{"response_id": stringSchema(), "status": JSONSchema{"enum": []string{string(TurnStatusCompleted), string(TurnStatusFailed), string(TurnStatusInterrupted)}, "type": "string"}}),
+			"turn_context":       objectSchema(map[string]any{"input": stringSchema(), "mode": stringSchema(), "response_id": stringSchema()}),
 		},
 		"required": []string{"version", "id", "thread_id", "seq", "kind", "at"},
 		"title":    "Forge Durable Runtime Protocol",
@@ -52,6 +53,26 @@ func agentActionSchema() JSONSchema {
 
 func agentIncidentSchema() JSONSchema {
 	return objectSchema(map[string]any{"blocking": JSONSchema{"type": "boolean"}, "description": stringSchema(), "kind": stringSchema(), "paths": JSONSchema{"items": stringSchema(), "type": "array"}})
+}
+
+func sideEffectIntentSchema() JSONSchema {
+	return objectSchema(map[string]any{
+		"allowed_paths":    JSONSchema{"items": stringSchema(), "type": "array"},
+		"artifact_paths":   JSONSchema{"items": stringSchema(), "type": "array"},
+		"gates":            JSONSchema{"items": sideEffectGateSchema(), "type": "array"},
+		"id":               stringSchema(),
+		"incident_mode":    JSONSchema{"type": "boolean"},
+		"reason":           stringSchema(),
+		"remote":           stringSchema(),
+		"required_actions": JSONSchema{"items": stringSchema(), "type": "array"},
+		"source_turn":      JSONSchema{"type": "integer"},
+		"target_branch":    stringSchema(),
+		"workspace_root":   stringSchema(),
+	})
+}
+
+func sideEffectGateSchema() JSONSchema {
+	return objectSchema(map[string]any{"evidence": stringSchema(), "name": stringSchema(), "status": stringSchema()})
 }
 
 func ToolSchemaToJSONSchema(schema *llm.ToolSchema) JSONSchema {

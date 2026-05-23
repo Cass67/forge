@@ -194,6 +194,190 @@ func TestRunnerRunInvokesDriverAndProgress(t *testing.T) {
 	}
 }
 
+func TestRunnerCreatesSideEffectIntentForWriteCommitPushRequest(t *testing.T) {
+	session := NewSession()
+	r := NewRunner(Config{Session: session, Driver: &scriptedDriver{responses: []string{"ok"}}})
+
+	if err := r.Run(context.Background(), "write FORGE_VS_CODEX.md, commit it to main and push"); err != nil {
+		t.Fatal(err)
+	}
+	intent := session.Snapshot().SideEffectIntent
+	if intent == nil {
+		t.Fatal("missing side-effect intent")
+	}
+	if !containsString(intent.AllowedPaths, "FORGE_VS_CODEX.md") {
+		t.Fatalf("AllowedPaths = %#v", intent.AllowedPaths)
+	}
+	for _, want := range []SideEffectAction{SideEffectActionWrite, SideEffectActionCommit, SideEffectActionPush} {
+		if !containsSideEffectAction(intent.RequiredActions, want) {
+			t.Fatalf("RequiredActions = %#v, want %s", intent.RequiredActions, want)
+		}
+	}
+	if intent.TargetBranch != "main" || intent.Remote != "origin" {
+		t.Fatalf("target = %s/%s", intent.Remote, intent.TargetBranch)
+	}
+}
+
+func TestDeriveSideEffectIntentIgnoresAbsoluteAndParentPaths(t *testing.T) {
+	intent := deriveSideEffectIntentFromText(1, `write /tmp/bad.md and ../bad.md and docs/../bad.md and C:\tmp\bad.md and docs/good.md`)
+	if intent == nil || !containsString(intent.AllowedPaths, "docs/good.md") {
+		t.Fatalf("intent = %#v", intent)
+	}
+	for _, unsafe := range []string{"/tmp/bad.md", "../bad.md", "bad.md", `C:\tmp\bad.md`} {
+		if containsString(intent.AllowedPaths, unsafe) {
+			t.Fatalf("unsafe allowed paths = %#v", intent.AllowedPaths)
+		}
+	}
+}
+
+func TestDeriveSideEffectIntentAllowsCommonBranchNames(t *testing.T) {
+	intent := deriveSideEffectIntentFromText(1, "write docs/good.md, commit it to feat/task-3 and push")
+	if intent == nil {
+		t.Fatal("missing intent")
+	}
+	if intent.TargetBranch != "feat/task-3" {
+		t.Fatalf("TargetBranch = %q, want feat/task-3", intent.TargetBranch)
+	}
+	intent = deriveSideEffectIntentFromText(2, "write docs/good.md, commit it to release/v1.2 and push")
+	if intent == nil || intent.TargetBranch != "release/v1.2" {
+		t.Fatalf("TargetBranch = %q, want release/v1.2", intent.TargetBranch)
+	}
+}
+
+func TestRunnerPreservesSideEffectIntentWhenPromptHasNoSideEffectTarget(t *testing.T) {
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{ID: "intent-1", AllowedPaths: []string{"docs/a.md"}})
+	r := NewRunner(Config{Session: session, Driver: &scriptedDriver{responses: []string{"ok"}}})
+
+	if err := r.Run(context.Background(), "what happened?"); err != nil {
+		t.Fatal(err)
+	}
+	intent := session.Snapshot().SideEffectIntent
+	if intent == nil || intent.ID != "intent-1" || !containsString(intent.AllowedPaths, "docs/a.md") {
+		t.Fatalf("SideEffectIntent = %#v", intent)
+	}
+}
+
+func TestRunnerPreservesSideEffectIntentForReadOnlyPathPrompt(t *testing.T) {
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{ID: "intent-1", AllowedPaths: []string{"docs/a.md"}, RequiredActions: []SideEffectAction{SideEffectActionWrite}})
+	r := NewRunner(Config{Session: session, Driver: &scriptedDriver{responses: []string{"ok"}}})
+
+	if err := r.Run(context.Background(), "read internal/react/loop.go"); err != nil {
+		t.Fatal(err)
+	}
+	intent := session.Snapshot().SideEffectIntent
+	if intent == nil || intent.ID != "intent-1" || !containsString(intent.AllowedPaths, "docs/a.md") || containsString(intent.AllowedPaths, "internal/react/loop.go") {
+		t.Fatalf("SideEffectIntent = %#v", intent)
+	}
+}
+
+func TestDeriveSideEffectIntentIgnoresURLTokens(t *testing.T) {
+	intent := deriveSideEffectIntentFromText(1, "write docs/report.md using https://example.com/foo")
+	if intent == nil || !containsString(intent.AllowedPaths, "docs/report.md") {
+		t.Fatalf("intent = %#v", intent)
+	}
+	for _, unsafe := range []string{"https:/example.com/foo", "https://example.com/foo"} {
+		if containsString(intent.AllowedPaths, unsafe) {
+			t.Fatalf("URL token entered allowed paths: %#v", intent.AllowedPaths)
+		}
+	}
+}
+
+func TestDeriveSideEffectIntentRejectsInvalidBranchRefSyntax(t *testing.T) {
+	for _, input := range []string{
+		"write docs/good.md, commit it to main@{1} and push",
+		"write docs/good.md, commit it to feature//x and push",
+		"write docs/good.md, commit it to @ and push",
+		"write docs/good.md, commit it to .bad and push",
+		"write docs/good.md, commit it to foo/.bar and push",
+		"write docs/good.md, commit it to foo.lock/bar and push",
+	} {
+		t.Run(input, func(t *testing.T) {
+			intent := deriveSideEffectIntentFromText(1, input)
+			if intent == nil {
+				t.Fatal("missing intent")
+			}
+			if intent.TargetBranch != "main" {
+				t.Fatalf("TargetBranch = %q, want main fallback", intent.TargetBranch)
+			}
+		})
+	}
+}
+
+func TestDeriveSideEffectIntentRespectsDoNotPush(t *testing.T) {
+	for _, input := range []string{
+		"write docs/report.md but do not push",
+		"write docs/report.md but do not git push",
+		"write docs/report.md but do not run git push",
+	} {
+		t.Run(input, func(t *testing.T) {
+			intent := deriveSideEffectIntentFromText(1, input)
+			if intent == nil {
+				t.Fatal("missing intent")
+			}
+			if !containsSideEffectAction(intent.RequiredActions, SideEffectActionWrite) {
+				t.Fatalf("RequiredActions = %#v, want write", intent.RequiredActions)
+			}
+			if containsSideEffectAction(intent.RequiredActions, SideEffectActionPush) {
+				t.Fatalf("RequiredActions = %#v, do not want push", intent.RequiredActions)
+			}
+		})
+	}
+}
+
+func TestDeriveSideEffectIntentDoesNotTreatPushTopicAsGitPush(t *testing.T) {
+	for _, input := range []string{
+		"write docs/push-notifications.md",
+		"write docs/report.md about mobile push notifications",
+		"write docs/report.md covering push updates",
+	} {
+		t.Run(input, func(t *testing.T) {
+			intent := deriveSideEffectIntentFromText(1, input)
+			if intent == nil {
+				t.Fatal("missing write intent")
+			}
+			if containsSideEffectAction(intent.RequiredActions, SideEffectActionPush) {
+				t.Fatalf("RequiredActions = %#v, do not want push", intent.RequiredActions)
+			}
+		})
+	}
+}
+
+func TestDeriveSideEffectIntentRespectsDoNotWriteOrCommit(t *testing.T) {
+	if intent := deriveSideEffectIntentFromText(1, "review docs/report.md, do not edit"); intent != nil {
+		t.Fatalf("intent = %#v, want nil for read-only review", intent)
+	}
+	if intent := deriveSideEffectIntentFromText(1, "get docs/report.md"); intent != nil {
+		t.Fatalf("intent = %#v, want nil for read-oriented get", intent)
+	}
+	if intent := deriveSideEffectIntentFromText(1, "get docs/report.md to review"); intent != nil {
+		t.Fatalf("intent = %#v, want nil for read-oriented get purpose", intent)
+	}
+	if intent := deriveSideEffectIntentFromText(1, "write a review of docs/report.md"); intent != nil {
+		t.Fatalf("intent = %#v, want nil for chat review", intent)
+	}
+	if intent := deriveSideEffectIntentFromText(1, "write a review of docs/report.md to help me understand it"); intent != nil {
+		t.Fatalf("intent = %#v, want nil for chat review purpose clause", intent)
+	}
+	if intent := deriveSideEffectIntentFromText(1, "write up what you think about docs/report.md"); intent != nil {
+		t.Fatalf("intent = %#v, want nil for chat write-up", intent)
+	}
+	if intent := deriveSideEffectIntentFromText(1, "write a review of docs/report.md as markdown"); intent != nil {
+		t.Fatalf("intent = %#v, want nil for chat markdown review", intent)
+	}
+	if intent := deriveSideEffectIntentFromText(1, "do not git commit docs/report.md"); intent != nil {
+		t.Fatalf("intent = %#v, want nil for negated commit", intent)
+	}
+	intent := deriveSideEffectIntentFromText(1, "write docs/report.md but do not git commit")
+	if intent == nil || !containsSideEffectAction(intent.RequiredActions, SideEffectActionWrite) {
+		t.Fatalf("intent = %#v, want write intent", intent)
+	}
+	if containsSideEffectAction(intent.RequiredActions, SideEffectActionCommit) {
+		t.Fatalf("RequiredActions = %#v, do not want commit", intent.RequiredActions)
+	}
+}
+
 func TestRunnerRunReturnsErrorWhenDriverMissing(t *testing.T) {
 	r := NewRunner(Config{})
 	if err := r.Run(context.Background(), "inspect"); err == nil {
@@ -984,6 +1168,701 @@ func TestRunnerBeforeToolHookBlocksCommitWorkflow(t *testing.T) {
 	})
 }
 
+func TestRunnerAllowsScopedGitCommitToRecoverRestageWorkflow(t *testing.T) {
+	r := NewRunner(Config{})
+	r.gitWorkflow.commitBlocker = commitBlockerRestage
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{ID: "intent-1", AllowedPaths: []string{"FORGE_VS_CODEX.md"}, RequiredActions: []SideEffectAction{SideEffectActionCommit}})
+	r.session = session
+
+	commitOutput := r.beforeToolHookOutput(context.Background(), "git_commit", map[string]any{"message": "retry scoped commit"})
+	if commitOutput.Block != nil {
+		t.Fatalf("scoped git_commit should recover restage workflow, block = %#v", commitOutput.Block)
+	}
+	addOutput := r.beforeToolHookOutput(context.Background(), "run_command", map[string]any{"command": "git add FORGE_VS_CODEX.md"})
+	if addOutput.Block == nil || !strings.Contains(addOutput.Block.Message, "scoped git transaction") {
+		t.Fatalf("shell git add block = %#v", addOutput.Block)
+	}
+}
+
+func TestRunnerBlocksShellGitMutationDuringScopedIntent(t *testing.T) {
+	r := NewRunner(Config{})
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{ID: "intent-1", AllowedPaths: []string{"FORGE_VS_CODEX.md"}, RequiredActions: []SideEffectAction{SideEffectActionCommit}})
+	r.session = session
+
+	for _, command := range []string{
+		"git add .",
+		"git add -A",
+		"git commit -m x",
+		"git push origin HEAD:main",
+		"git reset --hard HEAD~1",
+		"git restore FORGE_VS_CODEX.md",
+		"git clean -fd",
+		"git checkout -- FORGE_VS_CODEX.md",
+		"git checkout src/main",
+		"git checkout main",
+		"git switch main",
+		"git merge feature",
+		"git rebase main",
+		"git pull --rebase",
+		"git cherry-pick abc1234",
+		"git revert abc1234",
+		"git rm old.txt",
+		"git mv old.txt new.txt",
+		"git stash push",
+		"git branch -D old-branch",
+		"git remote add origin https://example.invalid/repo.git",
+		"git tag v1.0.0",
+		"git config user.name x",
+		"git -C repo add .",
+		"git -c user.name=x commit -m x",
+		"(git add .)",
+		"command git commit -m x",
+		"env VAR=x git push origin HEAD:main",
+		"sh -c 'git add .'",
+		"bash -lc 'git commit -m x'",
+		"sudo git add .",
+		"sudo -n git add .",
+		"time git add .",
+		"time -p git add .",
+		"env -i git add .",
+		"eval 'git add .'",
+		"exec git add .",
+		"echo $(git add .)",
+		"echo `git commit -m x`",
+		"echo \"$(git add .)\"",
+		"echo \"x$(git commit -m x)\"",
+		"echo \"`git add .`\"",
+		"if git status; then git add .; fi",
+		"git status\ngit add .",
+		"git status & git add .",
+		"git status && git add .",
+		"echo ok; git commit -m x",
+		`g\it add .`,
+		"g''it commit -m x",
+		"command g''it add .",
+	} {
+		t.Run(command, func(t *testing.T) {
+			output := r.beforeToolHookOutput(context.Background(), "run_command", map[string]any{"command": command})
+			if output.Block == nil || !strings.Contains(output.Block.Message, "scoped git transaction") {
+				t.Fatalf("block for %q = %#v", command, output.Block)
+			}
+		})
+	}
+}
+
+func TestRunnerBlocksExecSessionGitMutationDuringScopedIntent(t *testing.T) {
+	r := NewRunner(Config{})
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{ID: "intent-1", AllowedPaths: []string{"FORGE_VS_CODEX.md"}, RequiredActions: []SideEffectAction{SideEffectActionCommit}})
+	r.session = session
+
+	for _, tc := range []struct {
+		tool string
+		args map[string]any
+	}{
+		{tool: "exec_session_start", args: map[string]any{"command": "git add ."}},
+		{tool: "exec_session_write", args: map[string]any{"chars": "git add .\n"}},
+		{tool: "exec_session_write", args: map[string]any{"chars": "git "}},
+		{tool: "exec_session_write", args: map[string]any{"chars": "add .\n"}},
+		{tool: "command_write_stdin", args: map[string]any{"chars": "git commit -m x\n"}},
+		{tool: "command_write_stdin", args: map[string]any{"chars": "commit -m x\n"}},
+	} {
+		t.Run(tc.tool, func(t *testing.T) {
+			output := r.beforeToolHookOutput(context.Background(), tc.tool, tc.args)
+			if output.Block == nil || !strings.Contains(output.Block.Message, "scoped git transaction") {
+				t.Fatalf("block for %s = %#v", tc.tool, output.Block)
+			}
+		})
+	}
+}
+
+func TestRunnerAllowsShellGitReadOnlyDuringScopedIntent(t *testing.T) {
+	r := NewRunner(Config{})
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{ID: "intent-1", AllowedPaths: []string{"FORGE_VS_CODEX.md"}, RequiredActions: []SideEffectAction{SideEffectActionCommit}})
+	r.session = session
+
+	for _, command := range []string{"git status", "git diff", "git log --oneline -n 1", "git show --stat", "git branch --show-current"} {
+		t.Run(command, func(t *testing.T) {
+			output := r.beforeToolHookOutput(context.Background(), "run_command", map[string]any{"command": command})
+			if output.Block != nil {
+				t.Fatalf("unexpected block for %q = %#v", command, output.Block)
+			}
+		})
+	}
+}
+
+func TestRunnerBlocksFinalSuccessWhenSideEffectGatesPending(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{Text: "Done, committed and pushed."}},
+		{{Text: "I still need to run git_commit and git_push."}},
+	}}
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		AllowedPaths:    []string{"FORGE_VS_CODEX.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite, SideEffectActionCommit, SideEffectActionPush},
+		Gates: []SideEffectGate{
+			{Name: "write", Status: SideEffectGatePassed, Evidence: "write_file ok"},
+			{Name: "commit", Status: SideEffectGatePending},
+			{Name: "push", Status: SideEffectGatePending},
+		},
+	})
+	r := NewRunner(Config{Driver: driver, Session: session})
+
+	if err := r.Run(context.Background(), "continue"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(r.LastResponse(), "committed and pushed") {
+		t.Fatalf("final response = %q, should not claim unresolved gates", r.LastResponse())
+	}
+	if !sessionHistoryContains(session, "unresolved side-effect gates", "commit") {
+		t.Fatalf("history missing gate feedback: %#v", session.Snapshot().History)
+	}
+	if driver.callCount != 2 {
+		t.Fatalf("driver calls = %d, want recovery turn", driver.callCount)
+	}
+}
+
+func TestRunnerBlocksWriteSuccessClaimWhenWriteGatePending(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{Text: "Wrote the file to FORGE_VS_CODEX.md."}},
+		{{Text: "I still need to write FORGE_VS_CODEX.md."}},
+	}}
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		AllowedPaths:    []string{"FORGE_VS_CODEX.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite},
+		Gates:           []SideEffectGate{{Name: "write", Status: SideEffectGatePending}},
+	})
+	r := NewRunner(Config{Driver: driver, Session: session})
+
+	if err := r.Run(context.Background(), "continue"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(r.LastResponse(), "Wrote the file") {
+		t.Fatalf("final response = %q, should not claim unresolved write gate", r.LastResponse())
+	}
+	if !sessionHistoryContains(session, "unresolved side-effect gates", "write") {
+		t.Fatalf("history missing write gate feedback: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerBlocksMixedSuccessClaimAndCaveatWhenGatePending(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{Text: "I couldn't complete validation and wrote docs/a.md."}},
+		{{Text: "I still need to write docs/a.md."}},
+	}}
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		AllowedPaths:    []string{"docs/a.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite},
+		Gates:           []SideEffectGate{{Name: "write", Status: SideEffectGatePending}},
+	})
+	r := NewRunner(Config{Driver: driver, Session: session})
+
+	if err := r.Run(context.Background(), "continue"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(r.LastResponse(), "wrote docs/a.md") {
+		t.Fatalf("final response = %q, should not claim unresolved write gate", r.LastResponse())
+	}
+}
+
+func TestRunnerAllowsFailureStatusWhenSideEffectGatesPending(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{{{Text: "Complete: FORGE_VS_CODEX.md was not written, and no changes were pushed."}}}}
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		AllowedPaths:    []string{"FORGE_VS_CODEX.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionPush},
+		Gates:           []SideEffectGate{{Name: "push", Status: SideEffectGatePending}},
+	})
+	r := NewRunner(Config{Driver: driver, Session: session})
+
+	if err := r.Run(context.Background(), "continue"); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.LastResponse(); got != "Complete: FORGE_VS_CODEX.md was not written, and no changes were pushed." {
+		t.Fatalf("LastResponse = %q", got)
+	}
+	if sessionHistoryContains(session, "unresolved side-effect gates") {
+		t.Fatalf("unexpected gate feedback: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerAllowsBlockedFailureStatusWhenSideEffectGateFailed(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{{{Text: "Complete: blocked by secret policy; SECRET_WRITE_DONE"}}}}
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		AllowedPaths:    []string{"blocked-secret.txt"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite},
+		Gates:           []SideEffectGate{{Name: "write", Status: SideEffectGateFailed}},
+	})
+	r := NewRunner(Config{Driver: driver, Session: session})
+
+	if err := r.Run(context.Background(), "continue"); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.LastResponse(); got != "Complete: blocked by secret policy; SECRET_WRITE_DONE" {
+		t.Fatalf("LastResponse = %q", got)
+	}
+	if sessionHistoryContains(session, "unresolved side-effect gates") {
+		t.Fatalf("unexpected gate feedback: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerAllowsContractedFailureStatusWhenSideEffectGatesPending(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{{{Text: "Complete: FORGE_VS_CODEX.md wasn't changed and wasn't patched."}}}}
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		AllowedPaths:    []string{"FORGE_VS_CODEX.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite, SideEffectActionPush},
+		Gates:           []SideEffectGate{{Name: "write", Status: SideEffectGatePending}, {Name: "push", Status: SideEffectGatePending}},
+	})
+	r := NewRunner(Config{Driver: driver, Session: session})
+
+	if err := r.Run(context.Background(), "continue"); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.LastResponse(); got != "Complete: FORGE_VS_CODEX.md wasn't changed and wasn't patched." {
+		t.Fatalf("LastResponse = %q", got)
+	}
+}
+
+func TestRunnerAllowsDidNotImplementFailureStatusWhenSideEffectGatesPending(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{{{Text: "Complete: I didn't implement docs/a.md; no changes were made."}}}}
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		AllowedPaths:    []string{"docs/a.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite},
+		Gates:           []SideEffectGate{{Name: "write", Status: SideEffectGatePending}},
+	})
+	r := NewRunner(Config{Driver: driver, Session: session})
+
+	if err := r.Run(context.Background(), "continue"); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.LastResponse(); got != "Complete: I didn't implement docs/a.md; no changes were made." {
+		t.Fatalf("LastResponse = %q", got)
+	}
+}
+
+func TestRunnerBlocksAdditionalWriteSuccessVerbsWhenGatePending(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{Text: "Implemented docs/a.md."}},
+		{{Text: "I still need to write docs/a.md."}},
+	}}
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		AllowedPaths:    []string{"docs/a.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite},
+		Gates:           []SideEffectGate{{Name: "write", Status: SideEffectGatePending}},
+	})
+	r := NewRunner(Config{Driver: driver, Session: session})
+
+	if err := r.Run(context.Background(), "continue"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(r.LastResponse(), "Implemented docs/a.md") {
+		t.Fatalf("final response = %q, should not claim unresolved write gate", r.LastResponse())
+	}
+}
+
+func TestCompletedAgentFallbackDoesNotBypassSideEffectGate(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("ask agent to inspect docs/a.md")
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		AllowedPaths:    []string{"docs/a.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite},
+		Gates:           []SideEffectGate{{Name: "write", Status: SideEffectGatePending}},
+	})
+	session.UpsertAgentTask(AgentTaskState{ID: "agent-1", Role: "repo-auditor", Status: AgentStatusCompleted, Result: "wrote docs/a.md", ParentTurn: turn})
+	r := NewRunner(Config{Session: session})
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	handled, err := r.tryCompletedAgentResultFallbackAfterError(context.Background(), turn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handled {
+		t.Fatal("fallback should not complete with unresolved side-effect success claim")
+	}
+	if strings.Contains(r.LastResponse(), "wrote docs/a.md") {
+		t.Fatalf("LastResponse leaked fallback claim: %q", r.LastResponse())
+	}
+	if !sessionHistoryContains(session, "unresolved side-effect gates", "write") {
+		t.Fatalf("history missing gate feedback: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerMarksSideEffectGatesFromToolResults(t *testing.T) {
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		AllowedPaths:    []string{"FORGE_VS_CODEX.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite, SideEffectActionCommit, SideEffectActionPush},
+		Gates: []SideEffectGate{
+			{Name: "write", Status: SideEffectGatePending},
+			{Name: "commit", Status: SideEffectGatePending},
+			{Name: "push", Status: SideEffectGatePending},
+		},
+	})
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:       "write_file",
+		Parameters: []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}, {Name: "content", Type: "string", Required: true}},
+		Execute: func(context.Context, map[string]any) (string, error) {
+			return "wrote 10 bytes to FORGE_VS_CODEX.md", nil
+		},
+	})
+	reg.Register(agenttools.Tool{Name: "git_commit", Parameters: []agenttools.ParameterDef{{Name: "message", Type: "string", Required: true}}, Execute: func(context.Context, map[string]any) (string, error) {
+		return "commit abc1234 created with files:\nFORGE_VS_CODEX.md", nil
+	}})
+	reg.Register(agenttools.Tool{Name: "git_push", Execute: func(context.Context, map[string]any) (string, error) {
+		return "remote contains abc1234 at origin/main", nil
+	}})
+	r := NewRunner(Config{Tools: reg, Session: session})
+
+	if err := r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{
+		{ID: "write-1", Name: "write_file", ArgsJSON: `{"path":"FORGE_VS_CODEX.md","content":"comparison"}`},
+		{ID: "commit-1", Name: "git_commit", ArgsJSON: `{"message":"add comparison"}`},
+		{ID: "push-1", Name: "git_push", ArgsJSON: `{}`},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, gate := range session.Snapshot().SideEffectIntent.Gates {
+		if gate.Status != SideEffectGatePassed {
+			t.Fatalf("gate %s status = %s, want passed; gates = %#v", gate.Name, gate.Status, session.Snapshot().SideEffectIntent.Gates)
+		}
+		if gate.Evidence == "" {
+			t.Fatalf("gate %s missing evidence", gate.Name)
+		}
+	}
+}
+
+func TestRunnerMarksWriteGateFromAlternateWriteTools(t *testing.T) {
+	workspace := t.TempDir()
+	for _, tc := range []struct {
+		name   string
+		tool   string
+		args   string
+		result string
+	}{
+		{name: "absolute write_file", tool: "write_file", args: fmt.Sprintf(`{"path":%q,"content":"comparison"}`, filepath.Join(workspace, "docs/a.md")), result: "wrote 10 bytes to /workspace/docs/a.md"},
+		{name: "edit_file", tool: "edit_file", args: `{"path":"docs/a.md","old_text":"old","new_text":"new"}`, result: "edited docs/a.md"},
+		{name: "apply_patch", tool: "apply_patch", args: `{"patch":"*** Begin Patch\n*** Update File: docs/a.md\n@@\n-old\n+new\n*** End Patch"}`, result: "applied patch from patch"},
+		{name: "artifact_write", tool: "artifact_write", args: `{"path":"docs/a.md","content":"comparison"}`, result: `{"path":"docs/a.md","bytes":10}`},
+		{name: "run_command", tool: "run_command", args: `{"command":"cat > docs/a.md <<'EOF'\ncomparison\nEOF"}`, result: "exit 0"},
+		{name: "absolute run_command", tool: "run_command", args: fmt.Sprintf(`{"command":%q}`, "printf hi > "+filepath.Join(workspace, "docs/a.md")), result: "exit 0"},
+		{name: "dot-relative run_command", tool: "run_command", args: `{"command":"printf hi > ./docs/a.md"}`, result: "exit 0"},
+		{name: "cp run_command", tool: "run_command", args: `{"command":"cp /tmp/report.md docs/a.md"}`, result: "exit 0"},
+		{name: "touch option run_command", tool: "run_command", args: `{"command":"touch -m docs/a.md"}`, result: "exit 0"},
+		{name: "touch run_command", tool: "run_command", args: `{"command":"touch docs/a.md"}`, result: "exit 0"},
+		{name: "tee run_command", tool: "run_command", args: `{"command":"printf hi | tee docs/a.md"}`, result: "exit 0"},
+		{name: "tee run_command with failure text", tool: "run_command", args: `{"command":"printf 'failed cases' | tee docs/a.md"}`, result: "failed cases\nexit 0"},
+		{name: "tee run_command with git text", tool: "run_command", args: `{"command":"printf 'nothing to commit' | tee docs/a.md"}`, result: "nothing to commit\nexit 0"},
+		{name: "tee run_command with error text", tool: "run_command", args: `{"command":"printf 'error summary' | tee docs/a.md"}`, result: "error summary\nexit 0"},
+		{name: "nested shell run_command", tool: "run_command", args: `{"command":"sh -c 'printf hi > docs/a.md'"}`, result: "exit 0"},
+		{name: "cp directory run_command", tool: "run_command", args: `{"command":"cp /tmp/a.md docs/"}`, result: "exit 0"},
+		{name: "absolute cp directory run_command", tool: "run_command", args: fmt.Sprintf(`{"command":%q}`, "cp /tmp/a.md "+filepath.Join(workspace, "docs")+string(filepath.Separator)), result: "exit 0"},
+		{name: "multi-source cp directory run_command", tool: "run_command", args: `{"command":"cp /tmp/a.md /tmp/other.md docs/"}`, result: "exit 0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session := NewSession()
+			session.SetSideEffectIntent(SideEffectIntent{
+				ID:              "intent-1",
+				ArtifactPaths:   []string{"docs/a.md"},
+				AllowedPaths:    []string{"docs/a.md"},
+				WorkspaceRoot:   workspace,
+				RequiredActions: []SideEffectAction{SideEffectActionWrite},
+				Gates:           []SideEffectGate{{Name: "write", Status: SideEffectGatePending}},
+			})
+			active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cancel()
+			reg := agenttools.NewRegistry()
+			reg.Register(agenttools.Tool{Name: tc.tool, Execute: func(context.Context, map[string]any) (string, error) { return tc.result, nil }})
+			r := NewRunner(Config{Tools: reg, Session: session})
+
+			if err := r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{ID: "write-1", Name: tc.tool, ArgsJSON: tc.args}}); err != nil {
+				t.Fatal(err)
+			}
+			gate := session.Snapshot().SideEffectIntent.Gates[0]
+			if gate.Status != SideEffectGatePassed {
+				t.Fatalf("gate status = %s, want passed; gates = %#v", gate.Status, session.Snapshot().SideEffectIntent.Gates)
+			}
+		})
+	}
+}
+
+func TestRunnerDoesNotMarkWriteGateFromReadOnlyRunCommand(t *testing.T) {
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		ArtifactPaths:   []string{"docs/a.md"},
+		AllowedPaths:    []string{"docs/a.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite},
+		Gates:           []SideEffectGate{{Name: "write", Status: SideEffectGatePending}},
+	})
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "run_command", Execute: func(context.Context, map[string]any) (string, error) { return "docs/a.md\nexit 0", nil }})
+	r := NewRunner(Config{Tools: reg, Session: session})
+
+	if err := r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{ID: "run-1", Name: "run_command", ArgsJSON: `{"command":"ls docs/a.md"}`}}); err != nil {
+		t.Fatal(err)
+	}
+	if gate := session.Snapshot().SideEffectIntent.Gates[0]; gate.Status != SideEffectGatePending {
+		t.Fatalf("gate status = %s, want pending", gate.Status)
+	}
+}
+
+func TestRunnerDoesNotMarkWriteGateWhenRunCommandCopiesFromArtifact(t *testing.T) {
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		ArtifactPaths:   []string{"docs/a.md"},
+		AllowedPaths:    []string{"docs/a.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite},
+		Gates:           []SideEffectGate{{Name: "write", Status: SideEffectGatePending}},
+	})
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "run_command", Execute: func(context.Context, map[string]any) (string, error) { return "exit 0", nil }})
+	r := NewRunner(Config{Tools: reg, Session: session})
+
+	if err := r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{ID: "run-1", Name: "run_command", ArgsJSON: `{"command":"cp docs/a.md /tmp/backup"}`}}); err != nil {
+		t.Fatal(err)
+	}
+	if gate := session.Snapshot().SideEffectIntent.Gates[0]; gate.Status != SideEffectGatePending {
+		t.Fatalf("gate status = %s, want pending", gate.Status)
+	}
+}
+
+func TestRunnerDoesNotMarkWriteGateWhenRunCommandCopiesArtifactToOwnDirectory(t *testing.T) {
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		ArtifactPaths:   []string{"docs/a.md"},
+		AllowedPaths:    []string{"docs/a.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite},
+		Gates:           []SideEffectGate{{Name: "write", Status: SideEffectGatePending}},
+	})
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "run_command", Execute: func(context.Context, map[string]any) (string, error) { return "exit 0", nil }})
+	r := NewRunner(Config{Tools: reg, Session: session})
+
+	if err := r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{ID: "run-1", Name: "run_command", ArgsJSON: `{"command":"cp docs/./a.md docs/"}`}}); err != nil {
+		t.Fatal(err)
+	}
+	if gate := session.Snapshot().SideEffectIntent.Gates[0]; gate.Status != SideEffectGatePending {
+		t.Fatalf("gate status = %s, want pending", gate.Status)
+	}
+}
+
+func TestRunnerMarksWriteGateFromNestedShellPositionalPath(t *testing.T) {
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		ArtifactPaths:   []string{"docs/a.md"},
+		AllowedPaths:    []string{"docs/a.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite},
+		Gates:           []SideEffectGate{{Name: "write", Status: SideEffectGatePending}},
+	})
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "run_command", Execute: func(context.Context, map[string]any) (string, error) { return "exit 0", nil }})
+	r := NewRunner(Config{Tools: reg, Session: session})
+
+	if err := r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{ID: "run-1", Name: "run_command", ArgsJSON: `{"command":"sh -c 'printf hi > \"$1\"' sh docs/a.md"}`}}); err != nil {
+		t.Fatal(err)
+	}
+	if gate := session.Snapshot().SideEffectIntent.Gates[0]; gate.Status != SideEffectGatePassed {
+		t.Fatalf("gate status = %s, want passed", gate.Status)
+	}
+}
+
+func TestRunnerDoesNotMarkWriteGateFromInputRedirection(t *testing.T) {
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		ArtifactPaths:   []string{"docs/a.md"},
+		AllowedPaths:    []string{"docs/a.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite},
+		Gates:           []SideEffectGate{{Name: "write", Status: SideEffectGatePending}},
+	})
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "run_command", Execute: func(context.Context, map[string]any) (string, error) { return "exit 0", nil }})
+	r := NewRunner(Config{Tools: reg, Session: session})
+
+	if err := r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{ID: "run-1", Name: "run_command", ArgsJSON: `{"command":"tee < docs/a.md"}`}}); err != nil {
+		t.Fatal(err)
+	}
+	if gate := session.Snapshot().SideEffectIntent.Gates[0]; gate.Status != SideEffectGatePending {
+		t.Fatalf("gate status = %s, want pending", gate.Status)
+	}
+}
+
+func TestRunnerDoesNotMarkWriteGateFromQuotedShellExample(t *testing.T) {
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		ArtifactPaths:   []string{"docs/a.md"},
+		AllowedPaths:    []string{"docs/a.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite},
+		Gates:           []SideEffectGate{{Name: "write", Status: SideEffectGatePending}},
+	})
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "run_command", Execute: func(context.Context, map[string]any) (string, error) { return "exit 0", nil }})
+	r := NewRunner(Config{Tools: reg, Session: session})
+
+	if err := r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{ID: "run-1", Name: "run_command", ArgsJSON: `{"command":"printf 'example > docs/a.md'"}`}}); err != nil {
+		t.Fatal(err)
+	}
+	if gate := session.Snapshot().SideEffectIntent.Gates[0]; gate.Status != SideEffectGatePending {
+		t.Fatalf("gate status = %s, want pending", gate.Status)
+	}
+}
+
+func TestRunnerDoesNotMarkWriteGateWhenRunCommandFinalExitFails(t *testing.T) {
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		ArtifactPaths:   []string{"docs/a.md"},
+		AllowedPaths:    []string{"docs/a.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite},
+		Gates:           []SideEffectGate{{Name: "write", Status: SideEffectGatePending}},
+	})
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "run_command", Execute: func(context.Context, map[string]any) (string, error) { return "exit 0\nexit 1", nil }})
+	r := NewRunner(Config{Tools: reg, Session: session})
+
+	if err := r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{ID: "run-1", Name: "run_command", ArgsJSON: `{"command":"printf data > docs/a.md; false"}`}}); err != nil {
+		t.Fatal(err)
+	}
+	if gate := session.Snapshot().SideEffectIntent.Gates[0]; gate.Status != SideEffectGateFailed {
+		t.Fatalf("gate status = %s, want failed", gate.Status)
+	}
+}
+
+func TestRunnerDoesNotMarkWriteGateFromNestedQuotedShellExample(t *testing.T) {
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		ArtifactPaths:   []string{"docs/a.md"},
+		AllowedPaths:    []string{"docs/a.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite},
+		Gates:           []SideEffectGate{{Name: "write", Status: SideEffectGatePending}},
+	})
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "run_command", Execute: func(context.Context, map[string]any) (string, error) { return "exit 0", nil }})
+	r := NewRunner(Config{Tools: reg, Session: session})
+
+	if err := r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{ID: "run-1", Name: "run_command", ArgsJSON: `{"command":"sh -c 'printf \"example > docs/a.md\"'"}`}}); err != nil {
+		t.Fatal(err)
+	}
+	if gate := session.Snapshot().SideEffectIntent.Gates[0]; gate.Status != SideEffectGatePending {
+		t.Fatalf("gate status = %s, want pending", gate.Status)
+	}
+}
+
+func TestRunnerDoesNotMarkWriteGateFromRsyncDryRun(t *testing.T) {
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		ArtifactPaths:   []string{"docs/a.md"},
+		AllowedPaths:    []string{"docs/a.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite},
+		Gates:           []SideEffectGate{{Name: "write", Status: SideEffectGatePending}},
+	})
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "run_command", Execute: func(context.Context, map[string]any) (string, error) { return "exit 0", nil }})
+	r := NewRunner(Config{Tools: reg, Session: session})
+
+	if err := r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{ID: "run-1", Name: "run_command", ArgsJSON: `{"command":"rsync --dry-run /tmp/report.md docs/a.md"}`}}); err != nil {
+		t.Fatal(err)
+	}
+	if gate := session.Snapshot().SideEffectIntent.Gates[0]; gate.Status != SideEffectGatePending {
+		t.Fatalf("gate status = %s, want pending", gate.Status)
+	}
+}
+
+func TestRunnerAllowsQuotedGitSnippetInShellWriteDuringScopedIntent(t *testing.T) {
+	r := NewRunner(Config{})
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{ID: "intent-1", AllowedPaths: []string{"docs/a.md"}, RequiredActions: []SideEffectAction{SideEffectActionWrite}})
+	r.session = session
+
+	output := r.beforeToolHookOutput(context.Background(), "run_command", map[string]any{"command": "printf 'steps: edit; git add .' > docs/a.md"})
+	if output.Block != nil {
+		t.Fatalf("unexpected block = %#v", output.Block)
+	}
+}
+
 func hookOverlayContent(output hooks.ExecutionOutput, key string) string {
 	for _, overlay := range output.Overlays {
 		if overlay.Key == key {
@@ -1066,6 +1945,37 @@ func TestRunnerWritesPreviousResponseToMarkdownWithoutModelCall(t *testing.T) {
 	}
 	if got := r.LastResponse(); got != "wrote report" {
 		t.Fatalf("last response = %q, want wrote report", got)
+	}
+}
+
+func TestRunnerDirectMarkdownWriteExtendsActiveSideEffectIntent(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("compare forge with competitors")
+	mustAppendAssistantMessage(t, session, "### Bottom Line\nForge needs CI.")
+	mustCompleteTurn(t, session, turn, "### Bottom Line\nForge needs CI.", nil, nil)
+	session.SetSideEffectIntent(SideEffectIntent{ID: "intent-1", ArtifactPaths: []string{"docs/initial.md"}, AllowedPaths: []string{"docs/initial.md"}})
+	reg := agenttools.NewRegistry()
+	var gotPath string
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "write file",
+		AutoApprove: true,
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			gotPath, _ = args["path"].(string)
+			return "wrote report", nil
+		},
+	})
+	r := NewRunner(Config{Driver: &errorDriver{err: errors.New("driver should not be called")}, Tools: reg, Session: session})
+
+	if err := r.Run(context.Background(), "write it to an md"); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "docs/reports/report.md" {
+		t.Fatalf("path = %q, want docs/reports/report.md", gotPath)
+	}
+	intent := session.Snapshot().SideEffectIntent
+	if intent == nil || !containsString(intent.AllowedPaths, "docs/reports/report.md") {
+		t.Fatalf("AllowedPaths = %#v, want direct write target", intent)
 	}
 }
 
@@ -1423,6 +2333,258 @@ func TestRunnerWritesCompletedAgentResultFallbackOnPostDelegationToolError(t *te
 	}
 	if writtenContent != "# Forge Gap Report\n\nCompleted child-agent synthesis." {
 		t.Fatalf("content = %q", writtenContent)
+	}
+}
+
+func TestRunnerBlocksControlPlaneReportWriteToArtifactPath(t *testing.T) {
+	var executed atomic.Bool
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "write_file", Description: "write", Parameters: []agenttools.ParameterDef{
+		{Name: "path", Type: "string", Required: true},
+		{Name: "content", Type: "string", Required: true},
+	}, AutoApprove: true, Execute: func(context.Context, map[string]any) (string, error) {
+		executed.Store(true)
+		return "wrote", nil
+	}})
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:            "intent-1",
+		ArtifactPaths: []string{"FORGE_VS_CODEX.md"},
+		AllowedPaths:  []string{"FORGE_VS_CODEX.md"},
+	})
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	r := NewRunner(Config{Tools: reg, Session: session})
+
+	err = r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{
+		ID: "write-1", Name: "write_file", ArgsJSON: `{"path":"FORGE_VS_CODEX.md","content":"I've successfully created the commit, but I have a couple of issues to report:"}`,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if executed.Load() {
+		t.Fatal("write_file executed for blocked control-plane artifact write")
+	}
+	if !sessionHistoryContains(session, "blocked", "control-plane") {
+		t.Fatalf("history missing control-plane block feedback: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerBlocksControlPlaneArtifactWriteToArtifactPath(t *testing.T) {
+	var executed atomic.Bool
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "artifact_write", Description: "artifact write", Parameters: []agenttools.ParameterDef{
+		{Name: "path", Type: "string", Required: true},
+		{Name: "content", Type: "string", Required: true},
+	}, AutoApprove: true, Execute: func(context.Context, map[string]any) (string, error) {
+		executed.Store(true)
+		return "wrote", nil
+	}})
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{ID: "intent-1", ArtifactPaths: []string{"FORGE_VS_CODEX.md"}})
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	r := NewRunner(Config{Tools: reg, Session: session})
+
+	err = r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{
+		ID: "artifact-1", Name: "artifact_write", ArgsJSON: `{"path":"FORGE_VS_CODEX.md","content":"I've successfully created the commit, but I have a couple of issues to report:"}`,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed.Load() {
+		t.Fatal("artifact_write executed for blocked control-plane artifact write")
+	}
+}
+
+func TestRunnerBlocksControlPlaneArtifactWritePathAliases(t *testing.T) {
+	workspace := t.TempDir()
+	var executed atomic.Bool
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "write_file", Description: "write", Parameters: []agenttools.ParameterDef{
+		{Name: "path", Type: "string", Required: true},
+		{Name: "content", Type: "string", Required: true},
+	}, AutoApprove: true, Execute: func(context.Context, map[string]any) (string, error) {
+		executed.Store(true)
+		return "wrote", nil
+	}})
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{ID: "intent-1", ArtifactPaths: []string{"FORGE_VS_CODEX.md"}, WorkspaceRoot: workspace})
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	r := NewRunner(Config{Tools: reg, Session: session})
+
+	for _, path := range []string{filepath.Join(workspace, "FORGE_VS_CODEX.md"), "docs/../FORGE_VS_CODEX.md"} {
+		executed.Store(false)
+		err = r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{
+			ID: "write-" + strings.ReplaceAll(path, string(filepath.Separator), "-"), Name: "write_file", ArgsJSON: fmt.Sprintf(`{"path":%q,"content":"I've successfully created the commit, but I have a couple of issues to report:"}`, path),
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if executed.Load() {
+			t.Fatalf("write_file executed for blocked path alias %q", path)
+		}
+	}
+}
+
+func TestRunnerBlocksOutOfScopeWriteDuringSideEffectIntent(t *testing.T) {
+	var executed atomic.Bool
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "write_file", Description: "write", Parameters: []agenttools.ParameterDef{
+		{Name: "path", Type: "string", Required: true},
+		{Name: "content", Type: "string", Required: true},
+	}, AutoApprove: true, Execute: func(context.Context, map[string]any) (string, error) {
+		executed.Store(true)
+		return "wrote", nil
+	}})
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{ID: "intent-1", ArtifactPaths: []string{"docs/a.md"}, AllowedPaths: []string{"docs/a.md"}})
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	r := NewRunner(Config{Tools: reg, Session: session})
+
+	err = r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{
+		ID: "write-1", Name: "write_file", ArgsJSON: `{"path":"docs/other.md","content":"outside"}`,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed.Load() {
+		t.Fatal("write_file executed for out-of-scope side-effect path")
+	}
+	if !sessionHistoryContains(session, "blocked", "outside active side-effect intent") {
+		t.Fatalf("history missing out-of-scope block feedback: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerBlocksOutOfScopeWriteDuringArtifactOnlySideEffectIntent(t *testing.T) {
+	var executed atomic.Bool
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "write_file", Description: "write", Parameters: []agenttools.ParameterDef{
+		{Name: "path", Type: "string", Required: true},
+		{Name: "content", Type: "string", Required: true},
+	}, AutoApprove: true, Execute: func(context.Context, map[string]any) (string, error) {
+		executed.Store(true)
+		return "wrote", nil
+	}})
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{ID: "intent-1", ArtifactPaths: []string{"docs/a.md"}})
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	r := NewRunner(Config{Tools: reg, Session: session})
+
+	err = r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{
+		ID: "write-1", Name: "write_file", ArgsJSON: `{"path":"docs/other.md","content":"outside"}`,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed.Load() {
+		t.Fatal("write_file executed for out-of-scope artifact-only side-effect path")
+	}
+}
+
+func TestRunnerBlocksMixedScopePatchDuringSideEffectIntent(t *testing.T) {
+	var executed atomic.Bool
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "apply_patch", Description: "patch", Parameters: []agenttools.ParameterDef{{Name: "patch", Type: "string", Required: true}}, AutoApprove: true, Execute: func(context.Context, map[string]any) (string, error) {
+		executed.Store(true)
+		return "applied", nil
+	}})
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{ID: "intent-1", ArtifactPaths: []string{"docs/a.md"}, AllowedPaths: []string{"docs/a.md"}})
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	r := NewRunner(Config{Tools: reg, Session: session})
+
+	err = r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{
+		ID: "patch-1", Name: "apply_patch", ArgsJSON: `{"patch":"diff --git a/docs/a.md b/docs/a.md\n--- a/docs/a.md\n+++ b/docs/a.md\n@@ -1 +1 @@\n-old\n+new\ndiff --git a/docs/other.md b/docs/other.md\n--- a/docs/other.md\n+++ b/docs/other.md\n@@ -1 +1 @@\n-old\n+new"}`,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed.Load() {
+		t.Fatal("apply_patch executed for mixed in-scope/out-of-scope side-effect paths")
+	}
+	if !sessionHistoryContains(session, "blocked", "docs/other.md") {
+		t.Fatalf("history missing mixed-scope patch block feedback: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerDoesNotBlockLegitimateArtifactContentWithControlPlaneWords(t *testing.T) {
+	var executed atomic.Bool
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "write_file", Description: "write", Parameters: []agenttools.ParameterDef{
+		{Name: "path", Type: "string", Required: true},
+		{Name: "content", Type: "string", Required: true},
+	}, AutoApprove: true, Execute: func(context.Context, map[string]any) (string, error) {
+		executed.Store(true)
+		return "wrote", nil
+	}})
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{ID: "intent-1", ArtifactPaths: []string{"FORGE_VS_CODEX.md"}})
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	r := NewRunner(Config{Tools: reg, Session: session})
+
+	err = r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{
+		ID: "write-1", Name: "write_file", ArgsJSON: `{"path":"FORGE_VS_CODEX.md","content":"# Sub-agent notes\n\nThis document explains child agent design and tool was unavailable errors."}`,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !executed.Load() {
+		t.Fatal("write_file was blocked for legitimate artifact content")
+	}
+}
+
+func TestRunnerBlocksControlPlaneShellWriteToArtifactPath(t *testing.T) {
+	var executed atomic.Bool
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "run_command", Description: "run", Parameters: []agenttools.ParameterDef{{Name: "command", Type: "string", Required: true}}, AutoApprove: true, Execute: func(context.Context, map[string]any) (string, error) {
+		executed.Store(true)
+		return "exit 0", nil
+	}})
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{ID: "intent-1", ArtifactPaths: []string{"FORGE_VS_CODEX.md"}})
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	r := NewRunner(Config{Tools: reg, Session: session})
+
+	err = r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{
+		ID: "cmd-1", Name: "run_command", ArgsJSON: `{"command":"printf 'I have a couple of issues to report' > FORGE_VS_CODEX.md"}`,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed.Load() {
+		t.Fatal("run_command executed for blocked control-plane artifact write")
 	}
 }
 
@@ -2658,7 +3820,9 @@ func TestRunnerRunsPostEditValidationAfterGitCommitSuccess(t *testing.T) {
 	root := initReactTestGitRepo(t)
 	writeReactTestFile(t, filepath.Join(root, "a.txt"), "a\n")
 	reg := agenttools.NewRegistry()
-	reg.Register(agenttools.NewGitCommit(root, func(agenttools.Action) (bool, error) { return true, nil }))
+	reg.Register(agenttools.NewGitCommitScoped(root, func(agenttools.Action) (bool, error) { return true, nil }, func() agenttools.GitScope {
+		return agenttools.GitScope{AllowedPaths: []string{"a.txt"}}
+	}))
 	session := NewSession()
 	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
 	if err != nil {
@@ -2689,11 +3853,17 @@ func TestRunnerSkipsPostEditValidationAfterGitCommitNoopAndDenied(t *testing.T) 
 		name    string
 		prepare func(t *testing.T, root string)
 		approve bool
+		paths   []string
 	}{
 		{
-			name:    "nothing to commit",
-			prepare: func(t *testing.T, root string) {},
+			name: "nothing to commit",
+			prepare: func(t *testing.T, root string) {
+				writeReactTestFile(t, filepath.Join(root, "a.txt"), "a\n")
+				runReactGit(t, root, "add", "a.txt")
+				runReactGit(t, root, "commit", "-m", "initial")
+			},
 			approve: true,
+			paths:   []string{"a.txt"},
 		},
 		{
 			name: "denied",
@@ -2701,6 +3871,7 @@ func TestRunnerSkipsPostEditValidationAfterGitCommitNoopAndDenied(t *testing.T) 
 				writeReactTestFile(t, filepath.Join(root, "a.txt"), "a\n")
 			},
 			approve: false,
+			paths:   []string{"a.txt"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2708,7 +3879,9 @@ func TestRunnerSkipsPostEditValidationAfterGitCommitNoopAndDenied(t *testing.T) 
 			marker := filepath.Join(root, "validator-ran")
 			tc.prepare(t, root)
 			reg := agenttools.NewRegistry()
-			reg.Register(agenttools.NewGitCommit(root, func(agenttools.Action) (bool, error) { return tc.approve, nil }))
+			reg.Register(agenttools.NewGitCommitScoped(root, func(agenttools.Action) (bool, error) { return tc.approve, nil }, func() agenttools.GitScope {
+				return agenttools.GitScope{AllowedPaths: tc.paths}
+			}))
 			session := NewSession()
 			active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
 			if err != nil {
@@ -5920,6 +7093,32 @@ func TestRunnerRestoresActionToolsAfterDelegatedWaitWhenUserAskedForFileWrite(t 
 	}
 }
 
+func TestRunnerExposesGitPushOnlyForPushIntent(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"git_status", "git_commit", "git_push"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{SideEffectIntent: &SideEffectIntent{RequiredActions: []SideEffectAction{SideEffectActionCommit, SideEffectActionPush}}}
+	names := toolDefNames(r.selectToolDefs(snap))
+	if !containsString(names, "git_push") {
+		t.Fatalf("tools = %#v, want git_push", names)
+	}
+}
+
+func TestRunnerDoesNotExposeGitPushForCommitOnlyIntent(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"git_status", "git_commit", "git_push"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snap := SessionSnapshot{SideEffectIntent: &SideEffectIntent{RequiredActions: []SideEffectAction{SideEffectActionCommit}}}
+	names := toolDefNames(r.selectToolDefs(snap))
+	if containsString(names, "git_push") {
+		t.Fatalf("tools = %#v, should not expose git_push", names)
+	}
+}
+
 func TestRunnerExposesWriteToolsForValidateModeWriteRequest(t *testing.T) {
 	for _, input := range []string{
 		"run validation and write a report to docs/reports/validation.md",
@@ -6367,16 +7566,39 @@ func TestRunnerRecordsPendingDelegationWriteActionAfterWait(t *testing.T) {
 	}
 }
 
+func TestRunnerMergesDelegationTargetIntoActiveSideEffectIntent(t *testing.T) {
+	session := NewSession()
+	session.RecordInput("use repo-auditor then write the report")
+	session.SetSideEffectIntent(SideEffectIntent{ID: "intent-1", AllowedPaths: []string{"docs/summary.md"}})
+	r := NewRunner(Config{Session: session})
+
+	r.updatePostDelegationWorkflow("wait_agent", `{"id":"agent-1","status":"completed","result":"write report path docs/reports/audit.md"}`, false)
+
+	intent := session.Snapshot().SideEffectIntent
+	if intent == nil {
+		t.Fatal("missing side-effect intent")
+	}
+	if !containsString(intent.AllowedPaths, "docs/summary.md") || !containsString(intent.AllowedPaths, "docs/reports/audit.md") {
+		t.Fatalf("AllowedPaths = %#v", intent.AllowedPaths)
+	}
+	if !containsSideEffectAction(intent.RequiredActions, SideEffectActionWrite) {
+		t.Fatalf("RequiredActions = %#v, want write", intent.RequiredActions)
+	}
+}
+
 func TestRunnerRecordsPendingDelegationWriteActionAtSpawnForPathlessArtifactRequests(t *testing.T) {
-	for _, input := range []string{
-		"ask repo-auditor to inspect the repo, then write me a memo",
-		"ask repo-auditor to inspect the repo and save a note",
-		"ask repo-auditor to inspect the repo and create a report",
-		"ask repo-auditor to inspect the repo and write findings",
+	for _, tc := range []struct {
+		input             string
+		wantDefaultIntent bool
+	}{
+		{input: "ask repo-auditor to inspect the repo, then write me a memo", wantDefaultIntent: true},
+		{input: "ask repo-auditor to inspect the repo and save a note", wantDefaultIntent: true},
+		{input: "ask repo-auditor to inspect the repo and create a report", wantDefaultIntent: true},
+		{input: "ask repo-auditor to inspect the repo and write findings"},
 	} {
-		t.Run(input, func(t *testing.T) {
+		t.Run(tc.input, func(t *testing.T) {
 			session := NewSession()
-			session.RecordInput(input)
+			session.RecordInput(tc.input)
 			r := NewRunner(Config{Session: session})
 
 			r.updatePostDelegationWorkflow("spawn_agent", `{"id":"agent-1","role":"repo-auditor","status":"running"}`, false)
@@ -6390,6 +7612,12 @@ func TestRunnerRecordsPendingDelegationWriteActionAtSpawnForPathlessArtifactRequ
 			}
 			if action.TargetPath != "" {
 				t.Fatalf("target path = %q, want empty for pathless request", action.TargetPath)
+			}
+			if tc.wantDefaultIntent {
+				intent := session.Snapshot().SideEffectIntent
+				if intent == nil || !containsString(intent.AllowedPaths, "docs/reports/report.md") {
+					t.Fatalf("SideEffectIntent = %#v, want default report path", intent)
+				}
 			}
 		})
 	}

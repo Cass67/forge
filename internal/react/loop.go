@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -294,6 +297,12 @@ func (r *Runner) RunWithParts(ctx context.Context, input string, parts []llm.Mes
 	if err != nil {
 		return err
 	}
+	if root := deriveActiveWorkspaceRoot(prompt); root != "" {
+		r.session.SetActiveWorkspaceRoot(root)
+	}
+	if intent := deriveSideEffectIntentFromText(turn, prompt); intent != nil {
+		r.session.SetSideEffectIntent(*intent)
+	}
 	r.pendingRetryPrompt = ""
 	if len(parts) == 0 {
 		if handled, err := r.tryDirectLastResponseMarkdownWrite(ctx, turn, prompt, priorResponse); handled {
@@ -542,6 +551,27 @@ func (r *Runner) completeTurn(turn int, response string, toolCalls []TurnToolCal
 	return turnErr
 }
 
+func (r *Runner) finalSideEffectGateMayBlock() bool {
+	if r == nil || r.session == nil {
+		return false
+	}
+	return len(unresolvedSideEffectGates(r.session.Snapshot().SideEffectIntent)) > 0
+}
+
+func (r *Runner) blockFinalSideEffectSuccessIfNeeded(finalText string) (bool, error) {
+	if r == nil || r.session == nil || !finalResponseClaimsSideEffectSuccess(finalText) {
+		return false, nil
+	}
+	feedback := sideEffectGateFeedback(r.session.Snapshot().SideEffectIntent)
+	if feedback == "" {
+		return false, nil
+	}
+	if err := r.session.AppendUserMessage(feedback); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (r *Runner) tryDirectLastResponseMarkdownWrite(ctx context.Context, turn int, input, priorResponse string) (bool, error) {
 	priorResponse = strings.TrimSpace(priorResponse)
 	if r == nil || r.session == nil || r.tools == nil || priorResponse == "" {
@@ -554,6 +584,7 @@ func (r *Runner) tryDirectLastResponseMarkdownWrite(ctx context.Context, turn in
 	if _, ok := r.tools.Get("write_file"); !ok {
 		return false, nil
 	}
+	r.extendSideEffectIntentForDirectWrite(path)
 	start := time.Now()
 	defer r.emitStats(start)
 	args, err := json.Marshal(map[string]any{"path": path, "content": priorResponse})
@@ -572,6 +603,12 @@ func (r *Runner) tryDirectLastResponseMarkdownWrite(ctx context.Context, turn in
 	if final == "" {
 		final = "wrote previous response to " + path
 	}
+	if blocked, err := r.blockFinalSideEffectSuccessIfNeeded(final); blocked || err != nil {
+		if err != nil {
+			return true, err
+		}
+		return true, fmt.Errorf("direct markdown write final blocked by unresolved side-effect gates")
+	}
 	if err := r.appendAssistantMessage(final); err != nil {
 		return true, err
 	}
@@ -583,6 +620,27 @@ func (r *Runner) tryDirectLastResponseMarkdownWrite(ctx context.Context, turn in
 		r.renderer.AgentText(final)
 	}
 	return true, nil
+}
+
+func (r *Runner) extendSideEffectIntentForDirectWrite(path string) {
+	if r == nil || r.session == nil {
+		return
+	}
+	path = normalizeIntentPath(path)
+	if path == "" {
+		return
+	}
+	r.session.UpdateSideEffectIntent(func(intent *SideEffectIntent) {
+		if intent == nil || strings.TrimSpace(intent.ID) == "" {
+			return
+		}
+		if !slices.Contains(intent.ArtifactPaths, path) {
+			intent.ArtifactPaths = append(intent.ArtifactPaths, path)
+		}
+		if !slices.Contains(intent.AllowedPaths, path) {
+			intent.AllowedPaths = append(intent.AllowedPaths, path)
+		}
+	})
 }
 
 func directLastResponseMarkdownWritePath(input string) (string, bool) {
@@ -909,6 +967,9 @@ func (r *Runner) tryCompletedAgentResultFallbackWithOptions(ctx context.Context,
 	}
 	fallback := "Parent model connection failed while composing the final response. Showing completed child-agent result instead.\n\n" + content
 	r.pendingRetryPrompt = ""
+	if blocked, err := r.blockFinalSideEffectSuccessIfNeeded(fallback); blocked || err != nil {
+		return false, err
+	}
 	if err := r.appendAssistantMessage(fallback); err != nil {
 		return true, err
 	}
@@ -939,6 +1000,12 @@ func (r *Runner) writeCompletedAgentResultFallback(ctx context.Context, turn int
 	final := strings.TrimSpace(toolResultForCallID(r.session.Snapshot(), call.ID))
 	if final == "" {
 		final = "wrote completed child-agent results to " + path
+	}
+	if blocked, err := r.blockFinalSideEffectSuccessIfNeeded(final); blocked || err != nil {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("completed-agent fallback final blocked by unresolved side-effect gates")
 	}
 	if err := r.appendAssistantMessage(final); err != nil {
 		return err
@@ -1401,6 +1468,7 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 	visibleEmitted := 0
 	streamVisible := r.renderer != nil
 	hasTools := len(toolDefs) > 0
+	suppressFinalStreaming := r.finalSideEffectGateMayBlock()
 
 	for tok := range out {
 		if tok.ReasoningContent != "" {
@@ -1415,7 +1483,7 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 			continue
 		}
 		textBuf.WriteString(tok.Text)
-		if !hasTools {
+		if !hasTools && !suppressFinalStreaming {
 			current := textBuf.String()
 			if streamVisible && r.renderer != nil && len(current) > visibleEmitted {
 				r.renderer.AgentToken(current[visibleEmitted:])
@@ -1469,6 +1537,9 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 			"A tool call is required for this step. Use one of the available tools instead of answering with prose.",
 		)
 	}
+	if blocked, err := r.blockFinalSideEffectSuccessIfNeeded(finalText); blocked || err != nil {
+		return []llm.NativeToolCall{}, err
+	}
 	reasoning := strings.TrimSpace(reasoningBuf.String())
 	if err := r.appendAssistantMessage(finalText); err != nil {
 		return nil, err
@@ -1496,6 +1567,7 @@ func (r *Runner) streamPlainTurn(ctx context.Context, turn int, messages []llm.M
 	var textBuf strings.Builder
 	visibleEmitted := 0
 	streamVisible := r.renderer != nil
+	suppressFinalStreaming := r.finalSideEffectGateMayBlock()
 
 	for tok := range out {
 		if tok.Text == "" {
@@ -1503,7 +1575,7 @@ func (r *Runner) streamPlainTurn(ctx context.Context, turn int, messages []llm.M
 		}
 		textBuf.WriteString(tok.Text)
 		current := textBuf.String()
-		if streamVisible && r.renderer != nil && len(current) > visibleEmitted {
+		if !suppressFinalStreaming && streamVisible && r.renderer != nil && len(current) > visibleEmitted {
 			r.renderer.AgentToken(current[visibleEmitted:])
 			visibleEmitted = len(current)
 		}
@@ -1525,6 +1597,9 @@ func (r *Runner) streamPlainTurn(ctx context.Context, turn int, messages []llm.M
 			"react runtime: provider returned deprecated XML tool-call markup",
 			"Use the provider's native tool-calling interface only. Do not emit prose, XML, or example markup in place of a tool call.",
 		)
+	}
+	if blocked, err := r.blockFinalSideEffectSuccessIfNeeded(finalText); blocked || err != nil {
+		return []llm.NativeToolCall{}, err
 	}
 	if err := r.appendAssistantMessage(finalText); err != nil {
 		return nil, err
@@ -1681,11 +1756,46 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 			}
 			r.updatePlanWorkflow(call.Name, args, "", true)
 			r.updateSameFileSearchWorkflow(call.Name, args, true)
+			r.updateSideEffectGatesAfterToolResult(call.Name, args, validationErr, true)
 			continue
 		}
 
 		if err := r.ensureTurnCanMutate(ctx, turn); err != nil {
 			return err
+		}
+		if blocked, ok := r.blockOutOfScopeSideEffectMutation(call.Name, args); ok {
+			if err := r.appendFailureAndToolResultForTurn(ctx, turn,
+				protocol.FailureItem{Decision: protocol.ClassifyPolicyBlocked(blocked)},
+				protocol.ToolCallItem{ToolName: call.Name, ToolCallID: call.ID, Args: args},
+				protocol.ToolResultItem{ToolCallID: call.ID, Text: blocked},
+			); err != nil {
+				return err
+			}
+			if r.renderer != nil {
+				r.renderer.ToolCall(call.Name, reactToolSummary(args))
+				r.renderer.ToolResult(call.Name, blocked, "", true)
+			}
+			r.updatePlanWorkflow(call.Name, args, "", true)
+			r.updateSameFileSearchWorkflow(call.Name, args, true)
+			r.updateSideEffectGatesAfterToolResult(call.Name, args, blocked, true)
+			continue
+		}
+		if blocked, ok := r.blockControlPlaneArtifactWrite(call.Name, args); ok {
+			if err := r.appendFailureAndToolResultForTurn(ctx, turn,
+				protocol.FailureItem{Decision: protocol.ClassifyPolicyBlocked(blocked)},
+				protocol.ToolCallItem{ToolName: call.Name, ToolCallID: call.ID, Args: args},
+				protocol.ToolResultItem{ToolCallID: call.ID, Text: blocked},
+			); err != nil {
+				return err
+			}
+			if r.renderer != nil {
+				r.renderer.ToolCall(call.Name, reactToolSummary(args))
+				r.renderer.ToolResult(call.Name, blocked, "", true)
+			}
+			r.updatePlanWorkflow(call.Name, args, "", true)
+			r.updateSameFileSearchWorkflow(call.Name, args, true)
+			r.updateSideEffectGatesAfterToolResult(call.Name, args, blocked, true)
+			continue
 		}
 		if isCheckpointMutatingTool(call.Name) {
 			r.ensurePreMutationCheckpoint(ctx, turn)
@@ -1706,6 +1816,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 			}
 			r.updatePlanWorkflow(call.Name, args, "", true)
 			r.updateSameFileSearchWorkflow(call.Name, args, true)
+			r.updateSideEffectGatesAfterToolResult(call.Name, args, blocked, true)
 			continue
 		}
 
@@ -1820,6 +1931,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 			}
 			r.updateGitWorkflow(call.Name, args, errResult)
 			r.updatePostDelegationWorkflow(call.Name, errResult, true)
+			r.updateSideEffectGatesAfterToolResult(call.Name, args, errResult, true)
 			if isModelCorrectableToolExecutionError(call.Name, res.err) {
 				continue
 			}
@@ -1847,6 +1959,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 		r.updateValidationWorkflow(call.Name, args, res.result)
 		r.updateRepeatToolCallWorkflow(call.Name, args, res.result)
 		r.updatePostDelegationWorkflow(call.Name, res.result, false)
+		r.updateSideEffectGatesAfterToolResult(call.Name, args, res.result, false)
 		r.recordCheckpointScope(ctx, turn, call.Name, args)
 		if exec.tool.MutatesWorkspace && strings.TrimSpace(res.diff) != "" {
 			mutated = true
@@ -1857,6 +1970,155 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 	}
 	r.runPostEditValidator(ctx, changedFiles, mutated)
 	return nil
+}
+
+func (r *Runner) updateSideEffectGatesAfterToolResult(toolName string, args map[string]any, result string, isError bool) {
+	if r == nil || r.session == nil {
+		return
+	}
+	snap := r.session.Snapshot()
+	if snap.SideEffectIntent == nil {
+		return
+	}
+	gateName := sideEffectGateNameForTool(toolName)
+	if gateName == "" {
+		return
+	}
+	if gateName == string(SideEffectActionWrite) && !sideEffectWriteMatchesIntent(toolName, snap.SideEffectIntent, args) {
+		return
+	}
+	status := sideEffectGateStatusForToolResult(toolName, result, isError)
+	evidence := strings.TrimSpace(result)
+	if evidence == "" && isError {
+		evidence = "tool failed"
+	}
+	r.session.UpdateSideEffectIntent(func(intent *SideEffectIntent) {
+		if intent == nil || strings.TrimSpace(intent.ID) == "" {
+			return
+		}
+		updateSideEffectGate(intent, gateName, status, evidence)
+	})
+}
+
+func sideEffectGateNameForTool(toolName string) string {
+	switch strings.TrimSpace(toolName) {
+	case "write_file", "edit_file", "apply_patch", "artifact_write", "run_command":
+		return string(SideEffectActionWrite)
+	case "git_commit":
+		return string(SideEffectActionCommit)
+	case "git_push":
+		return string(SideEffectActionPush)
+	default:
+		return ""
+	}
+}
+
+func sideEffectWriteMatchesIntent(toolName string, intent *SideEffectIntent, args map[string]any) bool {
+	if intent == nil {
+		return false
+	}
+	switch strings.TrimSpace(toolName) {
+	case "write_file", "edit_file", "artifact_write":
+		return sideEffectPathMatchesIntent(normalizeArtifactToolPath(stringArg(args, "path"), intent), intent)
+	case "apply_patch":
+		patch := stringArg(args, "patch")
+		if sideEffectPathMatchesIntent(patchArtifactTarget(patch, intent), intent) {
+			return true
+		}
+		for _, path := range pathsFromPatch(patch) {
+			if sideEffectPathMatchesIntent(normalizeArtifactToolPath(path, intent), intent) {
+				return true
+			}
+		}
+		return false
+	case "run_command":
+		return sideEffectPathMatchesIntent(commandWriteArtifactTarget(stringArg(args, "command"), intent), intent)
+	default:
+		return false
+	}
+}
+
+func sideEffectPathMatchesIntent(path string, intent *SideEffectIntent) bool {
+	path = normalizeIntentPath(path)
+	if path == "" || intent == nil {
+		return false
+	}
+	return slices.Contains(intent.AllowedPaths, path) || slices.Contains(intent.ArtifactPaths, path)
+}
+
+func sideEffectGateStatusForToolResult(toolName, result string, isError bool) SideEffectGateStatus {
+	if isError {
+		return SideEffectGateFailed
+	}
+	lower := strings.ToLower(strings.TrimSpace(result))
+	if strings.TrimSpace(toolName) == "run_command" {
+		if runCommandResultExitZero(result) {
+			return SideEffectGatePassed
+		}
+		if sideEffectToolResultIsHardFailure(result) {
+			return SideEffectGateFailed
+		}
+		return SideEffectGateFailed
+	}
+	if sideEffectToolResultIsFailure(result) {
+		return SideEffectGateFailed
+	}
+	switch strings.TrimSpace(toolName) {
+	case "write_file", "edit_file", "apply_patch", "artifact_write":
+		return SideEffectGatePassed
+	case "git_commit":
+		if strings.HasPrefix(lower, "commit ") && strings.Contains(lower, " created with files") {
+			return SideEffectGatePassed
+		}
+	case "git_push":
+		if strings.HasPrefix(lower, "remote contains ") {
+			return SideEffectGatePassed
+		}
+	}
+	return SideEffectGateFailed
+}
+
+func sideEffectToolResultIsFailure(result string) bool {
+	lower := strings.ToLower(strings.TrimSpace(result))
+	return sideEffectToolResultIsHardFailure(result) || strings.Contains(lower, "nothing to commit") || strings.HasPrefix(lower, "failed") || strings.Contains(lower, " failed:") || strings.Contains(lower, " failed ")
+}
+
+func sideEffectToolResultIsHardFailure(result string) bool {
+	lower := strings.ToLower(strings.TrimSpace(result))
+	return lower == "" || strings.HasPrefix(lower, "error") || strings.HasPrefix(lower, "blocked") || strings.Contains(lower, "denied by user")
+}
+
+func runCommandResultExitZero(result string) bool {
+	lines := strings.Split(result, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		return line == "exit 0"
+	}
+	return false
+}
+
+func updateSideEffectGate(intent *SideEffectIntent, name string, status SideEffectGateStatus, evidence string) {
+	if intent == nil || strings.TrimSpace(name) == "" {
+		return
+	}
+	evidence = strings.TrimSpace(evidence)
+	for i := range intent.Gates {
+		if intent.Gates[i].Name != name {
+			continue
+		}
+		if intent.Gates[i].Status == SideEffectGatePassed && status != SideEffectGatePassed {
+			return
+		}
+		intent.Gates[i].Status = status
+		intent.Gates[i].Evidence = evidence
+		return
+	}
+	if containsSideEffectAction(intent.RequiredActions, SideEffectAction(name)) {
+		intent.Gates = append(intent.Gates, SideEffectGate{Name: name, Status: status, Evidence: evidence})
+	}
 }
 
 func (r *Runner) runPostEditValidator(ctx context.Context, changedFiles []string, mutated bool) {
@@ -1954,6 +2216,44 @@ func (r *Runner) recordCheckpointScope(ctx context.Context, turn int, toolName s
 	}
 }
 
+func (r *Runner) blockOutOfScopeSideEffectMutation(toolName string, args map[string]any) (string, bool) {
+	if r == nil || r.session == nil {
+		return "", false
+	}
+	intent := r.session.Snapshot().SideEffectIntent
+	if intent == nil || (len(intent.AllowedPaths) == 0 && len(intent.ArtifactPaths) == 0) {
+		return "", false
+	}
+	switch strings.TrimSpace(toolName) {
+	case "write_file", "edit_file", "artifact_write":
+		path := normalizeArtifactToolPath(stringArg(args, "path"), intent)
+		if sideEffectPathMatchesIntent(path, intent) {
+			return "", false
+		}
+		return outOfScopeSideEffectBlockMessage(firstNonEmpty(path, stringArg(args, "path"))), true
+	case "apply_patch":
+		paths := pathsFromPatch(stringArg(args, "patch"))
+		if len(paths) == 0 {
+			return "blocked: refusing apply_patch during active side-effect intent because patch target paths could not be verified", true
+		}
+		for _, raw := range paths {
+			path := normalizeArtifactToolPath(raw, intent)
+			if !sideEffectPathMatchesIntent(path, intent) {
+				return outOfScopeSideEffectBlockMessage(firstNonEmpty(path, raw)), true
+			}
+		}
+	}
+	return "", false
+}
+
+func outOfScopeSideEffectBlockMessage(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		path = "unknown path"
+	}
+	return "blocked: refusing workspace mutation outside active side-effect intent allowed paths: " + path
+}
+
 func checkpointScopePaths(toolName string, args map[string]any) []string {
 	switch toolName {
 	case "write_file", "edit_file", "artifact_write":
@@ -1967,6 +2267,393 @@ func checkpointScopePaths(toolName string, args map[string]any) []string {
 	return nil
 }
 
+func (r *Runner) blockControlPlaneArtifactWrite(toolName string, args map[string]any) (string, bool) {
+	if r == nil || r.session == nil {
+		return "", false
+	}
+	var path, content string
+	snapshot := r.session.Snapshot()
+	intent := snapshot.SideEffectIntent
+	if intent == nil || len(intent.ArtifactPaths) == 0 {
+		return "", false
+	}
+	switch toolName {
+	case "write_file", "artifact_write":
+		path = stringArg(args, "path")
+		content = stringArg(args, "content")
+	case "edit_file":
+		path = stringArg(args, "path")
+		content = stringArg(args, "new_text")
+	case "apply_patch":
+		content = stringArg(args, "patch")
+		if !looksLikeControlPlaneArtifactContent(content) {
+			return "", false
+		}
+		if artifact := patchArtifactTarget(content, intent); artifact != "" {
+			return controlPlaneArtifactBlockMessage(artifact), true
+		}
+		return "", false
+	case "run_command":
+		content = stringArg(args, "command")
+		if !looksLikeControlPlaneArtifactContent(content) {
+			return "", false
+		}
+		if artifact := commandArtifactTarget(content, intent); artifact != "" {
+			return controlPlaneArtifactBlockMessage(artifact), true
+		}
+		return "", false
+	default:
+		return "", false
+	}
+	path = normalizeArtifactToolPath(path, intent)
+	if path == "" || !looksLikeControlPlaneArtifactContent(content) {
+		return "", false
+	}
+	for _, artifact := range intent.ArtifactPaths {
+		artifact = normalizeIntentPath(artifact)
+		if artifact != "" && artifact == path {
+			return controlPlaneArtifactBlockMessage(artifact), true
+		}
+	}
+	return "", false
+}
+
+func normalizeArtifactToolPath(path string, intent *SideEffectIntent) string {
+	path = strings.TrimSpace(strings.Trim(path, "`'\".,:;()[]{}<>"))
+	if path == "" || looksLikeWindowsAbsolutePath(path) || strings.Contains(path, "\\") || strings.Contains(path, ":") {
+		return ""
+	}
+	if normalized := normalizeIntentPath(path); normalized != "" {
+		return normalized
+	}
+	if filepath.IsAbs(path) {
+		if intent == nil || strings.TrimSpace(intent.WorkspaceRoot) == "" {
+			return ""
+		}
+		root := filepath.Clean(strings.TrimSpace(intent.WorkspaceRoot))
+		rel, err := filepath.Rel(root, filepath.Clean(path))
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return ""
+		}
+		return normalizeIntentPath(filepath.ToSlash(rel))
+	}
+	return normalizeIntentPath(filepath.ToSlash(filepath.Clean(path)))
+}
+
+func controlPlaneArtifactBlockMessage(path string) string {
+	return "blocked: refusing to write control-plane child-agent report text into requested artifact " + path + ". Synthesize the user-facing document content instead, or ask the user if they explicitly want an incident report in this file."
+}
+
+func patchArtifactTarget(patch string, intent *SideEffectIntent) string {
+	for _, path := range pathsFromPatch(patch) {
+		path = normalizeArtifactToolPath(path, intent)
+		if path == "" {
+			continue
+		}
+		for _, artifact := range intent.ArtifactPaths {
+			artifact = normalizeIntentPath(artifact)
+			if artifact != "" && artifact == path {
+				return artifact
+			}
+		}
+	}
+	for _, line := range strings.Split(patch, "\n") {
+		line = strings.TrimSpace(line)
+		for _, prefix := range []string{"*** Add File:", "*** Update File:", "*** Delete File:"} {
+			if !strings.HasPrefix(line, prefix) {
+				continue
+			}
+			path := normalizeArtifactToolPath(strings.TrimSpace(strings.TrimPrefix(line, prefix)), intent)
+			if path == "" {
+				continue
+			}
+			for _, artifact := range intent.ArtifactPaths {
+				artifact = normalizeIntentPath(artifact)
+				if artifact != "" && artifact == path {
+					return artifact
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func commandArtifactTarget(command string, intent *SideEffectIntent) string {
+	if intent == nil {
+		return ""
+	}
+	for _, artifact := range intent.ArtifactPaths {
+		normalized := normalizeIntentPath(artifact)
+		if normalized == "" {
+			continue
+		}
+		if strings.Contains(command, normalized) || strings.Contains(command, filepath.Base(normalized)) {
+			return normalized
+		}
+	}
+	return ""
+}
+
+func commandWriteArtifactTarget(command string, intent *SideEffectIntent) string {
+	if intent == nil {
+		return ""
+	}
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return ""
+	}
+	for _, artifact := range append(append([]string(nil), intent.ArtifactPaths...), intent.AllowedPaths...) {
+		normalized := normalizeIntentPath(artifact)
+		if normalized == "" || !commandLooksLikeWriteToPath(command, commandWritePathRefs(normalized, intent)) {
+			continue
+		}
+		return normalized
+	}
+	return ""
+}
+
+func commandWritePathRefs(path string, intent *SideEffectIntent) []string {
+	refs := []string{path, "./" + path}
+	if intent != nil && strings.TrimSpace(intent.WorkspaceRoot) != "" {
+		refs = append(refs, filepath.Join(strings.TrimSpace(intent.WorkspaceRoot), filepath.FromSlash(path)))
+	}
+	return uniqueStrings(refs)
+}
+
+func commandLooksLikeWriteToPath(command string, paths []string) bool {
+	pathRefs := nonEmptyShellPathRefs(paths)
+	for _, segment := range shellCommandSegments(command) {
+		for _, nested := range nestedShellCommandsFromSegment(segment) {
+			if commandLooksLikeWriteToPath(nested, pathRefs) {
+				return true
+			}
+		}
+		if shellSegmentRedirectsToPath(segment, pathRefs) || commandSegmentWritesToDestination(segment, pathRefs) {
+			return true
+		}
+	}
+	return false
+}
+
+func nestedShellCommandsFromSegment(segment string) []string {
+	tokens := shellFields(segment)
+	commands := make([]string, 0, 1)
+	for i, token := range tokens {
+		if !isShellInterpreter(token) {
+			continue
+		}
+		commandIndex := shellCommandStringOptionIndex(tokens[i+1:])
+		if commandIndex < 0 || i+commandIndex+2 >= len(tokens) {
+			continue
+		}
+		nested := expandShellPositionalParameters(tokens[i+commandIndex+2], tokens[i+commandIndex+3:])
+		if nested = strings.TrimSpace(nested); nested != "" {
+			commands = append(commands, nested)
+		}
+	}
+	return commands
+}
+
+func expandShellPositionalParameters(command string, args []string) string {
+	for i := 1; i < len(args); i++ {
+		value := args[i]
+		placeholder := fmt.Sprintf("$%d", i)
+		command = strings.ReplaceAll(command, placeholder, value)
+		command = strings.ReplaceAll(command, "${"+strconv.Itoa(i)+"}", value)
+	}
+	return command
+}
+
+func nonEmptyShellPathRefs(paths []string) []string {
+	refs := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if path = strings.TrimSpace(path); path != "" {
+			refs = append(refs, path)
+		}
+	}
+	return uniqueStrings(refs)
+}
+
+func shellSegmentRedirectsToPath(segment string, refs []string) bool {
+	inSingleQuote := false
+	inDoubleQuote := false
+	for i := 0; i < len(segment); i++ {
+		if shellCharEscaped(segment, i) {
+			continue
+		}
+		switch segment[i] {
+		case '\'':
+			if !inDoubleQuote {
+				inSingleQuote = !inSingleQuote
+			}
+			continue
+		case '"':
+			if !inSingleQuote {
+				inDoubleQuote = !inDoubleQuote
+			}
+			continue
+		case '>':
+			if inSingleQuote || inDoubleQuote {
+				continue
+			}
+			if i+1 < len(segment) && segment[i+1] == '>' {
+				i++
+			}
+			j := i + 1
+			for j < len(segment) && (segment[j] == ' ' || segment[j] == '\t') {
+				j++
+			}
+			target, _ := nextShellToken(segment, j)
+			if shellTokenMatchesPath(target, refs) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func commandSegmentWritesToDestination(segment string, refs []string) bool {
+	tokens := shellFields(segment)
+	if len(tokens) < 2 {
+		return false
+	}
+	cmd := filepath.Base(tokens[0])
+	switch cmd {
+	case "cp", "mv", "install", "rsync":
+		if len(tokens) < 3 {
+			return false
+		}
+		if cmd == "rsync" && commandTokensIncludeRsyncDryRun(tokens[1:]) {
+			return false
+		}
+		last := strings.TrimRight(tokens[len(tokens)-1], ";")
+		return shellTokenMatchesPath(last, refs) || commandDirectoryDestinationMatchesPath(tokens, refs)
+	case "tee", "touch":
+		skipNext := false
+		for _, token := range tokens[1:] {
+			if skipNext {
+				skipNext = false
+				continue
+			}
+			if token == "<" {
+				skipNext = true
+				continue
+			}
+			if strings.HasPrefix(token, "<") {
+				continue
+			}
+			if strings.HasPrefix(token, "-") {
+				continue
+			}
+			if shellTokenMatchesPath(token, refs) {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+func commandDirectoryDestinationMatchesPath(tokens []string, refs []string) bool {
+	if len(tokens) < 3 {
+		return false
+	}
+	destination := strings.TrimSuffix(strings.Trim(strings.TrimRight(tokens[len(tokens)-1], ";"), "'\""), "/")
+	for _, ref := range refs {
+		ref = strings.Trim(strings.TrimSpace(ref), "'\"")
+		if ref == "" {
+			continue
+		}
+		for _, sourceToken := range tokens[1 : len(tokens)-1] {
+			source := strings.Trim(sourceToken, "'\"")
+			if source == "" || strings.HasPrefix(source, "-") || shellTokenMatchesPath(source, refs) || filepath.Base(ref) != filepath.Base(source) {
+				continue
+			}
+			dir := strings.TrimSuffix(filepath.ToSlash(filepath.Dir(ref)), "/")
+			if destination == dir {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func commandTokensIncludeRsyncDryRun(tokens []string) bool {
+	for _, token := range tokens {
+		if token == "--dry-run" || token == "-n" {
+			return true
+		}
+		if strings.HasPrefix(token, "-") && !strings.HasPrefix(token, "--") && strings.Contains(token, "n") {
+			return true
+		}
+	}
+	return false
+}
+
+func shellFields(segment string) []string {
+	var fields []string
+	var current strings.Builder
+	inSingleQuote := false
+	inDoubleQuote := false
+	flush := func() {
+		if current.Len() > 0 {
+			fields = append(fields, current.String())
+			current.Reset()
+		}
+	}
+	for i := 0; i < len(segment); i++ {
+		if segment[i] == '\\' && !inSingleQuote && i+1 < len(segment) {
+			current.WriteByte(segment[i+1])
+			i++
+			continue
+		}
+		switch segment[i] {
+		case '\'':
+			if !inDoubleQuote {
+				inSingleQuote = !inSingleQuote
+				continue
+			}
+		case '"':
+			if !inSingleQuote {
+				inDoubleQuote = !inDoubleQuote
+				continue
+			}
+		case ' ', '\t', '\n', '\r':
+			if !inSingleQuote && !inDoubleQuote {
+				flush()
+				continue
+			}
+		}
+		current.WriteByte(segment[i])
+	}
+	flush()
+	return fields
+}
+
+func nextShellToken(segment string, start int) (string, int) {
+	fields := shellFields(segment[start:])
+	if len(fields) == 0 {
+		return "", len(segment)
+	}
+	return fields[0], start + len(fields[0])
+}
+
+func shellTokenMatchesPath(token string, refs []string) bool {
+	token = strings.Trim(strings.TrimSpace(token), "'\"")
+	normalizedToken := normalizeIntentPath(token)
+	for _, ref := range refs {
+		ref = strings.Trim(strings.TrimSpace(ref), "'\"")
+		if token == ref {
+			return true
+		}
+		if normalizedToken != "" && normalizedToken == normalizeIntentPath(ref) {
+			return true
+		}
+	}
+	return false
+}
+
 func pathsFromPatch(patch string) []string {
 	var paths []string
 	for _, line := range strings.Split(patch, "\n") {
@@ -1974,6 +2661,14 @@ func pathsFromPatch(patch string) []string {
 			if strings.HasPrefix(line, prefix) {
 				path := strings.TrimSpace(strings.TrimPrefix(line, prefix))
 				if path != "/dev/null" {
+					paths = append(paths, path)
+				}
+			}
+		}
+		for _, prefix := range []string{"*** Add File:", "*** Update File:", "*** Delete File:", "*** Move to:"} {
+			if strings.HasPrefix(line, prefix) {
+				path := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+				if path != "" && path != "/dev/null" {
 					paths = append(paths, path)
 				}
 			}
@@ -2757,6 +3452,13 @@ func allowedToolNamesForSnapshot(snapshot SessionSnapshot) []string {
 	if inputSuggestsGitCommit(text) {
 		add("git_commit")
 	}
+	if sideEffectIntentRequiresAction(snapshot.SideEffectIntent, SideEffectActionCommit) {
+		add("git_commit")
+	}
+	if sideEffectIntentRequiresAction(snapshot.SideEffectIntent, SideEffectActionPush) {
+		addAll(gitReadToolNames)
+		add("git_push")
+	}
 	if historyIncludesToolHelp(snapshot) && len(allowed) > 0 {
 		addAll(writeToolNames, commandToolNames)
 	}
@@ -2769,6 +3471,13 @@ func allowedToolNamesForSnapshot(snapshot SessionSnapshot) []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+func sideEffectIntentRequiresAction(intent *SideEffectIntent, action SideEffectAction) bool {
+	if intent == nil {
+		return false
+	}
+	return containsSideEffectAction(intent.RequiredActions, action)
 }
 
 func historyIncludesToolHelp(snapshot SessionSnapshot) bool {
@@ -2999,6 +3708,7 @@ func (r *Runner) updatePostDelegationWorkflow(toolName, result string, isError b
 		}
 		r.postDelegation.pendingWrite = true
 		r.session.SetPendingDelegationAction(action)
+		r.ensureSideEffectIntentForDelegation(action, snapshot.LastInput+"\n"+result)
 	case "wait_agent":
 		if isError {
 			return
@@ -3019,6 +3729,7 @@ func (r *Runner) updatePostDelegationWorkflow(toolName, result string, isError b
 					action.SourceAgent = strings.TrimSpace(agentResult.ID)
 				}
 				r.session.SetPendingDelegationAction(action)
+				r.ensureSideEffectIntentForDelegation(action, snapshot.LastInput+"\n"+result)
 			}
 		}
 	case "write_file", "edit_file", "apply_patch", "run_command":
@@ -3030,6 +3741,56 @@ func (r *Runner) updatePostDelegationWorkflow(toolName, result string, isError b
 			}
 		}
 	}
+}
+
+func (r *Runner) ensureSideEffectIntentForDelegation(action DelegationActionState, text string) {
+	if r == nil || r.session == nil || action.Kind != DelegationActionWriteDoc {
+		return
+	}
+	targetPath := normalizeIntentPath(action.TargetPath)
+	if targetPath == "" {
+		targetPath = extractDelegationTargetPath(text)
+		targetPath = normalizeIntentPath(targetPath)
+	}
+	if targetPath == "" {
+		if path, ok := completedAgentResultMarkdownWritePath(text); ok {
+			targetPath = normalizeIntentPath(path)
+		}
+	}
+	if targetPath == "" {
+		return
+	}
+	snapshot := r.session.Snapshot()
+	if snapshot.SideEffectIntent == nil {
+		turn := snapshot.Turn
+		if turn == 0 {
+			turn = 1
+		}
+		r.session.SetSideEffectIntent(SideEffectIntent{
+			ID:              fmt.Sprintf("intent-%d", turn),
+			SourceTurn:      turn,
+			ArtifactPaths:   []string{targetPath},
+			AllowedPaths:    []string{targetPath},
+			RequiredActions: []SideEffectAction{SideEffectActionWrite},
+			Remote:          "origin",
+			Gates:           initialGatesForActions([]SideEffectAction{SideEffectActionWrite}),
+		})
+		return
+	}
+	r.session.UpdateSideEffectIntent(func(intent *SideEffectIntent) {
+		if !slices.Contains(intent.ArtifactPaths, targetPath) {
+			intent.ArtifactPaths = append(intent.ArtifactPaths, targetPath)
+		}
+		if !slices.Contains(intent.AllowedPaths, targetPath) {
+			intent.AllowedPaths = append(intent.AllowedPaths, targetPath)
+		}
+		if !containsSideEffectAction(intent.RequiredActions, SideEffectActionWrite) {
+			intent.RequiredActions = append(intent.RequiredActions, SideEffectActionWrite)
+		}
+		if !containsSideEffectGate(intent.Gates, string(SideEffectActionWrite)) {
+			intent.Gates = append(intent.Gates, SideEffectGate{Name: string(SideEffectActionWrite), Status: SideEffectGatePending})
+		}
+	})
 }
 
 func extractDelegationTargetPath(text string) string {
@@ -3281,10 +4042,64 @@ func inputSuggestsRepoContext(text string) bool {
 }
 
 func inputSuggestsFileWrites(text string) bool {
+	if inputNegatesFileWrite(text) {
+		return false
+	}
+	if inputSuggestsReadOnlyGetPath(text) {
+		return false
+	}
+	if inputSuggestsChatReviewOutput(text) {
+		return false
+	}
 	if !inputSuggestsDocumentOutputAction(text) {
 		return inputSuggestsReportFileTarget(text)
 	}
 	return inputSuggestsExplicitFileWrite(text)
+}
+
+func inputSuggestsReadOnlyGetPath(text string) bool {
+	text = normalizeToolIntentText(text)
+	return strings.HasPrefix(text, "get ") && inputMentionsPathLikeText(text) && !inputHasExplicitOutputDestination(text)
+}
+
+func inputSuggestsChatReviewOutput(text string) bool {
+	text = normalizeToolIntentText(text)
+	if !containsToolPhrase(text, "write a review of", "write up what you think about", "write up what you think of", "write up your thoughts about", "write up your thoughts on") {
+		return false
+	}
+	return !inputHasExplicitOutputDestination(text)
+}
+
+func inputHasExplicitOutputDestination(text string) bool {
+	if containsToolPhrase(text, "to a file", "into a file", "as a file") {
+		return true
+	}
+	fields := strings.Fields(text)
+	for i, field := range fields {
+		marker := strings.Trim(field, "`'\".,:;()[]{}<>")
+		if marker != "to" && marker != "into" && marker != "as" {
+			continue
+		}
+		if i+1 >= len(fields) {
+			continue
+		}
+		candidate := normalizeIntentPath(fields[i+1])
+		if candidate != "" && looksLikeExplicitIntentPath(candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func inputNegatesFileWrite(text string) bool {
+	text = normalizeToolIntentText(text)
+	if containsToolPhrase(text, "read-only", "read only", "review only", "inspect only", "no edits", "no changes", "without writing", "without editing", "do not write", "don't write", "dont write") {
+		return true
+	}
+	if containsToolPhrase(text, "do not edit", "don't edit", "dont edit", "not edit") && containsToolPhrase(text, "review ", "inspect ", "read ", "check ") && !containsToolPhrase(text, "write ", "save ", "create ", "update ", "append ", "patch ") {
+		return true
+	}
+	return false
 }
 
 func inputSuggestsExplicitFileWrite(text string) bool {
@@ -3407,10 +4222,36 @@ func containsExternalLocator(text string) bool {
 }
 
 func inputSuggestsGitCommit(text string) bool {
+	if inputNegatesGitCommit(text) {
+		return false
+	}
 	return containsToolPhrase(text,
 		"git commit", "commit it", "commit this", "create a commit",
-		"make a commit", "commit the changes",
+		"make a commit", "commit the changes", "commit only",
 	)
+}
+
+func inputNegatesGitCommit(text string) bool {
+	text = normalizeToolIntentText(text)
+	if containsToolPhrase(text,
+		"do not commit", "do not git commit", "don't commit", "don't git commit", "dont commit", "dont git commit",
+		"no commit", "no git commit", "without commit", "without git commit", "not commit", "not git commit",
+	) {
+		return true
+	}
+	idx := strings.Index(text, "git commit")
+	if idx < 0 {
+		idx = strings.Index(text, "commit")
+	}
+	if idx < 0 {
+		return false
+	}
+	start := idx - 40
+	if start < 0 {
+		start = 0
+	}
+	prefix := text[start:idx]
+	return containsToolPhrase(prefix, "do not", "don't", "dont", "without", "no ", "not ")
 }
 
 func inputSuggestsBugFixWork(text string) bool {
@@ -3429,10 +4270,34 @@ func inputSuggestsActionFollowUp(text string) bool {
 }
 
 func inputSuggestsGitPush(text string) bool {
+	if inputNegatesGitPush(text) {
+		return false
+	}
 	return containsToolPhrase(text,
 		"git push", "push it", "push this", "push main", "push to remote",
-		"push the branch", "push the changes", "publish local commits", "publish commits",
+		"push the branch", "push the changes", "push origin", "push to origin",
+		"and push", "then push", "publish local commits", "publish commits",
 	)
+}
+
+func inputNegatesGitPush(text string) bool {
+	text = normalizeToolIntentText(text)
+	if containsToolPhrase(text,
+		"do not push", "do not git push", "don't push", "don't git push", "dont push", "dont git push",
+		"no push", "no git push", "without push", "without git push", "not push", "not git push",
+	) {
+		return true
+	}
+	idx := strings.Index(text, "git push")
+	if idx < 0 {
+		return false
+	}
+	start := idx - 40
+	if start < 0 {
+		start = 0
+	}
+	prefix := text[start:idx]
+	return containsToolPhrase(prefix, "do not", "don't", "dont", "without", "no ", "not ")
 }
 
 func inputAsksGitPushStatus(text string) bool {
@@ -4379,7 +5244,16 @@ func redactRuntimeText(text string) string {
 
 func beforeToolGitCommitBlockHook(_ context.Context, event hooks.Event) []hooks.Result {
 	payload, ok := event.Transient.(beforeToolHookPayload)
-	if !ok || !isCommitToolCall(payload.ToolName, payload.Args) {
+	if !ok {
+		return nil
+	}
+	if blocksScopedIntentShellGitMutation(event.Snapshot, payload) {
+		return []hooks.Result{hooks.BlockResult{
+			Message:    "blocked: scoped git transaction is active. Use git_commit/git_push so Forge can enforce allowed paths, branch, remote, and verification gates.",
+			Provenance: "runtime",
+		}}
+	}
+	if !isCommitToolCall(payload.ToolName, payload.Args) {
 		return nil
 	}
 	switch {
@@ -4389,6 +5263,9 @@ func beforeToolGitCommitBlockHook(_ context.Context, event hooks.Event) []hooks.
 			Provenance: "runtime",
 		}}
 	case payload.GitWorkflow.commitBlocker == commitBlockerRestage:
+		if snap, ok := event.Snapshot.(SessionSnapshot); ok && snap.SideEffectIntent != nil && payload.ToolName == "git_commit" {
+			return nil
+		}
 		if payload.ToolName == "run_command" && strings.Contains(strings.ToLower(stringArg(payload.Args, "command")), "git add") {
 			return nil
 		}
@@ -4403,6 +5280,472 @@ func beforeToolGitCommitBlockHook(_ context.Context, event hooks.Event) []hooks.
 		}}
 	default:
 		return nil
+	}
+}
+
+func blocksScopedIntentShellGitMutation(snapshot any, payload beforeToolHookPayload) bool {
+	snap, ok := snapshot.(SessionSnapshot)
+	if !ok || snap.SideEffectIntent == nil {
+		return false
+	}
+	switch payload.ToolName {
+	case "run_command", "exec_session_start":
+		return shellCommandHasGitMutation(stringArg(payload.Args, "command"))
+	case "exec_session_write", "command_write_stdin":
+		return true
+	default:
+		return false
+	}
+}
+
+func shellCommandHasGitMutation(command string) bool {
+	for _, segment := range shellCommandSegments(command) {
+		if shellSegmentIsGitMutation(segment) {
+			return true
+		}
+	}
+	return false
+}
+
+func shellCommandSegments(command string) []string {
+	var segments []string
+	start := 0
+	inSingleQuote := false
+	inDoubleQuote := false
+	inBacktick := false
+	for i := 0; i < len(command); i++ {
+		if shellCharEscaped(command, i) {
+			continue
+		}
+		switch command[i] {
+		case '\'':
+			if !inDoubleQuote && !inBacktick {
+				inSingleQuote = !inSingleQuote
+			}
+			continue
+		case '"':
+			if !inSingleQuote && !inBacktick {
+				inDoubleQuote = !inDoubleQuote
+			}
+			continue
+		case '`':
+			if !inSingleQuote {
+				inBacktick = !inBacktick
+			}
+			continue
+		}
+		if inSingleQuote || inDoubleQuote || inBacktick {
+			continue
+		}
+		skip := 1
+		switch command[i] {
+		case ';', '\n', '\r':
+		case '&':
+			if i+1 < len(command) && command[i+1] == '&' {
+				skip = 2
+			}
+		case '|':
+			if i+1 < len(command) && command[i+1] == '|' {
+				skip = 2
+			}
+		default:
+			continue
+		}
+		if segment := strings.TrimSpace(command[start:i]); segment != "" {
+			segments = append(segments, segment)
+		}
+		i += skip - 1
+		start = i + 1
+	}
+	if segment := strings.TrimSpace(command[start:]); segment != "" {
+		segments = append(segments, segment)
+	}
+	return segments
+}
+
+func shellSegmentIsGitMutation(segment string) bool {
+	if shellSegmentCommandSubstitutionsHaveGitMutation(segment) {
+		return true
+	}
+	tokens := shellFields(strings.TrimSpace(segment))
+	if shellTokensInvokeNestedGitMutation(tokens) {
+		return true
+	}
+	subcommand, args, ok := gitSubcommandFromShellTokens(tokens)
+	if !ok {
+		return false
+	}
+	return gitShellSubcommandMayMutate(subcommand, args)
+}
+
+func shellSegmentCommandSubstitutionsHaveGitMutation(segment string) bool {
+	inSingleQuote := false
+	for i := 0; i < len(segment); i++ {
+		if segment[i] == '\'' && !shellCharEscaped(segment, i) {
+			inSingleQuote = !inSingleQuote
+			continue
+		}
+		if inSingleQuote || shellCharEscaped(segment, i) {
+			continue
+		}
+		if segment[i] == '$' && i+1 < len(segment) && segment[i+1] == '(' {
+			end := shellCommandSubstitutionEnd(segment, i+2)
+			if end < 0 {
+				continue
+			}
+			if shellCommandHasGitMutation(segment[i+2 : end]) {
+				return true
+			}
+			i = end
+			continue
+		}
+		if segment[i] == '`' {
+			end := shellBacktickSubstitutionEnd(segment, i+1)
+			if end < 0 {
+				continue
+			}
+			if shellCommandHasGitMutation(segment[i+1 : end]) {
+				return true
+			}
+			i = end
+		}
+	}
+	return false
+}
+
+func shellCharEscaped(text string, index int) bool {
+	backslashes := 0
+	for i := index - 1; i >= 0 && text[i] == '\\'; i-- {
+		backslashes++
+	}
+	return backslashes%2 == 1
+}
+
+func shellCommandSubstitutionEnd(text string, start int) int {
+	depth := 1
+	for i := start; i < len(text); i++ {
+		if shellCharEscaped(text, i) {
+			continue
+		}
+		switch text[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func shellBacktickSubstitutionEnd(text string, start int) int {
+	for i := start; i < len(text); i++ {
+		if text[i] == '`' && !shellCharEscaped(text, i) {
+			return i
+		}
+	}
+	return -1
+}
+
+func shellTokensInvokeNestedGitMutation(tokens []string) bool {
+	for i, raw := range tokens {
+		if shellTokenStartsCommandSubstitution(raw) {
+			nested := strings.Join(cleanShellNestedCommandArgs(tokens[i:]), " ")
+			if shellCommandHasGitMutation(nested) {
+				return true
+			}
+		}
+		name := filepath.Base(cleanShellGitToken(raw))
+		if name == "eval" {
+			nested := strings.Join(cleanShellGitArgs(tokens[i+1:]), " ")
+			if shellCommandHasGitMutation(nested) {
+				return true
+			}
+			continue
+		}
+		if !isShellInterpreter(name) {
+			continue
+		}
+		commandIndex := shellCommandStringOptionIndex(tokens[i+1:])
+		if commandIndex < 0 || i+commandIndex+2 >= len(tokens) {
+			continue
+		}
+		nested := strings.Join(cleanShellGitArgs(tokens[i+commandIndex+2:]), " ")
+		if shellCommandHasGitMutation(nested) {
+			return true
+		}
+	}
+	return false
+}
+
+func shellTokenStartsCommandSubstitution(token string) bool {
+	token = strings.TrimSpace(token)
+	return strings.HasPrefix(token, "$(") || strings.HasPrefix(token, "`")
+}
+
+func cleanShellNestedCommandArgs(tokens []string) []string {
+	args := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		cleaned := cleanShellGitToken(strings.TrimPrefix(strings.TrimPrefix(token, "$("), "`"))
+		cleaned = strings.TrimSuffix(strings.TrimSuffix(cleaned, ")"), "`")
+		cleaned = cleanShellGitToken(cleaned)
+		if cleaned != "" {
+			args = append(args, cleaned)
+		}
+	}
+	return args
+}
+
+func isShellInterpreter(token string) bool {
+	switch filepath.Base(token) {
+	case "sh", "bash", "zsh", "dash", "ksh":
+		return true
+	default:
+		return false
+	}
+}
+
+func shellCommandStringOptionIndex(tokens []string) int {
+	for i, raw := range tokens {
+		token := cleanShellGitToken(raw)
+		if !strings.HasPrefix(token, "-") {
+			continue
+		}
+		if token == "-c" || strings.Contains(strings.TrimPrefix(token, "-"), "c") {
+			return i
+		}
+	}
+	return -1
+}
+
+func gitShellSubcommandMayMutate(subcommand string, args []string) bool {
+	switch subcommand {
+	case "status", "diff", "log", "show", "rev-parse", "rev-list", "ls-files", "ls-tree", "ls-remote", "describe", "grep", "blame", "cat-file", "diff-tree", "diff-index", "diff-files", "for-each-ref", "merge-base", "name-rev", "shortlog", "whatchanged":
+		return false
+	case "branch":
+		return gitBranchShellArgsMayMutate(args)
+	case "config":
+		return gitConfigShellArgsMayMutate(args)
+	case "remote":
+		return gitRemoteShellArgsMayMutate(args)
+	case "tag":
+		return gitTagShellArgsMayMutate(args)
+	default:
+		return true
+	}
+}
+
+func gitBranchShellArgsMayMutate(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	for _, arg := range args {
+		switch {
+		case arg == "--show-current" || arg == "--list" || arg == "--all" || arg == "--remotes" || arg == "-a" || arg == "-r" || arg == "-v" || arg == "-vv":
+			continue
+		case strings.HasPrefix(arg, "--contains") || strings.HasPrefix(arg, "--no-contains") || strings.HasPrefix(arg, "--merged") || strings.HasPrefix(arg, "--no-merged") || strings.HasPrefix(arg, "--points-at") || strings.HasPrefix(arg, "--format=") || strings.HasPrefix(arg, "--sort=") || strings.HasPrefix(arg, "--column") || strings.HasPrefix(arg, "--no-column"):
+			continue
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+func gitConfigShellArgsMayMutate(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	readMode := false
+	for _, arg := range args {
+		if arg == "--get" || arg == "--get-all" || arg == "--get-regexp" || arg == "--list" || arg == "-l" || strings.HasPrefix(arg, "--get-") {
+			readMode = true
+			continue
+		}
+		if arg == "--show-origin" || arg == "--show-scope" || arg == "--name-only" || arg == "--null" {
+			continue
+		}
+		if strings.HasPrefix(arg, "--") {
+			return true
+		}
+		return !readMode && len(args) > 1
+	}
+	return false
+}
+
+func gitRemoteShellArgsMayMutate(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "-v", "--verbose", "get-url", "show":
+		return false
+	default:
+		return true
+	}
+}
+
+func gitTagShellArgsMayMutate(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	for _, arg := range args {
+		if arg == "-l" || arg == "--list" || arg == "-n" || strings.HasPrefix(arg, "-n") || strings.HasPrefix(arg, "--sort=") || strings.HasPrefix(arg, "--format=") || strings.HasPrefix(arg, "--points-at") || strings.HasPrefix(arg, "--contains") || strings.HasPrefix(arg, "--no-contains") || strings.HasPrefix(arg, "--merged") || strings.HasPrefix(arg, "--no-merged") {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func gitSubcommandFromShellTokens(tokens []string) (string, []string, bool) {
+	for i, raw := range tokens {
+		if filepath.Base(cleanShellGitToken(raw)) != "git" || !allowedShellGitPrefix(tokens[:i]) {
+			continue
+		}
+		for j := i + 1; j < len(tokens); {
+			token := cleanShellGitToken(tokens[j])
+			if token == "" {
+				j++
+				continue
+			}
+			if strings.HasPrefix(token, "-") {
+				if gitGlobalOptionTakesValue(token) && j+1 < len(tokens) {
+					j += 2
+				} else {
+					j++
+				}
+				continue
+			}
+			return token, cleanShellGitArgs(tokens[j+1:]), true
+		}
+	}
+	return "", nil, false
+}
+
+func allowedShellGitPrefix(tokens []string) bool {
+	for i := 0; i < len(tokens); {
+		raw := tokens[i]
+		token := cleanShellGitToken(raw)
+		name := filepath.Base(token)
+		if token == "" || token == "then" || token == "do" || token == "if" {
+			i++
+			continue
+		}
+		if strings.Contains(token, "=") && !strings.HasPrefix(token, "-") {
+			i++
+			continue
+		}
+		switch name {
+		case "command":
+			i++
+		case "exec":
+			i = skipShellWrapperPrefixArgs(tokens, i+1, execWrapperOptionTakesValue)
+		case "env":
+			i = skipShellWrapperPrefixArgs(tokens, i+1, envWrapperOptionTakesValue)
+		case "sudo":
+			i = skipShellWrapperPrefixArgs(tokens, i+1, sudoWrapperOptionTakesValue)
+		case "time":
+			i = skipShellWrapperPrefixArgs(tokens, i+1, timeWrapperOptionTakesValue)
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func skipShellWrapperPrefixArgs(tokens []string, start int, optionTakesValue func(string) bool) int {
+	for i := start; i < len(tokens); {
+		token := cleanShellGitToken(tokens[i])
+		if token == "" || (strings.Contains(token, "=") && !strings.HasPrefix(token, "-")) {
+			i++
+			continue
+		}
+		if !strings.HasPrefix(token, "-") {
+			return i
+		}
+		if optionTakesValue(token) && i+1 < len(tokens) {
+			i += 2
+		} else {
+			i++
+		}
+	}
+	return len(tokens)
+}
+
+func envWrapperOptionTakesValue(option string) bool {
+	if strings.Contains(option, "=") {
+		return false
+	}
+	switch option {
+	case "-u", "--unset", "-C", "--chdir", "-S", "--split-string", "--block-signal", "--default-signal", "--ignore-signal":
+		return true
+	default:
+		return false
+	}
+}
+
+func sudoWrapperOptionTakesValue(option string) bool {
+	if strings.Contains(option, "=") {
+		return false
+	}
+	switch option {
+	case "-A", "-a", "-b", "-C", "-c", "-D", "-g", "-h", "-p", "-R", "-r", "-T", "-t", "-U", "-u":
+		return true
+	default:
+		return false
+	}
+}
+
+func timeWrapperOptionTakesValue(option string) bool {
+	if strings.Contains(option, "=") {
+		return false
+	}
+	switch option {
+	case "-f", "--format", "-o", "--output":
+		return true
+	default:
+		return false
+	}
+}
+
+func execWrapperOptionTakesValue(option string) bool {
+	if strings.Contains(option, "=") {
+		return false
+	}
+	switch option {
+	case "-a":
+		return true
+	default:
+		return false
+	}
+}
+
+func cleanShellGitArgs(tokens []string) []string {
+	args := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		if cleaned := cleanShellGitToken(token); cleaned != "" {
+			args = append(args, cleaned)
+		}
+	}
+	return args
+}
+
+func cleanShellGitToken(token string) string {
+	return strings.Trim(strings.TrimSpace(token), "(){}[]'\"")
+}
+
+func gitGlobalOptionTakesValue(option string) bool {
+	if strings.Contains(option, "=") {
+		return false
+	}
+	switch option {
+	case "-C", "-c", "--git-dir", "--work-tree", "--namespace":
+		return true
+	default:
+		return false
 	}
 }
 
