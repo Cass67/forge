@@ -1030,8 +1030,56 @@ func TestHandleChatSlashCommandActivatesSkillInReactSession(t *testing.T) {
 	if !state.SkillActivated("brainstorming") {
 		t.Fatal("expected skill to be activated")
 	}
-	if !strings.Contains(session.lastUserMessage, "[Skill: brainstorming]") {
-		t.Fatalf("skill message = %q", session.lastUserMessage)
+	if session.lastUserMessage != "" {
+		t.Fatalf("skill activation appended user message %q, want typed skill context only", session.lastUserMessage)
+	}
+	if session.lastSkillName != "brainstorming" || session.lastSkillBody != "Use brainstorming." {
+		t.Fatalf("skill context = %q/%q", session.lastSkillName, session.lastSkillBody)
+	}
+}
+
+func TestRunChatTurnRecordsSkillContextWithoutRunningEmptySkillText(t *testing.T) {
+	runner := &stubChatTurnRunner{}
+	err := runChatTurn(context.Background(), runner, chatstate.ChatUserInput{IsInput: true, SkillName: "brainstorming", SkillBody: "Write docs/plans/design.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runner.calls != 0 {
+		t.Fatalf("Run calls = %d, want 0 for skill activation only", runner.calls)
+	}
+	if runner.skillName != "brainstorming" || !strings.Contains(runner.skillBody, "docs/plans/design.md") {
+		t.Fatalf("skill context = %q/%q", runner.skillName, runner.skillBody)
+	}
+}
+
+func TestRunChatTurnKeepsOriginalTextSeparateFromSkillContext(t *testing.T) {
+	runner := &stubChatTurnRunner{}
+	err := runChatTurn(context.Background(), runner, chatstate.ChatUserInput{IsInput: true, Text: "design /buddy", SkillName: "brainstorming", SkillBody: "Write docs/plans/design.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runner.calls != 1 || runner.input != "design /buddy" {
+		t.Fatalf("Run calls/input = %d/%q", runner.calls, runner.input)
+	}
+	if runner.skillName != "brainstorming" || !strings.Contains(runner.skillBody, "docs/plans/design.md") {
+		t.Fatalf("skill context = %q/%q", runner.skillName, runner.skillBody)
+	}
+}
+
+func TestAutoSkillChatInputKeepsSkillContextSeparate(t *testing.T) {
+	state := chatstate.New()
+	loadedSkills := []skills.Skill{{Name: "brainstorming", Description: "Plan first", Body: "Write docs/plans/design.md"}}
+
+	ui, ok := autoSkillChatInput(loadedSkills, state, "design /buddy")
+
+	if !ok {
+		t.Fatal("expected auto skill input")
+	}
+	if ui.Text != "design /buddy" || ui.SkillName != "brainstorming" || !strings.Contains(ui.SkillBody, "docs/plans/design.md") {
+		t.Fatalf("auto skill input = %#v", ui)
+	}
+	if strings.Contains(ui.Text, "[Skill:") {
+		t.Fatalf("skill body leaked into user text: %q", ui.Text)
 	}
 }
 
@@ -2228,6 +2276,8 @@ type stubChatTurnRunner struct {
 	input        string
 	err          error
 	lastResponse string
+	skillName    string
+	skillBody    string
 	taskState    *reactruntime.TaskState
 	queued       []string
 	interrupted  bool
@@ -2253,6 +2303,11 @@ func (s *stubChatTurnRunner) RunWithParts(_ context.Context, input string, parts
 
 func (s *stubChatTurnRunner) EmitResponse(text string) {
 	s.lastResponse = text
+}
+
+func (s *stubChatTurnRunner) AppendSkillContext(name, body string) {
+	s.skillName = name
+	s.skillBody = body
 }
 
 func (s *stubChatTurnRunner) SetTaskState(state reactruntime.TaskState) {
@@ -2289,6 +2344,8 @@ type stubChatSessionControl struct {
 	driver          llm.Driver
 	cleared         bool
 	lastUserMessage string
+	lastSkillName   string
+	lastSkillBody   string
 	lastResponse    string
 	taskState       *reactruntime.TaskState
 	compactKeep     int
@@ -2306,6 +2363,11 @@ func (s *stubChatSessionControl) ClearHistory() {
 
 func (s *stubChatSessionControl) AppendUserMessage(text string) {
 	s.lastUserMessage = text
+}
+
+func (s *stubChatSessionControl) AppendSkillContext(name, body string) {
+	s.lastSkillName = name
+	s.lastSkillBody = body
 }
 
 func (s *stubChatSessionControl) EmitResponse(text string) {

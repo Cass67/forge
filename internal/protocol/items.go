@@ -23,6 +23,7 @@ const (
 	ItemCompaction       ItemKind = "compaction"
 	ItemCheckpoint       ItemKind = "checkpoint"
 	ItemAgentHandoff     ItemKind = "agent_handoff"
+	ItemSkillContext     ItemKind = "skill_context"
 	ItemSideEffectIntent ItemKind = "side_effect_intent"
 	ItemTurnComplete     ItemKind = "turn_complete"
 )
@@ -55,6 +56,7 @@ type Item struct {
 	Compaction       *CompactionItem       `json:"compaction,omitempty"`
 	Checkpoint       *CheckpointItem       `json:"checkpoint,omitempty"`
 	AgentHandoff     *AgentHandoffItem     `json:"agent_handoff,omitempty"`
+	SkillContext     *SkillContextItem     `json:"skill_context,omitempty"`
 	SideEffectIntent *SideEffectIntentItem `json:"side_effect_intent,omitempty"`
 	TurnComplete     *TurnCompleteItem     `json:"turn_complete,omitempty"`
 }
@@ -139,6 +141,11 @@ type AgentHandoffItem struct {
 	RemainingActions []AgentFollowupActionItem    `json:"remaining_actions,omitempty"`
 	Incidents        []AgentWorkspaceIncidentItem `json:"incidents,omitempty"`
 	Blocking         bool                         `json:"blocking,omitempty"`
+}
+
+type SkillContextItem struct {
+	Name string `json:"name"`
+	Body string `json:"body,omitempty"`
 }
 
 type SideEffectGateItem struct {

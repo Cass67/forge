@@ -531,6 +531,13 @@ func (r *Runner) EmitResponse(text string) {
 	}
 }
 
+func (r *Runner) AppendSkillContext(name, body string) {
+	if r == nil || r.session == nil {
+		return
+	}
+	r.session.AppendSkillContext(name, body)
+}
+
 func (r *Runner) appendAssistantMessage(text string) error {
 	if r == nil || r.session == nil {
 		return nil

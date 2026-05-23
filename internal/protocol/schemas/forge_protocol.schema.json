@@ -147,6 +147,7 @@
         "compaction",
         "checkpoint",
         "agent_handoff",
+        "skill_context",
         "side_effect_intent",
         "turn_complete"
       ],
@@ -252,6 +253,18 @@
           "type": "string"
         },
         "workspace_root": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "skill_context": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "name": {
           "type": "string"
         }
       },

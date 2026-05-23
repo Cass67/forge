@@ -36,6 +36,8 @@ type ChatAttachment struct {
 type ChatUserInput struct {
 	IsInput     bool             `json:"is_input"`
 	Text        string           `json:"text,omitempty"`
+	SkillName   string           `json:"skill_name,omitempty"`
+	SkillBody   string           `json:"skill_body,omitempty"`
 	Attachments []ChatAttachment `json:"attachments,omitempty"`
 }
 

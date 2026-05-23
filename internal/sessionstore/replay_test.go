@@ -2,6 +2,7 @@ package sessionstore
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"forge/internal/llm"
@@ -77,6 +78,25 @@ func TestReplayClearsSideEffectIntent(t *testing.T) {
 	}
 	if replay.SideEffectIntent != nil {
 		t.Fatalf("SideEffectIntent = %#v, want nil", replay.SideEffectIntent)
+	}
+}
+
+func TestReplaySkillContextDoesNotCreateTurn(t *testing.T) {
+	replay, err := ReplayItems([]protocol.Item{{
+		Version:      protocol.CurrentItemVersion,
+		ThreadID:     "thread-1",
+		Seq:          1,
+		Kind:         protocol.ItemSkillContext,
+		SkillContext: &protocol.SkillContextItem{Name: "brainstorming", Body: "Write docs/plans/design.md"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replay.Turns) != 0 || len(replay.RecentInputs) != 0 {
+		t.Fatalf("replay turns/recent = %#v/%#v, want none", replay.Turns, replay.RecentInputs)
+	}
+	if len(replay.History) != 1 || replay.History[0].Role != llm.RoleSystem || !strings.Contains(replay.History[0].Content, "[Skill: brainstorming]") {
+		t.Fatalf("history = %#v", replay.History)
 	}
 }
 
