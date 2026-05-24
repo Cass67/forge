@@ -556,7 +556,11 @@ func turnInputSuggestsWritePlan(input string) bool {
 }
 
 func turnInputLooksLikeQuestion(input string) bool {
-	return strings.Contains(input, "?") || strings.HasPrefix(input, "how do i ") || strings.HasPrefix(input, "how can i ")
+	return strings.Contains(input, "?") || strings.HasPrefix(input, "how do i ") || strings.HasPrefix(input, "how can i ") || strings.HasPrefix(input, "can you explain ") || strings.HasPrefix(input, "please explain ") || strings.HasPrefix(input, "explain how ") || strings.HasPrefix(input, "explain the ")
+}
+
+func turnInputAsksForExplanation(input string) bool {
+	return strings.HasPrefix(input, "how do i ") || strings.HasPrefix(input, "how can i ") || strings.HasPrefix(input, "can you explain ") || strings.HasPrefix(input, "please explain ") || strings.HasPrefix(input, "explain how ") || strings.HasPrefix(input, "explain the ")
 }
 
 func turnContractPlanPath(input string, nowDate string) string {
@@ -613,11 +617,17 @@ func explicitInvalidArtifactPathCandidate(candidate string) bool {
 }
 
 func turnInputSuggestsInspection(input string) bool {
-	return containsToolPhrase(input, "look at the repo", "inspect the repo", "inspect repo", "read the repo", "review the repo")
+	return containsToolPhrase(input, "look at the repo", "inspect the repo", "inspect repo", "read the repo", "review the repo", "review build logs")
 }
 
 func turnInputSuggestsImplementation(input string) bool {
-	return containsToolPhrase(input, "implement this", "implement it", "make the change", "fix this", "edit ")
+	if inputNegatesFileWrite(input) || turnInputAsksForExplanation(input) {
+		return false
+	}
+	return containsToolPhrase(input,
+		"implement this", "implement it", "implement ", "make the change", "fix this", "edit ",
+		"add support for ", "build ", "change the cli to ", "update ", "modify ",
+	)
 }
 
 func turnInputMentionsVerification(input string) bool {
