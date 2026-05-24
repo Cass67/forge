@@ -1726,6 +1726,9 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 				continue
 			}
 			if errors.As(err, &retryable) && isEmptyNativeResponseError(retryable) {
+				if failed := r.failedAgentFallbackErrorText(); failed != "" {
+					return r.completeTurn(turn, "", nil, errors.New(failed))
+				}
 				if fallback := r.activeAgentFallbackText(); fallback != "" {
 					r.pendingRetryPrompt = ""
 					if ok, err := r.validateFinalCompletion(ctx, turn, fallback, false); !ok || err != nil {
@@ -1806,6 +1809,38 @@ func (r *Runner) applyProactivePromptCompaction(ctx context.Context) bool {
 
 func isEmptyNativeResponseError(err *RetryableCompletionError) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Message), "empty native response")
+}
+
+func (r *Runner) failedAgentFallbackErrorText() string {
+	if r == nil || r.session == nil {
+		return ""
+	}
+	snap := r.session.Snapshot()
+	if len(outstandingSpawnedAgents(snap)) > 0 {
+		return ""
+	}
+	var parts []string
+	for _, agent := range snap.AgentTasks {
+		if agent.Status != AgentStatusFailed {
+			continue
+		}
+		label := strings.TrimSpace(agent.ID)
+		if role := strings.TrimSpace(agent.Role); role != "" {
+			label = strings.TrimSpace(label + " (" + role + ")")
+		}
+		if label == "" {
+			label = "child agent"
+		}
+		detail := strings.TrimSpace(firstNonEmpty(agent.Error, agent.Result))
+		if detail == "" {
+			detail = "failed without details"
+		}
+		parts = append(parts, label+": "+detail)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "react runtime: child agent failed before parent could complete: " + strings.Join(parts, "; ")
 }
 
 func (r *Runner) activeAgentFallbackText() string {
@@ -2919,6 +2954,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 			}
 			r.updatePlanWorkflow(call.Name, args, "", true)
 			r.updateSameFileSearchWorkflow(call.Name, args, true)
+			r.updateRepeatToolCallWorkflow(call.Name, args, validationErr)
 			r.updateSideEffectGatesAfterToolResult(call.Name, args, validationErr, true)
 			continue
 		}
@@ -3107,7 +3143,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 		if appendErr != nil {
 			return appendErr
 		}
-		display := truncateToolResult(toolResult.Text)
+		display := renderableToolResultText(toolResult)
 		appended, appendErr := r.appendNativeToolResultItemForTurn(ctx, turn, toolResult)
 		if appendErr != nil {
 			return appendErr
@@ -3299,7 +3335,12 @@ func sideEffectPathMatchesIntent(path string, intent *SideEffectIntent) bool {
 	if path == "" || intent == nil {
 		return false
 	}
-	return slices.Contains(intent.AllowedPaths, path) || slices.Contains(intent.ArtifactPaths, path)
+	for _, candidate := range append(append([]string(nil), intent.AllowedPaths...), intent.ArtifactPaths...) {
+		if normalizeIntentPath(candidate) == path {
+			return true
+		}
+	}
+	return false
 }
 
 func sideEffectGateStatusForToolResult(toolName, result string, isError bool) SideEffectGateStatus {
@@ -4348,6 +4389,9 @@ func isModelCorrectableToolExecutionError(name string, err error) bool {
 			return true
 		}
 	}
+	if name == "read_output" && strings.Contains(err.Error(), "read output handle") {
+		return true
+	}
 	switch name {
 	case "ask_user_question":
 		return true
@@ -4455,6 +4499,13 @@ func truncateToolResult(result string) string {
 		return strings.Join(lines[:20], "\n") + fmt.Sprintf("\n... (%d more lines)", len(lines)-20)
 	}
 	return result
+}
+
+func renderableToolResultText(result protocol.ToolResultItem) string {
+	if strings.TrimSpace(result.Handle) != "" {
+		return fmt.Sprintf("output stored (%d bytes); full content available to the model via read_output", result.OriginalBytes)
+	}
+	return truncateToolResult(result.Text)
 }
 
 var (
@@ -7814,7 +7865,10 @@ func (r *Runner) updateRepeatToolCallWorkflow(toolName string, args map[string]a
 func repeatToolCallTarget(toolName string, args map[string]any) string {
 	switch toolName {
 	case "read_file":
-		return strings.TrimSpace(stringArg(args, "path"))
+		if path := strings.TrimSpace(stringArg(args, "path")); path != "" {
+			return path
+		}
+		return strings.TrimSpace(stringArg(args, "filePath"))
 	case "list_dir":
 		return strings.TrimSpace(stringArg(args, "path"))
 	case "code_search":
