@@ -2600,7 +2600,90 @@ func rawToolMarkupDetail(text string) (string, bool) {
 	if detail, ok := jsonToolCallDetail([]byte(trimmed)); ok {
 		return detail, true
 	}
+	if detail, ok := embeddedJSONToolCallDetail(trimmed); ok {
+		return detail, true
+	}
 	return "", false
+}
+
+func embeddedJSONToolCallDetail(text string) (string, bool) {
+	text = textOutsideFencedCodeBlocks(text)
+	for i := 0; i < len(text); i++ {
+		if text[i] != '{' && text[i] != '[' {
+			continue
+		}
+		raw, ok := balancedJSONValueAt(text, i)
+		if !ok {
+			continue
+		}
+		if detail, ok := jsonToolCallDetail(raw); ok {
+			return detail, true
+		}
+	}
+	return "", false
+}
+
+func textOutsideFencedCodeBlocks(text string) string {
+	var out strings.Builder
+	inFence := false
+	for _, line := range strings.SplitAfter(text, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			inFence = !inFence
+			continue
+		}
+		if !inFence {
+			out.WriteString(line)
+		}
+	}
+	return out.String()
+}
+
+func balancedJSONValueAt(text string, start int) ([]byte, bool) {
+	if start < 0 || start >= len(text) || (text[start] != '{' && text[start] != '[') {
+		return nil, false
+	}
+	stack := []byte{text[start]}
+	inString := false
+	escaped := false
+	for i := start + 1; i < len(text); i++ {
+		c := text[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch c {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '{', '[':
+			stack = append(stack, c)
+		case '}', ']':
+			if len(stack) == 0 || !jsonBracketsMatch(stack[len(stack)-1], c) {
+				return nil, false
+			}
+			stack = stack[:len(stack)-1]
+			if len(stack) == 0 {
+				raw := []byte(text[start : i+1])
+				if json.Valid(raw) {
+					return raw, true
+				}
+				return nil, false
+			}
+		}
+	}
+	return nil, false
+}
+
+func jsonBracketsMatch(open, close byte) bool {
+	return (open == '{' && close == '}') || (open == '[' && close == ']')
 }
 
 func jsonToolCallDetail(raw json.RawMessage) (string, bool) {

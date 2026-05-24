@@ -5978,6 +5978,8 @@ func TestRunnerRejectsJSONToolCallWrapperFinalText(t *testing.T) {
 		{name: "tool call array", response: `[{"tool_name":"bash","arguments":{"command":"ls"}}]`, detail: "bash"},
 		{name: "function object", response: `{"function":{"name":"bash","arguments":"{\"command\":\"ls\"}"}}`, detail: "bash"},
 		{name: "nested function object", response: `{"tool_calls":[{"function":{"name":"bash","arguments":"{\"command\":\"ls\"}"}}]}`, detail: "bash"},
+		{name: "embedded prose object", response: `I'll call this: {"name":"write_file","arguments":{"path":"x.txt","content":"x"}}`, detail: "write_file"},
+		{name: "embedded prose array", response: `I should run this: [{"name":"bash","arguments":{}}]`, detail: "bash"},
 	}
 
 	for _, tt := range tests {
@@ -6112,6 +6114,19 @@ func TestRunnerAllowsRawToolMarkupLookingJSONCodeBlockFinalText(t *testing.T) {
 	r := NewRunner(Config{Driver: driver, Session: NewSession()})
 
 	if err := r.Run(context.Background(), "show config"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if got := r.LastResponse(); got != final {
+		t.Fatalf("LastResponse = %q", got)
+	}
+}
+
+func TestRunnerAllowsGenericFencedJSONFinalText(t *testing.T) {
+	final := "Use this example:\n\n```json\n{\n  \"name\": \"example\",\n  \"enabled\": true\n}\n```"
+	driver := &nativeScriptedDriver{responses: []string{final}}
+	r := NewRunner(Config{Driver: driver, Session: NewSession()})
+
+	if err := r.Run(context.Background(), "show json example"); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
 	if got := r.LastResponse(); got != final {
