@@ -1,6 +1,7 @@
 package react
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -49,13 +50,15 @@ const (
 type EvidenceKind string
 
 const (
-	EvidenceTest           EvidenceKind = "test"
-	EvidenceTool           EvidenceKind = "tool"
-	EvidenceNote           EvidenceKind = "note"
-	EvidenceRead           EvidenceKind = "read"
-	EvidenceWrite          EvidenceKind = "write"
-	EvidenceVerification   EvidenceKind = "verification"
-	EvidenceModelViolation EvidenceKind = "model_violation"
+	EvidenceTest              EvidenceKind = "test"
+	EvidenceTool              EvidenceKind = "tool"
+	EvidenceNote              EvidenceKind = "note"
+	EvidenceRead              EvidenceKind = "read"
+	EvidenceWrite             EvidenceKind = "write"
+	EvidenceVerification      EvidenceKind = "verification"
+	EvidenceDelegation        EvidenceKind = "delegation"
+	EvidenceDelegationFailure EvidenceKind = "delegation_failure"
+	EvidenceModelViolation    EvidenceKind = "model_violation"
 )
 
 type ContractAction struct {
@@ -131,7 +134,7 @@ func normalizeTurnContract(contract *TurnContract) *TurnContract {
 	}
 	for i := range contract.Evidence {
 		switch contract.Evidence[i].Kind {
-		case EvidenceTest, EvidenceTool, EvidenceNote, EvidenceRead, EvidenceWrite, EvidenceVerification, EvidenceModelViolation:
+		case EvidenceTest, EvidenceTool, EvidenceNote, EvidenceRead, EvidenceWrite, EvidenceVerification, EvidenceDelegation, EvidenceDelegationFailure, EvidenceModelViolation:
 		default:
 			contract.Evidence[i].Kind = EvidenceNote
 		}
@@ -216,6 +219,11 @@ func recordToolResultEvidence(contract *TurnContract, toolName string, args map[
 			return
 		}
 	}
+	if isDelegationEvidenceTool(toolName) {
+		kind, summary := delegationEvidence(toolName, args, result, isError)
+		contract.Evidence = append(contract.Evidence, EvidenceRecord{Kind: kind, Summary: summary})
+		return
+	}
 	if isReadEvidenceTool(toolName) {
 		if contractToolResultFailed(toolName, result, isError) {
 			contract.Evidence = append(contract.Evidence, EvidenceRecord{Kind: EvidenceTool, Summary: toolEvidenceSummary("failed read", toolName, evidencePaths(args))})
@@ -252,6 +260,51 @@ func recordModelViolation(contract *TurnContract, reason, detail string) {
 func isReadEvidenceTool(toolName string) bool {
 	switch strings.TrimSpace(toolName) {
 	case "read_file", "list_dir", "search", "glob", "code_search", "read_output", "scratchpad_read", "git_status", "git_diff", "git_log":
+		return true
+	default:
+		return false
+	}
+}
+
+func isDelegationEvidenceTool(toolName string) bool {
+	switch strings.TrimSpace(toolName) {
+	case "spawn_agent", "wait_agent", "get_agent_output", "agent_status":
+		return true
+	default:
+		return false
+	}
+}
+
+func delegationEvidence(toolName string, args map[string]any, result string, isError bool) (EvidenceKind, string) {
+	id := strings.TrimSpace(stringArg(args, "id"))
+	status := ""
+	var decoded map[string]any
+	if json.Unmarshal([]byte(strings.TrimSpace(result)), &decoded) == nil {
+		if id == "" {
+			id = strings.TrimSpace(stringArg(decoded, "id"))
+		}
+		status = strings.TrimSpace(stringArg(decoded, "status"))
+	}
+	failed := contractToolResultFailed(toolName, result, isError) || delegationStatusFailed(status)
+	action := "delegation"
+	kind := EvidenceDelegation
+	if failed {
+		action = "failed delegation"
+		kind = EvidenceDelegationFailure
+	}
+	parts := []string{action + ":", strings.TrimSpace(toolName)}
+	if id != "" {
+		parts = append(parts, id)
+	}
+	if status != "" {
+		parts = append(parts, "status="+status)
+	}
+	return kind, strings.Join(parts, " ")
+}
+
+func delegationStatusFailed(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "failed", "error", "cancelled", "canceled":
 		return true
 	default:
 		return false

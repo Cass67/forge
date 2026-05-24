@@ -80,7 +80,7 @@ func sideEffectGateSchema() JSONSchema {
 func turnContractSchema() JSONSchema {
 	return objectSchemaRequired(map[string]any{
 		"evidence": JSONSchema{"items": objectSchemaRequired(map[string]any{
-			"kind":    enumStringSchema("test", "tool", "note", "read", "write", "verification", "model_violation"),
+			"kind":    enumStringSchema("test", "tool", "note", "read", "write", "verification", "delegation", "delegation_failure", "model_violation"),
 			"summary": stringSchema(),
 		}, []string{"kind"}), "type": "array"},
 		"gates": JSONSchema{"items": objectSchemaRequired(map[string]any{
