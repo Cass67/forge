@@ -69,6 +69,9 @@ func NewReadFile(workDir string, policies ...SecretPolicy) Tool {
 			}
 
 			var sb strings.Builder
+			if annotated := annotateGitPathState(workDir, path); annotated != path {
+				sb.WriteString("File status: " + annotated + "\n")
+			}
 			for i := start; i <= end; i++ {
 				if i <= len(lines) {
 					sb.WriteString(fmt.Sprintf("%4d | %s\n", i, lines[i-1]))
