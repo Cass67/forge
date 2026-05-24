@@ -377,7 +377,11 @@
                 "enum": [
                   "test",
                   "tool",
-                  "note"
+                  "note",
+                  "read",
+                  "write",
+                  "verification",
+                  "model_violation"
                 ],
                 "type": "string"
               },

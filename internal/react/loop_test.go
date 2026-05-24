@@ -4620,6 +4620,23 @@ func TestRunnerReturnsUnknownNativeToolErrorToModel(t *testing.T) {
 	}
 }
 
+func TestRunnerUnknownToolRecordsContractViolation(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "bad-1", Name: "bogus_tool", ArgsJSON: `{}`}}},
+		{{Text: "recovered"}},
+	}}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "read_file", Description: "read file"})
+	session := NewSession()
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+	if err := r.Run(context.Background(), "look at the repo"); err != nil {
+		t.Fatal(err)
+	}
+
+	assertContractEvidence(t, session.Snapshot().TurnContract, EvidenceModelViolation, "unknown_tool", "bogus_tool")
+}
+
 func TestRunnerMalformedArgsEmitsDurableFailureItem(t *testing.T) {
 	driver := &nativeSequenceDriver{steps: [][]llm.Token{
 		{{ToolCall: &llm.NativeToolCall{ID: "bad-json", Name: "read_file", ArgsJSON: `{"path":`}}},
@@ -4641,6 +4658,74 @@ func TestRunnerMalformedArgsEmitsDurableFailureItem(t *testing.T) {
 	if !found {
 		t.Fatalf("missing recoverable failure item: %#v", session.Snapshot().Items)
 	}
+}
+
+func TestRunnerMalformedArgumentsRecordsContractViolation(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "bad-json", Name: "read_file", ArgsJSON: `{"path":`}}},
+		{{Text: "recovered"}},
+	}}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "read_file", Description: "read file", Parameters: []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}}, AutoApprove: true, Execute: func(context.Context, map[string]any) (string, error) { return "", nil }})
+	session := NewSession()
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+	if err := r.Run(context.Background(), "look at the repo"); err != nil {
+		t.Fatal(err)
+	}
+
+	assertContractEvidence(t, session.Snapshot().TurnContract, EvidenceModelViolation, "malformed_arguments", "read_file")
+}
+
+func TestRunnerUnavailableToolRecordsContractViolation(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "read_file", Description: "read file", Execute: func(context.Context, map[string]any) (string, error) { return "", nil }})
+	session := NewSession()
+	session.SetTurnContract(TurnContract{ID: "contract-1", Status: ContractStatusActive})
+	r := NewRunner(Config{Tools: reg, Session: session})
+	turn := session.RecordInput("read file")
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	err = r.executeNativeToolCalls(active.Context, turn, []llm.NativeToolCall{{ID: "read-1", Name: "read_file", ArgsJSON: `{}`}}, []string{"tool_help"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assertContractEvidence(t, session.Snapshot().TurnContract, EvidenceModelViolation, "tool_unavailable_for_turn", "read_file")
+}
+
+func TestRunnerFailedReadDoesNotRecordSuccessfulReadEvidence(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "read_file",
+		Description: "read file",
+		Parameters:  []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}},
+		Execute: func(context.Context, map[string]any) (string, error) {
+			return "error: file not found", nil
+		},
+	})
+	session := NewSession()
+	session.SetTurnContract(TurnContract{ID: "contract-1", Status: ContractStatusActive})
+	r := NewRunner(Config{Tools: reg, Session: session})
+	turn := session.RecordInput("read missing file")
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	err = r.executeNativeToolCalls(active.Context, turn, []llm.NativeToolCall{{ID: "read-1", Name: "read_file", ArgsJSON: `{"path":"missing.md"}`}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	contract := session.Snapshot().TurnContract
+	assertNoContractEvidence(t, contract, EvidenceRead)
+	assertContractEvidence(t, contract, EvidenceTool, "failed read", "read_file", "missing.md")
 }
 
 func TestMalformedModelOutputAssertionsUseDurableItems(t *testing.T) {
@@ -5507,6 +5592,33 @@ func TestRunnerTracksValidationPassOnGoTest(t *testing.T) {
 	if note := r.session.Snapshot().RuntimeNote; note != "" {
 		t.Fatalf("runtime note should be empty on pass, got %q", note)
 	}
+}
+
+func TestTurnContractRecordsValidationCommandEvidence(t *testing.T) {
+	driver := &nativeSequenceDriver{
+		steps: [][]llm.Token{
+			{{ToolCall: &llm.NativeToolCall{ID: "c1", Name: "run_command", ArgsJSON: `{"command":"go test ./internal/react"}`}}},
+			{{Text: "all tests pass"}},
+		},
+	}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "run_command",
+		Description: "run shell command",
+		Parameters:  []agenttools.ParameterDef{{Name: "command", Type: "string", Required: true}},
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return "ok  forge/internal/react\nexit 0", nil
+		},
+	})
+	session := NewSession()
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+	if err := r.Run(context.Background(), "implement this and run tests"); err != nil {
+		t.Fatal(err)
+	}
+
+	assertContractEvidence(t, session.Snapshot().TurnContract, EvidenceVerification, "go test ./internal/react", "passed")
 }
 
 func TestRunnerTracksValidationFailOnGoTest(t *testing.T) {
@@ -7991,6 +8103,7 @@ func TestRunnerExecuteNativeToolCallsSkipsPreExecutionBranchesAfterCancellation(
 		t.Run(tc.name, func(t *testing.T) {
 			reg := agenttools.NewRegistry()
 			session := NewSession()
+			session.SetTurnContract(TurnContract{ID: "contract-1", Status: ContractStatusActive})
 			r := NewRunner(Config{
 				Tools:   reg,
 				Session: session,
@@ -8018,7 +8131,97 @@ func TestRunnerExecuteNativeToolCallsSkipsPreExecutionBranchesAfterCancellation(
 					t.Fatalf("stale pre-execution item was appended: %#v", item)
 				}
 			}
+			if contract := session.Snapshot().TurnContract; contract == nil || len(contract.Evidence) != 0 {
+				t.Fatalf("stale pre-execution contract evidence = %#v", contract)
+			}
 		})
+	}
+}
+
+func TestRunnerStaleUnknownToolDoesNotMutateTurnContract(t *testing.T) {
+	session := NewSession()
+	session.SetTurnContract(TurnContract{ID: "contract-1", Status: ContractStatusActive})
+	r := NewRunner(Config{Tools: agenttools.NewRegistry(), Session: session})
+	turn := session.RecordInput("run missing tool")
+
+	err := r.executeNativeToolCalls(context.Background(), turn, []llm.NativeToolCall{{ID: "missing-1", Name: "missing_tool", ArgsJSON: `{}`}})
+	if !errors.Is(err, ErrStaleTurn) {
+		t.Fatalf("executeNativeToolCalls error = %v, want ErrStaleTurn", err)
+	}
+	if contract := session.Snapshot().TurnContract; contract == nil || len(contract.Evidence) != 0 {
+		t.Fatalf("stale unknown-tool contract evidence = %#v", contract)
+	}
+}
+
+func TestRunnerStaleToolErrorDoesNotMutateTurnContract(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	session := NewSession()
+	session.SetTurnContract(TurnContract{ID: "contract-1", Status: ContractStatusActive})
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "fails after cancelling the active turn",
+		Parameters:  []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}},
+		Execute: func(context.Context, map[string]any) (string, error) {
+			if err := session.CancelActiveTurn("user cancelled"); err != nil {
+				return "", err
+			}
+			return "", errors.New("late write failure")
+		},
+	})
+	r := NewRunner(Config{Tools: reg, Session: session})
+	turn := session.RecordInput("write file")
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	err = r.executeNativeToolCalls(active.Context, turn, []llm.NativeToolCall{{ID: "write-1", Name: "write_file", ArgsJSON: `{"path":"a.txt"}`}})
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("executeNativeToolCalls error = %v, want nil or context canceled", err)
+	}
+	if contract := session.Snapshot().TurnContract; contract == nil || len(contract.Evidence) != 0 {
+		t.Fatalf("stale tool-error contract evidence = %#v", contract)
+	}
+}
+
+func TestRunnerStaleBeforeHookBlockDoesNotMutateTurnContract(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	session := NewSession()
+	session.SetTurnContract(TurnContract{ID: "contract-1", Status: ContractStatusActive})
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "custom",
+		Parameters:  []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}},
+		Execute: func(context.Context, map[string]any) (string, error) {
+			return "should not execute", nil
+		},
+	})
+	r := NewRunner(Config{
+		Tools:   reg,
+		Session: session,
+		ConfigureHooks: func(hooksReg *hooks.Registry) {
+			hooksReg.Register(hooks.PointBeforeTool, "test:cancel-and-block", func(context.Context, hooks.Event) []hooks.Result {
+				if err := session.CancelActiveTurn("user cancelled"); err != nil {
+					t.Fatalf("cancel active turn: %v", err)
+				}
+				return []hooks.Result{hooks.BlockResult{Message: "blocked after cancellation"}}
+			})
+		},
+	})
+	turn := session.RecordInput("write file")
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	err = r.executeNativeToolCalls(active.Context, turn, []llm.NativeToolCall{{ID: "write-1", Name: "write_file", ArgsJSON: `{"path":"a.txt"}`}})
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("executeNativeToolCalls error = %v, want nil or context canceled", err)
+	}
+	if contract := session.Snapshot().TurnContract; contract == nil || len(contract.Evidence) != 0 {
+		t.Fatalf("stale before-hook block contract evidence = %#v", contract)
 	}
 }
 

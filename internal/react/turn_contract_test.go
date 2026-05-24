@@ -2,6 +2,7 @@ package react
 
 import (
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -143,6 +144,127 @@ func TestDeriveTurnContractFromInput(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTurnContractRecordsReadEvidence(t *testing.T) {
+	contract := &TurnContract{ID: "contract-1"}
+
+	recordToolResultEvidence(contract, "read_file", map[string]any{"path": "README.md"}, "file contents", false)
+
+	assertContractEvidence(t, contract, EvidenceRead, "read_file", "README.md")
+}
+
+func TestTurnContractDoesNotRecordSuccessfulReadEvidenceForFailedRead(t *testing.T) {
+	contract := &TurnContract{ID: "contract-1"}
+
+	recordToolResultEvidence(contract, "read_file", map[string]any{"path": "missing.md"}, "error: file not found", false)
+
+	assertNoContractEvidence(t, contract, EvidenceRead)
+	assertContractEvidence(t, contract, EvidenceTool, "failed read", "read_file", "missing.md")
+}
+
+func TestTurnContractRecordsWriteEvidenceWithoutMutatingArtifactGate(t *testing.T) {
+	contract := &TurnContract{
+		ID:    "contract-1",
+		Gates: []ContractGate{{Name: "artifact", Status: ContractGatePending}},
+	}
+
+	recordToolResultEvidence(contract, "write_file", map[string]any{"path": "docs/plan.md"}, "wrote docs/plan.md", false)
+
+	assertContractEvidence(t, contract, EvidenceWrite, "write_file", "docs/plan.md")
+	assertContractGate(t, contract, "artifact", ContractGatePending)
+}
+
+func TestTurnContractRecordsVerificationEvidenceWithoutMutatingGate(t *testing.T) {
+	contract := &TurnContract{
+		ID:    "contract-1",
+		Gates: []ContractGate{{Name: "verification", Status: ContractGatePending}},
+	}
+
+	recordToolResultEvidence(contract, "run_command", map[string]any{"command": "go test ./internal/react"}, "ok\nexit 0", false)
+
+	assertContractEvidence(t, contract, EvidenceVerification, "go test ./internal/react", "passed")
+	assertContractGate(t, contract, "verification", ContractGatePending)
+}
+
+func TestTurnContractRecordsFailedVerificationEvidenceWithoutMutatingGate(t *testing.T) {
+	contract := &TurnContract{
+		ID:    "contract-1",
+		Gates: []ContractGate{{Name: "verification", Status: ContractGatePending}},
+	}
+
+	recordToolResultEvidence(contract, "run_command", map[string]any{"command": "go test ./internal/react"}, "FAIL\nexit 1", false)
+
+	assertContractEvidence(t, contract, EvidenceVerification, "go test ./internal/react", "failed")
+	assertContractGate(t, contract, "verification", ContractGatePending)
+}
+
+func TestTurnContractRecordsTextLevelToolResultFailures(t *testing.T) {
+	contract := &TurnContract{ID: "contract-1"}
+
+	recordToolResultEvidence(contract, "write_file", map[string]any{"path": "docs/plan.md"}, "blocked: outside requested scope", false)
+
+	assertNoContractEvidence(t, contract, EvidenceWrite)
+	assertContractEvidence(t, contract, EvidenceTool, "failed write", "write_file", "docs/plan.md")
+}
+
+func TestTurnContractRecordsAllPatchPathEvidenceOnOneLine(t *testing.T) {
+	contract := &TurnContract{ID: "contract-1"}
+	patch := "*** Begin Patch\n*** Update File: docs/a.md\n@@\n-old\n+new\n*** Add File: docs/b.md\n+hi\n*** End Patch"
+
+	recordToolResultEvidence(contract, "apply_patch", map[string]any{"patch": patch}, "applied patch", false)
+
+	assertContractEvidence(t, contract, EvidenceWrite, "docs/a.md", "docs/b.md")
+	if strings.Contains(contract.Evidence[0].Summary, "\n") {
+		t.Fatalf("evidence summary contains newline: %q", contract.Evidence[0].Summary)
+	}
+}
+
+func TestTurnContractRecordsModelViolationEvidence(t *testing.T) {
+	contract := &TurnContract{ID: "contract-1"}
+
+	recordModelViolation(contract, "unknown_tool", "bogus_tool")
+
+	assertContractEvidence(t, contract, EvidenceModelViolation, "unknown_tool", "bogus_tool")
+}
+
+func assertContractEvidence(t *testing.T, contract *TurnContract, kind EvidenceKind, parts ...string) {
+	t.Helper()
+	for _, evidence := range contract.Evidence {
+		if evidence.Kind != kind {
+			continue
+		}
+		matched := true
+		for _, part := range parts {
+			if !strings.Contains(evidence.Summary, part) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return
+		}
+	}
+	t.Fatalf("evidence = %#v, want kind %s containing %q", contract.Evidence, kind, parts)
+}
+
+func assertNoContractEvidence(t *testing.T, contract *TurnContract, kind EvidenceKind) {
+	t.Helper()
+	for _, evidence := range contract.Evidence {
+		if evidence.Kind == kind {
+			t.Fatalf("evidence = %#v, want no kind %s", contract.Evidence, kind)
+		}
+	}
+}
+
+func assertContractGate(t *testing.T, contract *TurnContract, name string, status ContractGateStatus) {
+	t.Helper()
+	for _, gate := range contract.Gates {
+		if gate.Name == name && gate.Status == status {
+			return
+		}
+	}
+	t.Fatalf("gates = %#v, want %s=%s", contract.Gates, name, status)
 }
 
 func contractHasAction(contract *TurnContract, action ContractActionKind) bool {

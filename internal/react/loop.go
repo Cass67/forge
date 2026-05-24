@@ -1713,6 +1713,10 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 		tool, ok := r.tools.Get(call.Name)
 		if !ok {
 			errMsg := redactRuntimeText(fmt.Sprintf("error: unknown tool %q. Use one of the tools provided for this turn.", call.Name))
+			if err := r.ensureTurnCanMutate(ctx, turn); err != nil {
+				return err
+			}
+			r.recordModelViolation("unknown_tool", call.Name)
 			execs = append(execs, toolExec{
 				call: call,
 				execute: func() ToolRunResult {
@@ -1724,6 +1728,10 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 		if len(allowed) > 0 {
 			if _, ok := allowed[strings.TrimSpace(call.Name)]; !ok {
 				errMsg := redactRuntimeText(fmt.Sprintf("error: tool %q is not available for this turn. Use one of the tools provided for this turn: %s.", call.Name, strings.Join(allowedList, ", ")))
+				if err := r.ensureTurnCanMutate(ctx, turn); err != nil {
+					return err
+				}
+				r.recordModelViolation("tool_unavailable_for_turn", call.Name)
 				execs = append(execs, toolExec{
 					call: call,
 					execute: func() ToolRunResult {
@@ -1732,6 +1740,9 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 				})
 				continue
 			}
+		}
+		if err := r.ensureTurnCanMutate(ctx, turn); err != nil {
+			return err
 		}
 
 		var args map[string]any
@@ -1744,6 +1755,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 			); err != nil {
 				return err
 			}
+			r.recordModelViolation("malformed_arguments", call.Name)
 			if r.renderer != nil {
 				r.renderer.ToolCall(call.Name, "malformed arguments")
 				r.renderer.ToolResult(call.Name, parseErr, "", true)
@@ -1760,6 +1772,8 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 			); err != nil {
 				return err
 			}
+			r.recordModelViolation("malformed_arguments", call.Name)
+			r.recordToolResultEvidence(call.Name, args, validationErr, true)
 			if r.renderer != nil {
 				r.renderer.ToolCall(call.Name, reactToolSummary(args))
 				r.renderer.ToolResult(call.Name, validationErr, "", true)
@@ -1770,9 +1784,6 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 			continue
 		}
 
-		if err := r.ensureTurnCanMutate(ctx, turn); err != nil {
-			return err
-		}
 		if blocked, ok := r.blockOutOfScopeSideEffectMutation(call.Name, args); ok {
 			if err := r.appendFailureAndToolResultForTurn(ctx, turn,
 				protocol.FailureItem{Decision: protocol.ClassifyPolicyBlocked(blocked)},
@@ -1781,6 +1792,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 			); err != nil {
 				return err
 			}
+			r.recordToolResultEvidence(call.Name, args, blocked, true)
 			if r.renderer != nil {
 				r.renderer.ToolCall(call.Name, reactToolSummary(args))
 				r.renderer.ToolResult(call.Name, blocked, "", true)
@@ -1798,6 +1810,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 			); err != nil {
 				return err
 			}
+			r.recordToolResultEvidence(call.Name, args, blocked, true)
 			if r.renderer != nil {
 				r.renderer.ToolCall(call.Name, reactToolSummary(args))
 				r.renderer.ToolResult(call.Name, blocked, "", true)
@@ -1820,6 +1833,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 			); err != nil {
 				return err
 			}
+			r.recordToolResultEvidence(call.Name, args, blocked, true)
 			if r.renderer != nil {
 				r.renderer.ToolCall(call.Name, reactToolSummary(args))
 				r.renderer.ToolResult(call.Name, blocked, "", true)
@@ -1849,6 +1863,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 		if err := r.appendToolCallForTurn(ctx, turn, protocol.ToolCallItem{ToolName: call.Name, ToolCallID: call.ID, Args: args}); err != nil {
 			return err
 		}
+		r.recordToolCallEvidence(call.Name, args)
 		if r.renderer != nil {
 			r.renderer.ToolCall(call.Name, reactToolSummary(args))
 		}
@@ -1934,6 +1949,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 				}
 				return nil
 			}
+			r.recordToolResultEvidence(call.Name, args, errResult, true)
 			r.applyHookOutput(beforeTool)
 			r.applyHookOutput(r.afterToolHookOutput(ctx, call.Name, args, true, errResult))
 			if r.renderer != nil {
@@ -1960,6 +1976,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 		if !appended {
 			return nil
 		}
+		r.recordToolResultEvidence(call.Name, args, res.result, false)
 		if r.renderer != nil {
 			r.renderer.ToolResult(call.Name, display, res.diff, false)
 		}
@@ -2007,6 +2024,33 @@ func (r *Runner) updateSideEffectGatesAfterToolResult(toolName string, args map[
 			return
 		}
 		updateSideEffectGate(intent, gateName, status, evidence)
+	})
+}
+
+func (r *Runner) recordToolCallEvidence(toolName string, args map[string]any) {
+	if r == nil || r.session == nil {
+		return
+	}
+	r.session.UpdateTurnContract(func(contract *TurnContract) {
+		recordToolCallEvidence(contract, toolName, args)
+	})
+}
+
+func (r *Runner) recordToolResultEvidence(toolName string, args map[string]any, result string, isError bool) {
+	if r == nil || r.session == nil {
+		return
+	}
+	r.session.UpdateTurnContract(func(contract *TurnContract) {
+		recordToolResultEvidence(contract, toolName, args, result, isError)
+	})
+}
+
+func (r *Runner) recordModelViolation(reason, detail string) {
+	if r == nil || r.session == nil {
+		return
+	}
+	r.session.UpdateTurnContract(func(contract *TurnContract) {
+		recordModelViolation(contract, reason, detail)
 	})
 }
 
