@@ -832,11 +832,6 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 					continue
 				}
 			}
-			if ctx.Err() == nil {
-				if handled, fallbackErr := r.tryCompletedAgentResultFallbackAfterError(ctx, turn); handled {
-					return fallbackErr
-				}
-			}
 			var retryable *RetryableCompletionError
 			if errors.As(err, &retryable) && completionRetries < maxCompletionRetriesPerTurn {
 				completionRetries++
@@ -860,6 +855,19 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 						r.renderer.AgentText(fallback)
 					}
 					return nil
+				}
+			}
+			if errors.As(err, &retryable) {
+				if retryableCompletionAllowsCompletedAgentFallback(retryable) && ctx.Err() == nil {
+					if handled, fallbackErr := r.tryCompletedAgentResultFallbackAfterError(ctx, turn); handled {
+						return fallbackErr
+					}
+				}
+				return r.completeTurn(turn, "", nil, err)
+			}
+			if ctx.Err() == nil {
+				if handled, fallbackErr := r.tryCompletedAgentResultFallbackAfterError(ctx, turn); handled {
+					return fallbackErr
 				}
 			}
 			return r.completeTurn(turn, "", nil, err)
@@ -1506,11 +1514,14 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 	}
 
 	if len(toolCalls) > 0 {
-		r.pendingRetryPrompt = ""
 		preamble := stripXMLToolCallMarkup(strings.TrimSpace(textBuf.String()))
 		safePreamble := redactRuntimeText(preamble)
 		reasoning := strings.TrimSpace(reasoningBuf.String())
 		toolCalls = r.boundPostDelegationReadOutputCalls(toolCalls)
+		if err := r.rejectUnknownNativeToolCalls(ctx, turn, toolCalls, toolDefs); err != nil {
+			return nil, err
+		}
+		r.pendingRetryPrompt = ""
 		r.ensurePreMutationCheckpointForCalls(ctx, turn, toolCalls)
 		if err := r.session.AppendAssistantToolTurn(safePreamble, toolCalls); err != nil {
 			return nil, err
@@ -1624,6 +1635,55 @@ func (r *Runner) streamPlainTurn(ctx context.Context, turn int, messages []llm.M
 	return nil, nil
 }
 
+func (r *Runner) rejectUnknownNativeToolCalls(ctx context.Context, turn int, calls []llm.NativeToolCall, toolDefs []llm.ToolDef) error {
+	available := make(map[string]struct{}, len(toolDefs))
+	availableNames := make([]string, 0, len(toolDefs))
+	for _, def := range toolDefs {
+		name := strings.TrimSpace(def.Name)
+		if name == "" {
+			continue
+		}
+		if _, ok := available[name]; ok {
+			continue
+		}
+		available[name] = struct{}{}
+		availableNames = append(availableNames, name)
+	}
+	for _, call := range calls {
+		name := strings.TrimSpace(call.Name)
+		if _, ok := available[name]; ok {
+			continue
+		}
+		if err := r.ensureTurnCanMutate(ctx, turn); err != nil {
+			return err
+		}
+		reason := "tool_unavailable_for_turn"
+		message := fmt.Sprintf("react runtime: tool %q is not available this turn", name)
+		if _, registered := r.tools.Get(name); !registered {
+			reason = "unknown_tool"
+			message = fmt.Sprintf("react runtime: unknown tool %q", name)
+		}
+		r.recordModelViolation(reason, name)
+		availableText := strings.Join(availableNames, ", ")
+		if availableText == "" {
+			availableText = "none"
+		}
+		return NewRetryableCompletionError(
+			message,
+			fmt.Sprintf("The tool %q is not available. Available tools this turn: %s. Emit a valid native tool call only, or explain why no tool is needed.", name, availableText),
+		)
+	}
+	return nil
+}
+
+func retryableCompletionAllowsCompletedAgentFallback(err *RetryableCompletionError) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(strings.TrimSpace(err.Message))
+	return strings.Contains(message, `tool "wait_agent" is not available this turn`)
+}
+
 func parseLegacyXMLToolCall(text string) (llm.NativeToolCall, bool) {
 	const open = "<tool_call>"
 	const close = "</tool_call>"
@@ -1683,8 +1743,9 @@ func (r *Runner) emitRetryNotice(msg string) {
 }
 
 // executeNativeToolCalls executes a batch of native tool calls and appends results
-// to the session. Unknown tools are returned to the model as tool errors so it can recover;
-// execution errors still abort the turn after recording the failed result.
+// to the session. Unknown or unavailable tools are model-output failures and do
+// not append synthetic successful tool results; execution errors still abort the
+// turn after recording the failed result.
 // Tool executions are dispatched in parallel (matching Codex's FuturesOrdered model)
 // to reduce total wall-clock time when multiple independent tools are requested.
 func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []llm.NativeToolCall, allowedToolNames ...[]string) error {
@@ -1712,33 +1773,19 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 	for _, call := range calls {
 		tool, ok := r.tools.Get(call.Name)
 		if !ok {
-			errMsg := redactRuntimeText(fmt.Sprintf("error: unknown tool %q. Use one of the tools provided for this turn.", call.Name))
 			if err := r.ensureTurnCanMutate(ctx, turn); err != nil {
 				return err
 			}
 			r.recordModelViolation("unknown_tool", call.Name)
-			execs = append(execs, toolExec{
-				call: call,
-				execute: func() ToolRunResult {
-					return ToolRunResult{Status: ToolRunSucceeded, Result: errMsg}
-				},
-			})
-			continue
+			return fmt.Errorf("react runtime: unknown tool %q", call.Name)
 		}
 		if len(allowed) > 0 {
 			if _, ok := allowed[strings.TrimSpace(call.Name)]; !ok {
-				errMsg := redactRuntimeText(fmt.Sprintf("error: tool %q is not available for this turn. Use one of the tools provided for this turn: %s.", call.Name, strings.Join(allowedList, ", ")))
 				if err := r.ensureTurnCanMutate(ctx, turn); err != nil {
 					return err
 				}
 				r.recordModelViolation("tool_unavailable_for_turn", call.Name)
-				execs = append(execs, toolExec{
-					call: call,
-					execute: func() ToolRunResult {
-						return ToolRunResult{Status: ToolRunSucceeded, Result: errMsg}
-					},
-				})
-				continue
+				return fmt.Errorf("react runtime: tool %q is not available for this turn. Available tools this turn: %s", call.Name, strings.Join(allowedList, ", "))
 			}
 		}
 		if err := r.ensureTurnCanMutate(ctx, turn); err != nil {
@@ -3210,6 +3257,9 @@ selectParentTools:
 		reason = "post_delegation_pending_action"
 		if postDelegationWriteDocMode(snapshot) {
 			allowed = nil
+			if completedStateDelegation && !historyIncludesCompletedToolCall(snapshot, "wait_agent") && len(completedToolCallResults(snapshot, "get_agent_output")) == 0 {
+				allowed = append(allowed, "wait_agent")
+			}
 			if !postDelegationReadOutputBudgetExhausted(snapshot) {
 				allowed = append(allowed, outputReadToolNames...)
 			}
