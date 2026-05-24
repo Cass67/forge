@@ -238,6 +238,14 @@ func recordToolResultEvidence(contract *TurnContract, toolName string, args map[
 			return
 		}
 		contract.Evidence = append(contract.Evidence, EvidenceRecord{Kind: EvidenceWrite, Summary: toolEvidenceSummary("write", toolName, evidencePaths(args))})
+		return
+	}
+	if isGitSideEffectTool(toolName) {
+		status := "passed"
+		if sideEffectGateStatusForToolResult(toolName, result, isError) != SideEffectGatePassed {
+			status = "failed"
+		}
+		contract.Evidence = append(contract.Evidence, EvidenceRecord{Kind: EvidenceTool, Summary: strings.TrimSpace(toolName + " " + status + ": " + strings.TrimSpace(result))})
 	}
 }
 
@@ -318,6 +326,181 @@ func isWriteEvidenceTool(toolName string) bool {
 	default:
 		return false
 	}
+}
+
+func isGitSideEffectTool(toolName string) bool {
+	switch strings.TrimSpace(toolName) {
+	case "git_commit", "git_push":
+		return true
+	default:
+		return false
+	}
+}
+
+func turnContractNeedsSideEffectIntent(contract *TurnContract) bool {
+	if contract == nil {
+		return false
+	}
+	if len(contract.RequiredArtifacts) > 0 {
+		return true
+	}
+	for _, action := range contract.RequiredActions {
+		switch action.Kind {
+		case ContractActionEdit, ContractActionCommit, ContractActionPush:
+			return true
+		}
+	}
+	return false
+}
+
+func mirrorSideEffectIntentIntoTurnContract(contract *TurnContract, intent *SideEffectIntent) {
+	if contract == nil || intent == nil {
+		return
+	}
+	if contract.Status == "" {
+		contract.Status = ContractStatusActive
+	}
+	if containsSideEffectAction(intent.RequiredActions, SideEffectActionWrite) || len(intent.ArtifactPaths) > 0 {
+		hasArtifact := false
+		for _, path := range intent.ArtifactPaths {
+			if sideEffectPathShouldMirrorAsContractArtifact(path, intent) {
+				hasArtifact = true
+				break
+			}
+		}
+		mirrorArtifacts := hasArtifact && (contract.Intent == "" || contract.Intent == TurnIntentAnswerOnly || contract.Intent == TurnIntentWriteArtifact)
+		if mirrorArtifacts {
+			contract.Intent = TurnIntentWriteArtifact
+		} else if contract.Intent == "" || contract.Intent == TurnIntentAnswerOnly {
+			contract.Intent = TurnIntentEditCode
+		}
+		addContractActionIfMissing(contract, ContractActionEdit, "write requested artifact")
+		addPendingContractGateIfMissing(contract, "write")
+		if mirrorArtifacts {
+			for _, path := range intent.ArtifactPaths {
+				if !sideEffectPathShouldMirrorAsContractArtifact(path, intent) {
+					continue
+				}
+				addContractArtifactIfMissing(contract, normalizeIntentPath(path), "requested artifact")
+			}
+			addPendingContractGateIfMissing(contract, "artifact")
+		}
+	}
+	if containsSideEffectAction(intent.RequiredActions, SideEffectActionCommit) {
+		if contract.Intent == "" || contract.Intent == TurnIntentAnswerOnly {
+			contract.Intent = TurnIntentEditCode
+		}
+		addContractActionIfMissing(contract, ContractActionCommit, "commit requested changes")
+		addPendingContractGateIfMissing(contract, "commit")
+	}
+	if containsSideEffectAction(intent.RequiredActions, SideEffectActionPush) {
+		if contract.Intent == "" || contract.Intent == TurnIntentAnswerOnly {
+			contract.Intent = TurnIntentEditCode
+		}
+		addContractActionIfMissing(contract, ContractActionPush, "push requested changes")
+		addPendingContractGateIfMissing(contract, "push")
+	}
+}
+
+func mirrorTurnContractIntoSideEffectIntent(intent *SideEffectIntent, contract *TurnContract) {
+	if intent == nil || contract == nil {
+		return
+	}
+	for _, artifact := range contract.RequiredArtifacts {
+		path := normalizeIntentPath(artifact.Path)
+		if path == "" {
+			continue
+		}
+		addSideEffectPathIfMissing(intent, path)
+		addSideEffectActionIfMissing(intent, SideEffectActionWrite)
+		if !containsSideEffectGate(intent.Gates, string(SideEffectActionWrite)) {
+			intent.Gates = append(intent.Gates, SideEffectGate{Name: string(SideEffectActionWrite), Status: SideEffectGatePending})
+		}
+	}
+	for _, action := range contract.RequiredActions {
+		switch action.Kind {
+		case ContractActionEdit:
+			if len(contract.RequiredArtifacts) > 0 {
+				addSideEffectActionIfMissing(intent, SideEffectActionWrite)
+				if !containsSideEffectGate(intent.Gates, string(SideEffectActionWrite)) {
+					intent.Gates = append(intent.Gates, SideEffectGate{Name: string(SideEffectActionWrite), Status: SideEffectGatePending})
+				}
+			}
+		case ContractActionCommit:
+			addSideEffectActionIfMissing(intent, SideEffectActionCommit)
+			if !containsSideEffectGate(intent.Gates, string(SideEffectActionCommit)) {
+				intent.Gates = append(intent.Gates, SideEffectGate{Name: string(SideEffectActionCommit), Status: SideEffectGatePending})
+			}
+		case ContractActionPush:
+			addSideEffectActionIfMissing(intent, SideEffectActionPush)
+			if !containsSideEffectGate(intent.Gates, string(SideEffectActionPush)) {
+				intent.Gates = append(intent.Gates, SideEffectGate{Name: string(SideEffectActionPush), Status: SideEffectGatePending})
+			}
+		}
+	}
+}
+
+func addContractActionIfMissing(contract *TurnContract, kind ContractActionKind, description string) {
+	for _, action := range contract.RequiredActions {
+		if action.Kind == kind {
+			return
+		}
+	}
+	contract.RequiredActions = append(contract.RequiredActions, ContractAction{Kind: kind, Description: description})
+}
+
+func addContractArtifactIfMissing(contract *TurnContract, path, description string) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return
+	}
+	for _, artifact := range contract.RequiredArtifacts {
+		if artifact.Path == path {
+			return
+		}
+	}
+	contract.RequiredArtifacts = append(contract.RequiredArtifacts, ArtifactRequirement{Path: path, Description: description})
+}
+
+func addPendingContractGateIfMissing(contract *TurnContract, name string) {
+	if contract == nil || strings.TrimSpace(name) == "" {
+		return
+	}
+	for _, gate := range contract.Gates {
+		if gate.Name == name {
+			return
+		}
+	}
+	contract.Gates = append(contract.Gates, ContractGate{Name: name, Status: ContractGatePending})
+}
+
+func sideEffectPathShouldMirrorAsContractArtifact(path string, intent *SideEffectIntent) bool {
+	path = normalizeIntentPath(path)
+	return path != "" && sideEffectPathMatchesIntent(path, intent)
+}
+
+func addSideEffectActionIfMissing(intent *SideEffectIntent, action SideEffectAction) {
+	if !containsSideEffectAction(intent.RequiredActions, action) {
+		intent.RequiredActions = append(intent.RequiredActions, action)
+	}
+}
+
+func addSideEffectPathIfMissing(intent *SideEffectIntent, path string) {
+	if !slicesContainsString(intent.ArtifactPaths, path) {
+		intent.ArtifactPaths = append(intent.ArtifactPaths, path)
+	}
+	if !slicesContainsString(intent.AllowedPaths, path) {
+		intent.AllowedPaths = append(intent.AllowedPaths, path)
+	}
+}
+
+func slicesContainsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func evidencePaths(args map[string]any) []string {
@@ -428,7 +611,7 @@ func turnInputSuggestsInspection(input string) bool {
 }
 
 func turnInputSuggestsImplementation(input string) bool {
-	return containsToolPhrase(input, "implement this", "implement it", "make the change", "fix this")
+	return containsToolPhrase(input, "implement this", "implement it", "make the change", "fix this", "edit ")
 }
 
 func turnInputMentionsVerification(input string) bool {

@@ -196,17 +196,24 @@ func TestRunnerRunInvokesDriverAndProgress(t *testing.T) {
 }
 
 func TestRunnerCreatesSideEffectIntentForWriteCommitPushRequest(t *testing.T) {
+	workspace := t.TempDir()
+	artifact := "docs/plans/turn-contract-kernel.md"
 	session := NewSession()
-	r := NewRunner(Config{Session: session, Driver: &scriptedDriver{responses: []string{"ok"}}})
+	session.SetActiveWorkspaceRoot(workspace)
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "write-1", Name: "write_file", ArgsJSON: fmt.Sprintf(`{"path":%q,"content":"# Turn Contract Kernel\n\n## Plan\n\nMirror side effect intent into the turn contract."}`, artifact)}}},
+		{{Text: "ok"}},
+	}}
+	r := NewRunner(Config{Session: session, Driver: driver, Tools: artifactGateWriteToolRegistry(t, workspace), MaxSteps: 5})
 
-	if err := r.Run(context.Background(), "write FORGE_VS_CODEX.md, commit it to main and push"); err != nil {
+	if err := r.Run(context.Background(), "write "+artifact+", commit it to main and push"); err != nil {
 		t.Fatal(err)
 	}
 	intent := session.Snapshot().SideEffectIntent
 	if intent == nil {
 		t.Fatal("missing side-effect intent")
 	}
-	if !containsString(intent.AllowedPaths, "FORGE_VS_CODEX.md") {
+	if !containsString(intent.AllowedPaths, artifact) {
 		t.Fatalf("AllowedPaths = %#v", intent.AllowedPaths)
 	}
 	for _, want := range []SideEffectAction{SideEffectActionWrite, SideEffectActionCommit, SideEffectActionPush} {
@@ -216,6 +223,40 @@ func TestRunnerCreatesSideEffectIntentForWriteCommitPushRequest(t *testing.T) {
 	}
 	if intent.TargetBranch != "main" || intent.Remote != "origin" {
 		t.Fatalf("target = %s/%s", intent.Remote, intent.TargetBranch)
+	}
+	contract := session.Snapshot().TurnContract
+	if contract == nil {
+		t.Fatal("missing turn contract")
+	}
+	for _, want := range []ContractActionKind{ContractActionEdit, ContractActionCommit, ContractActionPush} {
+		if !contractHasAction(contract, want) {
+			t.Fatalf("TurnContract actions = %#v, want %s", contract.RequiredActions, want)
+		}
+	}
+	if !contractHasArtifact(contract, artifact) || !contractHasGateStatus(contract, "artifact", ContractGatePassed) || !contractHasGate(contract, "commit") || !contractHasGate(contract, "push") {
+		t.Fatalf("TurnContract = %#v, want mirrored artifact/git gates", contract)
+	}
+}
+
+func TestRunnerCreatesSideEffectIntentForTurnContractGitActions(t *testing.T) {
+	session := NewSession()
+	r := NewRunner(Config{Session: session, Driver: &scriptedDriver{responses: []string{"ok"}}})
+
+	if err := r.Run(context.Background(), "commit and push"); err != nil {
+		t.Fatal(err)
+	}
+	intent := session.Snapshot().SideEffectIntent
+	if intent == nil {
+		t.Fatal("missing side-effect intent")
+	}
+	for _, want := range []SideEffectAction{SideEffectActionCommit, SideEffectActionPush} {
+		if !containsSideEffectAction(intent.RequiredActions, want) || !containsSideEffectGate(intent.Gates, string(want)) {
+			t.Fatalf("SideEffectIntent = %#v, want %s action and gate", intent, want)
+		}
+	}
+	contract := session.Snapshot().TurnContract
+	if contract == nil || !contractHasAction(contract, ContractActionCommit) || !contractHasAction(contract, ContractActionPush) || !contractHasGate(contract, "commit") || !contractHasGate(contract, "push") {
+		t.Fatalf("TurnContract = %#v, want commit/push actions and gates", contract)
 	}
 }
 
@@ -277,6 +318,103 @@ func TestRunnerArtifactGateBlocksMissingArtifactFinalCompletion(t *testing.T) {
 	}
 	if !lastUserMessageContains(session.Snapshot(), "docs/plans/2026-05-23-term-wrangler-design.md") {
 		t.Fatalf("history missing concrete artifact feedback: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerFinalFeedbackDoesNotDuplicateMirroredMissingArtifact(t *testing.T) {
+	session := NewSession()
+	session.SetTurnContract(TurnContract{
+		ID:                "contract-1",
+		Intent:            TurnIntentWriteArtifact,
+		RequiredActions:   []ContractAction{{Kind: ContractActionEdit}},
+		RequiredArtifacts: []ArtifactRequirement{{Path: "docs/report.md"}},
+		Gates:             []ContractGate{{Name: "artifact", Status: ContractGatePending}},
+		Status:            ContractStatusActive,
+	})
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		ArtifactPaths:   []string{"docs/report.md"},
+		AllowedPaths:    []string{"docs/report.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite},
+		Gates:           []SideEffectGate{{Name: string(SideEffectActionWrite), Status: SideEffectGatePending}},
+	})
+	r := NewRunner(Config{Session: session})
+
+	feedbackParts, hasArtifactFeedback, err := r.finalSideEffectGateFeedback("Done, wrote the file.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasArtifactFeedback || len(feedbackParts) != 1 {
+		t.Fatalf("feedbackParts = %#v, hasArtifactFeedback=%v; want only artifact feedback", feedbackParts, hasArtifactFeedback)
+	}
+}
+
+func TestRunnerArtifactGateRequiresExactPathEvidenceDespiteSideEffectWriteGate(t *testing.T) {
+	workspace := t.TempDir()
+	for _, path := range []string{"docs/a.txt", "docs/b.txt"} {
+		fullPath := filepath.Join(workspace, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fullPath, []byte("content"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	session := NewSession()
+	session.SetActiveWorkspaceRoot(workspace)
+	session.SetTurnContract(TurnContract{
+		ID:                "contract-1",
+		Intent:            TurnIntentWriteArtifact,
+		RequiredActions:   []ContractAction{{Kind: ContractActionEdit}},
+		RequiredArtifacts: []ArtifactRequirement{{Path: "docs/a.txt"}, {Path: "docs/b.txt"}},
+		Evidence:          []EvidenceRecord{{Kind: EvidenceWrite, Summary: "write: write_file docs/a.txt"}},
+		Gates:             []ContractGate{{Name: "artifact", Status: ContractGatePending}},
+		Status:            ContractStatusActive,
+	})
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		ArtifactPaths:   []string{"docs/a.txt", "docs/b.txt"},
+		AllowedPaths:    []string{"docs/a.txt", "docs/b.txt"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite},
+		Gates:           []SideEffectGate{{Name: string(SideEffectActionWrite), Status: SideEffectGatePassed}},
+	})
+	r := NewRunner(Config{Session: session})
+
+	feedbackParts, hasArtifactFeedback, err := r.finalSideEffectGateFeedback("Done, wrote the files.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasArtifactFeedback || len(feedbackParts) == 0 || !strings.Contains(strings.Join(feedbackParts, "\n"), "docs/b.txt") {
+		t.Fatalf("feedbackParts = %#v, hasArtifactFeedback=%v; want missing exact evidence for docs/b.txt", feedbackParts, hasArtifactFeedback)
+	}
+}
+
+func TestRunnerArtifactGateDoesNotPassRootlessMirroredArtifactWithOnlyWriteEvidence(t *testing.T) {
+	session := NewSession()
+	session.SetTurnContract(TurnContract{
+		ID:                "contract-1",
+		Intent:            TurnIntentWriteArtifact,
+		RequiredActions:   []ContractAction{{Kind: ContractActionEdit}},
+		RequiredArtifacts: []ArtifactRequirement{{Path: "docs/rootless.txt", Description: "requested artifact"}},
+		Evidence:          []EvidenceRecord{{Kind: EvidenceWrite, Summary: "write: write_file docs/rootless.txt"}},
+		Gates:             []ContractGate{{Name: "artifact", Status: ContractGatePending}},
+		Status:            ContractStatusActive,
+	})
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		ArtifactPaths:   []string{"docs/rootless.txt"},
+		AllowedPaths:    []string{"docs/rootless.txt"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite},
+		Gates:           []SideEffectGate{{Name: string(SideEffectActionWrite), Status: SideEffectGatePassed}},
+	})
+	r := NewRunner(Config{Session: session})
+
+	feedbackParts, hasArtifactFeedback, err := r.finalSideEffectGateFeedback("Done, wrote the file.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasArtifactFeedback || len(feedbackParts) == 0 {
+		t.Fatalf("feedbackParts = %#v, hasArtifactFeedback=%v; want rootless artifact validation to remain unresolved", feedbackParts, hasArtifactFeedback)
 	}
 }
 
@@ -6768,6 +6906,18 @@ func contractHasGateStatus(contract *TurnContract, name string, status ContractG
 	return false
 }
 
+func sideEffectHasGateStatus(intent *SideEffectIntent, name string, status SideEffectGateStatus) bool {
+	if intent == nil {
+		return false
+	}
+	for _, gate := range intent.Gates {
+		if gate.Name == name && gate.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
 func contractHasEvidence(contract *TurnContract, kind EvidenceKind, parts ...string) bool {
 	if contract == nil {
 		return false
@@ -9081,8 +9231,8 @@ func TestRunnerRecordsPendingDelegationWriteActionAfterWait(t *testing.T) {
 
 func TestRunnerMergesDelegationTargetIntoActiveSideEffectIntent(t *testing.T) {
 	session := NewSession()
-	session.RecordInput("use repo-auditor then write the report")
-	session.SetSideEffectIntent(SideEffectIntent{ID: "intent-1", AllowedPaths: []string{"docs/summary.md"}})
+	turn := session.RecordInput("use repo-auditor then write the report")
+	session.SetSideEffectIntent(SideEffectIntent{ID: "intent-1", SourceTurn: turn, AllowedPaths: []string{"docs/summary.md"}})
 	r := NewRunner(Config{Session: session})
 
 	r.updatePostDelegationWorkflow("wait_agent", map[string]any{"id": "agent-1"}, `{"id":"agent-1","status":"completed","result":"write report path docs/reports/audit.md"}`, false)
@@ -9096,6 +9246,212 @@ func TestRunnerMergesDelegationTargetIntoActiveSideEffectIntent(t *testing.T) {
 	}
 	if !containsSideEffectAction(intent.RequiredActions, SideEffectActionWrite) {
 		t.Fatalf("RequiredActions = %#v, want write", intent.RequiredActions)
+	}
+}
+
+func TestRunnerMergesDelegationTargetIntoActiveTurnContract(t *testing.T) {
+	session := NewSession()
+	session.RecordInput("use repo-auditor then write the report")
+	session.SetSideEffectIntent(SideEffectIntent{ID: "intent-1", AllowedPaths: []string{"docs/summary.md"}})
+	r := NewRunner(Config{Session: session})
+
+	r.updatePostDelegationWorkflow("wait_agent", map[string]any{"id": "agent-1"}, `{"id":"agent-1","status":"completed","result":"write report path docs/reports/audit.md"}`, false)
+
+	contract := session.Snapshot().TurnContract
+	if contract == nil {
+		t.Fatal("missing turn contract")
+	}
+	if contract.Intent != TurnIntentWriteArtifact || !contractHasAction(contract, ContractActionEdit) || !contractHasArtifact(contract, "docs/reports/audit.md") || !contractHasGate(contract, "artifact") {
+		t.Fatalf("TurnContract = %#v, want delegated write artifact mirrored", contract)
+	}
+}
+
+func TestRunnerDoesNotMirrorStaleSideEffectIntentIntoNewTurnContract(t *testing.T) {
+	session := NewSession()
+	session.RecordInput("write docs/old.md")
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		SourceTurn:      1,
+		ArtifactPaths:   []string{"docs/old.md"},
+		AllowedPaths:    []string{"docs/old.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite},
+		Gates:           []SideEffectGate{{Name: string(SideEffectActionWrite), Status: SideEffectGatePending}},
+	})
+	session.RecordInput("inspect the repo")
+	session.SetTurnContract(TurnContract{
+		ID:              "contract-2",
+		SourceTurn:      2,
+		Intent:          TurnIntentInspect,
+		RequiredActions: []ContractAction{{Kind: ContractActionRead}},
+		Status:          ContractStatusActive,
+	})
+	r := NewRunner(Config{Session: session})
+
+	r.syncTurnContractAndSideEffectIntent()
+
+	contract := session.Snapshot().TurnContract
+	if contract == nil || contract.Intent != TurnIntentInspect || contractHasArtifact(contract, "docs/old.md") || contractHasAction(contract, ContractActionEdit) {
+		t.Fatalf("TurnContract = %#v, want stale side-effect intent ignored", contract)
+	}
+}
+
+func TestRunnerDoesNotMirrorUnknownSourceSideEffectIntentIntoNewTurnContract(t *testing.T) {
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-legacy",
+		ArtifactPaths:   []string{"docs/old.md"},
+		AllowedPaths:    []string{"docs/old.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite, SideEffectActionCommit, SideEffectActionPush},
+		Gates: []SideEffectGate{
+			{Name: string(SideEffectActionWrite), Status: SideEffectGatePending},
+			{Name: string(SideEffectActionCommit), Status: SideEffectGatePending},
+			{Name: string(SideEffectActionPush), Status: SideEffectGatePending},
+		},
+	})
+	session.RecordInput("hello")
+	session.SetTurnContract(TurnContract{
+		ID:         "contract-1",
+		SourceTurn: 1,
+		Intent:     TurnIntentAnswerOnly,
+		Status:     ContractStatusActive,
+	})
+	r := NewRunner(Config{Session: session})
+
+	r.syncTurnContractAndSideEffectIntent()
+
+	contract := session.Snapshot().TurnContract
+	if contract == nil || contract.Intent != TurnIntentAnswerOnly || len(contract.RequiredActions) != 0 || len(contract.RequiredArtifacts) != 0 || len(contract.Gates) != 0 {
+		t.Fatalf("TurnContract = %#v, want unknown-source side-effect intent ignored", contract)
+	}
+}
+
+func TestRunnerPendingDelegationMirrorsOnlyCurrentTargetFromUnknownSourceIntent(t *testing.T) {
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-legacy",
+		ArtifactPaths:   []string{"docs/old.md"},
+		AllowedPaths:    []string{"docs/old.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite, SideEffectActionCommit, SideEffectActionPush},
+		Gates: []SideEffectGate{
+			{Name: string(SideEffectActionWrite), Status: SideEffectGatePending},
+			{Name: string(SideEffectActionCommit), Status: SideEffectGatePending},
+			{Name: string(SideEffectActionPush), Status: SideEffectGatePending},
+		},
+	})
+	session.RecordInput("use repo-auditor then write docs/new.md")
+	session.SetPendingDelegationAction(DelegationActionState{Kind: DelegationActionWriteDoc, TargetPath: "docs/new.md", SourceAgent: "agent-1"})
+	session.SetTurnContract(TurnContract{
+		ID:         "contract-1",
+		SourceTurn: 1,
+		Intent:     TurnIntentAnswerOnly,
+		Status:     ContractStatusActive,
+	})
+	r := NewRunner(Config{Session: session})
+
+	r.syncTurnContractAndSideEffectIntent()
+
+	contract := session.Snapshot().TurnContract
+	if contract == nil || contract.Intent != TurnIntentWriteArtifact || !contractHasAction(contract, ContractActionEdit) || !contractHasArtifact(contract, "docs/new.md") || !contractHasGate(contract, "artifact") {
+		t.Fatalf("TurnContract = %#v, want current delegation write mirrored", contract)
+	}
+	if contractHasArtifact(contract, "docs/old.md") || contractHasAction(contract, ContractActionCommit) || contractHasAction(contract, ContractActionPush) || contractHasGate(contract, "commit") || contractHasGate(contract, "push") {
+		t.Fatalf("TurnContract = %#v, want no stale artifact/git mirroring", contract)
+	}
+	intent := session.Snapshot().SideEffectIntent
+	if intent == nil || intent.SourceTurn != 1 || !containsString(intent.ArtifactPaths, "docs/new.md") || !containsString(intent.AllowedPaths, "docs/new.md") || !containsSideEffectAction(intent.RequiredActions, SideEffectActionWrite) || !containsSideEffectGate(intent.Gates, string(SideEffectActionWrite)) {
+		t.Fatalf("SideEffectIntent = %#v, want sanitized current delegation intent", intent)
+	}
+	if containsString(intent.ArtifactPaths, "docs/old.md") || containsString(intent.AllowedPaths, "docs/old.md") || containsSideEffectAction(intent.RequiredActions, SideEffectActionCommit) || containsSideEffectAction(intent.RequiredActions, SideEffectActionPush) || containsSideEffectGate(intent.Gates, string(SideEffectActionCommit)) || containsSideEffectGate(intent.Gates, string(SideEffectActionPush)) {
+		t.Fatalf("SideEffectIntent = %#v, want stale paths/git removed", intent)
+	}
+}
+
+func TestRunnerPendingDelegationSanitizationRemovesStaleGitToolExposure(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"write_file", "run_command", "git_status", "git_commit", "git_push", "tool_help"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-legacy",
+		ArtifactPaths:   []string{"docs/old.md"},
+		AllowedPaths:    []string{"docs/old.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite, SideEffectActionCommit, SideEffectActionPush},
+		Gates: []SideEffectGate{
+			{Name: string(SideEffectActionWrite), Status: SideEffectGatePending},
+			{Name: string(SideEffectActionCommit), Status: SideEffectGatePending},
+			{Name: string(SideEffectActionPush), Status: SideEffectGatePending},
+		},
+	})
+	session.RecordInput("use repo-auditor then write docs/new.md")
+	session.SetPendingDelegationAction(DelegationActionState{Kind: DelegationActionWriteDoc, TargetPath: "docs/new.md", SourceAgent: "agent-1"})
+	session.SetTurnContract(TurnContract{ID: "contract-1", SourceTurn: 1, Intent: TurnIntentAnswerOnly, Status: ContractStatusActive})
+	r := NewRunner(Config{Session: session, Tools: reg})
+
+	r.syncTurnContractAndSideEffectIntent()
+	names := toolDefNames(r.selectToolDefs(session.Snapshot()))
+
+	if containsString(names, "git_commit") || containsString(names, "git_push") {
+		t.Fatalf("tools = %#v, want stale git tools removed after sanitization", names)
+	}
+}
+
+func TestRunnerPendingDelegationSanitizationPreventsLaterGitGateReintroduction(t *testing.T) {
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-legacy",
+		ArtifactPaths:   []string{"docs/old.md"},
+		AllowedPaths:    []string{"docs/old.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite, SideEffectActionCommit, SideEffectActionPush},
+		Gates: []SideEffectGate{
+			{Name: string(SideEffectActionWrite), Status: SideEffectGatePending},
+			{Name: string(SideEffectActionCommit), Status: SideEffectGatePending},
+			{Name: string(SideEffectActionPush), Status: SideEffectGatePending},
+		},
+	})
+	session.RecordInput("use repo-auditor then write docs/new.md")
+	session.SetPendingDelegationAction(DelegationActionState{Kind: DelegationActionWriteDoc, TargetPath: "docs/new.md", SourceAgent: "agent-1"})
+	session.SetTurnContract(TurnContract{ID: "contract-1", SourceTurn: 1, Intent: TurnIntentAnswerOnly, Status: ContractStatusActive})
+	r := NewRunner(Config{Session: session})
+	r.syncTurnContractAndSideEffectIntent()
+
+	r.updateSideEffectGatesAfterToolResult("git_commit", map[string]any{"message": "stale"}, "commit abc123 created with files: docs/new.md", false)
+
+	contract := session.Snapshot().TurnContract
+	if contractHasAction(contract, ContractActionCommit) || contractHasGate(contract, "commit") || contractHasGateStatus(contract, "commit", ContractGatePassed) || contractHasGateStatus(contract, "commit", ContractGateFailed) {
+		t.Fatalf("TurnContract = %#v, want no stale commit action/gate reintroduced", contract)
+	}
+	intent := session.Snapshot().SideEffectIntent
+	if containsSideEffectAction(intent.RequiredActions, SideEffectActionCommit) || containsSideEffectGate(intent.Gates, string(SideEffectActionCommit)) {
+		t.Fatalf("SideEffectIntent = %#v, want commit removed after sanitization", intent)
+	}
+}
+
+func TestRunnerSuccessfulSideEffectToolResultUpdatesTurnContractGate(t *testing.T) {
+	session := NewSession()
+	session.SetTurnContract(TurnContract{
+		ID:              "contract-1",
+		Intent:          TurnIntentEditCode,
+		RequiredActions: []ContractAction{{Kind: ContractActionCommit}},
+		Gates:           []ContractGate{{Name: "commit", Status: ContractGatePending}},
+		Status:          ContractStatusActive,
+	})
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		RequiredActions: []SideEffectAction{SideEffectActionCommit},
+		Gates:           []SideEffectGate{{Name: string(SideEffectActionCommit), Status: SideEffectGatePending}},
+	})
+	r := NewRunner(Config{Session: session})
+
+	r.recordToolResultEvidence("git_commit", map[string]any{"message": "task 10"}, "commit abc123 created with files: a.go", false)
+	r.updateSideEffectGatesAfterToolResult("git_commit", map[string]any{"message": "task 10"}, "commit abc123 created with files: a.go", false)
+
+	snap := session.Snapshot()
+	if snap.SideEffectIntent == nil || !sideEffectHasGateStatus(snap.SideEffectIntent, string(SideEffectActionCommit), SideEffectGatePassed) {
+		t.Fatalf("SideEffectIntent = %#v, want passed commit gate", snap.SideEffectIntent)
+	}
+	if snap.TurnContract == nil || !contractHasGateStatus(snap.TurnContract, "commit", ContractGatePassed) || !contractHasEvidence(snap.TurnContract, EvidenceTool, "git_commit", "abc123") {
+		t.Fatalf("TurnContract = %#v, want passed commit gate and evidence", snap.TurnContract)
 	}
 }
 

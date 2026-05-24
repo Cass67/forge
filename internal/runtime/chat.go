@@ -420,6 +420,7 @@ func RunChatLive(setup *ChatSetup) {
 	}
 	evRenderer := agent.NewEventRenderer(renderCh)
 	session := reactruntime.NewSession()
+	session.SetActiveWorkspaceRoot(setup.WorkDir)
 
 	var approve tools.ApprovalFunc
 	gate := reactruntime.NewApprovalGate(setup.WorkDir, loadChatApprovalConfig(setup), nil, func(text string) {
@@ -754,6 +755,7 @@ func providerOptionsFromBootstrap(backends []bootstrap.ProviderBackend) []tui.Pr
 
 func RunChatConsole(setup *ChatSetup) {
 	session := reactruntime.NewSession()
+	session.SetActiveWorkspaceRoot(setup.WorkDir)
 	var approve tools.ApprovalFunc
 	if setup.Yolo {
 		approve = agent.YoloApproval()
