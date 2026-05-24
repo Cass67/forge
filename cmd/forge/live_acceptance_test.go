@@ -104,10 +104,135 @@ func TestFailureFixtureTermWranglerWouldNotPassContract(t *testing.T) {
 	if result.status != "failed_contract" {
 		t.Fatalf("status = %q, want failed_contract; violations=%v", result.status, result.violations)
 	}
-	for _, want := range []string{"unknown_tool", "raw_tool_markup", "missing_artifact"} {
+	for _, want := range []string{"unknown_tool", "raw_tool_markup", "missing_artifact", "provider_child_failure"} {
 		if !containsString(result.violations, want) {
 			t.Fatalf("violations = %v, want %q", result.violations, want)
 		}
+	}
+}
+
+func TestFailureFixtureAnalyzerAcceptsSuccessfulArtifactWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "thread.jsonl")
+	writeTextFile(t, path, strings.Join([]string{
+		`{"kind":"user_message","message":{"text":"write docs/superpowers/specs/2026-05-23-term-wrangler-design.md"}}`,
+		`{"kind":"tool_call","tool_call":{"tool_name":"write_file","tool_call_id":"write-1","args":{"path":"docs/superpowers/specs/2026-05-23-term-wrangler-design.md","content":"# term_wrangler Design\n\n## Backend Detection\n\nUse terminal-native backends with explicit fallback behavior and verification steps."}}}`,
+		`{"kind":"tool_result","tool_result":{"tool_call_id":"write-1","text":"wrote docs/superpowers/specs/2026-05-23-term-wrangler-design.md"}}`,
+		`{"kind":"assistant_message","message":{"text":"Done. Wrote docs/superpowers/specs/2026-05-23-term-wrangler-design.md with the approved backend design."}}`,
+		`{"kind":"turn_complete","turn_complete":{"status":"completed"}}`,
+	}, "\n")+"\n")
+
+	result := analyzeFailureThreadContract(t, path)
+
+	if result.status != "satisfied_contract" {
+		t.Fatalf("status = %q, want satisfied_contract; violations=%v", result.status, result.violations)
+	}
+	if len(result.violations) != 0 {
+		t.Fatalf("violations = %v, want none", result.violations)
+	}
+}
+
+func TestFailureFixtureAnalyzerRejectsDoneWithoutArtifactEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "thread.jsonl")
+	writeTextFile(t, path, strings.Join([]string{
+		`{"kind":"user_message","message":{"text":"write docs/superpowers/specs/2026-05-23-term-wrangler-design.md"}}`,
+		`{"kind":"assistant_message","message":{"text":"Done. I wrote docs/superpowers/specs/2026-05-23-term-wrangler-design.md."}}`,
+		`{"kind":"turn_complete","turn_complete":{"status":"completed"}}`,
+	}, "\n")+"\n")
+
+	result := analyzeFailureThreadContract(t, path)
+
+	if result.status != "failed_contract" {
+		t.Fatalf("status = %q, want failed_contract; violations=%v", result.status, result.violations)
+	}
+	if !containsString(result.violations, "missing_artifact") {
+		t.Fatalf("violations = %v, want missing_artifact", result.violations)
+	}
+}
+
+func TestFailureFixtureAnalyzerRejectsFailedWriteFileWithCorrectArgs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "thread.jsonl")
+	writeTextFile(t, path, strings.Join([]string{
+		`{"kind":"turn_contract","turn_contract":{"required_artifacts":[{"path":"docs/superpowers/specs/2026-05-23-term-wrangler-design.md"}]}}`,
+		`{"kind":"tool_call","tool_call":{"tool_name":"write_file","tool_call_id":"write-1","args":{"path":"docs/superpowers/specs/2026-05-23-term-wrangler-design.md","content":"# term_wrangler Design\n\n## Backend\n\nUse native terminal backends with clear fallback behavior."}}}`,
+		`{"kind":"tool_result","tool_result":{"tool_call_id":"write-1","text":"blocked: refusing to write requested artifact"}}`,
+		`{"kind":"assistant_message","message":{"text":"Done. Wrote docs/superpowers/specs/2026-05-23-term-wrangler-design.md."}}`,
+		`{"kind":"turn_complete","turn_complete":{"status":"completed"}}`,
+	}, "\n")+"\n")
+
+	result := analyzeFailureThreadContract(t, path)
+
+	if result.status != "failed_contract" {
+		t.Fatalf("status = %q, want failed_contract; violations=%v", result.status, result.violations)
+	}
+	if !containsString(result.violations, "missing_artifact") {
+		t.Fatalf("violations = %v, want missing_artifact", result.violations)
+	}
+}
+
+func TestFailureFixtureAnalyzerAcceptsTurnContractWriteEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "thread.jsonl")
+	writeTextFile(t, path, strings.Join([]string{
+		`{"kind":"turn_contract","turn_contract":{"required_artifacts":[{"path":"docs/reports/audit-design.md"}]}}`,
+		`{"kind":"tool_call","tool_call":{"tool_name":"artifact_write","tool_call_id":"artifact-1","args":{"path":"docs/reports/audit-design.md","content":"# Audit Design\n\n## backend\n\nUse collected repository evidence to produce a durable audit artifact."}}}`,
+		`{"kind":"turn_contract","turn_contract":{"required_artifacts":[{"path":"docs/reports/audit-design.md"}],"evidence":[{"kind":"write","summary":"write: artifact_write docs/reports/audit-design.md"}]}}`,
+		`{"kind":"turn_complete","turn_complete":{"status":"completed"}}`,
+	}, "\n")+"\n")
+
+	result := analyzeFailureThreadContract(t, path)
+
+	if result.status != "satisfied_contract" {
+		t.Fatalf("status = %q, want satisfied_contract; violations=%v", result.status, result.violations)
+	}
+}
+
+func TestFailureFixtureAnalyzerRejectsBackupPathEvidenceForRequiredArtifact(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "thread.jsonl")
+	writeTextFile(t, path, strings.Join([]string{
+		`{"kind":"turn_contract","turn_contract":{"required_artifacts":[{"path":"docs/a.md"}]}}`,
+		`{"kind":"tool_call","tool_call":{"tool_name":"write_file","tool_call_id":"write-1","args":{"path":"docs/a.md","content":"# Artifact Design\n\n## Plan\n\nThis content has no successful durable write evidence."}}}`,
+		`{"kind":"turn_contract","turn_contract":{"required_artifacts":[{"path":"docs/a.md"}],"evidence":[{"kind":"write","summary":"write: write_file docs/a.md.bak"}]}}`,
+		`{"kind":"turn_complete","turn_complete":{"status":"completed"}}`,
+	}, "\n")+"\n")
+
+	result := analyzeFailureThreadContract(t, path)
+
+	if result.status != "failed_contract" {
+		t.Fatalf("status = %q, want failed_contract; violations=%v", result.status, result.violations)
+	}
+	if !containsString(result.violations, "missing_artifact") {
+		t.Fatalf("violations = %v, want missing_artifact", result.violations)
+	}
+}
+
+func TestFailureFixtureAnalyzerDerivesArtifactPathFromRequest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "thread.jsonl")
+	writeTextFile(t, path, strings.Join([]string{
+		`{"kind":"user_message","message":{"text":"write docs/superpowers/specs/2027-01-02-widget-launch-design.md"}}`,
+		`{"kind":"tool_call","tool_call":{"tool_name":"write_file","tool_call_id":"write-1","args":{"path":"docs/superpowers/specs/2027-01-02-widget-launch-design.md","content":"# Widget Launch Design\n\n## Plan\n\nShip the widget launch in staged milestones with verification."}}}`,
+		`{"kind":"tool_result","tool_result":{"tool_call_id":"write-1","text":"wrote docs/superpowers/specs/2027-01-02-widget-launch-design.md"}}`,
+		`{"kind":"turn_complete","turn_complete":{"status":"completed"}}`,
+	}, "\n")+"\n")
+
+	result := analyzeFailureThreadContract(t, path)
+
+	if result.status != "satisfied_contract" {
+		t.Fatalf("status = %q, want satisfied_contract; violations=%v", result.status, result.violations)
+	}
+}
+
+func TestFailureFixtureAnalyzerAcceptsStructurallyPlausibleMarkdownCaseVariations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "thread.jsonl")
+	writeTextFile(t, path, strings.Join([]string{
+		`{"kind":"turn_contract","turn_contract":{"required_artifacts":[{"path":"docs/superpowers/specs/2026-05-24-term-wrangler-design.md"}]}}`,
+		`{"kind":"tool_call","tool_call":{"tool_name":"edit_file","tool_call_id":"edit-1","args":{"path":"docs/superpowers/specs/2026-05-24-term-wrangler-design.md","content":"# term wrangler design\n\n## backend\n\nthis document describes terminal backend choices and fallback behavior."}}}`,
+		`{"kind":"tool_result","tool_result":{"tool_call_id":"edit-1","text":"edited docs/superpowers/specs/2026-05-24-term-wrangler-design.md"}}`,
+		`{"kind":"turn_complete","turn_complete":{"status":"completed"}}`,
+	}, "\n")+"\n")
+
+	result := analyzeFailureThreadContract(t, path)
+
+	if result.status != "satisfied_contract" {
+		t.Fatalf("status = %q, want satisfied_contract; violations=%v", result.status, result.violations)
 	}
 }
 
@@ -1129,6 +1254,12 @@ type failureThreadContractResult struct {
 	violations []string
 }
 
+type failureThreadWriteCall struct {
+	toolName string
+	path     string
+	content  string
+}
+
 func analyzeFailureThreadContract(t *testing.T, path string) failureThreadContractResult {
 	t.Helper()
 	file, err := os.Open(path)
@@ -1144,30 +1275,53 @@ func analyzeFailureThreadContract(t *testing.T, path string) failureThreadContra
 	type threadEvent struct {
 		Kind     string `json:"kind"`
 		ToolCall struct {
-			ToolName string `json:"tool_name"`
-			Args     struct {
-				Path string `json:"path"`
-				File string `json:"file"`
+			ToolCallID string `json:"tool_call_id"`
+			ToolName   string `json:"tool_name"`
+			Args       struct {
+				Path    string `json:"path"`
+				File    string `json:"file"`
+				Content string `json:"content"`
+				Patch   string `json:"patch"`
 			} `json:"args"`
 		} `json:"tool_call"`
 		ToolResult struct {
-			Text string `json:"text"`
+			ToolCallID string `json:"tool_call_id"`
+			Text       string `json:"text"`
 		} `json:"tool_result"`
 		Message struct {
 			Text string `json:"text"`
 		} `json:"message"`
+		TurnContract struct {
+			RequiredArtifacts []struct {
+				Path string `json:"path"`
+			} `json:"required_artifacts"`
+			Evidence []struct {
+				Kind    string `json:"kind"`
+				Summary string `json:"summary"`
+			} `json:"evidence"`
+			Gates []struct {
+				Name     string `json:"name"`
+				Status   string `json:"status"`
+				Evidence string `json:"evidence"`
+			} `json:"gates"`
+		} `json:"turn_contract"`
 		TurnComplete struct {
 			Status string `json:"status"`
 		} `json:"turn_complete"`
 	}
 
 	var (
-		bashToolCalled  bool
-		unknownBashTool bool
-		childFailed     bool
-		rawToolMarkup   bool
-		artifactWritten bool
-		finalStatus     string
+		bashToolCalled       bool
+		unknownBashTool      bool
+		childFailed          bool
+		rawToolMarkup        bool
+		finalStatus          string
+		userTexts            []string
+		requiredPaths        []string
+		writeCalls           = make(map[string]failureThreadWriteCall)
+		artifactContent      = make(map[string]string)
+		successfulWritePaths = make(map[string]bool)
+		contractWritePaths   = make(map[string]bool)
 	)
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 1024), 4*1024*1024)
@@ -1177,12 +1331,22 @@ func analyzeFailureThreadContract(t *testing.T, path string) failureThreadContra
 			t.Fatalf("parse fixture JSONL: %v", err)
 		}
 		switch event.Kind {
+		case "user_message":
+			userTexts = append(userTexts, event.Message.Text)
 		case "tool_call":
 			if event.ToolCall.ToolName == "bash" {
 				bashToolCalled = true
 			}
-			if event.ToolCall.ToolName == "write_file" && isTermWranglerDesignArtifactPath(event.ToolCall.Args.Path, event.ToolCall.Args.File) {
-				artifactWritten = true
+			if isArtifactWriteTool(event.ToolCall.ToolName) {
+				for _, candidatePath := range artifactWriteToolPaths(event.ToolCall.ToolName, event.ToolCall.Args.Path, event.ToolCall.Args.File, event.ToolCall.Args.Patch) {
+					candidate := failureThreadWriteCall{toolName: event.ToolCall.ToolName, path: candidatePath, content: artifactWriteToolContent(event.ToolCall.ToolName, event.ToolCall.Args.Content, event.ToolCall.Args.Patch)}
+					if event.ToolCall.ToolCallID != "" {
+						writeCalls[event.ToolCall.ToolCallID] = candidate
+					}
+					if candidate.content != "" {
+						artifactContent[normalizeFailureArtifactPath(candidatePath)] = candidate.content
+					}
+				}
 			}
 		case "tool_result":
 			if bashToolCalled && strings.Contains(event.ToolResult.Text, `unknown tool "bash"`) {
@@ -1191,9 +1355,31 @@ func analyzeFailureThreadContract(t *testing.T, path string) failureThreadContra
 			if strings.Contains(event.ToolResult.Text, `"status":"failed"`) || strings.Contains(event.ToolResult.Text, `"status": "failed"`) {
 				childFailed = true
 			}
+			if call, ok := writeCalls[event.ToolResult.ToolCallID]; ok && !artifactWriteResultFailed(event.ToolResult.Text) {
+				successfulWritePaths[normalizeFailureArtifactPath(call.path)] = true
+			}
 		case "assistant_message":
 			if strings.Contains(event.Message.Text, "DSML") && strings.Contains(event.Message.Text, "tool_calls") {
 				rawToolMarkup = true
+			}
+		case "turn_contract":
+			for _, artifact := range event.TurnContract.RequiredArtifacts {
+				requiredPaths = appendFailureArtifactPath(requiredPaths, artifact.Path)
+			}
+			for _, evidence := range event.TurnContract.Evidence {
+				if evidence.Kind != "write" {
+					continue
+				}
+				for _, evidencePath := range failureArtifactEvidencePaths(evidence.Summary) {
+					contractWritePaths[normalizeFailureArtifactPath(evidencePath)] = true
+				}
+			}
+			for _, gate := range event.TurnContract.Gates {
+				if strings.EqualFold(gate.Status, "passed") {
+					for _, evidencePath := range failureArtifactEvidencePaths(gate.Evidence) {
+						contractWritePaths[normalizeFailureArtifactPath(evidencePath)] = true
+					}
+				}
 			}
 		case "turn_complete":
 			finalStatus = event.TurnComplete.Status
@@ -1203,6 +1389,22 @@ func analyzeFailureThreadContract(t *testing.T, path string) failureThreadContra
 		t.Fatalf("read fixture JSONL: %v", err)
 	}
 
+	requiredPaths = append(requiredPaths, requiredArtifactPathsFromUserText(strings.Join(userTexts, "\n"))...)
+	artifactWritten := false
+	for _, requiredPath := range requiredPaths {
+		normalizedPath := normalizeFailureArtifactPath(requiredPath)
+		if normalizedPath == "" {
+			continue
+		}
+		if !isPlausibleMarkdownArtifact(artifactContent[normalizedPath]) {
+			continue
+		}
+		if successfulWritePaths[normalizedPath] || contractWritePaths[normalizedPath] {
+			artifactWritten = true
+			break
+		}
+	}
+
 	result := failureThreadContractResult{status: finalStatus}
 	if unknownBashTool {
 		result.violations = append(result.violations, "unknown_tool")
@@ -1210,23 +1412,151 @@ func analyzeFailureThreadContract(t *testing.T, path string) failureThreadContra
 	if rawToolMarkup {
 		result.violations = append(result.violations, "raw_tool_markup")
 	}
+	if childFailed {
+		result.violations = append(result.violations, "provider_child_failure")
+	}
 	if finalStatus == "completed" && !artifactWritten {
 		result.violations = append(result.violations, "missing_artifact")
 	}
-	if unknownBashTool && childFailed && rawToolMarkup && finalStatus == "completed" && !artifactWritten {
+	if finalStatus == "completed" && len(result.violations) == 0 && artifactWritten {
+		result.status = "satisfied_contract"
+	}
+	if finalStatus == "completed" && len(result.violations) > 0 {
 		result.status = "failed_contract"
 	}
 	return result
 }
 
-func isTermWranglerDesignArtifactPath(values ...string) bool {
-	for _, value := range values {
-		if strings.HasSuffix(value, "docs/superpowers/specs/2025-07-15-term-wrangler-design.md") ||
-			strings.HasSuffix(value, "docs/superpowers/specs/2026-05-23-term-wrangler-design.md") {
-			return true
+func appendFailureArtifactPath(paths []string, path string) []string {
+	path = normalizeFailureArtifactPath(path)
+	if path == "" || containsString(paths, path) {
+		return paths
+	}
+	return append(paths, path)
+}
+
+func normalizeFailureArtifactPath(path string) string {
+	path = strings.Trim(strings.TrimSpace(path), "`'\".,:;)")
+	path = strings.TrimPrefix(path, "./")
+	if path == "" {
+		return ""
+	}
+	return filepath.ToSlash(filepath.Clean(path))
+}
+
+func requiredArtifactPathsFromUserText(text string) []string {
+	var paths []string
+	for _, token := range strings.Fields(text) {
+		for _, candidate := range strings.Split(token, ",") {
+			candidate = strings.Trim(strings.TrimSpace(candidate), "`'\".,:;)]}")
+			if strings.HasSuffix(candidate, ".md") {
+				paths = appendFailureArtifactPath(paths, candidate)
+			}
 		}
 	}
-	return false
+	return paths
+}
+
+func isArtifactWriteTool(toolName string) bool {
+	switch strings.TrimSpace(toolName) {
+	case "write_file", "edit_file", "apply_patch", "artifact_write":
+		return true
+	default:
+		return false
+	}
+}
+
+func artifactWriteToolPaths(toolName, path, file, patch string) []string {
+	switch strings.TrimSpace(toolName) {
+	case "write_file", "edit_file", "artifact_write":
+		var paths []string
+		paths = appendFailureArtifactPath(paths, path)
+		paths = appendFailureArtifactPath(paths, file)
+		return paths
+	case "apply_patch":
+		return artifactPathsFromPatch(patch)
+	default:
+		return nil
+	}
+}
+
+func artifactWriteToolContent(toolName, content, patch string) string {
+	if strings.TrimSpace(toolName) == "apply_patch" {
+		return addedMarkdownContentFromPatch(patch)
+	}
+	return content
+}
+
+func artifactPathsFromPatch(patch string) []string {
+	var paths []string
+	for _, line := range strings.Split(patch, "\n") {
+		line = strings.TrimSpace(line)
+		for _, prefix := range []string{"*** Add File: ", "*** Update File: ", "+++ b/"} {
+			if strings.HasPrefix(line, prefix) {
+				paths = appendFailureArtifactPath(paths, strings.TrimPrefix(line, prefix))
+			}
+		}
+	}
+	return paths
+}
+
+func addedMarkdownContentFromPatch(patch string) string {
+	var lines []string
+	for _, line := range strings.Split(patch, "\n") {
+		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+			lines = append(lines, strings.TrimPrefix(line, "+"))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func artifactWriteResultFailed(result string) bool {
+	lower := strings.ToLower(strings.TrimSpace(result))
+	return lower == "" || strings.HasPrefix(lower, "error") || strings.HasPrefix(lower, "blocked") || strings.HasPrefix(lower, "failed") || strings.Contains(lower, " failed") || strings.Contains(lower, "denied")
+}
+
+func failureArtifactEvidencePaths(summary string) []string {
+	if strings.TrimSpace(summary) == "" {
+		return nil
+	}
+	if paths := requiredArtifactPathsFromUserText(summary); len(paths) > 0 {
+		return paths
+	}
+	idx := strings.Index(summary, ":")
+	if idx < 0 {
+		return nil
+	}
+	fields := strings.Fields(strings.TrimSpace(summary[idx+1:]))
+	if len(fields) < 2 {
+		return nil
+	}
+	var paths []string
+	for _, path := range strings.Split(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(summary[idx+1:]), fields[0])), ",") {
+		paths = appendFailureArtifactPath(paths, path)
+	}
+	return paths
+}
+
+func isPlausibleMarkdownArtifact(content string) bool {
+	content = strings.TrimSpace(content)
+	if content == "" || !strings.Contains(content, "#") {
+		return false
+	}
+	lines := strings.Split(content, "\n")
+	hasHeading := false
+	hasSection := false
+	words := 0
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "# ") {
+			hasHeading = true
+		}
+		if strings.HasPrefix(trimmed, "## ") {
+			hasSection = true
+		}
+		words += len(strings.Fields(trimmed))
+	}
+	return hasHeading && hasSection && words >= 10
 }
 
 func containsString(items []string, want string) bool {
