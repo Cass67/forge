@@ -424,6 +424,10 @@
         },
         "intent": {
           "enum": [
+            "answer_only",
+            "inspect",
+            "write_artifact",
+            "edit_code",
             "implement",
             "verify"
           ],
@@ -442,6 +446,9 @@
               "kind": {
                 "enum": [
                   "edit",
+                  "read",
+                  "commit",
+                  "push",
                   "run",
                   "report"
                 ],

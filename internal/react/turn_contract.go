@@ -1,18 +1,30 @@
 package react
 
-import "forge/internal/protocol"
+import (
+	"fmt"
+	"strings"
+
+	"forge/internal/protocol"
+)
 
 type TurnIntent string
 
 const (
-	TurnIntentImplement TurnIntent = "implement"
-	TurnIntentVerify    TurnIntent = "verify"
+	TurnIntentAnswerOnly    TurnIntent = "answer_only"
+	TurnIntentInspect       TurnIntent = "inspect"
+	TurnIntentWriteArtifact TurnIntent = "write_artifact"
+	TurnIntentEditCode      TurnIntent = "edit_code"
+	TurnIntentImplement     TurnIntent = "implement"
+	TurnIntentVerify        TurnIntent = "verify"
 )
 
 type ContractActionKind string
 
 const (
 	ContractActionEdit   ContractActionKind = "edit"
+	ContractActionRead   ContractActionKind = "read"
+	ContractActionCommit ContractActionKind = "commit"
+	ContractActionPush   ContractActionKind = "push"
 	ContractActionRun    ContractActionKind = "run"
 	ContractActionReport ContractActionKind = "report"
 )
@@ -100,12 +112,14 @@ func normalizeTurnContract(contract *TurnContract) *TurnContract {
 	if contract.Status != ContractStatusSatisfied && contract.Status != ContractStatusCleared {
 		contract.Status = ContractStatusActive
 	}
-	if contract.Intent != "" && contract.Intent != TurnIntentVerify {
+	switch contract.Intent {
+	case "", TurnIntentAnswerOnly, TurnIntentInspect, TurnIntentWriteArtifact, TurnIntentEditCode, TurnIntentImplement, TurnIntentVerify:
+	default:
 		contract.Intent = TurnIntentImplement
 	}
 	for i := range contract.RequiredActions {
 		switch contract.RequiredActions[i].Kind {
-		case ContractActionEdit, ContractActionRun, ContractActionReport:
+		case ContractActionEdit, ContractActionRead, ContractActionCommit, ContractActionPush, ContractActionRun, ContractActionReport:
 		default:
 			contract.RequiredActions[i].Kind = ContractActionReport
 		}
@@ -125,6 +139,97 @@ func normalizeTurnContract(contract *TurnContract) *TurnContract {
 		}
 	}
 	return contract
+}
+
+func deriveTurnContractFromInput(turn int, input string, nowDate string) *TurnContract {
+	normalized := normalizeToolIntentText(input)
+	contract := &TurnContract{
+		ID:         fmt.Sprintf("contract-%d", turn),
+		SourceTurn: turn,
+		Intent:     TurnIntentAnswerOnly,
+		Status:     ContractStatusActive,
+	}
+	if normalized == "" {
+		return contract
+	}
+	if turnInputSuggestsWritePlan(normalized) {
+		contract.Intent = TurnIntentWriteArtifact
+		contract.RequiredActions = append(contract.RequiredActions, ContractAction{Kind: ContractActionEdit, Description: "write requested artifact"})
+		contract.RequiredArtifacts = append(contract.RequiredArtifacts, ArtifactRequirement{Path: turnContractPlanPath(input, nowDate), Description: "requested plan artifact"})
+		contract.Gates = append(contract.Gates, ContractGate{Name: "artifact", Status: ContractGatePending})
+		return contract
+	}
+	if turnInputSuggestsInspection(normalized) {
+		contract.Intent = TurnIntentInspect
+		contract.RequiredActions = append(contract.RequiredActions, ContractAction{Kind: ContractActionRead, Description: "inspect requested context"})
+		return contract
+	}
+	if turnInputSuggestsImplementation(normalized) {
+		contract.Intent = TurnIntentEditCode
+		contract.RequiredActions = append(contract.RequiredActions, ContractAction{Kind: ContractActionEdit, Description: "modify code as requested"})
+		if turnInputMentionsVerification(normalized) {
+			contract.RequiredVerification = append(contract.RequiredVerification, VerificationRequirement{Description: "verification requested by user"})
+		}
+		addGitActionsToTurnContract(contract, normalized)
+		return contract
+	}
+	if turnInputSuggestsGitCommit(normalized) || turnInputSuggestsGitPush(normalized) {
+		contract.Intent = TurnIntentEditCode
+		addGitActionsToTurnContract(contract, normalized)
+		return contract
+	}
+	return contract
+}
+
+func turnInputSuggestsWritePlan(input string) bool {
+	if inputNegatesFileWrite(input) || turnInputLooksLikeQuestion(input) {
+		return false
+	}
+	return containsToolPhrase(input, "write a plan", "write plan", "create a plan", "draft a plan") || strings.HasPrefix(input, "write docs/plans/")
+}
+
+func turnInputLooksLikeQuestion(input string) bool {
+	return strings.Contains(input, "?") || strings.HasPrefix(input, "how do i ") || strings.HasPrefix(input, "how can i ")
+}
+
+func turnContractPlanPath(input string, nowDate string) string {
+	for _, path := range extractMarkdownAndNamedPaths(input) {
+		return path
+	}
+	nowDate = strings.TrimSpace(nowDate)
+	if nowDate == "" {
+		nowDate = "runtime-current-date"
+	}
+	return "docs/plans/" + nowDate + "-plan.md"
+}
+
+func turnInputSuggestsInspection(input string) bool {
+	return containsToolPhrase(input, "look at the repo", "inspect the repo", "inspect repo", "read the repo", "review the repo")
+}
+
+func turnInputSuggestsImplementation(input string) bool {
+	return containsToolPhrase(input, "implement this", "implement it", "make the change", "fix this")
+}
+
+func turnInputMentionsVerification(input string) bool {
+	return containsToolPhrase(input, "test", "tests", "verify", "verification", "check", "lint")
+}
+
+func turnInputSuggestsGitCommit(input string) bool {
+	return inputSuggestsGitCommit(input)
+}
+
+func turnInputSuggestsGitPush(input string) bool {
+	return inputSuggestsGitPush(input)
+}
+
+func addGitActionsToTurnContract(contract *TurnContract, input string) {
+	if turnInputSuggestsGitCommit(input) {
+		contract.RequiredActions = append(contract.RequiredActions, ContractAction{Kind: ContractActionCommit, Description: "commit requested changes"})
+	}
+	if turnInputSuggestsGitPush(input) {
+		contract.RequiredActions = append(contract.RequiredActions, ContractAction{Kind: ContractActionPush, Description: "push requested changes"})
+	}
 }
 
 func turnContractToProtocol(contract TurnContract) protocol.TurnContractItem {
