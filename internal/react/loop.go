@@ -4108,6 +4108,9 @@ func validateToolArgs(tool agenttools.Tool, args map[string]any) string {
 			if param.Required && strings.TrimSpace(text) == "" {
 				return fmt.Sprintf("error: %s.%s is required", tool.Name, param.Name)
 			}
+			if containsOmittedPlaceholder(text) {
+				return fmt.Sprintf("error: %s.%s contains generated placeholder text; provide the complete value", tool.Name, param.Name)
+			}
 		case "int":
 			number, ok := value.(float64)
 			if !ok || number != float64(int(number)) {
@@ -4172,6 +4175,9 @@ func validateToolSchema(path string, schema *llm.ToolSchema, value any) string {
 		if strings.TrimSpace(text) == "" {
 			return fmt.Sprintf("error: %s is required", path)
 		}
+		if containsOmittedPlaceholder(text) {
+			return fmt.Sprintf("error: %s contains generated placeholder text; provide the complete value", path)
+		}
 		if len(schema.Enum) > 0 {
 			for _, allowed := range schema.Enum {
 				if text == allowed {
@@ -4193,9 +4199,43 @@ func validateToolSchema(path string, schema *llm.ToolSchema, value any) string {
 	return ""
 }
 
+func containsOmittedPlaceholder(text string) bool {
+	text = strings.TrimSpace(text)
+	start := strings.Index(text, "<omitted ")
+	for start >= 0 {
+		rest := text[start+len("<omitted "):]
+		end := strings.Index(rest, " chars>")
+		if end > 0 {
+			digits := rest[:end]
+			allDigits := true
+			for _, r := range digits {
+				if r < '0' || r > '9' {
+					allDigits = false
+					break
+				}
+			}
+			if allDigits {
+				return true
+			}
+		}
+		next := strings.Index(text[start+1:], "<omitted ")
+		if next < 0 {
+			return false
+		}
+		start += next + 1
+	}
+	return false
+}
+
 func isModelCorrectableToolExecutionError(name string, err error) bool {
 	if err == nil {
 		return false
+	}
+	if strings.Contains(err.Error(), "escapes working directory") {
+		switch name {
+		case "write_file", "edit_file", "apply_patch":
+			return true
+		}
 	}
 	switch name {
 	case "ask_user_question":
@@ -5468,7 +5508,7 @@ func inputSuggestsFileInspection(text string) bool {
 	}
 	return containsToolPhrase(text,
 		"read ", "open ", "inspect ", "examine ", "check ", "look at ", "show ",
-		"file", "files", "log", "logs", "trace", "debug", "readme", "config", "output", "image",
+		"file", "files", "log", "logs", "trace", "debug log", "debug logs", "readme", "config", "output", "image",
 		"repo", "repository", "project", "codebase", "workspace", "directory", "folder",
 		"what do you think", "tell me what you think", "anything i need change",
 		"anything i need to change", "improve", "improvement", "review",
@@ -5697,9 +5737,10 @@ func inputNegatesGitCommit(text string) bool {
 
 func inputSuggestsBugFixWork(text string) bool {
 	return containsToolPhrase(text,
-		"bug", "broken", "does not work", "doesn't work", "not working",
-		"fix this", "fix it", "patch this", "issue", "error", "failing",
-		"wrong", "regression", "cursor", "input pane", "input panel",
+		"broken", "does not work", "doesn't work", "not working",
+		"fix this", "fix it", "patch this", "input pane", "input panel",
+	) || containsBoundedToolPhrase(text,
+		"bug", "issue", "error", "failing", "wrong", "regression", "cursor",
 	)
 }
 
@@ -5772,7 +5813,11 @@ func inputLooksLikePastedTerminalOutput(text string) bool {
 	if !containsToolPhrase(lower, "react runtime: tool", "context deadline exceeded", "└ error:", "error:", "failed") {
 		return false
 	}
-	return containsToolPhrase(lower, "$ ", "• ran ", "• tried ", "└ ", "to reproduce")
+	return containsToolPhrase(lower, "$ ", "• ran ", "• tried ", "└ ", "to reproduce") || inputLooksLikeShellPromptTranscript(lower)
+}
+
+func inputLooksLikeShellPromptTranscript(text string) bool {
+	return containsToolPhrase(text, "~/", " cat ", " target/", " 1 err", " 1 ✘")
 }
 
 func inputSuggestsAgentCancellation(snapshot SessionSnapshot) bool {

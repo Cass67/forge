@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -729,6 +730,33 @@ func TestToOpenAIMessagesHandlesRoleTool(t *testing.T) {
 		if len(b) == 0 {
 			t.Fatalf("message[%d] marshaled to empty", i)
 		}
+	}
+}
+
+func TestOpenCodeGoDeepSeekChatCompletionsDowngradesImageParts(t *testing.T) {
+	img := t.TempDir() + "/image.png"
+	if err := os.WriteFile(img, []byte("not-a-real-png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d := NewCustomCompatProvider("opencode-go", "sk-test", "https://opencode.ai/zen/go/v1", "opencode-go/deepseek-v4-pro", "deepseek-v4-pro", false, nil)
+	params := d.chatCompletionParams([]llm.Message{
+		{
+			Role:    llm.RoleUser,
+			Content: "inspect this screenshot",
+			ContentParts: []llm.MessageContentPart{
+				{Type: "image", Image: &llm.ImageContent{Path: img, MIMEType: "image/png"}},
+			},
+		},
+	})
+	raw, err := json.Marshal(params.Messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "image_url") {
+		t.Fatalf("DeepSeek chat request contains unsupported image_url part: %s", string(raw))
+	}
+	if !strings.Contains(string(raw), "image attachment omitted") {
+		t.Fatalf("DeepSeek chat request missing image omission note: %s", string(raw))
 	}
 }
 
