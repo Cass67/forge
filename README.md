@@ -25,7 +25,7 @@ Forge is not a hosted SaaS or remote coding sandbox. It is a native local tool t
 
 - local coding agent with file, search, git, command, and web tools
 - provider-aware model routing across ChatGPT, Claude.ai, OpenAI, Anthropic, Copilot, and OpenAI-compatible backends
-- host-owned React runtime with task/mode state, typed hook overlays, bounded memory summaries, and completion enforcement
+- host-owned React runtime with task/mode state, typed hook overlays, bounded memory summaries, and runtime completion gates
 - live chat TUI with model picker, provider picker, approvals, nudges, recent activity, quiet progress updates, and runtime stats
 - command exec sessions for long-running terminal work without blocking the visible chat loop
 - legacy pass-based improvement pipeline for correctness, refactor, security, and production-readiness work
