@@ -37,6 +37,29 @@ func TestRunCommandTimeoutMetadataReflectsConfiguredTimeout(t *testing.T) {
 	}
 }
 
+func TestRunCommandExtendsTimeoutForFilesystemWideDiscovery(t *testing.T) {
+	for _, command := range []string{
+		"find / -name cargo -type f 2>/dev/null | head -5",
+		"which cargo 2>/dev/null || find / -name cargo -type f 2>/dev/null | head -5",
+	} {
+		t.Run(command, func(t *testing.T) {
+			if got := effectiveRunCommandTimeout(command, 60); got != 5*time.Minute {
+				t.Fatalf("effective timeout = %v, want 5m0s", got)
+			}
+		})
+	}
+}
+
+func TestRunCommandUsesConfiguredTimeoutForNormalCommands(t *testing.T) {
+	for _, command := range []string{"cargo build --release", "find . -name '*.rs'", "go test ./..."} {
+		t.Run(command, func(t *testing.T) {
+			if got := effectiveRunCommandTimeout(command, 60); got != time.Minute {
+				t.Fatalf("effective timeout = %v, want 1m0s", got)
+			}
+		})
+	}
+}
+
 func TestRunCommandFailure(t *testing.T) {
 	dir := t.TempDir()
 	tool := NewRunCommand(dir, 60, nil, func(a Action) (bool, error) { return true, nil })

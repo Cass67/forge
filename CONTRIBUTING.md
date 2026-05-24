@@ -11,7 +11,7 @@ If you are orienting yourself for the first time, read these in order:
 3. [cmd/forge/main.go](./cmd/forge/main.go)
 4. [internal/bootstrap/runtime.go](./internal/bootstrap/runtime.go)
 5. [internal/runtime/chat.go](./internal/runtime/chat.go)
- 6. [internal/react/loop.go](./internal/react/loop.go)
+6. [internal/react/loop.go](./internal/react/loop.go)
 
 ## Repository Shape
 

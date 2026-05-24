@@ -783,6 +783,13 @@ func TestDeriveSideEffectIntentIgnoresInjectedSkillPayload(t *testing.T) {
 	}
 }
 
+func TestDeriveSideEffectIntentIgnoresPastedTerminalOutput(t *testing.T) {
+	payload := "Forge failed on this terminal output:\n$ forge 'build an app that reads config.yaml and opens an AI agent like opencode'\n• Tried edit_file internal/app.rs\n└ error: react runtime: tool \"edit_file\" is not available this turn\nTo reproduce, run cargo test and fix the router."
+	if intent := deriveSideEffectIntentFromText(3, payload); intent != nil {
+		t.Fatalf("intent = %#v, want nil for pasted terminal output", intent)
+	}
+}
+
 func TestRunnerDoesNotRequireToolCallForInjectedSkillPayload(t *testing.T) {
 	snap := SessionSnapshot{
 		LastInput: "[Skill: requesting-code-review]\n\n# Requesting Code Review\n\nDispatch a code reviewer subagent. Fill template at `code-reviewer.md` and write findings.",
@@ -7173,6 +7180,136 @@ func TestAllowedToolsForNewGoRepoPricingCLIIncludesCommandAndWebTools(t *testing
 		if !containsString(tools, want) {
 			t.Fatalf("new Go pricing CLI tools = %#v, want %s", tools, want)
 		}
+	}
+}
+
+func TestAllowedToolsForAppRequestMentioningAgentsUsesParentImplementationTools(t *testing.T) {
+	input := "i need to make an app where it can read a config file which will be a list of dirs, for each of the dirs the tool will cd to it and open an ai agent like opencode or whatever in the respective directory. will be targetting macos and linux, the term should be specifiable"
+	contract := deriveTurnContractFromInput(1, input, "2026-05-24")
+	if contract == nil || contract.Intent != TurnIntentEditCode {
+		t.Fatalf("contract = %#v, want edit-code contract", contract)
+	}
+	tools := allowedToolNamesForSnapshot(SessionSnapshot{LastInput: input, TurnContract: contract})
+
+	for _, want := range []string{"read_file", "write_file", "run_command", "tool_help"} {
+		if !containsString(tools, want) {
+			t.Fatalf("app request tools = %#v, want %s", tools, want)
+		}
+	}
+	if shouldRouteParentThroughDelegation(SessionSnapshot{LastInput: input, TurnContract: contract}) {
+		t.Fatalf("app-domain agent wording should not route parent through Forge delegation")
+	}
+	if !shouldRequireToolCallForSnapshot(SessionSnapshot{LastInput: input, TurnContract: contract}) {
+		t.Fatal("real app build request should require tool evidence")
+	}
+}
+
+func TestAllowedToolsForPastedTerminalOutputBugReportUsesParentImplementationTools(t *testing.T) {
+	input := "Forge failed on this terminal output:\n$ forge 'build an app that reads config.yaml and opens an AI agent like opencode'\n• Tried edit_file internal/app.rs\n└ error: react runtime: tool \"edit_file\" is not available this turn\nTo reproduce, run cargo test and fix the router."
+	contract := deriveTurnContractFromInput(1, input, "2026-05-24")
+	if contract == nil || contract.Intent != TurnIntentEditCode {
+		t.Fatalf("contract = %#v, want edit-code bug-fix contract", contract)
+	}
+	snap := SessionSnapshot{LastInput: input, TurnContract: contract}
+	tools := allowedToolNamesForSnapshot(snap)
+
+	for _, want := range []string{"read_file", "edit_file", "run_command"} {
+		if !containsString(tools, want) {
+			t.Fatalf("pasted terminal bug report tools = %#v, want %s", tools, want)
+		}
+	}
+	for _, blocked := range []string{"spawn_agent", "wait_agent"} {
+		if containsString(tools, blocked) {
+			t.Fatalf("pasted terminal bug report tools = %#v, should not include %s", tools, blocked)
+		}
+	}
+	if shouldRouteParentThroughDelegation(snap) {
+		t.Fatal("pasted terminal output should not route parent through Forge delegation")
+	}
+}
+
+func TestIntentContractToolRoutingMatrix(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		wantIntent  TurnIntent
+		allowTools  []string
+		blockTools  []string
+		requireTool bool
+		delegate    bool
+	}{
+		{
+			name:        "app domain agent request is parent implementation work",
+			input:       "make an app that opens an ai agent like opencode in configured directories",
+			wantIntent:  TurnIntentEditCode,
+			allowTools:  []string{"read_file", "write_file", "run_command"},
+			requireTool: true,
+		},
+		{
+			name:        "explicit forge delegation keeps parent on delegation tools",
+			input:       "delegate to an explorer to inspect this repo",
+			wantIntent:  TurnIntentAnswerOnly,
+			allowTools:  []string{"spawn_agent", "wait_agent"},
+			blockTools:  []string{"write_file", "run_command"},
+			requireTool: true,
+			delegate:    true,
+		},
+		{
+			name:       "explanation mentioning build stays answer only",
+			input:      "please explain how to build an app that launches opencode agents",
+			wantIntent: TurnIntentAnswerOnly,
+			blockTools: []string{"write_file", "run_command", "spawn_agent"},
+		},
+		{
+			name:        "read-only review mentioning build logs stays inspection",
+			input:       "review build logs for the agent launcher",
+			wantIntent:  TurnIntentInspect,
+			allowTools:  []string{"read_file", "search"},
+			blockTools:  []string{"write_file", "run_command"},
+			requireTool: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			contract := deriveTurnContractFromInput(1, tt.input, "2026-05-24")
+			if contract == nil || contract.Intent != tt.wantIntent {
+				t.Fatalf("contract = %#v, want intent %s", contract, tt.wantIntent)
+			}
+			snap := SessionSnapshot{LastInput: tt.input, TurnContract: contract}
+			if got := shouldRouteParentThroughDelegation(snap); got != tt.delegate {
+				t.Fatalf("shouldRouteParentThroughDelegation = %v, want %v", got, tt.delegate)
+			}
+			tools := allowedToolNamesForSnapshot(snap)
+			for _, want := range tt.allowTools {
+				if !containsString(tools, want) {
+					t.Fatalf("tools = %#v, want %s", tools, want)
+				}
+			}
+			for _, blocked := range tt.blockTools {
+				if containsString(tools, blocked) {
+					t.Fatalf("tools = %#v, should not include %s", tools, blocked)
+				}
+			}
+			if got := shouldRequireToolCallForSnapshot(snap); got != tt.requireTool {
+				t.Fatalf("shouldRequireToolCallForSnapshot = %v, want %v", got, tt.requireTool)
+			}
+		})
+	}
+}
+
+func TestToolCallRequirementDeescalatesAfterContractEvidenceSatisfied(t *testing.T) {
+	contract := deriveTurnContractFromInput(1, "build the agent launcher", "2026-05-24")
+	if contract == nil || contract.Intent != TurnIntentEditCode {
+		t.Fatalf("contract = %#v, want edit-code contract", contract)
+	}
+	if !shouldRequireToolCallForSnapshot(SessionSnapshot{LastInput: "build the agent launcher", TurnContract: contract}) {
+		t.Fatal("missing edit evidence should require tool call")
+	}
+	recordToolResultEvidence(contract, "write_file", map[string]any{"path": "main.go"}, "wrote main.go", false)
+
+	if shouldRequireToolCallForSnapshot(SessionSnapshot{LastInput: "build the agent launcher", TurnContract: contract}) {
+		t.Fatal("satisfied edit evidence should not require another tool call")
 	}
 }
 

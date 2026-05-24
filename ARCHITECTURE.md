@@ -285,6 +285,7 @@ The provider picker in [internal/tui/chatmodel.go](./internal/tui/chatmodel.go) 
 `registerTools(...)` in [internal/runtime/chat.go](./internal/runtime/chat.go) registers the chat toolset:
 
 - `read_file`
+- `read_output`
 - `write_file`
 - `edit_file`
 - `apply_patch`
@@ -315,11 +316,15 @@ The provider picker in [internal/tui/chatmodel.go](./internal/tui/chatmodel.go) 
 - `git_branch_state`
 - `git_merge_status`
 - `git_commit`
+- `git_push`
 - `view_image`
 - `web_fetch`
 - `web_search`
 - `tool_help`
 - plan-mode tools such as `update_plan`, `enter_plan_mode`, and `exit_plan_mode`
+- user-interaction helpers such as `ask_user_question`
+- delegation tools such as `spawn_agent`, `wait_agent`, `get_agent_output`, `agent_status`, and `kill_agent`
+- MCP tools and resources when MCP servers are configured
 
 Some tools are prompt-hidden and are only exposed through `tool_help`.
 
@@ -361,7 +366,7 @@ Runtime evidence comes from executed tools and structured runtime events:
 
 Assistant text by itself is not completion evidence for real work. A final answer can report results only after the runtime accepts the relevant evidence and gates. Artifact gates fail closed for required artifacts: they require same-turn successful write evidence, an allowed exact path, workspace containment, file existence, and plausible content. Commit and push requests are mirrored through `SideEffectIntent` gates, and unresolved side-effect gates block finalization when the assistant claims side-effect success. Plan state is also a gate: an unresolved active plan step blocks successful finalization unless the assistant reports the blocker or failure instead of claiming success.
 
-Final validation is centralized before assistant text is appended or a turn is completed as successful. The current hard gates focus on raw tool-call markup, missing required tool calls, required artifacts, side-effect success claims, delegation failures, and inconsistent plan state. Verification requirements and evidence are represented in the contract, but they are not currently a general final-completion gate. When a contract is not satisfied, Forge may append runtime feedback and retry, ask for clarification, or fail visibly with a concrete error. It must not convert missing evidence, missing artifacts, failed child work, or provider/tool failures into a successful completion.
+Final validation is centralized before assistant text is appended or a turn is completed as successful. The current hard gates cover raw tool-call markup, missing required tool calls, required actions and verification evidence, required artifacts, side-effect success claims, delegation failures, and inconsistent plan state. When a contract is not satisfied, Forge may append runtime feedback and retry, ask for clarification, or fail visibly with a concrete error. It must not convert missing evidence, missing artifacts, failed child work, or provider/tool failures into a successful completion.
 
 ## System Prompt and History
 

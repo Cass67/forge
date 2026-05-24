@@ -154,6 +154,18 @@ func TestDeriveTurnContractFromInput(t *testing.T) {
 			wantActions: []ContractActionKind{ContractActionEdit},
 		},
 		{
+			name:        "app request mentioning ai agents requires write action",
+			input:       "make an app that reads a config file of dirs and opens an ai agent like opencode in each directory",
+			wantIntent:  TurnIntentEditCode,
+			wantActions: []ContractActionKind{ContractActionEdit},
+		},
+		{
+			name:        "app request mentioning terminals requires write action",
+			input:       "build a macos and linux app where the terminal command is specifiable",
+			wantIntent:  TurnIntentEditCode,
+			wantActions: []ContractActionKind{ContractActionEdit},
+		},
+		{
 			name:        "polite implement question requires write action",
 			input:       "Can you implement this?",
 			wantIntent:  TurnIntentEditCode,

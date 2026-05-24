@@ -167,11 +167,6 @@ func deriveTurnContractFromInput(turn int, input string, nowDate string) *TurnCo
 		contract.Gates = append(contract.Gates, ContractGate{Name: "artifact", Status: ContractGatePending})
 		return contract
 	}
-	if turnInputSuggestsInspection(normalized) {
-		contract.Intent = TurnIntentInspect
-		contract.RequiredActions = append(contract.RequiredActions, ContractAction{Kind: ContractActionRead, Description: "inspect requested context"})
-		return contract
-	}
 	if turnInputSuggestsImplementation(normalized) {
 		contract.Intent = TurnIntentEditCode
 		contract.RequiredActions = append(contract.RequiredActions, ContractAction{Kind: ContractActionEdit, Description: "modify code as requested"})
@@ -179,6 +174,11 @@ func deriveTurnContractFromInput(turn int, input string, nowDate string) *TurnCo
 			contract.RequiredVerification = append(contract.RequiredVerification, VerificationRequirement{Description: "verification requested by user"})
 		}
 		addGitActionsToTurnContract(contract, normalized)
+		return contract
+	}
+	if turnInputSuggestsInspection(normalized) {
+		contract.Intent = TurnIntentInspect
+		contract.RequiredActions = append(contract.RequiredActions, ContractAction{Kind: ContractActionRead, Description: "inspect requested context"})
 		return contract
 	}
 	if turnInputSuggestsGitCommit(normalized) || turnInputSuggestsGitPush(normalized) {
@@ -621,13 +621,17 @@ func turnInputSuggestsInspection(input string) bool {
 }
 
 func turnInputSuggestsImplementation(input string) bool {
-	if inputNegatesFileWrite(input) || turnInputAsksForExplanation(input) {
+	if inputNegatesFileWrite(input) || turnInputAsksForExplanation(input) || turnInputAsksForReadOnlyReview(input) {
 		return false
 	}
 	return containsToolPhrase(input,
 		"implement this", "implement it", "implement ", "make the change", "fix this", "edit ",
-		"add support for ", "build ", "change the cli to ", "update ", "modify ",
+		"add support for ", "build ", "change the cli to ", "update ", "modify ", "make an app", "make a app",
 	)
+}
+
+func turnInputAsksForReadOnlyReview(input string) bool {
+	return strings.HasPrefix(input, "review ") || strings.HasPrefix(input, "inspect ") || strings.HasPrefix(input, "examine ")
 }
 
 func turnInputMentionsVerification(input string) bool {

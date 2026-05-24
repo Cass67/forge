@@ -4658,6 +4658,9 @@ func allowedToolNamesForSnapshot(snapshot SessionSnapshot) []string {
 		addAll(readOnlyToolNames, writeToolNames, gitReadToolNames, commandToolNames, planningToolNames)
 		add("git_commit")
 	default:
+		if turnContractSuggestsImplementationTools(snapshot.TurnContract) {
+			addAll(readOnlyToolNames, writeToolNames, gitReadToolNames, commandToolNames, planningToolNames)
+		}
 		if inputSuggestsPreviewWork(text) {
 			addAll(readOnlyToolNames, writeToolNames, previewToolNames)
 		}
@@ -4682,7 +4685,7 @@ func allowedToolNamesForSnapshot(snapshot SessionSnapshot) []string {
 		}
 	}
 
-	if inputSuggestsDelegation(text) {
+	if inputSuggestsDelegation(text) && !inputLooksLikePastedTerminalOutput(snapshot.LastInput) {
 		addAll(delegateToolNames)
 	}
 	if inputSuggestsActionFollowUp(text) {
@@ -4726,6 +4729,13 @@ func sideEffectIntentRequiresAction(intent *SideEffectIntent, action SideEffectA
 		return false
 	}
 	return containsSideEffectAction(intent.RequiredActions, action)
+}
+
+func turnContractSuggestsImplementationTools(contract *TurnContract) bool {
+	if contract == nil || contract.Intent != TurnIntentEditCode {
+		return false
+	}
+	return len(contract.RequiredActions) > 0 || len(contract.RequiredArtifacts) > 0 || len(contract.RequiredVerification) > 0
 }
 
 func historyIncludesToolHelp(snapshot SessionSnapshot) bool {
@@ -5365,6 +5375,9 @@ func shouldRequireToolCallForSnapshot(snapshot SessionSnapshot) bool {
 	if pendingDelegationWriteAction(snapshot) || pendingPostDelegationWriteAction(snapshot) {
 		return true
 	}
+	if turnContractRequiresToolEvidence(snapshot.TurnContract) {
+		return true
+	}
 	if outstanding := len(outstandingSpawnedAgents(snapshot)); outstanding > 0 {
 		text := normalizeToolIntentText(snapshot.LastInput)
 		return currentInputRequestsDelegation(snapshot) || shouldExposeSpawnWhileAgentsActive(snapshot, outstanding) || inputSuggestsPostDelegationAction(text)
@@ -5373,7 +5386,17 @@ func shouldRequireToolCallForSnapshot(snapshot SessionSnapshot) bool {
 	return currentInputRequestsDelegation(snapshot) || inputSuggestsWebResearch(text)
 }
 
+func turnContractRequiresToolEvidence(contract *TurnContract) bool {
+	if contract == nil || contract.Status == ContractStatusSatisfied || contract.Status == ContractStatusCleared || contract.Intent == TurnIntentAnswerOnly {
+		return false
+	}
+	return turnContractFinalEvidenceFeedback(contract) != ""
+}
+
 func shouldRouteParentThroughDelegation(snapshot SessionSnapshot) bool {
+	if inputLooksLikePastedTerminalOutput(snapshot.LastInput) {
+		return false
+	}
 	text := normalizeToolIntentText(snapshot.LastInput)
 	return inputSuggestsDelegation(text)
 }
@@ -5558,6 +5581,9 @@ func inputSuggestsReportFileTarget(text string) bool {
 }
 
 func inputSuggestsCommandWork(text string) bool {
+	if turnInputAsksForExplanation(text) || turnInputAsksForReadOnlyReview(text) {
+		return false
+	}
 	if inputSuggestsRepoSetupCommandWork(text) || inputSuggestsGoBuildCommandWork(text) {
 		return true
 	}
@@ -5736,6 +5762,17 @@ func inputSuggestsDelegation(text string) bool {
 		"audit this repo", "audit the repo", "audit repository", "audit this codebase", "audit the codebase",
 		"compare this repo", "compare the repo", "fall down compared to",
 	)
+}
+
+func inputLooksLikePastedTerminalOutput(text string) bool {
+	lower := strings.ToLower(text)
+	if !strings.Contains(lower, "\n") {
+		return false
+	}
+	if !containsToolPhrase(lower, "react runtime: tool", "context deadline exceeded", "└ error:", "error:", "failed") {
+		return false
+	}
+	return containsToolPhrase(lower, "$ ", "• ran ", "• tried ", "└ ", "to reproduce")
 }
 
 func inputSuggestsAgentCancellation(snapshot SessionSnapshot) bool {
