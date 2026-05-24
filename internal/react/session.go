@@ -748,7 +748,7 @@ func (s *Session) CompleteTurn(turn int, response string, toolCalls []TurnToolCa
 			item = s.appendItemLocked(protocol.Item{
 				Kind:    protocol.ItemFailure,
 				TurnID:  turnID,
-				Failure: &protocol.FailureItem{Decision: protocol.ClassifyToolExecutionFailure("runtime", err)},
+				Failure: &protocol.FailureItem{Decision: classifyTurnFailure(err)},
 			})
 		} else {
 			item = s.appendItemLocked(protocol.Item{
@@ -764,6 +764,17 @@ func (s *Session) CompleteTurn(turn int, response string, toolCalls []TurnToolCa
 	}
 	s.mu.Unlock()
 	return nil
+}
+
+func classifyTurnFailure(err error) protocol.FailureDecision {
+	if err == nil {
+		return protocol.FailureDecision{Class: protocol.FailureNone}
+	}
+	var retryable *RetryableCompletionError
+	if errors.As(err, &retryable) {
+		return protocol.ClassifyModelOutputFailure("error: " + err.Error())
+	}
+	return protocol.ClassifyToolExecutionFailure("runtime", err)
 }
 
 func (s *Session) AppendAssistantMessage(text string) error {

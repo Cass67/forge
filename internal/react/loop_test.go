@@ -2446,6 +2446,34 @@ func TestRunnerRequiredActionAndVerificationPassAfterEvidence(t *testing.T) {
 	}
 }
 
+func TestRunnerSuccessfulFinalMarksTurnContractSatisfied(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("fix this")
+	session.SetTurnContract(TurnContract{
+		ID:              "contract-1",
+		SourceTurn:      turn,
+		Intent:          TurnIntentEditCode,
+		RequiredActions: []ContractAction{{Kind: ContractActionEdit}},
+		Evidence:        []EvidenceRecord{{Kind: EvidenceWrite, Summary: "write edit_file main.go"}},
+		Status:          ContractStatusActive,
+	})
+	r := NewRunner(Config{Session: session})
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	if err := r.appendFinalAssistantMessageAndCompleteTurn(context.Background(), turn, "Done.", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	contract := session.Snapshot().TurnContract
+	if contract == nil || contract.Status != ContractStatusSatisfied {
+		t.Fatalf("TurnContract = %#v, want satisfied", contract)
+	}
+}
+
 func TestRunnerRequiredVerificationCommandMustMatch(t *testing.T) {
 	session := NewSession()
 	turn := session.RecordInput("run focused tests")
@@ -6355,6 +6383,32 @@ func TestRunnerRepeatedUnknownToolEventuallyFailsVisibly(t *testing.T) {
 	assertContractEvidence(t, session.Snapshot().TurnContract, EvidenceModelViolation, "unknown_tool", "bash")
 }
 
+func TestRunnerRepeatedUnknownToolFailureClassIsModelOutputInvalid(t *testing.T) {
+	steps := make([][]llm.Token, maxCompletionRetriesPerTurn+1)
+	for i := range steps {
+		steps[i] = []llm.Token{{ToolCall: &llm.NativeToolCall{ID: fmt.Sprintf("bad-%d", i), Name: "bash", ArgsJSON: `{"command":"ls"}`}}}
+	}
+	driver := &nativeSequenceDriver{steps: steps}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "read_file", Description: "read file"})
+	session := NewSession()
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+	err := r.Run(context.Background(), "inspect the repo")
+	if err == nil {
+		t.Fatal("expected repeated unknown tool to fail")
+	}
+	for _, item := range session.Snapshot().Items {
+		if item.Kind == protocol.ItemFailure {
+			if item.Failure == nil || item.Failure.Decision.Class != protocol.FailureModelOutputInvalid {
+				t.Fatalf("failure item = %#v, want model_output_invalid", item.Failure)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing failure item: %#v", session.Snapshot().Items)
+}
+
 func TestRunnerUnknownToolRecordsContractViolation(t *testing.T) {
 	driver := &nativeSequenceDriver{steps: [][]llm.Token{
 		{{ToolCall: &llm.NativeToolCall{ID: "bad-1", Name: "bogus_tool", ArgsJSON: `{}`}}},
@@ -7270,6 +7324,29 @@ func TestAllowedToolsForShellPromptConfigTranscriptUsesParentImplementationTools
 	}
 }
 
+func TestExplicitPushRequestExposesGitPushTool(t *testing.T) {
+	tools := allowedToolNamesForSnapshot(SessionSnapshot{LastInput: "push it"})
+	if !containsString(tools, "git_push") {
+		t.Fatalf("push tools = %#v, want git_push", tools)
+	}
+}
+
+func TestReadOnlyTaskStatesDoNotExposeWriteTools(t *testing.T) {
+	for _, operation := range []string{"inspect", "analysis", "review", "plan"} {
+		t.Run(operation, func(t *testing.T) {
+			tools := allowedToolNamesForSnapshot(SessionSnapshot{
+				LastInput: "review the repo",
+				TaskState: &TaskState{Operation: operation},
+			})
+			for _, blocked := range []string{"write_file", "edit_file", "apply_patch"} {
+				if containsString(tools, blocked) {
+					t.Fatalf("%s tools = %#v, should not expose %s", operation, tools, blocked)
+				}
+			}
+		})
+	}
+}
+
 func TestBugReportFollowUpRequiresImplementationContract(t *testing.T) {
 	input := "you seem to have broken the ghostty config file and also it opens multiple windows, not one with multiple tabs"
 	contract := deriveTurnContractFromInput(3, input, "2026-05-24")
@@ -7309,6 +7386,48 @@ func TestWorkspaceEscapeToolErrorsAreModelCorrectable(t *testing.T) {
 				t.Fatalf("%s workspace escape should be model-correctable", name)
 			}
 		})
+	}
+}
+
+func TestRunCommandOutOfScopeSideEffectMutationBlockedBeforeExecution(t *testing.T) {
+	var executed bool
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:       "run_command",
+		Parameters: []agenttools.ParameterDef{{Name: "command", Type: "string", Required: true}},
+		Execute: func(context.Context, map[string]any) (string, error) {
+			executed = true
+			return "exit 0", nil
+		},
+	})
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:            "intent-1",
+		AllowedPaths:  []string{"docs/a.md"},
+		ArtifactPaths: []string{"docs/a.md"},
+	})
+	turn := session.RecordInput("write docs/a.md")
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	r := NewRunner(Config{Tools: reg, Session: session})
+
+	err = r.executeNativeToolCalls(active.Context, turn, []llm.NativeToolCall{{
+		ID:       "cmd-1",
+		Name:     "run_command",
+		ArgsJSON: `{"command":"printf hi > docs/b.md"}`,
+	}})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed {
+		t.Fatal("out-of-scope run_command mutation executed")
+	}
+	if !sessionHistoryContains(session, "blocked: refusing workspace mutation", "docs/b.md") {
+		t.Fatalf("history missing policy block: %#v", session.Snapshot().History)
 	}
 }
 
