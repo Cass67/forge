@@ -37,12 +37,12 @@ func NewListDir(workDir string, ignoreDirs []string) Tool {
 			if recursive {
 				return listRecursive(resolved, workDir, ignoreSet)
 			}
-			return listFlat(resolved, ignoreSet)
+			return listFlat(resolved, workDir, ignoreSet)
 		},
 	}
 }
 
-func listFlat(dir string, ignore map[string]bool) (string, error) {
+func listFlat(dir, workDir string, ignore map[string]bool) (string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return fmt.Sprintf("error: %v", err), nil
@@ -53,9 +53,15 @@ func listFlat(dir string, ignore map[string]bool) (string, error) {
 			continue
 		}
 		name := e.Name()
+		displayPath := name
+		if rel, err := filepath.Rel(workDir, filepath.Join(dir, e.Name())); err == nil {
+			displayPath = rel
+		}
 		if e.IsDir() {
 			name += "/"
+			displayPath += "/"
 		}
+		name = annotateGitPathState(workDir, displayPath)
 		sb.WriteString(name + "\n")
 	}
 	return sb.String(), nil
