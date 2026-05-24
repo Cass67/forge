@@ -4557,6 +4557,266 @@ func TestRunnerRejectsMalformedXMLToolCallMarkupFromNativeProvider(t *testing.T)
 	}
 }
 
+func TestRunnerRejectsRawDSMLToolMarkupFinalText(t *testing.T) {
+	driver := &nativeScriptedDriver{responses: []string{
+		`<｜｜DSML｜｜tool_calls>[{"name":"bash","arguments":{"command":"ls"}}]`,
+		"recovered without raw tool markup",
+	}}
+	session := NewSession()
+	turnCompleteCalled := false
+	r := NewRunner(Config{
+		Driver:  driver,
+		Session: session,
+		TurnComplete: func(SessionSnapshot) {
+			turnCompleteCalled = true
+		},
+	})
+
+	if err := r.Run(context.Background(), "list files"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if got := r.LastResponse(); got != "recovered without raw tool markup" {
+		t.Fatalf("LastResponse = %q", got)
+	}
+	if !turnCompleteCalled {
+		t.Fatal("expected turn_complete after recovered final text")
+	}
+	for _, msg := range session.Snapshot().History {
+		if msg.Role == llm.RoleAssistant && strings.Contains(msg.Content, "DSML") {
+			t.Fatalf("raw DSML markup persisted as assistant text: %#v", msg)
+		}
+	}
+	assertContractEvidence(t, session.Snapshot().TurnContract, EvidenceModelViolation, "raw_tool_markup", "DSML")
+}
+
+func TestRunnerRejectsRawToolMarkupXMLToolCallFinalText(t *testing.T) {
+	driver := &nativeScriptedDriver{responses: []string{
+		`Please run <tool_calls><tool_call>{"name":"bash","arguments":{"command":"ls"}}</tool_call></tool_calls>`,
+		"recovered without xml",
+	}}
+	session := NewSession()
+	r := NewRunner(Config{Driver: driver, Session: session})
+
+	if err := r.Run(context.Background(), "list files"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if got := r.LastResponse(); got != "recovered without xml" {
+		t.Fatalf("LastResponse = %q", got)
+	}
+	for _, msg := range session.Snapshot().History {
+		if msg.Role == llm.RoleAssistant && strings.Contains(msg.Content, "<tool_call") {
+			t.Fatalf("raw XML markup persisted as assistant text: %#v", msg)
+		}
+	}
+	assertContractEvidence(t, session.Snapshot().TurnContract, EvidenceModelViolation, "raw_tool_markup", "tool_call")
+}
+
+func TestRunnerRejectsRawToolMarkupJSONIshStandaloneToolCallFinalText(t *testing.T) {
+	driver := &nativeScriptedDriver{responses: []string{
+		`{"name":"bash","arguments":{"command":"ls"}}`,
+		"recovered without json tool call",
+	}}
+	session := NewSession()
+	r := NewRunner(Config{Driver: driver, Session: session})
+
+	if err := r.Run(context.Background(), "list files"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if got := r.LastResponse(); got != "recovered without json tool call" {
+		t.Fatalf("LastResponse = %q", got)
+	}
+	for _, msg := range session.Snapshot().History {
+		if msg.Role == llm.RoleAssistant && strings.Contains(msg.Content, `"name":"bash"`) {
+			t.Fatalf("standalone JSON tool call persisted as assistant text: %#v", msg)
+		}
+	}
+	assertContractEvidence(t, session.Snapshot().TurnContract, EvidenceModelViolation, "raw_tool_markup", "bash")
+}
+
+func TestRunnerRejectsJSONToolCallWrapperFinalText(t *testing.T) {
+	tests := []struct {
+		name     string
+		response string
+		detail   string
+	}{
+		{name: "tool calls wrapper", response: `{"tool_calls":[{"name":"bash","arguments":{"command":"ls"}}]}`, detail: "bash"},
+		{name: "tool call array", response: `[{"tool_name":"bash","arguments":{"command":"ls"}}]`, detail: "bash"},
+		{name: "function object", response: `{"function":{"name":"bash","arguments":"{\"command\":\"ls\"}"}}`, detail: "bash"},
+		{name: "nested function object", response: `{"tool_calls":[{"function":{"name":"bash","arguments":"{\"command\":\"ls\"}"}}]}`, detail: "bash"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			driver := &nativeScriptedDriver{responses: []string{tt.response, "recovered"}}
+			session := NewSession()
+			r := NewRunner(Config{Driver: driver, Session: session})
+
+			if err := r.Run(context.Background(), "list files"); err != nil {
+				t.Fatalf("Run returned error: %v", err)
+			}
+			if got := r.LastResponse(); got != "recovered" {
+				t.Fatalf("LastResponse = %q", got)
+			}
+			assertContractEvidence(t, session.Snapshot().TurnContract, EvidenceModelViolation, "raw_tool_markup", tt.detail)
+		})
+	}
+}
+
+func TestRunnerRawToolMarkupDoesNotStreamSuspiciousPrefixesBeforeRejection(t *testing.T) {
+	tests := []struct {
+		name   string
+		chunks []string
+	}{
+		{name: "DSML", chunks: []string{"<", "｜｜DSML｜｜tool_calls>", `[{"name":"bash","arguments":{"command":"ls"}}]`}},
+		{name: "JSON", chunks: []string{"{", `"name":"bash",`, `"arguments":{"command":"ls"}}`}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			steps := make([][]llm.Token, maxCompletionRetriesPerTurn+1)
+			for i := range steps {
+				for _, chunk := range tt.chunks {
+					steps[i] = append(steps[i], llm.Token{Text: chunk})
+				}
+			}
+			driver := &nativeSequenceDriver{steps: steps}
+			renderer := &recordingRenderer{}
+			r := NewRunner(Config{Driver: driver, Renderer: renderer, Session: NewSession()})
+
+			if err := r.Run(context.Background(), "list files"); err == nil {
+				t.Fatal("expected raw markup to fail")
+			}
+			renderer.mu.Lock()
+			defer renderer.mu.Unlock()
+			if len(renderer.tokenTexts) != 0 {
+				t.Fatalf("AgentToken chunks = %#v, want none for rejected raw markup", renderer.tokenTexts)
+			}
+			if len(renderer.fullTexts) != 0 {
+				t.Fatalf("AgentText chunks = %#v, want none for rejected raw markup", renderer.fullTexts)
+			}
+		})
+	}
+}
+
+func TestRunnerRawToolMarkupDoesNotStreamEmbeddedMarkupBeforeRejection(t *testing.T) {
+	tests := []struct {
+		name   string
+		chunks []string
+	}{
+		{name: "XML", chunks: []string{"Please run ", "<tool_calls>", `<tool_call>{"name":"bash","arguments":{"command":"ls"}}</tool_call></tool_calls>`}},
+		{name: "DSML", chunks: []string{"Please run ", "<｜｜DSML｜｜", `tool_calls>[{"name":"bash","arguments":{"command":"ls"}}]`}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			steps := make([][]llm.Token, maxCompletionRetriesPerTurn+1)
+			for i := range steps {
+				for _, chunk := range tt.chunks {
+					steps[i] = append(steps[i], llm.Token{Text: chunk})
+				}
+			}
+			driver := &nativeSequenceDriver{steps: steps}
+			renderer := &recordingRenderer{}
+			r := NewRunner(Config{Driver: driver, Renderer: renderer, Session: NewSession()})
+
+			if err := r.Run(context.Background(), "list files"); err == nil {
+				t.Fatal("expected raw markup to fail")
+			}
+			renderer.mu.Lock()
+			defer renderer.mu.Unlock()
+			streamed := strings.Join(renderer.tokenTexts, "")
+			if strings.Contains(streamed, "<tool_call") || strings.Contains(streamed, "DSML") {
+				t.Fatalf("AgentToken leaked raw markup: %#v", renderer.tokenTexts)
+			}
+			if len(renderer.fullTexts) != 0 {
+				t.Fatalf("AgentText chunks = %#v, want none for rejected raw markup", renderer.fullTexts)
+			}
+		})
+	}
+}
+
+func TestRunnerStaleRawToolMarkupDoesNotRecordContractEvidence(t *testing.T) {
+	driver := &nativeScriptedDriver{responses: []string{`<｜｜DSML｜｜tool_calls>[{"name":"bash","arguments":{"command":"ls"}}]`}}
+	session := NewSession()
+	session.SetTurnContract(TurnContract{ID: "contract-1", Status: ContractStatusActive})
+	r := NewRunner(Config{Driver: driver, Session: session})
+	turn := session.RecordInput("list files")
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+
+	_, err = r.streamPlainTurn(context.Background(), turn, session.Messages(""))
+	if err == nil {
+		t.Fatal("expected stale raw markup to fail")
+	}
+	for _, evidence := range session.Snapshot().TurnContract.Evidence {
+		if evidence.Kind == EvidenceModelViolation && strings.Contains(evidence.Summary, "raw_tool_markup") {
+			t.Fatalf("stale raw markup recorded contract evidence: %#v", evidence)
+		}
+	}
+}
+
+func TestRunnerAllowsDSMLInvokeExplanationWithoutRawMarkupDelimiters(t *testing.T) {
+	final := "The words DSML invoke can appear in documentation without being raw markup."
+	driver := &nativeScriptedDriver{responses: []string{final}}
+	r := NewRunner(Config{Driver: driver, Session: NewSession()})
+
+	if err := r.Run(context.Background(), "explain DSML"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if got := r.LastResponse(); got != final {
+		t.Fatalf("LastResponse = %q", got)
+	}
+}
+
+func TestRunnerAllowsRawToolMarkupLookingJSONCodeBlockFinalText(t *testing.T) {
+	final := "Use this config:\n\n```json\n{\n  \"name\": \"bash\",\n  \"arguments\": {\"command\": \"ls\"}\n}\n```"
+	driver := &nativeScriptedDriver{responses: []string{final}}
+	r := NewRunner(Config{Driver: driver, Session: NewSession()})
+
+	if err := r.Run(context.Background(), "show config"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if got := r.LastResponse(); got != final {
+		t.Fatalf("LastResponse = %q", got)
+	}
+}
+
+func TestRunnerRepeatedRawToolMarkupEventuallyFailsVisibly(t *testing.T) {
+	responses := make([]string, maxCompletionRetriesPerTurn+1)
+	for i := range responses {
+		responses[i] = `<｜｜DSML｜｜invoke name="bash" arguments='{"command":"ls"}' />`
+	}
+	driver := &nativeScriptedDriver{responses: responses}
+	session := NewSession()
+	turnCompleteCalled := false
+	r := NewRunner(Config{
+		Driver:  driver,
+		Session: session,
+		TurnComplete: func(SessionSnapshot) {
+			turnCompleteCalled = true
+		},
+	})
+
+	err := r.Run(context.Background(), "list files")
+	if err == nil {
+		t.Fatal("expected repeated raw tool markup to fail")
+	}
+	assertContainsAll(t, err.Error(), "raw tool-call markup")
+	if driver.callCount != maxCompletionRetriesPerTurn+1 {
+		t.Fatalf("driver calls = %d, want finite retry budget", driver.callCount)
+	}
+	if got := r.LastResponse(); got != "" {
+		t.Fatalf("LastResponse = %q, want no completed success", got)
+	}
+	if turnCompleteCalled {
+		t.Fatal("turn_complete called for raw markup final output")
+	}
+	assertContractEvidence(t, session.Snapshot().TurnContract, EvidenceModelViolation, "raw_tool_markup", "DSML")
+}
+
 func TestRunnerSetDriverSwitchesSubsequentTurns(t *testing.T) {
 	first := &nativeScriptedDriver{responses: []string{"first answer"}}
 	second := &nativeScriptedDriver{responses: []string{"second answer"}}
@@ -6079,6 +6339,55 @@ func TestRunnerGenericTaskTextDoesNotExposePluginTaskTool(t *testing.T) {
 	}
 	if !containsString(names, "read_file") {
 		t.Fatalf("generic task tools = %#v, want read_file", names)
+	}
+}
+
+func TestRunnerPreviewFollowUpExposesEditAndPreviewTools(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"read_file", "edit_file", "apply_patch", "preview_server_status", "preview_server_ensure", "tool_help"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snapshot := SessionSnapshot{
+		LastInput: "fix that and show me again",
+		History: []llm.Message{
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "preview-1", Name: "preview_server_ensure", ArgsJSON: `{"path":"themes_preview.html"}`}}},
+			{Role: llm.RoleTool, ToolCallID: "preview-1", Content: `{"status":"running","url":"http://127.0.0.1:1234/themes_preview.html"}`},
+		},
+	}
+
+	defs, decision := r.selectToolDefsWithDecision(snapshot)
+	names := toolDefNames(defs)
+
+	if decision.Reason != "preview_followup" {
+		t.Fatalf("reason = %q, want preview_followup (tools=%#v)", decision.Reason, names)
+	}
+	for _, want := range []string{"read_file", "edit_file", "apply_patch", "preview_server_status", "preview_server_ensure"} {
+		if !containsString(names, want) {
+			t.Fatalf("preview follow-up tools = %#v, want %s", names, want)
+		}
+	}
+}
+
+func TestRunnerPreviewVisualFollowUpExposesEditAndPreviewTools(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"read_file", "edit_file", "preview_server_status"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+	snapshot := SessionSnapshot{
+		LastInput: "more colors on git diff and file/numeral detection",
+		History: []llm.Message{
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "preview-1", Name: "preview_server_status", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "preview-1", Content: `{"status":"running","url":"http://127.0.0.1:1234/themes_preview.html"}`},
+		},
+	}
+
+	names := toolDefNames(r.selectToolDefs(snapshot))
+	for _, want := range []string{"read_file", "edit_file", "preview_server_status"} {
+		if !containsString(names, want) {
+			t.Fatalf("preview visual follow-up tools = %#v, want %s", names, want)
+		}
 	}
 }
 
