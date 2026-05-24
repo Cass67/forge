@@ -641,6 +641,57 @@ func TestSessionClearTurnContractPersistsSchemaValidClearItem(t *testing.T) {
 	}
 }
 
+func TestRunCommandFileMutationRecordsWriteEvidence(t *testing.T) {
+	contract := &TurnContract{ID: "contract-1", Status: ContractStatusActive}
+
+	recordToolResultEvidence(contract, "run_command", map[string]any{
+		"command": "sed -i '' 's/window-save-state = always/window-save-state = never/' ~/Library/Application\\ Support/com.mitchellh.ghostty/macos.ghostty",
+	}, "\nexit 0", false)
+
+	if !contractHasEvidence(contract, EvidenceWrite, "run_command", "sed -i") {
+		t.Fatalf("TurnContract evidence = %#v, want run_command write evidence", contract.Evidence)
+	}
+	if !turnContractActionSatisfied(contract, ContractActionEdit) {
+		t.Fatalf("TurnContract evidence = %#v, want edit action satisfied", contract.Evidence)
+	}
+}
+
+func TestRunCommandAppendHeredocRecordsWriteEvidence(t *testing.T) {
+	contract := &TurnContract{ID: "contract-1", Status: ContractStatusActive}
+
+	recordToolResultEvidence(contract, "run_command", map[string]any{
+		"command": "cat >> ~/Library/Application\\ Support/com.mitchellh.ghostty/config.ghostty << 'EOF'\nconfig-file = macos.ghostty\nEOF",
+	}, "\nexit 0", false)
+
+	if !contractHasEvidence(contract, EvidenceWrite, "run_command", "cat >>") {
+		t.Fatalf("TurnContract evidence = %#v, want append write evidence", contract.Evidence)
+	}
+}
+
+func TestRunCommandFailedMutationDoesNotRecordWriteEvidence(t *testing.T) {
+	contract := &TurnContract{ID: "contract-1", Status: ContractStatusActive}
+
+	recordToolResultEvidence(contract, "run_command", map[string]any{
+		"command": "sed -i '' 's/old/new/' file.txt",
+	}, "sed: file.txt: No such file or directory\nexit 1", false)
+
+	if contractHasEvidenceKind(contract, EvidenceWrite) {
+		t.Fatalf("TurnContract evidence = %#v, failed command must not count as write", contract.Evidence)
+	}
+}
+
+func TestRunCommandReadOnlyDoesNotRecordWriteEvidence(t *testing.T) {
+	contract := &TurnContract{ID: "contract-1", Status: ContractStatusActive}
+
+	recordToolResultEvidence(contract, "run_command", map[string]any{
+		"command": "grep \"window-save-state\" ~/Library/Application\\ Support/com.mitchellh.ghostty/macos.ghostty",
+	}, "window-save-state = never\n\nexit 0", false)
+
+	if contractHasEvidenceKind(contract, EvidenceWrite) {
+		t.Fatalf("TurnContract evidence = %#v, read-only command must not count as write", contract.Evidence)
+	}
+}
+
 func TestSessionConcurrentUpdateTurnContractPreservesBothMutations(t *testing.T) {
 	s := NewSession()
 	s.SetTurnContract(TurnContract{ID: "contract-1", Status: ContractStatusActive})
