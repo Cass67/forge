@@ -8069,6 +8069,26 @@ func TestRunnerSelectsPluginToolForPluginOnlyInput(t *testing.T) {
 	}
 }
 
+func TestRunnerSelectsMCPToolsForMCPInput(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	for _, name := range []string{"list_mcp_resources", "read_mcp_resource", "mcp__context7__resolve_library_id"} {
+		reg.Register(agenttools.Tool{Name: name, Description: name})
+	}
+	r := NewRunner(Config{Tools: reg})
+
+	ordinary := r.selectToolDefs(SessionSnapshot{LastInput: "hello there"})
+	if len(ordinary) != 0 {
+		t.Fatalf("ordinary chat should not expose MCP tools, got %#v", ordinary)
+	}
+	defs := r.selectToolDefs(SessionSnapshot{LastInput: "use context7 mcp to resolve the library id"})
+	names := toolDefNames(defs)
+	for _, want := range []string{"list_mcp_resources", "read_mcp_resource", "mcp__context7__resolve_library_id"} {
+		if !containsString(names, want) {
+			t.Fatalf("MCP input tools = %#v, want %s", names, want)
+		}
+	}
+}
+
 func TestRunnerDoesNotExposePluginToolsForOrdinaryRepoWork(t *testing.T) {
 	reg := agenttools.NewRegistry()
 	for _, name := range []string{"read_file", "list_dir", "plugin__oh-my-openagent__task", "plugin__oh-my-openagent__skill"} {

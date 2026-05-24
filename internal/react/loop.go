@@ -4584,6 +4584,8 @@ selectParentTools:
 	}
 	pluginNames := r.pluginToolNames()
 	pluginIntent := inputSuggestsPluginTool(snapshot.LastInput, pluginNames)
+	mcpNames := r.mcpToolNames()
+	mcpIntent := inputSuggestsMCPTool(snapshot.LastInput, mcpNames)
 	if len(allowed) == 0 && !pluginIntent && len(snapshot.AgentTasks) > 0 && len(outstandingSpawnedAgents(snapshot)) == 0 {
 		return nil, decision
 	}
@@ -4603,6 +4605,14 @@ selectParentTools:
 			reason = reason + "+plugin_intent"
 		}
 		allowed = append(allowed, pluginNames...)
+	}
+	if mcpIntent {
+		if reason == "none" || reason == "fallback_delegate" {
+			reason = "mcp_intent"
+		} else {
+			reason = reason + "+mcp_intent"
+		}
+		allowed = append(allowed, mcpNames...)
 	}
 	if !delegationComplete {
 		allowed = append(allowed, delegateToolNames...)
@@ -4705,6 +4715,52 @@ func (r *Runner) pluginToolNames() []string {
 		}
 	}
 	return names
+}
+
+func (r *Runner) mcpToolNames() []string {
+	if r == nil || r.tools == nil {
+		return nil
+	}
+	var names []string
+	for _, tool := range r.tools.All() {
+		name := strings.TrimSpace(tool.Name)
+		if name == "list_mcp_resources" || name == "list_mcp_resource_templates" || name == "read_mcp_resource" || strings.HasPrefix(name, "mcp__") {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func inputSuggestsMCPTool(input string, mcpNames []string) bool {
+	if len(mcpNames) == 0 {
+		return false
+	}
+	text := normalizeToolIntentText(input)
+	if text == "" {
+		return false
+	}
+	if strings.Contains(text, "mcp") {
+		return true
+	}
+	for _, name := range mcpNames {
+		for _, token := range mcpIntentTokens(name) {
+			if token != "" && strings.Contains(text, token) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func mcpIntentTokens(name string) []string {
+	name = strings.TrimSpace(name)
+	if strings.HasPrefix(name, "mcp__") {
+		parts := strings.Split(name, "__")
+		if len(parts) >= 2 {
+			return []string{normalizePluginIntentToken(parts[1])}
+		}
+	}
+	return nil
 }
 
 func inputSuggestsPluginTool(input string, pluginNames []string) bool {
