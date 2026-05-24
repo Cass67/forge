@@ -35,6 +35,17 @@ func TestBuildNativeSystemPrompt(t *testing.T) {
 	}
 }
 
+func TestBuildNativeSystemPromptIncludesCurrentDate(t *testing.T) {
+	old := currentDateString
+	currentDateString = func() string { return "2026-05-23" }
+	t.Cleanup(func() { currentDateString = old })
+
+	prompt := BuildNativeSystemPrompt("/home/user/project")
+	if !strings.Contains(prompt, "Current date: 2026-05-23") {
+		t.Fatalf("prompt missing current date:\n%s", prompt)
+	}
+}
+
 func TestBuildNativeSystemPromptOmitsProjectScanSummary(t *testing.T) {
 	dir := t.TempDir()
 	prompt := BuildNativeSystemPrompt(dir)

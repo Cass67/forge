@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -107,5 +108,40 @@ func TestGlobNoMatches(t *testing.T) {
 	}
 	if !strings.Contains(result, "no matches") {
 		t.Errorf("expected 'no matches', got: %s", result)
+	}
+}
+
+func TestGlobAnnotatesUntrackedGitFiles(t *testing.T) {
+	dir := t.TempDir()
+	runGitGlobTest(t, dir, "init")
+	if err := os.WriteFile(filepath.Join(dir, "tracked.md"), []byte("tracked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitGlobTest(t, dir, "add", "tracked.md")
+	runGitGlobTest(t, dir, "commit", "-m", "init")
+	if err := os.WriteFile(filepath.Join(dir, "draft.md"), []byte("draft"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := NewGlob(dir, nil)
+	result, err := tool.Execute(context.Background(), map[string]any{"pattern": "*.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "draft.md [untracked]") {
+		t.Fatalf("glob result = %q, want untracked marker", result)
+	}
+	if strings.Contains(result, "tracked.md [untracked]") {
+		t.Fatalf("glob result marked tracked file untracked: %q", result)
+	}
+}
+
+func runGitGlobTest(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@example.com", "GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@example.com")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, string(out))
 	}
 }

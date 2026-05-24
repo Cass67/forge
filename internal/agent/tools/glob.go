@@ -74,12 +74,12 @@ func NewGlob(workDir string, ignoreDirs []string) Tool {
 
 			var sb strings.Builder
 			for _, m := range matches {
+				display := m
 				if basePath != "." {
 					rel, _ := filepath.Rel(workDir, filepath.Join(resolved, m))
-					sb.WriteString(rel + "\n")
-				} else {
-					sb.WriteString(m + "\n")
+					display = rel
 				}
+				sb.WriteString(annotateGitPathState(workDir, display) + "\n")
 			}
 			if len(matches) >= maxEntries {
 				fmt.Fprintf(&sb, "... truncated at %d entries\n", maxEntries)
