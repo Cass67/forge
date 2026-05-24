@@ -567,26 +567,56 @@ func (r *Runner) finalSideEffectGateMayBlock() bool {
 		return false
 	}
 	snap := r.session.Snapshot()
-	return len(unresolvedSideEffectGates(snap.SideEffectIntent)) > 0 || turnContractHasPendingArtifactGate(snap.TurnContract)
+	return len(unresolvedSideEffectGates(snap.SideEffectIntent)) > 0 || turnContractHasPendingArtifactGate(snap.TurnContract) || planStateHasUnresolvedStep(snap.PlanState)
 }
 
-func (r *Runner) blockFinalSideEffectSuccessIfNeeded(finalText string) (bool, error) {
+func (r *Runner) blockFinalPlanStateSuccessIfNeeded(turn int, finalText string) (bool, error) {
+	return r.blockFinalCompletionGates(turn, finalText)
+}
+
+func (r *Runner) blockFinalCompletionGates(turn int, finalText string) (bool, error) {
 	if r == nil || r.session == nil {
 		return false, nil
 	}
-	var feedbackParts []string
-	hasArtifactFeedback := false
-	if artifactFeedback := r.turnContractArtifactGateFeedback(); artifactFeedback != "" {
-		if finalResponseReportsSideEffectFailure(strings.ToLower(finalText)) {
-			return true, fmt.Errorf("react runtime: artifact gate failed: %s", strings.TrimSpace(finalText))
+	snap := r.session.Snapshot()
+	step, ok := unresolvedPlanStep(snap.PlanState)
+	if ok || contractHasPlanStateGate(snap.TurnContract) {
+		turnID := fmt.Sprintf("turn-%d", turn)
+		if turn > 0 && !r.session.IsActiveTurn(turnID) {
+			return false, staleTurnError(turnID)
 		}
-		feedbackParts = append(feedbackParts, artifactFeedback)
-		hasArtifactFeedback = true
 	}
-	if finalResponseClaimsSideEffectSuccess(finalText) {
-		if feedback := sideEffectGateFeedback(r.session.Snapshot().SideEffectIntent); feedback != "" {
-			feedbackParts = append(feedbackParts, feedback)
+	sideFeedback, hasArtifactFeedback, sideFailure := r.finalSideEffectGateFeedback(finalText)
+	if !ok {
+		r.passResolvedPlanStateGate()
+		return r.blockWithSideEffectFeedback(sideFeedback, hasArtifactFeedback, sideFailure)
+	}
+	lowerFinal := strings.ToLower(finalText)
+	if finalResponseReportsSideEffectFailure(lowerFinal) {
+		if sideFailure != nil {
+			return true, sideFailure
 		}
+		return true, fmt.Errorf("react runtime: plan state %s: %s", strings.ToLower(strings.TrimSpace(step.Status)), strings.TrimSpace(finalText))
+	}
+	feedback := planStateInconsistencyFeedback(step)
+	r.recordPlanStateContractViolation(feedback)
+	feedbackParts := append([]string(nil), sideFeedback...)
+	feedbackParts = append(feedbackParts, feedback)
+	combinedFeedback := strings.Join(feedbackParts, "\n")
+	if combinedFeedback != "" {
+		if err := r.session.AppendUserMessage(combinedFeedback); err != nil {
+			return false, err
+		}
+	}
+	if hasArtifactFeedback {
+		return true, NewRetryableCompletionError("react runtime: artifact gate unresolved", combinedFeedback)
+	}
+	return true, NewRetryableCompletionError("react runtime: plan state inconsistent", combinedFeedback)
+}
+
+func (r *Runner) blockWithSideEffectFeedback(feedbackParts []string, hasArtifactFeedback bool, failure error) (bool, error) {
+	if failure != nil {
+		return true, failure
 	}
 	feedback := strings.Join(feedbackParts, "\n")
 	if feedback == "" {
@@ -599,6 +629,105 @@ func (r *Runner) blockFinalSideEffectSuccessIfNeeded(finalText string) (bool, er
 		return true, NewRetryableCompletionError("react runtime: artifact gate unresolved", feedback)
 	}
 	return true, nil
+}
+
+func planStateHasUnresolvedStep(plan *PlanState) bool {
+	_, ok := unresolvedPlanStep(plan)
+	return ok
+}
+
+func unresolvedPlanStep(plan *PlanState) (PlanStep, bool) {
+	if plan == nil {
+		return PlanStep{}, false
+	}
+	return plan.ActiveStep()
+}
+
+func planStateInconsistencyFeedback(step PlanStep) string {
+	status := strings.ToLower(strings.TrimSpace(step.Status))
+	if status == "" {
+		status = "unresolved"
+	}
+	name := strings.TrimSpace(step.Step)
+	if name == "" {
+		name = "<unnamed step>"
+	}
+	feedback := "Runtime feedback: plan state inconsistent: step " + strconv.Quote(name) + " is " + status
+	if blocker := strings.TrimSpace(step.Blocker); blocker != "" {
+		feedback += " (blocker: " + blocker + ")"
+	}
+	return feedback + ". Update the plan state or report the blocker/failure instead of claiming successful completion."
+}
+
+func (r *Runner) recordPlanStateContractViolation(feedback string) {
+	if r == nil || r.session == nil || strings.TrimSpace(feedback) == "" {
+		return
+	}
+	r.session.UpdateTurnContract(func(contract *TurnContract) {
+		updateContractGate(contract, "plan_state", ContractGateFailed, feedback)
+		summary := "plan state inconsistent: " + feedback
+		for _, evidence := range contract.Evidence {
+			if evidence.Kind == EvidenceModelViolation && evidence.Summary == summary {
+				return
+			}
+		}
+		contract.Evidence = append(contract.Evidence, EvidenceRecord{Kind: EvidenceModelViolation, Summary: summary})
+	})
+}
+
+func (r *Runner) passResolvedPlanStateGate() {
+	if r == nil || r.session == nil {
+		return
+	}
+	r.session.UpdateTurnContract(func(contract *TurnContract) {
+		for _, gate := range contract.Gates {
+			if gate.Name == "plan_state" && gate.Status != ContractGatePassed {
+				updateContractGate(contract, "plan_state", ContractGatePassed, "plan state resolved")
+				return
+			}
+		}
+	})
+}
+
+func contractHasPlanStateGate(contract *TurnContract) bool {
+	if contract == nil {
+		return false
+	}
+	for _, gate := range contract.Gates {
+		if gate.Name == "plan_state" {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Runner) blockFinalSideEffectSuccessIfNeeded(finalText string) (bool, error) {
+	if r == nil || r.session == nil {
+		return false, nil
+	}
+	feedbackParts, hasArtifactFeedback, failure := r.finalSideEffectGateFeedback(finalText)
+	return r.blockWithSideEffectFeedback(feedbackParts, hasArtifactFeedback, failure)
+}
+
+func (r *Runner) finalSideEffectGateFeedback(finalText string) ([]string, bool, error) {
+	if r == nil || r.session == nil {
+		return nil, false, nil
+	}
+	var feedbackParts []string
+	hasArtifactFeedback := false
+	if artifactFeedback := r.turnContractArtifactGateFeedback(); artifactFeedback != "" {
+		if finalResponseReportsSideEffectFailure(strings.ToLower(finalText)) {
+			return nil, true, fmt.Errorf("react runtime: artifact gate failed: %s", strings.TrimSpace(finalText))
+		}
+		feedbackParts = append(feedbackParts, artifactFeedback)
+		hasArtifactFeedback = true
+	}
+	if finalResponseClaimsSideEffectSuccess(finalText) {
+		if feedback := sideEffectGateFeedback(r.session.Snapshot().SideEffectIntent); feedback != "" {
+			feedbackParts = append(feedbackParts, feedback)
+		}
+	}
+	return feedbackParts, hasArtifactFeedback, nil
 }
 
 func (r *Runner) turnContractArtifactGateFeedback() string {
@@ -913,11 +1042,11 @@ func (r *Runner) tryDirectLastResponseMarkdownWrite(ctx context.Context, turn in
 	if final == "" {
 		final = "wrote previous response to " + path
 	}
-	if blocked, err := r.blockFinalSideEffectSuccessIfNeeded(final); blocked || err != nil {
+	if blocked, err := r.blockFinalPlanStateSuccessIfNeeded(turn, final); blocked || err != nil {
 		if err != nil {
 			return true, err
 		}
-		return true, fmt.Errorf("direct markdown write final blocked by unresolved side-effect gates")
+		return true, fmt.Errorf("direct markdown write final blocked by unresolved completion gates")
 	}
 	if err := r.appendAssistantMessage(final); err != nil {
 		return true, err
@@ -1288,8 +1417,8 @@ func (r *Runner) tryCompletedAgentResultFallbackWithOptions(ctx context.Context,
 	}
 	fallback := "Parent model connection failed while composing the final response. Showing completed child-agent result instead.\n\n" + content
 	r.pendingRetryPrompt = ""
-	if blocked, err := r.blockFinalSideEffectSuccessIfNeeded(fallback); blocked || err != nil {
-		if r.hasTurnSnapshot(turn) {
+	if blocked, err := r.blockFinalPlanStateSuccessIfNeeded(turn, fallback); blocked || err != nil {
+		if err != nil && r.hasTurnSnapshot(turn) {
 			r.recordModelViolation("completed-agent fallback blocked", fallbackBlockDetail(err))
 		}
 		return false, err
@@ -1328,14 +1457,14 @@ func (r *Runner) writeCompletedAgentResultFallback(ctx context.Context, turn int
 	if final == "" {
 		final = "wrote completed child-agent results to " + path
 	}
-	if blocked, err := r.blockFinalSideEffectSuccessIfNeeded(final); blocked || err != nil {
-		if r.hasTurnSnapshot(turn) {
+	if blocked, err := r.blockFinalPlanStateSuccessIfNeeded(turn, final); blocked || err != nil {
+		if err != nil && r.hasTurnSnapshot(turn) {
 			r.recordModelViolation("completed-agent fallback write blocked", fallbackBlockDetail(err))
 		}
 		if err != nil {
 			return err
 		}
-		return fmt.Errorf("completed-agent fallback final blocked by unresolved side-effect gates")
+		return fmt.Errorf("completed-agent fallback final blocked by unresolved completion gates")
 	}
 	if err := r.appendAssistantMessage(final); err != nil {
 		return err
@@ -1892,7 +2021,7 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 			"A tool call is required for this step. Use one of the available tools instead of answering with prose.",
 		)
 	}
-	if blocked, err := r.blockFinalSideEffectSuccessIfNeeded(finalText); blocked || err != nil {
+	if blocked, err := r.blockFinalPlanStateSuccessIfNeeded(turn, finalText); blocked || err != nil {
 		return []llm.NativeToolCall{}, err
 	}
 	reasoning := strings.TrimSpace(reasoningBuf.String())
@@ -1953,7 +2082,7 @@ func (r *Runner) streamPlainTurn(ctx context.Context, turn int, messages []llm.M
 	if err := r.rejectRawToolMarkupFinalText(ctx, turn, finalText); err != nil {
 		return nil, err
 	}
-	if blocked, err := r.blockFinalSideEffectSuccessIfNeeded(finalText); blocked || err != nil {
+	if blocked, err := r.blockFinalPlanStateSuccessIfNeeded(turn, finalText); blocked || err != nil {
 		return []llm.NativeToolCall{}, err
 	}
 	if err := r.appendAssistantMessage(finalText); err != nil {
