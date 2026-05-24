@@ -89,11 +89,11 @@ func turnContractSchema() JSONSchema {
 			"status":   enumStringSchema("pending", "passed", "failed"),
 		}, []string{"name", "status"}), "type": "array"},
 		"id":     stringSchema(),
-		"intent": enumStringSchema("implement", "verify"),
+		"intent": enumStringSchema("answer_only", "inspect", "write_artifact", "edit_code", "implement", "verify"),
 		"reason": stringSchema(),
 		"required_actions": JSONSchema{"items": objectSchemaRequired(map[string]any{
 			"description": stringSchema(),
-			"kind":        enumStringSchema("edit", "run", "report"),
+			"kind":        enumStringSchema("edit", "read", "commit", "push", "run", "report"),
 		}, []string{"kind"}), "type": "array"},
 		"required_artifacts": JSONSchema{"items": objectSchemaRequired(map[string]any{
 			"description": stringSchema(),
