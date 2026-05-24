@@ -219,17 +219,27 @@ func TestRunnerCreatesSideEffectIntentForWriteCommitPushRequest(t *testing.T) {
 }
 
 func TestRunnerRecordsTurnContractForWritePlanInput(t *testing.T) {
+	workspace := t.TempDir()
+	artifact := "docs/plans/2026-05-23-term-wrangler.md"
+	if err := os.MkdirAll(filepath.Join(workspace, "docs/plans"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	session := NewSession()
-	r := NewRunner(Config{Session: session, Driver: &scriptedDriver{responses: []string{"ok"}}})
+	session.SetActiveWorkspaceRoot(workspace)
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "write-1", Name: "write_file", ArgsJSON: fmt.Sprintf(`{"path":%q,"content":"# Term Wrangler\n\n## Plan\n\nContract recording writes the requested artifact."}`, artifact)}}},
+		{{Text: "ok"}},
+	}}
+	r := NewRunner(Config{Session: session, Driver: driver, Tools: artifactGateWriteToolRegistry(t, workspace), MaxSteps: 5})
 
-	if err := r.Run(context.Background(), "write docs/plans/2026-05-23-term-wrangler.md"); err != nil {
+	if err := r.Run(context.Background(), "write "+artifact); err != nil {
 		t.Fatal(err)
 	}
 	contract := session.Snapshot().TurnContract
 	if contract == nil {
 		t.Fatal("missing turn contract")
 	}
-	if contract.Intent != TurnIntentWriteArtifact || !contractHasAction(contract, ContractActionEdit) || !contractHasArtifact(contract, "docs/plans/2026-05-23-term-wrangler.md") || !contractHasGate(contract, "artifact") {
+	if contract.Intent != TurnIntentWriteArtifact || !contractHasAction(contract, ContractActionEdit) || !contractHasArtifact(contract, artifact) || !contractHasGateStatus(contract, "artifact", ContractGatePassed) {
 		t.Fatalf("TurnContract = %#v", contract)
 	}
 }
@@ -247,6 +257,296 @@ func TestRunnerRecordsAnswerOnlyTurnContractForCasualInput(t *testing.T) {
 	}
 	if contract.Intent != TurnIntentAnswerOnly || len(contract.RequiredActions) != 0 {
 		t.Fatalf("TurnContract = %#v, want answer_only with no required actions", contract)
+	}
+}
+
+func TestRunnerArtifactGateBlocksMissingArtifactFinalCompletion(t *testing.T) {
+	workspace := t.TempDir()
+	session := NewSession()
+	session.SetActiveWorkspaceRoot(workspace)
+	driver := &nativeSequenceDriver{steps: repeatedTextSteps("Done, I wrote the plan.", 4)}
+	r := NewRunner(Config{Session: session, Driver: driver, MaxSteps: 5})
+
+	err := r.Run(context.Background(), "write docs/plans/2026-05-23-term-wrangler-design.md")
+	if err == nil || !strings.Contains(err.Error(), "artifact gate unresolved") {
+		t.Fatalf("err = %v, want artifact gate unresolved", err)
+	}
+	if turns := session.Snapshot().Turns; len(turns) == 0 || strings.TrimSpace(turns[len(turns)-1].FinalResponse) != "" {
+		t.Fatalf("turns = %#v, want no persisted final success", turns)
+	}
+	if !lastUserMessageContains(session.Snapshot(), "docs/plans/2026-05-23-term-wrangler-design.md") {
+		t.Fatalf("history missing concrete artifact feedback: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerArtifactGatePassesAfterWriteFileWritesExactPath(t *testing.T) {
+	workspace := t.TempDir()
+	artifact := "docs/plans/2026-05-23-term-wrangler-design.md"
+	session := NewSession()
+	session.SetActiveWorkspaceRoot(workspace)
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "write-1", Name: "write_file", ArgsJSON: fmt.Sprintf(`{"path":%q,"content":"# Term Wrangler Design\n\n## Approach\n\nThis plan describes the implementation steps and validation strategy."}`, artifact)}}},
+		{{Text: "Done, I wrote the plan."}},
+	}}
+	r := NewRunner(Config{Session: session, Driver: driver, Tools: artifactGateWriteToolRegistry(t, workspace), MaxSteps: 5})
+
+	if err := r.Run(context.Background(), "write "+artifact); err != nil {
+		t.Fatal(err)
+	}
+	if turns := session.Snapshot().Turns; len(turns) == 0 || !strings.Contains(turns[len(turns)-1].FinalResponse, "wrote the plan") {
+		t.Fatalf("turns = %#v, want persisted final success", turns)
+	}
+	contract := session.Snapshot().TurnContract
+	if contract == nil || !contractHasGateStatus(contract, "artifact", ContractGatePassed) {
+		t.Fatalf("TurnContract = %#v, want passed artifact gate", contract)
+	}
+}
+
+func TestRunnerArtifactGateFailsWrongDateGeneratedPlanPath(t *testing.T) {
+	workspace := t.TempDir()
+	required := "docs/plans/2026-05-23-term-wrangler-design.md"
+	wrong := "docs/plans/2026-05-22-term-wrangler-design.md"
+	session := NewSession()
+	session.SetActiveWorkspaceRoot(workspace)
+	driver := &nativeSequenceDriver{steps: append([][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "write-1", Name: "write_file", ArgsJSON: fmt.Sprintf(`{"path":%q,"content":"# Term Wrangler Design\n\n## Approach\n\nWrong date path should not satisfy the required artifact."}`, wrong)}}},
+	}, repeatedTextSteps("Done, I wrote the plan.", 4)...)}
+	r := NewRunner(Config{Session: session, Driver: driver, Tools: artifactGateWriteToolRegistry(t, workspace), MaxSteps: 6})
+
+	err := r.Run(context.Background(), "write "+required)
+	if err == nil || !strings.Contains(err.Error(), "artifact gate unresolved") {
+		t.Fatalf("err = %v, want artifact gate unresolved", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(workspace, required)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("required artifact stat err = %v, want not exist", statErr)
+	}
+	if turns := session.Snapshot().Turns; len(turns) == 0 || strings.TrimSpace(turns[len(turns)-1].FinalResponse) != "" {
+		t.Fatalf("turns = %#v, want no persisted final success", turns)
+	}
+}
+
+func TestRunnerArtifactGateFailsWhenWriteToolResultIsTextError(t *testing.T) {
+	workspace := t.TempDir()
+	artifact := "docs/plans/2026-05-23-term-wrangler-design.md"
+	session := NewSession()
+	session.SetActiveWorkspaceRoot(workspace)
+	driver := &nativeSequenceDriver{steps: append([][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "write-1", Name: "write_file", ArgsJSON: fmt.Sprintf(`{"path":%q,"content":"# Term Wrangler Design\n\n## Approach\n\nThe tool reports an error and must not satisfy the gate."}`, artifact)}}},
+	}, repeatedTextSteps("Done, I wrote the plan.", 4)...)}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "write_file", Parameters: []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}, {Name: "content", Type: "string", Required: true}}, Execute: func(context.Context, map[string]any) (string, error) {
+		return "error: disk full", nil
+	}})
+	r := NewRunner(Config{Session: session, Driver: driver, Tools: reg, MaxSteps: 6})
+
+	err := r.Run(context.Background(), "write "+artifact)
+	if err == nil || !strings.Contains(err.Error(), "artifact gate unresolved") {
+		t.Fatalf("err = %v, want artifact gate unresolved", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(workspace, artifact)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("artifact stat err = %v, want not exist", statErr)
+	}
+}
+
+func TestRunnerArtifactGateFailsInvalidRequiredArtifactPaths(t *testing.T) {
+	workspace := t.TempDir()
+	for _, path := range []string{"/tmp/escape.md", "../escape.md"} {
+		t.Run(path, func(t *testing.T) {
+			session := NewSession()
+			session.SetActiveWorkspaceRoot(workspace)
+			session.RecordInput("write invalid artifact")
+			session.SetTurnContract(TurnContract{
+				ID:                "contract-1",
+				Intent:            TurnIntentWriteArtifact,
+				RequiredArtifacts: []ArtifactRequirement{{Path: path, Description: "requested plan artifact"}},
+				Gates:             []ContractGate{{Name: "artifact", Status: ContractGatePending}},
+			})
+			r := NewRunner(Config{Session: session})
+
+			blocked, err := r.blockFinalSideEffectSuccessIfNeeded("Done, I wrote the plan.")
+			if !blocked || err == nil || !strings.Contains(err.Error(), "artifact gate unresolved") {
+				t.Fatalf("blocked, err = %v, %v; want artifact gate unresolved", blocked, err)
+			}
+			if !contractHasGateStatus(session.Snapshot().TurnContract, "artifact", ContractGateFailed) {
+				t.Fatalf("TurnContract = %#v, want failed artifact gate", session.Snapshot().TurnContract)
+			}
+		})
+	}
+}
+
+func TestRunnerArtifactGateRequiresPlanMarkdownHeadingAndSectionForGenericName(t *testing.T) {
+	workspace := t.TempDir()
+	artifact := "docs/design.md"
+	session := NewSession()
+	session.SetActiveWorkspaceRoot(workspace)
+	driver := &nativeSequenceDriver{steps: append([][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "write-1", Name: "write_file", ArgsJSON: fmt.Sprintf(`{"path":%q,"content":"just a short design note without markdown structure"}`, artifact)}}},
+	}, repeatedTextSteps("Done, I wrote the plan.", 4)...)}
+	r := NewRunner(Config{Session: session, Driver: driver, Tools: artifactGateWriteToolRegistry(t, workspace), MaxSteps: 6})
+
+	err := r.Run(context.Background(), "write a plan to "+artifact)
+	if err == nil || !strings.Contains(err.Error(), "artifact gate unresolved") {
+		t.Fatalf("err = %v, want artifact gate unresolved", err)
+	}
+	if !contractHasGateStatus(session.Snapshot().TurnContract, "artifact", ContractGateFailed) {
+		t.Fatalf("TurnContract = %#v, want failed artifact gate", session.Snapshot().TurnContract)
+	}
+}
+
+func TestRunnerArtifactGateBlocksPreExistingArtifactWithoutSameTurnWriteEvidence(t *testing.T) {
+	workspace := t.TempDir()
+	artifact := "docs/plans/2026-05-23-pre-existing.md"
+	if err := os.MkdirAll(filepath.Join(workspace, "docs/plans"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, artifact), []byte("# Existing\n\n## Plan\n\nThis file existed before the current turn."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	session := NewSession()
+	session.SetActiveWorkspaceRoot(workspace)
+	r := NewRunner(Config{Session: session, Driver: &nativeSequenceDriver{steps: repeatedTextSteps("Done, I wrote the plan.", 4)}, MaxSteps: 5})
+
+	err := r.Run(context.Background(), "write "+artifact)
+	if err == nil || !strings.Contains(err.Error(), "artifact gate unresolved") {
+		t.Fatalf("err = %v, want artifact gate unresolved", err)
+	}
+	if !contractHasGateStatus(session.Snapshot().TurnContract, "artifact", ContractGatePending) {
+		t.Fatalf("TurnContract = %#v, want pending artifact gate", session.Snapshot().TurnContract)
+	}
+}
+
+func TestRunnerArtifactGateAllowsHonestFailureReportWithoutRetryLoop(t *testing.T) {
+	workspace := t.TempDir()
+	session := NewSession()
+	session.SetActiveWorkspaceRoot(workspace)
+	r := NewRunner(Config{Session: session, Driver: &nativeSequenceDriver{steps: [][]llm.Token{{{Text: "I could not write docs/plans/2026-05-23-failure.md because the write tool failed."}}}}, MaxSteps: 5})
+
+	err := r.Run(context.Background(), "write docs/plans/2026-05-23-failure.md")
+	if err == nil || !strings.Contains(err.Error(), "artifact gate failed") {
+		t.Fatalf("err = %v, want non-retryable artifact gate failure", err)
+	}
+	if got := session.Snapshot().Turns[len(session.Snapshot().Turns)-1].FinalResponse; got != "" {
+		t.Fatalf("FinalResponse = %q, want no success response", got)
+	}
+	if got := session.Snapshot().Turns[len(session.Snapshot().Turns)-1].Error; !strings.Contains(got, "could not write") {
+		t.Fatalf("turn error = %q, want honest failure recorded", got)
+	}
+}
+
+func TestRunnerArtifactGateRejectsSymlinkArtifactEscapingWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	artifact := "docs/plans/2026-05-23-symlink.md"
+	if err := os.MkdirAll(filepath.Join(workspace, "docs/plans"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outsideFile := filepath.Join(outside, "escape.md")
+	if err := os.WriteFile(outsideFile, []byte("# Escape\n\n## Plan\n\nThis target is outside the workspace."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideFile, filepath.Join(workspace, artifact)); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	session := NewSession()
+	session.SetActiveWorkspaceRoot(workspace)
+	driver := &nativeSequenceDriver{steps: append([][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "write-1", Name: "write_file", ArgsJSON: fmt.Sprintf(`{"path":%q,"content":"# Escape\n\n## Plan\n\nThis write evidence should not permit escaped symlink reads."}`, artifact)}}},
+	}, repeatedTextSteps("Done, I wrote the plan.", 4)...)}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "write_file", Parameters: []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}, {Name: "content", Type: "string", Required: true}}, Execute: func(context.Context, map[string]any) (string, error) {
+		return "wrote " + artifact, nil
+	}})
+	r := NewRunner(Config{Session: session, Driver: driver, Tools: reg, MaxSteps: 6})
+
+	err := r.Run(context.Background(), "write "+artifact)
+	if err == nil || !strings.Contains(err.Error(), "artifact gate unresolved") {
+		t.Fatalf("err = %v, want artifact gate unresolved", err)
+	}
+	if !contractHasGateStatus(session.Snapshot().TurnContract, "artifact", ContractGateFailed) {
+		t.Fatalf("TurnContract = %#v, want failed artifact gate", session.Snapshot().TurnContract)
+	}
+}
+
+func TestRunnerArtifactGateRejectsSymlinkParentEscapingWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	artifact := "docs/a.md"
+	if err := os.WriteFile(filepath.Join(outside, "a.md"), []byte("# Escape\n\n## Plan\n\nThis target is outside via a symlinked parent."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workspace, "docs")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	session := NewSession()
+	session.SetActiveWorkspaceRoot(workspace)
+	driver := &nativeSequenceDriver{steps: append([][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "write-1", Name: "write_file", ArgsJSON: fmt.Sprintf(`{"path":%q,"content":"# Escape\n\n## Plan\n\nThis write evidence should not permit symlinked parent escape reads."}`, artifact)}}},
+	}, repeatedTextSteps("Done, I wrote the plan.", 4)...)}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "write_file", Parameters: []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}, {Name: "content", Type: "string", Required: true}}, Execute: func(context.Context, map[string]any) (string, error) {
+		return "wrote " + artifact, nil
+	}})
+	r := NewRunner(Config{Session: session, Driver: driver, Tools: reg, MaxSteps: 6})
+
+	err := r.Run(context.Background(), "write a plan to "+artifact)
+	if err == nil || !strings.Contains(err.Error(), "artifact gate unresolved") {
+		t.Fatalf("err = %v, want artifact gate unresolved", err)
+	}
+	if !contractHasGateStatus(session.Snapshot().TurnContract, "artifact", ContractGateFailed) {
+		t.Fatalf("TurnContract = %#v, want failed artifact gate", session.Snapshot().TurnContract)
+	}
+}
+
+func TestRunnerArtifactGatePreservesAndFailsInvalidRequestedArtifactPath(t *testing.T) {
+	workspace := t.TempDir()
+	session := NewSession()
+	session.SetActiveWorkspaceRoot(workspace)
+	r := NewRunner(Config{Session: session, Driver: &nativeSequenceDriver{steps: repeatedTextSteps("Done, I wrote the plan.", 4)}, MaxSteps: 5})
+
+	err := r.Run(context.Background(), "write a plan to ../escape.md")
+	if err == nil || !strings.Contains(err.Error(), "artifact gate unresolved") {
+		t.Fatalf("err = %v, want artifact gate unresolved", err)
+	}
+	contract := session.Snapshot().TurnContract
+	if contract == nil || !contractHasArtifact(contract, "../escape.md") {
+		t.Fatalf("TurnContract = %#v, want invalid artifact preserved", contract)
+	}
+	if contractHasArtifact(contract, "docs/plans/"+time.Now().Format("2006-01-02")+"-plan.md") {
+		t.Fatalf("TurnContract = %#v, must not fallback to dated default path", contract)
+	}
+	if !contractHasGateStatus(contract, "artifact", ContractGateFailed) {
+		t.Fatalf("TurnContract = %#v, want failed artifact gate", contract)
+	}
+}
+
+func TestRunnerArtifactGateUsesExactWriteEvidencePath(t *testing.T) {
+	workspace := t.TempDir()
+	artifact := "docs/a.md"
+	backup := "docs/a.md.bak"
+	if err := os.MkdirAll(filepath.Join(workspace, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, artifact), []byte("# A\n\n## Section\n\nPre-existing target."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	session := NewSession()
+	session.SetActiveWorkspaceRoot(workspace)
+	session.RecordInput("write exact artifact")
+	session.SetTurnContract(TurnContract{
+		ID:                "contract-1",
+		Intent:            TurnIntentWriteArtifact,
+		RequiredArtifacts: []ArtifactRequirement{{Path: artifact, Description: "requested plan artifact"}},
+		Evidence:          []EvidenceRecord{{Kind: EvidenceWrite, Summary: "write: write_file " + backup}},
+		Gates:             []ContractGate{{Name: "artifact", Status: ContractGatePending}},
+	})
+	r := NewRunner(Config{Session: session})
+
+	blocked, err := r.blockFinalSideEffectSuccessIfNeeded("Done, I wrote the plan.")
+	if !blocked || err == nil || !strings.Contains(err.Error(), "artifact gate unresolved") {
+		t.Fatalf("blocked, err = %v, %v; want artifact gate unresolved", blocked, err)
+	}
+	if contractHasGateStatus(session.Snapshot().TurnContract, "artifact", ContractGatePassed) {
+		t.Fatalf("TurnContract = %#v, backup write evidence must not pass target artifact", session.Snapshot().TurnContract)
 	}
 }
 
@@ -5891,6 +6191,57 @@ func TestAllowedToolsForActionFollowUpIncludesWriteAndCommandTools(t *testing.T)
 
 func containsString(values []string, want string) bool {
 	return slices.Contains(values, want)
+}
+
+func repeatedTextSteps(text string, count int) [][]llm.Token {
+	steps := make([][]llm.Token, 0, count)
+	for range count {
+		steps = append(steps, []llm.Token{{Text: text}})
+	}
+	return steps
+}
+
+func artifactGateWriteToolRegistry(t *testing.T, workspace string) *agenttools.Registry {
+	t.Helper()
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "write_file", Parameters: []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}, {Name: "content", Type: "string", Required: true}}, Execute: func(_ context.Context, args map[string]any) (string, error) {
+		path := filepath.Clean(stringArg(args, "path"))
+		content := stringArg(args, "content")
+		if strings.TrimSpace(path) == "" {
+			return "error: missing path", nil
+		}
+		fullPath := filepath.Join(workspace, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
+			return "", err
+		}
+		return "wrote " + path, nil
+	}})
+	return reg
+}
+
+func contractHasGateStatus(contract *TurnContract, name string, status ContractGateStatus) bool {
+	if contract == nil {
+		return false
+	}
+	for _, gate := range contract.Gates {
+		if gate.Name == name && gate.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
+func lastUserMessageContains(snapshot SessionSnapshot, text string) bool {
+	for i := len(snapshot.History) - 1; i >= 0; i-- {
+		msg := snapshot.History[i]
+		if msg.Role == llm.RoleUser {
+			return strings.Contains(msg.Content, text)
+		}
+	}
+	return false
 }
 
 func toolDefNames(defs []llm.ToolDef) []string {

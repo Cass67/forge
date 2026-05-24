@@ -47,6 +47,22 @@ func TestDeriveTurnContractFromInput(t *testing.T) {
 			wantGates:     []string{"artifact"},
 		},
 		{
+			name:          "write plan with parent traversal path preserves invalid artifact",
+			input:         "write a plan to ../escape.md",
+			wantIntent:    TurnIntentWriteArtifact,
+			wantActions:   []ContractActionKind{ContractActionEdit},
+			wantArtifacts: []string{"../escape.md"},
+			wantGates:     []string{"artifact"},
+		},
+		{
+			name:          "write plan with absolute path preserves invalid artifact",
+			input:         "write a plan to /tmp/x.md",
+			wantIntent:    TurnIntentWriteArtifact,
+			wantActions:   []ContractActionKind{ContractActionEdit},
+			wantArtifacts: []string{"/tmp/x.md"},
+			wantGates:     []string{"artifact"},
+		},
+		{
 			name:        "implementation requires write action",
 			input:       "implement this",
 			wantIntent:  TurnIntentEditCode,

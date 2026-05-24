@@ -2,6 +2,7 @@ package react
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"forge/internal/protocol"
@@ -317,6 +318,9 @@ func turnInputLooksLikeQuestion(input string) bool {
 }
 
 func turnContractPlanPath(input string, nowDate string) string {
+	if path := explicitTurnContractArtifactPath(input); path != "" {
+		return path
+	}
 	for _, path := range extractMarkdownAndNamedPaths(input) {
 		return path
 	}
@@ -325,6 +329,45 @@ func turnContractPlanPath(input string, nowDate string) string {
 		nowDate = "runtime-current-date"
 	}
 	return "docs/plans/" + nowDate + "-plan.md"
+}
+
+func explicitTurnContractArtifactPath(input string) string {
+	fields := strings.FieldsFunc(input, func(r rune) bool {
+		switch r {
+		case ' ', '\t', '\n', '\r':
+			return true
+		default:
+			return false
+		}
+	})
+	for _, field := range fields {
+		candidate := strings.TrimPrefix(field, "path=")
+		candidate = strings.TrimPrefix(candidate, "target=")
+		candidate = strings.Trim(candidate, "`'\",:;()[]{}<>")
+		if candidate == "" || strings.Contains(candidate, "://") {
+			continue
+		}
+		if path := normalizeIntentPath(candidate); path != "" && looksLikeExplicitIntentPath(path) {
+			return path
+		}
+		if explicitInvalidArtifactPathCandidate(candidate) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func explicitInvalidArtifactPathCandidate(candidate string) bool {
+	if candidate == "" || strings.Contains(candidate, "://") || looksLikeWindowsAbsolutePath(candidate) {
+		return false
+	}
+	if strings.Contains(candidate, "\\") || strings.Contains(candidate, ":") {
+		return false
+	}
+	if filepath.IsAbs(candidate) || strings.HasPrefix(filepath.ToSlash(candidate), "../") || strings.Contains(filepath.ToSlash(candidate), "/../") {
+		return strings.EqualFold(filepath.Ext(candidate), ".md")
+	}
+	return false
 }
 
 func turnInputSuggestsInspection(input string) bool {
