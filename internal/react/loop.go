@@ -553,9 +553,35 @@ func (r *Runner) appendAssistantMessage(text string) error {
 	return r.session.AppendAssistantMessage(text)
 }
 
+func (r *Runner) appendFinalAssistantMessageAndCompleteTurn(ctx context.Context, turn int, response string, toolCalls []TurnToolCall) error {
+	if err := r.ensureFinalValidationTurnCurrent(ctx, turn); err != nil {
+		return err
+	}
+	if err := r.appendAssistantMessage(response); err != nil {
+		return err
+	}
+	if err := r.ensureFinalValidationTurnCurrent(ctx, turn); err != nil {
+		return err
+	}
+	return r.completeTurn(turn, response, toolCalls, nil)
+}
+
 func (r *Runner) completeTurn(turn int, response string, toolCalls []TurnToolCall, turnErr error) error {
 	if r == nil || r.session == nil {
 		return turnErr
+	}
+	if turnErr == nil && turn > 0 {
+		turnID := fmt.Sprintf("turn-%d", turn)
+		active, ok := r.session.ActiveTurnSnapshot()
+		if !ok {
+			return staleTurnError(turnID)
+		}
+		if active.ID == turnID && !r.session.IsActiveTurn(turnID) {
+			return staleTurnError(turnID)
+		}
+		if active.ID != turnID {
+			return staleTurnError(turnID)
+		}
 	}
 	if err := r.session.CompleteTurn(turn, response, toolCalls, turnErr); err != nil {
 		if turnErr != nil {
@@ -607,7 +633,7 @@ func (r *Runner) ensureFinalValidationTurnCurrent(ctx context.Context, turn int)
 	}
 	active, ok := r.session.ActiveTurnSnapshot()
 	if !ok {
-		return nil
+		return staleTurnError(fmt.Sprintf("turn-%d", turn))
 	}
 	turnID := fmt.Sprintf("turn-%d", turn)
 	if active.ID != turnID || !r.session.IsActiveTurn(turnID) {
@@ -635,7 +661,10 @@ func (r *Runner) blockFinalCompletionGates(turn int, finalText string) (bool, er
 	sideFeedback, hasArtifactFeedback, sideFailure := r.finalSideEffectGateFeedback(finalText)
 	if !ok {
 		r.passResolvedPlanStateGate()
-		return r.blockWithSideEffectFeedback(sideFeedback, hasArtifactFeedback, sideFailure)
+		if blocked, err := r.blockWithSideEffectFeedback(sideFeedback, hasArtifactFeedback, sideFailure); blocked || err != nil {
+			return blocked, err
+		}
+		return r.blockWithTurnContractFeedback(turn, finalText)
 	}
 	lowerFinal := strings.ToLower(finalText)
 	if finalResponseReportsSideEffectFailure(lowerFinal) {
@@ -658,6 +687,199 @@ func (r *Runner) blockFinalCompletionGates(turn int, finalText string) (bool, er
 		return true, NewRetryableCompletionError("react runtime: artifact gate unresolved", combinedFeedback)
 	}
 	return true, NewRetryableCompletionError("react runtime: plan state inconsistent", combinedFeedback)
+}
+
+func (r *Runner) blockWithTurnContractFeedback(turn int, finalText string) (bool, error) {
+	if r == nil || r.session == nil {
+		return false, nil
+	}
+	snap := r.session.Snapshot()
+	contract := snap.TurnContract
+	if !turnContractRequiresFinalEvidence(contract, turn) {
+		return false, nil
+	}
+	if finalResponseReportsSideEffectFailure(strings.ToLower(finalText)) {
+		return true, fmt.Errorf("react runtime: turn contract not satisfied: %s", strings.TrimSpace(finalText))
+	}
+	feedback := turnContractFinalEvidenceFeedback(contract)
+	if feedback == "" {
+		return false, nil
+	}
+	if err := r.session.AppendUserMessage(feedback); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func turnContractRequiresFinalEvidence(contract *TurnContract, turn int) bool {
+	if contract == nil || contract.Status == ContractStatusSatisfied || contract.Status == ContractStatusCleared || contract.Intent == TurnIntentAnswerOnly {
+		return false
+	}
+	if contract.SourceTurn != 0 && turn != 0 && contract.SourceTurn != turn {
+		return false
+	}
+	return len(contract.RequiredActions) > 0 || len(contract.RequiredArtifacts) > 0 || len(contract.RequiredVerification) > 0 || turnContractHasEvidenceKind(contract, EvidenceDelegationFailure)
+}
+
+func turnContractFinalEvidenceFeedback(contract *TurnContract) string {
+	if contract == nil {
+		return ""
+	}
+	var missing []string
+	for _, action := range contract.RequiredActions {
+		if !turnContractActionSatisfied(contract, action.Kind) {
+			missing = append(missing, string(action.Kind))
+		}
+	}
+	if len(contract.RequiredVerification) > 0 && !turnContractRequiredVerificationPassed(contract) {
+		missing = append(missing, "verification")
+	}
+	for _, artifact := range contract.RequiredArtifacts {
+		path := strings.TrimSpace(artifact.Path)
+		if path == "" {
+			path = "<empty>"
+		}
+		if !turnContractRequiredArtifactSatisfied(contract, artifact) {
+			missing = append(missing, "artifact "+path)
+		}
+	}
+	if len(missing) > 0 {
+		feedback := "Runtime feedback: required turn contract evidence missing: " + strings.Join(uniqueStrings(missing), ", ") + ". Use the required tools and successful verification evidence before claiming completion."
+		if turnContractHasEvidenceKind(contract, EvidenceDelegationFailure) {
+			feedback += " delegation failed; provide parent-owned recovery evidence satisfying the required actions/artifacts or report the failure/blocker."
+		}
+		return feedback
+	}
+	if turnContractHasEvidenceKind(contract, EvidenceDelegationFailure) && len(contract.RequiredActions) == 0 && len(contract.RequiredArtifacts) == 0 && len(contract.RequiredVerification) == 0 {
+		return "Runtime feedback: delegation failed. Provide parent-owned recovery evidence satisfying the required actions/artifacts or report the failure/blocker instead of claiming successful completion."
+	}
+	return ""
+}
+
+func turnContractActionSatisfied(contract *TurnContract, kind ContractActionKind) bool {
+	switch kind {
+	case ContractActionEdit:
+		return turnContractHasWriteEvidence(contract) || contractGatePassed(contract, string(SideEffectActionWrite)) || contractGatePassed(contract, "artifact")
+	case ContractActionRead:
+		return turnContractHasEvidenceKind(contract, EvidenceRead) || (turnContractHasEvidenceKind(contract, EvidenceDelegation) && !turnContractHasEvidenceKind(contract, EvidenceDelegationFailure))
+	case ContractActionRun:
+		return turnContractAnyVerificationPassed(contract) || contractHasPassedToolEvidence(contract, "run_command")
+	case ContractActionCommit:
+		return contractGatePassed(contract, string(SideEffectActionCommit)) || contractHasPassedToolEvidence(contract, "git_commit")
+	case ContractActionPush:
+		return contractGatePassed(contract, string(SideEffectActionPush)) || contractHasPassedToolEvidence(contract, "git_push")
+	case ContractActionReport:
+		return true
+	default:
+		return false
+	}
+}
+
+func turnContractHasWriteEvidence(contract *TurnContract) bool {
+	return turnContractHasEvidenceKind(contract, EvidenceWrite)
+}
+
+func turnContractRequiredVerificationPassed(contract *TurnContract) bool {
+	if contract == nil {
+		return false
+	}
+	for _, required := range contract.RequiredVerification {
+		command := strings.TrimSpace(required.Command)
+		if command == "" {
+			if !turnContractAnyVerificationPassed(contract) {
+				return false
+			}
+			continue
+		}
+		if !turnContractVerificationCommandPassed(contract, command) {
+			return false
+		}
+	}
+	return true
+}
+
+func turnContractAnyVerificationPassed(contract *TurnContract) bool {
+	if contract == nil {
+		return false
+	}
+	for _, evidence := range contract.Evidence {
+		if evidence.Kind == EvidenceVerification && strings.Contains(strings.ToLower(evidence.Summary), "passed") {
+			return true
+		}
+	}
+	return false
+}
+
+func turnContractVerificationCommandPassed(contract *TurnContract, command string) bool {
+	if contract == nil {
+		return false
+	}
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return turnContractAnyVerificationPassed(contract)
+	}
+	for _, evidence := range contract.Evidence {
+		if evidence.Kind != EvidenceVerification || !strings.Contains(strings.ToLower(evidence.Summary), "passed") {
+			continue
+		}
+		if strings.TrimSpace(strings.TrimPrefix(evidence.Summary, "verification passed:")) == command {
+			return true
+		}
+	}
+	return false
+}
+
+func turnContractRequiredArtifactSatisfied(contract *TurnContract, artifact ArtifactRequirement) bool {
+	path := normalizeIntentPath(artifact.Path)
+	if path == "" {
+		return false
+	}
+	if status, ok := latestArtifactWriteEvidenceStatus(contract, path); ok {
+		return status == ContractGatePassed
+	}
+	for _, gate := range contract.Gates {
+		if gate.Name == "artifact" && gate.Status == ContractGatePassed && evidenceSummaryHasExactPath(gate.Evidence, path) {
+			return true
+		}
+	}
+	return false
+}
+
+func contractGatePassed(contract *TurnContract, name string) bool {
+	if contract == nil || strings.TrimSpace(name) == "" {
+		return false
+	}
+	for _, gate := range contract.Gates {
+		if gate.Name == name && gate.Status == ContractGatePassed {
+			return true
+		}
+	}
+	return false
+}
+
+func contractHasPassedToolEvidence(contract *TurnContract, toolName string) bool {
+	if contract == nil || strings.TrimSpace(toolName) == "" {
+		return false
+	}
+	for _, evidence := range contract.Evidence {
+		lower := strings.ToLower(evidence.Summary)
+		if evidence.Kind == EvidenceTool && strings.Contains(lower, strings.ToLower(toolName)) && strings.Contains(lower, "passed") {
+			return true
+		}
+	}
+	return false
+}
+
+func turnContractHasEvidenceKind(contract *TurnContract, kind EvidenceKind) bool {
+	if contract == nil {
+		return false
+	}
+	for _, evidence := range contract.Evidence {
+		if evidence.Kind == kind {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Runner) blockWithSideEffectFeedback(feedbackParts []string, hasArtifactFeedback bool, failure error) (bool, error) {
@@ -1263,10 +1485,7 @@ func (r *Runner) tryDirectLastResponseMarkdownWrite(ctx context.Context, turn in
 		}
 		return true, fmt.Errorf("direct markdown write final blocked by unresolved completion gates")
 	}
-	if err := r.appendAssistantMessage(final); err != nil {
-		return true, err
-	}
-	if err := r.completeTurn(turn, final, nil, nil); err != nil {
+	if err := r.appendFinalAssistantMessageAndCompleteTurn(ctx, turn, final, nil); err != nil {
 		return true, err
 	}
 	r.notifyTurnComplete()
@@ -1491,10 +1710,7 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 					if ok, err := r.validateFinalCompletion(ctx, turn, fallback, false); !ok || err != nil {
 						return err
 					}
-					if err := r.appendAssistantMessage(fallback); err != nil {
-						return err
-					}
-					if err := r.completeTurn(turn, fallback, nil, nil); err != nil {
+					if err := r.appendFinalAssistantMessageAndCompleteTurn(ctx, turn, fallback, nil); err != nil {
 						return err
 					}
 					r.notifyTurnComplete()
@@ -1641,10 +1857,7 @@ func (r *Runner) tryCompletedAgentResultFallbackWithOptions(ctx context.Context,
 		}
 		return false, err
 	}
-	if err := r.appendAssistantMessage(fallback); err != nil {
-		return true, err
-	}
-	if err := r.completeTurn(turn, fallback, nil, nil); err != nil {
+	if err := r.appendFinalAssistantMessageAndCompleteTurn(ctx, turn, fallback, nil); err != nil {
 		return true, err
 	}
 	r.notifyTurnComplete()
@@ -1684,10 +1897,7 @@ func (r *Runner) writeCompletedAgentResultFallback(ctx context.Context, turn int
 		}
 		return fmt.Errorf("completed-agent fallback final blocked by unresolved completion gates")
 	}
-	if err := r.appendAssistantMessage(final); err != nil {
-		return err
-	}
-	if err := r.completeTurn(turn, final, nil, nil); err != nil {
+	if err := r.appendFinalAssistantMessageAndCompleteTurn(ctx, turn, final, nil); err != nil {
 		return err
 	}
 	r.notifyTurnComplete()
@@ -2234,13 +2444,13 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 		return []llm.NativeToolCall{}, err
 	}
 	reasoning := strings.TrimSpace(reasoningBuf.String())
-	if err := r.appendAssistantMessage(finalText); err != nil {
+	if err := r.ensureFinalValidationTurnCurrent(ctx, turn); err != nil {
 		return nil, err
 	}
 	if reasoning != "" {
 		r.session.SetLastAssistantReasoning(reasoning)
 	}
-	if err := r.completeTurn(turn, finalText, nil, nil); err != nil {
+	if err := r.appendFinalAssistantMessageAndCompleteTurn(ctx, turn, finalText, nil); err != nil {
 		return nil, err
 	}
 	r.notifyTurnComplete()
@@ -2291,10 +2501,7 @@ func (r *Runner) streamPlainTurn(ctx context.Context, turn int, messages []llm.M
 	if ok, err := r.validateFinalCompletion(ctx, turn, finalText, false); !ok || err != nil {
 		return []llm.NativeToolCall{}, err
 	}
-	if err := r.appendAssistantMessage(finalText); err != nil {
-		return nil, err
-	}
-	if err := r.completeTurn(turn, finalText, nil, nil); err != nil {
+	if err := r.appendFinalAssistantMessageAndCompleteTurn(ctx, turn, finalText, nil); err != nil {
 		return nil, err
 	}
 	r.notifyTurnComplete()
