@@ -1503,9 +1503,10 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 		textBuf.WriteString(tok.Text)
 		if !hasTools && !suppressFinalStreaming {
 			current := textBuf.String()
-			if streamVisible && r.renderer != nil && len(current) > visibleEmitted {
-				r.renderer.AgentToken(current[visibleEmitted:])
-				visibleEmitted = len(current)
+			safeVisible := safeRawMarkupStreamingPrefixLen(current)
+			if streamVisible && r.renderer != nil && safeVisible > visibleEmitted {
+				r.renderer.AgentToken(current[visibleEmitted:safeVisible])
+				visibleEmitted = safeVisible
 			}
 		}
 	}
@@ -1546,11 +1547,8 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 		)
 	}
 	r.pendingRetryPrompt = ""
-	if looksLikeLegacyXMLToolCall(finalText) {
-		return nil, NewRetryableCompletionError(
-			"react runtime: provider returned deprecated XML tool-call markup",
-			"Use the provider's native tool-calling interface only. Do not emit prose, XML, or example markup in place of a tool call.",
-		)
+	if err := r.rejectRawToolMarkupFinalText(ctx, turn, finalText); err != nil {
+		return nil, err
 	}
 	if requireToolCall {
 		return nil, NewRetryableCompletionError(
@@ -1596,9 +1594,12 @@ func (r *Runner) streamPlainTurn(ctx context.Context, turn int, messages []llm.M
 		}
 		textBuf.WriteString(tok.Text)
 		current := textBuf.String()
-		if !suppressFinalStreaming && streamVisible && r.renderer != nil && len(current) > visibleEmitted {
-			r.renderer.AgentToken(current[visibleEmitted:])
-			visibleEmitted = len(current)
+		if !suppressFinalStreaming && streamVisible && r.renderer != nil {
+			safeVisible := safeRawMarkupStreamingPrefixLen(current)
+			if safeVisible > visibleEmitted {
+				r.renderer.AgentToken(current[visibleEmitted:safeVisible])
+				visibleEmitted = safeVisible
+			}
 		}
 	}
 	if err := <-errCh; err != nil {
@@ -1613,11 +1614,8 @@ func (r *Runner) streamPlainTurn(ctx context.Context, turn int, messages []llm.M
 		)
 	}
 	r.pendingRetryPrompt = ""
-	if looksLikeLegacyXMLToolCall(finalText) {
-		return nil, NewRetryableCompletionError(
-			"react runtime: provider returned deprecated XML tool-call markup",
-			"Use the provider's native tool-calling interface only. Do not emit prose, XML, or example markup in place of a tool call.",
-		)
+	if err := r.rejectRawToolMarkupFinalText(ctx, turn, finalText); err != nil {
+		return nil, err
 	}
 	if blocked, err := r.blockFinalSideEffectSuccessIfNeeded(finalText); blocked || err != nil {
 		return []llm.NativeToolCall{}, err
@@ -1682,6 +1680,118 @@ func retryableCompletionAllowsCompletedAgentFallback(err *RetryableCompletionErr
 	}
 	message := strings.ToLower(strings.TrimSpace(err.Message))
 	return strings.Contains(message, `tool "wait_agent" is not available this turn`)
+}
+
+func (r *Runner) rejectRawToolMarkupFinalText(ctx context.Context, turn int, finalText string) error {
+	detail, ok := rawToolMarkupDetail(finalText)
+	if !ok {
+		return nil
+	}
+	if err := r.ensureTurnCanMutate(ctx, turn); err != nil {
+		return err
+	}
+	r.recordModelViolation("raw_tool_markup", detail)
+	return NewRetryableCompletionError(
+		"react runtime: provider returned raw tool-call markup or deprecated XML tool-call markup",
+		"Use the provider's native tool-calling interface only. Do not emit DSML, XML, JSON tool-call objects, or example markup as final assistant text.",
+	)
+}
+
+func safeRawMarkupStreamingPrefixLen(text string) int {
+	unsafeAt := -1
+	for _, marker := range []string{"<", "{", "["} {
+		if idx := strings.Index(text, marker); idx >= 0 && (unsafeAt < 0 || idx < unsafeAt) {
+			unsafeAt = idx
+		}
+	}
+	if unsafeAt >= 0 {
+		return unsafeAt
+	}
+	return len(text)
+}
+
+func rawToolMarkupDetail(text string) (string, bool) {
+	trimmed := strings.TrimSpace(text)
+	lower := strings.ToLower(trimmed)
+	if strings.Contains(lower, "<｜｜dsml｜｜") || strings.Contains(lower, "<||dsml||") {
+		return "DSML", true
+	}
+	if looksLikeLegacyXMLToolCall(trimmed) {
+		return "tool_call", true
+	}
+	if detail, ok := jsonToolCallDetail([]byte(trimmed)); ok {
+		return detail, true
+	}
+	return "", false
+}
+
+func jsonToolCallDetail(raw json.RawMessage) (string, bool) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || (!strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[")) {
+		return "", false
+	}
+	if strings.HasPrefix(trimmed, "[") {
+		var items []json.RawMessage
+		if err := json.Unmarshal(raw, &items); err != nil {
+			return "", false
+		}
+		for _, item := range items {
+			if detail, ok := jsonToolCallDetail(item); ok {
+				return detail, true
+			}
+		}
+		return "", false
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return "", false
+	}
+	if detail, ok := directJSONToolCallDetail(obj); ok {
+		return detail, true
+	}
+	if function, ok := obj["function"]; ok {
+		if detail, ok := jsonToolCallDetail(function); ok {
+			return detail, true
+		}
+	}
+	if calls, ok := obj["tool_calls"]; ok {
+		if detail, ok := jsonToolCallDetail(calls); ok {
+			return detail, true
+		}
+	}
+	return "", false
+}
+
+func directJSONToolCallDetail(obj map[string]json.RawMessage) (string, bool) {
+	name := jsonStringField(obj, "name")
+	if name == "" {
+		name = jsonStringField(obj, "tool_name")
+	}
+	if name == "" || !jsonObjectHasAnyField(obj, "arguments", "args") {
+		return "", false
+	}
+	return name, true
+}
+
+func jsonObjectHasAnyField(obj map[string]json.RawMessage, fields ...string) bool {
+	for _, field := range fields {
+		if _, ok := obj[field]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func jsonStringField(obj map[string]json.RawMessage, field string) string {
+	raw, ok := obj[field]
+	if !ok {
+		return ""
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(value)
 }
 
 func parseLegacyXMLToolCall(text string) (llm.NativeToolCall, bool) {
@@ -3250,6 +3360,13 @@ selectParentTools:
 	if len(allowed) == 0 {
 		reason = "none"
 	}
+	if snapshotHasPreviewToolEvidence(snapshot) && inputSuggestsPreviewFollowUp(normalizeToolIntentText(snapshot.LastInput)) {
+		reason = "preview_followup"
+		allowed = append(allowed, readOnlyToolNames...)
+		allowed = append(allowed, writeToolNames...)
+		allowed = append(allowed, previewToolNames...)
+		allowed = append(allowed, "tool_help")
+	}
 	if delegationComplete {
 		allowed = withoutToolNames(allowed, delegateToolNames...)
 	}
@@ -3600,6 +3717,10 @@ func historyIncludesToolCall(snapshot SessionSnapshot, toolName string) bool {
 		}
 	}
 	return false
+}
+
+func snapshotHasPreviewToolEvidence(snapshot SessionSnapshot) bool {
+	return historyIncludesToolCall(snapshot, "preview_server_ensure") || historyIncludesToolCall(snapshot, "preview_server_status")
 }
 
 func historyIncludesCompletedToolCall(snapshot SessionSnapshot, toolName string) bool {
@@ -4126,6 +4247,17 @@ func inputSuggestsPreviewWork(text string) bool {
 		"show it on the web page", "put that on the web page", "refresh the preview",
 		"open the preview again",
 	)
+}
+
+func inputSuggestsPreviewFollowUp(text string) bool {
+	return inputSuggestsPreviewWork(text) ||
+		inputSuggestsActionFollowUp(text) ||
+		inputSuggestsBugFixWork(text) ||
+		containsToolPhrase(text,
+			"fix that", "show me again", "show it again", "show again",
+			"more colors", "colour", "color", "theme", "graphics", "iconography",
+			"code boxes", "git output", "git diff", "file/numeral", "numeral detection",
+		)
 }
 
 func inputSuggestsFileInspection(text string) bool {
