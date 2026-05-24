@@ -303,7 +303,8 @@ func (r *Runner) RunWithParts(ctx context.Context, input string, parts []llm.Mes
 	}
 	directLastResponseWrite := len(parts) == 0 && strings.TrimSpace(priorResponse) != "" && directLastResponseMarkdownWriteIntent(directWriteTokens(prompt))
 	if !directLastResponseWrite {
-		if contract := deriveTurnContractFromInput(turn, prompt, time.Now().Format("2006-01-02")); contract != nil {
+		preserveActiveContract := shouldPreserveActiveContractForInput(r.session.Snapshot(), prompt)
+		if contract := deriveTurnContractFromInput(turn, prompt, time.Now().Format("2006-01-02")); contract != nil && !preserveActiveContract {
 			r.session.SetTurnContract(*contract)
 		}
 		if intent := deriveSideEffectIntentFromText(turn, prompt); intent != nil {
@@ -603,14 +604,29 @@ func (r *Runner) markTurnContractSatisfiedIfComplete(turn int) {
 		if contract == nil || contract.Status != ContractStatusActive || contract.Intent == TurnIntentAnswerOnly {
 			return
 		}
-		if contract.SourceTurn != 0 && turn != 0 && contract.SourceTurn != turn {
-			return
-		}
 		if turnContractFinalEvidenceFeedback(contract) != "" {
 			return
 		}
 		contract.Status = ContractStatusSatisfied
 	})
+}
+
+func shouldPreserveActiveContractForInput(snapshot SessionSnapshot, input string) bool {
+	contract := snapshot.TurnContract
+	if contract == nil || contract.Status != ContractStatusActive || contract.Intent == TurnIntentAnswerOnly {
+		return false
+	}
+	return inputIsBareContinuation(input)
+}
+
+func inputIsBareContinuation(input string) bool {
+	normalized := normalizeToolIntentText(input)
+	switch normalized {
+	case "continue", "keep going", "go on", "proceed", "carry on", "resume":
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *Runner) finalSideEffectGateMayBlock() bool {
@@ -2958,6 +2974,25 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 			r.updateSideEffectGatesAfterToolResult(call.Name, args, validationErr, true)
 			continue
 		}
+		if blocked, ok := r.blockRepeatedExplorationToolCall(call.Name, args); ok {
+			if err := r.appendFailureAndToolResultForTurn(ctx, turn,
+				protocol.FailureItem{Decision: protocol.ClassifyPolicyBlocked(blocked)},
+				protocol.ToolCallItem{ToolName: call.Name, ToolCallID: call.ID, Args: args},
+				protocol.ToolResultItem{ToolCallID: call.ID, Text: blocked},
+			); err != nil {
+				return err
+			}
+			r.recordToolResultEvidence(call.Name, args, blocked, true)
+			if r.renderer != nil {
+				r.renderer.ToolCall(call.Name, reactToolSummary(args))
+				r.renderer.ToolResult(call.Name, blocked, "", true)
+			}
+			r.updatePlanWorkflow(call.Name, args, "", true)
+			r.updateSameFileSearchWorkflow(call.Name, args, true)
+			r.updateRepeatToolCallWorkflow(call.Name, args, blocked)
+			r.updateSideEffectGatesAfterToolResult(call.Name, args, blocked, true)
+			continue
+		}
 
 		if blocked, ok := r.blockOutOfScopeSideEffectMutation(call.Name, args); ok {
 			if err := r.appendFailureAndToolResultForTurn(ctx, turn,
@@ -3556,6 +3591,21 @@ func (r *Runner) blockOutOfScopeSideEffectMutation(toolName string, args map[str
 		}
 	}
 	return "", false
+}
+
+func (r *Runner) blockRepeatedExplorationToolCall(toolName string, args map[string]any) (string, bool) {
+	toolName = strings.TrimSpace(toolName)
+	if toolName != "read_file" {
+		return "", false
+	}
+	target := repeatToolCallTarget(toolName, args)
+	if target == "" || target != r.repeatWorkflow.lastTarget || toolName != r.repeatWorkflow.lastToolName {
+		return "", false
+	}
+	if r.repeatWorkflow.streak < repeatToolCallThreshold {
+		return "", false
+	}
+	return fmt.Sprintf("blocked: repeated %s on %q %d times without progress. Stop rereading the same file; use the evidence already gathered, read a specific missing range once, or synthesize the answer now.", toolName, target, r.repeatWorkflow.streak), true
 }
 
 func mutationPathsFromShellCommand(command string) []string {
