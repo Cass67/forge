@@ -2384,6 +2384,60 @@ func TestRunnerWritesCompletedAgentResultFallbackOnPostDelegationToolError(t *te
 	}
 }
 
+func TestRunnerDelegatedCompletedAgentWaitThenWritesReport(t *testing.T) {
+	session := NewSession()
+	session.SetPendingDelegationAction(DelegationActionState{
+		Kind:       DelegationActionWriteDoc,
+		TargetPath: "docs/reports/gaps.md",
+	})
+	session.UpsertAgentTask(AgentTaskState{
+		ID:         "agent-1",
+		Role:       "synthesizer",
+		Status:     AgentStatusCompleted,
+		Result:     "# Forge Gap Report\n\nCompleted child-agent synthesis.",
+		ParentTurn: 1,
+	})
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{"id":"agent-1"}`}}},
+		{{ToolCall: &llm.NativeToolCall{ID: "write-1", Name: "write_file", ArgsJSON: `{"path":"docs/reports/gaps.md","content":"# Forge Gap Report\n\nCompleted child-agent synthesis."}`}}},
+		{{Text: "wrote synthesized report"}},
+	}}
+	var writtenPath, writtenContent string
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "wait_agent",
+		Description: "wait for agent",
+		AutoApprove: true,
+		Execute: func(context.Context, map[string]any) (string, error) {
+			return `{"id":"agent-1","status":"completed","result":"# Forge Gap Report\n\nCompleted child-agent synthesis."}`, nil
+		},
+	})
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "write file",
+		AutoApprove: true,
+		Execute: func(_ context.Context, args map[string]any) (string, error) {
+			writtenPath, _ = args["path"].(string)
+			writtenContent, _ = args["content"].(string)
+			return "wrote " + writtenPath, nil
+		},
+	})
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+	if err := r.Run(context.Background(), "continue"); err != nil {
+		t.Fatal(err)
+	}
+	if writtenPath != "docs/reports/gaps.md" {
+		t.Fatalf("path = %q, want docs/reports/gaps.md", writtenPath)
+	}
+	if writtenContent != "# Forge Gap Report\n\nCompleted child-agent synthesis." {
+		t.Fatalf("content = %q", writtenContent)
+	}
+	if !historyIncludesCompletedToolCall(session.Snapshot(), "wait_agent") {
+		t.Fatalf("history missing completed wait_agent: %#v", session.Snapshot().History)
+	}
+}
+
 func TestRunnerBlocksControlPlaneReportWriteToArtifactPath(t *testing.T) {
 	var executed atomic.Bool
 	reg := agenttools.NewRegistry()
@@ -2693,7 +2747,7 @@ func TestRunnerBoundsBulkPostDelegationReadOutputCalls(t *testing.T) {
 	}
 }
 
-func TestRunnerDoesNotExecuteUnavailablePostDelegationTools(t *testing.T) {
+func TestRunnerRetriesUnavailableToolInsteadOfTreatingAsNormalToolResult(t *testing.T) {
 	session := NewSession()
 	session.SetPendingDelegationAction(DelegationActionState{
 		Kind:       DelegationActionWriteDoc,
@@ -2757,9 +2811,20 @@ func TestRunnerDoesNotExecuteUnavailablePostDelegationTools(t *testing.T) {
 	if writtenContent != "# Parent Report\n\nSynthesized." {
 		t.Fatalf("written content = %q", writtenContent)
 	}
-	if len(driver.allMsgs) < 2 || !messagesContainText(driver.allMsgs[1], `tool "read_file" is not available for this turn`) {
-		t.Fatalf("second model call did not include unavailable-tool correction: %#v", driver.allMsgs)
+	if len(driver.lastOpts) < 2 || !driver.lastOpts[1].RequireToolCall {
+		t.Fatalf("unavailable registered tool satisfied required tool call: %#v", driver.lastOpts)
 	}
+	for _, msg := range session.Snapshot().History {
+		if msg.Role == llm.RoleTool && msg.ToolCallID == "read-1" {
+			t.Fatalf("unavailable registered tool was treated as normal tool feedback: %#v", msg)
+		}
+	}
+	if len(driver.allMsgs) < 2 {
+		t.Fatalf("driver messages = %d, want unavailable-tool correction", len(driver.allMsgs))
+	}
+	correction := messagesText(driver.allMsgs[1])
+	assertContainsAll(t, correction, "read_file", "not available", "Available tools", "read_output", "write_file")
+	assertContractEvidence(t, session.Snapshot().TurnContract, EvidenceModelViolation, "tool_unavailable_for_turn", "read_file")
 }
 
 func TestRunnerRequiresToolCallUntilPostDelegationWriteCompletes(t *testing.T) {
@@ -4588,36 +4653,71 @@ func TestRunnerNativePathHandlesMalformedArgsJSONAsToolFeedback(t *testing.T) {
 	}
 }
 
-func TestRunnerReturnsUnknownNativeToolErrorToModel(t *testing.T) {
+func TestRunnerRetriesUnknownToolInsteadOfTreatingAsNormalToolResult(t *testing.T) {
 	driver := &nativeSequenceDriver{steps: [][]llm.Token{
-		{{ToolCall: &llm.NativeToolCall{ID: "bad-1", Name: "find docs -type f -name \"*.md\"</arg_value>", ArgsJSON: `{}`}}},
-		{{Text: "recovered after tool correction"}},
+		{{ToolCall: &llm.NativeToolCall{ID: "bad-1", Name: "bash", ArgsJSON: `{"command":"ls"}`}}},
+		{{ToolCall: &llm.NativeToolCall{ID: "read-1", Name: "read_file", ArgsJSON: `{"path":"README.md"}`}}},
+		{{Text: "recovered after native read"}},
 	}}
 	reg := agenttools.NewRegistry()
-	reg.Register(agenttools.Tool{Name: "read_file", Description: "read file"})
+	reg.Register(agenttools.Tool{
+		Name:        "read_file",
+		Description: "read file",
+		Parameters:  []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}},
+		AutoApprove: true,
+		Execute: func(context.Context, map[string]any) (string, error) {
+			return "forge readme", nil
+		},
+	})
 	session := NewSession()
 	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
 
 	if err := r.Run(context.Background(), "inspect the repo"); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
-	if driver.callCount != 2 {
+	if driver.callCount != 3 {
 		t.Fatalf("driver calls = %d, want recovery turn", driver.callCount)
 	}
-	if got := r.LastResponse(); got != "recovered after tool correction" {
+	if got := r.LastResponse(); got != "recovered after native read" {
 		t.Fatalf("LastResponse = %q", got)
 	}
 	snap := session.Snapshot()
-	found := false
 	for _, msg := range snap.History {
-		if msg.Role == llm.RoleTool && strings.Contains(msg.Content, "unknown tool") {
-			found = true
-			break
+		if msg.Role == llm.RoleTool && msg.ToolCallID == "bad-1" {
+			t.Fatalf("unknown tool was treated as normal tool feedback: %#v", msg)
 		}
 	}
-	if !found {
-		t.Fatalf("history missing unknown-tool feedback: %#v", snap.History)
+	if len(driver.allMsgs) < 2 {
+		t.Fatalf("driver messages = %d, want corrective retry", len(driver.allMsgs))
 	}
+	correction := messagesText(driver.allMsgs[1])
+	assertContainsAll(t, correction, "bash", "not available", "Available tools", "read_file")
+	assertContractEvidence(t, snap.TurnContract, EvidenceModelViolation, "unknown_tool", "bash")
+}
+
+func TestRunnerRepeatedUnknownToolEventuallyFailsVisibly(t *testing.T) {
+	steps := make([][]llm.Token, maxCompletionRetriesPerTurn+1)
+	for i := range steps {
+		steps[i] = []llm.Token{{ToolCall: &llm.NativeToolCall{ID: fmt.Sprintf("bad-%d", i), Name: "bash", ArgsJSON: `{"command":"ls"}`}}}
+	}
+	driver := &nativeSequenceDriver{steps: steps}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "read_file", Description: "read file"})
+	session := NewSession()
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+	err := r.Run(context.Background(), "inspect the repo")
+	if err == nil {
+		t.Fatal("expected repeated unknown tool to fail")
+	}
+	assertContainsAll(t, err.Error(), "unknown tool", "bash")
+	if driver.callCount != maxCompletionRetriesPerTurn+1 {
+		t.Fatalf("driver calls = %d, want finite retry budget", driver.callCount)
+	}
+	if got := r.LastResponse(); got != "" {
+		t.Fatalf("LastResponse = %q, want no completed success", got)
+	}
+	assertContractEvidence(t, session.Snapshot().TurnContract, EvidenceModelViolation, "unknown_tool", "bash")
 }
 
 func TestRunnerUnknownToolRecordsContractViolation(t *testing.T) {
@@ -4691,11 +4791,39 @@ func TestRunnerUnavailableToolRecordsContractViolation(t *testing.T) {
 	defer cancel()
 
 	err = r.executeNativeToolCalls(active.Context, turn, []llm.NativeToolCall{{ID: "read-1", Name: "read_file", ArgsJSON: `{}`}}, []string{"tool_help"})
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("expected unavailable tool error")
+	}
+	for _, msg := range session.Snapshot().History {
+		if msg.Role == llm.RoleTool && msg.ToolCallID == "read-1" {
+			t.Fatalf("unavailable tool appended normal tool result: %#v", msg)
+		}
 	}
 
 	assertContractEvidence(t, session.Snapshot().TurnContract, EvidenceModelViolation, "tool_unavailable_for_turn", "read_file")
+}
+
+func TestRunnerDirectUnknownToolDoesNotAppendSuccessfulToolResult(t *testing.T) {
+	session := NewSession()
+	session.SetTurnContract(TurnContract{ID: "contract-1", Status: ContractStatusActive})
+	r := NewRunner(Config{Tools: agenttools.NewRegistry(), Session: session})
+	turn := session.RecordInput("run missing tool")
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	err = r.executeNativeToolCalls(active.Context, turn, []llm.NativeToolCall{{ID: "missing-1", Name: "missing_tool", ArgsJSON: `{}`}})
+	if err == nil {
+		t.Fatal("expected unknown tool error")
+	}
+	for _, msg := range session.Snapshot().History {
+		if msg.Role == llm.RoleTool && msg.ToolCallID == "missing-1" {
+			t.Fatalf("unknown tool appended normal tool result: %#v", msg)
+		}
+	}
+	assertContractEvidence(t, session.Snapshot().TurnContract, EvidenceModelViolation, "unknown_tool", "missing_tool")
 }
 
 func TestRunnerFailedReadDoesNotRecordSuccessfulReadEvidence(t *testing.T) {
@@ -8709,4 +8837,22 @@ func lastToolResult(t *testing.T, session *Session) *protocol.ToolResultItem {
 		t.Fatal("missing tool result item")
 	}
 	return result
+}
+
+func messagesText(messages []llm.Message) string {
+	var b strings.Builder
+	for _, msg := range messages {
+		b.WriteString(msg.Content)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func assertContainsAll(t *testing.T, text string, parts ...string) {
+	t.Helper()
+	for _, part := range parts {
+		if !strings.Contains(text, part) {
+			t.Fatalf("text %q missing %q", text, part)
+		}
+	}
 }
