@@ -106,7 +106,9 @@ type PlanState struct {
 func (s PlanState) ActiveStep() (PlanStep, bool) {
 	for _, step := range s.Steps {
 		switch strings.ToLower(strings.TrimSpace(step.Status)) {
-		case "in_progress", "blocked":
+		case "complete", "completed", "done", "success", "succeeded", "skipped", "cancelled", "canceled":
+			continue
+		default:
 			return step, true
 		}
 	}

@@ -1165,8 +1165,9 @@ func TestRunnerIncludesBlockedPlanRuntimeGuidance(t *testing.T) {
 		Session: session,
 	})
 
-	if err := r.Run(context.Background(), "keep going"); err != nil {
-		t.Fatal(err)
+	err := r.Run(context.Background(), "keep going")
+	if err == nil || !strings.Contains(err.Error(), "plan state blocked") {
+		t.Fatalf("err = %v, want visible blocked plan-state failure", err)
 	}
 
 	var blockedMsg string
@@ -1210,8 +1211,9 @@ func TestRunnerBlockedPlanOverlayCoexistsWithSuggestedSkillOverlay(t *testing.T)
 		Session: session,
 	})
 
-	if err := r.Run(context.Background(), "keep going"); err != nil {
-		t.Fatal(err)
+	err := r.Run(context.Background(), "keep going")
+	if err == nil || !strings.Contains(err.Error(), "plan state blocked") {
+		t.Fatalf("err = %v, want visible blocked plan-state failure", err)
 	}
 
 	foundSuggested := false
@@ -1822,6 +1824,293 @@ func TestRunnerBlocksAdditionalWriteSuccessVerbsWhenGatePending(t *testing.T) {
 	}
 	if strings.Contains(r.LastResponse(), "Implemented docs/a.md") {
 		t.Fatalf("final response = %q, should not claim unresolved write gate", r.LastResponse())
+	}
+}
+
+func TestRunnerPlanStateBlocksFinalSuccessWhenStepInProgress(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{Text: "Done, implemented the requested change."}},
+		{{Text: "I still need to finish the implementation step."}},
+	}}
+	session := NewSession()
+	session.SetPlanState(PlanState{Steps: []PlanStep{{Step: "Implement the requested change", Status: "in_progress"}}})
+	r := NewRunner(Config{Driver: driver, Session: session})
+
+	err := r.Run(context.Background(), "continue")
+	if err == nil || !strings.Contains(err.Error(), "plan state in_progress") {
+		t.Fatalf("err = %v, want visible in-progress plan-state failure after retry", err)
+	}
+	if strings.Contains(r.LastResponse(), "implemented the requested change") {
+		t.Fatalf("final response = %q, should not claim completion while plan is in progress", r.LastResponse())
+	}
+	if !sessionHistoryContains(session, "plan state inconsistent", "Implement the requested change") {
+		t.Fatalf("history missing concrete plan feedback: %#v", session.Snapshot().History)
+	}
+	if driver.callCount != 2 {
+		t.Fatalf("driver calls = %d, want recovery turn", driver.callCount)
+	}
+}
+
+func TestRunnerPlanStateAndArtifactGateFeedbackAreBothReported(t *testing.T) {
+	workspace := t.TempDir()
+	artifact := "docs/plans/2026-05-23-combined.md"
+	driver := &nativeSequenceDriver{steps: repeatedTextSteps("Done, I wrote the plan.", 4)}
+	session := NewSession()
+	session.SetActiveWorkspaceRoot(workspace)
+	session.SetPlanState(PlanState{Steps: []PlanStep{{Step: "Write the plan artifact", Status: "in_progress"}}})
+	r := NewRunner(Config{Session: session, Driver: driver, MaxSteps: 5})
+
+	err := r.Run(context.Background(), "write "+artifact)
+	if err == nil || !strings.Contains(err.Error(), "artifact gate unresolved") {
+		t.Fatalf("err = %v, want artifact gate unresolved after combined validation", err)
+	}
+	if !sessionHistoryContains(session, "plan state inconsistent", "Write the plan artifact") {
+		t.Fatalf("history missing plan feedback: %#v", session.Snapshot().History)
+	}
+	if !sessionHistoryContains(session, "artifact gate unresolved", artifact) {
+		t.Fatalf("history missing artifact feedback: %#v", session.Snapshot().History)
+	}
+	contract := session.Snapshot().TurnContract
+	if !contractHasGateStatus(contract, "artifact", ContractGatePending) {
+		t.Fatalf("TurnContract = %#v, want artifact gate evaluated", contract)
+	}
+}
+
+func TestRunnerPlanStateAndSideEffectGateFeedbackAreBothReported(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{Text: "Done, committed and pushed."}},
+		{{Text: "I still need to finish the implementation and run git_commit."}},
+	}}
+	session := NewSession()
+	session.SetPlanState(PlanState{Steps: []PlanStep{{Step: "Finish implementation", Status: "in_progress"}}})
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		AllowedPaths:    []string{"docs/a.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite, SideEffectActionCommit},
+		Gates:           []SideEffectGate{{Name: "write", Status: SideEffectGatePassed}, {Name: "commit", Status: SideEffectGatePending}},
+	})
+	r := NewRunner(Config{Driver: driver, Session: session})
+
+	err := r.Run(context.Background(), "continue")
+	if err == nil || !strings.Contains(err.Error(), "plan state in_progress") {
+		t.Fatalf("err = %v, want visible plan-state failure after retry", err)
+	}
+	if !sessionHistoryContains(session, "plan state inconsistent", "Finish implementation") {
+		t.Fatalf("history missing plan feedback: %#v", session.Snapshot().History)
+	}
+	if !sessionHistoryContains(session, "unresolved side-effect gates", "commit") {
+		t.Fatalf("history missing side-effect feedback: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerDirectMarkdownWriteReportsPlanAndSideEffectFeedback(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("draft previous response")
+	mustAppendAssistantMessage(t, session, "### Bottom Line\nForge needs CI.")
+	mustCompleteTurn(t, session, turn, "### Bottom Line\nForge needs CI.", nil, nil)
+	session.SetPlanState(PlanState{Steps: []PlanStep{{Step: "Write required artifact", Status: "in_progress"}}})
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		AllowedPaths:    []string{"docs/reports/report.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite, SideEffectActionCommit},
+		Gates:           []SideEffectGate{{Name: "write", Status: SideEffectGatePassed}, {Name: "commit", Status: SideEffectGatePending}},
+	})
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "write_file", Description: "write file", AutoApprove: true, Execute: func(context.Context, map[string]any) (string, error) {
+		return "wrote report", nil
+	}})
+	r := NewRunner(Config{Driver: &errorDriver{err: errors.New("driver should not be called")}, Tools: reg, Session: session})
+
+	err := r.Run(context.Background(), "write it to an md")
+	if err == nil || !strings.Contains(err.Error(), "plan state inconsistent") {
+		t.Fatalf("err = %v, want plan state inconsistent after direct write validation", err)
+	}
+	if !sessionHistoryContains(session, "plan state inconsistent", "Write required artifact") || !sessionHistoryContains(session, "unresolved side-effect gates", "commit") {
+		t.Fatalf("history missing combined direct-write feedback: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerCompletedAgentFallbackReportsPlanAndSideEffectFeedback(t *testing.T) {
+	workspace := t.TempDir()
+	session := NewSession()
+	session.SetActiveWorkspaceRoot(workspace)
+	turn := session.RecordInput("write docs/a.md")
+	session.SetPlanState(PlanState{Steps: []PlanStep{{Step: "Write docs/a.md", Status: "in_progress"}}})
+	session.SetTurnContract(TurnContract{
+		ID:                "contract-1",
+		SourceTurn:        turn,
+		Intent:            TurnIntentWriteArtifact,
+		RequiredArtifacts: []ArtifactRequirement{{Path: "docs/a.md"}},
+		Gates:             []ContractGate{{Name: "artifact", Status: ContractGatePending}},
+		Status:            ContractStatusActive,
+	})
+	session.SetPendingDelegationAction(DelegationActionState{Kind: DelegationActionWriteDoc, TargetPath: "docs/a.md"})
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		AllowedPaths:    []string{"docs/a.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite, SideEffectActionCommit},
+		Gates:           []SideEffectGate{{Name: "write", Status: SideEffectGatePending}, {Name: "commit", Status: SideEffectGatePending}},
+	})
+	session.UpsertAgentTask(AgentTaskState{ID: "agent-1", Role: "repo-auditor", Status: AgentStatusCompleted, Result: "# A\n\n## Plan\n\ncontent", ParentTurn: turn})
+	r := NewRunner(Config{Session: session, Tools: artifactGateWriteToolRegistry(t, workspace)})
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	err = r.writeCompletedAgentResultFallback(context.Background(), turn, "docs/a.md", "# A\n\n## Plan\n\ncontent")
+	if err == nil || !strings.Contains(err.Error(), "plan state inconsistent") {
+		t.Fatalf("err = %v; want blocked fallback", err)
+	}
+	if !sessionHistoryContains(session, "plan state inconsistent", "Write docs/a.md") || !sessionHistoryContains(session, "unresolved side-effect gates", "commit") {
+		t.Fatalf("history missing combined fallback feedback: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerPlanStateBlocksFinalSuccessWhenStepBlocked(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: repeatedTextSteps("Complete, all work is done.", 4)}
+	session := NewSession()
+	session.SetPlanState(PlanState{Steps: []PlanStep{{Step: "Choose deployment target", Status: "blocked", Blocker: "need user decision"}}})
+	r := NewRunner(Config{Driver: driver, Session: session, MaxSteps: 5})
+
+	err := r.Run(context.Background(), "continue")
+	if err == nil || !strings.Contains(err.Error(), "plan state inconsistent") {
+		t.Fatalf("err = %v, want plan state inconsistent", err)
+	}
+	if turns := session.Snapshot().Turns; len(turns) == 0 || strings.TrimSpace(turns[len(turns)-1].FinalResponse) != "" {
+		t.Fatalf("turns = %#v, want no persisted final success", turns)
+	}
+	if !sessionHistoryContains(session, "plan state inconsistent", "Choose deployment target", "need user decision") {
+		t.Fatalf("history missing concrete blocked-plan feedback: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerPlanStateFailureReportWithBlockedStepDoesNotCompleteAsSuccessOrRetry(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{{{Text: "I cannot complete this because the plan is blocked on user approval."}}}}
+	session := NewSession()
+	session.SetPlanState(PlanState{Steps: []PlanStep{{Step: "Get approval", Status: "blocked", Blocker: "waiting for user approval"}}})
+	r := NewRunner(Config{Driver: driver, Session: session, MaxSteps: 5})
+
+	err := r.Run(context.Background(), "continue")
+	if err == nil || !strings.Contains(err.Error(), "plan state blocked") {
+		t.Fatalf("err = %v, want visible plan-state failure", err)
+	}
+	if driver.callCount != 1 {
+		t.Fatalf("driver calls = %d, want no retry loop", driver.callCount)
+	}
+	turns := session.Snapshot().Turns
+	if len(turns) == 0 {
+		t.Fatal("missing turn record")
+	}
+	last := turns[len(turns)-1]
+	if last.FinalResponse != "" {
+		t.Fatalf("FinalResponse = %q, want no success response", last.FinalResponse)
+	}
+	if !strings.Contains(last.Error, "blocked on user approval") {
+		t.Fatalf("turn error = %q, want honest failure recorded", last.Error)
+	}
+	contract := session.Snapshot().TurnContract
+	if contractHasEvidence(contract, EvidenceModelViolation, "plan state inconsistent") || contractHasGateStatus(contract, "plan_state", ContractGateFailed) {
+		t.Fatalf("TurnContract = %#v, honest blocker report must not record plan-state violation", contract)
+	}
+}
+
+func TestRunnerAllowsFinalSuccessWhenAllPlanStepsComplete(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{{{Text: "Done, implemented the requested change."}}}}
+	session := NewSession()
+	session.SetPlanState(PlanState{Steps: []PlanStep{{Step: "Implement the requested change", Status: "completed"}}})
+	r := NewRunner(Config{Driver: driver, Session: session})
+
+	if err := r.Run(context.Background(), "continue"); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.LastResponse(); got != "Done, implemented the requested change." {
+		t.Fatalf("LastResponse = %q", got)
+	}
+}
+
+func TestRunnerPlanStatePassesStaleFailedGateAfterStepsComplete(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("continue")
+	session.SetPlanState(PlanState{Steps: []PlanStep{{Step: "Implement the requested change", Status: "completed"}}})
+	session.SetTurnContract(TurnContract{
+		ID:     "contract-1",
+		Gates:  []ContractGate{{Name: "plan_state", Status: ContractGateFailed, Evidence: "previous blocked step"}},
+		Status: ContractStatusActive,
+	})
+	r := NewRunner(Config{Session: session})
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	blocked, err := r.blockFinalPlanStateSuccessIfNeeded(turn, "Done, implemented the requested change.")
+	if blocked || err != nil {
+		t.Fatalf("blocked, err = %v, %v; want final success allowed", blocked, err)
+	}
+	if !contractHasGateStatus(session.Snapshot().TurnContract, "plan_state", ContractGatePassed) {
+		t.Fatalf("TurnContract = %#v, want stale plan_state gate passed", session.Snapshot().TurnContract)
+	}
+}
+
+func TestRunnerPlanStateBlocksPendingAndUnknownStatuses(t *testing.T) {
+	for _, status := range []string{"pending", "waiting_for_review"} {
+		t.Run(status, func(t *testing.T) {
+			driver := &nativeSequenceDriver{steps: repeatedTextSteps("Done, implemented the requested change.", 4)}
+			session := NewSession()
+			session.SetPlanState(PlanState{Steps: []PlanStep{{Step: "Implement the requested change", Status: status}}})
+			r := NewRunner(Config{Driver: driver, Session: session, MaxSteps: 5})
+
+			err := r.Run(context.Background(), "continue")
+			if err == nil || !strings.Contains(err.Error(), "plan state inconsistent") {
+				t.Fatalf("err = %v, want plan state inconsistent", err)
+			}
+			if got := session.Snapshot().Turns[len(session.Snapshot().Turns)-1].FinalResponse; got != "" {
+				t.Fatalf("FinalResponse = %q, want no success response", got)
+			}
+		})
+	}
+}
+
+func TestRunnerPlanStateGateNoPlanStateLeavesFinalBehaviorUnchanged(t *testing.T) {
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{{{Text: "Done, implemented the requested change."}}}}
+	session := NewSession()
+	r := NewRunner(Config{Driver: driver, Session: session})
+
+	if err := r.Run(context.Background(), "continue"); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.LastResponse(); got != "Done, implemented the requested change." {
+		t.Fatalf("LastResponse = %q", got)
+	}
+}
+
+func TestRunnerPlanStateStaleTurnDoesNotMutateFeedbackOrContract(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("continue")
+	session.SetPlanState(PlanState{Steps: []PlanStep{{Step: "Implement the requested change", Status: "in_progress"}}})
+	session.SetTurnContract(TurnContract{ID: "contract-1", Status: ContractStatusActive})
+	r := NewRunner(Config{Session: session})
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	before := session.Snapshot()
+
+	blocked, err := r.blockFinalPlanStateSuccessIfNeeded(turn, "Done, implemented the requested change.")
+
+	if blocked || !errors.Is(err, ErrStaleTurn) {
+		t.Fatalf("blocked, err = %v, %v; want stale turn", blocked, err)
+	}
+	after := session.Snapshot()
+	if len(after.History) != len(before.History) {
+		t.Fatalf("stale plan gate mutated history: before=%#v after=%#v", before.History, after.History)
+	}
+	if contractHasEvidenceKind(after.TurnContract, EvidenceModelViolation) || contractHasGateStatus(after.TurnContract, "plan_state", ContractGateFailed) {
+		t.Fatalf("stale plan gate mutated contract: %#v", after.TurnContract)
 	}
 }
 
