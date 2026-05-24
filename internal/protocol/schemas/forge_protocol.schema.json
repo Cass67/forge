@@ -381,6 +381,8 @@
                   "read",
                   "write",
                   "verification",
+                  "delegation",
+                  "delegation_failure",
                   "model_violation"
                 ],
                 "type": "string"

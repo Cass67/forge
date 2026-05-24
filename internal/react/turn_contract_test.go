@@ -224,6 +224,25 @@ func TestTurnContractRecordsTextLevelToolResultFailures(t *testing.T) {
 	assertContractEvidence(t, contract, EvidenceTool, "failed write", "write_file", "docs/plan.md")
 }
 
+func TestTurnContractRecordsDelegationEvidence(t *testing.T) {
+	contract := &TurnContract{ID: "contract-1"}
+
+	recordToolResultEvidence(contract, "wait_agent", map[string]any{"id": "agent-1"}, `{"id":"agent-1","status":"completed","result":"wrote docs/report.md"}`, false)
+
+	assertContractEvidence(t, contract, EvidenceDelegation, "wait_agent", "agent-1", "completed")
+	assertNoContractEvidence(t, contract, EvidenceWrite)
+}
+
+func TestTurnContractRecordsFailedDelegationEvidence(t *testing.T) {
+	contract := &TurnContract{ID: "contract-1"}
+
+	recordToolResultEvidence(contract, "get_agent_output", map[string]any{"id": "agent-1"}, "error: agent failed", true)
+
+	assertContractEvidence(t, contract, EvidenceDelegationFailure, "get_agent_output", "agent-1", "failed")
+	assertNoContractEvidence(t, contract, EvidenceRead)
+	assertNoContractEvidence(t, contract, EvidenceWrite)
+}
+
 func TestTurnContractRecordsAllPatchPathEvidenceOnOneLine(t *testing.T) {
 	contract := &TurnContract{ID: "contract-1"}
 	patch := "*** Begin Patch\n*** Update File: docs/a.md\n@@\n-old\n+new\n*** Add File: docs/b.md\n+hi\n*** End Patch"
