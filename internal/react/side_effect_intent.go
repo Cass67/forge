@@ -101,7 +101,7 @@ func looksLikeControlPlaneArtifactContent(content string) bool {
 }
 
 func deriveSideEffectIntentFromText(turn int, text string) *SideEffectIntent {
-	if inputLooksLikeInjectedSkillPayload(text) {
+	if inputLooksLikeInjectedSkillPayload(text) || inputLooksLikePastedTerminalOutput(text) {
 		return nil
 	}
 	paths := extractMarkdownAndNamedPaths(text)

@@ -43,7 +43,7 @@ func NewRunCommandWithWorkDirProvider(fallbackWorkDir string, provider WorkDirPr
 			{Name: "command", Type: "string", Description: "command to run", Required: true},
 		},
 		AutoApprove: false,
-		Timeout:     time.Duration(timeoutSecs) * time.Second,
+		Timeout:     effectiveRunCommandTimeout("", timeoutSecs),
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			command, _ := args["command"].(string)
 			command = normalizePseudoToolCommands(command)
@@ -95,7 +95,7 @@ func NewRunCommandWithWorkDirProvider(fallbackWorkDir string, provider WorkDirPr
 				return string(payload), nil
 			}
 
-			timeout := time.Duration(timeoutSecs) * time.Second
+			timeout := effectiveRunCommandTimeout(command, timeoutSecs)
 			cmdCtx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 
@@ -118,7 +118,7 @@ func NewRunCommandWithWorkDirProvider(fallbackWorkDir string, provider WorkDirPr
 			exitCode := 0
 			if err != nil {
 				if cmdCtx.Err() == context.DeadlineExceeded {
-					return result + fmt.Sprintf("\ntimeout after %ds", timeoutSecs), nil
+					return result + fmt.Sprintf("\ntimeout after %ds", int(timeout.Seconds())), nil
 				}
 				if exitErr, ok := err.(*exec.ExitError); ok {
 					exitCode = exitErr.ExitCode()
@@ -128,6 +128,25 @@ func NewRunCommandWithWorkDirProvider(fallbackWorkDir string, provider WorkDirPr
 			return result + fmt.Sprintf("\nexit %d", exitCode), nil
 		},
 	}
+}
+
+func effectiveRunCommandTimeout(command string, timeoutSecs int) time.Duration {
+	base := time.Duration(timeoutSecs) * time.Second
+	if base <= 0 {
+		base = DefaultToolTimeout
+	}
+	if filesystemWideDiscoveryCommand(command) && base < 5*time.Minute {
+		return 5 * time.Minute
+	}
+	return base
+}
+
+func filesystemWideDiscoveryCommand(command string) bool {
+	normalized := strings.ToLower(strings.Join(strings.Fields(command), " "))
+	if normalized == "" {
+		return false
+	}
+	return strings.Contains(normalized, "find / ") || strings.Contains(normalized, "find / -") || strings.Contains(normalized, "find /dev") || strings.Contains(normalized, "find /system") || strings.Contains(normalized, "find /users")
 }
 
 func normalizePseudoToolCommands(command string) string {
