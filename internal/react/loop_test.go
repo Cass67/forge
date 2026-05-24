@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -2111,6 +2112,69 @@ func TestRunnerPlanStateStaleTurnDoesNotMutateFeedbackOrContract(t *testing.T) {
 	}
 	if contractHasEvidenceKind(after.TurnContract, EvidenceModelViolation) || contractHasGateStatus(after.TurnContract, "plan_state", ContractGateFailed) {
 		t.Fatalf("stale plan gate mutated contract: %#v", after.TurnContract)
+	}
+}
+
+func TestRunnerFinalCompletionValidationBlocksUnresolvedGates(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("continue")
+	session.SetPlanState(PlanState{Steps: []PlanStep{{Step: "Write required artifact", Status: "in_progress"}}})
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		AllowedPaths:    []string{"docs/a.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite, SideEffectActionCommit},
+		Gates:           []SideEffectGate{{Name: "write", Status: SideEffectGatePassed}, {Name: "commit", Status: SideEffectGatePending}},
+	})
+	r := NewRunner(Config{Session: session})
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	ok, err := r.validateFinalCompletion(context.Background(), turn, "Done, I wrote and committed the artifact.", false)
+
+	if ok || err == nil || !strings.Contains(err.Error(), "plan state inconsistent") {
+		t.Fatalf("ok, err = %v, %v; want plan-state gate failure", ok, err)
+	}
+	if !sessionHistoryContains(session, "plan state inconsistent", "Write required artifact") || !sessionHistoryContains(session, "unresolved side-effect gates", "commit") {
+		t.Fatalf("history missing combined central validation feedback: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerFinalCompletionValidationStaleTurnDoesNotMutate(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("continue")
+	session.SetPlanState(PlanState{Steps: []PlanStep{{Step: "Write required artifact", Status: "in_progress"}}})
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		AllowedPaths:    []string{"docs/a.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite},
+		Gates:           []SideEffectGate{{Name: "write", Status: SideEffectGatePending}},
+	})
+	session.SetTurnContract(TurnContract{ID: "contract-1", Status: ContractStatusActive})
+	r := NewRunner(Config{Session: session})
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	before := session.Snapshot()
+
+	ok, err := r.validateFinalCompletion(context.Background(), turn, "Done, I wrote the artifact.", false)
+
+	if ok || !errors.Is(err, ErrStaleTurn) {
+		t.Fatalf("ok, err = %v, %v; want stale turn", ok, err)
+	}
+	after := session.Snapshot()
+	if len(after.History) != len(before.History) {
+		t.Fatalf("stale final validation mutated history: before=%#v after=%#v", before.History, after.History)
+	}
+	if !reflect.DeepEqual(after.SideEffectIntent, before.SideEffectIntent) {
+		t.Fatalf("stale final validation mutated side-effect intent: before=%#v after=%#v", before.SideEffectIntent, after.SideEffectIntent)
+	}
+	if !reflect.DeepEqual(after.TurnContract, before.TurnContract) {
+		t.Fatalf("stale final validation mutated turn contract: before=%#v after=%#v", before.TurnContract, after.TurnContract)
 	}
 }
 

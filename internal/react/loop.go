@@ -570,6 +570,48 @@ func (r *Runner) finalSideEffectGateMayBlock() bool {
 	return len(unresolvedSideEffectGates(snap.SideEffectIntent)) > 0 || turnContractHasPendingArtifactGate(snap.TurnContract) || planStateHasUnresolvedStep(snap.PlanState)
 }
 
+func (r *Runner) validateFinalCompletion(ctx context.Context, turn int, finalText string, requireToolCall bool) (bool, error) {
+	// Successful finalization must pass this central point before assistant text
+	// is appended or the turn is completed as a success.
+	if err := r.ensureFinalValidationTurnCurrent(ctx, turn); err != nil {
+		return false, err
+	}
+	if err := r.rejectRawToolMarkupFinalText(ctx, turn, finalText); err != nil {
+		return false, err
+	}
+	if requireToolCall {
+		return false, NewRetryableCompletionError(
+			"react runtime: required tool call missing",
+			"A tool call is required for this step. Use one of the available tools instead of answering with prose.",
+		)
+	}
+	if blocked, err := r.blockFinalCompletionGates(turn, finalText); blocked || err != nil {
+		if err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	return true, nil
+}
+
+func (r *Runner) ensureFinalValidationTurnCurrent(ctx context.Context, turn int) error {
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if r == nil || r.session == nil {
+		return nil
+	}
+	active, ok := r.session.ActiveTurnSnapshot()
+	if !ok {
+		return nil
+	}
+	turnID := fmt.Sprintf("turn-%d", turn)
+	if active.ID != turnID || !r.session.IsActiveTurn(turnID) {
+		return staleTurnError(turnID)
+	}
+	return nil
+}
+
 func (r *Runner) blockFinalPlanStateSuccessIfNeeded(turn int, finalText string) (bool, error) {
 	return r.blockFinalCompletionGates(turn, finalText)
 }
@@ -1042,7 +1084,7 @@ func (r *Runner) tryDirectLastResponseMarkdownWrite(ctx context.Context, turn in
 	if final == "" {
 		final = "wrote previous response to " + path
 	}
-	if blocked, err := r.blockFinalPlanStateSuccessIfNeeded(turn, final); blocked || err != nil {
+	if ok, err := r.validateFinalCompletion(ctx, turn, final, false); !ok || err != nil {
 		if err != nil {
 			return true, err
 		}
@@ -1273,6 +1315,9 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 			if errors.As(err, &retryable) && isEmptyNativeResponseError(retryable) {
 				if fallback := r.activeAgentFallbackText(); fallback != "" {
 					r.pendingRetryPrompt = ""
+					if ok, err := r.validateFinalCompletion(ctx, turn, fallback, false); !ok || err != nil {
+						return err
+					}
 					if err := r.appendAssistantMessage(fallback); err != nil {
 						return err
 					}
@@ -1417,7 +1462,7 @@ func (r *Runner) tryCompletedAgentResultFallbackWithOptions(ctx context.Context,
 	}
 	fallback := "Parent model connection failed while composing the final response. Showing completed child-agent result instead.\n\n" + content
 	r.pendingRetryPrompt = ""
-	if blocked, err := r.blockFinalPlanStateSuccessIfNeeded(turn, fallback); blocked || err != nil {
+	if ok, err := r.validateFinalCompletion(ctx, turn, fallback, false); !ok || err != nil {
 		if err != nil && r.hasTurnSnapshot(turn) {
 			r.recordModelViolation("completed-agent fallback blocked", fallbackBlockDetail(err))
 		}
@@ -1457,7 +1502,7 @@ func (r *Runner) writeCompletedAgentResultFallback(ctx context.Context, turn int
 	if final == "" {
 		final = "wrote completed child-agent results to " + path
 	}
-	if blocked, err := r.blockFinalPlanStateSuccessIfNeeded(turn, final); blocked || err != nil {
+	if ok, err := r.validateFinalCompletion(ctx, turn, final, false); !ok || err != nil {
 		if err != nil && r.hasTurnSnapshot(turn) {
 			r.recordModelViolation("completed-agent fallback write blocked", fallbackBlockDetail(err))
 		}
@@ -2012,16 +2057,7 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 		)
 	}
 	r.pendingRetryPrompt = ""
-	if err := r.rejectRawToolMarkupFinalText(ctx, turn, finalText); err != nil {
-		return nil, err
-	}
-	if requireToolCall {
-		return nil, NewRetryableCompletionError(
-			"react runtime: required tool call missing",
-			"A tool call is required for this step. Use one of the available tools instead of answering with prose.",
-		)
-	}
-	if blocked, err := r.blockFinalPlanStateSuccessIfNeeded(turn, finalText); blocked || err != nil {
+	if ok, err := r.validateFinalCompletion(ctx, turn, finalText, requireToolCall); !ok || err != nil {
 		return []llm.NativeToolCall{}, err
 	}
 	reasoning := strings.TrimSpace(reasoningBuf.String())
@@ -2079,10 +2115,7 @@ func (r *Runner) streamPlainTurn(ctx context.Context, turn int, messages []llm.M
 		)
 	}
 	r.pendingRetryPrompt = ""
-	if err := r.rejectRawToolMarkupFinalText(ctx, turn, finalText); err != nil {
-		return nil, err
-	}
-	if blocked, err := r.blockFinalPlanStateSuccessIfNeeded(turn, finalText); blocked || err != nil {
+	if ok, err := r.validateFinalCompletion(ctx, turn, finalText, false); !ok || err != nil {
 		return []llm.NativeToolCall{}, err
 	}
 	if err := r.appendAssistantMessage(finalText); err != nil {
