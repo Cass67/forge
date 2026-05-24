@@ -431,6 +431,10 @@ func finalResponseReportsSideEffectFailure(lower string) bool {
 }
 
 func sideEffectGateFeedback(intent *SideEffectIntent) string {
+	return sideEffectGateFeedbackExcept(intent, nil)
+}
+
+func sideEffectGateFeedbackExcept(intent *SideEffectIntent, ignored map[string]bool) string {
 	unresolved := unresolvedSideEffectGates(intent)
 	if len(unresolved) == 0 {
 		return ""
@@ -438,6 +442,9 @@ func sideEffectGateFeedback(intent *SideEffectIntent) string {
 	parts := make([]string, 0, len(unresolved))
 	tools := make([]string, 0, len(unresolved))
 	for _, gate := range unresolved {
+		if ignored != nil && ignored[gate.Name] {
+			continue
+		}
 		status := strings.TrimSpace(string(gate.Status))
 		if status == "" {
 			status = string(SideEffectGatePending)
@@ -453,6 +460,9 @@ func sideEffectGateFeedback(intent *SideEffectIntent) string {
 		case string(SideEffectActionVerify):
 			tools = append(tools, "run_command")
 		}
+	}
+	if len(parts) == 0 {
+		return ""
 	}
 	message := "Runtime feedback: unresolved side-effect gates: " + strings.Join(parts, ", ") + "."
 	if len(tools) > 0 {

@@ -301,11 +301,15 @@ func (r *Runner) RunWithParts(ctx context.Context, input string, parts []llm.Mes
 	if root := deriveActiveWorkspaceRoot(prompt); root != "" {
 		r.session.SetActiveWorkspaceRoot(root)
 	}
-	if contract := deriveTurnContractFromInput(turn, prompt, time.Now().Format("2006-01-02")); contract != nil {
-		r.session.SetTurnContract(*contract)
-	}
-	if intent := deriveSideEffectIntentFromText(turn, prompt); intent != nil {
-		r.session.SetSideEffectIntent(*intent)
+	directLastResponseWrite := len(parts) == 0 && strings.TrimSpace(priorResponse) != "" && directLastResponseMarkdownWriteIntent(directWriteTokens(prompt))
+	if !directLastResponseWrite {
+		if contract := deriveTurnContractFromInput(turn, prompt, time.Now().Format("2006-01-02")); contract != nil {
+			r.session.SetTurnContract(*contract)
+		}
+		if intent := deriveSideEffectIntentFromText(turn, prompt); intent != nil {
+			r.session.SetSideEffectIntent(*intent)
+		}
+		r.syncTurnContractAndSideEffectIntent()
 	}
 	r.pendingRetryPrompt = ""
 	if len(parts) == 0 {
@@ -757,7 +761,7 @@ func (r *Runner) finalSideEffectGateFeedback(finalText string) ([]string, bool, 
 	}
 	var feedbackParts []string
 	hasArtifactFeedback := false
-	if artifactFeedback := r.turnContractArtifactGateFeedback(); artifactFeedback != "" {
+	if artifactFeedback := r.turnContractArtifactGateFeedback(finalText); artifactFeedback != "" {
 		if finalResponseReportsSideEffectFailure(strings.ToLower(finalText)) {
 			return nil, true, fmt.Errorf("react runtime: artifact gate failed: %s", strings.TrimSpace(finalText))
 		}
@@ -765,20 +769,27 @@ func (r *Runner) finalSideEffectGateFeedback(finalText string) ([]string, bool, 
 		hasArtifactFeedback = true
 	}
 	if finalResponseClaimsSideEffectSuccess(finalText) {
-		if feedback := sideEffectGateFeedback(r.session.Snapshot().SideEffectIntent); feedback != "" {
+		ignored := map[string]bool(nil)
+		if hasArtifactFeedback {
+			ignored = map[string]bool{string(SideEffectActionWrite): true}
+		}
+		if feedback := sideEffectGateFeedbackExcept(r.session.Snapshot().SideEffectIntent, ignored); feedback != "" {
 			feedbackParts = append(feedbackParts, feedback)
 		}
 	}
 	return feedbackParts, hasArtifactFeedback, nil
 }
 
-func (r *Runner) turnContractArtifactGateFeedback() string {
+func (r *Runner) turnContractArtifactGateFeedback(finalText string) string {
 	if r == nil || r.session == nil {
 		return ""
 	}
 	snap := r.session.Snapshot()
 	contract := snap.TurnContract
 	if contract == nil || contract.Intent != TurnIntentWriteArtifact || len(contract.RequiredArtifacts) == 0 {
+		return ""
+	}
+	if contractHasOnlyMirroredSideEffectArtifacts(contract) && !finalResponseClaimsSideEffectSuccess(finalText) {
 		return ""
 	}
 	root := strings.TrimSpace(snap.ActiveWorkspaceRoot)
@@ -827,6 +838,18 @@ func (r *Runner) turnContractArtifactGateFeedback() string {
 		return ""
 	}
 	return "Runtime feedback: artifact gate unresolved: required artifact must exist at exact path " + strings.Join(failures, ", ") + ". Write the requested file before claiming completion."
+}
+
+func contractHasOnlyMirroredSideEffectArtifacts(contract *TurnContract) bool {
+	if contract == nil || len(contract.RequiredArtifacts) == 0 {
+		return false
+	}
+	for _, artifact := range contract.RequiredArtifacts {
+		if strings.TrimSpace(artifact.Description) != "requested artifact" {
+			return false
+		}
+	}
+	return true
 }
 
 func validateContractArtifactRequirement(contract *TurnContract, intent *SideEffectIntent, root string, artifact ArtifactRequirement) (ContractGateStatus, string) {
@@ -918,6 +941,152 @@ func updateContractGate(contract *TurnContract, name string, status ContractGate
 	contract.Gates = append(contract.Gates, ContractGate{Name: name, Status: status, Evidence: evidence})
 }
 
+func (r *Runner) syncTurnContractAndSideEffectIntent() {
+	if r == nil || r.session == nil {
+		return
+	}
+	r.syncTurnContractFromSideEffectIntent()
+	r.syncSideEffectIntentFromTurnContract()
+	r.syncTurnContractFromSideEffectIntent()
+}
+
+func (r *Runner) syncTurnContractFromSideEffectIntent() {
+	snap := r.session.Snapshot()
+	if snap.SideEffectIntent == nil {
+		return
+	}
+	if !sideEffectIntentCanMirrorIntoTurnContract(snap.SideEffectIntent, snap.TurnContract, snap.PendingDelegationAction) {
+		return
+	}
+	if sanitized := sanitizedSideEffectIntentForPendingDelegation(snap); sanitized != nil {
+		r.session.SetSideEffectIntent(*sanitized)
+		snap.SideEffectIntent = sanitized
+	}
+	intent := sideEffectIntentForTurnContractMirror(snap.SideEffectIntent, snap.PendingDelegationAction)
+	if snap.TurnContract == nil {
+		turn := intent.SourceTurn
+		if turn == 0 {
+			turn = snap.Turn
+		}
+		if turn == 0 {
+			turn = 1
+		}
+		contract := TurnContract{ID: fmt.Sprintf("contract-%d", turn), SourceTurn: turn, Status: ContractStatusActive}
+		mirrorSideEffectIntentIntoTurnContract(&contract, intent)
+		if len(contract.RequiredActions) > 0 || len(contract.RequiredArtifacts) > 0 {
+			r.session.SetTurnContract(contract)
+		}
+		return
+	}
+	r.session.UpdateTurnContract(func(contract *TurnContract) {
+		mirrorSideEffectIntentIntoTurnContract(contract, intent)
+	})
+}
+
+func (r *Runner) syncSideEffectIntentFromTurnContract() {
+	snap := r.session.Snapshot()
+	if !turnContractNeedsSideEffectIntent(snap.TurnContract) {
+		return
+	}
+	if snap.SideEffectIntent == nil || !sideEffectIntentCanMirrorIntoTurnContract(snap.SideEffectIntent, snap.TurnContract, snap.PendingDelegationAction) {
+		turn := snap.TurnContract.SourceTurn
+		if turn == 0 {
+			turn = snap.Turn
+		}
+		if turn == 0 {
+			turn = 1
+		}
+		intent := SideEffectIntent{ID: fmt.Sprintf("intent-%d", turn), SourceTurn: turn, Remote: "origin"}
+		mirrorTurnContractIntoSideEffectIntent(&intent, snap.TurnContract)
+		if len(intent.RequiredActions) > 0 || len(intent.ArtifactPaths) > 0 {
+			r.session.SetSideEffectIntent(intent)
+		}
+		return
+	}
+	r.session.UpdateSideEffectIntent(func(intent *SideEffectIntent) {
+		mirrorTurnContractIntoSideEffectIntent(intent, snap.TurnContract)
+	})
+}
+
+func sideEffectIntentCanMirrorIntoTurnContract(intent *SideEffectIntent, contract *TurnContract, pending *DelegationActionState) bool {
+	if intent == nil || contract == nil {
+		return true
+	}
+	if pending != nil && pending.Kind == DelegationActionWriteDoc {
+		return true
+	}
+	if intent.SourceTurn == 0 {
+		return false
+	}
+	if contract.SourceTurn == 0 {
+		return false
+	}
+	return intent.SourceTurn == contract.SourceTurn
+}
+
+func sideEffectIntentForTurnContractMirror(intent *SideEffectIntent, pending *DelegationActionState) *SideEffectIntent {
+	if intent == nil || pending == nil || pending.Kind != DelegationActionWriteDoc {
+		return intent
+	}
+	targetPath := normalizeIntentPath(pending.TargetPath)
+	if targetPath == "" {
+		return intent
+	}
+	if intent.SourceTurn != 0 {
+		return intent
+	}
+	copy := &SideEffectIntent{
+		ID:              intent.ID,
+		SourceTurn:      intent.SourceTurn,
+		ArtifactPaths:   []string{targetPath},
+		AllowedPaths:    []string{targetPath},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite},
+		WorkspaceRoot:   intent.WorkspaceRoot,
+		Gates:           []SideEffectGate{{Name: string(SideEffectActionWrite), Status: SideEffectGatePending}},
+	}
+	return copy
+}
+
+func sanitizedSideEffectIntentForPendingDelegation(snap SessionSnapshot) *SideEffectIntent {
+	if snap.SideEffectIntent == nil || snap.PendingDelegationAction == nil || snap.PendingDelegationAction.Kind != DelegationActionWriteDoc {
+		return nil
+	}
+	targetPath := normalizeIntentPath(snap.PendingDelegationAction.TargetPath)
+	if targetPath == "" || !sideEffectIntentIsStaleForContract(snap.SideEffectIntent, snap.TurnContract) {
+		return nil
+	}
+	turn := 0
+	if snap.TurnContract != nil {
+		turn = snap.TurnContract.SourceTurn
+	}
+	if turn == 0 {
+		turn = snap.Turn
+	}
+	if turn == 0 {
+		turn = 1
+	}
+	return &SideEffectIntent{
+		ID:              fmt.Sprintf("intent-%d", turn),
+		SourceTurn:      turn,
+		ArtifactPaths:   []string{targetPath},
+		AllowedPaths:    []string{targetPath},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite},
+		Remote:          "origin",
+		WorkspaceRoot:   snap.SideEffectIntent.WorkspaceRoot,
+		Gates:           []SideEffectGate{{Name: string(SideEffectActionWrite), Status: SideEffectGatePending}},
+	}
+}
+
+func sideEffectIntentIsStaleForContract(intent *SideEffectIntent, contract *TurnContract) bool {
+	if intent == nil {
+		return false
+	}
+	if intent.SourceTurn == 0 {
+		return true
+	}
+	return contract != nil && contract.SourceTurn != 0 && intent.SourceTurn != contract.SourceTurn
+}
+
 func contractArtifactPathAllowed(intent *SideEffectIntent, path string) bool {
 	path = normalizeIntentPath(path)
 	if path == "" || filepath.IsAbs(path) || strings.HasPrefix(path, "../") || path == ".." {
@@ -965,6 +1134,7 @@ func latestArtifactWriteEvidenceStatus(contract *TurnContract, path string) (Con
 		return ContractGatePending, false
 	}
 	path = normalizeIntentPath(path)
+	foundFailed := false
 	for i := len(contract.Evidence) - 1; i >= 0; i-- {
 		evidence := contract.Evidence[i]
 		if path == "" || !evidenceSummaryHasExactPath(evidence.Summary, path) {
@@ -974,8 +1144,11 @@ func latestArtifactWriteEvidenceStatus(contract *TurnContract, path string) (Con
 			return ContractGatePassed, true
 		}
 		if evidence.Kind == EvidenceTool && strings.Contains(strings.ToLower(evidence.Summary), "failed write") {
-			return ContractGateFailed, true
+			foundFailed = true
 		}
+	}
+	if foundFailed {
+		return ContractGateFailed, true
 	}
 	return ContractGatePending, false
 }
@@ -1050,7 +1223,7 @@ func artifactRequiresMarkdownPlanSpecStructure(contract *TurnContract, artifact 
 	if strings.Contains(lowerPath, "plan") || strings.Contains(lowerPath, "spec") {
 		return true
 	}
-	return contract != nil && contract.Intent == TurnIntentWriteArtifact
+	return false
 }
 
 func (r *Runner) tryDirectLastResponseMarkdownWrite(ctx context.Context, turn int, input, priorResponse string) (bool, error) {
@@ -2680,6 +2853,69 @@ func (r *Runner) updateSideEffectGatesAfterToolResult(toolName string, args map[
 		}
 		updateSideEffectGate(intent, gateName, status, evidence)
 	})
+	r.session.UpdateTurnContract(func(contract *TurnContract) {
+		recordToolResultEvidence(contract, toolName, args, result, isError)
+		dedupeContractEvidence(contract)
+		if contractTracksSideEffectGate(contract, gateName) {
+			updateContractGate(contract, gateName, contractGateStatusFromSideEffectStatus(status), evidence)
+		}
+	})
+}
+
+func contractTracksSideEffectGate(contract *TurnContract, gateName string) bool {
+	if contract == nil || strings.TrimSpace(gateName) == "" {
+		return false
+	}
+	for _, gate := range contract.Gates {
+		if gate.Name == gateName {
+			return true
+		}
+	}
+	for _, action := range contract.RequiredActions {
+		switch gateName {
+		case string(SideEffectActionWrite):
+			if action.Kind == ContractActionEdit {
+				return true
+			}
+		case string(SideEffectActionCommit):
+			if action.Kind == ContractActionCommit {
+				return true
+			}
+		case string(SideEffectActionPush):
+			if action.Kind == ContractActionPush {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func dedupeContractEvidence(contract *TurnContract) {
+	if contract == nil || len(contract.Evidence) < 2 {
+		return
+	}
+	seen := make(map[string]bool, len(contract.Evidence))
+	out := contract.Evidence[:0]
+	for _, evidence := range contract.Evidence {
+		key := string(evidence.Kind) + "\x00" + evidence.Summary
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, evidence)
+	}
+	contract.Evidence = out
+}
+
+func contractGateStatusFromSideEffectStatus(status SideEffectGateStatus) ContractGateStatus {
+	switch status {
+	case SideEffectGatePassed:
+		return ContractGatePassed
+	case SideEffectGateFailed:
+		return ContractGateFailed
+	default:
+		return ContractGatePending
+	}
 }
 
 func (r *Runner) recordToolCallEvidence(toolName string, args map[string]any) {
@@ -4616,6 +4852,7 @@ func (r *Runner) ensureSideEffectIntentForDelegation(action DelegationActionStat
 			Remote:          "origin",
 			Gates:           initialGatesForActions([]SideEffectAction{SideEffectActionWrite}),
 		})
+		r.syncTurnContractFromSideEffectIntent()
 		return
 	}
 	r.session.UpdateSideEffectIntent(func(intent *SideEffectIntent) {
@@ -4632,6 +4869,7 @@ func (r *Runner) ensureSideEffectIntentForDelegation(action DelegationActionStat
 			intent.Gates = append(intent.Gates, SideEffectGate{Name: string(SideEffectActionWrite), Status: SideEffectGatePending})
 		}
 	})
+	r.syncTurnContractFromSideEffectIntent()
 }
 
 func extractDelegationTargetPath(text string) string {
