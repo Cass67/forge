@@ -65,6 +65,10 @@ The core package boundaries are:
   - chat-mode assembly, approvals, tool registration, runtime wiring, and live/console entrypoints
 - [internal/react/loop.go](./internal/react/loop.go)
   - host-owned turn runner, workflow state, completion checks, tool execution loop, and delegation hooks
+- [internal/react/turn_contract.go](./internal/react/turn_contract.go)
+  - per-turn runtime contract model, derivation, evidence records, gates, and durable protocol conversion
+- [internal/react/side_effect_intent.go](./internal/react/side_effect_intent.go)
+  - side-effect action derivation and gates for writes, verification, commits, and pushes
 - [internal/react/session.go](./internal/react/session.go)
   - session snapshot/state model for history, task state, plan state, hook output, pending input, interruption, and memory summary
 - [internal/react/prompt.go](./internal/react/prompt.go)
@@ -340,6 +344,24 @@ At a high level, `Runner.Run(...)` does this:
 6. update workflow state such as validation/search/git/repeat guidance
 7. run completion checks before accepting the final answer
 8. record post-turn memory summary updates and prompt-visible runtime state
+
+### Turn Contract Kernel
+
+The Turn Contract Kernel is the runtime-owned completion contract for chat turns. It is implemented primarily in [internal/react/turn_contract.go](./internal/react/turn_contract.go) and enforced from the turn loop in [internal/react/loop.go](./internal/react/loop.go). Prompt wording can guide the model, but it is not the enforcement boundary.
+
+For each user turn, Forge derives a `TurnContract` from the request text and mirrors it with `SideEffectIntent` when the turn implies durable side effects. The contract records intent, required actions, required artifacts, verification requirements, evidence, gates, status, and source turn. It is converted into durable protocol state so replay keeps the runtime view of the turn, not just model prose.
+
+Runtime evidence comes from executed tools and structured runtime events:
+
+- read/search/git inspection tools record read evidence
+- write/edit/patch/artifact tools record write evidence
+- validation commands can record verification evidence when their results pass
+- delegation tools record delegation evidence or delegation-failure evidence
+- unknown tools, raw tool markup, and inconsistent plan state record model-violation evidence
+
+Assistant text by itself is not completion evidence for real work. A final answer can report results only after the runtime accepts the relevant evidence and gates. Artifact gates fail closed for required artifacts: they require same-turn successful write evidence, an allowed exact path, workspace containment, file existence, and plausible content. Commit and push requests are mirrored through `SideEffectIntent` gates, and unresolved side-effect gates block finalization when the assistant claims side-effect success. Plan state is also a gate: an unresolved active plan step blocks successful finalization unless the assistant reports the blocker or failure instead of claiming success.
+
+Final validation is centralized before assistant text is appended or a turn is completed as successful. The current hard gates focus on raw tool-call markup, missing required tool calls, required artifacts, side-effect success claims, delegation failures, and inconsistent plan state. Verification requirements and evidence are represented in the contract, but they are not currently a general final-completion gate. When a contract is not satisfied, Forge may append runtime feedback and retry, ask for clarification, or fail visibly with a concrete error. It must not convert missing evidence, missing artifacts, failed child work, or provider/tool failures into a successful completion.
 
 ## System Prompt and History
 
