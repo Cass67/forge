@@ -583,6 +583,9 @@ func (r *Runner) completeTurn(turn int, response string, toolCalls []TurnToolCal
 			return staleTurnError(turnID)
 		}
 	}
+	if turnErr == nil {
+		r.markTurnContractSatisfiedIfComplete(turn)
+	}
 	if err := r.session.CompleteTurn(turn, response, toolCalls, turnErr); err != nil {
 		if turnErr != nil {
 			return errors.Join(turnErr, err)
@@ -590,6 +593,24 @@ func (r *Runner) completeTurn(turn int, response string, toolCalls []TurnToolCal
 		return err
 	}
 	return turnErr
+}
+
+func (r *Runner) markTurnContractSatisfiedIfComplete(turn int) {
+	if r == nil || r.session == nil {
+		return
+	}
+	r.session.UpdateTurnContract(func(contract *TurnContract) {
+		if contract == nil || contract.Status != ContractStatusActive || contract.Intent == TurnIntentAnswerOnly {
+			return
+		}
+		if contract.SourceTurn != 0 && turn != 0 && contract.SourceTurn != turn {
+			return
+		}
+		if turnContractFinalEvidenceFeedback(contract) != "" {
+			return
+		}
+		contract.Status = ContractStatusSatisfied
+	})
 }
 
 func (r *Runner) finalSideEffectGateMayBlock() bool {
@@ -3477,8 +3498,98 @@ func (r *Runner) blockOutOfScopeSideEffectMutation(toolName string, args map[str
 				return outOfScopeSideEffectBlockMessage(firstNonEmpty(path, raw)), true
 			}
 		}
+	case "run_command":
+		command := stringArg(args, "command")
+		if commandWriteArtifactTarget(command, intent) != "" {
+			return "", false
+		}
+		paths := mutationPathsFromShellCommand(command)
+		if len(paths) == 0 {
+			return "", false
+		}
+		for _, raw := range paths {
+			path := normalizeArtifactToolPath(raw, intent)
+			if !sideEffectPathMatchesIntent(path, intent) {
+				return outOfScopeSideEffectBlockMessage(firstNonEmpty(path, raw)), true
+			}
+		}
 	}
 	return "", false
+}
+
+func mutationPathsFromShellCommand(command string) []string {
+	fields := shellLikeFields(command)
+	if len(fields) == 0 {
+		return nil
+	}
+	var paths []string
+	for i, field := range fields {
+		switch {
+		case field == ">" || field == ">>":
+			if i+1 < len(fields) {
+				paths = append(paths, fields[i+1])
+			}
+		case strings.HasPrefix(field, ">>") && len(field) > 2:
+			paths = append(paths, strings.TrimSpace(field[2:]))
+		case strings.HasPrefix(field, ">") && len(field) > 1:
+			paths = append(paths, strings.TrimSpace(field[1:]))
+		}
+	}
+	if len(fields) >= 3 && fields[0] == "sed" {
+		for _, field := range fields[1:] {
+			if field == "-i" || strings.HasPrefix(field, "-i") {
+				paths = append(paths, fields[len(fields)-1])
+				break
+			}
+		}
+	}
+	return uniqueStrings(paths)
+}
+
+func shellLikeFields(command string) []string {
+	var fields []string
+	var b strings.Builder
+	inSingle := false
+	inDouble := false
+	escaped := false
+	flush := func() {
+		if b.Len() == 0 {
+			return
+		}
+		fields = append(fields, b.String())
+		b.Reset()
+	}
+	for _, r := range command {
+		if escaped {
+			b.WriteRune(r)
+			escaped = false
+			continue
+		}
+		if r == '\\' {
+			escaped = true
+			continue
+		}
+		switch r {
+		case '\'':
+			if !inDouble {
+				inSingle = !inSingle
+				continue
+			}
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
+				continue
+			}
+		case ' ', '\t', '\n', '\r':
+			if !inSingle && !inDouble {
+				flush()
+				continue
+			}
+		}
+		b.WriteRune(r)
+	}
+	flush()
+	return fields
 }
 
 func outOfScopeSideEffectBlockMessage(path string) string {
@@ -4675,7 +4786,10 @@ func allowedToolNamesForSnapshot(snapshot SessionSnapshot) []string {
 	case "overview":
 		addAll(readOnlyToolNames, gitReadToolNames, planningToolNames)
 	case "inspect", "analysis", "review", "plan":
-		addAll(readOnlyToolNames, writeToolNames, gitReadToolNames, planningToolNames)
+		addAll(readOnlyToolNames, gitReadToolNames, planningToolNames)
+		if turnContractSuggestsImplementationTools(snapshot.TurnContract) || inputSuggestsFileWrites(text) {
+			addAll(writeToolNames)
+		}
 		if inputSuggestsCommandWork(text) {
 			addAll(commandToolNames)
 		}
@@ -4736,6 +4850,7 @@ func allowedToolNamesForSnapshot(snapshot SessionSnapshot) []string {
 	}
 	if inputSuggestsGitPush(text) {
 		addAll(gitReadToolNames, commandToolNames)
+		add("git_push")
 	}
 	if inputAsksGitPushStatus(text) {
 		addAll(gitReadToolNames)
@@ -7592,6 +7707,9 @@ func isValidationPass(result string) bool {
 		return code == "0"
 	}
 	lower := strings.ToLower(result)
+	if strings.Contains(lower, "timeout") || strings.Contains(lower, "timed out") || strings.Contains(lower, "deadline exceeded") {
+		return false
+	}
 	return !strings.Contains(lower, "\nfail\t")
 }
 

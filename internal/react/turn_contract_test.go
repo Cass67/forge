@@ -692,6 +692,21 @@ func TestRunCommandReadOnlyDoesNotRecordWriteEvidence(t *testing.T) {
 	}
 }
 
+func TestRunCommandValidationTimeoutRecordsFailedVerification(t *testing.T) {
+	contract := &TurnContract{ID: "contract-1", Status: ContractStatusActive}
+
+	recordToolResultEvidence(contract, "run_command", map[string]any{
+		"command": "go test ./...",
+	}, "timeout after 120s", false)
+
+	if !contractHasEvidence(contract, EvidenceVerification, "verification failed", "go test ./...") {
+		t.Fatalf("TurnContract evidence = %#v, want failed verification", contract.Evidence)
+	}
+	if contractHasEvidence(contract, EvidenceVerification, "verification passed") {
+		t.Fatalf("TurnContract evidence = %#v, timeout must not pass verification", contract.Evidence)
+	}
+}
+
 func TestSessionConcurrentUpdateTurnContractPreservesBothMutations(t *testing.T) {
 	s := NewSession()
 	s.SetTurnContract(TurnContract{ID: "contract-1", Status: ContractStatusActive})
