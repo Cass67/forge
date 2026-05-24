@@ -49,6 +49,7 @@ type SideEffectIntent struct {
 func normalizeIntentPath(path string) string {
 	path = strings.TrimSpace(path)
 	path = strings.Trim(path, "`'\".,:;()[]{}<>")
+	path = strings.TrimPrefix(path, "@")
 	if path == "" || filepath.IsAbs(path) || looksLikeWindowsAbsolutePath(path) || strings.Contains(path, "\\") || strings.Contains(path, ":") {
 		return ""
 	}
