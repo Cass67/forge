@@ -110,6 +110,7 @@ type recordingRenderer struct {
 	tokenTexts []string
 	fullTexts  []string
 	retryTexts []string
+	toolTexts  []string
 	events     []string
 	statsCalls int
 	statsUsage []llm.Usage
@@ -141,10 +142,11 @@ func (r *recordingRenderer) ToolCall(string, string) {
 	defer r.mu.Unlock()
 	r.events = append(r.events, "tool_call")
 }
-func (r *recordingRenderer) ToolResult(string, string, string, bool) {
+func (r *recordingRenderer) ToolResult(_ string, text string, _ string, _ bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.events = append(r.events, "tool_result")
+	r.toolTexts = append(r.toolTexts, text)
 }
 func (r *recordingRenderer) Stats(_ time.Duration, usage llm.Usage) {
 	r.mu.Lock()
@@ -2976,6 +2978,40 @@ func TestRunnerMarksWriteGateFromNestedShellPositionalPath(t *testing.T) {
 	}
 }
 
+func TestRunnerNormalizesAtPrefixedSideEffectArtifactPath(t *testing.T) {
+	session := NewSession()
+	session.SetSideEffectIntent(SideEffectIntent{
+		ID:              "intent-1",
+		ArtifactPaths:   []string{"@testing-anti-patterns.md"},
+		AllowedPaths:    []string{"@testing-anti-patterns.md"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite},
+		Gates:           []SideEffectGate{{Name: "write", Status: SideEffectGatePending}},
+	})
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "write file",
+		Parameters: []agenttools.ParameterDef{
+			{Name: "path", Type: "string", Required: true},
+			{Name: "content", Type: "string", Required: true},
+		},
+		Execute: func(context.Context, map[string]any) (string, error) { return "wrote testing-anti-patterns.md", nil },
+	})
+	r := NewRunner(Config{Tools: reg, Session: session})
+
+	if err := r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{ID: "write-1", Name: "write_file", ArgsJSON: `{"path":"testing-anti-patterns.md","content":"ok"}`}}); err != nil {
+		t.Fatal(err)
+	}
+	if gate := session.Snapshot().SideEffectIntent.Gates[0]; gate.Status != SideEffectGatePassed {
+		t.Fatalf("gate status = %s, want passed; gates = %#v", gate.Status, session.Snapshot().SideEffectIntent.Gates)
+	}
+}
+
 func TestRunnerDoesNotMarkWriteGateFromInputRedirection(t *testing.T) {
 	session := NewSession()
 	session.SetSideEffectIntent(SideEffectIntent{
@@ -3588,6 +3624,87 @@ func TestRunnerWritesCompletedAgentResultFallbackOnPostDelegationToolError(t *te
 	}
 	if writtenContent != "# Forge Gap Report\n\nCompleted child-agent synthesis." {
 		t.Fatalf("content = %q", writtenContent)
+	}
+}
+
+func TestReadOutputMissingHandleErrorIsModelCorrectable(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("read delegated output")
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "read_output",
+		Description: "read output",
+		Parameters:  []agenttools.ParameterDef{{Name: "handle", Type: "string", Required: true}},
+		Execute: func(context.Context, map[string]any) (string, error) {
+			return "", errors.New(`read output handle "session/missing": lstat /tmp/session/missing: no such file or directory`)
+		},
+	})
+	r := NewRunner(Config{Tools: reg, Session: session})
+
+	if err := r.executeNativeToolCalls(active.Context, turn, []llm.NativeToolCall{{ID: "read-1", Name: "read_output", ArgsJSON: `{"handle":"session/missing"}`}}); err != nil {
+		t.Fatal(err)
+	}
+	if !sessionHistoryContains(session, "read output handle", "no such file or directory") {
+		t.Fatalf("history missing correctable read_output error: %#v", session.Snapshot().History)
+	}
+}
+
+func TestMalformedToolArgSchemaAliasFeedsRepeatLoopDetector(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("read files")
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "read_file",
+		Description: "read file",
+		Parameters:  []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}},
+		Execute: func(context.Context, map[string]any) (string, error) {
+			t.Fatal("malformed read_file args should not execute")
+			return "", nil
+		},
+	})
+	r := NewRunner(Config{Tools: reg, Session: session})
+	call := llm.NativeToolCall{ID: "read-1", Name: "read_file", ArgsJSON: `{"filePath":"README.md","summary":true}`}
+
+	for i := 0; i < repeatToolCallThreshold; i++ {
+		call.ID = fmt.Sprintf("read-%d", i)
+		if err := r.executeNativeToolCalls(active.Context, turn, []llm.NativeToolCall{call}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if r.repeatWorkflow.streak < repeatToolCallThreshold || r.repeatWorkflow.lastTarget != "README.md" {
+		t.Fatalf("repeat workflow = %#v, want malformed schema alias tracked", r.repeatWorkflow)
+	}
+	if got := r.repeatWorkflow.overlayContent(repeatToolCallThreshold); !strings.Contains(got, "Loop detection") {
+		t.Fatalf("repeat overlay = %q, want loop detection", got)
+	}
+}
+
+func TestRunnerPreservesFailedChildCauseWhenParentResponseEmpty(t *testing.T) {
+	session := NewSession()
+	session.UpsertAgentTask(AgentTaskState{
+		ID:         "agent-1",
+		Role:       "explorer",
+		Status:     AgentStatusFailed,
+		Result:     "opencode-go stream failed: unexpected end of JSON input",
+		ParentTurn: 1,
+	})
+	driver := &nativeSequenceDriver{steps: repeatedTokenSteps(nil, maxCompletionRetriesPerTurn+1)}
+	r := NewRunner(Config{Driver: driver, Session: session})
+
+	err := r.Run(context.Background(), "continue")
+	if err == nil || !strings.Contains(err.Error(), "opencode-go stream failed") {
+		t.Fatalf("err = %v, want failed child cause", err)
 	}
 }
 
@@ -7587,6 +7704,14 @@ func repeatedTextSteps(text string, count int) [][]llm.Token {
 	return steps
 }
 
+func repeatedTokenSteps(tokens []llm.Token, count int) [][]llm.Token {
+	steps := make([][]llm.Token, 0, count)
+	for range count {
+		steps = append(steps, append([]llm.Token(nil), tokens...))
+	}
+	return steps
+}
+
 func artifactGateWriteToolRegistry(t *testing.T, workspace string) *agenttools.Registry {
 	t.Helper()
 	reg := agenttools.NewRegistry()
@@ -11289,6 +11414,46 @@ func TestExecuteNativeToolCallsStoresLargeOutputOutOfBand(t *testing.T) {
 	}
 	if string(got) != "2345" {
 		t.Fatalf("stored output = %q, want 2345", got)
+	}
+}
+
+func TestExecuteNativeToolCallsHidesOutputStoreHandleFromRenderer(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "large_output",
+		Description: "large output test tool",
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return strings.Repeat("x", 32), nil
+		},
+	})
+	session := NewSession()
+	store := sessionstore.NewFileOutputStore(t.TempDir())
+	renderer := &recordingRenderer{}
+	r := NewRunner(Config{Tools: reg, Session: session, Renderer: renderer, OutputStore: store, OutputStoreThresholdBytes: 5})
+	turn := session.RecordInput("run large output tool")
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	if err := r.executeNativeToolCalls(active.Context, turn, []llm.NativeToolCall{{ID: "c1", Name: "large_output", ArgsJSON: `{}`}}); err != nil {
+		t.Fatal(err)
+	}
+
+	result := lastToolResult(t, session)
+	if result.Handle == "" || !strings.Contains(result.Text, result.Handle) || !strings.Contains(result.Text, "SHA256") {
+		t.Fatalf("session result = %#v, want handle-bearing model-visible result", result)
+	}
+	if len(renderer.toolTexts) != 1 {
+		t.Fatalf("renderer tool texts = %#v, want one", renderer.toolTexts)
+	}
+	display := renderer.toolTexts[0]
+	if strings.Contains(display, result.Handle) || strings.Contains(display, "SHA256") || strings.Contains(display, "Tool output stored out-of-band") {
+		t.Fatalf("renderer display leaked output-store internals: %q", display)
+	}
+	if !strings.Contains(display, "output stored") || !strings.Contains(display, "32 bytes") {
+		t.Fatalf("renderer display = %q, want concise stored-output summary", display)
 	}
 }
 
