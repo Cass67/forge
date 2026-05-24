@@ -2419,6 +2419,33 @@ func TestRunnerRequiredActionBlocksPlainSuccessfulFinalWithoutEvidence(t *testin
 	}
 }
 
+func TestRunnerContinuePreservesUnfinishedEditContract(t *testing.T) {
+	session := NewSession()
+	session.SetTurnContract(TurnContract{
+		ID:              "contract-1",
+		SourceTurn:      1,
+		Intent:          TurnIntentEditCode,
+		RequiredActions: []ContractAction{{Kind: ContractActionEdit, Description: "modify code as requested"}},
+		Status:          ContractStatusActive,
+	})
+	driver := &nativeSequenceDriver{steps: repeatedTextSteps("I'll continue.", maxCompletionRetriesPerTurn+1)}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{Name: "write_file", Description: "write file"})
+	r := NewRunner(Config{Session: session, Driver: driver, Tools: reg})
+
+	err := r.Run(context.Background(), "continue")
+	if err == nil {
+		t.Fatal("expected preserved edit contract to keep turn unfinished")
+	}
+	if len(driver.lastOpts) == 0 || !driver.lastOpts[0].RequireToolCall {
+		t.Fatalf("native options = %#v, want required tool call from preserved edit contract", driver.lastOpts)
+	}
+	contract := session.Snapshot().TurnContract
+	if contract == nil || contract.ID != "contract-1" || contract.Intent != TurnIntentEditCode || contract.SourceTurn != 1 {
+		t.Fatalf("TurnContract = %#v, want original edit contract preserved", contract)
+	}
+}
+
 func TestRunnerRequiredActionAndVerificationPassAfterEvidence(t *testing.T) {
 	session := NewSession()
 	turn := session.RecordInput("fix this and run tests")
@@ -7260,6 +7287,43 @@ func TestRunnerNudgesOnRepeatedSameFileCodeSearch(t *testing.T) {
 		if msg.Role == llm.RoleTool && strings.Contains(msg.Content, "blocked:") {
 			t.Fatalf("expected no blocking, got blocked tool result: %s", msg.Content)
 		}
+	}
+}
+
+func TestRunnerBlocksRepeatedSameFileReadsAfterThreshold(t *testing.T) {
+	steps := make([][]llm.Token, repeatToolCallThreshold+2)
+	for i := 0; i < repeatToolCallThreshold+1; i++ {
+		steps[i] = []llm.Token{{ToolCall: &llm.NativeToolCall{
+			ID:       fmt.Sprintf("c%d", i+1),
+			Name:     "read_file",
+			ArgsJSON: `{"path":"src/main.rs"}`,
+		}}}
+	}
+	steps[len(steps)-1] = []llm.Token{{Text: "Done."}}
+	driver := &nativeSequenceDriver{steps: steps}
+	reg := agenttools.NewRegistry()
+	readCalls := 0
+	reg.Register(agenttools.Tool{
+		Name:        "read_file",
+		Description: "read file",
+		Parameters:  []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}},
+		AutoApprove: true,
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			readCalls++
+			return "contents", nil
+		},
+	})
+	session := NewSession()
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+
+	if err := r.Run(context.Background(), "inspect src/main.rs"); err != nil {
+		t.Fatal(err)
+	}
+	if readCalls != repeatToolCallThreshold {
+		t.Fatalf("read calls = %d, want repeated read blocked after threshold %d", readCalls, repeatToolCallThreshold)
+	}
+	if !sessionHistoryContains(session, "blocked: repeated read_file", "src/main.rs") {
+		t.Fatalf("history missing repeated read block: %#v", session.Snapshot().History)
 	}
 }
 
