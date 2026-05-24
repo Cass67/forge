@@ -300,6 +300,9 @@ func (r *Runner) RunWithParts(ctx context.Context, input string, parts []llm.Mes
 	if root := deriveActiveWorkspaceRoot(prompt); root != "" {
 		r.session.SetActiveWorkspaceRoot(root)
 	}
+	if contract := deriveTurnContractFromInput(turn, prompt, time.Now().Format("2006-01-02")); contract != nil {
+		r.session.SetTurnContract(*contract)
+	}
 	if intent := deriveSideEffectIntentFromText(turn, prompt); intent != nil {
 		r.session.SetSideEffectIntent(*intent)
 	}
@@ -4237,7 +4240,7 @@ func inputSuggestsGitCommit(text string) bool {
 	}
 	return containsToolPhrase(text,
 		"git commit", "commit it", "commit this", "create a commit",
-		"make a commit", "commit the changes", "commit only",
+		"make a commit", "commit the changes", "commit only", "commit and push",
 	)
 }
 
@@ -4283,11 +4286,11 @@ func inputSuggestsGitPush(text string) bool {
 	if inputNegatesGitPush(text) {
 		return false
 	}
-	return containsToolPhrase(text,
+	return containsBoundedToolPhrase(text,
 		"git push", "push it", "push this", "push main", "push to remote",
 		"push the branch", "push the changes", "push origin", "push to origin",
-		"and push", "then push", "publish local commits", "publish commits",
-	)
+		"publish local commits", "publish commits",
+	) || (containsBoundedToolPhrase(text, "and push", "then push") && inputSuggestsGitCommit(text))
 }
 
 func inputNegatesGitPush(text string) bool {
@@ -4299,6 +4302,9 @@ func inputNegatesGitPush(text string) bool {
 		return true
 	}
 	idx := strings.Index(text, "git push")
+	if idx < 0 {
+		idx = strings.Index(text, "push")
+	}
 	if idx < 0 {
 		return false
 	}
@@ -4504,6 +4510,32 @@ func containsToolPhrase(text string, phrases ...string) bool {
 		}
 	}
 	return false
+}
+
+func containsBoundedToolPhrase(text string, phrases ...string) bool {
+	for _, phrase := range phrases {
+		for offset := 0; offset < len(text); {
+			start := strings.Index(text[offset:], phrase)
+			if start < 0 {
+				break
+			}
+			start += offset
+			end := start + len(phrase)
+			if isToolPhraseBoundary(text, start-1) && isToolPhraseBoundary(text, end) {
+				return true
+			}
+			offset = start + 1
+		}
+	}
+	return false
+}
+
+func isToolPhraseBoundary(text string, index int) bool {
+	if index < 0 || index >= len(text) {
+		return true
+	}
+	c := text[index]
+	return (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_'
 }
 
 func (r *Runner) blockedToolResult(toolName string, args map[string]any) string {

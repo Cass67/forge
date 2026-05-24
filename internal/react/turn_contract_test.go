@@ -1,11 +1,167 @@
 package react
 
 import (
+	"slices"
 	"testing"
 	"time"
 
 	"forge/internal/protocol"
 )
+
+func TestDeriveTurnContractFromInput(t *testing.T) {
+	tests := []struct {
+		name             string
+		input            string
+		wantIntent       TurnIntent
+		wantActions      []ContractActionKind
+		wantArtifacts    []string
+		wantGates        []string
+		wantVerification bool
+	}{
+		{
+			name:       "casual hello is answer only",
+			input:      "hello",
+			wantIntent: TurnIntentAnswerOnly,
+		},
+		{
+			name:        "repo inspection requires read evidence",
+			input:       "look at the repo",
+			wantIntent:  TurnIntentInspect,
+			wantActions: []ContractActionKind{ContractActionRead},
+		},
+		{
+			name:          "write plan uses dated default artifact",
+			input:         "write a plan",
+			wantIntent:    TurnIntentWriteArtifact,
+			wantActions:   []ContractActionKind{ContractActionEdit},
+			wantArtifacts: []string{"docs/plans/2026-05-23-plan.md"},
+			wantGates:     []string{"artifact"},
+		},
+		{
+			name:          "write plan with explicit path uses exact artifact",
+			input:         "write docs/plans/2026-05-23-term-wrangler.md",
+			wantIntent:    TurnIntentWriteArtifact,
+			wantActions:   []ContractActionKind{ContractActionEdit},
+			wantArtifacts: []string{"docs/plans/2026-05-23-term-wrangler.md"},
+			wantGates:     []string{"artifact"},
+		},
+		{
+			name:        "implementation requires write action",
+			input:       "implement this",
+			wantIntent:  TurnIntentEditCode,
+			wantActions: []ContractActionKind{ContractActionEdit},
+		},
+		{
+			name:             "implementation only requires verification when mentioned",
+			input:            "implement this and run tests",
+			wantIntent:       TurnIntentEditCode,
+			wantActions:      []ContractActionKind{ContractActionEdit},
+			wantVerification: true,
+		},
+		{
+			name:        "commit and push require git actions",
+			input:       "commit and push",
+			wantIntent:  TurnIntentEditCode,
+			wantActions: []ContractActionKind{ContractActionCommit, ContractActionPush},
+		},
+		{
+			name:        "combined implement commit and push keeps all actions",
+			input:       "implement this, commit and push",
+			wantIntent:  TurnIntentEditCode,
+			wantActions: []ContractActionKind{ContractActionEdit, ContractActionCommit, ContractActionPush},
+		},
+		{
+			name:        "negated commit and push do not create git actions",
+			input:       "implement this, do not commit and no push",
+			wantIntent:  TurnIntentEditCode,
+			wantActions: []ContractActionKind{ContractActionEdit},
+		},
+		{
+			name:        "push items is not git push",
+			input:       "implement this and push items onto the queue",
+			wantIntent:  TurnIntentEditCode,
+			wantActions: []ContractActionKind{ContractActionEdit},
+		},
+		{
+			name:        "do not commit and push negates both git actions",
+			input:       "implement this, do not commit and push",
+			wantIntent:  TurnIntentEditCode,
+			wantActions: []ContractActionKind{ContractActionEdit},
+		},
+		{
+			name:       "plain build this is answer only",
+			input:      "build this",
+			wantIntent: TurnIntentAnswerOnly,
+		},
+		{
+			name:       "write plan question is answer only",
+			input:      "how do I write a plan?",
+			wantIntent: TurnIntentAnswerOnly,
+		},
+		{
+			name:       "negated write plan is answer only",
+			input:      "do not write a plan",
+			wantIntent: TurnIntentAnswerOnly,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := deriveTurnContractFromInput(7, tt.input, "2026-05-23")
+			if got == nil {
+				t.Fatal("contract = nil")
+			}
+			if got.ID != "contract-7" || got.SourceTurn != 7 || got.Status != ContractStatusActive || got.Intent != tt.wantIntent {
+				t.Fatalf("contract header = %#v", got)
+			}
+			for _, action := range tt.wantActions {
+				if !contractHasAction(got, action) {
+					t.Fatalf("actions = %#v, want %s", got.RequiredActions, action)
+				}
+			}
+			if len(got.RequiredActions) != len(tt.wantActions) {
+				t.Fatalf("actions = %#v, want exactly %#v", got.RequiredActions, tt.wantActions)
+			}
+			for _, artifact := range tt.wantArtifacts {
+				if !contractHasArtifact(got, artifact) {
+					t.Fatalf("artifacts = %#v, want %s", got.RequiredArtifacts, artifact)
+				}
+			}
+			if len(got.RequiredArtifacts) != len(tt.wantArtifacts) {
+				t.Fatalf("artifacts = %#v, want exactly %#v", got.RequiredArtifacts, tt.wantArtifacts)
+			}
+			for _, gate := range tt.wantGates {
+				if !contractHasGate(got, gate) {
+					t.Fatalf("gates = %#v, want %s", got.Gates, gate)
+				}
+			}
+			if len(got.Gates) != len(tt.wantGates) {
+				t.Fatalf("gates = %#v, want exactly %#v", got.Gates, tt.wantGates)
+			}
+			if (len(got.RequiredVerification) > 0) != tt.wantVerification {
+				t.Fatalf("verification = %#v, want present=%v", got.RequiredVerification, tt.wantVerification)
+			}
+		})
+	}
+}
+
+func contractHasAction(contract *TurnContract, action ContractActionKind) bool {
+	return slices.ContainsFunc(contract.RequiredActions, func(got ContractAction) bool {
+		return got.Kind == action
+	})
+}
+
+func contractHasArtifact(contract *TurnContract, path string) bool {
+	return slices.ContainsFunc(contract.RequiredArtifacts, func(got ArtifactRequirement) bool {
+		return got.Path == path
+	})
+}
+
+func contractHasGate(contract *TurnContract, name string) bool {
+	return slices.ContainsFunc(contract.Gates, func(got ContractGate) bool {
+		return got.Name == name && got.Status == ContractGatePending
+	})
+}
 
 func TestSessionSetTurnContractPersistsItemAndSnapshot(t *testing.T) {
 	sink := &fakeDurableSink{}

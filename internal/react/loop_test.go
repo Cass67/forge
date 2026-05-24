@@ -218,6 +218,38 @@ func TestRunnerCreatesSideEffectIntentForWriteCommitPushRequest(t *testing.T) {
 	}
 }
 
+func TestRunnerRecordsTurnContractForWritePlanInput(t *testing.T) {
+	session := NewSession()
+	r := NewRunner(Config{Session: session, Driver: &scriptedDriver{responses: []string{"ok"}}})
+
+	if err := r.Run(context.Background(), "write docs/plans/2026-05-23-term-wrangler.md"); err != nil {
+		t.Fatal(err)
+	}
+	contract := session.Snapshot().TurnContract
+	if contract == nil {
+		t.Fatal("missing turn contract")
+	}
+	if contract.Intent != TurnIntentWriteArtifact || !contractHasAction(contract, ContractActionEdit) || !contractHasArtifact(contract, "docs/plans/2026-05-23-term-wrangler.md") || !contractHasGate(contract, "artifact") {
+		t.Fatalf("TurnContract = %#v", contract)
+	}
+}
+
+func TestRunnerRecordsAnswerOnlyTurnContractForCasualInput(t *testing.T) {
+	session := NewSession()
+	r := NewRunner(Config{Session: session, Driver: &scriptedDriver{responses: []string{"hi"}}})
+
+	if err := r.Run(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+	contract := session.Snapshot().TurnContract
+	if contract == nil {
+		t.Fatal("missing turn contract")
+	}
+	if contract.Intent != TurnIntentAnswerOnly || len(contract.RequiredActions) != 0 {
+		t.Fatalf("TurnContract = %#v, want answer_only with no required actions", contract)
+	}
+}
+
 func TestDeriveSideEffectIntentIgnoresAbsoluteAndParentPaths(t *testing.T) {
 	intent := deriveSideEffectIntentFromText(1, `write /tmp/bad.md and ../bad.md and docs/../bad.md and C:\tmp\bad.md and docs/good.md`)
 	if intent == nil || !containsString(intent.AllowedPaths, "docs/good.md") {
