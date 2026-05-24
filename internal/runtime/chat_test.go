@@ -1735,7 +1735,7 @@ func TestRegisterReactDelegationToolsStreamsSubAgentEvents(t *testing.T) {
 		t.Fatal("wait_agent tool not registered")
 	}
 	rawSpawn, err := spawnTool.Execute(context.Background(), map[string]any{
-		"task_description": "inspect repo",
+		"task_description": "say hello",
 		"role":             "code researcher",
 	})
 	if err != nil {
