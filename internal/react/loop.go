@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -565,21 +566,320 @@ func (r *Runner) finalSideEffectGateMayBlock() bool {
 	if r == nil || r.session == nil {
 		return false
 	}
-	return len(unresolvedSideEffectGates(r.session.Snapshot().SideEffectIntent)) > 0
+	snap := r.session.Snapshot()
+	return len(unresolvedSideEffectGates(snap.SideEffectIntent)) > 0 || turnContractHasPendingArtifactGate(snap.TurnContract)
 }
 
 func (r *Runner) blockFinalSideEffectSuccessIfNeeded(finalText string) (bool, error) {
-	if r == nil || r.session == nil || !finalResponseClaimsSideEffectSuccess(finalText) {
+	if r == nil || r.session == nil {
 		return false, nil
 	}
-	feedback := sideEffectGateFeedback(r.session.Snapshot().SideEffectIntent)
+	var feedbackParts []string
+	hasArtifactFeedback := false
+	if artifactFeedback := r.turnContractArtifactGateFeedback(); artifactFeedback != "" {
+		if finalResponseReportsSideEffectFailure(strings.ToLower(finalText)) {
+			return true, fmt.Errorf("react runtime: artifact gate failed: %s", strings.TrimSpace(finalText))
+		}
+		feedbackParts = append(feedbackParts, artifactFeedback)
+		hasArtifactFeedback = true
+	}
+	if finalResponseClaimsSideEffectSuccess(finalText) {
+		if feedback := sideEffectGateFeedback(r.session.Snapshot().SideEffectIntent); feedback != "" {
+			feedbackParts = append(feedbackParts, feedback)
+		}
+	}
+	feedback := strings.Join(feedbackParts, "\n")
 	if feedback == "" {
 		return false, nil
 	}
 	if err := r.session.AppendUserMessage(feedback); err != nil {
 		return false, err
 	}
+	if hasArtifactFeedback {
+		return true, NewRetryableCompletionError("react runtime: artifact gate unresolved", feedback)
+	}
 	return true, nil
+}
+
+func (r *Runner) turnContractArtifactGateFeedback() string {
+	if r == nil || r.session == nil {
+		return ""
+	}
+	snap := r.session.Snapshot()
+	contract := snap.TurnContract
+	if contract == nil || contract.Intent != TurnIntentWriteArtifact || len(contract.RequiredArtifacts) == 0 {
+		return ""
+	}
+	root := strings.TrimSpace(snap.ActiveWorkspaceRoot)
+	if root == "" && snap.SideEffectIntent != nil {
+		root = strings.TrimSpace(snap.SideEffectIntent.WorkspaceRoot)
+	}
+	if root == "" {
+		root = "."
+	}
+	root = filepath.Clean(root)
+	var failures []string
+	updates := make(map[string]ContractGate)
+	for _, artifact := range contract.RequiredArtifacts {
+		path := strings.TrimSpace(artifact.Path)
+		if path == "" {
+			path = "<empty>"
+		}
+		status, evidence := validateContractArtifactRequirement(contract, snap.SideEffectIntent, root, artifact)
+		updates[path] = ContractGate{Name: "artifact", Status: status, Evidence: evidence}
+		if status != ContractGatePassed {
+			failures = append(failures, path+" ("+evidence+")")
+		}
+	}
+	if len(updates) > 0 {
+		r.session.UpdateTurnContract(func(contract *TurnContract) {
+			status := ContractGatePassed
+			var evidence []string
+			for _, artifact := range contract.RequiredArtifacts {
+				path := strings.TrimSpace(artifact.Path)
+				if path == "" {
+					path = "<empty>"
+				}
+				update, ok := updates[path]
+				if !ok {
+					continue
+				}
+				if update.Status != ContractGatePassed {
+					status = update.Status
+				}
+				evidence = append(evidence, path+": "+update.Evidence)
+			}
+			updateContractGate(contract, "artifact", status, strings.Join(evidence, "; "))
+		})
+	}
+	if len(failures) == 0 {
+		return ""
+	}
+	return "Runtime feedback: artifact gate unresolved: required artifact must exist at exact path " + strings.Join(failures, ", ") + ". Write the requested file before claiming completion."
+}
+
+func validateContractArtifactRequirement(contract *TurnContract, intent *SideEffectIntent, root string, artifact ArtifactRequirement) (ContractGateStatus, string) {
+	rawPath := strings.TrimSpace(artifact.Path)
+	path := normalizeIntentPath(rawPath)
+	if path == "" || path != rawPath {
+		return ContractGateFailed, "invalid required artifact path"
+	}
+	writeStatus, ok := latestArtifactWriteEvidenceStatus(contract, path)
+	if !ok {
+		return ContractGatePending, "missing same-turn successful write evidence"
+	}
+	if writeStatus != ContractGatePassed {
+		return ContractGateFailed, "latest write evidence is a tool error"
+	}
+	if !contractArtifactPathAllowed(intent, path) {
+		return ContractGateFailed, "path is outside allowed artifact scope"
+	}
+	fullPath, ok := contractArtifactFullPath(root, path)
+	if !ok {
+		return ContractGateFailed, "path is outside active workspace"
+	}
+	info, err := os.Lstat(fullPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ContractGatePending, "missing"
+		}
+		return ContractGateFailed, "stat failed: " + err.Error()
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		resolved, err := filepath.EvalSymlinks(fullPath)
+		if err != nil {
+			return ContractGateFailed, "symlink resolution failed: " + err.Error()
+		}
+		if !resolvedPathInsideRoot(root, resolved) {
+			return ContractGateFailed, "symlink target is outside active workspace"
+		}
+		info, err = os.Stat(fullPath)
+		if err != nil {
+			return ContractGateFailed, "stat failed: " + err.Error()
+		}
+	}
+	resolved, err := filepath.EvalSymlinks(fullPath)
+	if err != nil {
+		return ContractGateFailed, "symlink resolution failed: " + err.Error()
+	}
+	if !resolvedPathInsideRoot(root, resolved) {
+		return ContractGateFailed, "resolved path is outside active workspace"
+	}
+	if info.IsDir() {
+		return ContractGateFailed, "path is a directory"
+	}
+	if info.Size() == 0 {
+		return ContractGateFailed, "file is empty"
+	}
+	content, err := os.ReadFile(fullPath)
+	if err != nil {
+		return ContractGateFailed, "read failed: " + err.Error()
+	}
+	if !artifactContentPlausible(contract, artifact, string(content)) {
+		return ContractGateFailed, "markdown plan/spec lacks heading and substantive section"
+	}
+	return ContractGatePassed, "exists and content is plausible"
+}
+
+func turnContractHasPendingArtifactGate(contract *TurnContract) bool {
+	if contract == nil || contract.Intent != TurnIntentWriteArtifact {
+		return false
+	}
+	for _, gate := range contract.Gates {
+		if gate.Name == "artifact" && gate.Status != ContractGatePassed {
+			return true
+		}
+	}
+	return len(contract.RequiredArtifacts) > 0
+}
+
+func updateContractGate(contract *TurnContract, name string, status ContractGateStatus, evidence string) {
+	if contract == nil || strings.TrimSpace(name) == "" {
+		return
+	}
+	for i := range contract.Gates {
+		if contract.Gates[i].Name == name {
+			contract.Gates[i].Status = status
+			contract.Gates[i].Evidence = evidence
+			return
+		}
+	}
+	contract.Gates = append(contract.Gates, ContractGate{Name: name, Status: status, Evidence: evidence})
+}
+
+func contractArtifactPathAllowed(intent *SideEffectIntent, path string) bool {
+	path = normalizeIntentPath(path)
+	if path == "" || filepath.IsAbs(path) || strings.HasPrefix(path, "../") || path == ".." {
+		return false
+	}
+	if intent == nil {
+		return true
+	}
+	return sideEffectPathMatchesIntent(path, intent)
+}
+
+func contractArtifactFullPath(root, path string) (string, bool) {
+	path = normalizeIntentPath(path)
+	if path == "" || filepath.IsAbs(path) {
+		return "", false
+	}
+	root = filepath.Clean(strings.TrimSpace(root))
+	if root == "" {
+		root = "."
+	}
+	fullPath := filepath.Clean(filepath.Join(root, filepath.FromSlash(path)))
+	if !pathInsideRoot(root, fullPath) {
+		return "", false
+	}
+	return fullPath, true
+}
+
+func pathInsideRoot(root, path string) bool {
+	root = filepath.Clean(strings.TrimSpace(root))
+	path = filepath.Clean(strings.TrimSpace(path))
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != "." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".."
+}
+
+func resolvedPathInsideRoot(root, path string) bool {
+	resolvedRoot, err := filepath.EvalSymlinks(filepath.Clean(strings.TrimSpace(root)))
+	if err != nil {
+		resolvedRoot = filepath.Clean(strings.TrimSpace(root))
+	}
+	return pathInsideRoot(resolvedRoot, filepath.Clean(strings.TrimSpace(path)))
+}
+
+func latestArtifactWriteEvidenceStatus(contract *TurnContract, path string) (ContractGateStatus, bool) {
+	if contract == nil {
+		return ContractGatePending, false
+	}
+	path = normalizeIntentPath(path)
+	for i := len(contract.Evidence) - 1; i >= 0; i-- {
+		evidence := contract.Evidence[i]
+		if path == "" || !evidenceSummaryHasExactPath(evidence.Summary, path) {
+			continue
+		}
+		if evidence.Kind == EvidenceWrite {
+			return ContractGatePassed, true
+		}
+		if evidence.Kind == EvidenceTool && strings.Contains(strings.ToLower(evidence.Summary), "failed write") {
+			return ContractGateFailed, true
+		}
+	}
+	return ContractGatePending, false
+}
+
+func evidenceSummaryHasExactPath(summary, path string) bool {
+	path = normalizeIntentPath(path)
+	if path == "" {
+		return false
+	}
+	for _, got := range evidenceSummaryPaths(summary) {
+		if normalizeIntentPath(got) == path {
+			return true
+		}
+	}
+	return false
+}
+
+func evidenceSummaryPaths(summary string) []string {
+	idx := strings.Index(summary, ":")
+	if idx < 0 {
+		return nil
+	}
+	rest := strings.TrimSpace(summary[idx+1:])
+	fields := strings.Fields(rest)
+	if len(fields) < 2 {
+		return nil
+	}
+	pathsText := strings.TrimSpace(strings.TrimPrefix(rest, fields[0]))
+	var paths []string
+	for _, path := range strings.Split(pathsText, ",") {
+		if path = strings.TrimSpace(path); path != "" {
+			paths = append(paths, path)
+		}
+	}
+	return paths
+}
+
+func artifactContentPlausible(contract *TurnContract, artifact ArtifactRequirement, content string) bool {
+	if strings.TrimSpace(content) == "" {
+		return false
+	}
+	lowerPath := strings.ToLower(strings.TrimSpace(artifact.Path))
+	if !strings.HasSuffix(lowerPath, ".md") || !artifactRequiresMarkdownPlanSpecStructure(contract, artifact) {
+		return true
+	}
+	lines := strings.Split(content, "\n")
+	hasHeading := false
+	hasSection := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "# ") {
+			hasHeading = true
+		}
+		if strings.HasPrefix(trimmed, "## ") {
+			for _, body := range lines[i+1:] {
+				if strings.TrimSpace(body) != "" {
+					hasSection = true
+					break
+				}
+			}
+		}
+	}
+	return hasHeading && hasSection
+}
+
+func artifactRequiresMarkdownPlanSpecStructure(contract *TurnContract, artifact ArtifactRequirement) bool {
+	lowerPath := strings.ToLower(strings.TrimSpace(artifact.Path))
+	lowerDescription := strings.ToLower(strings.TrimSpace(artifact.Description))
+	if strings.Contains(lowerDescription, "plan") || strings.Contains(lowerDescription, "spec") {
+		return true
+	}
+	if strings.Contains(lowerPath, "plan") || strings.Contains(lowerPath, "spec") {
+		return true
+	}
+	return contract != nil && contract.Intent == TurnIntentWriteArtifact
 }
 
 func (r *Runner) tryDirectLastResponseMarkdownWrite(ctx context.Context, turn int, input, priorResponse string) (bool, error) {
