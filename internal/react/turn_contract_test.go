@@ -263,6 +263,53 @@ func TestTurnContractRecordsModelViolationEvidence(t *testing.T) {
 	assertContractEvidence(t, contract, EvidenceModelViolation, "unknown_tool", "bogus_tool")
 }
 
+func TestMirrorSideEffectIntentIntoTurnContractIncludesExplicitNonMarkdownArtifacts(t *testing.T) {
+	contract := &TurnContract{ID: "contract-1", SourceTurn: 3, Status: ContractStatusActive}
+	intent := &SideEffectIntent{
+		ID:              "intent-3",
+		SourceTurn:      3,
+		ArtifactPaths:   []string{"configs/settings.json"},
+		AllowedPaths:    []string{"configs/settings.json"},
+		RequiredActions: []SideEffectAction{SideEffectActionWrite},
+	}
+
+	mirrorSideEffectIntentIntoTurnContract(contract, intent)
+
+	if contract.Intent != TurnIntentWriteArtifact || !contractHasArtifact(contract, "configs/settings.json") || !contractHasGate(contract, "artifact") {
+		t.Fatalf("TurnContract = %#v, want non-markdown artifact mirrored", contract)
+	}
+}
+
+func TestMirrorSideEffectIntentIntoTurnContractPreservesResolvedGateStatus(t *testing.T) {
+	contract := &TurnContract{
+		ID:              "contract-3",
+		SourceTurn:      3,
+		Intent:          TurnIntentEditCode,
+		RequiredActions: []ContractAction{{Kind: ContractActionCommit}},
+		Gates:           []ContractGate{{Name: "commit", Status: ContractGatePassed, Evidence: "commit abc123"}},
+		Status:          ContractStatusActive,
+	}
+	intent := &SideEffectIntent{
+		ID:              "intent-3",
+		SourceTurn:      3,
+		RequiredActions: []SideEffectAction{SideEffectActionCommit},
+		Gates:           []SideEffectGate{{Name: string(SideEffectActionCommit), Status: SideEffectGatePending}},
+	}
+
+	mirrorSideEffectIntentIntoTurnContract(contract, intent)
+
+	assertContractGate(t, contract, "commit", ContractGatePassed)
+}
+
+func TestTurnContractRecordsGitEvidenceUsingSideEffectGateSemantics(t *testing.T) {
+	contract := &TurnContract{ID: "contract-1"}
+
+	recordToolResultEvidence(contract, "git_commit", map[string]any{"message": "task 10"}, "created commit abc123", false)
+
+	assertContractEvidence(t, contract, EvidenceTool, "git_commit", "failed")
+	assertNoContractEvidenceSummary(t, contract, EvidenceTool, "git_commit passed")
+}
+
 func assertContractEvidence(t *testing.T, contract *TurnContract, kind EvidenceKind, parts ...string) {
 	t.Helper()
 	for _, evidence := range contract.Evidence {
@@ -288,6 +335,15 @@ func assertNoContractEvidence(t *testing.T, contract *TurnContract, kind Evidenc
 	for _, evidence := range contract.Evidence {
 		if evidence.Kind == kind {
 			t.Fatalf("evidence = %#v, want no kind %s", contract.Evidence, kind)
+		}
+	}
+}
+
+func assertNoContractEvidenceSummary(t *testing.T, contract *TurnContract, kind EvidenceKind, part string) {
+	t.Helper()
+	for _, evidence := range contract.Evidence {
+		if evidence.Kind == kind && strings.Contains(evidence.Summary, part) {
+			t.Fatalf("evidence = %#v, want no kind %s containing %q", contract.Evidence, kind, part)
 		}
 	}
 }
