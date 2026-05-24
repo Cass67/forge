@@ -1283,9 +1283,15 @@ func (r *Runner) tryCompletedAgentResultFallbackWithOptions(ctx context.Context,
 			return true, r.writeCompletedAgentResultFallback(ctx, turn, path, writeContent)
 		}
 	}
+	if err := r.ensureFallbackTurnCurrent(ctx, turn); err != nil {
+		return false, err
+	}
 	fallback := "Parent model connection failed while composing the final response. Showing completed child-agent result instead.\n\n" + content
 	r.pendingRetryPrompt = ""
 	if blocked, err := r.blockFinalSideEffectSuccessIfNeeded(fallback); blocked || err != nil {
+		if r.hasTurnSnapshot(turn) {
+			r.recordModelViolation("completed-agent fallback blocked", fallbackBlockDetail(err))
+		}
 		return false, err
 	}
 	if err := r.appendAssistantMessage(fallback); err != nil {
@@ -1302,6 +1308,9 @@ func (r *Runner) tryCompletedAgentResultFallbackWithOptions(ctx context.Context,
 }
 
 func (r *Runner) writeCompletedAgentResultFallback(ctx context.Context, turn int, path, content string) error {
+	if err := r.ensureFallbackTurnCurrent(ctx, turn); err != nil {
+		return err
+	}
 	args, err := json.Marshal(map[string]any{"path": path, "content": content})
 	if err != nil {
 		return err
@@ -1320,6 +1329,9 @@ func (r *Runner) writeCompletedAgentResultFallback(ctx context.Context, turn int
 		final = "wrote completed child-agent results to " + path
 	}
 	if blocked, err := r.blockFinalSideEffectSuccessIfNeeded(final); blocked || err != nil {
+		if r.hasTurnSnapshot(turn) {
+			r.recordModelViolation("completed-agent fallback write blocked", fallbackBlockDetail(err))
+		}
 		if err != nil {
 			return err
 		}
@@ -1336,6 +1348,30 @@ func (r *Runner) writeCompletedAgentResultFallback(ctx context.Context, turn int
 		r.renderer.AgentText(final)
 	}
 	return nil
+}
+
+func (r *Runner) ensureFallbackTurnCurrent(ctx context.Context, turn int) error {
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if r == nil || r.session == nil {
+		return nil
+	}
+	turnID := fmt.Sprintf("turn-%d", turn)
+	if active, ok := r.session.ActiveTurnSnapshot(); ok {
+		if active.ID != turnID {
+			return staleTurnError(turnID)
+		}
+		return nil
+	}
+	return staleTurnError(turnID)
+}
+
+func fallbackBlockDetail(err error) string {
+	if err == nil {
+		return "unresolved completion gate"
+	}
+	return err.Error()
 }
 
 func completedAgentResultFallbackContent(snap SessionSnapshot) string {
@@ -2413,7 +2449,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 				r.renderer.ToolResult(call.Name, errResult, res.diff, true)
 			}
 			r.updateGitWorkflow(call.Name, args, errResult)
-			r.updatePostDelegationWorkflow(call.Name, errResult, true)
+			r.updatePostDelegationWorkflow(call.Name, args, errResult, true)
 			r.updateSideEffectGatesAfterToolResult(call.Name, args, errResult, true)
 			if isModelCorrectableToolExecutionError(call.Name, res.err) {
 				continue
@@ -2442,7 +2478,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 		r.updateSameFileSearchWorkflow(call.Name, args, false)
 		r.updateValidationWorkflow(call.Name, args, res.result)
 		r.updateRepeatToolCallWorkflow(call.Name, args, res.result)
-		r.updatePostDelegationWorkflow(call.Name, res.result, false)
+		r.updatePostDelegationWorkflow(call.Name, args, res.result, false)
 		r.updateSideEffectGatesAfterToolResult(call.Name, args, res.result, false)
 		r.recordCheckpointScope(ctx, turn, call.Name, args)
 		if exec.tool.MutatesWorkspace && strings.TrimSpace(res.diff) != "" {
@@ -3643,8 +3679,11 @@ func (r *Runner) selectToolDefsWithDecision(snapshot SessionSnapshot) ([]llm.Too
 		if !fallbackSettledWrite {
 			postDelegationText = postDelegationToolIntentText(snapshot)
 		}
-		if !pendingPostDelegationWrite && !inputSuggestsPostDelegationAction(normalizeToolIntentText(postDelegationText)) {
-			return nil, decision
+		if !pendingPostDelegationWrite {
+			if !currentPostDelegationAction {
+				return nil, decision
+			}
+			postDelegationText = snapshot.LastInput
 		}
 		snapshot.LastInput = postDelegationText
 		goto selectParentTools
@@ -4209,7 +4248,7 @@ func postDelegationActionHints(results []string) string {
 	return strings.Join(hints, "\n")
 }
 
-func (r *Runner) updatePostDelegationWorkflow(toolName, result string, isError bool) {
+func (r *Runner) updatePostDelegationWorkflow(toolName string, args map[string]any, result string, isError bool) {
 	if r == nil {
 		return
 	}
@@ -4258,7 +4297,7 @@ func (r *Runner) updatePostDelegationWorkflow(toolName, result string, isError b
 			}
 		}
 	case "write_file", "edit_file", "apply_patch", "run_command":
-		if !isError {
+		if !isError && r.parentWriteSatisfiesPendingDelegationAction(toolName, args, result) {
 			r.postDelegation.pendingWrite = false
 			if r.session != nil {
 				r.session.ClearPendingDelegationAction()
@@ -4266,6 +4305,121 @@ func (r *Runner) updatePostDelegationWorkflow(toolName, result string, isError b
 			}
 		}
 	}
+}
+
+func (r *Runner) parentWriteSatisfiesPendingDelegationAction(toolName string, args map[string]any, result string) bool {
+	if r == nil || r.session == nil {
+		return true
+	}
+	snapshot := r.session.Snapshot()
+	action := snapshot.PendingDelegationAction
+	if action == nil || action.Kind != DelegationActionWriteDoc {
+		return true
+	}
+	targetPath := pendingDelegationWriteTarget(snapshot)
+	if targetPath == "" {
+		return false
+	}
+	return writeToolResultTargetsPath(toolName, args, targetPath)
+}
+
+func writeToolResultTargetsPath(toolName string, args map[string]any, targetPath string) bool {
+	targetPath = normalizeIntentPath(targetPath)
+	if targetPath == "" {
+		return false
+	}
+	if strings.TrimSpace(toolName) == "run_command" {
+		intent := &SideEffectIntent{ArtifactPaths: []string{targetPath}, AllowedPaths: []string{targetPath}}
+		return commandWriteArtifactTarget(stringArg(args, "command"), intent) == targetPath
+	}
+	if evidencePathsContainExactPath(args, targetPath) {
+		return true
+	}
+	return false
+}
+
+func evidencePathsContainExactPath(args map[string]any, targetPath string) bool {
+	targetPath = normalizeIntentPath(targetPath)
+	if targetPath == "" {
+		return false
+	}
+	for _, path := range evidencePaths(args) {
+		if normalizeIntentPath(path) == targetPath {
+			return true
+		}
+	}
+	return false
+}
+
+func pendingDelegationWriteTarget(snapshot SessionSnapshot) string {
+	if snapshot.PendingDelegationAction != nil && snapshot.PendingDelegationAction.Kind == DelegationActionWriteDoc {
+		if path := normalizeIntentPath(snapshot.PendingDelegationAction.TargetPath); path != "" {
+			return path
+		}
+	}
+	if path := singleTurnContractArtifactPath(snapshot.TurnContract); path != "" {
+		return path
+	}
+	if path := singleSideEffectArtifactPath(snapshot.SideEffectIntent); path != "" {
+		return path
+	}
+	return singleHistoryDelegationTargetPath(snapshot)
+}
+
+func singleTurnContractArtifactPath(contract *TurnContract) string {
+	if contract == nil {
+		return ""
+	}
+	var paths []string
+	for _, artifact := range contract.RequiredArtifacts {
+		paths = append(paths, artifact.Path)
+	}
+	return singleNormalizedPath(paths)
+}
+
+func singleSideEffectArtifactPath(intent *SideEffectIntent) string {
+	if intent == nil {
+		return ""
+	}
+	paths := append([]string(nil), intent.ArtifactPaths...)
+	paths = append(paths, intent.AllowedPaths...)
+	return singleNormalizedPath(paths)
+}
+
+func singleHistoryDelegationTargetPath(snapshot SessionSnapshot) string {
+	var paths []string
+	for _, input := range snapshot.RecentInputs {
+		paths = append(paths, extractMarkdownAndNamedPaths(input)...)
+	}
+	paths = append(paths, extractMarkdownAndNamedPaths(snapshot.InitialInput)...)
+	paths = append(paths, extractMarkdownAndNamedPaths(snapshot.LastInput)...)
+	for _, msg := range snapshot.History {
+		if msg.Role == llm.RoleUser {
+			paths = append(paths, extractMarkdownAndNamedPaths(msg.Content)...)
+		}
+	}
+	for _, result := range completedToolCallResults(snapshot, "wait_agent") {
+		paths = append(paths, extractMarkdownAndNamedPaths(result)...)
+	}
+	for _, result := range completedToolCallResults(snapshot, "get_agent_output") {
+		paths = append(paths, extractMarkdownAndNamedPaths(result)...)
+	}
+	return singleNormalizedPath(paths)
+}
+
+func singleNormalizedPath(paths []string) string {
+	unique := make([]string, 0, 1)
+	for _, path := range paths {
+		path = normalizeIntentPath(path)
+		if path == "" || slices.Contains(unique, path) {
+			continue
+		}
+		unique = append(unique, path)
+	}
+	if len(unique) != 1 {
+		return ""
+	}
+	return unique[0]
 }
 
 func (r *Runner) ensureSideEffectIntentForDelegation(action DelegationActionState, text string) {
@@ -4339,7 +4493,7 @@ func pendingPostDelegationWriteAction(snapshot SessionSnapshot) bool {
 	if completedAgentFallbackAfterIndex(snapshot, waitResultIndex) && !currentPostDelegationAction {
 		return false
 	}
-	if successfulToolResultAfterIndex(snapshot, waitResultIndex, writeToolNames) {
+	if successfulDelegationWriteAfterIndex(snapshot, waitResultIndex) {
 		return false
 	}
 	if historyBeforeIndexSuggestsFileWrite(snapshot, waitResultIndex) {
@@ -4462,6 +4616,38 @@ func successfulToolResultAfterIndex(snapshot SessionSnapshot, index int, toolNam
 			}
 		case llm.RoleTool:
 			if _, ok := ids[msg.ToolCallID]; ok && !strings.HasPrefix(normalizeToolIntentText(msg.Content), "error:") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func successfulDelegationWriteAfterIndex(snapshot SessionSnapshot, index int) bool {
+	if index < 0 {
+		return false
+	}
+	targetPath := pendingDelegationWriteTarget(snapshot)
+	ids := make(map[string]llm.NativeToolCall)
+	for i, msg := range snapshot.History {
+		if i <= index {
+			continue
+		}
+		switch msg.Role {
+		case llm.RoleAssistant:
+			for _, tc := range msg.ToolCalls {
+				if toolNameIn(tc.Name, writeToolNames) && strings.TrimSpace(tc.ID) != "" {
+					ids[tc.ID] = tc
+				}
+			}
+		case llm.RoleTool:
+			call, ok := ids[msg.ToolCallID]
+			if !ok || targetPath == "" || strings.HasPrefix(normalizeToolIntentText(msg.Content), "error:") {
+				continue
+			}
+			args := map[string]any{}
+			_ = json.Unmarshal([]byte(call.ArgsJSON), &args)
+			if writeToolResultTargetsPath(call.Name, args, targetPath) {
 				return true
 			}
 		}

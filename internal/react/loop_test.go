@@ -2738,6 +2738,187 @@ func TestRunnerDelegatedCompletedAgentWaitThenWritesReport(t *testing.T) {
 	}
 }
 
+func TestRunnerBlocksWaitAgentCompletedWriteArtifactWithoutParentWrite(t *testing.T) {
+	workspace := t.TempDir()
+	artifact := "docs/plans/2026-05-23-delegated.md"
+	session := NewSession()
+	session.SetActiveWorkspaceRoot(workspace)
+	session.UpsertAgentTask(AgentTaskState{
+		ID:         "agent-1",
+		Role:       "planner",
+		Status:     AgentStatusCompleted,
+		Result:     "# Delegated Plan\n\n## Approach\n\nThe child wrote the plan content.",
+		ParentTurn: 1,
+	})
+	driver := &nativeSequenceDriver{steps: append([][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{"id":"agent-1"}`}}},
+	}, repeatedTextSteps("Done, the child wrote the plan.", 4)...)}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "wait_agent",
+		Description: "wait for agent",
+		AutoApprove: true,
+		Execute: func(context.Context, map[string]any) (string, error) {
+			return `{"id":"agent-1","status":"completed","result":"# Delegated Plan\n\n## Approach\n\nThe child wrote the plan content."}`, nil
+		},
+	})
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session, MaxSteps: 6})
+
+	err := r.Run(context.Background(), "write "+artifact)
+	if err == nil || !strings.Contains(err.Error(), "artifact gate unresolved") {
+		t.Fatalf("err = %v, want artifact gate unresolved", err)
+	}
+	if turns := session.Snapshot().Turns; len(turns) == 0 || strings.TrimSpace(turns[len(turns)-1].FinalResponse) != "" {
+		t.Fatalf("turns = %#v, want no persisted final success", turns)
+	}
+	contract := session.Snapshot().TurnContract
+	if contract == nil || !contractHasGateStatus(contract, "artifact", ContractGatePending) {
+		t.Fatalf("TurnContract = %#v, want pending artifact gate", contract)
+	}
+	if contractHasEvidenceKind(contract, EvidenceWrite) {
+		t.Fatalf("TurnContract evidence = %#v, child completion must not count as parent write", contract.Evidence)
+	}
+}
+
+func TestRunnerFailedWaitAgentRecordsDelegationFailureEvidence(t *testing.T) {
+	session := NewSession()
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{"id":"agent-1"}`}}},
+	}}
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "wait_agent",
+		Description: "wait for agent",
+		AutoApprove: true,
+		Execute: func(context.Context, map[string]any) (string, error) {
+			return "", errors.New("child provider failed")
+		},
+	})
+	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session, MaxSteps: 3})
+
+	err := r.Run(context.Background(), "inspect repo")
+	if err == nil || !strings.Contains(err.Error(), "child provider failed") {
+		t.Fatalf("err = %v, want child provider failed", err)
+	}
+	contract := session.Snapshot().TurnContract
+	if contract == nil || !contractHasEvidence(contract, EvidenceDelegationFailure, "wait_agent", "agent-1") {
+		t.Fatalf("TurnContract evidence = %#v, want failed delegation evidence", contract)
+	}
+	if contractHasEvidenceKind(contract, EvidenceRead) || contractHasEvidenceKind(contract, EvidenceWrite) {
+		t.Fatalf("TurnContract evidence = %#v, failed delegation must not satisfy read/write", contract.Evidence)
+	}
+}
+
+func TestRunnerCompletedAgentFallbackWithoutArtifactWriteFailsVisibly(t *testing.T) {
+	workspace := t.TempDir()
+	artifact := "docs/plans/2026-05-23-fallback.md"
+	session := NewSession()
+	session.SetActiveWorkspaceRoot(workspace)
+	turn := session.RecordInput("write " + artifact)
+	session.SetTurnContract(TurnContract{
+		ID:                "contract-1",
+		SourceTurn:        turn,
+		Intent:            TurnIntentWriteArtifact,
+		RequiredActions:   []ContractAction{{Kind: ContractActionEdit, Description: "write requested artifact"}},
+		RequiredArtifacts: []ArtifactRequirement{{Path: artifact, Description: "requested plan artifact"}},
+		Gates:             []ContractGate{{Name: "artifact", Status: ContractGatePending}},
+		Status:            ContractStatusActive,
+	})
+	session.UpsertAgentTask(AgentTaskState{
+		ID:         "agent-1",
+		Role:       "planner",
+		Status:     AgentStatusCompleted,
+		Result:     "# Delegated Plan\n\n## Approach\n\nChild-only artifact content.",
+		ParentTurn: turn,
+	})
+	r := NewRunner(Config{Session: session})
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	handled, err := r.tryCompletedAgentResultFallbackAfterError(context.Background(), turn)
+	if handled || err == nil || !strings.Contains(err.Error(), "artifact gate") {
+		t.Fatalf("handled, err = %v, %v; want visible artifact gate failure", handled, err)
+	}
+	if got := r.LastResponse(); strings.Contains(got, "Showing completed child-agent result") || strings.Contains(got, "Child-only") {
+		t.Fatalf("LastResponse = %q, should not append success fallback", got)
+	}
+	if !contractHasEvidence(session.Snapshot().TurnContract, EvidenceModelViolation, "completed-agent fallback", "artifact gate") {
+		t.Fatalf("TurnContract evidence = %#v, want fallback failure evidence", session.Snapshot().TurnContract)
+	}
+}
+
+func TestRunnerCompletedAgentFallbackWriteFileRecordsParentEvidenceAndPassesArtifactGate(t *testing.T) {
+	workspace := t.TempDir()
+	artifact := "docs/plans/2026-05-23-fallback-write.md"
+	session := NewSession()
+	session.SetActiveWorkspaceRoot(workspace)
+	turn := session.RecordInput("write " + artifact)
+	session.SetTurnContract(TurnContract{
+		ID:                "contract-1",
+		SourceTurn:        turn,
+		Intent:            TurnIntentWriteArtifact,
+		RequiredActions:   []ContractAction{{Kind: ContractActionEdit, Description: "write requested artifact"}},
+		RequiredArtifacts: []ArtifactRequirement{{Path: artifact, Description: "requested plan artifact"}},
+		Gates:             []ContractGate{{Name: "artifact", Status: ContractGatePending}},
+		Status:            ContractStatusActive,
+	})
+	session.SetPendingDelegationAction(DelegationActionState{Kind: DelegationActionWriteDoc, TargetPath: artifact})
+	session.UpsertAgentTask(AgentTaskState{
+		ID:         "agent-1",
+		Role:       "planner",
+		Status:     AgentStatusCompleted,
+		Result:     "# Fallback Write Plan\n\n## Approach\n\nParent fallback writes the exact required artifact.",
+		ParentTurn: turn,
+	})
+	r := NewRunner(Config{Session: session, Tools: artifactGateWriteToolRegistry(t, workspace)})
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	handled, err := r.tryCompletedAgentResultFallbackAfterError(context.Background(), turn)
+	if !handled || err != nil {
+		t.Fatalf("handled, err = %v, %v", handled, err)
+	}
+	contract := session.Snapshot().TurnContract
+	if contract == nil || !contractHasEvidence(contract, EvidenceWrite, "write_file", artifact) {
+		t.Fatalf("TurnContract evidence = %#v, want parent write evidence", contract)
+	}
+	if !contractHasGateStatus(contract, "artifact", ContractGatePassed) {
+		t.Fatalf("TurnContract = %#v, want passed artifact gate", contract)
+	}
+}
+
+func TestRunnerReadOnlyDelegationSummaryStillAllowed(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("ask agent to inspect the repo")
+	session.UpsertAgentTask(AgentTaskState{
+		ID:         "agent-1",
+		Role:       "repo-auditor",
+		Status:     AgentStatusCompleted,
+		Result:     "Repo inspection found no required writes.",
+		ParentTurn: turn,
+	})
+	r := NewRunner(Config{Session: session})
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	handled, err := r.tryCompletedAgentResultFallbackAfterError(context.Background(), turn)
+	if !handled || err != nil {
+		t.Fatalf("handled, err = %v, %v", handled, err)
+	}
+	if got := r.LastResponse(); !strings.Contains(got, "Repo inspection found no required writes") {
+		t.Fatalf("LastResponse = %q, want read-only child summary", got)
+	}
+}
+
 func TestRunnerBlocksControlPlaneReportWriteToArtifactPath(t *testing.T) {
 	var executed atomic.Bool
 	reg := agenttools.NewRegistry()
@@ -6234,6 +6415,32 @@ func contractHasGateStatus(contract *TurnContract, name string, status ContractG
 	return false
 }
 
+func contractHasEvidence(contract *TurnContract, kind EvidenceKind, parts ...string) bool {
+	if contract == nil {
+		return false
+	}
+	for _, evidence := range contract.Evidence {
+		if evidence.Kind != kind {
+			continue
+		}
+		matched := true
+		for _, part := range parts {
+			if !strings.Contains(evidence.Summary, part) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+func contractHasEvidenceKind(contract *TurnContract, kind EvidenceKind) bool {
+	return contractHasEvidence(contract, kind)
+}
+
 func lastUserMessageContains(snapshot SessionSnapshot, text string) bool {
 	for i := len(snapshot.History) - 1; i >= 0; i-- {
 		msg := snapshot.History[i]
@@ -7164,6 +7371,11 @@ func TestRunnerFallsBackToCompletedAgentResultWhenParentStreamTimesOut(t *testin
 		ParentTurn:  turn,
 		CompletedAt: time.Now(),
 	})
+	_, cancel, err := session.BeginTurn(context.Background(), fmt.Sprintf("turn-%d", turn))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
 
 	if err := r.runLoop(context.Background(), turn); err != nil {
 		t.Fatal(err)
@@ -8470,7 +8682,7 @@ func TestRunnerClearsBlockingHandoffAfterParentWrite(t *testing.T) {
 	})
 	r := NewRunner(Config{Session: session})
 
-	r.updatePostDelegationWorkflow("write_file", "wrote docs/audit.md", false)
+	r.updatePostDelegationWorkflow("write_file", map[string]any{"path": "docs/audit.md"}, "wrote docs/audit.md", false)
 
 	tasks := session.Snapshot().AgentTasks
 	if len(tasks) != 1 || tasks[0].Handoff != nil {
@@ -8503,7 +8715,7 @@ func TestRunnerRecordsPendingDelegationWriteActionAfterWait(t *testing.T) {
 	session.RecordInput("use repo-auditor then write the report to docs/reports/audit.md")
 	r := NewRunner(Config{Session: session})
 
-	r.updatePostDelegationWorkflow("wait_agent", `{"id":"agent-1","status":"completed","result":"findings returned"}`, false)
+	r.updatePostDelegationWorkflow("wait_agent", map[string]any{"id": "agent-1"}, `{"id":"agent-1","status":"completed","result":"findings returned"}`, false)
 
 	action := session.Snapshot().PendingDelegationAction
 	if action == nil {
@@ -8520,7 +8732,7 @@ func TestRunnerMergesDelegationTargetIntoActiveSideEffectIntent(t *testing.T) {
 	session.SetSideEffectIntent(SideEffectIntent{ID: "intent-1", AllowedPaths: []string{"docs/summary.md"}})
 	r := NewRunner(Config{Session: session})
 
-	r.updatePostDelegationWorkflow("wait_agent", `{"id":"agent-1","status":"completed","result":"write report path docs/reports/audit.md"}`, false)
+	r.updatePostDelegationWorkflow("wait_agent", map[string]any{"id": "agent-1"}, `{"id":"agent-1","status":"completed","result":"write report path docs/reports/audit.md"}`, false)
 
 	intent := session.Snapshot().SideEffectIntent
 	if intent == nil {
@@ -8549,7 +8761,7 @@ func TestRunnerRecordsPendingDelegationWriteActionAtSpawnForPathlessArtifactRequ
 			session.RecordInput(tc.input)
 			r := NewRunner(Config{Session: session})
 
-			r.updatePostDelegationWorkflow("spawn_agent", `{"id":"agent-1","role":"repo-auditor","status":"running"}`, false)
+			r.updatePostDelegationWorkflow("spawn_agent", nil, `{"id":"agent-1","role":"repo-auditor","status":"running"}`, false)
 
 			action := session.Snapshot().PendingDelegationAction
 			if action == nil {
@@ -8605,10 +8817,239 @@ func TestRunnerClearsPendingDelegationActionAfterParentWrite(t *testing.T) {
 	session.SetPendingDelegationAction(DelegationActionState{Kind: DelegationActionWriteDoc, TargetPath: "docs/reports/audit.md"})
 	r := NewRunner(Config{Session: session})
 
-	r.updatePostDelegationWorkflow("write_file", "wrote docs/reports/audit.md", false)
+	r.updatePostDelegationWorkflow("write_file", map[string]any{"path": "docs/reports/audit.md"}, "wrote docs/reports/audit.md", false)
 
 	if action := session.Snapshot().PendingDelegationAction; action != nil {
 		t.Fatalf("pending delegation action after write = %#v", action)
+	}
+}
+
+func TestRunnerKeepsPendingDelegationActionAfterWrongParentWritePath(t *testing.T) {
+	session := NewSession()
+	session.SetPendingDelegationAction(DelegationActionState{Kind: DelegationActionWriteDoc, TargetPath: "docs/reports/audit.md"})
+	r := NewRunner(Config{Session: session})
+
+	r.updatePostDelegationWorkflow("write_file", map[string]any{"path": "docs/reports/other.md"}, "wrote docs/reports/other.md", false)
+
+	if action := session.Snapshot().PendingDelegationAction; action == nil || action.TargetPath != "docs/reports/audit.md" {
+		t.Fatalf("pending delegation action after wrong write = %#v", action)
+	}
+}
+
+func TestRunnerPathlessDelegationWriteUsesRequiredArtifactTarget(t *testing.T) {
+	session := NewSession()
+	session.SetPendingDelegationAction(DelegationActionState{Kind: DelegationActionWriteDoc})
+	session.SetTurnContract(TurnContract{
+		ID:                "contract-1",
+		Intent:            TurnIntentWriteArtifact,
+		RequiredArtifacts: []ArtifactRequirement{{Path: "docs/a.md"}},
+		Gates:             []ContractGate{{Name: "artifact", Status: ContractGatePending}},
+		Status:            ContractStatusActive,
+	})
+	r := NewRunner(Config{Session: session})
+
+	r.updatePostDelegationWorkflow("write_file", map[string]any{"path": "docs/other.md"}, "wrote docs/other.md", false)
+	if action := session.Snapshot().PendingDelegationAction; action == nil {
+		t.Fatal("pending delegation action cleared by wrong path")
+	}
+
+	r.updatePostDelegationWorkflow("write_file", map[string]any{"path": "docs/a.md"}, "wrote docs/a.md", false)
+	if action := session.Snapshot().PendingDelegationAction; action != nil {
+		t.Fatalf("pending delegation action after exact artifact write = %#v", action)
+	}
+}
+
+func TestRunnerDelegationWriteRejectsBackupPathAndResultMention(t *testing.T) {
+	session := NewSession()
+	session.SetPendingDelegationAction(DelegationActionState{Kind: DelegationActionWriteDoc, TargetPath: "docs/a.md"})
+	r := NewRunner(Config{Session: session})
+
+	r.updatePostDelegationWorkflow("write_file", map[string]any{"path": "docs/a.md.bak"}, "wrote backup while mentioning docs/a.md", false)
+
+	if action := session.Snapshot().PendingDelegationAction; action == nil || action.TargetPath != "docs/a.md" {
+		t.Fatalf("pending delegation action after backup write = %#v", action)
+	}
+}
+
+func TestRunnerReplayedDelegationRequiresExactTargetWrite(t *testing.T) {
+	items := []protocol.Item{
+		{Version: protocol.CurrentItemVersion, Seq: 1, TurnID: "turn-1", Kind: protocol.ItemTurnContext, TurnContext: &protocol.TurnContextItem{Input: "write docs/a.md"}},
+		{Version: protocol.CurrentItemVersion, Seq: 2, TurnID: "turn-1", Kind: protocol.ItemTurnContract, TurnContract: &protocol.TurnContractItem{
+			ID:                "contract-1",
+			Intent:            "write_artifact",
+			Status:            "active",
+			RequiredArtifacts: []protocol.ArtifactRequirementItem{{Path: "docs/a.md"}},
+			Gates:             []protocol.ContractGateItem{{Name: "artifact", Status: "pending"}},
+		}},
+		{Version: protocol.CurrentItemVersion, Seq: 3, TurnID: "turn-1", Kind: protocol.ItemToolCall, ToolCall: &protocol.ToolCallItem{ToolName: "wait_agent", ToolCallID: "wait-1", Args: map[string]any{"id": "agent-1"}}},
+		{Version: protocol.CurrentItemVersion, Seq: 4, TurnID: "turn-1", Kind: protocol.ItemToolResult, ToolResult: &protocol.ToolResultItem{ToolName: "wait_agent", ToolCallID: "wait-1", Text: `{"id":"agent-1","status":"completed","result":"write report path docs/a.md"}`}},
+		{Version: protocol.CurrentItemVersion, Seq: 5, TurnID: "turn-1", Kind: protocol.ItemToolCall, ToolCall: &protocol.ToolCallItem{ToolName: "write_file", ToolCallID: "write-1", Args: map[string]any{"path": "docs/a.md.bak"}}},
+		{Version: protocol.CurrentItemVersion, Seq: 6, TurnID: "turn-1", Kind: protocol.ItemToolResult, ToolResult: &protocol.ToolResultItem{ToolName: "write_file", ToolCallID: "write-1", Text: "wrote docs/a.md.bak and mentioned docs/a.md"}},
+	}
+	session, err := NewSessionFromItems(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !pendingPostDelegationWriteAction(session.Snapshot()) {
+		t.Fatalf("replayed snapshot should still require exact docs/a.md write: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerStaleCompletedAgentFallbackDoesNotMutateContractOrHistory(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("write docs/a.md")
+	session.SetTurnContract(TurnContract{
+		ID:                "contract-1",
+		Intent:            TurnIntentWriteArtifact,
+		RequiredArtifacts: []ArtifactRequirement{{Path: "docs/a.md"}},
+		Gates:             []ContractGate{{Name: "artifact", Status: ContractGatePending}},
+		Status:            ContractStatusActive,
+	})
+	session.UpsertAgentTask(AgentTaskState{ID: "agent-1", Role: "planner", Status: AgentStatusCompleted, Result: "# A\n\n## Plan\n\nchild result", ParentTurn: turn})
+	r := NewRunner(Config{Session: session})
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	before := session.Snapshot()
+
+	_, _ = r.tryCompletedAgentResultFallbackAfterError(context.Background(), turn)
+
+	after := session.Snapshot()
+	if contractHasEvidenceKind(after.TurnContract, EvidenceModelViolation) {
+		t.Fatalf("stale fallback mutated turn contract evidence: %#v", after.TurnContract.Evidence)
+	}
+	if !contractHasGateStatus(after.TurnContract, "artifact", ContractGatePending) || len(after.TurnContract.Gates) != len(before.TurnContract.Gates) || after.TurnContract.Gates[0].Evidence != "" {
+		t.Fatalf("stale fallback mutated gates: before=%#v after=%#v", before.TurnContract.Gates, after.TurnContract.Gates)
+	}
+	if len(after.History) != len(before.History) {
+		t.Fatalf("stale fallback mutated history: before=%#v after=%#v", before.History, after.History)
+	}
+}
+
+func TestRunnerStaleCompletedAgentWriteFallbackDoesNotExecuteToolOrMutateContract(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("write docs/a.md")
+	session.SetTurnContract(TurnContract{
+		ID:                "contract-1",
+		Intent:            TurnIntentWriteArtifact,
+		RequiredArtifacts: []ArtifactRequirement{{Path: "docs/a.md"}},
+		Gates:             []ContractGate{{Name: "artifact", Status: ContractGatePending}},
+		Status:            ContractStatusActive,
+	})
+	executed := false
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "write file",
+		AutoApprove: true,
+		Execute: func(context.Context, map[string]any) (string, error) {
+			executed = true
+			return "wrote docs/a.md", nil
+		},
+	})
+	r := NewRunner(Config{Session: session, Tools: reg})
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	before := session.Snapshot()
+
+	err = r.writeCompletedAgentResultFallback(context.Background(), turn, "docs/a.md", "# A\n\n## Plan\n\ncontent")
+
+	if !errors.Is(err, ErrStaleTurn) {
+		t.Fatalf("err = %v, want ErrStaleTurn", err)
+	}
+	if executed {
+		t.Fatal("stale write fallback executed write_file")
+	}
+	after := session.Snapshot()
+	if len(after.History) != len(before.History) {
+		t.Fatalf("stale write fallback mutated history: before=%#v after=%#v", before.History, after.History)
+	}
+	if contractHasEvidenceKind(after.TurnContract, EvidenceWrite) || contractHasEvidenceKind(after.TurnContract, EvidenceModelViolation) {
+		t.Fatalf("stale write fallback mutated evidence: %#v", after.TurnContract.Evidence)
+	}
+	if after.TurnContract.Gates[0].Evidence != "" || after.TurnContract.Gates[0].Status != ContractGatePending {
+		t.Fatalf("stale write fallback mutated gates: %#v", after.TurnContract.Gates)
+	}
+}
+
+func TestRunnerNoActiveTurnCompletedAgentFallbackDoesNotMutateContractOrHistory(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("write docs/a.md")
+	session.SetTurnContract(TurnContract{
+		ID:                "contract-1",
+		Intent:            TurnIntentWriteArtifact,
+		RequiredArtifacts: []ArtifactRequirement{{Path: "docs/a.md"}},
+		Gates:             []ContractGate{{Name: "artifact", Status: ContractGatePending}},
+		Status:            ContractStatusActive,
+	})
+	session.UpsertAgentTask(AgentTaskState{ID: "agent-1", Role: "planner", Status: AgentStatusCompleted, Result: "# A\n\n## Plan\n\nchild result", ParentTurn: turn})
+	r := NewRunner(Config{Session: session})
+	before := session.Snapshot()
+
+	_, _ = r.tryCompletedAgentResultFallbackAfterError(context.Background(), turn)
+
+	after := session.Snapshot()
+	if contractHasEvidenceKind(after.TurnContract, EvidenceModelViolation) {
+		t.Fatalf("no-active fallback mutated turn contract evidence: %#v", after.TurnContract.Evidence)
+	}
+	if !contractHasGateStatus(after.TurnContract, "artifact", ContractGatePending) || len(after.TurnContract.Gates) != len(before.TurnContract.Gates) || after.TurnContract.Gates[0].Evidence != "" {
+		t.Fatalf("no-active fallback mutated gates: before=%#v after=%#v", before.TurnContract.Gates, after.TurnContract.Gates)
+	}
+	if len(after.History) != len(before.History) {
+		t.Fatalf("no-active fallback mutated history: before=%#v after=%#v", before.History, after.History)
+	}
+	if r.LastResponse() != "" {
+		t.Fatalf("no-active fallback appended assistant text: %q", r.LastResponse())
+	}
+}
+
+func TestRunnerNoActiveTurnCompletedAgentWriteFallbackDoesNotExecuteToolOrMutateContract(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("write docs/a.md")
+	session.SetTurnContract(TurnContract{
+		ID:                "contract-1",
+		Intent:            TurnIntentWriteArtifact,
+		RequiredArtifacts: []ArtifactRequirement{{Path: "docs/a.md"}},
+		Gates:             []ContractGate{{Name: "artifact", Status: ContractGatePending}},
+		Status:            ContractStatusActive,
+	})
+	executed := false
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:        "write_file",
+		Description: "write file",
+		AutoApprove: true,
+		Execute: func(context.Context, map[string]any) (string, error) {
+			executed = true
+			return "wrote docs/a.md", nil
+		},
+	})
+	r := NewRunner(Config{Session: session, Tools: reg})
+	before := session.Snapshot()
+
+	err := r.writeCompletedAgentResultFallback(context.Background(), turn, "docs/a.md", "# A\n\n## Plan\n\ncontent")
+
+	if !errors.Is(err, ErrStaleTurn) {
+		t.Fatalf("err = %v, want ErrStaleTurn", err)
+	}
+	if executed {
+		t.Fatal("no-active write fallback executed write_file")
+	}
+	after := session.Snapshot()
+	if len(after.History) != len(before.History) {
+		t.Fatalf("no-active write fallback mutated history: before=%#v after=%#v", before.History, after.History)
+	}
+	if contractHasEvidenceKind(after.TurnContract, EvidenceWrite) || contractHasEvidenceKind(after.TurnContract, EvidenceModelViolation) {
+		t.Fatalf("no-active write fallback mutated evidence: %#v", after.TurnContract.Evidence)
+	}
+	if after.TurnContract.Gates[0].Evidence != "" || after.TurnContract.Gates[0].Status != ContractGatePending {
+		t.Fatalf("no-active write fallback mutated gates: %#v", after.TurnContract.Gates)
 	}
 }
 
@@ -8655,13 +9096,19 @@ func TestRunnerClearsPostDelegationDocumentWorkAfterWrite(t *testing.T) {
 		History: []llm.Message{
 			{Role: llm.RoleUser, Content: "figure this out and write me a nice doc"},
 			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "wait-1", Name: "wait_agent", ArgsJSON: `{}`}}},
-			{Role: llm.RoleTool, ToolCallID: "wait-1", Content: `{"status":"completed","result":"The parent should save this as the final document."}`},
-			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "write-1", Name: "write_file", ArgsJSON: `{}`}}},
+			{Role: llm.RoleTool, ToolCallID: "wait-1", Content: `{"status":"completed","result":"The parent should save this as docs/reports/status.md."}`},
+			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "write-1", Name: "write_file", ArgsJSON: `{"path":"docs/reports/status.md"}`}}},
 			{Role: llm.RoleTool, ToolCallID: "write-1", Content: `wrote docs/reports/status.md`},
 			{Role: llm.RoleUser, Content: "what happened?"},
 		},
 	}
 
+	if target := pendingDelegationWriteTarget(snap); target != "docs/reports/status.md" {
+		t.Fatalf("pending delegation target = %q", target)
+	}
+	if index := lastCompletedToolResultIndex(snap, "wait_agent"); index < 0 || !successfulDelegationWriteAfterIndex(snap, index) {
+		t.Fatalf("successful delegation write not detected after wait index %d", index)
+	}
 	if defs := r.selectToolDefs(snap); len(defs) != 0 {
 		t.Fatalf("post-delegation tools after successful write = %#v, want none", toolDefNames(defs))
 	}
