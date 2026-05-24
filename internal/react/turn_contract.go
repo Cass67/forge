@@ -218,6 +218,12 @@ func recordToolResultEvidence(contract *TurnContract, toolName string, args map[
 			contract.Evidence = append(contract.Evidence, EvidenceRecord{Kind: EvidenceVerification, Summary: fmt.Sprintf("verification %s: %s", status, command)})
 			return
 		}
+		status := "failed"
+		if !contractToolResultFailed(toolName, result, isError) && runCommandResultExitZero(result) {
+			status = "passed"
+		}
+		contract.Evidence = append(contract.Evidence, EvidenceRecord{Kind: EvidenceTool, Summary: strings.TrimSpace("run_command " + status + ": " + command)})
+		return
 	}
 	if isDelegationEvidenceTool(toolName) {
 		kind, summary := delegationEvidence(toolName, args, result, isError)

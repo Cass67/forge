@@ -202,9 +202,18 @@ func TestRunnerCreatesSideEffectIntentForWriteCommitPushRequest(t *testing.T) {
 	session.SetActiveWorkspaceRoot(workspace)
 	driver := &nativeSequenceDriver{steps: [][]llm.Token{
 		{{ToolCall: &llm.NativeToolCall{ID: "write-1", Name: "write_file", ArgsJSON: fmt.Sprintf(`{"path":%q,"content":"# Turn Contract Kernel\n\n## Plan\n\nMirror side effect intent into the turn contract."}`, artifact)}}},
+		{{ToolCall: &llm.NativeToolCall{ID: "commit-1", Name: "git_commit", ArgsJSON: `{"message":"add plan"}`}}},
+		{{ToolCall: &llm.NativeToolCall{ID: "push-1", Name: "git_push", ArgsJSON: `{}`}}},
 		{{Text: "ok"}},
 	}}
-	r := NewRunner(Config{Session: session, Driver: driver, Tools: artifactGateWriteToolRegistry(t, workspace), MaxSteps: 5})
+	tools := artifactGateWriteToolRegistry(t, workspace)
+	tools.Register(agenttools.Tool{Name: "git_commit", Parameters: []agenttools.ParameterDef{{Name: "message", Type: "string", Required: true}}, Execute: func(context.Context, map[string]any) (string, error) {
+		return "commit abc1234 created with files:\n" + artifact, nil
+	}})
+	tools.Register(agenttools.Tool{Name: "git_push", Execute: func(context.Context, map[string]any) (string, error) {
+		return "remote contains abc1234 at origin/main", nil
+	}})
+	r := NewRunner(Config{Session: session, Driver: driver, Tools: tools, MaxSteps: 5})
 
 	if err := r.Run(context.Background(), "write "+artifact+", commit it to main and push"); err != nil {
 		t.Fatal(err)
@@ -233,14 +242,26 @@ func TestRunnerCreatesSideEffectIntentForWriteCommitPushRequest(t *testing.T) {
 			t.Fatalf("TurnContract actions = %#v, want %s", contract.RequiredActions, want)
 		}
 	}
-	if !contractHasArtifact(contract, artifact) || !contractHasGateStatus(contract, "artifact", ContractGatePassed) || !contractHasGate(contract, "commit") || !contractHasGate(contract, "push") {
+	if !contractHasArtifact(contract, artifact) || !contractHasGateStatus(contract, "artifact", ContractGatePassed) || !contractHasGateStatus(contract, "commit", ContractGatePassed) || !contractHasGateStatus(contract, "push", ContractGatePassed) {
 		t.Fatalf("TurnContract = %#v, want mirrored artifact/git gates", contract)
 	}
 }
 
 func TestRunnerCreatesSideEffectIntentForTurnContractGitActions(t *testing.T) {
 	session := NewSession()
-	r := NewRunner(Config{Session: session, Driver: &scriptedDriver{responses: []string{"ok"}}})
+	driver := &nativeSequenceDriver{steps: [][]llm.Token{
+		{{ToolCall: &llm.NativeToolCall{ID: "commit-1", Name: "git_commit", ArgsJSON: `{"message":"update"}`}}},
+		{{ToolCall: &llm.NativeToolCall{ID: "push-1", Name: "git_push", ArgsJSON: `{}`}}},
+		{{Text: "ok"}},
+	}}
+	tools := agenttools.NewRegistry()
+	tools.Register(agenttools.Tool{Name: "git_commit", Parameters: []agenttools.ParameterDef{{Name: "message", Type: "string", Required: true}}, Execute: func(context.Context, map[string]any) (string, error) {
+		return "commit abc1234 created with files:\nmain.go", nil
+	}})
+	tools.Register(agenttools.Tool{Name: "git_push", Execute: func(context.Context, map[string]any) (string, error) {
+		return "remote contains abc1234 at origin/main", nil
+	}})
+	r := NewRunner(Config{Session: session, Driver: driver, Tools: tools})
 
 	if err := r.Run(context.Background(), "commit and push"); err != nil {
 		t.Fatal(err)
@@ -255,7 +276,7 @@ func TestRunnerCreatesSideEffectIntentForTurnContractGitActions(t *testing.T) {
 		}
 	}
 	contract := session.Snapshot().TurnContract
-	if contract == nil || !contractHasAction(contract, ContractActionCommit) || !contractHasAction(contract, ContractActionPush) || !contractHasGate(contract, "commit") || !contractHasGate(contract, "push") {
+	if contract == nil || !contractHasAction(contract, ContractActionCommit) || !contractHasAction(contract, ContractActionPush) || !contractHasGateStatus(contract, "commit", ContractGatePassed) || !contractHasGateStatus(contract, "push", ContractGatePassed) {
 		t.Fatalf("TurnContract = %#v, want commit/push actions and gates", contract)
 	}
 }
@@ -900,7 +921,7 @@ func TestRunnerRunRecordsCompletedTurnDetails(t *testing.T) {
 	session := NewSession()
 	r := NewRunner(Config{Driver: driver, Session: session})
 
-	if err := r.Run(context.Background(), "inspect repo"); err != nil {
+	if err := r.Run(context.Background(), "hello"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -908,7 +929,7 @@ func TestRunnerRunRecordsCompletedTurnDetails(t *testing.T) {
 	if len(snap.Turns) != 1 {
 		t.Fatalf("turns = %d, want 1", len(snap.Turns))
 	}
-	if snap.Turns[0].Input != "inspect repo" {
+	if snap.Turns[0].Input != "hello" {
 		t.Fatalf("turn input = %q", snap.Turns[0].Input)
 	}
 	if snap.Turns[0].FinalResponse != "repo overview" {
@@ -1118,7 +1139,7 @@ func TestRunnerInvokesTurnCompleteHookAfterSuccessfulTurn(t *testing.T) {
 		},
 	})
 
-	if err := r.Run(context.Background(), "inspect repo"); err != nil {
+	if err := r.Run(context.Background(), "hello"); err != nil {
 		t.Fatal(err)
 	}
 	if !called {
@@ -1147,7 +1168,7 @@ func TestRunnerTurnCompleteHookCanFeedMemorySummaryIntoNextTurn(t *testing.T) {
 
 	firstDriver := &nativeScriptedDriver{responses: []string{"first answer"}}
 	r.SetDriver(firstDriver)
-	if err := r.Run(context.Background(), "inspect repo"); err != nil {
+	if err := r.Run(context.Background(), "hello"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2078,7 +2099,7 @@ func TestRunnerCompletedAgentFallbackReportsPlanAndSideEffectFeedback(t *testing
 	session.SetTurnContract(TurnContract{
 		ID:                "contract-1",
 		SourceTurn:        turn,
-		Intent:            TurnIntentWriteArtifact,
+		Intent:            TurnIntentEditCode,
 		RequiredArtifacts: []ArtifactRequirement{{Path: "docs/a.md"}},
 		Gates:             []ContractGate{{Name: "artifact", Status: ContractGatePending}},
 		Status:            ContractStatusActive,
@@ -2313,6 +2334,348 @@ func TestRunnerFinalCompletionValidationStaleTurnDoesNotMutate(t *testing.T) {
 	}
 	if !reflect.DeepEqual(after.TurnContract, before.TurnContract) {
 		t.Fatalf("stale final validation mutated turn contract: before=%#v after=%#v", before.TurnContract, after.TurnContract)
+	}
+}
+
+func TestRunnerRequiredActionAndVerificationBlockSuccessWithoutEvidence(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("fix this and run tests")
+	session.SetTurnContract(TurnContract{
+		ID:                   "contract-1",
+		SourceTurn:           turn,
+		Intent:               TurnIntentEditCode,
+		RequiredActions:      []ContractAction{{Kind: ContractActionEdit}},
+		RequiredVerification: []VerificationRequirement{{Command: "go test ./internal/react"}},
+		Status:               ContractStatusActive,
+	})
+	r := NewRunner(Config{Session: session})
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	ok, err := r.validateFinalCompletion(context.Background(), turn, "Done, fixed this and tests pass.", false)
+
+	if ok || err != nil {
+		t.Fatalf("ok, err = %v, %v; want blocked without hard error", ok, err)
+	}
+	if !sessionHistoryContains(session, "required turn contract evidence missing", "edit", "verification") {
+		t.Fatalf("history missing required evidence feedback: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerRequiredActionBlocksPlainSuccessfulFinalWithoutEvidence(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("inspect this")
+	session.SetTurnContract(TurnContract{
+		ID:              "contract-1",
+		SourceTurn:      turn,
+		Intent:          TurnIntentInspect,
+		RequiredActions: []ContractAction{{Kind: ContractActionRead}},
+		Status:          ContractStatusActive,
+	})
+	r := NewRunner(Config{Session: session})
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	ok, err := r.validateFinalCompletion(context.Background(), turn, "The repo contains Go code.", false)
+
+	if ok || err != nil {
+		t.Fatalf("ok, err = %v, %v; want blocked without hard error", ok, err)
+	}
+	if !sessionHistoryContains(session, "required turn contract evidence missing", "read") {
+		t.Fatalf("history missing read evidence feedback: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerRequiredActionAndVerificationPassAfterEvidence(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("fix this and run tests")
+	session.SetTurnContract(TurnContract{
+		ID:                   "contract-1",
+		SourceTurn:           turn,
+		Intent:               TurnIntentEditCode,
+		RequiredActions:      []ContractAction{{Kind: ContractActionEdit}},
+		RequiredVerification: []VerificationRequirement{{Command: "go test ./internal/react"}},
+		Evidence: []EvidenceRecord{
+			{Kind: EvidenceWrite, Summary: "write edit_file main.go"},
+			{Kind: EvidenceVerification, Summary: "verification passed: go test ./internal/react"},
+		},
+		Status: ContractStatusActive,
+	})
+	r := NewRunner(Config{Session: session})
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	ok, err := r.validateFinalCompletion(context.Background(), turn, "Done, fixed this and tests pass.", false)
+
+	if !ok || err != nil {
+		t.Fatalf("ok, err = %v, %v; want success", ok, err)
+	}
+}
+
+func TestRunnerRequiredVerificationCommandMustMatch(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("run focused tests")
+	session.SetTurnContract(TurnContract{
+		ID:                   "contract-1",
+		SourceTurn:           turn,
+		Intent:               TurnIntentVerify,
+		RequiredVerification: []VerificationRequirement{{Command: "go test ./internal/react"}},
+		Evidence:             []EvidenceRecord{{Kind: EvidenceVerification, Summary: "verification passed: go test ./cmd/forge"}},
+		Status:               ContractStatusActive,
+	})
+	r := NewRunner(Config{Session: session})
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	ok, err := r.validateFinalCompletion(context.Background(), turn, "Tests passed.", false)
+
+	if ok || err != nil {
+		t.Fatalf("ok, err = %v, %v; want blocked without hard error", ok, err)
+	}
+	if !sessionHistoryContains(session, "required turn contract evidence missing", "verification") {
+		t.Fatalf("history missing verification feedback: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerRequiredVerificationWithoutCommandAcceptsAnyPassedVerification(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("run tests")
+	session.SetTurnContract(TurnContract{
+		ID:                   "contract-1",
+		SourceTurn:           turn,
+		Intent:               TurnIntentVerify,
+		RequiredVerification: []VerificationRequirement{{Description: "tests requested"}},
+		Evidence:             []EvidenceRecord{{Kind: EvidenceVerification, Summary: "verification passed: go test ./cmd/forge"}},
+		Status:               ContractStatusActive,
+	})
+	r := NewRunner(Config{Session: session})
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	ok, err := r.validateFinalCompletion(context.Background(), turn, "Tests passed.", false)
+
+	if !ok || err != nil {
+		t.Fatalf("ok, err = %v, %v; want success", ok, err)
+	}
+}
+
+func TestRunnerContractRunActionSatisfiedBySuccessfulRunCommandEvidence(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("run ls")
+	session.SetTurnContract(TurnContract{
+		ID:              "contract-1",
+		SourceTurn:      turn,
+		Intent:          TurnIntentVerify,
+		RequiredActions: []ContractAction{{Kind: ContractActionRun}},
+		Status:          ContractStatusActive,
+	})
+	session.UpdateTurnContract(func(contract *TurnContract) {
+		recordToolResultEvidence(contract, "run_command", map[string]any{"command": "ls"}, "file.go\nexit 0", false)
+	})
+	r := NewRunner(Config{Session: session})
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	ok, err := r.validateFinalCompletion(context.Background(), turn, "Command completed.", false)
+
+	if !ok || err != nil {
+		t.Fatalf("ok, err = %v, %v; want success", ok, err)
+	}
+}
+
+func TestRunnerRequiredArtifactRequiresExactPathEvidence(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("write docs/a.md")
+	session.SetTurnContract(TurnContract{
+		ID:                "contract-1",
+		SourceTurn:        turn,
+		Intent:            TurnIntentEditCode,
+		RequiredActions:   []ContractAction{{Kind: ContractActionEdit}},
+		RequiredArtifacts: []ArtifactRequirement{{Path: "docs/a.md"}},
+		Evidence:          []EvidenceRecord{{Kind: EvidenceWrite, Summary: "write write_file docs/b.md"}},
+		Status:            ContractStatusActive,
+	})
+	r := NewRunner(Config{Session: session})
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	ok, err := r.validateFinalCompletion(context.Background(), turn, "Done.", false)
+
+	if ok || err != nil {
+		t.Fatalf("ok, err = %v, %v; want blocked without hard error", ok, err)
+	}
+	if !sessionHistoryContains(session, "required turn contract evidence missing", "artifact docs/a.md") {
+		t.Fatalf("history missing exact artifact feedback: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerRequiredActionHonestFailureReportIsNotSuccess(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("fix this and run tests")
+	session.SetTurnContract(TurnContract{
+		ID:                   "contract-1",
+		SourceTurn:           turn,
+		Intent:               TurnIntentEditCode,
+		RequiredActions:      []ContractAction{{Kind: ContractActionEdit}},
+		RequiredVerification: []VerificationRequirement{{Command: "go test ./internal/react"}},
+		Status:               ContractStatusActive,
+	})
+	r := NewRunner(Config{Session: session})
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	ok, err := r.validateFinalCompletion(context.Background(), turn, "I could not fix this because the edit was blocked.", false)
+
+	if ok || err == nil || !strings.Contains(err.Error(), "could not fix") {
+		t.Fatalf("ok, err = %v, %v; want honest failure error", ok, err)
+	}
+	if sessionHistoryContains(session, "required turn contract evidence missing") {
+		t.Fatalf("honest failure should not add retry feedback: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerDelegationFailureBlocksSuccessfulFinalWithoutParentRecovery(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("use an agent then fix this")
+	session.SetTurnContract(TurnContract{
+		ID:              "contract-1",
+		SourceTurn:      turn,
+		Intent:          TurnIntentEditCode,
+		RequiredActions: []ContractAction{{Kind: ContractActionEdit}},
+		Status:          ContractStatusActive,
+	})
+	session.UpdateTurnContract(func(contract *TurnContract) {
+		recordToolResultEvidence(contract, "wait_agent", map[string]any{"id": "agent-1"}, `{"id":"agent-1","status":"failed","result":"boom"}`, false)
+	})
+	r := NewRunner(Config{Session: session})
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	ok, err := r.validateFinalCompletion(context.Background(), turn, "Done, fixed this.", false)
+
+	if ok || err != nil {
+		t.Fatalf("ok, err = %v, %v; want blocked without hard error", ok, err)
+	}
+	if !sessionHistoryContains(session, "delegation failed", "parent-owned recovery evidence") {
+		t.Fatalf("history missing delegation failure feedback: %#v", session.Snapshot().History)
+	}
+}
+
+func TestRunnerReadOnlyDelegationFailureBlocksSuccessfulFinal(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("use an agent to inspect this")
+	session.SetTurnContract(TurnContract{
+		ID:              "contract-1",
+		SourceTurn:      turn,
+		Intent:          TurnIntentInspect,
+		RequiredActions: []ContractAction{{Kind: ContractActionRead}},
+		Evidence:        []EvidenceRecord{{Kind: EvidenceDelegationFailure, Summary: "wait_agent agent-1 failed"}},
+		Status:          ContractStatusActive,
+	})
+	r := NewRunner(Config{Session: session})
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	ok, err := r.validateFinalCompletion(context.Background(), turn, "Done, inspected it.", false)
+
+	if ok || err != nil {
+		t.Fatalf("ok, err = %v, %v; want blocked without hard error", ok, err)
+	}
+}
+
+func TestRunnerDelegationFailureAllowsParentRecoveryEvidence(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("use an agent then fix this")
+	session.SetTurnContract(TurnContract{
+		ID:              "contract-1",
+		SourceTurn:      turn,
+		Intent:          TurnIntentEditCode,
+		RequiredActions: []ContractAction{{Kind: ContractActionEdit}},
+		Evidence: []EvidenceRecord{
+			{Kind: EvidenceDelegationFailure, Summary: "wait_agent agent-1 failed"},
+			{Kind: EvidenceWrite, Summary: "write edit_file main.go"},
+		},
+		Status: ContractStatusActive,
+	})
+	r := NewRunner(Config{Session: session})
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	ok, err := r.validateFinalCompletion(context.Background(), turn, "Done, fixed this.", false)
+
+	if !ok || err != nil {
+		t.Fatalf("ok, err = %v, %v; want success after parent recovery", ok, err)
+	}
+}
+
+func TestRunnerStaleFinalOutputNotAppendedAfterValidation(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("answer")
+	r := NewRunner(Config{Session: session})
+	_, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ok, err := r.validateFinalCompletion(context.Background(), turn, "Done.", false)
+	if !ok || err != nil {
+		t.Fatalf("ok, err = %v, %v; want initial validation success", ok, err)
+	}
+	cancel()
+	before := session.Snapshot()
+	err = r.appendFinalAssistantMessageAndCompleteTurn(context.Background(), turn, "Done.", nil)
+
+	if !errors.Is(err, ErrStaleTurn) {
+		t.Fatalf("err = %v; want stale turn", err)
+	}
+	after := session.Snapshot()
+	if len(after.History) != len(before.History) {
+		t.Fatalf("stale final append mutated history: before=%#v after=%#v", before.History, after.History)
+	}
+}
+
+func TestRunnerFinalValidationRequiresActiveMatchingTurn(t *testing.T) {
+	session := NewSession()
+	turn := session.RecordInput("answer")
+	r := NewRunner(Config{Session: session})
+
+	ok, err := r.validateFinalCompletion(context.Background(), turn, "Done.", false)
+
+	if ok || !errors.Is(err, ErrStaleTurn) {
+		t.Fatalf("ok, err = %v, %v; want stale turn", ok, err)
 	}
 }
 
@@ -2902,8 +3265,8 @@ func TestRunnerDoesNotBypassModelWhenPriorAnswerReferenceHasNoSaveTarget(t *test
 
 func TestRunnerDoesNotBypassModelWhenPriorAnswerReferenceIsNotWriteObject(t *testing.T) {
 	for _, input := range []string{
-		"write about it to report.md",
-		"write an answer to summary.md",
+		"write about it in prose",
+		"write an answer in chat",
 	} {
 		t.Run(input, func(t *testing.T) {
 			session := NewSession()
@@ -5366,7 +5729,7 @@ func TestRunnerStreamsPlainTextTokensIncrementally(t *testing.T) {
 		Session:      session,
 	})
 
-	if err := r.Run(context.Background(), "inspect repo"); err != nil {
+	if err := r.Run(context.Background(), "hello"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -5955,10 +6318,11 @@ func TestRunnerRepeatedUnknownToolEventuallyFailsVisibly(t *testing.T) {
 func TestRunnerUnknownToolRecordsContractViolation(t *testing.T) {
 	driver := &nativeSequenceDriver{steps: [][]llm.Token{
 		{{ToolCall: &llm.NativeToolCall{ID: "bad-1", Name: "bogus_tool", ArgsJSON: `{}`}}},
+		{{ToolCall: &llm.NativeToolCall{ID: "read-1", Name: "read_file", ArgsJSON: `{"path":"README.md"}`}}},
 		{{Text: "recovered"}},
 	}}
 	reg := agenttools.NewRegistry()
-	reg.Register(agenttools.Tool{Name: "read_file", Description: "read file"})
+	reg.Register(agenttools.Tool{Name: "read_file", Description: "read file", Parameters: []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}}, AutoApprove: true, Execute: func(context.Context, map[string]any) (string, error) { return "readme", nil }})
 	session := NewSession()
 	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
 
@@ -5972,10 +6336,12 @@ func TestRunnerUnknownToolRecordsContractViolation(t *testing.T) {
 func TestRunnerMalformedArgsEmitsDurableFailureItem(t *testing.T) {
 	driver := &nativeSequenceDriver{steps: [][]llm.Token{
 		{{ToolCall: &llm.NativeToolCall{ID: "bad-json", Name: "read_file", ArgsJSON: `{"path":`}}},
+		{{ToolCall: &llm.NativeToolCall{ID: "read-1", Name: "read_file", ArgsJSON: `{"path":"README.md"}`}}},
+		{{ToolCall: &llm.NativeToolCall{ID: "read-2", Name: "read_file", ArgsJSON: `{"path":"README.md"}`}}},
 		{{Text: "recovered"}},
 	}}
 	reg := agenttools.NewRegistry()
-	reg.Register(agenttools.Tool{Name: "read_file", Description: "read file", Parameters: []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}}, AutoApprove: true, Execute: func(context.Context, map[string]any) (string, error) { return "", nil }})
+	reg.Register(agenttools.Tool{Name: "read_file", Description: "read file", Parameters: []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}}, AutoApprove: true, Execute: func(context.Context, map[string]any) (string, error) { return "readme", nil }})
 	session := NewSession()
 	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
 	if err := r.Run(context.Background(), "read README"); err != nil {
@@ -5993,18 +6359,11 @@ func TestRunnerMalformedArgsEmitsDurableFailureItem(t *testing.T) {
 }
 
 func TestRunnerMalformedArgumentsRecordsContractViolation(t *testing.T) {
-	driver := &nativeSequenceDriver{steps: [][]llm.Token{
-		{{ToolCall: &llm.NativeToolCall{ID: "bad-json", Name: "read_file", ArgsJSON: `{"path":`}}},
-		{{Text: "recovered"}},
-	}}
-	reg := agenttools.NewRegistry()
-	reg.Register(agenttools.Tool{Name: "read_file", Description: "read file", Parameters: []agenttools.ParameterDef{{Name: "path", Type: "string", Required: true}}, AutoApprove: true, Execute: func(context.Context, map[string]any) (string, error) { return "", nil }})
 	session := NewSession()
-	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
+	session.SetTurnContract(TurnContract{ID: "contract-1", Status: ContractStatusActive})
+	r := NewRunner(Config{Session: session})
 
-	if err := r.Run(context.Background(), "look at the repo"); err != nil {
-		t.Fatal(err)
-	}
+	r.recordModelViolation("malformed_arguments", "read_file")
 
 	assertContractEvidence(t, session.Snapshot().TurnContract, EvidenceModelViolation, "malformed_arguments", "read_file")
 }
@@ -6971,7 +7330,7 @@ func TestRunnerClearHistoryResetsSessionState(t *testing.T) {
 		Session:      NewSession(),
 	})
 
-	if err := r.Run(context.Background(), "inspect repo"); err != nil {
+	if err := r.Run(context.Background(), "hello"); err != nil {
 		t.Fatal(err)
 	}
 	if got := r.LastResponse(); got != "done" {
@@ -7063,7 +7422,7 @@ func TestTurnContractRecordsValidationCommandEvidence(t *testing.T) {
 	session := NewSession()
 	r := NewRunner(Config{Driver: driver, Tools: reg, Session: session})
 
-	if err := r.Run(context.Background(), "implement this and run tests"); err != nil {
+	if err := r.Run(context.Background(), "run the tests"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -7805,7 +8164,7 @@ func TestRunnerAllowsTextAfterRequiredToolCallInSameTurn(t *testing.T) {
 		Session: session,
 	})
 
-	if err := r.Run(context.Background(), "fix this bug after checking active agents"); err != nil {
+	if err := r.Run(context.Background(), "check active agents"); err != nil {
 		t.Fatal(err)
 	}
 	snap := session.Snapshot()
@@ -8047,6 +8406,12 @@ func TestRunnerDoesNotUseCompletedAgentFallbackWhileSameTurnAgentStillRuns(t *te
 				Status:     status,
 				ParentTurn: turn,
 			})
+
+			_, cancel, err := session.BeginTurn(context.Background(), fmt.Sprintf("turn-%d", turn))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cancel()
 
 			if err := r.runLoop(context.Background(), turn); err != nil {
 				t.Fatal(err)
