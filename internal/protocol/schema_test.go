@@ -78,7 +78,7 @@ func TestGeneratedSchemaConstrainsTurnContractFields(t *testing.T) {
 	evidenceItems := evidence["items"].(JSONSchema)
 	evidenceProps := evidenceItems["properties"].(map[string]any)
 	assertSchemaRequired(t, evidenceItems, "kind")
-	assertSchemaEnum(t, evidenceProps["kind"].(JSONSchema), "test", "tool", "note")
+	assertSchemaEnum(t, evidenceProps["kind"].(JSONSchema), "test", "tool", "note", "read", "write", "verification", "model_violation")
 
 	gates := turnContractProps["gates"].(JSONSchema)
 	gateItems := gates["items"].(JSONSchema)

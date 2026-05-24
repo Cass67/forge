@@ -48,9 +48,13 @@ const (
 type EvidenceKind string
 
 const (
-	EvidenceTest EvidenceKind = "test"
-	EvidenceTool EvidenceKind = "tool"
-	EvidenceNote EvidenceKind = "note"
+	EvidenceTest           EvidenceKind = "test"
+	EvidenceTool           EvidenceKind = "tool"
+	EvidenceNote           EvidenceKind = "note"
+	EvidenceRead           EvidenceKind = "read"
+	EvidenceWrite          EvidenceKind = "write"
+	EvidenceVerification   EvidenceKind = "verification"
+	EvidenceModelViolation EvidenceKind = "model_violation"
 )
 
 type ContractAction struct {
@@ -126,7 +130,7 @@ func normalizeTurnContract(contract *TurnContract) *TurnContract {
 	}
 	for i := range contract.Evidence {
 		switch contract.Evidence[i].Kind {
-		case EvidenceTest, EvidenceTool, EvidenceNote:
+		case EvidenceTest, EvidenceTool, EvidenceNote, EvidenceRead, EvidenceWrite, EvidenceVerification, EvidenceModelViolation:
 		default:
 			contract.Evidence[i].Kind = EvidenceNote
 		}
@@ -179,6 +183,126 @@ func deriveTurnContractFromInput(turn int, input string, nowDate string) *TurnCo
 		return contract
 	}
 	return contract
+}
+
+func recordToolCallEvidence(contract *TurnContract, toolName string, args map[string]any) {
+	if contract == nil {
+		return
+	}
+	toolName = strings.TrimSpace(toolName)
+	if toolName == "" {
+		return
+	}
+}
+
+func recordToolResultEvidence(contract *TurnContract, toolName string, args map[string]any, result string, isError bool) {
+	if contract == nil {
+		return
+	}
+	toolName = strings.TrimSpace(toolName)
+	if toolName == "" {
+		return
+	}
+	if toolName == "run_command" {
+		command := strings.TrimSpace(stringArg(args, "command"))
+		if isValidationCommand(strings.ToLower(command)) {
+			passed := !contractToolResultFailed(toolName, result, isError) && isValidationPass(result)
+			status := "failed"
+			if passed {
+				status = "passed"
+			}
+			contract.Evidence = append(contract.Evidence, EvidenceRecord{Kind: EvidenceVerification, Summary: fmt.Sprintf("verification %s: %s", status, command)})
+			return
+		}
+	}
+	if isReadEvidenceTool(toolName) {
+		if contractToolResultFailed(toolName, result, isError) {
+			contract.Evidence = append(contract.Evidence, EvidenceRecord{Kind: EvidenceTool, Summary: toolEvidenceSummary("failed read", toolName, evidencePaths(args))})
+			return
+		}
+		contract.Evidence = append(contract.Evidence, EvidenceRecord{Kind: EvidenceRead, Summary: toolEvidenceSummary("read", toolName, evidencePaths(args))})
+		return
+	}
+	if isWriteEvidenceTool(toolName) {
+		if contractToolResultFailed(toolName, result, isError) {
+			contract.Evidence = append(contract.Evidence, EvidenceRecord{Kind: EvidenceTool, Summary: toolEvidenceSummary("failed write", toolName, evidencePaths(args))})
+			return
+		}
+		contract.Evidence = append(contract.Evidence, EvidenceRecord{Kind: EvidenceWrite, Summary: toolEvidenceSummary("write", toolName, evidencePaths(args))})
+	}
+}
+
+func recordModelViolation(contract *TurnContract, reason, detail string) {
+	if contract == nil {
+		return
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return
+	}
+	detail = strings.TrimSpace(detail)
+	summary := reason
+	if detail != "" {
+		summary += ": " + detail
+	}
+	contract.Evidence = append(contract.Evidence, EvidenceRecord{Kind: EvidenceModelViolation, Summary: summary})
+}
+
+func isReadEvidenceTool(toolName string) bool {
+	switch strings.TrimSpace(toolName) {
+	case "read_file", "list_dir", "search", "glob", "code_search", "read_output", "scratchpad_read", "git_status", "git_diff", "git_log":
+		return true
+	default:
+		return false
+	}
+}
+
+func isWriteEvidenceTool(toolName string) bool {
+	switch strings.TrimSpace(toolName) {
+	case "write_file", "edit_file", "apply_patch", "artifact_write", "scratchpad_write":
+		return true
+	default:
+		return false
+	}
+}
+
+func evidencePaths(args map[string]any) []string {
+	for _, key := range []string{"path", "file_path", "target_path"} {
+		if value := normalizeEvidencePath(stringArg(args, key)); value != "" {
+			return []string{value}
+		}
+	}
+	var paths []string
+	for _, path := range pathsFromPatch(stringArg(args, "patch")) {
+		if path = normalizeEvidencePath(path); path != "" {
+			paths = append(paths, path)
+		}
+	}
+	return paths
+}
+
+func normalizeEvidencePath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	return strings.Join(strings.Fields(path), " ")
+}
+
+func toolEvidenceSummary(action, toolName string, paths []string) string {
+	summary := strings.TrimSpace(action) + ": " + strings.TrimSpace(toolName)
+	if len(paths) > 0 {
+		summary += " " + strings.Join(paths, ", ")
+	}
+	return summary
+}
+
+func contractToolResultFailed(toolName, result string, isError bool) bool {
+	if isError || sideEffectToolResultIsFailure(result) {
+		return true
+	}
+	lower := strings.ToLower(strings.TrimSpace(result))
+	return strings.HasPrefix(lower, "refused:") || strings.HasPrefix(lower, "refused ")
 }
 
 func turnInputSuggestsWritePlan(input string) bool {
