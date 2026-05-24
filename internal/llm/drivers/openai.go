@@ -283,7 +283,7 @@ func (d *OpenAIDriver) chatCompletionParams(messages []llm.Message) openai.ChatC
 func (d *OpenAIDriver) chatCompletionParamsWithTools(messages []llm.Message, opts llm.NativeToolOptions) openai.ChatCompletionNewParams {
 	params := openai.ChatCompletionNewParams{
 		Model:    shared.ChatModel(d.apiModel),
-		Messages: toOpenAIMessages(messages, d.requiresAssistantReasoningContent()),
+		Messages: toOpenAIMessagesWithOptions(messages, d.requiresAssistantReasoningContent(), providerSupportsChatImageParts(d.providerLabel, d.registryName, d.apiModel)),
 	}
 	if providerSupportsStreamUsageOptions(d.providerLabel) {
 		params.StreamOptions = openai.ChatCompletionStreamOptionsParam{
@@ -830,6 +830,16 @@ func providerSupportsResponseCompaction(providerLabel string) bool {
 	}
 }
 
+func providerSupportsChatImageParts(providerLabel, registryName, apiModel string) bool {
+	providerLabel = strings.ToLower(strings.TrimSpace(providerLabel))
+	registryName = strings.ToLower(strings.TrimSpace(registryName))
+	apiModel = strings.ToLower(strings.TrimSpace(apiModel))
+	if providerLabel == "opencode-go" && (strings.Contains(registryName, "deepseek") || strings.Contains(apiModel, "deepseek")) {
+		return false
+	}
+	return true
+}
+
 func (d *OpenAIDriver) shouldFallbackToNonStreaming(err error) bool {
 	if err == nil || !providerUsesLegacyMaxTokensField(d.providerLabel) {
 		return false
@@ -839,6 +849,10 @@ func (d *OpenAIDriver) shouldFallbackToNonStreaming(err error) bool {
 }
 
 func toOpenAIMessages(msgs []llm.Message, includeEmptyAssistantReasoning bool) []openai.ChatCompletionMessageParamUnion {
+	return toOpenAIMessagesWithOptions(msgs, includeEmptyAssistantReasoning, true)
+}
+
+func toOpenAIMessagesWithOptions(msgs []llm.Message, includeEmptyAssistantReasoning bool, allowImageParts bool) []openai.ChatCompletionMessageParamUnion {
 	out := make([]openai.ChatCompletionMessageParamUnion, 0, len(msgs))
 	for _, m := range msgs {
 		switch m.Role {
@@ -858,6 +872,10 @@ func toOpenAIMessages(msgs []llm.Message, includeEmptyAssistantReasoning bool) [
 						}
 					case "image":
 						if part.Image != nil {
+							if !allowImageParts {
+								parts = append(parts, openai.TextContentPart("[image attachment omitted: this provider does not support image chat content]"))
+								continue
+							}
 							dataURL, err := imageToDataURL(part.Image.Path, part.Image.MIMEType)
 							if err != nil {
 								continue

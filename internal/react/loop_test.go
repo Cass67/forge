@@ -790,12 +790,30 @@ func TestDeriveSideEffectIntentIgnoresPastedTerminalOutput(t *testing.T) {
 	}
 }
 
+func TestDeriveSideEffectIntentIgnoresShellPromptConfigTranscript(t *testing.T) {
+	payload := "~/git/term_wrangler  target/release/term_wrangler                                                         ok\nerror: no config file found.\n\nCreate a term_wrangler.toml in the current directory or at:\n  ~/.config/term_wrangler/config.toml\n\nExample:\n  command = \"opencode\"\n  terminal = \"auto\"\n  dirs = [\"/path/to/project1\", \"/path/to/project2\"]\n\n ~/git/term_wrangler  cat ~/.config/term_wrangler/config.toml                                            1 err\n# term_wrangler example config\n# AI agent command to run in each directory\ncommand = \"opencode\"\nterminal = \"auto\"\ndirs = [\"~/git/uavchum\", \"~/git/term_wrangler\"]"
+	if intent := deriveSideEffectIntentFromText(3, payload); intent != nil {
+		t.Fatalf("intent = %#v, want nil for pasted shell transcript", intent)
+	}
+}
+
 func TestRunnerDoesNotRequireToolCallForInjectedSkillPayload(t *testing.T) {
 	snap := SessionSnapshot{
 		LastInput: "[Skill: requesting-code-review]\n\n# Requesting Code Review\n\nDispatch a code reviewer subagent. Fill template at `code-reviewer.md` and write findings.",
 	}
 	if shouldRequireToolCallForSnapshot(snap) {
 		t.Fatal("injected skill context should not require a tool call")
+	}
+}
+
+func TestDebugChatPromptDoesNotExposeInspectionTools(t *testing.T) {
+	snap := SessionSnapshot{LastInput: "debug hello forge"}
+
+	if tools := allowedToolNamesForSnapshot(snap); len(tools) != 0 {
+		t.Fatalf("allowed tools = %#v, want none for plain debug chat prompt", tools)
+	}
+	if shouldRequireToolCallForSnapshot(snap) {
+		t.Fatal("plain debug chat prompt should not require a tool call")
 	}
 }
 
@@ -7225,6 +7243,72 @@ func TestAllowedToolsForPastedTerminalOutputBugReportUsesParentImplementationToo
 	}
 	if shouldRouteParentThroughDelegation(snap) {
 		t.Fatal("pasted terminal output should not route parent through Forge delegation")
+	}
+}
+
+func TestAllowedToolsForShellPromptConfigTranscriptUsesParentImplementationTools(t *testing.T) {
+	input := "~/git/term_wrangler  target/release/term_wrangler                                                         ok\nerror: no config file found.\n\nCreate a term_wrangler.toml in the current directory or at:\n  ~/.config/term_wrangler/config.toml\n\nExample:\n  command = \"opencode\"\n  terminal = \"auto\"\n  dirs = [\"/path/to/project1\", \"/path/to/project2\"]\n\n ~/git/term_wrangler  cat ~/.config/term_wrangler/config.toml                                            1 err\n# term_wrangler example config\n# AI agent command to run in each directory\ncommand = \"opencode\"\nterminal = \"auto\"\ndirs = [\"~/git/uavchum\", \"~/git/term_wrangler\"]"
+	contract := deriveTurnContractFromInput(1, input, "2026-05-24")
+	if contract == nil || contract.Intent != TurnIntentEditCode {
+		t.Fatalf("contract = %#v, want edit-code bug-fix contract", contract)
+	}
+	snap := SessionSnapshot{LastInput: input, TurnContract: contract}
+	tools := allowedToolNamesForSnapshot(snap)
+
+	for _, want := range []string{"read_file", "edit_file", "run_command"} {
+		if !containsString(tools, want) {
+			t.Fatalf("shell transcript tools = %#v, want %s", tools, want)
+		}
+	}
+	for _, blocked := range []string{"spawn_agent", "wait_agent"} {
+		if containsString(tools, blocked) {
+			t.Fatalf("shell transcript tools = %#v, should not include %s", tools, blocked)
+		}
+	}
+	if shouldRouteParentThroughDelegation(snap) {
+		t.Fatal("shell prompt transcript should not route parent through Forge delegation")
+	}
+}
+
+func TestBugReportFollowUpRequiresImplementationContract(t *testing.T) {
+	input := "you seem to have broken the ghostty config file and also it opens multiple windows, not one with multiple tabs"
+	contract := deriveTurnContractFromInput(3, input, "2026-05-24")
+	if contract == nil || contract.Intent != TurnIntentEditCode {
+		t.Fatalf("contract = %#v, want edit-code bug-fix contract", contract)
+	}
+	snap := SessionSnapshot{LastInput: input, TurnContract: contract}
+	tools := allowedToolNamesForSnapshot(snap)
+	for _, want := range []string{"read_file", "edit_file", "run_command"} {
+		if !containsString(tools, want) {
+			t.Fatalf("bug follow-up tools = %#v, want %s", tools, want)
+		}
+	}
+	if !shouldRequireToolCallForSnapshot(snap) {
+		t.Fatal("bug-fix follow-up should require tool evidence")
+	}
+}
+
+func TestValidateToolArgsRejectsOmittedPlaceholderStrings(t *testing.T) {
+	tool := agenttools.Tool{
+		Name: "run_command",
+		Parameters: []agenttools.ParameterDef{
+			{Name: "command", Type: "string", Required: true},
+		},
+	}
+	err := validateToolArgs(tool, map[string]any{"command": "<omitted 658 chars>"})
+	if !strings.Contains(err, "placeholder") {
+		t.Fatalf("validateToolArgs error = %q, want placeholder rejection", err)
+	}
+}
+
+func TestWorkspaceEscapeToolErrorsAreModelCorrectable(t *testing.T) {
+	err := errors.New(`path "/tmp/test_ghostty.scpt" escapes working directory`)
+	for _, name := range []string{"write_file", "edit_file", "apply_patch"} {
+		t.Run(name, func(t *testing.T) {
+			if !isModelCorrectableToolExecutionError(name, err) {
+				t.Fatalf("%s workspace escape should be model-correctable", name)
+			}
+		})
 	}
 }
 

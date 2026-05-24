@@ -176,6 +176,16 @@ func deriveTurnContractFromInput(turn int, input string, nowDate string) *TurnCo
 		addGitActionsToTurnContract(contract, normalized)
 		return contract
 	}
+	if inputSuggestsBugFixWork(normalized) && !inputSuggestsDocumentOutputAction(normalized) && !turnInputAsksForExplanation(normalized) && !turnInputAsksForReadOnlyReview(normalized) {
+		contract.Intent = TurnIntentEditCode
+		contract.RequiredActions = append(contract.RequiredActions, ContractAction{Kind: ContractActionEdit, Description: "fix reported runtime error"})
+		return contract
+	}
+	if inputLooksLikePastedTerminalOutput(input) && inputSuggestsBugFixWork(normalized) {
+		contract.Intent = TurnIntentEditCode
+		contract.RequiredActions = append(contract.RequiredActions, ContractAction{Kind: ContractActionEdit, Description: "fix reported runtime error"})
+		return contract
+	}
 	if turnInputSuggestsInspection(normalized) {
 		contract.Intent = TurnIntentInspect
 		contract.RequiredActions = append(contract.RequiredActions, ContractAction{Kind: ContractActionRead, Description: "inspect requested context"})
@@ -221,6 +231,10 @@ func recordToolResultEvidence(contract *TurnContract, toolName string, args map[
 		status := "failed"
 		if !contractToolResultFailed(toolName, result, isError) && runCommandResultExitZero(result) {
 			status = "passed"
+		}
+		if status == "passed" && runCommandLooksLikeFileMutation(command) {
+			contract.Evidence = append(contract.Evidence, EvidenceRecord{Kind: EvidenceWrite, Summary: strings.TrimSpace("run_command write: " + command)})
+			return
 		}
 		contract.Evidence = append(contract.Evidence, EvidenceRecord{Kind: EvidenceTool, Summary: strings.TrimSpace("run_command " + status + ": " + command)})
 		return
@@ -332,6 +346,14 @@ func isWriteEvidenceTool(toolName string) bool {
 	default:
 		return false
 	}
+}
+
+func runCommandLooksLikeFileMutation(command string) bool {
+	lower := strings.ToLower(strings.TrimSpace(command))
+	if lower == "" {
+		return false
+	}
+	return strings.Contains(lower, "sed -i") || strings.Contains(lower, "cat >>")
 }
 
 func isGitSideEffectTool(toolName string) bool {
