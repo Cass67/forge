@@ -24,6 +24,10 @@ type chatTheme struct {
 	Success         lipgloss.Color
 	Warning         lipgloss.Color
 	Error           lipgloss.Color
+	TaskActive      lipgloss.Color
+	TaskCompleted   lipgloss.Color
+	TaskBlocked     lipgloss.Color
+	TaskPending     lipgloss.Color
 }
 
 func (t chatTheme) appSurface() lipgloss.Color {
@@ -65,6 +69,10 @@ var chatThemeRegistry = []chatTheme{
 		Success:         lipgloss.Color("#6fda9c"),
 		Warning:         lipgloss.Color("#ffcb6b"),
 		Error:           lipgloss.Color("#ff7f7f"),
+		TaskActive:      lipgloss.Color("#79c0ff"),
+		TaskCompleted:   lipgloss.Color("#6fda9c"),
+		TaskBlocked:     lipgloss.Color("#ffcb6b"),
+		TaskPending:     lipgloss.Color("#8d9aae"),
 	},
 	{
 		ID:              "codex",
@@ -83,6 +91,10 @@ var chatThemeRegistry = []chatTheme{
 		Success:         lipgloss.Color("#5fd38d"),
 		Warning:         lipgloss.Color("#f2cc60"),
 		Error:           lipgloss.Color("#ff8787"),
+		TaskActive:      lipgloss.Color("#58a6ff"),
+		TaskCompleted:   lipgloss.Color("#5fd38d"),
+		TaskBlocked:     lipgloss.Color("#f2cc60"),
+		TaskPending:     lipgloss.Color("#8c9cb0"),
 	},
 	{
 		ID:              "opencode",
@@ -101,6 +113,10 @@ var chatThemeRegistry = []chatTheme{
 		Success:         lipgloss.Color("#64d79a"),
 		Warning:         lipgloss.Color("#ffcf73"),
 		Error:           lipgloss.Color("#ff8e8e"),
+		TaskActive:      lipgloss.Color("#6bb7ff"),
+		TaskCompleted:   lipgloss.Color("#64d79a"),
+		TaskBlocked:     lipgloss.Color("#ffcf73"),
+		TaskPending:     lipgloss.Color("#90a0b7"),
 	},
 	{
 		ID:              "low",
@@ -119,6 +135,10 @@ var chatThemeRegistry = []chatTheme{
 		Success:         lipgloss.Color("#7fbf7f"),
 		Warning:         lipgloss.Color("#d29922"),
 		Error:           lipgloss.Color("#f85149"),
+		TaskActive:      lipgloss.Color("#7fbf7f"),
+		TaskCompleted:   lipgloss.Color("#7fbf7f"),
+		TaskBlocked:     lipgloss.Color("#d29922"),
+		TaskPending:     lipgloss.Color("#8b949e"),
 	},
 	{
 		ID:              "light",
@@ -137,6 +157,10 @@ var chatThemeRegistry = []chatTheme{
 		Success:         lipgloss.Color("#1a7f37"),
 		Warning:         lipgloss.Color("#9a6700"),
 		Error:           lipgloss.Color("#cf222e"),
+		TaskActive:      lipgloss.Color("#0969da"),
+		TaskCompleted:   lipgloss.Color("#1a7f37"),
+		TaskBlocked:     lipgloss.Color("#9a6700"),
+		TaskPending:     lipgloss.Color("#57606a"),
 	},
 	{
 		ID:              "dusk",
@@ -155,6 +179,10 @@ var chatThemeRegistry = []chatTheme{
 		Success:         lipgloss.Color("#4ade80"),
 		Warning:         lipgloss.Color("#fbbf24"),
 		Error:           lipgloss.Color("#fb7185"),
+		TaskActive:      lipgloss.Color("#38bdf8"),
+		TaskCompleted:   lipgloss.Color("#4ade80"),
+		TaskBlocked:     lipgloss.Color("#fbbf24"),
+		TaskPending:     lipgloss.Color("#94a3b8"),
 	},
 	{
 		ID:              "midnight-ink",
@@ -173,6 +201,10 @@ var chatThemeRegistry = []chatTheme{
 		Success:         lipgloss.Color("#6ec89b"),
 		Warning:         lipgloss.Color("#d4a954"),
 		Error:           lipgloss.Color("#d46e6e"),
+		TaskActive:      lipgloss.Color("#5b9bd5"),
+		TaskCompleted:   lipgloss.Color("#6ec89b"),
+		TaskBlocked:     lipgloss.Color("#d4a954"),
+		TaskPending:     lipgloss.Color("#6b7d96"),
 	},
 	{
 		ID:              "eclipse",
@@ -191,6 +223,10 @@ var chatThemeRegistry = []chatTheme{
 		Success:         lipgloss.Color("#34d399"),
 		Warning:         lipgloss.Color("#fbbf24"),
 		Error:           lipgloss.Color("#f87171"),
+		TaskActive:      lipgloss.Color("#34d399"),
+		TaskCompleted:   lipgloss.Color("#34d399"),
+		TaskBlocked:     lipgloss.Color("#fbbf24"),
+		TaskPending:     lipgloss.Color("#a1a1aa"),
 	},
 }
 

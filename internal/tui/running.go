@@ -58,6 +58,12 @@ type RunningModel struct {
 	AI2Scroll      int
 	writerTurnGap  bool
 	auditorTurnGap bool
+	// Plan tracking
+	PlanSteps    []PlanStep // parsed plan steps from the current session
+	PlanTotal    int
+	PlanComplete int
+	// File changes tracking
+	FilesChanged int // files written/edited during the session
 }
 
 func NewRunningModel(totalPasses, totalRounds int, ai1Model, ai2Model string) RunningModel {
@@ -77,6 +83,14 @@ func (m RunningModel) Init() tea.Cmd { return nil }
 func (m RunningModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case llm.Event:
+		// Track tool changes before routing to handleEvent
+		if msg.Kind == llm.EventToolCall || msg.Kind == llm.EventToolResult {
+			m.trackToolChange(msg)
+		}
+		// Detect plan steps in writer output
+		if msg.Kind == llm.EventToken && msg.Agent == "writer" {
+			m.detectPlanFromText(msg.Text)
+		}
 		return m.handleEvent(msg)
 	case tea.WindowSizeMsg:
 		m.Width = msg.Width
@@ -192,7 +206,19 @@ func (m RunningModel) statusLine() string {
 		activity = "paused"
 	}
 
-	return passLabel + "  " + roundLabel + "  " + activity
+	// Plan progress indicator
+	planInfo := ""
+	if m.PlanTotal > 0 {
+		planInfo = fmt.Sprintf(" plan %d/%d", m.PlanComplete, m.PlanTotal)
+	}
+
+	// File changes indicator
+	changesInfo := ""
+	if m.FilesChanged > 0 {
+		changesInfo = fmt.Sprintf(" files %d", m.FilesChanged)
+	}
+
+	return passLabel + "  " + roundLabel + "  " + activity + planInfo + changesInfo
 }
 
 func (m RunningModel) splitView() string {
@@ -507,4 +533,38 @@ func paintRows(lines []string, width int) string {
 		b.WriteString(padStyledWidth(line, width))
 	}
 	return b.String()
+}
+
+// detectPlanFromText scans agent output for plan step markers and tracks progress.
+func (m *RunningModel) detectPlanFromText(text string) {
+	// Look for plan step markers like [completed], [in_progress], etc.
+	match := planStepRegex.FindAllStringSubmatch(text, -1)
+	if len(match) == 0 {
+		return
+	}
+
+	// Count all unique plan steps from the accumulated writer buffer
+	m.PlanSteps = parsePlanSteps(m.WriterBuf)
+	total := len(m.PlanSteps)
+	if total == 0 {
+		return
+	}
+	m.PlanTotal = total
+
+	complete := 0
+	for _, step := range m.PlanSteps {
+		if step.Status == planStepCompleted || step.Status == "failed" {
+			complete++
+		}
+	}
+	m.PlanComplete = complete
+}
+
+// trackToolChange counts file write/edit operations from tool events.
+func (m *RunningModel) trackToolChange(ev llm.Event) {
+	toolName := ev.Agent
+	switch toolName {
+	case "write_file", "patch", "edit_file", "apply_patch":
+		m.FilesChanged++
+	}
 }

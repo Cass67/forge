@@ -898,7 +898,7 @@ func runMakeInteractive() {
 		if len(cfg.Pipeline) > 0 {
 			totalPasses = len(cfg.Pipeline)
 		}
-		result := tui.RunLive(events, totalPasses, lastStart.Rounds, tui.LiveConfig{
+		result := tui.RunLivePipeline(events, totalPasses, lastStart.Rounds, tui.LiveConfig{
 			WriterModel:  lastStart.WriterModel,
 			AuditorModel: lastStart.AuditorModel,
 			Gate:         gate,
