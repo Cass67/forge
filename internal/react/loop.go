@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"forge/internal/agent"
 	agenttools "forge/internal/agent/tools"
@@ -76,6 +75,7 @@ type Runner struct {
 	turnComplete              func(SessionSnapshot)
 	toolExposureObserver      func(ToolExposureDecision)
 	toolThrashCircuitBreaker  int
+	completionGateRejections  int
 	outputStore               sessionstore.OutputStore
 	outputStoreThresholdBytes int
 	checkpointManager         *workspace.CheckpointManager
@@ -123,18 +123,24 @@ type sameFileSearchWorkflowState struct {
 type repeatToolCallState struct {
 	lastToolName string
 	lastTarget   string
-	streak       int
+	// recent holds the last repeatToolCallWindow exploration call keys since
+	// the last mutating tool call, so alternating repeats (grep A / cat B /
+	// grep A ...) are caught, not just consecutive identical calls.
+	recent []string
+	// streak is the number of occurrences of the most recent key within the
+	// window (including the latest call).
+	streak int
 }
 
 type postDelegationWorkflowState struct {
 	pendingWrite bool
 }
 
-const planExplorationBudget = 10
-const analysisExplorationBudget = 15
-const previewExplorationBudget = 4
-const implementExplorationBudget = 12
-const inspectExplorationBudget = 8
+const planExplorationBudget = 24
+const analysisExplorationBudget = 40
+const previewExplorationBudget = 6
+const implementExplorationBudget = 24
+const inspectExplorationBudget = 24
 const defaultOutputStoreThresholdBytes = 10 * 1024
 
 const (
@@ -150,10 +156,10 @@ func outputStoreThresholdBytes(configured int) int {
 	return defaultOutputStoreThresholdBytes
 }
 
-const overviewExplorationBudget = 6
-const reviewExplorationBudget = 10
-const validateExplorationBudget = 6
-const chatExplorationBudget = 8
+const overviewExplorationBudget = 12
+const reviewExplorationBudget = 40
+const validateExplorationBudget = 12
+const chatExplorationBudget = 16
 const maxLoopSafetySteps = 1000
 
 func maxLoopSteps(configured int) int {
@@ -171,8 +177,10 @@ func toolThrashThreshold(configured, fallback int) int {
 }
 
 const sameFileSearchThrashThreshold = 5
-const repeatToolCallThreshold = 6
+const repeatToolCallThreshold = 3
+const repeatToolCallWindow = 10
 const maxCompletionRetriesPerTurn = 3
+const maxCompletionGateRejectionsPerTurn = 2
 const retryNoticeText = "Revising answer..."
 
 var loopHookOverlayKeys = map[string]struct{}{
@@ -273,7 +281,6 @@ func (r *Runner) RunWithParts(ctx context.Context, input string, parts []llm.Mes
 	if prompt == "" && len(parts) == 0 {
 		return nil
 	}
-	priorResponse := r.LastResponse()
 	turnID := fmt.Sprintf("turn-%d", r.session.Snapshot().Turn+1)
 	activeTurn, _, err := r.session.BeginTurn(ctx, turnID)
 	if err != nil {
@@ -298,26 +305,16 @@ func (r *Runner) RunWithParts(ctx context.Context, input string, parts []llm.Mes
 	if err != nil {
 		return err
 	}
-	if root := deriveActiveWorkspaceRoot(prompt); root != "" {
-		r.session.SetActiveWorkspaceRoot(root)
-	}
-	directLastResponseWrite := len(parts) == 0 && strings.TrimSpace(priorResponse) != "" && directLastResponseMarkdownWriteIntent(directWriteTokens(prompt))
-	if !directLastResponseWrite {
-		preserveActiveContract := shouldPreserveActiveContractForInput(r.session.Snapshot(), prompt)
-		if contract := deriveTurnContractFromInput(turn, prompt, time.Now().Format("2006-01-02")); contract != nil && !preserveActiveContract {
-			r.session.SetTurnContract(*contract)
-		}
-		if intent := deriveSideEffectIntentFromText(turn, prompt); intent != nil {
-			r.session.SetSideEffectIntent(*intent)
-		}
-		r.syncTurnContractAndSideEffectIntent()
-	}
+	// Intent is the model's job: no contracts, side-effect intents, workspace
+	// roots, or write bypasses are derived from keyword-matching the input.
+	r.session.SetTurnContract(TurnContract{
+		ID:         fmt.Sprintf("contract-%d", turn),
+		SourceTurn: turn,
+		Intent:     TurnIntentAnswerOnly,
+		Status:     ContractStatusActive,
+	})
 	r.pendingRetryPrompt = ""
-	if len(parts) == 0 {
-		if handled, err := r.tryDirectLastResponseMarkdownWrite(ctx, turn, prompt, priorResponse); handled {
-			return err
-		}
-	}
+	r.completionGateRejections = 0
 	if r.driver == nil {
 		err := fmt.Errorf("react runner: driver is nil")
 		return r.completeTurn(turn, "", nil, err)
@@ -611,24 +608,6 @@ func (r *Runner) markTurnContractSatisfiedIfComplete(turn int) {
 	})
 }
 
-func shouldPreserveActiveContractForInput(snapshot SessionSnapshot, input string) bool {
-	contract := snapshot.TurnContract
-	if contract == nil || contract.Status != ContractStatusActive || contract.Intent == TurnIntentAnswerOnly {
-		return false
-	}
-	return inputIsBareContinuation(input)
-}
-
-func inputIsBareContinuation(input string) bool {
-	normalized := normalizeToolIntentText(input)
-	switch normalized {
-	case "continue", "keep going", "go on", "proceed", "carry on", "resume":
-		return true
-	default:
-		return false
-	}
-}
-
 func (r *Runner) finalSideEffectGateMayBlock() bool {
 	if r == nil || r.session == nil {
 		return false
@@ -679,14 +658,25 @@ func (r *Runner) ensureFinalValidationTurnCurrent(ctx context.Context, turn int)
 	return nil
 }
 
-func (r *Runner) blockFinalPlanStateSuccessIfNeeded(turn int, finalText string) (bool, error) {
-	return r.blockFinalCompletionGates(turn, finalText)
-}
-
 func (r *Runner) blockFinalCompletionGates(turn int, finalText string) (bool, error) {
 	if r == nil || r.session == nil {
 		return false, nil
 	}
+	// Gates are advisory nudges, not walls: after a bounded number of
+	// rejections the final answer goes through. The gates are derived from
+	// keyword heuristics and an uncapped rejection loop burns the whole step
+	// budget when they misclassify the user's intent.
+	if r.completionGateRejections >= maxCompletionGateRejectionsPerTurn {
+		return false, nil
+	}
+	blocked, err := r.blockFinalCompletionGatesOnce(turn, finalText)
+	if blocked {
+		r.completionGateRejections++
+	}
+	return blocked, err
+}
+
+func (r *Runner) blockFinalCompletionGatesOnce(turn int, finalText string) (bool, error) {
 	snap := r.session.Snapshot()
 	step, ok := unresolvedPlanStep(snap.PlanState)
 	if ok || contractHasPlanStateGate(snap.TurnContract) {
@@ -702,13 +692,6 @@ func (r *Runner) blockFinalCompletionGates(turn int, finalText string) (bool, er
 			return blocked, err
 		}
 		return r.blockWithTurnContractFeedback(turn, finalText)
-	}
-	lowerFinal := strings.ToLower(finalText)
-	if finalResponseReportsSideEffectFailure(lowerFinal) {
-		if sideFailure != nil {
-			return true, sideFailure
-		}
-		return true, fmt.Errorf("react runtime: plan state %s: %s", strings.ToLower(strings.TrimSpace(step.Status)), strings.TrimSpace(finalText))
 	}
 	feedback := planStateInconsistencyFeedback(step)
 	r.recordPlanStateContractViolation(feedback)
@@ -734,9 +717,6 @@ func (r *Runner) blockWithTurnContractFeedback(turn int, finalText string) (bool
 	contract := snap.TurnContract
 	if !turnContractRequiresFinalEvidence(contract, turn) {
 		return false, nil
-	}
-	if finalResponseReportsSideEffectFailure(strings.ToLower(finalText)) {
-		return true, fmt.Errorf("react runtime: turn contract not satisfied: %s", strings.TrimSpace(finalText))
 	}
 	feedback := turnContractFinalEvidenceFeedback(contract)
 	if feedback == "" {
@@ -1006,14 +986,6 @@ func contractHasPlanStateGate(contract *TurnContract) bool {
 	return false
 }
 
-func (r *Runner) blockFinalSideEffectSuccessIfNeeded(finalText string) (bool, error) {
-	if r == nil || r.session == nil {
-		return false, nil
-	}
-	feedbackParts, hasArtifactFeedback, failure := r.finalSideEffectGateFeedback(finalText)
-	return r.blockWithSideEffectFeedback(feedbackParts, hasArtifactFeedback, failure)
-}
-
 func (r *Runner) finalSideEffectGateFeedback(finalText string) ([]string, bool, error) {
 	if r == nil || r.session == nil {
 		return nil, false, nil
@@ -1021,20 +993,15 @@ func (r *Runner) finalSideEffectGateFeedback(finalText string) ([]string, bool, 
 	var feedbackParts []string
 	hasArtifactFeedback := false
 	if artifactFeedback := r.turnContractArtifactGateFeedback(finalText); artifactFeedback != "" {
-		if finalResponseReportsSideEffectFailure(strings.ToLower(finalText)) {
-			return nil, true, fmt.Errorf("react runtime: artifact gate failed: %s", strings.TrimSpace(finalText))
-		}
 		feedbackParts = append(feedbackParts, artifactFeedback)
 		hasArtifactFeedback = true
 	}
-	if finalResponseClaimsSideEffectSuccess(finalText) {
-		ignored := map[string]bool(nil)
-		if hasArtifactFeedback {
-			ignored = map[string]bool{string(SideEffectActionWrite): true}
-		}
-		if feedback := sideEffectGateFeedbackExcept(r.session.Snapshot().SideEffectIntent, ignored); feedback != "" {
-			feedbackParts = append(feedbackParts, feedback)
-		}
+	ignored := map[string]bool(nil)
+	if hasArtifactFeedback {
+		ignored = map[string]bool{string(SideEffectActionWrite): true}
+	}
+	if feedback := sideEffectGateFeedbackExcept(r.session.Snapshot().SideEffectIntent, ignored); feedback != "" {
+		feedbackParts = append(feedbackParts, feedback)
 	}
 	return feedbackParts, hasArtifactFeedback, nil
 }
@@ -1048,9 +1015,7 @@ func (r *Runner) turnContractArtifactGateFeedback(finalText string) string {
 	if contract == nil || contract.Intent != TurnIntentWriteArtifact || len(contract.RequiredArtifacts) == 0 {
 		return ""
 	}
-	if contractHasOnlyMirroredSideEffectArtifacts(contract) && !finalResponseClaimsSideEffectSuccess(finalText) {
-		return ""
-	}
+	_ = finalText
 	root := strings.TrimSpace(snap.ActiveWorkspaceRoot)
 	if root == "" && snap.SideEffectIntent != nil {
 		root = strings.TrimSpace(snap.SideEffectIntent.WorkspaceRoot)
@@ -1097,18 +1062,6 @@ func (r *Runner) turnContractArtifactGateFeedback(finalText string) string {
 		return ""
 	}
 	return "Runtime feedback: artifact gate unresolved: required artifact must exist at exact path " + strings.Join(failures, ", ") + ". Write the requested file before claiming completion."
-}
-
-func contractHasOnlyMirroredSideEffectArtifacts(contract *TurnContract) bool {
-	if contract == nil || len(contract.RequiredArtifacts) == 0 {
-		return false
-	}
-	for _, artifact := range contract.RequiredArtifacts {
-		if strings.TrimSpace(artifact.Description) != "requested artifact" {
-			return false
-		}
-	}
-	return true
 }
 
 func validateContractArtifactRequirement(contract *TurnContract, intent *SideEffectIntent, root string, artifact ArtifactRequirement) (ContractGateStatus, string) {
@@ -1198,152 +1151,6 @@ func updateContractGate(contract *TurnContract, name string, status ContractGate
 		}
 	}
 	contract.Gates = append(contract.Gates, ContractGate{Name: name, Status: status, Evidence: evidence})
-}
-
-func (r *Runner) syncTurnContractAndSideEffectIntent() {
-	if r == nil || r.session == nil {
-		return
-	}
-	r.syncTurnContractFromSideEffectIntent()
-	r.syncSideEffectIntentFromTurnContract()
-	r.syncTurnContractFromSideEffectIntent()
-}
-
-func (r *Runner) syncTurnContractFromSideEffectIntent() {
-	snap := r.session.Snapshot()
-	if snap.SideEffectIntent == nil {
-		return
-	}
-	if !sideEffectIntentCanMirrorIntoTurnContract(snap.SideEffectIntent, snap.TurnContract, snap.PendingDelegationAction) {
-		return
-	}
-	if sanitized := sanitizedSideEffectIntentForPendingDelegation(snap); sanitized != nil {
-		r.session.SetSideEffectIntent(*sanitized)
-		snap.SideEffectIntent = sanitized
-	}
-	intent := sideEffectIntentForTurnContractMirror(snap.SideEffectIntent, snap.PendingDelegationAction)
-	if snap.TurnContract == nil {
-		turn := intent.SourceTurn
-		if turn == 0 {
-			turn = snap.Turn
-		}
-		if turn == 0 {
-			turn = 1
-		}
-		contract := TurnContract{ID: fmt.Sprintf("contract-%d", turn), SourceTurn: turn, Status: ContractStatusActive}
-		mirrorSideEffectIntentIntoTurnContract(&contract, intent)
-		if len(contract.RequiredActions) > 0 || len(contract.RequiredArtifacts) > 0 {
-			r.session.SetTurnContract(contract)
-		}
-		return
-	}
-	r.session.UpdateTurnContract(func(contract *TurnContract) {
-		mirrorSideEffectIntentIntoTurnContract(contract, intent)
-	})
-}
-
-func (r *Runner) syncSideEffectIntentFromTurnContract() {
-	snap := r.session.Snapshot()
-	if !turnContractNeedsSideEffectIntent(snap.TurnContract) {
-		return
-	}
-	if snap.SideEffectIntent == nil || !sideEffectIntentCanMirrorIntoTurnContract(snap.SideEffectIntent, snap.TurnContract, snap.PendingDelegationAction) {
-		turn := snap.TurnContract.SourceTurn
-		if turn == 0 {
-			turn = snap.Turn
-		}
-		if turn == 0 {
-			turn = 1
-		}
-		intent := SideEffectIntent{ID: fmt.Sprintf("intent-%d", turn), SourceTurn: turn, Remote: "origin"}
-		mirrorTurnContractIntoSideEffectIntent(&intent, snap.TurnContract)
-		if len(intent.RequiredActions) > 0 || len(intent.ArtifactPaths) > 0 {
-			r.session.SetSideEffectIntent(intent)
-		}
-		return
-	}
-	r.session.UpdateSideEffectIntent(func(intent *SideEffectIntent) {
-		mirrorTurnContractIntoSideEffectIntent(intent, snap.TurnContract)
-	})
-}
-
-func sideEffectIntentCanMirrorIntoTurnContract(intent *SideEffectIntent, contract *TurnContract, pending *DelegationActionState) bool {
-	if intent == nil || contract == nil {
-		return true
-	}
-	if pending != nil && pending.Kind == DelegationActionWriteDoc {
-		return true
-	}
-	if intent.SourceTurn == 0 {
-		return false
-	}
-	if contract.SourceTurn == 0 {
-		return false
-	}
-	return intent.SourceTurn == contract.SourceTurn
-}
-
-func sideEffectIntentForTurnContractMirror(intent *SideEffectIntent, pending *DelegationActionState) *SideEffectIntent {
-	if intent == nil || pending == nil || pending.Kind != DelegationActionWriteDoc {
-		return intent
-	}
-	targetPath := normalizeIntentPath(pending.TargetPath)
-	if targetPath == "" {
-		return intent
-	}
-	if intent.SourceTurn != 0 {
-		return intent
-	}
-	copy := &SideEffectIntent{
-		ID:              intent.ID,
-		SourceTurn:      intent.SourceTurn,
-		ArtifactPaths:   []string{targetPath},
-		AllowedPaths:    []string{targetPath},
-		RequiredActions: []SideEffectAction{SideEffectActionWrite},
-		WorkspaceRoot:   intent.WorkspaceRoot,
-		Gates:           []SideEffectGate{{Name: string(SideEffectActionWrite), Status: SideEffectGatePending}},
-	}
-	return copy
-}
-
-func sanitizedSideEffectIntentForPendingDelegation(snap SessionSnapshot) *SideEffectIntent {
-	if snap.SideEffectIntent == nil || snap.PendingDelegationAction == nil || snap.PendingDelegationAction.Kind != DelegationActionWriteDoc {
-		return nil
-	}
-	targetPath := normalizeIntentPath(snap.PendingDelegationAction.TargetPath)
-	if targetPath == "" || !sideEffectIntentIsStaleForContract(snap.SideEffectIntent, snap.TurnContract) {
-		return nil
-	}
-	turn := 0
-	if snap.TurnContract != nil {
-		turn = snap.TurnContract.SourceTurn
-	}
-	if turn == 0 {
-		turn = snap.Turn
-	}
-	if turn == 0 {
-		turn = 1
-	}
-	return &SideEffectIntent{
-		ID:              fmt.Sprintf("intent-%d", turn),
-		SourceTurn:      turn,
-		ArtifactPaths:   []string{targetPath},
-		AllowedPaths:    []string{targetPath},
-		RequiredActions: []SideEffectAction{SideEffectActionWrite},
-		Remote:          "origin",
-		WorkspaceRoot:   snap.SideEffectIntent.WorkspaceRoot,
-		Gates:           []SideEffectGate{{Name: string(SideEffectActionWrite), Status: SideEffectGatePending}},
-	}
-}
-
-func sideEffectIntentIsStaleForContract(intent *SideEffectIntent, contract *TurnContract) bool {
-	if intent == nil {
-		return false
-	}
-	if intent.SourceTurn == 0 {
-		return true
-	}
-	return contract != nil && contract.SourceTurn != 0 && intent.SourceTurn != contract.SourceTurn
 }
 
 func contractArtifactPathAllowed(intent *SideEffectIntent, path string) bool {
@@ -1485,213 +1292,6 @@ func artifactRequiresMarkdownPlanSpecStructure(contract *TurnContract, artifact 
 	return false
 }
 
-func (r *Runner) tryDirectLastResponseMarkdownWrite(ctx context.Context, turn int, input, priorResponse string) (bool, error) {
-	priorResponse = strings.TrimSpace(priorResponse)
-	if r == nil || r.session == nil || r.tools == nil || priorResponse == "" {
-		return false, nil
-	}
-	path, ok := directLastResponseMarkdownWritePath(input)
-	if !ok {
-		return false, nil
-	}
-	if _, ok := r.tools.Get("write_file"); !ok {
-		return false, nil
-	}
-	r.extendSideEffectIntentForDirectWrite(path)
-	start := time.Now()
-	defer r.emitStats(start)
-	args, err := json.Marshal(map[string]any{"path": path, "content": priorResponse})
-	if err != nil {
-		return true, err
-	}
-	call := llm.NativeToolCall{ID: "direct_write_last_response_1", Name: "write_file", ArgsJSON: string(args)}
-	r.ensurePreMutationCheckpointForCalls(ctx, turn, []llm.NativeToolCall{call})
-	if err := r.session.AppendAssistantToolTurn("", []llm.NativeToolCall{call}); err != nil {
-		return true, err
-	}
-	if err := r.executeNativeToolCalls(ctx, turn, []llm.NativeToolCall{call}); err != nil {
-		return true, err
-	}
-	final := strings.TrimSpace(toolResultForCallID(r.session.Snapshot(), call.ID))
-	if final == "" {
-		final = "wrote previous response to " + path
-	}
-	if ok, err := r.validateFinalCompletion(ctx, turn, final, false); !ok || err != nil {
-		if err != nil {
-			return true, err
-		}
-		return true, fmt.Errorf("direct markdown write final blocked by unresolved completion gates")
-	}
-	if err := r.appendFinalAssistantMessageAndCompleteTurn(ctx, turn, final, nil); err != nil {
-		return true, err
-	}
-	r.notifyTurnComplete()
-	if r.renderer != nil {
-		r.renderer.AgentText(final)
-	}
-	return true, nil
-}
-
-func (r *Runner) extendSideEffectIntentForDirectWrite(path string) {
-	if r == nil || r.session == nil {
-		return
-	}
-	path = normalizeIntentPath(path)
-	if path == "" {
-		return
-	}
-	r.session.UpdateSideEffectIntent(func(intent *SideEffectIntent) {
-		if intent == nil || strings.TrimSpace(intent.ID) == "" {
-			return
-		}
-		if !slices.Contains(intent.ArtifactPaths, path) {
-			intent.ArtifactPaths = append(intent.ArtifactPaths, path)
-		}
-		if !slices.Contains(intent.AllowedPaths, path) {
-			intent.AllowedPaths = append(intent.AllowedPaths, path)
-		}
-	})
-}
-
-func directLastResponseMarkdownWritePath(input string) (string, bool) {
-	if !directLastResponseMarkdownWriteIntent(directWriteTokens(input)) {
-		return "", false
-	}
-	if path := extractDelegationTargetPath(input); path != "" {
-		return path, true
-	}
-	return "docs/reports/report.md", true
-}
-
-func directWriteTokens(input string) []string {
-	fields := strings.Fields(normalizeToolIntentText(input))
-	tokens := make([]string, 0, len(fields))
-	for _, field := range fields {
-		token := strings.Trim(field, "`'\".,:;()[]{}<>!?\n\t")
-		token = strings.TrimPrefix(token, "path=")
-		token = strings.TrimPrefix(token, "target=")
-		if token != "" {
-			tokens = append(tokens, token)
-		}
-	}
-	return tokens
-}
-
-func directLastResponseMarkdownWriteIntent(tokens []string) bool {
-	verb := firstDirectWriteVerb(tokens)
-	if verb < 0 {
-		return false
-	}
-	refEnd, ok := directLastResponseReferenceEnd(tokens, verb+1)
-	if !ok {
-		return false
-	}
-	marker := firstDirectWriteTargetMarker(tokens, refEnd)
-	return marker >= 0 && directWriteTargetAfterMarker(tokens[marker+1:])
-}
-
-func firstDirectWriteVerb(tokens []string) int {
-	for i, token := range tokens {
-		switch token {
-		case "write", "save", "create":
-			return i
-		}
-	}
-	return -1
-}
-
-func directLastResponseReferenceEnd(tokens []string, start int) (int, bool) {
-	if start >= len(tokens) {
-		return -1, false
-	}
-	switch tokens[start] {
-	case "it", "that", "above":
-		return start + 1, true
-	case "previous", "last":
-		if start+1 < len(tokens) && tokens[start+1] == "response" {
-			return start + 2, true
-		}
-	case "the":
-		if directTokenPair(tokens, start+1, "previous", "response") ||
-			directTokenPair(tokens, start+1, "last", "response") {
-			return start + 3, true
-		}
-		if start+1 < len(tokens) && (tokens[start+1] == "answer" || tokens[start+1] == "above") {
-			return start + 2, true
-		}
-	case "this":
-		if start+1 < len(tokens) && tokens[start+1] == "answer" {
-			return start + 2, true
-		}
-	}
-	return -1, false
-}
-
-func firstDirectWriteTargetMarker(tokens []string, start int) int {
-	for i := start; i < len(tokens); i++ {
-		switch tokens[i] {
-		case "to", "as", "into":
-			return i
-		}
-	}
-	return -1
-}
-
-func directWriteTargetAfterMarker(tokens []string) bool {
-	for _, token := range tokens {
-		if directArticleToken(token) {
-			continue
-		}
-		if directTargetToken(token) {
-			return true
-		}
-		return false
-	}
-	return false
-}
-
-func directTokenPair(tokens []string, index int, first, second string) bool {
-	return index+1 < len(tokens) && tokens[index] == first && tokens[index+1] == second
-}
-
-func directArticleToken(token string) bool {
-	switch token {
-	case "a", "an", "the":
-		return true
-	default:
-		return false
-	}
-}
-
-func directTargetToken(token string) bool {
-	if strings.HasSuffix(token, ".md") {
-		return true
-	}
-	if directArticleToken(token) {
-		return false
-	}
-	switch token {
-	case "md", "markdown", "file", "report", "doc", "docs", "document", "memo", "note", "checklist":
-		return true
-	default:
-		return false
-	}
-}
-
-func toolResultForCallID(snapshot SessionSnapshot, id string) string {
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return ""
-	}
-	for i := len(snapshot.History) - 1; i >= 0; i-- {
-		msg := snapshot.History[i]
-		if msg.Role == llm.RoleTool && msg.ToolCallID == id {
-			return msg.Content
-		}
-	}
-	return ""
-}
-
 func (r *Runner) runLoop(ctx context.Context, turn int) error {
 	start := time.Now()
 	turnID := fmt.Sprintf("turn-%d", turn)
@@ -1700,17 +1300,15 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 
 	completionRetries := 0
 	reactiveCompacted := false
-	usedToolThisTurn := false
 	for range r.maxSteps {
 		if r.applyPendingInput() {
-			usedToolThisTurn = false
 			r.syncRuntimeNote()
 		}
 		r.applyProactivePromptCompaction(ctx)
 		snap := r.session.Snapshot()
 		toolDefs, toolDecision := r.selectToolDefsWithDecision(snap)
-		requireToolCall := shouldRequireToolCallForSnapshot(snap) && (!usedToolThisTurn || pendingDelegationWriteAction(snap) || pendingPostDelegationWriteAction(snap))
-		toolDecision.RequireToolCall = requireToolCall
+		// Never force a tool call: prose from the model is its answer.
+		const requireToolCall = false
 		r.observeToolExposure(toolDecision)
 		if len(toolDefs) > 0 && !isNative {
 			err := fmt.Errorf("react runtime: driver %q does not support native tool calling", r.driver.Name())
@@ -1779,7 +1377,6 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 		if calls == nil {
 			// streamNativeTurn already recorded the final response
 			if r.applyPendingInput() {
-				usedToolThisTurn = false
 				continue
 			}
 			return nil
@@ -1794,7 +1391,6 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 			return err
 		}
 		completionRetries = 0
-		usedToolThisTurn = true
 	}
 
 	err := fmt.Errorf("react runtime: safety step limit (%d) exceeded", r.maxSteps)
@@ -1889,10 +1485,6 @@ func (r *Runner) activeAgentFallbackText() string {
 	return "Child agent work is still in progress: " + strings.Join(parts, "; ") + ". Ask for status or tell me to continue waiting."
 }
 
-func (r *Runner) tryCompletedAgentResultFallback(ctx context.Context, turn int) (bool, error) {
-	return r.tryCompletedAgentResultFallbackWithOptions(ctx, turn, false)
-}
-
 func (r *Runner) tryCompletedAgentResultFallbackAfterError(ctx context.Context, turn int) (bool, error) {
 	return r.tryCompletedAgentResultFallbackWithOptions(ctx, turn, true)
 }
@@ -1902,21 +1494,10 @@ func (r *Runner) tryCompletedAgentResultFallbackWithOptions(ctx context.Context,
 		return false, nil
 	}
 	snap := r.session.Snapshot()
-	if completedAgentFallbackSettledWrite(snap) && !inputSuggestsPostDelegationAction(normalizeToolIntentText(snap.LastInput)) {
-		return false, nil
-	}
+	_ = allowBoundedMultiAgent
 	content := completedAgentResultFallbackContent(snap)
 	if content == "" {
 		return false, nil
-	}
-	if path, ok := completedAgentResultMarkdownWritePathForSnapshot(snap); ok && r.tools != nil {
-		if _, ok := r.tools.Get("write_file"); ok {
-			writeContent := completedAgentResultMarkdownWriteContentWithOptions(snap, allowBoundedMultiAgent)
-			if writeContent == "" {
-				return false, nil
-			}
-			return true, r.writeCompletedAgentResultFallback(ctx, turn, path, writeContent)
-		}
 	}
 	if err := r.ensureFallbackTurnCurrent(ctx, turn); err != nil {
 		return false, err
@@ -1937,46 +1518,6 @@ func (r *Runner) tryCompletedAgentResultFallbackWithOptions(ctx context.Context,
 		r.renderer.AgentText(fallback)
 	}
 	return true, nil
-}
-
-func (r *Runner) writeCompletedAgentResultFallback(ctx context.Context, turn int, path, content string) error {
-	if err := r.ensureFallbackTurnCurrent(ctx, turn); err != nil {
-		return err
-	}
-	args, err := json.Marshal(map[string]any{"path": path, "content": content})
-	if err != nil {
-		return err
-	}
-	call := llm.NativeToolCall{ID: "direct_write_completed_agents_1", Name: "write_file", ArgsJSON: string(args)}
-	r.pendingRetryPrompt = ""
-	r.ensurePreMutationCheckpointForCalls(ctx, turn, []llm.NativeToolCall{call})
-	if err := r.session.AppendAssistantToolTurn("", []llm.NativeToolCall{call}); err != nil {
-		return err
-	}
-	if err := r.executeNativeToolCalls(ctx, turn, []llm.NativeToolCall{call}); err != nil {
-		return err
-	}
-	final := strings.TrimSpace(toolResultForCallID(r.session.Snapshot(), call.ID))
-	if final == "" {
-		final = "wrote completed child-agent results to " + path
-	}
-	if ok, err := r.validateFinalCompletion(ctx, turn, final, false); !ok || err != nil {
-		if err != nil && r.hasTurnSnapshot(turn) {
-			r.recordModelViolation("completed-agent fallback write blocked", fallbackBlockDetail(err))
-		}
-		if err != nil {
-			return err
-		}
-		return fmt.Errorf("completed-agent fallback final blocked by unresolved completion gates")
-	}
-	if err := r.appendFinalAssistantMessageAndCompleteTurn(ctx, turn, final, nil); err != nil {
-		return err
-	}
-	r.notifyTurnComplete()
-	if r.renderer != nil {
-		r.renderer.AgentText(final)
-	}
-	return nil
 }
 
 func (r *Runner) ensureFallbackTurnCurrent(ctx context.Context, turn int) error {
@@ -2032,138 +1573,16 @@ func completedAgentResultFallbackContent(snap SessionSnapshot) string {
 	return strings.Join(parts, "\n\n")
 }
 
-func completedAgentResultMarkdownWriteContent(snap SessionSnapshot) string {
-	return completedAgentResultMarkdownWriteContentWithOptions(snap, false)
-}
-
-func completedAgentResultMarkdownWriteContentWithOptions(snap SessionSnapshot, allowBoundedMultiAgent bool) string {
-	resultTurn := completedAgentResultTurn(snap)
-	if sameTurnAgentStillOutstanding(snap.AgentTasks, resultTurn) {
-		return ""
-	}
-	if result := completedAgentResultByRole(snap, "synthesizer"); result != "" {
-		return result
-	}
-
-	var results []string
-	for _, task := range snap.AgentTasks {
-		if task.Status != AgentStatusCompleted || task.ParentTurn != resultTurn {
-			continue
-		}
-		result := strings.TrimSpace(task.Result)
-		if result == "" {
-			continue
-		}
-		results = append(results, result)
-	}
-	if len(results) == 1 {
-		return results[0]
-	}
-	if summary := conciseMultiAgentMarkdownSummary(results); summary != "" {
-		return summary
-	}
-	if allowBoundedMultiAgent {
-		return boundedMultiAgentMarkdownSummary(snap, resultTurn)
-	}
-	return ""
-}
-
-func conciseMultiAgentMarkdownSummary(results []string) string {
-	if len(results) < 2 {
-		return ""
-	}
-	bullets := make([]string, 0, len(results))
-	for _, result := range results {
-		if !isConciseAgentFinding(result) {
-			return ""
-		}
-		bullets = append(bullets, "- "+strings.ReplaceAll(strings.TrimSpace(result), "\n", " "))
-	}
-	return "# Consolidated Findings\n\n" + strings.Join(bullets, "\n") + "\n"
-}
-
 const (
 	boundedMultiAgentMaxSections      = 5
 	boundedMultiAgentSectionByteLimit = 3000
 )
 
-func boundedMultiAgentMarkdownSummary(snap SessionSnapshot, resultTurn int) string {
-	sections := []string{
-		"# Consolidated Findings",
-		"Parent synthesis failed after delegated agents completed. This fallback preserves bounded child-agent findings so the requested document is still written.",
-	}
-	included := 0
-	omitted := 0
-	for _, task := range snap.AgentTasks {
-		if task.Status != AgentStatusCompleted || task.ParentTurn != resultTurn {
-			continue
-		}
-		result := strings.TrimSpace(task.Result)
-		if result == "" {
-			continue
-		}
-		if included >= boundedMultiAgentMaxSections {
-			omitted++
-			continue
-		}
-		label := strings.TrimSpace(task.Role)
-		if label == "" {
-			label = strings.TrimSpace(task.ID)
-		}
-		if label == "" {
-			label = "child agent"
-		}
-		if len(result) > boundedMultiAgentSectionByteLimit {
-			result = truncateStringToValidUTF8Bytes(result, boundedMultiAgentSectionByteLimit) + "\n\n[truncated]"
-		}
-		sections = append(sections, "## "+label+"\n\n"+result)
-		included++
-	}
-	if len(sections) <= 2 {
-		return ""
-	}
-	if omitted > 0 {
-		sections = append(sections, fmt.Sprintf("_%d additional child-agent result(s) omitted by bounded fallback._", omitted))
-	}
-	return strings.Join(sections, "\n\n") + "\n"
-}
-
-func truncateStringToValidUTF8Bytes(s string, limit int) string {
-	if limit <= 0 {
-		return ""
-	}
-	if len(s) <= limit {
-		return strings.TrimSpace(s)
-	}
-	cut := limit
-	for cut > 0 && !utf8.ValidString(s[:cut]) {
-		cut--
-	}
-	return strings.TrimSpace(s[:cut])
-}
-
-func isConciseAgentFinding(result string) bool {
-	result = strings.TrimSpace(result)
-	if result == "" || len(result) > 500 || strings.HasPrefix(result, "#") {
-		return false
-	}
-	lines := strings.Split(result, "\n")
-	if len(lines) > 3 {
-		return false
-	}
-	for _, line := range lines {
-		if strings.HasPrefix(strings.TrimSpace(line), "#") {
-			return false
-		}
-	}
-	return true
-}
-
 func completedAgentResultTurn(snap SessionSnapshot) int {
 	if agentTaskCompletedResultForTurn(snap.AgentTasks, snap.Turn) || sameTurnAgentStillOutstanding(snap.AgentTasks, snap.Turn) {
 		return snap.Turn
 	}
-	if !pendingDelegationWriteAction(snap) && !pendingPostDelegationWriteAction(snap) {
+	if !pendingDelegationWriteAction(snap) {
 		return snap.Turn
 	}
 	if snap.PendingDelegationAction != nil {
@@ -2198,153 +1617,6 @@ func agentTaskCompletedResultForTurn(tasks []AgentTaskState, turn int) bool {
 		}
 	}
 	return false
-}
-
-func completedAgentResultByRole(snap SessionSnapshot, role string) string {
-	role = strings.TrimSpace(role)
-	if role == "" {
-		return ""
-	}
-	resultTurn := completedAgentResultTurn(snap)
-	for i := len(snap.AgentTasks) - 1; i >= 0; i-- {
-		task := snap.AgentTasks[i]
-		if task.Status != AgentStatusCompleted || task.ParentTurn != resultTurn || !strings.EqualFold(strings.TrimSpace(task.Role), role) {
-			continue
-		}
-		if result := strings.TrimSpace(task.Result); result != "" {
-			return result
-		}
-	}
-	return ""
-}
-
-func completedAgentResultMarkdownWritePath(input string) (string, bool) {
-	tokens := directWriteTokens(input)
-	verb := firstDirectWriteVerb(tokens)
-	if verb < 0 {
-		return "", false
-	}
-	if path := extractDelegationTargetPath(input); path != "" {
-		return path, true
-	}
-	if completedAgentWriteTargetAfterVerb(tokens[verb+1:]) {
-		return "docs/reports/report.md", true
-	}
-	for i := verb + 1; i < len(tokens); i++ {
-		switch tokens[i] {
-		case "to", "as", "into", "in":
-			if completedAgentWriteTargetAfterMarker(tokens[i+1:]) {
-				return "docs/reports/report.md", true
-			}
-		}
-	}
-	return "", false
-}
-
-func completedAgentResultMarkdownWritePathForSnapshot(snap SessionSnapshot) (string, bool) {
-	if path, ok := completedAgentResultMarkdownWritePath(snap.LastInput); ok {
-		return path, true
-	}
-	if snap.PendingDelegationAction != nil && snap.PendingDelegationAction.Kind == DelegationActionWriteDoc {
-		if path := strings.TrimSpace(snap.PendingDelegationAction.TargetPath); path != "" {
-			return path, true
-		}
-	}
-	if path := extractDelegationTargetPath(postDelegationToolIntentText(snap)); path != "" {
-		return path, true
-	}
-	return "", false
-}
-
-func completedAgentWriteTargetAfterVerb(tokens []string) bool {
-	nonTarget := 0
-	for i, token := range tokens {
-		switch token {
-		case "to", "as", "into", "in":
-			return false
-		}
-		if directArticleToken(token) || token == "markup" || token == "me" || token == "us" {
-			continue
-		}
-		if completedAgentWriteTargetAt(tokens, i) {
-			return true
-		}
-		nonTarget++
-		if nonTarget > 1 {
-			return false
-		}
-	}
-	return false
-}
-
-func completedAgentWriteTargetAfterMarker(tokens []string) bool {
-	sawArticle := false
-	for i, token := range tokens {
-		if directArticleToken(token) {
-			sawArticle = true
-			continue
-		}
-		if token == "markup" {
-			continue
-		}
-		if completedAgentWriteTargetAt(tokens, i) {
-			return true
-		}
-		if !sawArticle {
-			return false
-		}
-		next := i + 1
-		if next >= len(tokens) || directArticleToken(tokens[next]) || tokens[next] == "markup" {
-			return false
-		}
-		return completedAgentWriteTargetAt(tokens, next)
-	}
-	return false
-}
-
-func completedAgentWriteTargetAt(tokens []string, index int) bool {
-	if index < 0 || index >= len(tokens) {
-		return false
-	}
-	token := tokens[index]
-	if !directTargetToken(token) {
-		return false
-	}
-	for i := index + 1; i < len(tokens); i++ {
-		next := tokens[i]
-		if directArticleToken(next) || next == "markup" || next == "markdown" {
-			continue
-		}
-		if completedAgentTargetRelationToken(next) {
-			return true
-		}
-		if completedAgentCodeArtifactNoun(next) {
-			return false
-		}
-		if directTargetToken(next) {
-			continue
-		}
-		return true
-	}
-	return true
-}
-
-func completedAgentTargetRelationToken(token string) bool {
-	switch token {
-	case "about", "on", "for", "with", "from", "of", "containing", "including":
-		return true
-	default:
-		return false
-	}
-}
-
-func completedAgentCodeArtifactNoun(token string) bool {
-	switch token {
-	case "parser", "generator", "builder", "tool", "library", "package", "component", "function", "class", "module", "api", "cli", "command":
-		return true
-	default:
-		return false
-	}
 }
 
 func sameTurnAgentStillOutstanding(tasks []AgentTaskState, turn int) bool {
@@ -3012,24 +2284,6 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 			r.updateSideEffectGatesAfterToolResult(call.Name, args, blocked, true)
 			continue
 		}
-		if blocked, ok := r.blockControlPlaneArtifactWrite(call.Name, args); ok {
-			if err := r.appendFailureAndToolResultForTurn(ctx, turn,
-				protocol.FailureItem{Decision: protocol.ClassifyPolicyBlocked(blocked)},
-				protocol.ToolCallItem{ToolName: call.Name, ToolCallID: call.ID, Args: args},
-				protocol.ToolResultItem{ToolCallID: call.ID, Text: blocked},
-			); err != nil {
-				return err
-			}
-			r.recordToolResultEvidence(call.Name, args, blocked, true)
-			if r.renderer != nil {
-				r.renderer.ToolCall(call.Name, reactToolSummary(args))
-				r.renderer.ToolResult(call.Name, blocked, "", true)
-			}
-			r.updatePlanWorkflow(call.Name, args, "", true)
-			r.updateSameFileSearchWorkflow(call.Name, args, true)
-			r.updateSideEffectGatesAfterToolResult(call.Name, args, blocked, true)
-			continue
-		}
 		if isCheckpointMutatingTool(call.Name) {
 			r.ensurePreMutationCheckpoint(ctx, turn)
 		}
@@ -3595,17 +2849,28 @@ func (r *Runner) blockOutOfScopeSideEffectMutation(toolName string, args map[str
 
 func (r *Runner) blockRepeatedExplorationToolCall(toolName string, args map[string]any) (string, bool) {
 	toolName = strings.TrimSpace(toolName)
-	if toolName != "read_file" {
+	if !isExplorationToolCall(toolName, args) {
 		return "", false
 	}
 	target := repeatToolCallTarget(toolName, args)
-	if target == "" || target != r.repeatWorkflow.lastTarget || toolName != r.repeatWorkflow.lastToolName {
+	if target == "" {
 		return "", false
 	}
-	if r.repeatWorkflow.streak < repeatToolCallThreshold {
+	count := repeatToolCallOccurrences(r.repeatWorkflow.recent, toolName+":"+target)
+	if count < toolThrashThreshold(r.toolThrashCircuitBreaker, repeatToolCallThreshold) {
 		return "", false
 	}
-	return fmt.Sprintf("blocked: repeated %s on %q %d times without progress. Stop rereading the same file; use the evidence already gathered, read a specific missing range once, or synthesize the answer now.", toolName, target, r.repeatWorkflow.streak), true
+	return fmt.Sprintf("blocked: identical %s on %q already ran %d times in your recent calls and returned the same result. Do not repeat it. Use the evidence already gathered, target a different range or pattern, or synthesize the answer now.", toolName, target, count), true
+}
+
+func repeatToolCallOccurrences(recent []string, key string) int {
+	count := 0
+	for _, k := range recent {
+		if k == key {
+			count++
+		}
+	}
+	return count
 }
 
 func mutationPathsFromShellCommand(command string) []string {
@@ -3704,57 +2969,6 @@ func checkpointScopePaths(toolName string, args map[string]any) []string {
 	return nil
 }
 
-func (r *Runner) blockControlPlaneArtifactWrite(toolName string, args map[string]any) (string, bool) {
-	if r == nil || r.session == nil {
-		return "", false
-	}
-	var path, content string
-	snapshot := r.session.Snapshot()
-	intent := snapshot.SideEffectIntent
-	if intent == nil || len(intent.ArtifactPaths) == 0 {
-		return "", false
-	}
-	switch toolName {
-	case "write_file", "artifact_write":
-		path = stringArg(args, "path")
-		content = stringArg(args, "content")
-	case "edit_file":
-		path = stringArg(args, "path")
-		content = stringArg(args, "new_text")
-	case "apply_patch":
-		content = stringArg(args, "patch")
-		if !looksLikeControlPlaneArtifactContent(content) {
-			return "", false
-		}
-		if artifact := patchArtifactTarget(content, intent); artifact != "" {
-			return controlPlaneArtifactBlockMessage(artifact), true
-		}
-		return "", false
-	case "run_command":
-		content = stringArg(args, "command")
-		if !looksLikeControlPlaneArtifactContent(content) {
-			return "", false
-		}
-		if artifact := commandArtifactTarget(content, intent); artifact != "" {
-			return controlPlaneArtifactBlockMessage(artifact), true
-		}
-		return "", false
-	default:
-		return "", false
-	}
-	path = normalizeArtifactToolPath(path, intent)
-	if path == "" || !looksLikeControlPlaneArtifactContent(content) {
-		return "", false
-	}
-	for _, artifact := range intent.ArtifactPaths {
-		artifact = normalizeIntentPath(artifact)
-		if artifact != "" && artifact == path {
-			return controlPlaneArtifactBlockMessage(artifact), true
-		}
-	}
-	return "", false
-}
-
 func normalizeArtifactToolPath(path string, intent *SideEffectIntent) string {
 	path = strings.TrimSpace(strings.Trim(path, "`'\".,:;()[]{}<>"))
 	if path == "" || looksLikeWindowsAbsolutePath(path) || strings.Contains(path, "\\") || strings.Contains(path, ":") {
@@ -3775,10 +2989,6 @@ func normalizeArtifactToolPath(path string, intent *SideEffectIntent) string {
 		return normalizeIntentPath(filepath.ToSlash(rel))
 	}
 	return normalizeIntentPath(filepath.ToSlash(filepath.Clean(path)))
-}
-
-func controlPlaneArtifactBlockMessage(path string) string {
-	return "blocked: refusing to write control-plane child-agent report text into requested artifact " + path + ". Synthesize the user-facing document content instead, or ask the user if they explicitly want an incident report in this file."
 }
 
 func patchArtifactTarget(patch string, intent *SideEffectIntent) string {
@@ -3810,22 +3020,6 @@ func patchArtifactTarget(patch string, intent *SideEffectIntent) string {
 					return artifact
 				}
 			}
-		}
-	}
-	return ""
-}
-
-func commandArtifactTarget(command string, intent *SideEffectIntent) string {
-	if intent == nil {
-		return ""
-	}
-	for _, artifact := range intent.ArtifactPaths {
-		normalized := normalizeIntentPath(artifact)
-		if normalized == "" {
-			continue
-		}
-		if strings.Contains(command, normalized) || strings.Contains(command, filepath.Base(normalized)) {
-			return normalized
 		}
 	}
 	return ""
@@ -4206,7 +3400,7 @@ func (r *Runner) boundPostDelegationReadOutputCalls(calls []llm.NativeToolCall) 
 		return calls
 	}
 	snap := r.session.Snapshot()
-	if !pendingDelegationWriteAction(snap) && !pendingPostDelegationWriteAction(snap) {
+	if !pendingDelegationWriteAction(snap) {
 		return calls
 	}
 	readCount := 0
@@ -4578,172 +3772,17 @@ var (
 	agentStatusToolNames = []string{"agent_status"}
 )
 
-func (r *Runner) selectToolDefs(snapshot SessionSnapshot) []llm.ToolDef {
-	defs, _ := r.selectToolDefsWithDecision(snapshot)
-	return defs
-}
-
 func (r *Runner) selectToolDefsWithDecision(snapshot SessionSnapshot) ([]llm.ToolDef, ToolExposureDecision) {
 	decision := newToolExposureDecision(snapshot)
 	if r == nil || r.tools == nil {
 		return nil, decision
 	}
-	if outstanding := len(outstandingSpawnedAgents(snapshot)); outstanding > 0 {
-		activeNames := activeAgentToolNamesForSnapshot(snapshot)
-		if shouldExposeSpawnWhileAgentsActive(snapshot, outstanding) {
-			activeNames = append(activeNames, "spawn_agent")
-		}
-		defs := r.tools.Filter(activeNames).ToLLMToolDefs()
-		return defs, decision.withTools("active_agents", defs)
-	}
-	blockingHandoff := blockingAgentHandoffs(snapshot)
-	currentDelegationIntent := currentInputRequestsDelegation(snapshot)
-	currentPostDelegationAction := inputSuggestsPostDelegationAction(normalizeToolIntentText(snapshot.LastInput))
-	fallbackSettledWrite := completedAgentFallbackSettledWrite(snapshot) && !currentPostDelegationAction
-	pendingWorkflowWrite := r.postDelegation.pendingWrite || pendingDelegationWriteAction(snapshot)
-	if fallbackSettledWrite {
-		pendingWorkflowWrite = false
-	}
-	pendingPostDelegationWrite := pendingWorkflowWrite || pendingPostDelegationWriteAction(snapshot)
-	completedStateDelegation := pendingPostDelegationWrite && completedDelegationAgentResultsAvailable(snapshot)
-	delegationComplete := historyIncludesCompletedToolCall(snapshot, "wait_agent") || completedStateDelegation
-	if completedStateDelegation {
-		currentDelegationIntent = false
-	}
-	if delegationComplete && !currentDelegationIntent {
-		if len(blockingHandoff) > 0 {
-			snapshot.LastInput = agentHandoffToolIntentText(blockingHandoff)
-			goto selectParentTools
-		}
-		postDelegationText := snapshot.LastInput
-		if !fallbackSettledWrite {
-			postDelegationText = postDelegationToolIntentText(snapshot)
-		}
-		if !pendingPostDelegationWrite {
-			if !currentPostDelegationAction {
-				return nil, decision
-			}
-			postDelegationText = snapshot.LastInput
-		}
-		snapshot.LastInput = postDelegationText
-		goto selectParentTools
-	}
-	if currentDelegationIntent {
-		if defs := r.tools.Filter(delegateToolNames).ToLLMToolDefs(); len(defs) > 0 {
-			return defs, decision.withTools("delegation_intent", defs)
-		}
-	}
-selectParentTools:
-	allowed := allowedToolNamesForSnapshot(snapshot)
-	reason := "parent_intent"
-	if len(allowed) == 0 {
-		reason = "none"
-	}
-	if snapshotHasPreviewToolEvidence(snapshot) && inputSuggestsPreviewFollowUp(normalizeToolIntentText(snapshot.LastInput)) {
-		reason = "preview_followup"
-		allowed = append(allowed, readOnlyToolNames...)
-		allowed = append(allowed, writeToolNames...)
-		allowed = append(allowed, previewToolNames...)
-		allowed = append(allowed, "tool_help")
-	}
-	if delegationComplete {
-		allowed = withoutToolNames(allowed, delegateToolNames...)
-	}
-	if pendingPostDelegationWrite {
-		reason = "post_delegation_pending_action"
-		if postDelegationWriteDocMode(snapshot) {
-			allowed = nil
-			if completedStateDelegation && !historyIncludesCompletedToolCall(snapshot, "wait_agent") && len(completedToolCallResults(snapshot, "get_agent_output")) == 0 {
-				allowed = append(allowed, "wait_agent")
-			}
-			if !postDelegationReadOutputBudgetExhausted(snapshot) {
-				allowed = append(allowed, outputReadToolNames...)
-			}
-			allowed = append(allowed, writeToolNames...)
-			if inputSuggestsGitCommit(normalizeToolIntentText(postDelegationToolIntentText(snapshot))) {
-				allowed = append(allowed, gitReadToolNames...)
-				allowed = append(allowed, "git_commit")
-			}
-		} else {
-			allowed = append(allowed, readOnlyToolNames...)
-			allowed = append(allowed, writeToolNames...)
-			allowed = append(allowed, gitReadToolNames...)
-		}
-		allowed = append(allowed, "tool_help")
-	}
-	if len(blockingHandoff) > 0 {
-		reason = "agent_handoff_blocking"
-		allowed = append(allowed, readOnlyToolNames...)
-		allowed = append(allowed, gitReadToolNames...)
-		allowed = append(allowed, "tool_help")
-		if handoffTasksRequireWriteTools(blockingHandoff) {
-			allowed = append(allowed, writeToolNames...)
-		}
-		if handoffTasksRequireCommandTools(blockingHandoff) {
-			allowed = append(allowed, "run_command")
-		}
-	}
-	pluginNames := r.pluginToolNames()
-	pluginIntent := inputSuggestsPluginTool(snapshot.LastInput, pluginNames)
-	mcpNames := r.mcpToolNames()
-	mcpIntent := inputSuggestsMCPTool(snapshot.LastInput, mcpNames)
-	if len(allowed) == 0 && !pluginIntent && len(snapshot.AgentTasks) > 0 && len(outstandingSpawnedAgents(snapshot)) == 0 {
-		return nil, decision
-	}
-	if len(allowed) == 0 && !pluginIntent && len(snapshot.AgentTasks) > 0 {
-		if defs := r.tools.Filter(agentStatusToolNames).ToLLMToolDefs(); len(defs) > 0 {
-			return defs, decision.withTools("agent_status_state", defs)
-		}
-	}
-	if len(allowed) == 0 && !pluginIntent {
-		reason = "fallback_delegate"
-		allowed = append(allowed, delegateToolNames...)
-	}
-	if pluginIntent {
-		if reason == "none" || reason == "fallback_delegate" {
-			reason = "plugin_intent"
-		} else {
-			reason = reason + "+plugin_intent"
-		}
-		allowed = append(allowed, pluginNames...)
-	}
-	if mcpIntent {
-		if reason == "none" || reason == "fallback_delegate" {
-			reason = "mcp_intent"
-		} else {
-			reason = reason + "+mcp_intent"
-		}
-		allowed = append(allowed, mcpNames...)
-	}
-	if !delegationComplete {
-		allowed = append(allowed, delegateToolNames...)
-	}
-	defs := r.tools.Filter(allowed).ToLLMToolDefs()
-	return defs, decision.withTools(reason, defs)
+	// The model always sees every registered tool. Which tools a turn needs
+	// is the model's call; keyword-routing tool exposure from the user's
+	// phrasing caused most of the runtime's unreliability.
+	defs := r.tools.ToLLMToolDefs()
+	return defs, decision.withTools("all", defs)
 }
-
-func activeAgentToolNamesForSnapshot(snapshot SessionSnapshot) []string {
-	names := append([]string(nil), activeAgentToolNames...)
-	if inputSuggestsAgentCancellation(snapshot) {
-		names = append(names, "kill_agent")
-	}
-	return names
-}
-
-func shouldExposeSpawnWhileAgentsActive(snapshot SessionSnapshot, outstanding int) bool {
-	if outstanding >= 5 || !shouldRouteParentThroughDelegation(snapshot) {
-		return false
-	}
-	return inputSuggestsMultiRootDelegatedReport(normalizeToolIntentText(snapshot.LastInput))
-}
-
-func postDelegationWriteDocMode(snapshot SessionSnapshot) bool {
-	if pendingDelegationWriteAction(snapshot) {
-		return true
-	}
-	return inputSuggestsFileWrites(normalizeToolIntentText(snapshot.LastInput))
-}
-
 func newToolExposureDecision(snapshot SessionSnapshot) ToolExposureDecision {
 	decision := ToolExposureDecision{
 		Reason:                "none",
@@ -4785,291 +3824,6 @@ func (r *Runner) observeToolExposure(decision ToolExposureDecision) {
 	}
 	decision.ToolNames = append([]string(nil), decision.ToolNames...)
 	r.toolExposureObserver(decision)
-}
-
-func withoutToolNames(names []string, excluded ...string) []string {
-	if len(names) == 0 || len(excluded) == 0 {
-		return names
-	}
-	exclude := make(map[string]struct{}, len(excluded))
-	for _, name := range excluded {
-		exclude[name] = struct{}{}
-	}
-	out := names[:0]
-	for _, name := range names {
-		if _, ok := exclude[name]; ok {
-			continue
-		}
-		out = append(out, name)
-	}
-	return out
-}
-
-func (r *Runner) pluginToolNames() []string {
-	if r == nil || r.tools == nil {
-		return nil
-	}
-	var names []string
-	for _, tool := range r.tools.All() {
-		if strings.HasPrefix(strings.TrimSpace(tool.Name), "plugin__") {
-			names = append(names, tool.Name)
-		}
-	}
-	return names
-}
-
-func (r *Runner) mcpToolNames() []string {
-	if r == nil || r.tools == nil {
-		return nil
-	}
-	var names []string
-	for _, tool := range r.tools.All() {
-		name := strings.TrimSpace(tool.Name)
-		if name == "list_mcp_resources" || name == "list_mcp_resource_templates" || name == "read_mcp_resource" || strings.HasPrefix(name, "mcp__") {
-			names = append(names, name)
-		}
-	}
-	return names
-}
-
-func inputSuggestsMCPTool(input string, mcpNames []string) bool {
-	if len(mcpNames) == 0 {
-		return false
-	}
-	text := normalizeToolIntentText(input)
-	if text == "" {
-		return false
-	}
-	if strings.Contains(text, "mcp") {
-		return true
-	}
-	for _, name := range mcpNames {
-		for _, token := range mcpIntentTokens(name) {
-			if token != "" && strings.Contains(text, token) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func mcpIntentTokens(name string) []string {
-	name = strings.TrimSpace(name)
-	if strings.HasPrefix(name, "mcp__") {
-		parts := strings.Split(name, "__")
-		if len(parts) >= 2 {
-			return []string{normalizePluginIntentToken(parts[1])}
-		}
-	}
-	return nil
-}
-
-func inputSuggestsPluginTool(input string, pluginNames []string) bool {
-	if len(pluginNames) == 0 {
-		return false
-	}
-	text := normalizeToolIntentText(input)
-	if text == "" {
-		return false
-	}
-	if strings.Contains(text, "plugin") || strings.Contains(text, "plugin__") {
-		return true
-	}
-	for _, name := range pluginNames {
-		for _, token := range pluginIntentTokens(name) {
-			if token != "" && strings.Contains(text, token) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func pluginIntentTokens(namespacedName string) []string {
-	parts := strings.Split(strings.TrimSpace(namespacedName), "__")
-	if len(parts) != 3 || parts[0] != "plugin" {
-		return nil
-	}
-	tokens := []string{
-		normalizePluginIntentToken(parts[1]),
-		normalizePluginIntentToken(parts[1] + " " + parts[2]),
-	}
-	if token := normalizePluginIntentToken(parts[2]); !isGenericPluginIntentToken(token) {
-		tokens = append(tokens, token)
-	}
-	return tokens
-}
-
-func isGenericPluginIntentToken(token string) bool {
-	switch token {
-	case "", "task", "skill", "grep", "glob", "look at":
-		return true
-	default:
-		return false
-	}
-}
-
-func normalizePluginIntentToken(token string) string {
-	token = strings.NewReplacer("_", " ", "-", " ").Replace(strings.ToLower(strings.TrimSpace(token)))
-	return strings.Join(strings.Fields(token), " ")
-}
-
-func allowedToolNamesForSnapshot(snapshot SessionSnapshot) []string {
-	text := normalizeToolIntentText(snapshot.LastInput)
-	repoContext := inputSuggestsRepoContext(text)
-	allowed := make(map[string]struct{})
-
-	add := func(names ...string) {
-		for _, name := range names {
-			name = strings.TrimSpace(name)
-			if name == "" {
-				continue
-			}
-			allowed[name] = struct{}{}
-		}
-	}
-	addAll := func(groups ...[]string) {
-		for _, group := range groups {
-			add(group...)
-		}
-	}
-
-	operation := ""
-	if snapshot.TaskState != nil {
-		operation = strings.ToLower(strings.TrimSpace(snapshot.TaskState.Operation))
-	}
-
-	switch operation {
-	case "overview":
-		addAll(readOnlyToolNames, gitReadToolNames, planningToolNames)
-	case "inspect", "analysis", "review", "plan":
-		addAll(readOnlyToolNames, gitReadToolNames, planningToolNames)
-		if turnContractSuggestsImplementationTools(snapshot.TurnContract) || inputSuggestsFileWrites(text) {
-			addAll(writeToolNames)
-		}
-		if inputSuggestsCommandWork(text) {
-			addAll(commandToolNames)
-		}
-		if inputSuggestsWebResearch(text) {
-			addAll(webToolNames)
-		}
-	case "implement":
-		addAll(readOnlyToolNames, writeToolNames, gitReadToolNames, commandToolNames, planningToolNames)
-		if inputSuggestsPreviewWork(text) {
-			addAll(previewToolNames)
-		}
-	case "validate":
-		addAll(readOnlyToolNames, gitReadToolNames, commandToolNames, planningToolNames)
-		if inputSuggestsExplicitFileWrite(text) {
-			addAll(writeToolNames)
-		}
-	case "preview":
-		addAll(readOnlyToolNames, writeToolNames, previewToolNames, planningToolNames)
-	case "merge":
-		addAll(readOnlyToolNames, writeToolNames, gitReadToolNames, commandToolNames, planningToolNames)
-		add("git_commit")
-	default:
-		if turnContractSuggestsImplementationTools(snapshot.TurnContract) {
-			addAll(readOnlyToolNames, writeToolNames, gitReadToolNames, commandToolNames, planningToolNames)
-		}
-		if inputSuggestsPreviewWork(text) {
-			addAll(readOnlyToolNames, writeToolNames, previewToolNames)
-		}
-		if inputSuggestsFileInspection(text) {
-			addAll(readOnlyToolNames)
-			if repoContext {
-				addAll(gitReadToolNames)
-			}
-		}
-		if inputSuggestsFileWrites(text) {
-			addAll(writeToolNames)
-		}
-		if inputSuggestsCommandWork(text) {
-			addAll(commandToolNames)
-		}
-		if inputSuggestsWebResearch(text) {
-			addAll(webToolNames)
-		}
-		if inputSuggestsGitCommit(text) {
-			addAll(gitReadToolNames)
-			add("git_commit")
-		}
-	}
-
-	if inputSuggestsDelegation(text) && !inputLooksLikePastedTerminalOutput(snapshot.LastInput) {
-		addAll(delegateToolNames)
-	}
-	if inputSuggestsActionFollowUp(text) {
-		addAll(readOnlyToolNames, writeToolNames, gitReadToolNames, commandToolNames, planningToolNames)
-	}
-	if inputSuggestsBugFixWork(text) {
-		addAll(readOnlyToolNames, writeToolNames, commandToolNames, planningToolNames)
-	}
-	if inputSuggestsGitPush(text) {
-		addAll(gitReadToolNames, commandToolNames)
-		add("git_push")
-	}
-	if inputAsksGitPushStatus(text) {
-		addAll(gitReadToolNames)
-	}
-	if inputSuggestsGitCommit(text) {
-		add("git_commit")
-	}
-	if sideEffectIntentRequiresAction(snapshot.SideEffectIntent, SideEffectActionCommit) {
-		add("git_commit")
-	}
-	if sideEffectIntentRequiresAction(snapshot.SideEffectIntent, SideEffectActionPush) {
-		addAll(gitReadToolNames)
-		add("git_push")
-	}
-	if historyIncludesToolHelp(snapshot) && len(allowed) > 0 {
-		addAll(writeToolNames, commandToolNames)
-	}
-	if len(allowed) > 0 {
-		add("tool_help")
-	}
-
-	names := make([]string, 0, len(allowed))
-	for name := range allowed {
-		names = append(names, name)
-	}
-	return names
-}
-
-func sideEffectIntentRequiresAction(intent *SideEffectIntent, action SideEffectAction) bool {
-	if intent == nil {
-		return false
-	}
-	return containsSideEffectAction(intent.RequiredActions, action)
-}
-
-func turnContractSuggestsImplementationTools(contract *TurnContract) bool {
-	if contract == nil || contract.Intent != TurnIntentEditCode {
-		return false
-	}
-	return len(contract.RequiredActions) > 0 || len(contract.RequiredArtifacts) > 0 || len(contract.RequiredVerification) > 0
-}
-
-func historyIncludesToolHelp(snapshot SessionSnapshot) bool {
-	return historyIncludesToolCall(snapshot, "tool_help")
-}
-
-func historyIncludesToolCall(snapshot SessionSnapshot, toolName string) bool {
-	for _, msg := range snapshot.History {
-		if msg.Role != llm.RoleAssistant {
-			continue
-		}
-		for _, tc := range msg.ToolCalls {
-			if tc.Name == toolName {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func snapshotHasPreviewToolEvidence(snapshot SessionSnapshot) bool {
-	return historyIncludesToolCall(snapshot, "preview_server_ensure") || historyIncludesToolCall(snapshot, "preview_server_status")
 }
 
 func historyIncludesCompletedToolCall(snapshot SessionSnapshot, toolName string) bool {
@@ -5230,82 +3984,14 @@ func agentStillOutstanding(status AgentStatus) bool {
 	}
 }
 
-func postDelegationToolIntentText(snapshot SessionSnapshot) string {
-	parts := []string{snapshot.LastInput}
-	if hints := postDelegationActionHints(completedToolCallResults(snapshot, "wait_agent")); hints != "" {
-		parts = append(parts, hints)
-	}
-	return strings.Join(parts, "\n")
-}
-
-func postDelegationActionHints(results []string) string {
-	var hints []string
-	for _, result := range results {
-		text := normalizeToolIntentText(result)
-		if text == "" {
-			continue
-		}
-		if inputMentionsPathLikeText(text) && containsToolPhrase(text,
-			"report path", "intended report path", "file creation", "target path",
-			"docs/reports", "docs/findings", "docs/superpowers", ".md",
-		) {
-			hints = append(hints, "write report path docs/reports/report.md")
-		}
-		if !containsToolPhrase(text, "do not commit", "don't commit") && inputSuggestsGitCommit(text) {
-			hints = append(hints, "commit it")
-		}
-	}
-	return strings.Join(hints, "\n")
-}
-
 func (r *Runner) updatePostDelegationWorkflow(toolName string, args map[string]any, result string, isError bool) {
 	if r == nil {
 		return
 	}
+	// Delegation write obligations are no longer derived from keywords in the
+	// input or agent results; only clearing of restored pending actions remains.
 	toolName = strings.TrimSpace(toolName)
 	switch toolName {
-	case "spawn_agent":
-		if isError || r.session == nil {
-			return
-		}
-		snapshot := r.session.Snapshot()
-		if !inputSuggestsFileWrites(normalizeToolIntentText(snapshot.LastInput)) {
-			return
-		}
-		action := DelegationActionState{
-			Kind:        DelegationActionWriteDoc,
-			TargetPath:  extractDelegationTargetPath(snapshot.LastInput),
-			Description: "write delegated output",
-		}
-		if agentResult, ok := decodeAgentToolResult(result); ok {
-			action.SourceAgent = strings.TrimSpace(agentResult.ID)
-		}
-		r.postDelegation.pendingWrite = true
-		r.session.SetPendingDelegationAction(action)
-		r.ensureSideEffectIntentForDelegation(action, snapshot.LastInput+"\n"+result)
-	case "wait_agent":
-		if isError {
-			return
-		}
-		snapshot := SessionSnapshot{}
-		if r.session != nil {
-			snapshot = r.session.Snapshot()
-		}
-		if inputSuggestsFileWrites(normalizeToolIntentText(snapshot.LastInput)) || inputSuggestsFileWrites(normalizeToolIntentText(result)) {
-			r.postDelegation.pendingWrite = true
-			if r.session != nil {
-				action := DelegationActionState{
-					Kind:        DelegationActionWriteDoc,
-					TargetPath:  extractDelegationTargetPath(snapshot.LastInput + "\n" + result),
-					Description: "write delegated output",
-				}
-				if agentResult, ok := decodeAgentToolResult(result); ok {
-					action.SourceAgent = strings.TrimSpace(agentResult.ID)
-				}
-				r.session.SetPendingDelegationAction(action)
-				r.ensureSideEffectIntentForDelegation(action, snapshot.LastInput+"\n"+result)
-			}
-		}
 	case "write_file", "edit_file", "apply_patch", "run_command":
 		if !isError && r.parentWriteSatisfiesPendingDelegationAction(toolName, args, result) {
 			r.postDelegation.pendingWrite = false
@@ -5432,314 +4118,8 @@ func singleNormalizedPath(paths []string) string {
 	return unique[0]
 }
 
-func (r *Runner) ensureSideEffectIntentForDelegation(action DelegationActionState, text string) {
-	if r == nil || r.session == nil || action.Kind != DelegationActionWriteDoc {
-		return
-	}
-	targetPath := normalizeIntentPath(action.TargetPath)
-	if targetPath == "" {
-		targetPath = extractDelegationTargetPath(text)
-		targetPath = normalizeIntentPath(targetPath)
-	}
-	if targetPath == "" {
-		if path, ok := completedAgentResultMarkdownWritePath(text); ok {
-			targetPath = normalizeIntentPath(path)
-		}
-	}
-	if targetPath == "" {
-		return
-	}
-	snapshot := r.session.Snapshot()
-	if snapshot.SideEffectIntent == nil {
-		turn := snapshot.Turn
-		if turn == 0 {
-			turn = 1
-		}
-		r.session.SetSideEffectIntent(SideEffectIntent{
-			ID:              fmt.Sprintf("intent-%d", turn),
-			SourceTurn:      turn,
-			ArtifactPaths:   []string{targetPath},
-			AllowedPaths:    []string{targetPath},
-			RequiredActions: []SideEffectAction{SideEffectActionWrite},
-			Remote:          "origin",
-			Gates:           initialGatesForActions([]SideEffectAction{SideEffectActionWrite}),
-		})
-		r.syncTurnContractFromSideEffectIntent()
-		return
-	}
-	r.session.UpdateSideEffectIntent(func(intent *SideEffectIntent) {
-		if !slices.Contains(intent.ArtifactPaths, targetPath) {
-			intent.ArtifactPaths = append(intent.ArtifactPaths, targetPath)
-		}
-		if !slices.Contains(intent.AllowedPaths, targetPath) {
-			intent.AllowedPaths = append(intent.AllowedPaths, targetPath)
-		}
-		if !containsSideEffectAction(intent.RequiredActions, SideEffectActionWrite) {
-			intent.RequiredActions = append(intent.RequiredActions, SideEffectActionWrite)
-		}
-		if !containsSideEffectGate(intent.Gates, string(SideEffectActionWrite)) {
-			intent.Gates = append(intent.Gates, SideEffectGate{Name: string(SideEffectActionWrite), Status: SideEffectGatePending})
-		}
-	})
-	r.syncTurnContractFromSideEffectIntent()
-}
-
-func extractDelegationTargetPath(text string) string {
-	for _, field := range strings.Fields(text) {
-		candidate := strings.Trim(field, "`'\".,:;()[]{}<>")
-		candidate = strings.TrimPrefix(candidate, "path=")
-		candidate = strings.TrimPrefix(candidate, "target=")
-		if strings.HasSuffix(strings.ToLower(candidate), ".md") {
-			return candidate
-		}
-	}
-	return ""
-}
-
-func pendingPostDelegationWriteAction(snapshot SessionSnapshot) bool {
-	waitResultIndex := lastCompletedToolResultIndex(snapshot, "wait_agent")
-	if waitResultIndex < 0 {
-		return false
-	}
-	currentPostDelegationAction := inputSuggestsPostDelegationAction(normalizeToolIntentText(snapshot.LastInput))
-	if completedAgentFallbackAfterIndex(snapshot, waitResultIndex) && !currentPostDelegationAction {
-		return false
-	}
-	if successfulDelegationWriteAfterIndex(snapshot, waitResultIndex) {
-		return false
-	}
-	if historyBeforeIndexSuggestsFileWrite(snapshot, waitResultIndex) {
-		return true
-	}
-	for _, result := range completedToolCallResults(snapshot, "wait_agent") {
-		if inputSuggestsFileWrites(normalizeToolIntentText(result)) {
-			return true
-		}
-	}
-	return false
-}
-
-func completedAgentFallbackSettledWrite(snapshot SessionSnapshot) bool {
-	waitResultIndex := lastCompletedToolResultIndex(snapshot, "wait_agent")
-	return waitResultIndex >= 0 && completedAgentFallbackAfterIndex(snapshot, waitResultIndex)
-}
-
-func completedAgentFallbackAfterIndex(snapshot SessionSnapshot, index int) bool {
-	const fallbackPrefix = "Parent model connection failed while composing the final response. Showing completed child-agent result instead."
-	for i, msg := range snapshot.History {
-		if i <= index || msg.Role != llm.RoleAssistant {
-			continue
-		}
-		if strings.HasPrefix(strings.TrimSpace(msg.Content), fallbackPrefix) {
-			return true
-		}
-	}
-	return false
-}
-
 func pendingDelegationWriteAction(snapshot SessionSnapshot) bool {
 	return snapshot.PendingDelegationAction != nil && snapshot.PendingDelegationAction.Kind == DelegationActionWriteDoc
-}
-
-func postDelegationReadOutputBudgetExhausted(snapshot SessionSnapshot) bool {
-	start := lastCompletedToolResultIndex(snapshot, "wait_agent")
-	if start < 0 {
-		if !pendingDelegationWriteAction(snapshot) || !completedDelegationAgentResultsAvailable(snapshot) {
-			return false
-		}
-		start = -1
-	}
-	readCalls := 0
-	for i, msg := range snapshot.History {
-		if i <= start || msg.Role != llm.RoleAssistant {
-			continue
-		}
-		for _, call := range msg.ToolCalls {
-			if strings.TrimSpace(call.Name) == "read_output" {
-				readCalls++
-			}
-		}
-	}
-	return readCalls >= postDelegationReadOutputCallBudget
-}
-
-func completedDelegationAgentResultsAvailable(snapshot SessionSnapshot) bool {
-	for _, task := range snapshot.AgentTasks {
-		if task.Status == AgentStatusCompleted && strings.TrimSpace(task.Result) != "" {
-			return true
-		}
-	}
-	return false
-}
-
-func lastCompletedToolResultIndex(snapshot SessionSnapshot, toolName string) int {
-	ids := make(map[string]struct{})
-	last := -1
-	for i, msg := range snapshot.History {
-		switch msg.Role {
-		case llm.RoleAssistant:
-			for _, tc := range msg.ToolCalls {
-				if tc.Name == toolName && strings.TrimSpace(tc.ID) != "" {
-					ids[tc.ID] = struct{}{}
-				}
-			}
-		case llm.RoleTool:
-			if _, ok := ids[msg.ToolCallID]; ok {
-				last = i
-			}
-		}
-	}
-	return last
-}
-
-func historyBeforeIndexSuggestsFileWrite(snapshot SessionSnapshot, index int) bool {
-	if index < 0 {
-		return false
-	}
-	for i, msg := range snapshot.History {
-		if i > index {
-			break
-		}
-		if msg.Role != llm.RoleUser {
-			continue
-		}
-		if inputSuggestsFileWrites(normalizeToolIntentText(msg.Content)) {
-			return true
-		}
-	}
-	return false
-}
-
-func successfulToolResultAfterIndex(snapshot SessionSnapshot, index int, toolNames []string) bool {
-	if index < 0 || len(toolNames) == 0 {
-		return false
-	}
-	ids := make(map[string]struct{})
-	for i, msg := range snapshot.History {
-		if i <= index {
-			continue
-		}
-		switch msg.Role {
-		case llm.RoleAssistant:
-			for _, tc := range msg.ToolCalls {
-				if toolNameIn(tc.Name, toolNames) && strings.TrimSpace(tc.ID) != "" {
-					ids[tc.ID] = struct{}{}
-				}
-			}
-		case llm.RoleTool:
-			if _, ok := ids[msg.ToolCallID]; ok && !strings.HasPrefix(normalizeToolIntentText(msg.Content), "error:") {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func successfulDelegationWriteAfterIndex(snapshot SessionSnapshot, index int) bool {
-	if index < 0 {
-		return false
-	}
-	targetPath := pendingDelegationWriteTarget(snapshot)
-	ids := make(map[string]llm.NativeToolCall)
-	for i, msg := range snapshot.History {
-		if i <= index {
-			continue
-		}
-		switch msg.Role {
-		case llm.RoleAssistant:
-			for _, tc := range msg.ToolCalls {
-				if toolNameIn(tc.Name, writeToolNames) && strings.TrimSpace(tc.ID) != "" {
-					ids[tc.ID] = tc
-				}
-			}
-		case llm.RoleTool:
-			call, ok := ids[msg.ToolCallID]
-			if !ok || targetPath == "" || strings.HasPrefix(normalizeToolIntentText(msg.Content), "error:") {
-				continue
-			}
-			args := map[string]any{}
-			_ = json.Unmarshal([]byte(call.ArgsJSON), &args)
-			if writeToolResultTargetsPath(call.Name, args, targetPath) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func toolNameIn(name string, names []string) bool {
-	name = strings.TrimSpace(name)
-	for _, candidate := range names {
-		if name == strings.TrimSpace(candidate) {
-			return true
-		}
-	}
-	return false
-}
-
-func shouldRequireToolCallForSnapshot(snapshot SessionSnapshot) bool {
-	if inputLooksLikeInjectedSkillPayload(snapshot.LastInput) {
-		return false
-	}
-	if len(blockingAgentHandoffs(snapshot)) > 0 {
-		return true
-	}
-	if pendingDelegationWriteAction(snapshot) || pendingPostDelegationWriteAction(snapshot) {
-		return true
-	}
-	if turnContractRequiresToolEvidence(snapshot.TurnContract) {
-		return true
-	}
-	if outstanding := len(outstandingSpawnedAgents(snapshot)); outstanding > 0 {
-		text := normalizeToolIntentText(snapshot.LastInput)
-		return currentInputRequestsDelegation(snapshot) || shouldExposeSpawnWhileAgentsActive(snapshot, outstanding) || inputSuggestsPostDelegationAction(text)
-	}
-	text := normalizeToolIntentText(snapshot.LastInput)
-	return currentInputRequestsDelegation(snapshot) || inputSuggestsWebResearch(text)
-}
-
-func turnContractRequiresToolEvidence(contract *TurnContract) bool {
-	if contract == nil || contract.Status == ContractStatusSatisfied || contract.Status == ContractStatusCleared || contract.Intent == TurnIntentAnswerOnly {
-		return false
-	}
-	return turnContractFinalEvidenceFeedback(contract) != ""
-}
-
-func shouldRouteParentThroughDelegation(snapshot SessionSnapshot) bool {
-	if inputLooksLikePastedTerminalOutput(snapshot.LastInput) {
-		return false
-	}
-	text := normalizeToolIntentText(snapshot.LastInput)
-	return inputSuggestsDelegation(text)
-}
-
-func currentInputRequestsDelegation(snapshot SessionSnapshot) bool {
-	if !shouldRouteParentThroughDelegation(snapshot) {
-		return false
-	}
-	if !historyIncludesCompletedToolCall(snapshot, "wait_agent") {
-		return true
-	}
-	return latestUserInputAfterCompletedToolCall(snapshot, "wait_agent")
-}
-
-func latestUserInputAfterCompletedToolCall(snapshot SessionSnapshot, toolName string) bool {
-	index := lastCompletedToolResultIndex(snapshot, toolName)
-	if index < 0 {
-		return false
-	}
-	lastInput := normalizeToolIntentText(snapshot.LastInput)
-	if lastInput == "" {
-		return false
-	}
-	for i := len(snapshot.History) - 1; i > index; i-- {
-		msg := snapshot.History[i]
-		if msg.Role != llm.RoleUser {
-			continue
-		}
-		return normalizeToolIntentText(msg.Content) == lastInput
-	}
-	return false
 }
 
 func normalizeToolIntentText(text string) string {
@@ -5748,558 +4128,6 @@ func normalizeToolIntentText(text string) string {
 		return ""
 	}
 	return strings.Join(strings.Fields(text), " ")
-}
-
-func inputSuggestsPreviewWork(text string) bool {
-	return containsToolPhrase(text,
-		"preview", "mock up", "mockup", "web page", "webpage", "landing page",
-		"show in browser", "show me in browser", "html preview", "still up",
-		"pick 3 others", "pick three others", "no neon", "show me them on the screen",
-		"show it on the web page", "put that on the web page", "refresh the preview",
-		"open the preview again",
-	)
-}
-
-func inputSuggestsPreviewFollowUp(text string) bool {
-	return inputSuggestsPreviewWork(text) ||
-		inputSuggestsActionFollowUp(text) ||
-		inputSuggestsBugFixWork(text) ||
-		containsToolPhrase(text,
-			"fix that", "show me again", "show it again", "show again",
-			"more colors", "colour", "color", "theme", "graphics", "iconography",
-			"code boxes", "git output", "git diff", "file/numeral", "numeral detection",
-		)
-}
-
-func inputSuggestsFileInspection(text string) bool {
-	if text == "" {
-		return false
-	}
-	if inputMentionsPathLikeText(text) {
-		return true
-	}
-	return containsToolPhrase(text,
-		"read ", "open ", "inspect ", "examine ", "check ", "look at ", "show ",
-		"file", "files", "log", "logs", "trace", "debug log", "debug logs", "readme", "config", "output", "image",
-		"repo", "repository", "project", "codebase", "workspace", "directory", "folder",
-		"what do you think", "tell me what you think", "anything i need change",
-		"anything i need to change", "improve", "improvement", "review",
-	)
-}
-
-func inputSuggestsRepoContext(text string) bool {
-	return containsToolPhrase(text, "repo", "repository", "project", "codebase", "workspace")
-}
-
-func inputSuggestsFileWrites(text string) bool {
-	if inputNegatesFileWrite(text) {
-		return false
-	}
-	if inputSuggestsReadOnlyGetPath(text) {
-		return false
-	}
-	if inputSuggestsChatReviewOutput(text) {
-		return false
-	}
-	if !inputSuggestsDocumentOutputAction(text) {
-		return inputSuggestsReportFileTarget(text)
-	}
-	return inputSuggestsExplicitFileWrite(text)
-}
-
-func inputSuggestsReadOnlyGetPath(text string) bool {
-	text = normalizeToolIntentText(text)
-	return strings.HasPrefix(text, "get ") && inputMentionsPathLikeText(text) && !inputHasExplicitOutputDestination(text)
-}
-
-func inputSuggestsChatReviewOutput(text string) bool {
-	text = normalizeToolIntentText(text)
-	if !containsToolPhrase(text, "write a review of", "write up what you think about", "write up what you think of", "write up your thoughts about", "write up your thoughts on") {
-		return false
-	}
-	return !inputHasExplicitOutputDestination(text)
-}
-
-func inputHasExplicitOutputDestination(text string) bool {
-	if containsToolPhrase(text, "to a file", "into a file", "as a file") {
-		return true
-	}
-	fields := strings.Fields(text)
-	for i, field := range fields {
-		marker := strings.Trim(field, "`'\".,:;()[]{}<>")
-		if marker != "to" && marker != "into" && marker != "as" {
-			continue
-		}
-		if i+1 >= len(fields) {
-			continue
-		}
-		candidate := normalizeIntentPath(fields[i+1])
-		if candidate != "" && looksLikeExplicitIntentPath(candidate) {
-			return true
-		}
-	}
-	return false
-}
-
-func inputNegatesFileWrite(text string) bool {
-	text = normalizeToolIntentText(text)
-	if containsToolPhrase(text, "read-only", "read only", "review only", "inspect only", "no edits", "no changes", "without writing", "without editing", "do not write", "don't write", "dont write") {
-		return true
-	}
-	if containsToolPhrase(text, "do not edit", "don't edit", "dont edit", "not edit") && containsToolPhrase(text, "review ", "inspect ", "read ", "check ") && !containsToolPhrase(text, "write ", "save ", "create ", "update ", "append ", "patch ") {
-		return true
-	}
-	return false
-}
-
-func inputSuggestsExplicitFileWrite(text string) bool {
-	if !inputSuggestsDocumentOutputAction(text) {
-		return false
-	}
-	return inputMentionsPathLikeText(text) || inputSuggestsDocumentOutputTarget(text) || inputSuggestsStrongFindingsWrite(text)
-}
-
-func inputSuggestsDocumentOutputTarget(text string) bool {
-	return containsToolPhrase(text,
-		" file", " files", "markdown", ".md", "to a file", "into a file",
-		"readme", "config", "artifact", "html", "script",
-		" doc", " docs", "document", "spec", "report", "memo", "note",
-	)
-}
-
-func inputSuggestsDocumentOutputAction(text string) bool {
-	return containsToolPhrase(text,
-		"write ", "save ", "create ", "update ", "edit ", "patch ", "append ",
-		"rewrite ", "modify ", "written ", "wrote ", "put ", "make ", "turn ",
-		"convert ", "export ", "capture ", "record ", "document ", "get ",
-		"draft ", "produce ", "report ",
-	)
-}
-
-func inputSuggestsStrongFindingsWrite(text string) bool {
-	if !containsToolPhrase(text, "findings") {
-		return false
-	}
-	return containsToolPhrase(text,
-		"write ", "save ", "create ", "update ", "append ", "rewrite ", "written ", "wrote ",
-	)
-}
-
-func inputSuggestsReportFileTarget(text string) bool {
-	return inputMentionsPathLikeText(text) && containsToolPhrase(text,
-		"report path", "intended report path", "file creation", "target path", "save as", "write as",
-		"docs/reports", "docs/findings", "docs/superpowers", "conformance.md", "audit.md",
-	)
-}
-
-func inputSuggestsCommandWork(text string) bool {
-	if turnInputAsksForExplanation(text) || turnInputAsksForReadOnlyReview(text) {
-		return false
-	}
-	if inputSuggestsRepoSetupCommandWork(text) || inputSuggestsGoBuildCommandWork(text) {
-		return true
-	}
-	return containsToolPhrase(text,
-		"run ", "command", "shell", "terminal", "test", "tests", "build", "lint",
-		"install", "compile", "benchmark", "start server", "restart server",
-		"dev server", "keep it running", "terminal session",
-		"git init", "go mod", "go test", "go build", "go run",
-		"initialize repo", "initialise repo", "init repo", "create directory", "create a directory",
-		"mkdir",
-	)
-}
-
-func inputSuggestsRepoSetupCommandWork(text string) bool {
-	if !containsToolPhrase(text, "repo", "repository") {
-		return false
-	}
-	return containsToolPhrase(text,
-		"create ", "make ", "set up", "setup", "init ", "initialize ", "initialise ",
-	)
-}
-
-func inputSuggestsGoBuildCommandWork(text string) bool {
-	if !containsToolPhrase(text, "go", "golang", "cli tool", "command line tool", "command-line tool") {
-		return false
-	}
-	if !containsToolPhrase(text, "cli tool", "command line tool", "command-line tool", "go project", "go module", "written in go") {
-		return false
-	}
-	return containsToolPhrase(text,
-		"create ", "make ", "build ", "implement ", "write ", "add ", "set up", "setup",
-	)
-}
-
-func inputSuggestsWebResearch(text string) bool {
-	if inputSuggestsPreviewWork(text) {
-		return false
-	}
-	return containsToolPhrase(text,
-		"latest", "look up", "lookup", "search the web", "browse", "online",
-		"internet", "website", "url", "fetch", "news", "price", "prices", "pricing",
-		"cost", "costs", "how much", "market rate", "current price",
-	) || inputAsksExternalFactQuestion(text)
-}
-
-func inputAsksExternalFactQuestion(text string) bool {
-	if text == "" || inputSuggestsRepoContext(text) || inputMentionsPathLikeText(text) {
-		return false
-	}
-	if !startsWithFactQuestion(text) {
-		return false
-	}
-	return containsExternalLocator(text)
-}
-
-func startsWithFactQuestion(text string) bool {
-	for _, prefix := range []string{
-		"what ", "what's ", "whats ", "what is ", "what are ",
-		"when ", "where ", "who ", "which ", "how ",
-		"is ", "are ", "do ", "does ", "can ", "will ",
-	} {
-		if strings.HasPrefix(text, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-func containsExternalLocator(text string) bool {
-	padded := " " + text + " "
-	for _, marker := range []string{" in ", " at ", " near ", " around ", " between ", " from ", " for "} {
-		if strings.Contains(padded, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-func inputSuggestsGitCommit(text string) bool {
-	if inputNegatesGitCommit(text) {
-		return false
-	}
-	return containsToolPhrase(text,
-		"git commit", "commit it", "commit this", "create a commit",
-		"make a commit", "commit the changes", "commit only", "commit and push",
-	)
-}
-
-func inputNegatesGitCommit(text string) bool {
-	text = normalizeToolIntentText(text)
-	if containsToolPhrase(text,
-		"do not commit", "do not git commit", "don't commit", "don't git commit", "dont commit", "dont git commit",
-		"no commit", "no git commit", "without commit", "without git commit", "not commit", "not git commit",
-	) {
-		return true
-	}
-	idx := strings.Index(text, "git commit")
-	if idx < 0 {
-		idx = strings.Index(text, "commit")
-	}
-	if idx < 0 {
-		return false
-	}
-	start := idx - 40
-	if start < 0 {
-		start = 0
-	}
-	prefix := text[start:idx]
-	return containsToolPhrase(prefix, "do not", "don't", "dont", "without", "no ", "not ")
-}
-
-func inputSuggestsBugFixWork(text string) bool {
-	return containsToolPhrase(text,
-		"broken", "does not work", "doesn't work", "not working",
-		"fix this", "fix it", "patch this", "input pane", "input panel",
-	) || containsBoundedToolPhrase(text,
-		"bug", "issue", "error", "failing", "wrong", "regression", "cursor",
-	)
-}
-
-func inputSuggestsActionFollowUp(text string) bool {
-	return containsToolPhrase(text,
-		"do it", "continue", "use what you need", "go ahead", "implement it", "build it",
-		"make the change", "make changes", "fix it", "apply it", "ship it", "finish it",
-	)
-}
-
-func inputSuggestsGitPush(text string) bool {
-	if inputNegatesGitPush(text) {
-		return false
-	}
-	return containsBoundedToolPhrase(text,
-		"git push", "push it", "push this", "push main", "push to remote",
-		"push the branch", "push the changes", "push origin", "push to origin",
-		"publish local commits", "publish commits",
-	) || (containsBoundedToolPhrase(text, "and push", "then push") && inputSuggestsGitCommit(text))
-}
-
-func inputNegatesGitPush(text string) bool {
-	text = normalizeToolIntentText(text)
-	if containsToolPhrase(text,
-		"do not push", "do not git push", "don't push", "don't git push", "dont push", "dont git push",
-		"no push", "no git push", "without push", "without git push", "not push", "not git push",
-	) {
-		return true
-	}
-	idx := strings.Index(text, "git push")
-	if idx < 0 {
-		idx = strings.Index(text, "push")
-	}
-	if idx < 0 {
-		return false
-	}
-	start := idx - 40
-	if start < 0 {
-		start = 0
-	}
-	prefix := text[start:idx]
-	return containsToolPhrase(prefix, "do not", "don't", "dont", "without", "no ", "not ")
-}
-
-func inputAsksGitPushStatus(text string) bool {
-	return containsToolPhrase(text,
-		"did you push", "did it push", "is it pushed", "was it pushed",
-		"have you pushed", "has it been pushed",
-	)
-}
-
-func inputSuggestsDelegation(text string) bool {
-	if inputSuggestsMultiRootDelegatedReport(text) {
-		return true
-	}
-	return containsToolPhrase(text,
-		"sub-agent", "sub agent", "delegate", "parallel agent", "parallel agents", "spawn agent",
-		"ask agent", "ask agents", "use agent", "use agents", "agent to", "agents to",
-		"multiple agents", "three agents", "3 agents", "omo agent", "omo agents", "openagent", "oh my openagent",
-		"audit this repo", "audit the repo", "audit repository", "audit this codebase", "audit the codebase",
-		"compare this repo", "compare the repo", "fall down compared to",
-	)
-}
-
-func inputLooksLikePastedTerminalOutput(text string) bool {
-	lower := strings.ToLower(text)
-	if !strings.Contains(lower, "\n") {
-		return false
-	}
-	if !containsToolPhrase(lower, "react runtime: tool", "context deadline exceeded", "└ error:", "error:", "failed") {
-		return false
-	}
-	return containsToolPhrase(lower, "$ ", "• ran ", "• tried ", "└ ", "to reproduce") || inputLooksLikeShellPromptTranscript(lower)
-}
-
-func inputLooksLikeShellPromptTranscript(text string) bool {
-	return containsToolPhrase(text, "~/", " cat ", " target/", " 1 err", " 1 ✘")
-}
-
-func inputSuggestsAgentCancellation(snapshot SessionSnapshot) bool {
-	text := normalizeToolIntentText(snapshot.LastInput)
-	if strings.Contains(text, "kill_agent") {
-		return true
-	}
-	targets := activeAgentCancellationTargets(snapshot)
-	tokens := strings.Fields(text)
-	for i, token := range tokens {
-		if !agentCancellationVerb(token) {
-			continue
-		}
-		for j := i + 1; j < len(tokens) && j <= i+4; j++ {
-			if agentCancellationArticle(tokens[j]) {
-				continue
-			}
-			if agentCancellationTarget(tokens[j]) || mapContainsCleanToken(targets, tokens[j]) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func activeAgentCancellationTargets(snapshot SessionSnapshot) map[string]struct{} {
-	targets := make(map[string]struct{})
-	for _, agent := range outstandingSpawnedAgents(snapshot) {
-		for _, value := range []string{agent.ID, agent.Role} {
-			if token := cleanIntentToken(value); token != "" {
-				targets[token] = struct{}{}
-			}
-		}
-	}
-	return targets
-}
-
-func mapContainsCleanToken(values map[string]struct{}, token string) bool {
-	if len(values) == 0 {
-		return false
-	}
-	_, ok := values[cleanIntentToken(token)]
-	return ok
-}
-
-func agentCancellationVerb(token string) bool {
-	switch cleanIntentToken(token) {
-	case "kill", "cancel", "stop", "terminate", "abort":
-		return true
-	default:
-		return false
-	}
-}
-
-func agentCancellationArticle(token string) bool {
-	switch cleanIntentToken(token) {
-	case "the", "this", "that", "running":
-		return true
-	default:
-		return false
-	}
-}
-
-func agentCancellationTarget(token string) bool {
-	switch cleanIntentToken(token) {
-	case "agent", "agents", "sub-agent", "subagent", "child", "it":
-		return true
-	default:
-		return false
-	}
-}
-
-func cleanIntentToken(token string) string {
-	return strings.Trim(strings.ToLower(strings.TrimSpace(token)), "`'\".,:;!?()[]{}<>")
-}
-
-func inputSuggestsMultiRootDelegatedReport(text string) bool {
-	return inputSuggestsFileWrites(text) && (len(absoluteWorkspaceRoots(text)) > 1 || sharedGitRepoListCount(text) > 1)
-}
-
-func sharedGitRepoListCount(text string) int {
-	if !mentionsSharedGitRoot(text) {
-		return 0
-	}
-	wanted := map[string]struct{}{
-		"cci":      {},
-		"codex":    {},
-		"deepseek": {},
-		"opencode": {},
-	}
-	count := 0
-	for _, field := range strings.Fields(text) {
-		token := cleanIntentToken(field)
-		if _, ok := wanted[token]; !ok {
-			continue
-		}
-		delete(wanted, token)
-		count++
-	}
-	return count
-}
-
-func mentionsSharedGitRoot(text string) bool {
-	for _, field := range strings.Fields(text) {
-		token := cleanIntentToken(field)
-		if token == "~/git" || strings.HasSuffix(token, "/git") {
-			return true
-		}
-	}
-	return false
-}
-
-func absoluteWorkspaceRoots(text string) map[string]struct{} {
-	roots := make(map[string]struct{})
-	for _, field := range strings.Fields(text) {
-		path := strings.Trim(field, "`'\".,;:()[]{}<>")
-		if !strings.HasPrefix(path, "/") && !strings.HasPrefix(path, "~/") {
-			continue
-		}
-		root := absoluteWorkspaceRoot(path)
-		if root != "" {
-			roots[root] = struct{}{}
-		}
-	}
-	return roots
-}
-
-func absoluteWorkspaceRoot(path string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return ""
-	}
-	if strings.HasPrefix(path, "~/") {
-		parts := strings.Split(strings.Trim(path, "/"), "/")
-		if len(parts) < 3 {
-			return path
-		}
-		return strings.Join(parts[:3], "/")
-	}
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) < 2 {
-		return path
-	}
-	if len(parts) >= 4 && strings.EqualFold(parts[0], "users") {
-		return "/" + strings.Join(parts[:4], "/")
-	}
-	return "/" + strings.Join(parts[:2], "/")
-}
-
-func inputSuggestsPostDelegationAction(text string) bool {
-	return inputSuggestsFileWrites(text) ||
-		inputSuggestsCommandWork(text) ||
-		inputSuggestsPreviewWork(text) ||
-		inputSuggestsGitCommit(text) ||
-		inputSuggestsGitPush(text) ||
-		inputSuggestsActionFollowUp(text) ||
-		inputSuggestsBugFixWork(text)
-}
-
-func inputMentionsPathLikeText(text string) bool {
-	if strings.Contains(text, "/") || strings.Contains(text, "\\") {
-		return true
-	}
-	return containsToolPhrase(text,
-		".go", ".md", ".txt", ".log", ".json", ".yaml", ".yml", ".toml",
-		".png", ".jpg", ".jpeg", ".gif", ".svg",
-	)
-}
-
-func containsToolPhrase(text string, phrases ...string) bool {
-	for _, phrase := range phrases {
-		if strings.Contains(text, phrase) {
-			return true
-		}
-	}
-	return false
-}
-
-func containsBoundedToolPhrase(text string, phrases ...string) bool {
-	for _, phrase := range phrases {
-		for offset := 0; offset < len(text); {
-			start := strings.Index(text[offset:], phrase)
-			if start < 0 {
-				break
-			}
-			start += offset
-			end := start + len(phrase)
-			if isToolPhraseBoundary(text, start-1) && isToolPhraseBoundary(text, end) {
-				return true
-			}
-			offset = start + 1
-		}
-	}
-	return false
-}
-
-func isToolPhraseBoundary(text string, index int) bool {
-	if index < 0 || index >= len(text) {
-		return true
-	}
-	c := text[index]
-	return (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_'
-}
-
-func (r *Runner) blockedToolResult(toolName string, args map[string]any) string {
-	output := r.beforeToolHookOutput(context.Background(), toolName, args)
-	if output.Block == nil {
-		return ""
-	}
-	return strings.TrimSpace(output.Block.Message)
 }
 
 func (r *Runner) updateGitWorkflow(toolName string, args map[string]any, result string) {
@@ -6740,7 +4568,7 @@ func postDelegationWritePromptHook(_ context.Context, event hooks.Event) []hooks
 	if !ok || !historyIncludesCompletedToolCall(snap, "wait_agent") {
 		return nil
 	}
-	if !pendingDelegationWriteAction(snap) && !pendingPostDelegationWriteAction(snap) {
+	if !pendingDelegationWriteAction(snap) {
 		return nil
 	}
 	target := "the requested document path"
@@ -6784,52 +4612,6 @@ func blockingAgentHandoffs(snap SessionSnapshot) []AgentTaskState {
 	return out
 }
 
-func handoffTasksRequireWriteTools(tasks []AgentTaskState) bool {
-	for _, task := range tasks {
-		if task.Handoff == nil {
-			continue
-		}
-		for _, action := range task.Handoff.RemainingActions {
-			switch action.Kind {
-			case AgentActionWriteFile, AgentActionRestoreFile:
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func handoffTasksRequireCommandTools(tasks []AgentTaskState) bool {
-	for _, task := range tasks {
-		if task.Handoff == nil {
-			continue
-		}
-		for _, action := range task.Handoff.RemainingActions {
-			if action.Kind == AgentActionRunVerification {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func agentHandoffToolIntentText(tasks []AgentTaskState) string {
-	var b strings.Builder
-	b.WriteString("Resolve child-agent handoff before final response. ")
-	for _, task := range tasks {
-		if task.Handoff == nil {
-			continue
-		}
-		for _, action := range task.Handoff.RemainingActions {
-			fmt.Fprintf(&b, "Action %s %s %s. ", action.Kind, action.TargetPath, action.Description)
-		}
-		for _, incident := range task.Handoff.Incidents {
-			fmt.Fprintf(&b, "Incident %s %s %s. ", incident.Kind, strings.Join(incident.Paths, " "), incident.Description)
-		}
-	}
-	return b.String()
-}
-
 func agentHandoffOverlayContent(tasks []AgentTaskState) string {
 	var b strings.Builder
 	b.WriteString("Resolve child-agent handoff before final response. The parent/orchestrator owns remaining writes, repairs, verification, commits, and user questions. Do not ask the user to run repair commands.\n")
@@ -6861,27 +4643,6 @@ func agentHandoffOverlayContent(tasks []AgentTaskState) string {
 		}
 	}
 	return strings.TrimSpace(b.String())
-}
-
-func postDelegationNeedsSynthesisAgent(snap SessionSnapshot) bool {
-	if !pendingDelegationWriteAction(snap) && !pendingPostDelegationWriteAction(snap) {
-		return false
-	}
-	if historyIncludesCompletedToolCall(snap, "read_output") {
-		return false
-	}
-	resultTurn := completedAgentResultTurn(snap)
-	completed := 0
-	for _, task := range snap.AgentTasks {
-		if task.Status != AgentStatusCompleted || task.ParentTurn != resultTurn || strings.TrimSpace(task.Result) == "" {
-			continue
-		}
-		if strings.EqualFold(strings.TrimSpace(task.Role), "synthesizer") {
-			return false
-		}
-		completed++
-	}
-	return completed > 1
 }
 
 func synthesisPromptHook(_ context.Context, event hooks.Event) []hooks.Result {
@@ -7899,15 +5660,15 @@ func (r *Runner) updateRepeatToolCallWorkflow(toolName string, args map[string]a
 		return
 	}
 	key := toolName + ":" + target
-	lastKey := r.repeatWorkflow.lastToolName + ":" + r.repeatWorkflow.lastTarget
-	if key == lastKey {
-		r.repeatWorkflow.streak++
-	} else {
-		r.repeatWorkflow = repeatToolCallState{
-			lastToolName: toolName,
-			lastTarget:   target,
-			streak:       1,
-		}
+	recent := append(r.repeatWorkflow.recent, key)
+	if len(recent) > repeatToolCallWindow {
+		recent = recent[len(recent)-repeatToolCallWindow:]
+	}
+	r.repeatWorkflow = repeatToolCallState{
+		lastToolName: toolName,
+		lastTarget:   target,
+		recent:       recent,
+		streak:       repeatToolCallOccurrences(recent, key),
 	}
 	r.syncRuntimeNote()
 }
@@ -7915,10 +5676,19 @@ func (r *Runner) updateRepeatToolCallWorkflow(toolName string, args map[string]a
 func repeatToolCallTarget(toolName string, args map[string]any) string {
 	switch toolName {
 	case "read_file":
-		if path := strings.TrimSpace(stringArg(args, "path")); path != "" {
-			return path
+		path := strings.TrimSpace(stringArg(args, "path"))
+		if path == "" {
+			path = strings.TrimSpace(stringArg(args, "filePath"))
 		}
-		return strings.TrimSpace(stringArg(args, "filePath"))
+		if path == "" {
+			return ""
+		}
+		// Include the requested range so paging through a large file with
+		// different start_line/end_line values is not treated as a repeat.
+		if rangeKey := readRangeKey(args); rangeKey != "" {
+			return path + "#" + rangeKey
+		}
+		return path
 	case "list_dir":
 		return strings.TrimSpace(stringArg(args, "path"))
 	case "code_search":
@@ -7944,11 +5714,30 @@ func repeatToolCallTarget(toolName string, args map[string]any) string {
 	}
 }
 
+func readRangeKey(args map[string]any) string {
+	start := stringArg(args, "start_line")
+	end := stringArg(args, "end_line")
+	if start == "" {
+		if v, ok := args["start_line"].(float64); ok {
+			start = fmt.Sprintf("%d", int(v))
+		}
+	}
+	if end == "" {
+		if v, ok := args["end_line"].(float64); ok {
+			end = fmt.Sprintf("%d", int(v))
+		}
+	}
+	if start == "" && end == "" {
+		return ""
+	}
+	return start + "-" + end
+}
+
 func (s repeatToolCallState) overlayContent(threshold int) string {
 	if s.streak < toolThrashThreshold(threshold, repeatToolCallThreshold) {
 		return ""
 	}
-	return fmt.Sprintf("Loop detection: you have called %s on the same target %q %d times in a row without making progress. Stop repeating this action. Either the approach is wrong or you already have the information you need. Switch to a different tool or synthesize your findings now.", s.lastToolName, s.lastTarget, s.streak)
+	return fmt.Sprintf("Loop detection: you have called %s on the same target %q %d times recently without making progress. Stop repeating this action. Either the approach is wrong or you already have the information you need. Switch to a different tool or synthesize your findings now.", s.lastToolName, s.lastTarget, s.streak)
 }
 
 func isExplorationToolCall(toolName string, args map[string]any) bool {

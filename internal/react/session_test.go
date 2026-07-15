@@ -3,7 +3,6 @@ package react
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -242,38 +241,6 @@ func TestNewSessionFromItemsRestoresSideEffectWorkspaceRoot(t *testing.T) {
 	}
 	if got := restored.Snapshot().ActiveWorkspaceRoot; got != "/Users/cass/git/arkanoid" {
 		t.Fatalf("ActiveWorkspaceRoot = %q, want /Users/cass/git/arkanoid", got)
-	}
-}
-
-func TestDeriveActiveWorkspaceRootFromNewRepoRequest(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	for _, input := range []string{
-		"create me a new repo in ~/git/Arkanoid and build a game",
-		"create me a new repo in ~/git/Arkanoid and put the game in it",
-	} {
-		t.Run(input, func(t *testing.T) {
-			got := deriveActiveWorkspaceRoot(input)
-			want := filepath.Join(home, "git", "Arkanoid")
-			if got != want {
-				t.Fatalf("deriveActiveWorkspaceRoot = %q, want %q", got, want)
-			}
-		})
-	}
-}
-
-func TestDeriveActiveWorkspaceRootRejectsAmbiguousRelativePath(t *testing.T) {
-	for _, input := range []string{
-		"create me a new repo there and build a game",
-		"create me a new repo in . and build a game",
-		"create me a new repo in ../arkanoid and build a game",
-	} {
-		t.Run(input, func(t *testing.T) {
-			if got := deriveActiveWorkspaceRoot(input); got != "" {
-				t.Fatalf("deriveActiveWorkspaceRoot = %q, want empty", got)
-			}
-		})
 	}
 }
 

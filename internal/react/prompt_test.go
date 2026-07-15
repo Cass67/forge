@@ -201,6 +201,7 @@ func TestBuildMessages_LargeToolResultTruncated(t *testing.T) {
 			{Role: llm.RoleUser, Content: "run something"},
 			{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{{ID: "c1", Name: "run_command", ArgsJSON: `{}`}}},
 			{Role: llm.RoleTool, ToolCallID: "c1", Content: bigResult},
+			{Role: llm.RoleAssistant, Content: "command finished"},
 		},
 	}
 	msgs := BuildMessages("sys", snap)
@@ -227,7 +228,7 @@ func TestBuildMessages_LargeToolResultTruncated(t *testing.T) {
 		t.Error("tail lines should be present in LLM context")
 	}
 	// Truncation marker must appear
-	if !strings.Contains(toolMsg.Content, "lines truncated)") {
+	if !strings.Contains(toolMsg.Content, "lines omitted") {
 		t.Error("truncation marker should be present")
 	}
 	// Original snapshot must not be mutated — truncateToolResults must copy

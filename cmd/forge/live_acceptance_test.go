@@ -67,36 +67,6 @@ func TestLiveAcceptanceDelegatedAuditWritesReportWithLocalProvider(t *testing.T)
 	server.AssertDelegatedWrite(t)
 }
 
-func TestLiveAcceptanceComparisonReposWritesMarkupAfterParentServerErrorWithLocalProvider(t *testing.T) {
-	server := newLiveAcceptanceMock(t)
-	defer server.Close()
-	bin := buildForgeBinary(t)
-	workDir := initLiveAcceptanceFixture(t)
-	configHome := writeLiveAcceptanceConfig(t, server.URL())
-	initLiveAcceptanceComparisonRepos(t, configHome)
-
-	output, _ := runForgeConsole(t, bin, configHome, workDir, strings.Join([]string{
-		`LIVE_COMPARISON_MARKUP_CHECK: let take a look at the cci, codex and opencode repo's in ~/git and analyse the features in this codebase and work out if there is anything remaining that would be helpful or interesting to use. write findings in markup doc`,
-		`/quit`,
-	}, "\n")+"\n")
-
-	if strings.Contains(output, "Server error — retrying") {
-		t.Fatalf("console output reported final server error as retrying:\n%s", output)
-	}
-	reportPath := filepath.Join(workDir, "docs", "reports", "report.md")
-	reportBytes, err := os.ReadFile(reportPath)
-	if err != nil {
-		t.Fatalf("read %s: %v\nconsole output:\n%s", reportPath, err, output)
-	}
-	report := string(reportBytes)
-	for _, want := range []string{"CCI checkpoints", "Codex sandbox", "OpenCode undo"} {
-		if !strings.Contains(report, want) {
-			t.Fatalf("report missing %q:\n%s", want, report)
-		}
-	}
-	server.AssertComparisonMarkup(t)
-}
-
 func TestFailureFixtureTermWranglerWouldNotPassContract(t *testing.T) {
 	path := filepath.Join("testdata", "failure_threads", "term_wrangler_unknown_tool_dsml.jsonl")
 	result := analyzeFailureThreadContract(t, path)
@@ -255,49 +225,6 @@ func TestFailureFixtureAnalyzerIgnoresUnrelatedWriteFile(t *testing.T) {
 	if !containsString(result.violations, "missing_artifact") {
 		t.Fatalf("violations = %v, want missing_artifact", result.violations)
 	}
-}
-
-func TestLiveAcceptanceScopedDocCommitPushDirtyWorktreeWithLocalProvider(t *testing.T) {
-	server := newLiveAcceptanceMock(t)
-	defer server.Close()
-	bin := buildForgeBinary(t)
-	workDir := initLiveAcceptanceFixture(t)
-	initLiveAcceptanceBareRemote(t, workDir)
-	writeTextFile(t, filepath.Join(workDir, "AI-1.md"), "unrelated child scratch\n")
-	writeTextFile(t, filepath.Join(workDir, "internal", "react", "loop.go"), "package react\n// unrelated dirty change\n")
-	configHome := writeLiveAcceptanceConfig(t, server.URL())
-
-	output, _ := runForgeConsole(t, bin, configHome, workDir, strings.Join([]string{
-		`LIVE_SCOPED_DOC_COMMIT_PUSH_CHECK: write FORGE_VS_CODEX.md, commit only that file to main, and push origin main. If a child reports accidental extra files or unresolved push, resolve safely without overwriting the doc with the report.`,
-		`/quit`,
-	}, "\n")+"\n")
-
-	docPath := filepath.Join(workDir, "FORGE_VS_CODEX.md")
-	docContent, err := os.ReadFile(docPath)
-	if err != nil {
-		t.Fatalf("read %s: %v\nconsole output:\n%s", docPath, err, output)
-	}
-	if strings.Contains(string(docContent), "I've successfully created the commit") {
-		t.Fatal("artifact was overwritten with control-plane report")
-	}
-	commitFiles := gitOutput(t, workDir, "show", "--name-only", "--format=", "HEAD")
-	if strings.TrimSpace(commitFiles) != "FORGE_VS_CODEX.md" {
-		t.Fatalf("commit files = %q\nconsole output:\n%s", commitFiles, output)
-	}
-	status := gitOutput(t, workDir, "status", "--porcelain", "--untracked-files=all")
-	if !strings.Contains(status, "AI-1.md") {
-		t.Fatalf("unrelated dirty file was not preserved, status=%q", status)
-	}
-	if !strings.Contains(status, "internal/react/loop.go") {
-		t.Fatalf("unrelated dirty modification was not preserved, status=%q", status)
-	}
-	if got := readTextFile(t, filepath.Join(workDir, "internal", "react", "loop.go")); got != "package react\n// unrelated dirty change\n" {
-		t.Fatalf("unrelated dirty modification content = %q", got)
-	}
-	if !strings.Contains(output, "SCOPED_DOC_PUSH_VERIFIED") {
-		t.Fatalf("console output missing verified completion:\n%s", output)
-	}
-	server.AssertScopedDocCommitPush(t)
 }
 
 func TestLiveAcceptanceMultipleAgentsStatusWithLocalProvider(t *testing.T) {

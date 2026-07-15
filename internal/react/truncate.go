@@ -36,14 +36,22 @@ var bulkyToolArgKeys = map[string]struct{}{
 
 // truncateToolResults returns a copy of messages where any RoleTool message
 // whose content exceeds maxLines lines is replaced with a head+tail summary.
+// Trailing tool messages (the current turn's freshest results) are exempt so
+// the model always sees the full output of what it just ran; older results
+// are clipped with a marker that explains how to recover the omitted range.
 // The returned slice is a new allocation. String fields (Content, ToolCallID)
 // on modified messages are replaced with new values. Reference fields
 // (ToolCalls) are shallow-copied.
 func truncateToolResults(messages []llm.Message, maxLines int) []llm.Message {
 	out := make([]llm.Message, len(messages))
 	copy(out, messages)
+	// Freshest batch: contiguous RoleTool messages at the end of the sequence.
+	exemptFrom := len(out)
+	for exemptFrom > 0 && out[exemptFrom-1].Role == llm.RoleTool {
+		exemptFrom--
+	}
 	for i, msg := range out {
-		if msg.Role != llm.RoleTool {
+		if msg.Role != llm.RoleTool || i >= exemptFrom {
 			continue
 		}
 		lines := strings.Split(msg.Content, "\n")
@@ -59,7 +67,7 @@ func truncateToolResults(messages []llm.Message, maxLines int) []llm.Message {
 		omitted := len(lines) - head - tail
 		parts := make([]string, 0, head+tail+1)
 		parts = append(parts, lines[:head]...)
-		parts = append(parts, fmt.Sprintf("... (%d lines truncated)", omitted))
+		parts = append(parts, fmt.Sprintf("... (%d lines omitted from this older result: lines %d-%d. Re-running the identical call returns the same clipped view; to see the omitted range, read the specific line range with read_file start_line/end_line or narrow the command.)", omitted, head+1, len(lines)-tail))
 		parts = append(parts, lines[len(lines)-tail:]...)
 		out[i].Content = strings.Join(parts, "\n")
 	}
