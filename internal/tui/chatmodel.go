@@ -548,6 +548,13 @@ func isRecoverableToolFeedback(ev llm.Event) bool {
 	if ev.Agent == "ask_user_question" {
 		return strings.Contains(message, "options") || strings.Contains(message, "question")
 	}
+	// Runtime-internal retry feedback: the loop already fed these back to the
+	// model as tool results; rendering them as top-level errors reads as a
+	// failed turn when the turn is still recovering.
+	if strings.Contains(message, "malformed tool call arguments") ||
+		strings.Contains(message, "contains the literal marker") {
+		return true
+	}
 	if !strings.HasPrefix(message, ev.Agent+".") {
 		return false
 	}
