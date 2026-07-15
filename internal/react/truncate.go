@@ -11,9 +11,12 @@ import (
 const (
 	// toolResultMaxLines is the line budget passed to truncateToolResults in BuildMessages.
 	// Results at or below this threshold are sent to the LLM unmodified.
-	toolResultMaxLines         = 200
-	toolCallArgSoftStringLimit = 400
-	toolCallArgHardStringLimit = 2000
+	toolResultMaxLines = 200
+	// Keep these limits generous: every truncated arg puts an "<omitted N
+	// chars>" marker into the model's view of its own past calls, and weaker
+	// models copy the marker back into new calls.
+	toolCallArgSoftStringLimit = 1200
+	toolCallArgHardStringLimit = 4000
 )
 
 var bulkyToolArgKeys = map[string]struct{}{

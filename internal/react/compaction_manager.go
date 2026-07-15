@@ -91,7 +91,15 @@ func (m *CompactionManager) DecidePromptPressure(messages []llm.Message) Compact
 	if estimatePromptBytes(messages) <= m.cfg.PromptBudgetBytes {
 		return CompactionDecision{Mode: CompactionNone, Reason: "below prompt budget", KeepTurns: m.cfg.KeepTurns}
 	}
-	for _, msg := range messages {
+	// Only pick micro when a compactable (non tail-protected) result exists;
+	// the apply step skips the freshest microCompactProtectedTail messages, so
+	// deciding on those would fire a no-op micro compaction on every step and
+	// never escalate to summarization.
+	compactableEnd := len(messages) - microCompactProtectedTail
+	for i, msg := range messages {
+		if i >= compactableEnd {
+			break
+		}
 		if msg.Role == llm.RoleTool && len(msg.Content) > m.cfg.PromptToolResultBytes {
 			// Protect the freshest results: crushing what the model is actively
 			// using forces re-reads that look like tool-call loops.
