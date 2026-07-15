@@ -23,6 +23,7 @@ type CompactionDecision struct {
 	DropTurns       int
 	SummaryLen      int
 	ToolResultBytes int
+	ProtectTail     int
 }
 
 type CompactionHookPayload struct {
@@ -92,7 +93,9 @@ func (m *CompactionManager) DecidePromptPressure(messages []llm.Message) Compact
 	}
 	for _, msg := range messages {
 		if msg.Role == llm.RoleTool && len(msg.Content) > m.cfg.PromptToolResultBytes {
-			return CompactionDecision{Mode: CompactionMicro, Reason: "prompt budget", KeepTurns: m.cfg.KeepTurns, ToolResultBytes: m.cfg.PromptToolResultBytes}
+			// Protect the freshest results: crushing what the model is actively
+			// using forces re-reads that look like tool-call loops.
+			return CompactionDecision{Mode: CompactionMicro, Reason: "prompt budget", KeepTurns: m.cfg.KeepTurns, ToolResultBytes: m.cfg.PromptToolResultBytes, ProtectTail: microCompactProtectedTail}
 		}
 	}
 	if !promptHasOlderTurns(messages) {
@@ -176,7 +179,7 @@ func (m *CompactionManager) Apply(session *Session, decision CompactionDecision)
 		if maxBytes < 1 {
 			maxBytes = m.cfg.LargeToolResultBytes
 		}
-		changed := MicroCompactLargeToolResults(session, maxBytes)
+		changed := MicroCompactLargeToolResults(session, maxBytes, decision.ProtectTail)
 		if changed {
 			m.failures = 0
 		}

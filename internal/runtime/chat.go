@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"slices"
@@ -1342,23 +1341,6 @@ func (r agentProgressRenderTarget) StatsWithContext(duration time.Duration, usag
 func (r agentProgressRenderTarget) Error(msg string) { r.target.Error(msg) }
 func (r agentProgressRenderTarget) Info(msg string)  { r.target.Info(msg) }
 
-func reactDelegationSystemSuffix(role string) string {
-	var sb strings.Builder
-	sb.WriteString("You are forge's spawned agent for a bounded delegated task.\n")
-	sb.WriteString("- Complete the delegated task autonomously and return a plain-text result to the parent agent.\n")
-	sb.WriteString("- Stay within the delegated scope.\n")
-	sb.WriteString("- Do not mention internal runtime machinery or role hints in your answer unless directly relevant.\n")
-	switch strings.ToLower(strings.TrimSpace(reactruntime.MapSpawnRole(role))) {
-	case "explorer":
-		sb.WriteString("- Bias toward inspection, tracing, and evidence gathering.\n")
-	case "worker":
-		sb.WriteString("- Bias toward concrete implementation and verification.\n")
-	default:
-		sb.WriteString("- Use your judgment to inspect, act, and verify as needed.\n")
-	}
-	return strings.TrimSpace(sb.String())
-}
-
 func resolveChatRuntimeMode() chatRuntimeMode {
 	return chatRuntimeReact
 }
@@ -1385,30 +1367,9 @@ func runChatTurn(ctx context.Context, reactRunner chatTurnRunner, input chatstat
 			return nil
 		}
 	}
-	if isPromptBoundaryQuestion(text) {
-		if reactRunner != nil {
-			reactRunner.EmitResponse(promptBoundaryRefusal)
-		}
-		return nil
-	}
 	if reactRunner == nil {
 		return fmt.Errorf("chat react runner is nil")
 	}
-	if shouldPromoteFollowUpToImplementation(text, reactRunner.TaskState()) {
-		current := reactRunner.TaskState()
-		next := reactruntime.TaskState{
-			Objective:            strings.TrimSpace(text),
-			Operation:            "implement",
-			RequiredVerification: "inspect the relevant code, make the change with edit tools, and run the relevant verification before claiming completion",
-		}
-		if current != nil && strings.TrimSpace(current.Objective) != "" {
-			next.Objective = strings.TrimSpace(current.Objective)
-		}
-		reactRunner.SetTaskState(next)
-	} else if shouldResetTaskStateForInput(text) {
-		reactRunner.SetTaskState(reactruntime.TaskState{})
-	}
-
 	parts := chatInputToContentParts(input.Attachments)
 	if len(parts) > 0 {
 		return reactRunner.RunWithParts(ctx, text, parts)
@@ -1633,125 +1594,6 @@ func cloneChatHookOutput(output hooks.ExecutionOutput) hooks.ExecutionOutput {
 		cloned.Block = &block
 	}
 	return cloned
-}
-
-func normalizedIntentText(input string) string {
-	text := strings.ToLower(strings.TrimSpace(input))
-	if text == "" {
-		return ""
-	}
-	text = strings.NewReplacer("’", "'", "“", "\"", "”", "\"").Replace(text)
-	text = collapseRepeatedLetters(text)
-	return strings.Join(strings.Fields(text), " ")
-}
-
-func shouldResetTaskStateForInput(input string) bool {
-	text := normalizedIntentText(input)
-	if text == "" || looksLikeWorkspaceScopedInput(text) || looksLikeRepoFollowUp(text) {
-		return false
-	}
-	return true
-}
-
-func shouldPromoteFollowUpToImplementation(input string, state *reactruntime.TaskState) bool {
-	if state == nil {
-		return false
-	}
-	operation := strings.ToLower(strings.TrimSpace(state.Operation))
-	if operation != "inspect" && operation != "overview" && operation != "analysis" {
-		return false
-	}
-	text := normalizedIntentText(input)
-	return looksLikeActionFollowUp(text)
-}
-
-func looksLikeWorkspaceScopedInput(text string) bool {
-	return containsAnyPhrase(text,
-		"repo", "repository", "project", "codebase", "workspace", "worktree",
-		"working directory", "current directory", "this directory", "this folder",
-		"this repo", "this project", "this codebase", "branch", "diff",
-		"pull request", "in here",
-	)
-}
-
-func looksLikeRepoFollowUp(text string) bool {
-	return containsAnyPhrase(text,
-		"do it", "fix it", "apply it", "apply that", "commit it", "merge it",
-		"test it", "build it", "validate it", "finish it", "continue with it",
-		"go ahead", "ship it", "run the tests", "run tests", "rerun tests",
-		"run the build", "run build", "keep going", "same problem", "same issue",
-		"same again", "still broken", "still broke", "still the same",
-		"what do you think", "tell me what you think", "anything i need change",
-		"what should i change", "what should i improve", "clean this up",
-		"write me a script", "script to clean",
-	)
-}
-
-func looksLikeActionFollowUp(text string) bool {
-	return containsAnyPhrase(text,
-		"do it", "continue", "use what you need", "go ahead", "implement it", "build it",
-		"make the change", "make changes", "fix it", "apply it", "ship it", "finish it",
-	)
-}
-
-func collapseRepeatedLetters(text string) string {
-	if text == "" {
-		return ""
-	}
-	var b strings.Builder
-	b.Grow(len(text))
-	var prev rune
-	repeatCount := 0
-	for _, r := range text {
-		if r == prev && r >= 'a' && r <= 'z' {
-			repeatCount++
-			if repeatCount >= 2 {
-				continue
-			}
-		} else {
-			repeatCount = 0
-		}
-		b.WriteRune(r)
-		prev = r
-	}
-	return b.String()
-}
-
-func containsAnyPhrase(text string, phrases ...string) bool {
-	for _, phrase := range phrases {
-		if strings.Contains(text, phrase) {
-			return true
-		}
-	}
-	return false
-}
-
-func gitBranchContainsHead(workDir, branch string) (bool, error) {
-	verify := exec.Command("git", "rev-parse", "--verify", "--quiet", branch)
-	verify.Dir = workDir
-	if err := verify.Run(); err != nil {
-		return false, fmt.Errorf("verify target branch %s: %w", branch, err)
-	}
-	cmd := exec.Command("git", "merge-base", "--is-ancestor", "HEAD", branch)
-	cmd.Dir = workDir
-	if err := cmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			return false, nil
-		}
-		return false, fmt.Errorf("check whether %s contains HEAD: %w", branch, err)
-	}
-	return true, nil
-}
-
-func isPromptBoundaryQuestion(input string) bool {
-	lower := strings.ToLower(strings.TrimSpace(input))
-	if lower == "" {
-		return false
-	}
-	return strings.Contains(lower, "system prompt") ||
-		strings.Contains(lower, "developer prompt") ||
-		strings.Contains(lower, "hidden prompt") ||
-		strings.Contains(lower, "internal instruction")
 }
 
 type chatSessionControl interface {

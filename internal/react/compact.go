@@ -11,6 +11,10 @@ import (
 const (
 	compactedToolMetadataMaxBytes     = 240
 	compactedToolMetadataAggregateMax = 480
+	// microCompactProtectedTail keeps the most recent messages out of micro
+	// compaction so the model does not lose tool results it is actively using
+	// (losing them forces re-reads, which look like tool-call loops).
+	microCompactProtectedTail = 8
 )
 
 func CompactSessionHistory(session *Session, keep int) bool {
@@ -20,14 +24,18 @@ func CompactSessionHistory(session *Session, keep int) bool {
 	return session.compact(keep)
 }
 
-func MicroCompactLargeToolResults(session *Session, maxBytes int) bool {
+func MicroCompactLargeToolResults(session *Session, maxBytes, protectTail int) bool {
 	if session == nil || maxBytes < 1 {
 		return false
 	}
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	changed := false
+	protectedFrom := len(session.history) - protectTail
 	for i, msg := range session.history {
+		if protectTail > 0 && i >= protectedFrom {
+			break
+		}
 		if msg.Role != llm.RoleTool || len(msg.Content) <= maxBytes {
 			continue
 		}

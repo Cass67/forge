@@ -26,6 +26,7 @@ func TestTruncateToolResults_LongResultTruncated(t *testing.T) {
 	content := strings.Join(lines, "\n")
 	msgs := []llm.Message{
 		{Role: llm.RoleTool, ToolCallID: "1", Content: content},
+		{Role: llm.RoleAssistant, Content: "done reading"},
 	}
 	got := truncateToolResults(msgs, toolResultMaxLines)
 	result := got[0].Content
@@ -38,8 +39,28 @@ func TestTruncateToolResults_LongResultTruncated(t *testing.T) {
 	if !strings.Contains(result, "line 300") {
 		t.Error("tail lines should be present")
 	}
-	if !strings.Contains(result, "truncated") {
+	if !strings.Contains(result, "omitted") {
 		t.Error("truncation marker should be present")
+	}
+	if !strings.Contains(result, "start_line/end_line") {
+		t.Error("truncation marker should explain how to recover the omitted range")
+	}
+}
+
+func TestTruncateToolResults_TrailingResultsExempt(t *testing.T) {
+	lines := make([]string, 300)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line %d", i+1)
+	}
+	content := strings.Join(lines, "\n")
+	msgs := []llm.Message{
+		{Role: llm.RoleAssistant, Content: "reading"},
+		{Role: llm.RoleTool, ToolCallID: "1", Content: content},
+		{Role: llm.RoleTool, ToolCallID: "2", Content: content},
+	}
+	got := truncateToolResults(msgs, toolResultMaxLines)
+	if got[1].Content != content || got[2].Content != content {
+		t.Error("freshest trailing tool results must not be truncated")
 	}
 }
 
@@ -109,10 +130,11 @@ func TestTruncateToolResults_ScalesHeadTailWithMaxLines(t *testing.T) {
 	}
 	msgs := []llm.Message{
 		{Role: llm.RoleTool, ToolCallID: "1", Content: strings.Join(lines, "\n")},
+		{Role: llm.RoleAssistant, Content: "done reading"},
 	}
 	got := truncateToolResults(msgs, 6)
 	result := got[0].Content
-	if !strings.Contains(result, "truncated") {
+	if !strings.Contains(result, "omitted") {
 		t.Error("should be truncated when over limit")
 	}
 	if strings.Contains(result, "line 7") || strings.Contains(result, "line 8") {
@@ -133,11 +155,12 @@ func TestTruncateToolResults_TruncationMarkerFormat(t *testing.T) {
 	}
 	msgs := []llm.Message{
 		{Role: llm.RoleTool, ToolCallID: "1", Content: strings.Join(lines, "\n")},
+		{Role: llm.RoleAssistant, Content: "done reading"},
 	}
 	got := truncateToolResults(msgs, toolResultMaxLines)
 	result := got[0].Content
-	if !strings.Contains(result, "lines truncated)") {
-		t.Errorf("marker should contain 'lines truncated)', got: %q", result)
+	if !strings.Contains(result, "lines omitted") {
+		t.Errorf("marker should contain 'lines omitted', got: %q", result)
 	}
 }
 
