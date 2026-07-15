@@ -22,6 +22,7 @@ import (
 	"forge/internal/copilot"
 	"forge/internal/llm"
 	"forge/internal/secscan"
+	"forge/internal/session"
 	"forge/internal/skills"
 
 	"github.com/charmbracelet/bubbles/viewport"
@@ -209,6 +210,46 @@ type chatAgentTaskState struct {
 	RecentActivity []chatAgentTaskActivity `json:"recent_activity,omitempty"`
 }
 
+// toolCallEntry records a single tool invocation for display.
+type toolCallEntry struct {
+	ToolName string `json:"tool_name"`
+	Target   string `json:"target,omitempty"`
+	Summary  string `json:"summary,omitempty"`
+	Status   string `json:"status,omitempty"` // "running", "done", "error"
+	AgentID  string `json:"agent_id,omitempty"`
+}
+
+// fileChangesTracker tracks files modified/added/deleted during a session.
+type fileChangesTracker struct {
+	Modified []string `json:"modified,omitempty"`
+	Added    []string `json:"added,omitempty"`
+	Deleted  []string `json:"deleted,omitempty"`
+}
+
+func (f *fileChangesTracker) markModified(path string) {
+	if path == "" {
+		return
+	}
+	for _, p := range f.Modified {
+		if p == path {
+			return
+		}
+	}
+	f.Modified = append(f.Modified, path)
+}
+
+func (f *fileChangesTracker) Total() int {
+	return len(f.Modified) + len(f.Added) + len(f.Deleted)
+}
+
+func (f *fileChangesTracker) Paths() []string {
+	var all []string
+	all = append(all, f.Modified...)
+	all = append(all, f.Added...)
+	all = append(all, f.Deleted...)
+	return all
+}
+
 type ChatModel struct {
 	config  ChatLiveConfig
 	model   string
@@ -242,6 +283,8 @@ type ChatModel struct {
 	agentViewVisible       bool
 	agentViewIndex         int
 	agentTasks             []chatAgentTaskState
+	recentToolCalls        []toolCallEntry
+	fileChanges            fileChangesTracker
 	lastToolResult         string
 	lastCodeBlock          string
 	lastToolSummary        map[string]string
@@ -265,6 +308,7 @@ type ChatModel struct {
 	recentActivityLines    []string
 	recentActivityIndex    int
 	liveProgress           LiveProgressState
+	stickyPlanContent      string // pinned plan rendered above chat, not in scroll viewport
 	turnAnchorMessageIndex int
 	pendingSubAgentSummary *subAgentSummary
 	skills                 []skills.Skill
@@ -273,6 +317,34 @@ type ChatModel struct {
 	currentNudge           NudgeSuggestion
 	themeID                string
 	pendingQueuedInput     []string
+
+	// Pipeline/audit mode fields (for forge make / pipeline sessions)
+	pipelineActive         bool
+	pipelineViewActive     bool
+	pipelineTotalPasses    int
+	pipelineTotalRounds    int
+	pipelineCurrentPass    int
+	pipelineCurrentRound   int
+	pipelinePassName       string
+	pipelinePhase          string
+	pipelineWriterBuf      string
+	pipelineAuditorBuf     string
+	pipelineWriterScroll   int
+	pipelineAuditorScroll  int
+	pipelineFocusRight     bool
+	pipelineManualMode     bool
+	pipelineWaitingAdvance bool
+	pipelineWaitingAgent   string
+	pipelineWriterTurnGap  bool
+	pipelineAuditorTurnGap bool
+	pipelineGate           *session.TurnGate
+	pipelineOutputDir      string
+	// File preview fields (for task 2: live file preview)
+	pipelineFilePreviewVisible bool
+	pipelineFilePreviewPath    string
+	pipelineFilePreviewContent string
+	pipelineFilePreviewScroll  int
+	pipelineFilePreviewHeight  int
 
 	helpVisible bool
 	helpTab     int
@@ -423,6 +495,7 @@ func (m *ChatModel) upsertPlanMessage(content string) {
 		return
 	}
 	msg := ChatMessage{Kind: MsgPlan, Header: "Plan", Content: content}
+	m.stickyPlanContent = content
 	for i := range m.messages {
 		if m.messages[i].Kind != MsgPlan {
 			continue
@@ -968,7 +1041,7 @@ func (m ChatModel) composer() ChatComposer {
 
 func (m ChatModel) inputHeight() int {
 	if m.pendingApproval != nil {
-		return strings.Count(m.pendingApproval.Summary, "\n") + 6
+		return m.approvalOverlayHeight()
 	}
 	return m.composer().Height(m.width)
 }
@@ -981,6 +1054,13 @@ func (m ChatModel) normalModeStatsFooterHeight() int {
 }
 
 func (m ChatModel) liveStatusSlotHeight() int {
+	if n := len(m.liveProgress.Entries); n > 0 {
+		return min(n, 3)
+	}
+	// Reserve a slot even when empty so the layout doesn't jump
+	if m.flash != "" || m.busy || m.status != "" {
+		return 1
+	}
 	return 1
 }
 
@@ -1060,11 +1140,14 @@ func (m ChatModel) headerHeight() int {
 type normalChatLayoutBudget struct {
 	Header      int
 	HeaderGap   int
+	StickyPlan  int
 	Chat        int
 	DebugDock   int
 	Pending     int
 	LiveStatus  int
 	TaskPanel   int
+	ToolCards   int
+	FileChanges int
 	Input       int
 	StatsFooter int
 	Total       int
@@ -1074,15 +1157,18 @@ func (m ChatModel) normalChatLayoutBudget() normalChatLayoutBudget {
 	b := normalChatLayoutBudget{
 		Header:      m.headerHeight(),
 		HeaderGap:   chatHeaderGapHeight,
+		StickyPlan:  m.stickyPlanHeight(),
 		DebugDock:   m.debugDockHeight(),
 		TaskPanel:   m.agentTaskPanelHeight(),
+		ToolCards:   m.toolCardsPanelHeight(),
+		FileChanges: m.fileChangesPanelHeight(),
 		Pending:     m.pendingInputPreviewHeight(),
 		LiveStatus:  m.liveStatusSlotHeight(),
 		Input:       m.inputHeight(),
 		StatsFooter: m.normalModeStatsFooterHeight(),
 	}
-	b.Chat = max(1, m.height-b.Header-b.HeaderGap-b.DebugDock-b.Pending-b.LiveStatus-b.TaskPanel-b.Input-b.StatsFooter)
-	b.Total = b.Header + b.HeaderGap + b.Chat + b.DebugDock + b.Pending + b.LiveStatus + b.TaskPanel + b.Input + b.StatsFooter
+	b.Chat = max(1, m.height-b.Header-b.HeaderGap-b.StickyPlan-b.DebugDock-b.TaskPanel-b.ToolCards-b.FileChanges-b.Pending-b.LiveStatus-b.Input-b.StatsFooter)
+	b.Total = b.Header + b.HeaderGap + b.StickyPlan + b.Chat + b.DebugDock + b.TaskPanel + b.ToolCards + b.FileChanges + b.Pending + b.LiveStatus + b.Input + b.StatsFooter
 	return b
 }
 
@@ -1935,6 +2021,13 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
+	// Pipeline mode: handle pipeline-specific events
+	if m.pipelineActive {
+		if consumed, cmd := m.handlePipelineLLMEvent(ev); consumed {
+			return m, cmd
+		}
+	}
+
 	// Sub-agent events primarily render in the tools pane, with human-readable
 	// prose mirrored into the main transcript.
 	if ev.SubAgent != "" {
@@ -2023,6 +2116,8 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		if ev.Agent == "update_plan" && !ev.IsError {
 			m.upsertPlanMessage(ev.Text)
 		}
+		// Track tool call for cards display
+		m.trackToolCall(ev)
 		if ev.Content != "" {
 			m.lastToolResult = ev.Content
 		} else if ev.Text != "" {
@@ -2611,6 +2706,13 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Pipeline mode key handling (applies in both pipeline view and chat view)
+	if m.pipelineActive {
+		if consumed, cmd := m.handlePipelineKey(msg); consumed {
+			return m, cmd
+		}
+	}
+
 	// Handle approval mode
 	if m.pendingApproval != nil {
 		switch {
@@ -2642,6 +2744,12 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyCtrlF:
 		m.openSearchOverlay("")
 		return m, nil
+	case tea.KeyCtrlP:
+		// Ctrl+P: pipeline view toggle (only in pipeline mode)
+		if m.pipelineActive {
+			m.pipelineViewActive = !m.pipelineViewActive
+			return m, nil
+		}
 	case tea.KeyEscape:
 		if m.busy && m.inputCh != nil {
 			ch := m.inputCh
@@ -3463,6 +3571,14 @@ func (m ChatModel) helpLines() []string {
 			"",
 			"Turn control:",
 			"  Esc                cancel current run",
+			"",
+			"Pipeline/audit mode (forge make):",
+			"  Ctrl-P / v         toggle chat view / pipeline view",
+			"  ← / →              focus writer / auditor pane",
+			"  ↑ / ↓              scroll active pane",
+			"  p                  toggle file preview pane",
+			"  Space              advance turn (manual mode)",
+			"  q                  quit when complete",
 		}
 	}
 }
@@ -5325,6 +5441,12 @@ func (m ChatModel) View() string {
 	theme := m.theme()
 	headerData := m.statusSnapshot()
 	header := renderStatusHeaderForHeight(theme, headerData, m.width, m.height)
+
+	// Pipeline mode: render the pipeline view (either chat view or two-pane view)
+	if m.pipelineActive {
+		return m.pipelineRenderView(theme, header)
+	}
+
 	budget := m.normalChatLayoutBudget()
 
 	chatBodyHeight := budget.Chat
@@ -5370,25 +5492,29 @@ func (m ChatModel) View() string {
 
 	var inputBox string
 	if m.pendingApproval != nil {
-		approvalStyle := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(theme.Warning).
-			Background(theme.HeaderBG).
-			Foreground(theme.Text).
-			Width(m.width - 4)
-		approvalText := fmt.Sprintf("Tool: %s\n%s\n\n[y]es / [n]o", m.pendingApproval.Tool, m.pendingApproval.Summary)
-		inputBox = approvalStyle.Render(approvalText)
+		inputBox = m.renderApprovalOverlay(theme)
 	} else {
 		inputBox = m.composer().Render(theme, m.width)
 	}
 
 	headerGap := lipgloss.NewStyle().Width(m.width).Render("")
-	parts := []string{header, headerGap, chatPane}
+	stickyPlan := m.renderStickyPlan(theme)
+	parts := []string{header, headerGap}
+	if stickyPlan != "" {
+		parts = append(parts, stickyPlan)
+	}
+	parts = append(parts, chatPane)
 	if debugDock != "" {
 		parts = append(parts, debugDock)
 	}
 	if panel := m.renderAgentTaskPanel(theme); panel != "" {
 		parts = append(parts, panel)
+	}
+	if cards := m.renderToolCardsPanel(theme); cards != "" {
+		parts = append(parts, cards)
+	}
+	if changes := m.renderFileChangesPanel(theme); changes != "" {
+		parts = append(parts, changes)
 	}
 	if preview := m.renderPendingInputPreview(theme); preview != "" {
 		parts = append(parts, preview)
@@ -5450,20 +5576,181 @@ func fillSurfaceRows(view string, width int, bg lipgloss.Color) string {
 	return strings.Join(lines, "\n")
 }
 
+// approvalOverlayHeight estimates the height of the approval overlay.
+func (m ChatModel) approvalOverlayHeight() int {
+	action := m.pendingApproval
+	if action == nil {
+		return m.composer().Height(m.width)
+	}
+
+	// Base: outer border (2) + header (1) + tool info (1) + empty line (1) + prompt (1) = 6
+	h := 6
+
+	if action.Path != "" {
+		h++ // path line
+	}
+	if action.Summary != "" && action.Summary != action.Detail {
+		h++ // summary line (1 line for truncated)
+	}
+
+	detail := strings.TrimSpace(action.Detail)
+	if detail != "" {
+		detailLines := strings.Count(detail, "\n") + 1
+		// Cap at 8 lines detail + 1 for the "... N more" indicator
+		h += min(detailLines, 9)
+		if detailLines > 8 {
+			h++ // indicator line replaces one of the detail lines
+		}
+	}
+
+	return h
+}
+
+// renderApprovalOverlay renders a rich approval dialog showing the diff content
+// when a tool action requires user approval.
+func (m ChatModel) renderApprovalOverlay(theme chatTheme) string {
+	action := m.pendingApproval
+	if action == nil {
+		return ""
+	}
+
+	width := max(20, m.width-2)
+	innerWidth := width - 4
+
+	// Header
+	header := lipgloss.NewStyle().
+		Foreground(theme.Warning).
+		Bold(true).
+		Render("⚠ Approve Tool Call")
+
+	// Tool info line
+	toolInfo := lipgloss.NewStyle().
+		Foreground(theme.AccentSecondary).
+		Render(fmt.Sprintf("Tool: %s", action.Tool))
+
+	// Path line if available
+	var pathLine string
+	if action.Path != "" {
+		pathLine = lipgloss.NewStyle().
+			Foreground(theme.TextDim).
+			Render(fmt.Sprintf("Path: %s", action.Path))
+	}
+
+	// Summary line if available and different from detail
+	var summaryLine string
+	if action.Summary != "" && action.Summary != action.Detail {
+		summary := action.Summary
+		if len(summary) > 80 {
+			summary = summary[:80] + "…"
+		}
+		summaryLine = lipgloss.NewStyle().
+			Foreground(theme.TextDim).
+			Render(summary)
+	}
+
+	// Detail content — render as diff if it looks like one, otherwise as plain text
+	var detailContent string
+	detail := strings.TrimSpace(action.Detail)
+	if detail != "" {
+		if looksLikeDiff(detail) {
+			detailContent = enhancedDiffBlock(detail, innerWidth, theme)
+		} else {
+			// Render as indented code block
+			codeStyle := lipgloss.NewStyle().
+				Foreground(theme.Text).
+				Width(innerWidth)
+			detailContent = codeStyle.Render(detail)
+		}
+		// Cap detail display height so it doesn't take over the screen
+		detailLines := strings.Split(detailContent, "\n")
+		maxDetailLines := 8
+		if len(detailLines) > maxDetailLines {
+			detailLines = detailLines[:maxDetailLines]
+			detailLines = append(detailLines, lipgloss.NewStyle().
+				Foreground(theme.TextDim).
+				Italic(true).
+				Render(fmt.Sprintf("… %d more lines — see chat for full content", len(strings.Split(detail, "\n"))-maxDetailLines)))
+			detailContent = strings.Join(detailLines, "\n")
+		}
+	}
+
+	// Action prompt
+	prompt := lipgloss.NewStyle().
+		Foreground(theme.AccentPrimary).
+		Bold(true).
+		Render("[y] Approve  [n] Reject")
+
+	// Build the body
+	var bodyParts []string
+	bodyParts = append(bodyParts, header)
+	bodyParts = append(bodyParts, toolInfo)
+	if pathLine != "" {
+		bodyParts = append(bodyParts, pathLine)
+	}
+	if summaryLine != "" {
+		bodyParts = append(bodyParts, summaryLine)
+	}
+	if detailContent != "" {
+		bodyParts = append(bodyParts, "")
+		bodyParts = append(bodyParts, detailContent)
+	}
+	bodyParts = append(bodyParts, "")
+	bodyParts = append(bodyParts, prompt)
+
+	body := strings.Join(bodyParts, "\n")
+
+	// Wrap in a bordered overlay style
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(theme.Warning).
+		Foreground(theme.Text).
+		Width(width).
+		Render(body)
+}
+
+// looksLikeDiff checks if text content appears to be a unified diff.
+func looksLikeDiff(content string) bool {
+	lines := strings.SplitN(content, "\n", 10)
+	for _, line := range lines {
+		if strings.HasPrefix(line, "diff --git") ||
+			strings.HasPrefix(line, "--- ") ||
+			strings.HasPrefix(line, "+++ ") ||
+			strings.HasPrefix(line, "@@ ") {
+			return true
+		}
+	}
+	return false
+}
+
 func (m ChatModel) renderLiveProgressSlot(theme chatTheme) string {
 	message, busy := m.transientStatusMessage()
-	slotStyle := lipgloss.NewStyle().
-		Foreground(theme.TextDim).
-		Width(m.width)
 	if message == "" {
-		return slotStyle.Render("")
+		return lipgloss.NewStyle().
+			Foreground(theme.TextDim).
+			Width(m.width).
+			Render("")
 	}
-	prefix := "·"
-	if busy {
-		prefix = chatSpinnerGlyph(m.spinnerFrame)
-		slotStyle = slotStyle.Foreground(theme.AccentPrimary).Bold(true)
+
+	lines := strings.Split(message, "\n")
+	rendered := make([]string, 0, len(lines))
+
+	for i, line := range lines {
+		prefix := "·"
+		style := lipgloss.NewStyle().
+			Width(m.width)
+
+		if busy && i == len(lines)-1 {
+			// Active entry gets spinner + accent color
+			prefix = chatSpinnerGlyph(m.spinnerFrame)
+			style = style.Foreground(theme.AccentPrimary).Bold(true)
+		} else {
+			style = style.Foreground(theme.TextDim)
+		}
+
+		rendered = append(rendered, style.Render(fitCell(prefix+" "+line, max(1, m.width))))
 	}
-	return slotStyle.Render(fitCell(prefix+" "+message, max(1, m.width)))
+
+	return strings.Join(rendered, "\n")
 }
 
 func (m ChatModel) renderPendingInputPreview(theme chatTheme) string {
@@ -5517,7 +5804,7 @@ func (m ChatModel) renderPerformanceTraceLine() string {
 }
 
 func (m ChatModel) renderNormalModeStatsLine(theme chatTheme) string {
-	parts := make([]string, 0, 4)
+	parts := make([]string, 0, 5)
 	if m.statsDuration > 0 && m.statsUsage.OutputTokens > 0 {
 		tokPerSec := float64(m.statsUsage.OutputTokens) / m.statsDuration.Seconds()
 		parts = append(parts, fmt.Sprintf("%.0f tok/s", tokPerSec))
@@ -5534,14 +5821,16 @@ func (m ChatModel) renderNormalModeStatsLine(theme chatTheme) string {
 	if context := buildContextSummary(m.statusSnapshot()); context != "" {
 		parts = append(parts, context)
 	}
+	if plan := m.currentPlanProgress(); plan != nil {
+		if compact := renderPlanProgressBarCompact(*plan, theme); compact != "" {
+			parts = append(parts, compact)
+		}
+	}
 	if m.lastRenderStats.Hits > 0 || m.lastRenderStats.Misses > 0 {
 		cachePart := fmt.Sprintf("cache %d hits", m.lastRenderStats.Hits)
 		if m.lastRenderStats.Misses > 0 {
 			cachePart += fmt.Sprintf(" / %d misses", m.lastRenderStats.Misses)
 		}
-		// Only show misses when both hits and misses are zero is not possible here (guard above).
-		// But when hits=0 and misses>0, we still want to show it:
-		// Actually the guard already handles this: if Hits>0 || Misses>0
 		parts = append(parts, cachePart)
 	}
 	if len(parts) == 0 {
@@ -5555,8 +5844,23 @@ func (m ChatModel) renderNormalModeStatsLine(theme chatTheme) string {
 }
 
 func (m ChatModel) transientStatusMessage() (string, bool) {
-	if message := normalizeStatusMessage(m.liveProgress.LatestMessage()); message != "" {
-		return message, m.busy
+	if len(m.liveProgress.Entries) > 0 {
+		messages := make([]string, 0, len(m.liveProgress.Entries))
+		for _, entry := range m.liveProgress.Entries {
+			if normalized := normalizeStatusMessage(entry); normalized != "" {
+				messages = append(messages, normalized)
+			}
+		}
+		if len(messages) > 0 {
+			// Cap visible entries at 3; oldest ones are dropped
+			show := messages
+			if len(show) > 3 {
+				extra := len(show) - 3
+				show = show[len(show)-3:]
+				show[0] = fmt.Sprintf("… %d more", extra)
+			}
+			return strings.Join(show, "\n"), m.busy
+		}
 	}
 	if m.busy {
 		if status := normalizeStatusMessage(m.status); status != "" {

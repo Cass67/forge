@@ -31,6 +31,7 @@ type chatStatusData struct {
 	CodexUsage       *codexusage.Snapshot
 	ModelInfo        *modelcatalog.ModelInfo
 	AgentMode        string // non-empty mode badge e.g. "[plan]" surfaced by runtime nudges
+	ActiveTasks      int    // number of non-terminal agent tasks
 }
 
 type chatStatsData struct {
@@ -56,6 +57,13 @@ func buildStatusLine1(data chatStatusData) string {
 	}
 	if mode := strings.TrimSpace(data.AgentMode); mode != "" {
 		parts = append(parts, mode)
+	}
+	if count := data.ActiveTasks; count > 0 {
+		label := fmt.Sprintf("%d task", count)
+		if count != 1 {
+			label += "s"
+		}
+		parts = append(parts, "⟳ "+label)
 	}
 	return strings.Join(parts, " • ")
 }
@@ -518,6 +526,7 @@ func (m ChatModel) statusSnapshot() chatStatusData {
 		data.ModelInfo = m.config.ModelInfo(m.model)
 	}
 	data.ContextUsed, data.ContextLimit = deriveContextUsage(data.SessionUsage, data.ModelInfo, data.ContextUsed, data.ContextLimit)
+	data.ActiveTasks = countActiveAgentTasks(m.agentTasks)
 	return data
 }
 
@@ -552,6 +561,21 @@ func providerFromModel(model string) string {
 		return ""
 	}
 	return strings.ToLower(strings.TrimSpace(parts[0]))
+}
+
+// countActiveAgentTasks returns the number of agent tasks that are still active
+// (non-terminal status). This is used for the status header badge.
+func countActiveAgentTasks(tasks []chatAgentTaskState) int {
+	count := 0
+	for _, task := range tasks {
+		if strings.TrimSpace(task.ID) == "" {
+			continue
+		}
+		if !isTerminalAgentTaskStatus(task.Status) {
+			count++
+		}
+	}
+	return count
 }
 
 func buildCopilotQuotaSummary(quota *copilot.UserQuota) string {
