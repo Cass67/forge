@@ -72,7 +72,7 @@ func (m ChatMessage) Render(width int, theme chatTheme) string {
 		if header == "" {
 			header = "Plan"
 		}
-		body := RenderSemanticPlain(strings.TrimSpace(m.Content), profileProse, theme)
+		body := renderPlanContent(m.Content, width, theme)
 		blocks := []string{
 			renderMessageHeader(header, width, theme, m.accentColor(theme)),
 			lipgloss.NewStyle().

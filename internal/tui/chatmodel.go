@@ -1057,6 +1057,7 @@ type normalChatLayoutBudget struct {
 	DebugDock   int
 	Pending     int
 	LiveStatus  int
+	TaskPanel   int
 	Input       int
 	StatsFooter int
 	Total       int
@@ -1067,13 +1068,14 @@ func (m ChatModel) normalChatLayoutBudget() normalChatLayoutBudget {
 		Header:      m.headerHeight(),
 		HeaderGap:   chatHeaderGapHeight,
 		DebugDock:   m.debugDockHeight(),
+		TaskPanel:   m.agentTaskPanelHeight(),
 		Pending:     m.pendingInputPreviewHeight(),
 		LiveStatus:  m.liveStatusSlotHeight(),
 		Input:       m.inputHeight(),
 		StatsFooter: m.normalModeStatsFooterHeight(),
 	}
-	b.Chat = max(1, m.height-b.Header-b.HeaderGap-b.DebugDock-b.Pending-b.LiveStatus-b.Input-b.StatsFooter)
-	b.Total = b.Header + b.HeaderGap + b.Chat + b.DebugDock + b.Pending + b.LiveStatus + b.Input + b.StatsFooter
+	b.Chat = max(1, m.height-b.Header-b.HeaderGap-b.DebugDock-b.Pending-b.LiveStatus-b.TaskPanel-b.Input-b.StatsFooter)
+	b.Total = b.Header + b.HeaderGap + b.Chat + b.DebugDock + b.Pending + b.LiveStatus + b.TaskPanel + b.Input + b.StatsFooter
 	return b
 }
 
@@ -5377,6 +5379,9 @@ func (m ChatModel) View() string {
 	parts := []string{header, headerGap, chatPane}
 	if debugDock != "" {
 		parts = append(parts, debugDock)
+	}
+	if panel := m.renderAgentTaskPanel(theme); panel != "" {
+		parts = append(parts, panel)
 	}
 	if preview := m.renderPendingInputPreview(theme); preview != "" {
 		parts = append(parts, preview)
