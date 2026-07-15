@@ -103,3 +103,5 @@ $RECYCLE.BIN/
 
 # Worktrees
 .worktrees/
+cmd/forge/output/
+internal/runtime/output/
