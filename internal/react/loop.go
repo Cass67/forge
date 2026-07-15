@@ -360,7 +360,7 @@ func (r *Runner) applyCompactionDecision(ctx context.Context, decision Compactio
 	}
 	if changed {
 		r.compactionFailures = 0
-		if r.progress != nil && beforeContext > 0 && afterContext > 0 {
+		if r.progress != nil && beforeContext > 0 && afterContext > 0 && afterContext < beforeContext {
 			r.progress(fmt.Sprintf("react runtime: compacted context ~%d -> ~%d (%s)", beforeContext, afterContext, decision.Reason))
 		}
 	} else if r.compactionMaxFailures > 0 && compactionDecisionAttempted(decision) {
@@ -1408,11 +1408,19 @@ func (r *Runner) applyProactivePromptCompaction(ctx context.Context) bool {
 		if decision.Mode == CompactionNone {
 			return changed
 		}
-		if r.progress != nil {
-			r.progress("react runtime: compacting prompt before provider call")
-		}
+		before := estimatePromptBytes(messages)
 		if !r.applyCompactionDecision(ctx, decision) {
 			return changed
+		}
+		after := estimatePromptBytes(r.session.Messages(r.currentSystemPrompt()))
+		if after >= before {
+			// The pass mutated history without shrinking the prompt (e.g. the
+			// oversized content survives prompt-side truncation). Stop instead
+			// of thrashing on decisions that cannot converge.
+			return changed
+		}
+		if r.progress != nil {
+			r.progress("react runtime: compacting prompt before provider call")
 		}
 		changed = true
 	}
