@@ -3505,7 +3505,7 @@ func validateToolArgs(tool agenttools.Tool, args map[string]any) string {
 				return fmt.Sprintf("error: %s.%s is required", tool.Name, param.Name)
 			}
 			if containsOmittedPlaceholder(text) {
-				return fmt.Sprintf("error: %s.%s contains generated placeholder text; provide the complete value", tool.Name, param.Name)
+				return fmt.Sprintf("error: %s.%s contains the literal marker \"<omitted N chars>\". That marker is a truncation placeholder from your conversation history, not real content — do not copy earlier tool calls. Regenerate the complete value from scratch.", tool.Name, param.Name)
 			}
 		case "int":
 			number, ok := value.(float64)
@@ -3572,7 +3572,7 @@ func validateToolSchema(path string, schema *llm.ToolSchema, value any) string {
 			return fmt.Sprintf("error: %s is required", path)
 		}
 		if containsOmittedPlaceholder(text) {
-			return fmt.Sprintf("error: %s contains generated placeholder text; provide the complete value", path)
+			return fmt.Sprintf("error: %s contains the literal marker \"<omitted N chars>\". That marker is a truncation placeholder from your conversation history, not real content — do not copy earlier tool calls. Regenerate the complete value from scratch.", path)
 		}
 		if len(schema.Enum) > 0 {
 			for _, allowed := range schema.Enum {
