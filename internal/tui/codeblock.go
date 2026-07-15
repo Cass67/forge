@@ -379,6 +379,9 @@ func renderCodeBlock(lang, body string, width int, theme chatTheme) string {
 }
 
 func renderCodeBlockBody(lang, body string, width int, theme chatTheme) string {
+	if strings.EqualFold(lang, "diff") || strings.EqualFold(lang, "patch") {
+		return enhancedDiffBlock(body, width, theme)
+	}
 	lines := normalizeCodeBlockBodyLines(lang, body)
 	rendered := make([]string, 0, len(lines))
 	for _, line := range lines {
@@ -386,16 +389,7 @@ func renderCodeBlockBody(lang, body string, width int, theme chatTheme) string {
 			Foreground(theme.Text).
 			Background(theme.AppBG).
 			Width(width)
-		if strings.EqualFold(lang, "diff") || strings.EqualFold(lang, "patch") {
-			switch {
-			case strings.HasPrefix(line, "+"):
-				style = style.Foreground(theme.Success)
-			case strings.HasPrefix(line, "-"):
-				style = style.Foreground(theme.Error)
-			case strings.HasPrefix(line, "@@"):
-				style = style.Foreground(theme.AccentSecondary)
-			}
-		}
+
 		rendered = append(rendered, style.Render(line))
 	}
 	return strings.Join(rendered, "\n")

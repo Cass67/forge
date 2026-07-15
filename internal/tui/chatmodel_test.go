@@ -470,14 +470,14 @@ func TestChatModelShowsPersistentPlanAfterUpdatePlanResult(t *testing.T) {
 	m.width = 90
 	m.height = 28
 
-	updated, _ := m.Update(llm.Event{Kind: llm.EventToolResult, Agent: "update_plan", Text: "Explanation: Runtime alignment\nPlan:\n- [completed] Inspect loop\n- [in_progress] Tighten prompt", IsError: false})
+	updated, _ := m.Update(llm.Event{Kind: llm.EventToolResult, Agent: "update_plan", Text: "Explanation: Runtime alignment\nPlan:\n- [completed] Inspect loop\n- Tighten prompt", IsError: false})
 	m = updated.(ChatModel)
 
 	var foundPlan bool
 	for _, msg := range m.messages {
 		if msg.Kind == MsgPlan {
 			foundPlan = true
-			if !strings.Contains(msg.Content, "[in_progress] Tighten prompt") {
+			if !strings.Contains(msg.Content, "Tighten prompt") {
 				t.Fatalf("plan message = %#v", msg)
 			}
 		}
@@ -485,7 +485,7 @@ func TestChatModelShowsPersistentPlanAfterUpdatePlanResult(t *testing.T) {
 	if !foundPlan {
 		t.Fatalf("expected persistent plan message, got %#v", m.messages)
 	}
-	if got := strippedLine(m.View()); !strings.Contains(got, "[in_progress] Tighten prompt") {
+	if got := strippedLine(m.View()); !strings.Contains(got, "Tighten prompt") {
 		t.Fatalf("expected plan visible in main pane, got:\n%s", got)
 	}
 }
