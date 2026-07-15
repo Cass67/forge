@@ -17,6 +17,7 @@ type LiveConfig struct {
 	WriterModel  string
 	AuditorModel string
 	Gate         *session.TurnGate
+	WorkDir      string // optional work directory for file preview
 }
 
 type LiveResult struct {
@@ -361,17 +362,43 @@ func foldForDisplay(text string) string {
 		filename := header[colon+1:]
 		i++
 		codeLines := 0
+		startIdx := i
 		for i < len(lines) && lines[i] != "```" {
 			codeLines++
 			i++
 		}
+		endIdx := i
 		if i < len(lines) && lines[i] == "```" {
 			i++
 		}
 		if filename == "" {
 			filename = "unnamed"
 		}
-		out = append(out, fmt.Sprintf("[code: %s %d lines]", filename, codeLines))
+
+		// Show the opening fence
+		out = append(out, lines[startIdx-1])
+
+		// Show first few lines of code
+		const previewLines = 5
+		if codeLines <= previewLines {
+			// Show all lines
+			for j := startIdx; j < endIdx; j++ {
+				out = append(out, lines[j])
+			}
+		} else {
+			// Show first previewLines lines
+			for j := startIdx; j < startIdx+previewLines; j++ {
+				out = append(out, lines[j])
+			}
+			// Show fold indicator
+			remaining := codeLines - previewLines
+			out = append(out, fmt.Sprintf("... %d more lines", remaining))
+		}
+
+		// Show closing fence if present
+		if endIdx < len(lines) && lines[endIdx] == "```" {
+			out = append(out, lines[endIdx])
+		}
 	}
 
 	return strings.TrimSpace(strings.Join(out, "\n"))

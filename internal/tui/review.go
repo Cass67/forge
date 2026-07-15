@@ -15,8 +15,9 @@ type ReviewRequested struct{}
 
 // ReviewFile represents a file in the session output.
 type ReviewFile struct {
-	Path string // relative to code/
-	Size int64
+	Path      string // relative to code/
+	Size      int64
+	IsDiffLog bool // set for diff-log.md which lives in the output dir root
 }
 
 // ReviewModel is a file browser for session output.
@@ -49,6 +50,18 @@ func NewReviewModel(outputDir, copyTarget string) ReviewModel {
 func loadReviewFiles(outputDir string) []ReviewFile {
 	codeDir := filepath.Join(outputDir, "code")
 	var files []ReviewFile
+
+	// Add diff-log.md as the first entry if it exists
+	diffLogPath := filepath.Join(outputDir, "diff-log.md")
+	if _, err := os.Stat(diffLogPath); err == nil {
+		info, _ := os.Stat(diffLogPath)
+		var size int64
+		if info != nil {
+			size = info.Size()
+		}
+		files = append(files, ReviewFile{Path: "diff-log.md", Size: size, IsDiffLog: true})
+	}
+
 	filepath.WalkDir(codeDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
@@ -151,7 +164,13 @@ func (m *ReviewModel) viewFile() {
 	if m.Cursor >= len(m.Files) {
 		return
 	}
-	path := filepath.Join(m.OutputDir, "code", m.Files[m.Cursor].Path)
+	file := m.Files[m.Cursor]
+	var path string
+	if file.IsDiffLog {
+		path = filepath.Join(m.OutputDir, file.Path)
+	} else {
+		path = filepath.Join(m.OutputDir, "code", file.Path)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		m.FileContent = fmt.Sprintf("error reading file: %v", err)
@@ -172,8 +191,12 @@ func (m *ReviewModel) copySelected() {
 		if i >= len(m.Files) {
 			continue
 		}
-		src := filepath.Join(m.OutputDir, "code", m.Files[i].Path)
-		dst := filepath.Join(m.CopyTarget, m.Files[i].Path)
+		file := m.Files[i]
+		if file.IsDiffLog {
+			continue
+		}
+		src := filepath.Join(m.OutputDir, "code", file.Path)
+		dst := filepath.Join(m.CopyTarget, file.Path)
 		os.MkdirAll(filepath.Dir(dst), 0o755)
 		data, err := os.ReadFile(src)
 		if err != nil {
@@ -240,10 +263,17 @@ func (m ReviewModel) viewList() string {
 func (m ReviewModel) viewFileContent() string {
 	var sb strings.Builder
 	filename := ""
+	isDiffLog := false
 	if m.Cursor < len(m.Files) {
 		filename = m.Files[m.Cursor].Path
+		isDiffLog = m.Files[m.Cursor].IsDiffLog
 	}
-	sb.WriteString(styleBold.Render(filename) + "\n\n")
+
+	header := styleBold.Render(filename)
+	if isDiffLog {
+		header = styleYellow.Render("📋 Diff Log — All Changes") + "  " + styleDim.Render(filename)
+	}
+	sb.WriteString(header + "\n\n")
 
 	lines := strings.Split(m.FileContent, "\n")
 	bodyHeight := m.Height - 4
