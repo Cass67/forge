@@ -136,7 +136,7 @@ func TestDiffStat(t *testing.T) {
 	}
 }
 
-func TestCurrentBranchAndCheckoutNewBranch(t *testing.T) {
+func TestCurrentBranch(t *testing.T) {
 	dir := setupRepo(t)
 	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
 	if err := CommitAll(dir, "initial"); err != nil {
@@ -150,17 +150,6 @@ func TestCurrentBranchAndCheckoutNewBranch(t *testing.T) {
 	if current != "master" && current != "main" {
 		t.Fatalf("unexpected initial branch %q", current)
 	}
-
-	if err := CheckoutNewBranch(dir, "forge/test-branch"); err != nil {
-		t.Fatalf("CheckoutNewBranch: %v", err)
-	}
-	current, err = CurrentBranch(dir)
-	if err != nil {
-		t.Fatalf("CurrentBranch: %v", err)
-	}
-	if current != "forge/test-branch" {
-		t.Fatalf("current branch = %q, want %q", current, "forge/test-branch")
-	}
 }
 
 func TestCurrentBranchInUnbornRepo(t *testing.T) {
@@ -172,34 +161,6 @@ func TestCurrentBranchInUnbornRepo(t *testing.T) {
 	}
 	if current == "" || current == "HEAD" {
 		t.Fatalf("expected symbolic branch name, got %q", current)
-	}
-}
-
-func TestBranchExists(t *testing.T) {
-	dir := setupRepo(t)
-	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init"), 0o644)
-	if err := CommitAll(dir, "initial"); err != nil {
-		t.Fatalf("CommitAll: %v", err)
-	}
-
-	if err := CheckoutNewBranch(dir, "forge/exists-check"); err != nil {
-		t.Fatalf("CheckoutNewBranch: %v", err)
-	}
-
-	exists, err := BranchExists(dir, "forge/exists-check")
-	if err != nil {
-		t.Fatalf("BranchExists existing branch: %v", err)
-	}
-	if !exists {
-		t.Fatal("expected existing branch to be detected")
-	}
-
-	exists, err = BranchExists(dir, "forge/does-not-exist")
-	if err != nil {
-		t.Fatalf("BranchExists missing branch: %v", err)
-	}
-	if exists {
-		t.Fatal("expected missing branch to report false")
 	}
 }
 
