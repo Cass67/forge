@@ -323,7 +323,7 @@ func setDefaults(c *Config) {
 	c.Retry.MaxAttempts = 3
 	c.Retry.InitialWait = 1000
 	c.Retry.MaxWait = 30000
-	c.Retry.Timeout = 300
+	c.Retry.Timeout = 600
 	c.Resilience.CompactionMaxFailures = 3
 	c.Resilience.TokenDiminishingThreshold = 500
 	c.Resilience.TokenDiminishingChecks = 2
