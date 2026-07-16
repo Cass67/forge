@@ -106,61 +106,53 @@ func extractFilePathFromResult(text string) string {
 	return ""
 }
 
-// renderToolCardsPanel renders recent tool calls as compact bordered cards.
+// renderToolCardsPanel renders recent tool calls as compact single-line rows.
+// Hidden by default; toggled with Ctrl+T or /tools.
 func (m ChatModel) renderToolCardsPanel(theme chatTheme) string {
-	if len(m.recentToolCalls) == 0 {
+	if !m.toolPanelsVisible || len(m.recentToolCalls) == 0 {
 		return ""
 	}
 
 	width := max(1, m.width)
 	title := lipgloss.NewStyle().
-		Foreground(theme.AccentPrimary).
+		Foreground(theme.TextDim).
 		Bold(true).
-		Render(fitCell(" Recent Tools ", width))
+		Render(fitCell(" tools ", width))
 
-	cardStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.Border).
-		Padding(0, 1).
-		Width(width - 4)
+	toolStyle := lipgloss.NewStyle().Foreground(theme.AccentSecondary)
+	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim)
 
-	var cards []string
+	var rows []string
 	n := len(m.recentToolCalls)
 	if n > 3 {
 		n = 3
 	}
-
 	for i := len(m.recentToolCalls) - n; i < len(m.recentToolCalls); i++ {
 		call := m.recentToolCalls[i]
-		toolStyle := lipgloss.NewStyle().
-			Foreground(theme.AccentSecondary).
-			Bold(true)
-		dimStyle := lipgloss.NewStyle().
-			Foreground(theme.TextDim)
-
-		statusColor := theme.TaskActive
+		icon, iconColor := "●", theme.TaskActive
 		switch call.Status {
 		case "done":
-			statusColor = theme.TaskCompleted
+			icon, iconColor = "✓", theme.TaskCompleted
 		case "error":
-			statusColor = theme.Error
+			icon, iconColor = "✗", theme.Error
 		}
-		statusStyle := lipgloss.NewStyle().Foreground(statusColor)
-
-		line := toolStyle.Render(call.ToolName)
+		line := "  " + lipgloss.NewStyle().Foreground(iconColor).Render(icon) +
+			" " + toolStyle.Render(call.ToolName)
 		if call.Target != "" {
-			line += " " + dimStyle.Render(call.Target)
+			target := truncateRightEllipsis(call.Target, max(1, width-len(call.ToolName)-8))
+			line += "  " + dimStyle.Render(target)
 		}
-		line += "  " + statusStyle.Render(call.Status)
-		cards = append(cards, cardStyle.Render(line))
+		rows = append(rows, line)
 	}
 
-	body := strings.Join(cards, "\n")
-	return lipgloss.JoinVertical(lipgloss.Left, title, body)
+	return lipgloss.JoinVertical(lipgloss.Left, append([]string{title}, rows...)...)
 }
 
 // renderFileChangesPanel renders a compact summary of file changes.
 func (m ChatModel) renderFileChangesPanel(theme chatTheme) string {
+	if !m.toolPanelsVisible {
+		return ""
+	}
 	changes := m.fileChanges
 	if changes.Total() == 0 {
 		return ""
@@ -168,9 +160,9 @@ func (m ChatModel) renderFileChangesPanel(theme chatTheme) string {
 
 	width := max(1, m.width)
 	title := lipgloss.NewStyle().
-		Foreground(theme.AccentPrimary).
+		Foreground(theme.TextDim).
 		Bold(true).
-		Render(fitCell(" Changed Files ", width))
+		Render(fitCell(" changed files ", width))
 
 	modified := lipgloss.NewStyle().
 		Foreground(theme.Success).
@@ -209,19 +201,22 @@ func (m ChatModel) renderFileChangesPanel(theme chatTheme) string {
 
 // toolCardsPanelHeight returns the height needed for the tool cards panel.
 func (m ChatModel) toolCardsPanelHeight() int {
-	if len(m.recentToolCalls) == 0 {
+	if !m.toolPanelsVisible || len(m.recentToolCalls) == 0 {
 		return 0
 	}
 	n := len(m.recentToolCalls)
 	if n > 3 {
 		n = 3
 	}
-	// Title + n cards (each 2 lines with border) + small gap
-	return 1 + n*2
+	// Title + one row per call
+	return 1 + n
 }
 
 // fileChangesPanelHeight returns the height needed for the file changes panel.
 func (m ChatModel) fileChangesPanelHeight() int {
+	if !m.toolPanelsVisible {
+		return 0
+	}
 	changes := m.fileChanges
 	if changes.Total() == 0 {
 		return 0

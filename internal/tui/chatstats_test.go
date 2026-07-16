@@ -140,7 +140,7 @@ func TestRenderStatusHeaderUsesAppBackgroundSurface(t *testing.T) {
 		WorkDir: "/tmp/work",
 	}, 80)
 
-	for _, want := range []string{"FORGE", "model", "dir", "openai/gpt-5", "/tmp/work"} {
+	for _, want := range []string{"FORGE", "dir", "openai/gpt-5", "/tmp/work"} {
 		if !strings.Contains(strippedLine(rendered), want) {
 			t.Fatalf("header missing %q: %q", want, strippedLine(rendered))
 		}
@@ -154,7 +154,7 @@ func TestRenderStatusHeaderForHeightKeepsModelLineAtLowHeights(t *testing.T) {
 	}, 42, 6)
 	plain := strippedLine(rendered)
 
-	if !strings.Contains(plain, "model") || !strings.Contains(plain, "copilot/gpt-5") {
+	if !strings.Contains(plain, "copilot/gpt-5") {
 		t.Fatalf("height-aware header should keep model line, got:\n%s", plain)
 	}
 	if !strings.Contains(plain, "dir") || !strings.Contains(plain, "work") {
@@ -263,23 +263,21 @@ func TestRenderStatusHeaderUsesSplitRailCardAtWideWidths(t *testing.T) {
 	}, 80)
 
 	lines := strings.Split(rendered, "\n")
-	if len(lines) < 3 {
-		t.Fatalf("header lines = %d, want at least 3: %q", len(lines), rendered)
+	if len(lines) < 2 {
+		t.Fatalf("header lines = %d, want at least 2: %q", len(lines), rendered)
 	}
-	headerLines := make([]string, 0, 3)
-	for _, line := range lines[:3] {
+	headerLines := make([]string, 0, 2)
+	for _, line := range lines[:2] {
 		headerLines = append(headerLines, strippedLine(line))
 	}
 	header := strings.Join(headerLines, "\n")
-	for _, want := range []string{"FORGE", "openai/gpt-5.4", "model", "dir", "~/Documents/OPC/git/other/forge"} {
+	for _, want := range []string{"FORGE", "openai/gpt-5.4", "dir", "~/Documents/OPC/git/other/forge"} {
 		if !strings.Contains(header, want) {
 			t.Fatalf("wide header missing %q in:\n%s", want, header)
 		}
 	}
-	for _, want := range []string{"▌ model", "▌ dir"} {
-		if !strings.Contains(header, want) {
-			t.Fatalf("wide header missing rail label %q in:\n%s", want, header)
-		}
+	if !strings.Contains(header, "▌ dir") {
+		t.Fatalf("wide header missing rail label %q in:\n%s", "▌ dir", header)
 	}
 	if strings.ContainsAny(header, "╭╮╰╯") {
 		t.Fatalf("header should be flat (no box border), got:\n%s", header)
@@ -374,7 +372,7 @@ func TestRenderStatusHeaderUsesHeaderSurfaceAcrossAllThemes(t *testing.T) {
 		if strings.ContainsAny(plain, "╭╮╰╯│") {
 			t.Fatalf("theme %q rendered boxed/separator glyphs in header:\n%s", theme.ID, plain)
 		}
-		if !strings.Contains(plain, "▌ model") || !strings.Contains(plain, "▌ dir") {
+		if !strings.Contains(plain, "▌ dir") {
 			t.Fatalf("theme %q should keep the strengthened rail layout:\n%s", theme.ID, plain)
 		}
 		for idx, line := range strings.Split(rendered, "\n") {
