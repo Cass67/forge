@@ -3,13 +3,10 @@ package react
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 	"sync"
-	"time"
 
 	"forge/internal/agent/tools"
-	"forge/internal/gitutil"
 	"forge/internal/permissions"
 	"forge/internal/secscan"
 )
@@ -76,21 +73,17 @@ type GuardianEvent struct {
 }
 
 type ApprovalGate struct {
-	workDir          string
-	cfg              ApprovalConfig
-	prompt           tools.ApprovalFunc
-	guardian         func(string, tools.Action) tools.GuardianReview
-	guardianContext  func() string
-	guardianObserve  func(GuardianEvent)
-	classifierCtx    func() context.Context
-	updates          []ApprovalUpdate
-	promptMu         sync.Mutex
-	promptOwner      chan struct{}
-	progress         func(string)
-	now              func() time.Time
-	originalBranch   string
-	didSwitchBranch  bool
-	bypassSafeBranch func(tools.Action) bool
+	workDir         string
+	cfg             ApprovalConfig
+	prompt          tools.ApprovalFunc
+	guardian        func(string, tools.Action) tools.GuardianReview
+	guardianContext func() string
+	guardianObserve func(GuardianEvent)
+	classifierCtx   func() context.Context
+	updates         []ApprovalUpdate
+	promptMu        sync.Mutex
+	promptOwner     chan struct{}
+	progress        func(string)
 }
 
 func NewApprovalGate(workDir string, cfg ApprovalConfig, prompt tools.ApprovalFunc, progress func(string)) *ApprovalGate {
@@ -105,7 +98,6 @@ func NewApprovalGate(workDir string, cfg ApprovalConfig, prompt tools.ApprovalFu
 		prompt:      prompt,
 		promptOwner: make(chan struct{}, 1),
 		progress:    progress,
-		now:         time.Now,
 	}
 }
 
@@ -115,10 +107,6 @@ func (g *ApprovalGate) SetPrompt(prompt tools.ApprovalFunc) {
 	if prompt != nil {
 		g.prompt = prompt
 	}
-}
-
-func (g *ApprovalGate) SetSafeBranchBypass(fn func(tools.Action) bool) {
-	g.bypassSafeBranch = fn
 }
 
 func (g *ApprovalGate) SetGuardianReviewer(reviewer func(string, tools.Action) tools.GuardianReview) {
@@ -203,13 +191,6 @@ func (g *ApprovalGate) Approve(action tools.Action) (bool, error) {
 		return false, fmt.Errorf("approval action tool is required")
 	}
 	evaluationAction := action
-
-	mutating := actionMutates(action)
-	if mutating && (g.bypassSafeBranch == nil || !g.bypassSafeBranch(action)) {
-		if err := g.ensureSafeBranch(action); err != nil {
-			return false, err
-		}
-	}
 
 	sandboxAllowed := g.cfg.SandboxPolicy.Allows(action)
 	if !sandboxAllowed {
@@ -684,125 +665,6 @@ func gitBranchReadOnlyCommand(command string) bool {
 		}
 	}
 	return strings.TrimSpace(command) == "git branch"
-}
-
-func (g *ApprovalGate) ensureSafeBranch(action tools.Action) error {
-	if g == nil || strings.TrimSpace(g.workDir) == "" {
-		return nil
-	}
-	isRepo, err := gitutil.IsRepository(g.workDir)
-	if err != nil || !isRepo {
-		return err
-	}
-	current, err := gitutil.CurrentBranch(g.workDir)
-	if err != nil {
-		return err
-	}
-	if !isProtectedBranch(current) {
-		return nil
-	}
-	if !g.didSwitchBranch {
-		g.originalBranch = current
-	}
-	target := safeBranchName(action.Summary, g.now())
-	exists, err := gitutil.BranchExists(g.workDir, target)
-	if err != nil {
-		return err
-	}
-	if exists {
-		if err := checkoutBranch(g.workDir, target); err != nil {
-			return err
-		}
-	} else if err := gitutil.CheckoutNewBranch(g.workDir, target); err != nil {
-		return err
-	}
-	g.didSwitchBranch = true
-	if g.progress != nil {
-		g.progress("Switched to branch " + target)
-	}
-	return nil
-}
-
-// Restore switches back to the original branch if the gate created a
-// safety branch during the session, and deletes the safety branch when
-// its commits have been merged into the original branch. This should be
-// called when the session ends.
-func (g *ApprovalGate) Restore() {
-	if g == nil || !g.didSwitchBranch || g.originalBranch == "" {
-		return
-	}
-	// Record the safety branch name before switching away from it.
-	safetyBranch, err := gitutil.CurrentBranch(g.workDir)
-	if err != nil {
-		safetyBranch = ""
-	}
-	if err := checkoutBranch(g.workDir, g.originalBranch); err != nil {
-		if g.progress != nil {
-			g.progress(fmt.Sprintf("warning: could not restore branch %s: %v", g.originalBranch, err))
-		}
-		return
-	}
-	if g.progress != nil {
-		g.progress("Restored branch " + g.originalBranch)
-	}
-	// Delete the safety branch if it is now fully merged into the original.
-	if safetyBranch != "" && safetyBranch != g.originalBranch {
-		merged, err := gitutil.IsBranchMerged(g.workDir, safetyBranch, g.originalBranch)
-		if err == nil && merged {
-			if delErr := gitutil.DeleteBranch(g.workDir, safetyBranch); delErr == nil {
-				if g.progress != nil {
-					g.progress("Deleted merged branch " + safetyBranch)
-				}
-			}
-		}
-	}
-}
-
-func safeBranchName(seed string, now time.Time) string {
-	slug := branchSlug(seed)
-	if slug == "" {
-		slug = "task"
-	}
-	stamp := now.UTC().Format("20060102150405")
-	return "forge/" + slug + "-" + stamp
-}
-
-func branchSlug(input string) string {
-	input = strings.ToLower(strings.TrimSpace(input))
-	if input == "" {
-		return ""
-	}
-	var b strings.Builder
-	lastDash := false
-	for _, r := range input {
-		isAlphaNum := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
-		if isAlphaNum {
-			b.WriteRune(r)
-			lastDash = false
-		} else if !lastDash {
-			b.WriteByte('-')
-			lastDash = true
-		}
-		if b.Len() >= 32 {
-			break
-		}
-	}
-	return strings.Trim(b.String(), "-")
-}
-
-func isProtectedBranch(branch string) bool {
-	branch = strings.TrimSpace(branch)
-	return branch == "main" || branch == "master"
-}
-
-func checkoutBranch(dir, branch string) error {
-	branch = strings.TrimSpace(branch)
-	if branch == "" {
-		return fmt.Errorf("branch name is required")
-	}
-	cmd := exec.Command("git", "checkout", branch)
-	cmd.Dir = dir
-	return cmd.Run()
 }
 
 func firstNonEmpty(values ...string) string {
