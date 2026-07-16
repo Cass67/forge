@@ -12,80 +12,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// RunLivePipeline runs a pipeline/audit session using ChatModel.
-// It has the same signature intent as RunLive but uses the chat-based UI
-// with a toggleable two-pane view. Returns a LiveResult for the caller.
-func RunLivePipeline(events <-chan llm.Event, totalPasses, totalRounds int, cfg LiveConfig, outputDir string) LiveResult {
-	chatCfg := ChatLiveConfig{
-		Model: cfg.WriterModel,
-	}
-	// Set workDir for file preview
-	workDir := cfg.WorkDir
-	if workDir == "" {
-		if wd, err := os.Getwd(); err == nil {
-			workDir = wd
-		}
-	}
-	m := NewChatModel(chatCfg)
-	m.pipelineActive = true
-	m.pipelineTotalPasses = totalPasses
-	m.pipelineTotalRounds = totalRounds
-	m.pipelineGate = cfg.Gate
-	m.pipelineOutputDir = outputDir
-	m.workDir = workDir
-	m.pipelinePassName = "starting"
-	m.pipelinePhase = "starting"
-	m.pipelineManualMode = cfg.Gate != nil && cfg.Gate.Enabled()
-	m.model = cfg.WriterModel
-
-	// Add an initial message showing what's running
-	m.AddMessage(ChatMessage{
-		Kind: MsgStatus,
-		Content: fmt.Sprintf("Running pipeline (%d passes, %d rounds) — writer: %s | auditor: %s",
-			totalPasses, totalRounds, cfg.WriterModel, cfg.AuditorModel),
-	})
-	m.AddMessage(ChatMessage{
-		Kind:    MsgStatus,
-		Content: "Press Ctrl+P to toggle between chat view and pipeline view. Press P to toggle file preview.",
-	})
-
-	p := tea.NewProgram(m, tea.WithAltScreen())
-
-	// Feed LLM events
-	go func() {
-		for ev := range events {
-			p.Send(ev)
-		}
-		p.Send(llm.Event{Kind: llm.EventDone})
-	}()
-
-	finalModel, _ := p.Run()
-	fm := finalModel.(ChatModel)
-
-	var resultErr error
-	if fm.pipelinePhase == "aborted" {
-		// Try to find the error from the last status message
-		for i := len(fm.messages) - 1; i >= 0; i-- {
-			if fm.messages[i].Kind == MsgStatus && strings.Contains(fm.messages[i].Content, "Pipeline aborted:") {
-				parts := strings.SplitN(fm.messages[i].Content, "Pipeline aborted: ", 2)
-				if len(parts) == 2 && strings.TrimSpace(parts[1]) != "" {
-					resultErr = fmt.Errorf("%s", strings.TrimSpace(parts[1]))
-				}
-				break
-			}
-		}
-	}
-
-	return LiveResult{
-		Aborted:           fm.pipelinePhase == "aborted",
-		OutputDir:         fm.pipelineOutputDir,
-		Err:               resultErr,
-		FeedbackRequested: fm.pipelinePhase == "feedback_requested",
-		FeedbackPass:      fm.pipelineCurrentPass,
-		FeedbackPassName:  fm.pipelinePassName,
-	}
-}
-
 // handlePipelineLLMEvent processes pipeline-specific LLM events.
 // Returns true if the event was consumed as a pipeline event, plus an optional cmd.
 func (m *ChatModel) handlePipelineLLMEvent(ev llm.Event) (bool, tea.Cmd) {
@@ -390,11 +316,10 @@ func (m *ChatModel) pipelineFilePreviewMaxScroll() int {
 	return max(0, len(lines)-height)
 }
 
-// pipelineRenderView renders the entire pipeline view (either chat view or two-pane view).
+// pipelineRenderView renders the entire pipeline view.
+// If pipelineViewActive is true, it shows the two-pane pipeline view.
+// Otherwise it falls through to the normal chat view.
 func (m ChatModel) pipelineRenderView(theme chatTheme, header string) string {
-	if !m.pipelineActive {
-		return ""
-	}
 
 	if m.pipelineViewActive {
 		return m.pipelineRenderTwoPane(theme, header)
@@ -414,7 +339,7 @@ func (m ChatModel) pipelineRenderChatView(theme chatTheme, header string) string
 	if strings.TrimSpace(m.chatVisible) == "" {
 		empty := []string{
 			"  Pipeline running...",
-			"  Press Ctrl+P for pipeline view, P for file preview.",
+			keyLabel("  Press Ctrl+P for pipeline view, P for file preview."),
 		}
 		chatLines = empty
 		chatTotalLines = len(empty)
@@ -467,6 +392,38 @@ func (m ChatModel) pipelineRenderChatView(theme chatTheme, header string) string
 // pipelineRenderTwoPane renders the two-pane split view for pipeline mode.
 func (m ChatModel) pipelineRenderTwoPane(theme chatTheme, header string) string {
 	headerGap := lipgloss.NewStyle().Width(m.width).Render("")
+
+	// When no pipeline is active, show an informational idle state
+	if !m.pipelineActive {
+		bodyHeight := m.pipelineBodyHeight()
+		bodyWidth := max(20, m.width-2)
+		lines := []string{
+			"",
+			"  ╔══════════════════════════════════════════════╗",
+			"  ║                                              ║",
+			"  ║     No pipeline running                      ║",
+			"  ║     Type /make to start a pipeline session   ║",
+			"  ║     Press Ctrl+P to return to chat view      ║",
+			"  ║                                              ║",
+			"  ╚══════════════════════════════════════════════╝",
+			"",
+		}
+		if len(lines) < bodyHeight {
+			padding := make([]string, bodyHeight-len(lines))
+			for i := range padding {
+				padding[i] = ""
+			}
+			lines = append(lines, padding...)
+		}
+		idle := lipgloss.NewStyle().
+			Background(lipgloss.Color("#0d1117")).
+			Foreground(lipgloss.Color("#8b949e")).
+			Width(bodyWidth).Height(bodyHeight).
+			Render(strings.Join(lines, "\n"))
+		body := lipgloss.JoinHorizontal(lipgloss.Top, idle)
+		return lipgloss.JoinVertical(lipgloss.Left, header, headerGap, body, m.pipelineRenderFooter())
+	}
+
 	leftWidth := max(20, (m.width-1)/2)
 	rightWidth := max(20, m.width-leftWidth)
 	bodyHeight := m.pipelineBodyHeight()
@@ -603,6 +560,8 @@ func (m ChatModel) pipelineRenderFooter() string {
 	if m.pipelineFilePreviewVisible {
 		helpText = "↑↓ scroll  p close preview"
 	}
+	// Debug: show buffer sizes so we can see if data is flowing
+	helpText = fmt.Sprintf("buf:%d/%d  %s", len(m.pipelineWriterBuf), len(m.pipelineAuditorBuf), helpText)
 	return lipgloss.NewStyle().
 		Background(lipgloss.Color("#161b22")).
 		Foreground(lipgloss.Color("#8b949e")).

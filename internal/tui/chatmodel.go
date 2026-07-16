@@ -338,13 +338,26 @@ type ChatModel struct {
 	pipelineWriterTurnGap  bool
 	pipelineAuditorTurnGap bool
 	pipelineGate           *session.TurnGate
-	pipelineOutputDir      string
 	// File preview fields (for task 2: live file preview)
 	pipelineFilePreviewVisible bool
 	pipelineFilePreviewPath    string
 	pipelineFilePreviewContent string
 	pipelineFilePreviewScroll  int
 	pipelineFilePreviewHeight  int
+
+	// Pipeline config dialog state (opened by /make)
+	pipelineConfigVisible       bool
+	pipelineConfigFocus         int // 0 = writer, 1 = auditor, 2 = rounds
+	pipelineConfigWriterModel   string
+	pipelineConfigAuditorModel  string
+	pipelineConfigRounds        int
+	pipelineConfigWriterCursor  int
+	pipelineConfigAuditorCursor int
+
+	// Pending pipeline start (after dialog closes, awaiting user prompt)
+	pipelinePendingWriter  string
+	pipelinePendingAuditor string
+	pipelinePendingRounds  int
 
 	helpVisible bool
 	helpTab     int
@@ -2021,11 +2034,8 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
-	// Pipeline mode: handle pipeline-specific events
-	if m.pipelineActive {
-		if consumed, cmd := m.handlePipelineLLMEvent(ev); consumed {
-			return m, cmd
-		}
+	if consumed, cmd := m.handlePipelineLLMEvent(ev); consumed {
+		return m, cmd
 	}
 
 	// Sub-agent events primarily render in the tools pane, with human-readable
@@ -2679,6 +2689,9 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.sessionsVisible {
 		return m.handleSessionsKey(msg)
 	}
+	if m.pipelineConfigVisible {
+		return m.handlePipelineConfigKey(msg)
+	}
 	if m.agentViewVisible {
 		switch msg.Type {
 		case tea.KeyEscape:
@@ -2707,10 +2720,8 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Pipeline mode key handling (applies in both pipeline view and chat view)
-	if m.pipelineActive {
-		if consumed, cmd := m.handlePipelineKey(msg); consumed {
-			return m, cmd
-		}
+	if consumed, cmd := m.handlePipelineKey(msg); consumed {
+		return m, cmd
 	}
 
 	// Handle approval mode
@@ -2745,11 +2756,8 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.openSearchOverlay("")
 		return m, nil
 	case tea.KeyCtrlP:
-		// Ctrl+P: pipeline view toggle (only in pipeline mode)
-		if m.pipelineActive {
-			m.pipelineViewActive = !m.pipelineViewActive
-			return m, nil
-		}
+		m.pipelineViewActive = !m.pipelineViewActive
+		return m, nil
 	case tea.KeyEscape:
 		if m.busy && m.inputCh != nil {
 			ch := m.inputCh
@@ -2873,6 +2881,51 @@ func (m ChatModel) trySubmitText(input string, attachments []chatstate.ChatAttac
 
 	if input == "/exit" || input == "/quit" {
 		return m, tea.Quit, true
+	}
+
+	// If a pipeline is pending, start the pipeline with this text instead of submitting as chat
+	if m.pipelinePendingWriter != "" {
+		writerModel := m.pipelinePendingWriter
+		auditorModel := m.pipelinePendingAuditor
+		rounds := m.pipelinePendingRounds
+		m.pipelinePendingWriter = ""
+		m.pipelinePendingAuditor = ""
+		m.pipelinePendingRounds = 0
+		if m.config.StartPipeline == nil {
+			m.flash = "pipeline mode not available"
+			return m, nil, false
+		}
+		m.pipelineActive = true
+		m.pipelineViewActive = true
+		m.pipelinePhase = "starting"
+		m.pipelinePassName = "starting"
+		m.pipelineTotalPasses = 4
+		m.pipelineTotalRounds = rounds
+		m.pipelineManualMode = false
+		m.pipelineCurrentPass = 0
+		m.pipelineCurrentRound = 0
+		m.pipelineWriterBuf = ""
+		m.pipelineAuditorBuf = ""
+		m.pipelineWriterScroll = 0
+		m.pipelineAuditorScroll = 0
+		m.pipelineFocusRight = false
+		m.pipelineWriterTurnGap = false
+		m.pipelineAuditorTurnGap = false
+		m.flash = "starting pipeline..."
+		m.AddMessage(ChatMessage{
+			Kind:    MsgStatus,
+			Content: fmt.Sprintf("Pipeline started — writer: %s  auditor: %s  rounds: %d", writerModel, auditorModel, rounds),
+		})
+		m.AddMessage(ChatMessage{
+			Kind:    MsgStatus,
+			Content: fmt.Sprintf("Prompt: %s", input),
+		})
+		if err := m.config.StartPipeline(input, writerModel, auditorModel, rounds); err != nil {
+			m.pipelineActive = false
+			m.pipelineViewActive = false
+			m.flash = fmt.Sprintf("pipeline error: %v", err)
+		}
+		return m, nil, true
 	}
 
 	if strings.HasPrefix(input, "/") {
@@ -3202,7 +3255,7 @@ var builtinCommands = []string{
 	"/models", "/model", "/provider",
 	"/skills", "/auto-skills", "/sessions", "/save", "/restore",
 	"/find", "/files", "/copy agent", "/copy tools", "/copy code", "/copy result",
-	"/exit", "/quit",
+	"/make", "/exit", "/quit",
 }
 
 func (m ChatModel) isBuiltinCommand(input string) bool {
@@ -3421,6 +3474,17 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		}
 		m.autoSkillsMode = mode
 		m.flash = fmt.Sprintf("auto-skills: %s", mode)
+	case strings.HasPrefix(input, "/make"):
+		raw := strings.TrimSpace(strings.TrimPrefix(input, "/make"))
+		if m.config.StartPipeline == nil {
+			m.flash = "pipeline mode not available"
+			break
+		}
+		if m.pipelineActive {
+			m.flash = "pipeline already running — Ctrl+P to view"
+			break
+		}
+		m.openPipelineConfig(raw)
 	case input == "/find":
 		m.openSearchOverlay("")
 		m.flash = "search opened"
@@ -3470,10 +3534,21 @@ func (m ChatModel) helpTabs() []string {
 	return []string{"Keys", "Chat Commands", "CLI Skills"}
 }
 
+// keyLabel translates Ctrl- prefix to macOS notation when running on darwin.
+func keyLabel(s string) string {
+	if runtime.GOOS != "darwin" {
+		return s
+	}
+	// Replace both Ctrl- and Ctrl+ prefix forms
+	s = strings.ReplaceAll(s, "Ctrl-", "⌃")
+	s = strings.ReplaceAll(s, "Ctrl+", "⌃")
+	return s
+}
+
 func (m ChatModel) helpLines() []string {
 	switch m.helpTab {
 	case 1:
-		return []string{
+		return applyKeyLabels([]string{
 			"Chat commands",
 			"",
 			"Discovery and navigation:",
@@ -3491,6 +3566,8 @@ func (m ChatModel) helpLines() []string {
 			"",
 			"Session state:",
 			"  /new               start a clean session",
+			"  /make [prompt]     open pipeline config dialog",
+			"                     pick writer/auditor models and start",
 			"  /sessions          open saved sessions picker",
 			"  /save [name]       save the current session",
 			"  /restore [name]    restore a saved session",
@@ -3513,9 +3590,9 @@ func (m ChatModel) helpLines() []string {
 			"  /clear tools       clear debug trace buffer",
 			"  /exit              leave live mode",
 			"  /quit              leave live mode",
-		}
+		})
 	case 2:
-		return []string{
+		return applyKeyLabels([]string{
 			"CLI skills",
 			"",
 			"In chat:",
@@ -3543,10 +3620,19 @@ func (m ChatModel) helpLines() []string {
 			"  forge skills install [--scope global|project] --git <repo-url> [--subdir <path>]",
 			"  forge skills install [--scope global|project] superpowers [skill-name ...]",
 			"  forge skills update superpowers [--scope global|project]",
-		}
+		})
 	default:
-		return []string{
+		return applyKeyLabels([]string{
 			"Keyboard shortcuts",
+			"",
+			"Pipeline/audit mode (Ctrl+P or /make):",
+			"  /make <prompt>     start a pipeline session",
+			"  Ctrl-P / v         toggle chat view / pipeline view",
+			"  ← / →              focus writer / auditor pane",
+			"  ↑ / ↓              scroll active pane",
+			"  p                  toggle file preview pane",
+			"  Space              advance turn (manual mode)",
+			"  q                  quit when complete",
 			"",
 			"Help navigation:",
 			"  F1                 open help",
@@ -3571,16 +3657,17 @@ func (m ChatModel) helpLines() []string {
 			"",
 			"Turn control:",
 			"  Esc                cancel current run",
-			"",
-			"Pipeline/audit mode (forge make):",
-			"  Ctrl-P / v         toggle chat view / pipeline view",
-			"  ← / →              focus writer / auditor pane",
-			"  ↑ / ↓              scroll active pane",
-			"  p                  toggle file preview pane",
-			"  Space              advance turn (manual mode)",
-			"  q                  quit when complete",
-		}
+		})
 	}
+}
+
+// applyKeyLabels runs every line through keyLabel for OS-aware key notation.
+func applyKeyLabels(lines []string) []string {
+	out := make([]string, len(lines))
+	for i, line := range lines {
+		out[i] = keyLabel(line)
+	}
+	return out
 }
 
 func (m *ChatModel) openSearchOverlay(query string) {
@@ -5314,7 +5401,7 @@ func (m ChatModel) renderProvidersOverlay() string {
 	footerText := "↑/↓ select • Enter configure/select • d delete credential • Esc close"
 	if m.providerPromptingKey {
 		if m.providerAuthProvider == "claude" {
-			footerText = "Ctrl+O open browser • Enter submit pasted callback/code • Esc cancel"
+			footerText = keyLabel("Ctrl+O open browser • Enter submit pasted callback/code • Esc cancel")
 		} else {
 			footerText = "Enter save key • Esc cancel"
 		}
@@ -5442,8 +5529,8 @@ func (m ChatModel) View() string {
 	headerData := m.statusSnapshot()
 	header := renderStatusHeaderForHeight(theme, headerData, m.width, m.height)
 
-	// Pipeline mode: render the pipeline view (either chat view or two-pane view)
-	if m.pipelineActive {
+	// Pipeline view: render the two-pane pipeline view (toggled with Ctrl+P)
+	if m.pipelineViewActive {
 		return m.pipelineRenderView(theme, header)
 	}
 
@@ -5544,6 +5631,9 @@ func (m ChatModel) View() string {
 		if overlay := m.renderTraceOverlay(); overlay != "" {
 			return fillSurfaceRows(overlay, m.width, theme.AppBG)
 		}
+	}
+	if m.pipelineConfigVisible {
+		return fillSurfaceRows(m.renderPipelineConfigOverlay(), m.width, theme.AppBG)
 	}
 	if m.searchVisible {
 		return fillSurfaceRows(m.renderSearchOverlay(), m.width, theme.AppBG)

@@ -21,19 +21,18 @@ func TestStartsWithFlag(t *testing.T) {
 	}
 }
 
-func TestRunMakeWithoutArgsUsesInteractiveMode(t *testing.T) {
-	called := false
-	prev := runMakeInteractiveFn
-	runMakeInteractiveFn = func() {
-		called = true
+func TestRunMakeWithoutArgsExitsWithUsage(t *testing.T) {
+	// forge make with no args now prints usage and exits instead of launching the TUI.
+	prev := runImproveArgsFn
+	runImproveArgsFn = func(_ string, _ []string) {
+		t.Fatal("unexpected call to runImproveArgsFn")
 	}
-	defer func() { runMakeInteractiveFn = prev }()
+	defer func() { runImproveArgsFn = prev }()
 
+	// runMake calls os.Exit(1) — we can at least verify it doesn't panic and
+	// doesn't call runImproveArgsFn. A full exit-code test would require
+	// os.Exec or an init() guard.
 	runMake(nil)
-
-	if !called {
-		t.Fatal("expected forge make with no args to launch the legacy interactive pipeline")
-	}
 }
 
 func TestRunMakeWithArgsUsesBatchMode(t *testing.T) {
