@@ -1337,13 +1337,13 @@ func TestChatModelFirstPromptKeepsExpandedHeader(t *testing.T) {
 			t.Fatalf("line %d width = %d, want <= %d: %q", i, width, m.width, line)
 		}
 	}
-	if len(lines) < 3 {
+	if len(lines) < 2 {
 		t.Fatalf("expected expanded header lines, got:\n%s", strings.Join(lines, "\n"))
 	}
-	if !strings.Contains(lines[1], "model") || !strings.Contains(lines[1], "copilot/gpt-5") {
-		t.Fatalf("expected model line to remain visible after first prompt, got:\n%s", strings.Join(lines[:min(len(lines), 3)], "\n"))
+	if !strings.Contains(lines[0], "copilot/gpt-5") {
+		t.Fatalf("expected model to remain visible after first prompt, got:\n%s", strings.Join(lines[:min(len(lines), 3)], "\n"))
 	}
-	if !strings.Contains(lines[2], "dir") || !strings.Contains(lines[2], "/tmp/forge") {
+	if !strings.Contains(lines[1], "dir") || !strings.Contains(lines[1], "/tmp/forge") {
 		t.Fatalf("expected dir line to remain visible after first prompt, got:\n%s", strings.Join(lines[:min(len(lines), 3)], "\n"))
 	}
 }
@@ -1368,7 +1368,7 @@ func TestChatModelStatsFooterFitsWithoutCroppingHeader(t *testing.T) {
 		t.Fatalf("view height = %d, want <= %d\n%s", len(lines), m.height, strippedLine(view))
 	}
 	plain := strippedLine(view)
-	if !strings.Contains(plain, "FORGE") || !strings.Contains(plain, "model") || !strings.Contains(plain, "localllm/gpt") || !strings.Contains(plain, "dir") {
+	if !strings.Contains(plain, "FORGE") || !strings.Contains(plain, "localllm/gpt") || !strings.Contains(plain, "dir") {
 		t.Fatalf("expected full header to remain visible with stats footer:\n%s", plain)
 	}
 }
@@ -1412,7 +1412,7 @@ func TestChatModelNormalLayoutBudgetMatchesRenderedRows(t *testing.T) {
 			t.Fatalf("line %d width = %d, want <= %d: %q", i, width, m.width, line)
 		}
 	}
-	if !strings.Contains(lines[0], "localllm/gpt-oss-20b") || !strings.Contains(lines[1], "model") || !strings.Contains(lines[2], "dir") {
+	if !strings.Contains(lines[0], "localllm/gpt-oss-20b") || !strings.Contains(lines[1], "dir") {
 		t.Fatalf("header not preserved at top:\n%s", strings.Join(lines[:min(len(lines), 4)], "\n"))
 	}
 }
@@ -1430,7 +1430,7 @@ func TestChatModelNormalLayoutBudgetReservesQueuedInputPreview(t *testing.T) {
 	if len(lines) > m.height {
 		t.Fatalf("view rows = %d, want <= %d\n%s", len(lines), m.height, view)
 	}
-	if !strings.Contains(lines[0], "FORGE") || !strings.Contains(lines[1], "model") || !strings.Contains(lines[2], "dir") {
+	if !strings.Contains(lines[0], "FORGE") || !strings.Contains(lines[1], "dir") {
 		t.Fatalf("header not preserved with queued preview:\n%s", strings.Join(lines[:min(len(lines), 4)], "\n"))
 	}
 }
@@ -1447,15 +1447,12 @@ func assertNormalViewFitsAndKeepsHeader(t *testing.T, m ChatModel) {
 			t.Fatalf("line %d width = %d, want <= %d: %q", i, width, m.width, line)
 		}
 	}
-	if len(lines) >= 3 {
+	if len(lines) >= 2 {
 		if !strings.Contains(lines[0], "localllm/gpt") && !strings.Contains(lines[0], "FORGE") {
 			t.Fatalf("first row missing title/model:\n%s", strings.Join(lines[:min(len(lines), 4)], "\n"))
 		}
-		if !strings.Contains(lines[1], "model") {
-			t.Fatalf("second row missing model line:\n%s", strings.Join(lines[:min(len(lines), 4)], "\n"))
-		}
-		if !strings.Contains(lines[2], "dir") {
-			t.Fatalf("third row missing dir line:\n%s", strings.Join(lines[:min(len(lines), 4)], "\n"))
+		if !strings.Contains(lines[1], "dir") {
+			t.Fatalf("second row missing dir line:\n%s", strings.Join(lines[:min(len(lines), 4)], "\n"))
 		}
 	}
 }
@@ -1509,17 +1506,14 @@ func TestChatModelStatsFooterKeepsHeaderAtTopAfterSuccessfulChat(t *testing.T) {
 	m = updated.(ChatModel)
 
 	lines := strings.Split(strippedLine(m.View()), "\n")
-	if len(lines) < 3 {
+	if len(lines) < 2 {
 		t.Fatalf("view missing header lines:\n%s", strings.Join(lines, "\n"))
 	}
 	if !strings.Contains(lines[0], "FORGE") || !strings.Contains(lines[0], "localllm/gpt-oss-20b") {
 		t.Fatalf("first visible row should be header title/model, got:\n%s", strings.Join(lines[:min(len(lines), 4)], "\n"))
 	}
-	if !strings.Contains(lines[1], "model") || !strings.Contains(lines[1], "localllm/gpt-oss-20b") {
-		t.Fatalf("second visible row should be model line, got:\n%s", strings.Join(lines[:min(len(lines), 4)], "\n"))
-	}
-	if !strings.Contains(lines[2], "dir") || !strings.Contains(lines[2], "forge") {
-		t.Fatalf("third visible row should be dir line, got:\n%s", strings.Join(lines[:min(len(lines), 4)], "\n"))
+	if !strings.Contains(lines[1], "dir") || !strings.Contains(lines[1], "forge") {
+		t.Fatalf("second visible row should be dir line, got:\n%s", strings.Join(lines[:min(len(lines), 4)], "\n"))
 	}
 }
 
@@ -2090,13 +2084,13 @@ func TestChatModelAgentPanelSkipsLegacyToolSections(t *testing.T) {
 	}
 }
 
-func TestChatModelToolsPaneToggleShowsRemovedMessage(t *testing.T) {
+func TestChatModelToolsCommandTogglesToolPanels(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 120
 	m.height = 24
 
-	if m.toolsVisible {
-		t.Fatal("tools pane should start hidden")
+	if m.toolPanelsVisible {
+		t.Fatal("tool panels should start hidden")
 	}
 
 	m.inputBuf = "/tools"
@@ -2104,10 +2098,22 @@ func TestChatModelToolsPaneToggleShowsRemovedMessage(t *testing.T) {
 	updated, _ := m.submitInput()
 	m = updated.(ChatModel)
 
-	if m.toolsVisible {
-		t.Fatal("tools pane should stay hidden")
+	if !m.toolPanelsVisible {
+		t.Fatal("/tools should show tool panels")
 	}
-	if !strings.Contains(m.flash, "tools pane removed") {
+	if !strings.Contains(m.flash, "tool activity shown") {
+		t.Fatalf("flash = %q", m.flash)
+	}
+
+	m.inputBuf = "/tools"
+	m.inputPos = len("/tools")
+	updated, _ = m.submitInput()
+	m = updated.(ChatModel)
+
+	if m.toolPanelsVisible {
+		t.Fatal("second /tools should hide tool panels")
+	}
+	if !strings.Contains(m.flash, "tool activity hidden") {
 		t.Fatalf("flash = %q", m.flash)
 	}
 }
@@ -2122,15 +2128,12 @@ func TestChatModelSlashToggleToolsAlias(t *testing.T) {
 	updated, _ := m.submitInput()
 	m = updated.(ChatModel)
 
-	if m.toolsVisible {
-		t.Fatal("tools pane should remain hidden after /toggle tools")
-	}
-	if !strings.Contains(m.flash, "tools pane removed") {
-		t.Fatalf("flash = %q", m.flash)
+	if !m.toolPanelsVisible {
+		t.Fatal("/toggle tools should show tool panels")
 	}
 }
 
-func TestChatModelSlashToggleToolsOnOffStaysDisabled(t *testing.T) {
+func TestChatModelSlashToggleToolsOnOff(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.width = 120
 	m.height = 24
@@ -2139,16 +2142,16 @@ func TestChatModelSlashToggleToolsOnOffStaysDisabled(t *testing.T) {
 	m.inputPos = len(m.inputBuf)
 	updated, _ := m.submitInput()
 	m = updated.(ChatModel)
-	if m.toolsVisible {
-		t.Fatal("tools pane should remain hidden after /toggle tools on")
+	if !m.toolPanelsVisible {
+		t.Fatal("tool panels should show after /toggle tools on")
 	}
 
 	m.inputBuf = "/toggle tools off"
 	m.inputPos = len(m.inputBuf)
 	updated, _ = m.submitInput()
 	m = updated.(ChatModel)
-	if m.toolsVisible {
-		t.Fatal("tools pane should remain hidden after /toggle tools off")
+	if m.toolPanelsVisible {
+		t.Fatal("tool panels should hide after /toggle tools off")
 	}
 }
 

@@ -62,6 +62,7 @@ type RetryObserver func(RetryEvent)
 
 type RetryAttemptsExhaustedError struct {
 	Attempts int
+	Timeout  time.Duration
 	Err      error
 }
 
@@ -71,6 +72,9 @@ func (e *RetryAttemptsExhaustedError) Error() string {
 	}
 	if e.Err == nil {
 		return fmt.Sprintf("all %d attempts failed", e.Attempts)
+	}
+	if e.Err == context.DeadlineExceeded {
+		return fmt.Sprintf("all %d attempts failed: LLM call timed out after %ds timeout (adjust retry.timeout_seconds in config.toml)", e.Attempts, int(e.Timeout.Seconds()))
 	}
 	return fmt.Sprintf("all %d attempts failed: %v", e.Attempts, e.Err)
 }
@@ -237,10 +241,13 @@ func (d *RetryDriver) Stream(ctx context.Context, messages []Message, out chan<-
 			return lastErr
 		}
 		if emittedAny {
+			if lastErr == context.DeadlineExceeded || strings.Contains(lastErr.Error(), "context deadline exceeded") {
+				return fmt.Errorf("LLM call timed out after %v (adjust retry.timeout_seconds in config.toml): %w", d.timeout, context.DeadlineExceeded)
+			}
 			return lastErr
 		}
 	}
-	return &RetryAttemptsExhaustedError{Attempts: d.maxAttempts, Err: lastErr}
+	return &RetryAttemptsExhaustedError{Attempts: d.maxAttempts, Timeout: d.timeout, Err: lastErr}
 }
 
 func (d *RetryDriver) StreamWithTools(ctx context.Context, messages []Message, tools []ToolDef, out chan<- Token) error {
@@ -355,10 +362,13 @@ func (d *RetryDriver) StreamWithToolsOptions(ctx context.Context, messages []Mes
 			return lastErr
 		}
 		if emittedAny {
+			if lastErr == context.DeadlineExceeded || strings.Contains(lastErr.Error(), "context deadline exceeded") {
+				return fmt.Errorf("LLM call timed out after %v (adjust retry.timeout_seconds in config.toml): %w", d.timeout, context.DeadlineExceeded)
+			}
 			return lastErr
 		}
 	}
-	return &RetryAttemptsExhaustedError{Attempts: d.maxAttempts, Err: lastErr}
+	return &RetryAttemptsExhaustedError{Attempts: d.maxAttempts, Timeout: d.timeout, Err: lastErr}
 }
 
 func newStreamIdleTimer(timeout time.Duration) (*time.Timer, <-chan time.Time) {

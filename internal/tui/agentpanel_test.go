@@ -40,11 +40,11 @@ func TestAgentTaskPanelHeight(t *testing.T) {
 		want  int
 	}{
 		{"no tasks", nil, 0},
-		{"one task", []chatAgentTaskState{{ID: "a", Role: "r1", Status: "running"}}, 4},
+		{"one task", []chatAgentTaskState{{ID: "a", Role: "r1", Status: "running"}}, 2},
 		{"two tasks", []chatAgentTaskState{
 			{ID: "a", Role: "r1", Status: "running"},
 			{ID: "b", Role: "r2", Status: "running"},
-		}, 7},
+		}, 3},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -57,7 +57,7 @@ func TestAgentTaskPanelHeight(t *testing.T) {
 	}
 }
 
-func TestFormatTaskPanelCardShowsTool(t *testing.T) {
+func TestFormatTaskPanelRowShowsTool(t *testing.T) {
 	theme := lookupThemeForTest(t, "default")
 	now := time.Now()
 
@@ -67,9 +67,9 @@ func TestFormatTaskPanelCardShowsTool(t *testing.T) {
 		Status:       "running",
 		LastToolName: "code_search",
 	}
-	got := formatTaskPanelCard(task, now, 80, theme)
+	got := formatTaskPanelRow(task, now, 80, theme)
 	if got == "" {
-		t.Fatal("expected non-empty card")
+		t.Fatal("expected non-empty row")
 	}
 	if !strings.Contains(got, "writer") {
 		t.Fatalf("expected role in output: %s", got)

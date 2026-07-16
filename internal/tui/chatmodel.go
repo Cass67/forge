@@ -283,6 +283,7 @@ type ChatModel struct {
 	agentViewVisible       bool
 	agentViewIndex         int
 	agentTasks             []chatAgentTaskState
+	toolPanelsVisible      bool
 	recentToolCalls        []toolCallEntry
 	fileChanges            fileChangesTracker
 	lastToolResult         string
@@ -2758,6 +2759,9 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyCtrlP:
 		m.pipelineViewActive = !m.pipelineViewActive
 		return m, nil
+	case tea.KeyCtrlT:
+		m.setToolPanelsVisible(!m.toolPanelsVisible)
+		return m, nil
 	case tea.KeyEscape:
 		if m.busy && m.inputCh != nil {
 			ch := m.inputCh
@@ -3411,14 +3415,11 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			m.flash = fmt.Sprintf("session restored: %s", name)
 		}
 	case input == "/tools" || input == "/toggle tools":
-		m.toolsVisible = false
-		m.flash = "tools pane removed"
+		m.setToolPanelsVisible(!m.toolPanelsVisible)
 	case input == "/toggle tools on":
-		m.toolsVisible = false
-		m.flash = "tools pane removed"
+		m.setToolPanelsVisible(true)
 	case input == "/toggle tools off":
-		m.toolsVisible = false
-		m.flash = "tools pane removed"
+		m.setToolPanelsVisible(false)
 	case input == "/agents" || input == "/agents models":
 		m.flash = fmt.Sprintf("unknown command: %s", input)
 	case input == "/provider":
@@ -3654,6 +3655,7 @@ func (m ChatModel) helpLines() []string {
 			"  Mouse wheel        scroll conversation",
 			"  Ctrl-F             open search for current pane",
 			"  n / N              next / previous search hit",
+			"  Ctrl-T / /tools    toggle tool activity panel",
 			"",
 			"Turn control:",
 			"  Esc                cancel current run",
@@ -5519,6 +5521,17 @@ func (m *ChatModel) restoreSession(name string) error {
 	}
 	m.applySnapshot(s)
 	return nil
+}
+
+func (m *ChatModel) setToolPanelsVisible(visible bool) {
+	m.toolPanelsVisible = visible
+	if visible {
+		m.flash = "tool activity shown (Ctrl+T or /tools to hide)"
+	} else {
+		m.flash = "tool activity hidden (Ctrl+T or /tools to show)"
+	}
+	m.resizeChatViewport()
+	m.viewportDirty = true
 }
 
 func (m ChatModel) View() string {

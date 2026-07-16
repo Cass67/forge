@@ -363,7 +363,6 @@ func buildWideHeaderLines(theme chatTheme, modelValue, workDirValue string, widt
 
 	lines := []string{
 		padStyledWidth(renderForgeWordmark(theme)+sep+modelProminent, width),
-		buildHeaderMetaLine(theme, "model", truncateRightEllipsis(modelValue, max(1, width-16)), width),
 		buildHeaderMetaLine(theme, "dir", truncateLeftEllipsis(workDirValue, max(1, width-16)), width),
 	}
 	return lines
@@ -374,7 +373,6 @@ func buildMediumHeaderLines(theme chatTheme, modelValue, workDirValue string, wi
 
 	lines := []string{
 		padStyledWidth(renderForgeWordmark(theme)+"  "+lipgloss.NewStyle().Foreground(theme.HeaderFG).Bold(true).Render(truncateRightEllipsis(modelValue, prominentWidth)), width),
-		buildHeaderMetaLine(theme, "model", truncateRightEllipsis(modelValue, max(1, width-14)), width),
 		buildHeaderMetaLine(theme, "dir", truncateLeftEllipsis(workDirValue, max(1, width-14)), width),
 	}
 	return lines
@@ -383,7 +381,6 @@ func buildMediumHeaderLines(theme chatTheme, modelValue, workDirValue string, wi
 func buildNarrowHeaderLines(theme chatTheme, modelValue, workDirValue string, width int) []string {
 	lines := []string{
 		padStyledWidth(lipgloss.NewStyle().Foreground(theme.HeaderFG).Bold(true).Render(truncateRightEllipsis(modelValue, width)), width),
-		buildHeaderMetaLine(theme, "model", truncateRightEllipsis(modelValue, max(1, width-14)), width),
 		buildHeaderMetaLine(theme, "dir", truncateLeftEllipsis(workDirValue, max(1, width-14)), width),
 	}
 	return lines

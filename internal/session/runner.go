@@ -83,7 +83,7 @@ func (r *Runner) Run(ctx context.Context) {
 
 		for roundNum := 1; roundNum <= pass.Rounds; roundNum++ {
 			if ctx.Err() != nil {
-				r.cfg.Events <- llm.Event{Kind: llm.EventAbort, Err: ctx.Err()}
+				r.cfg.Events <- llm.Event{Kind: llm.EventAbort, Err: fmt.Errorf("pass %d round %d: pipeline cancelled: %w", passNum, roundNum, ctx.Err())}
 				return
 			}
 
@@ -108,7 +108,7 @@ func (r *Runner) Run(ctx context.Context) {
 				r.cfg.UserPrompt, r.cfg.LanguageHint, storeText, lastAuditorTurn)
 			if err != nil {
 				r.cfg.Log.Error("round failed", map[string]any{"pass": passNum, "round": roundNum, "error": err.Error()})
-				r.cfg.Events <- llm.Event{Kind: llm.EventError, Pass: passNum, Round: roundNum, Err: err}
+				r.cfg.Events <- llm.Event{Kind: llm.EventError, Pass: passNum, Round: roundNum, Err: fmt.Errorf("pass %d round %d: %w", passNum, roundNum, err)}
 				return
 			}
 			lastAuditorTurn = round.LastAuditorTurn()
@@ -137,7 +137,7 @@ func (r *Runner) Run(ctx context.Context) {
 					r.cfg.Log.Info("user feedback received", map[string]any{"pass": passNum, "len": len(feedback)})
 				}
 			case <-ctx.Done():
-				r.cfg.Events <- llm.Event{Kind: llm.EventAbort, Err: ctx.Err()}
+				r.cfg.Events <- llm.Event{Kind: llm.EventAbort, Err: fmt.Errorf("pass %d: feedback cancelled: %w", passNum, ctx.Err())}
 				return
 			}
 		}
