@@ -18,7 +18,6 @@ import (
 	"time"
 	"unicode"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"golang.org/x/term"
 
 	"forge/internal/auth"
@@ -33,13 +32,11 @@ import (
 	"forge/internal/output"
 	pluginruntime "forge/internal/plugins"
 	runtimepkg "forge/internal/runtime"
-	"forge/internal/session"
 	"forge/internal/skills"
 	"forge/internal/tui"
 )
 
 var (
-	runMakeInteractiveFn  = runMakeInteractive
 	runImproveArgsFn      = runImproveArgs
 	loadMainConfigFn      = bootstrap.LoadConfig
 	saveMainConfigFn      = config.Save
@@ -130,8 +127,9 @@ func startsWithFlag(arg string) bool {
 
 func runMake(args []string) {
 	if len(args) == 0 {
-		runMakeInteractiveFn()
-		return
+		fmt.Fprintln(os.Stderr, "usage: forge make <path> --prompt \"...\"")
+		fmt.Fprintln(os.Stderr, "  (use /make in chat mode for interactive pipeline sessions)")
+		os.Exit(1)
 	}
 	runImproveArgsFn("make", args)
 }
@@ -848,104 +846,6 @@ func saveMCPServer(name string, server config.MCPServerConfig) {
 	if err := saveMainConfigFn(mainConfigPathFn(), cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "error saving config: %v\n", err)
 		os.Exit(1)
-	}
-}
-
-func runMakeInteractive() {
-	rt, err := bootstrap.LoadRuntime()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
-		os.Exit(1)
-	}
-	cfg := rt.Config
-	tokens := rt.Tokens
-	reg := rt.Registry
-	available := rt.Models
-	app := tui.NewApp(tui.AppConfig{
-		WriterModels:   available,
-		AuditorModels:  available,
-		DefaultWriter:  cfg.Models.Writer,
-		DefaultAuditor: cfg.Models.Auditor,
-	})
-
-	p := tea.NewProgram(app, tea.WithAltScreen())
-	go bootstrap.SendStartupChecks(p, bootstrap.Preflight(cfg, tokens, reg))
-	retModel, err := p.Run()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	finalApp, _ := retModel.(tui.App)
-	if !finalApp.Started {
-		return
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	gate := session.NewTurnGate()
-	tracker := llm.NewUsageTracker()
-
-	var feedbackChan chan string
-	if finalApp.LastStart().Interactive {
-		feedbackChan = make(chan string)
-	}
-
-	events, outDir := runtimepkg.StartSession(ctx, cfg, tokens, reg, finalApp.LastStart(), gate, "", tracker, feedbackChan)
-
-	lastStart := finalApp.LastStart()
-	for {
-		totalPasses := 4
-		if len(cfg.Pipeline) > 0 {
-			totalPasses = len(cfg.Pipeline)
-		}
-		result := tui.RunLivePipeline(events, totalPasses, lastStart.Rounds, tui.LiveConfig{
-			WriterModel:  lastStart.WriterModel,
-			AuditorModel: lastStart.AuditorModel,
-			Gate:         gate,
-		}, outDir)
-
-		if result.FeedbackRequested && feedbackChan != nil {
-			passLabel := result.FeedbackPassName
-			if passLabel == "" {
-				passLabel = llm.PassName(result.FeedbackPass)
-			}
-			fmt.Printf("\n--- %s pass complete --- feedback (enter to skip): ", passLabel)
-			scanner := bufio.NewScanner(os.Stdin)
-			feedback := ""
-			if scanner.Scan() {
-				feedback = strings.TrimSpace(scanner.Text())
-			}
-			feedbackChan <- feedback
-			continue
-		}
-
-		aborted := result.Aborted
-		reason := ""
-		if result.Err != nil {
-			reason = result.Err.Error()
-		}
-
-		post := tui.RunPostSession(outDir, aborted, reason, formatTokenSummary(tracker), lastStart, available, available)
-		if !post.Fix {
-			break
-		}
-
-		lastStart = tui.SessionStarted{
-			Prompt:       post.Issue,
-			WriterModel:  post.WriterModel,
-			AuditorModel: post.AuditorModel,
-			Rounds:       lastStart.Rounds,
-			LangHint:     lastStart.LangHint,
-			ContextFiles: lastStart.ContextFiles,
-			Interactive:  lastStart.Interactive,
-		}
-		gate = session.NewTurnGate()
-		tracker = llm.NewUsageTracker()
-		feedbackChan = nil
-		if lastStart.Interactive {
-			feedbackChan = make(chan string)
-		}
-		events, outDir = runtimepkg.StartSession(ctx, cfg, tokens, reg, lastStart, gate, filepath.Join(outDir, "code"), tracker, feedbackChan)
 	}
 }
 
