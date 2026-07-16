@@ -594,7 +594,7 @@ func TestApprovalGateReadOnlySandboxCanBeOverriddenOnFailure(t *testing.T) {
 	}
 }
 
-func TestApprovalGateSwitchesOffProtectedBranchForMutation(t *testing.T) {
+func TestApprovalGateNeverSwitchesBranches(t *testing.T) {
 	repo := setupApprovalRepo(t)
 	ensureMainBranch(t, repo)
 
@@ -614,42 +614,7 @@ func TestApprovalGateSwitchesOffProtectedBranchForMutation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !approved {
-		t.Fatal("expected mutation to be approved after branch transition")
-	}
-
-	branch, err := gitutil.CurrentBranch(repo)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if branch == "main" || branch == "master" {
-		t.Fatalf("expected non-protected branch, got %q", branch)
-	}
-	if !strings.HasPrefix(branch, "forge/") {
-		t.Fatalf("expected forge/* branch, got %q", branch)
-	}
-}
-
-func TestApprovalGateDoesNotSwitchBranchesForReadOnlyGitQueries(t *testing.T) {
-	repo := setupApprovalRepo(t)
-	ensureMainBranch(t, repo)
-
-	gate := NewApprovalGate(repo, ApprovalConfig{
-		DefaultPolicy: ApprovalNever,
-		SandboxPolicy: SandboxWorkspaceWrite,
-	}, func(action tools.Action) (bool, error) {
-		return true, nil
-	}, nil)
-
-	approved, err := gate.Approve(tools.Action{
-		Tool:    "run_command",
-		Summary: "git branch -vv",
-		Detail:  "git branch -vv",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !approved {
-		t.Fatal("expected read-only git query to be approved")
+		t.Fatal("expected mutation to be approved")
 	}
 
 	branch, err := gitutil.CurrentBranch(repo)
@@ -657,7 +622,7 @@ func TestApprovalGateDoesNotSwitchBranchesForReadOnlyGitQueries(t *testing.T) {
 		t.Fatal(err)
 	}
 	if branch != "main" {
-		t.Fatalf("expected to stay on main for read-only query, got %q", branch)
+		t.Fatalf("gate must never switch branches, got %q", branch)
 	}
 }
 
@@ -673,120 +638,6 @@ func setupApprovalRepo(t *testing.T) string {
 	runGit(t, dir, "add", "README.md")
 	runGit(t, dir, "commit", "-m", "init")
 	return dir
-}
-
-func TestApprovalGateRestoreDeletesMergedSafetyBranch(t *testing.T) {
-	repo := setupApprovalRepo(t)
-	ensureMainBranch(t, repo)
-
-	var progress []string
-	gate := NewApprovalGate(repo, ApprovalConfig{
-		DefaultPolicy: ApprovalNever,
-		SandboxPolicy: SandboxWorkspaceWrite,
-	}, func(action tools.Action) (bool, error) {
-		return true, nil
-	}, func(msg string) { progress = append(progress, msg) })
-
-	// Trigger branch creation by approving a mutation on main.
-	if _, err := gate.Approve(tools.Action{Tool: "write_file", Summary: "write internal/app.go"}); err != nil {
-		t.Fatal(err)
-	}
-	safetyBranch, err := gitutil.CurrentBranch(repo)
-	if err != nil || safetyBranch == "main" {
-		t.Fatalf("expected forge/* branch, got %q err %v", safetyBranch, err)
-	}
-
-	// Simulate a commit on the safety branch.
-	if err := os.WriteFile(filepath.Join(repo, "app.go"), []byte("package main\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runGit(t, repo, "add", "app.go")
-	runGit(t, repo, "commit", "-m", "add app.go")
-
-	// Merge the safety branch into main so Restore() can delete it.
-	runGit(t, repo, "checkout", "main")
-	runGit(t, repo, "merge", "--ff-only", safetyBranch)
-	// Switch back to safety branch to simulate the session still being on it.
-	runGit(t, repo, "checkout", safetyBranch)
-
-	gate.Restore()
-
-	// Should be back on main.
-	current, err := gitutil.CurrentBranch(repo)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if current != "main" {
-		t.Fatalf("expected main after Restore, got %q", current)
-	}
-
-	// Safety branch should have been deleted.
-	exists, err := gitutil.BranchExists(repo, safetyBranch)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if exists {
-		t.Fatalf("expected safety branch %q to be deleted after Restore", safetyBranch)
-	}
-
-	// Progress messages should include deletion notice.
-	var deletedMsg string
-	for _, msg := range progress {
-		if strings.Contains(msg, "Deleted merged branch") {
-			deletedMsg = msg
-		}
-	}
-	if deletedMsg == "" {
-		t.Errorf("expected 'Deleted merged branch' progress message, got: %v", progress)
-	}
-}
-
-func TestApprovalGateRestoreKeepsUnmergedSafetyBranch(t *testing.T) {
-	repo := setupApprovalRepo(t)
-	ensureMainBranch(t, repo)
-
-	gate := NewApprovalGate(repo, ApprovalConfig{
-		DefaultPolicy: ApprovalNever,
-		SandboxPolicy: SandboxWorkspaceWrite,
-	}, func(action tools.Action) (bool, error) {
-		return true, nil
-	}, nil)
-
-	// Trigger branch creation.
-	if _, err := gate.Approve(tools.Action{Tool: "write_file", Summary: "write internal/app.go"}); err != nil {
-		t.Fatal(err)
-	}
-	safetyBranch, err := gitutil.CurrentBranch(repo)
-	if err != nil || safetyBranch == "main" {
-		t.Fatalf("expected forge/* branch, got %q err %v", safetyBranch, err)
-	}
-
-	// Commit on the safety branch but do NOT merge into main.
-	if err := os.WriteFile(filepath.Join(repo, "app.go"), []byte("package main\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	runGit(t, repo, "add", "app.go")
-	runGit(t, repo, "commit", "-m", "add app.go")
-
-	gate.Restore()
-
-	// Should be back on main.
-	current, err := gitutil.CurrentBranch(repo)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if current != "main" {
-		t.Fatalf("expected main after Restore, got %q", current)
-	}
-
-	// Safety branch should still exist since it was not merged.
-	exists, err := gitutil.BranchExists(repo, safetyBranch)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !exists {
-		t.Fatalf("expected unmerged safety branch %q to be kept", safetyBranch)
-	}
 }
 
 func ensureMainBranch(t *testing.T, dir string) {

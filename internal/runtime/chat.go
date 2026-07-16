@@ -321,31 +321,6 @@ func gitScopeProviderForSession(session *reactruntime.Session) tools.GitScopePro
 	}
 }
 
-func scopedIntentBypassesSafeBranch(session *reactruntime.Session, action tools.Action) bool {
-	if session == nil {
-		return false
-	}
-	intent := session.Snapshot().SideEffectIntent
-	if intent == nil || len(intent.AllowedPaths) == 0 {
-		return false
-	}
-	if strings.TrimSpace(intent.TargetBranch) == "" || strings.TrimSpace(intent.Remote) == "" {
-		return false
-	}
-	if !slices.Contains(intent.RequiredActions, reactruntime.SideEffectActionCommit) || !slices.Contains(intent.RequiredActions, reactruntime.SideEffectActionPush) {
-		return false
-	}
-	switch strings.TrimSpace(action.Tool) {
-	case "git_commit", "git_push":
-		return true
-	case "write_file", "edit_file", "artifact_write":
-		path := filepath.ToSlash(filepath.Clean(strings.TrimSpace(action.Path)))
-		return slices.Contains(intent.AllowedPaths, path) || slices.Contains(intent.ArtifactPaths, path)
-	default:
-		return false
-	}
-}
-
 func configureDurableSessionSink(cfg *config.Config, session *reactruntime.Session, workDir string) {
 	if cfg == nil || session == nil || strings.TrimSpace(cfg.Session.OutputDir) == "" {
 		return
@@ -426,9 +401,6 @@ func RunChatLive(setup *ChatSetup) {
 	gate := reactruntime.NewApprovalGate(setup.WorkDir, loadChatApprovalConfig(setup), nil, func(text string) {
 		evRenderer.Info(text)
 	})
-	gate.SetSafeBranchBypass(func(action tools.Action) bool {
-		return scopedIntentBypassesSafeBranch(session, action)
-	})
 	gate.SetGuardianReviewer(func(transcript string, action tools.Action) tools.GuardianReview {
 		return tools.ReviewApprovalAction(transcript, action)
 	})
@@ -445,7 +417,6 @@ func RunChatLive(setup *ChatSetup) {
 	}
 	gate.SetPrompt(approve)
 	approve = gate.Approve
-	defer gate.Restore()
 
 	reg := tools.NewRegistry()
 	previewRuntime, mcpManager := registerTools(reg, setup.WorkDir, setup.Config, session, approve, evRenderer.Info, func(status tools.ExecSessionStatus) {
@@ -818,9 +789,6 @@ func RunChatConsole(setup *ChatSetup) {
 	gate := reactruntime.NewApprovalGate(setup.WorkDir, loadChatApprovalConfig(setup), approve, func(text string) {
 		_, _ = fmt.Fprintln(os.Stdout, text)
 	})
-	gate.SetSafeBranchBypass(func(action tools.Action) bool {
-		return scopedIntentBypassesSafeBranch(session, action)
-	})
 	gate.SetGuardianReviewer(func(transcript string, action tools.Action) tools.GuardianReview {
 		return tools.ReviewApprovalAction(transcript, action)
 	})
@@ -831,7 +799,6 @@ func RunChatConsole(setup *ChatSetup) {
 		applyGuardianOverlay(session, event)
 	})
 	approve = gate.Approve
-	defer gate.Restore()
 
 	reg := tools.NewRegistry()
 	renderer := agent.NewRenderer(os.Stdout, 80, true)

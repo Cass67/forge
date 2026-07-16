@@ -220,50 +220,6 @@ func TestGitScopeProviderRequiresBranchWhenTargetBranchPresent(t *testing.T) {
 	}
 }
 
-func TestScopedIntentBypassesSafeBranchOnlyForCompleteCommitPushTransaction(t *testing.T) {
-	session := reactruntime.NewSession()
-	session.SetSideEffectIntent(reactruntime.SideEffectIntent{
-		AllowedPaths:    []string{"FORGE_VS_CODEX.md"},
-		TargetBranch:    "main",
-		Remote:          "origin",
-		RequiredActions: []reactruntime.SideEffectAction{reactruntime.SideEffectActionCommit, reactruntime.SideEffectActionPush},
-		ArtifactPaths:   []string{"FORGE_VS_CODEX.md"},
-		WorkspaceRoot:   t.TempDir(),
-	})
-
-	for _, action := range []tools.Action{
-		{Tool: "git_commit"},
-		{Tool: "git_push"},
-		{Tool: "write_file", Path: "FORGE_VS_CODEX.md"},
-	} {
-		if !scopedIntentBypassesSafeBranch(session, action) {
-			t.Fatalf("scopedIntentBypassesSafeBranch(%#v) = false, want true", action)
-		}
-	}
-	if scopedIntentBypassesSafeBranch(session, tools.Action{Tool: "write_file", Path: "unrelated.md"}) {
-		t.Fatal("bypassed safe branch for write outside scoped artifact paths")
-	}
-}
-
-func TestScopedIntentDoesNotBypassSafeBranchForIncompleteCommitOnlyIntent(t *testing.T) {
-	session := reactruntime.NewSession()
-	session.SetSideEffectIntent(reactruntime.SideEffectIntent{
-		AllowedPaths:    []string{"FORGE_VS_CODEX.md"},
-		RequiredActions: []reactruntime.SideEffectAction{reactruntime.SideEffectActionCommit},
-		ArtifactPaths:   []string{"FORGE_VS_CODEX.md"},
-	})
-
-	for _, action := range []tools.Action{
-		{Tool: "git_commit"},
-		{Tool: "git_push"},
-		{Tool: "write_file", Path: "FORGE_VS_CODEX.md"},
-	} {
-		if scopedIntentBypassesSafeBranch(session, action) {
-			t.Fatalf("scopedIntentBypassesSafeBranch(%#v) = true, want false", action)
-		}
-	}
-}
-
 func writeRuntimeTestFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
