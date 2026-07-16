@@ -18,8 +18,33 @@ import (
 	"forge/internal/copilot"
 	"forge/internal/llm"
 	"forge/internal/modelcatalog"
+	"forge/internal/output"
 	"forge/internal/skills"
+
+	"github.com/muesli/reflow/wordwrap"
 )
+
+// CheckResult is sent as a Bubble Tea message when a startup check completes.
+type CheckResult struct {
+	Name   string
+	OK     bool
+	Detail string
+}
+
+// StartupComplete is sent when all startup checks pass.
+type StartupComplete struct{}
+
+// SessionStarted is emitted when the user presses enter to start a pipeline session
+// in the legacy input flow, or when a pipeline session is started via /make.
+type SessionStarted struct {
+	Prompt       string
+	WriterModel  string
+	AuditorModel string
+	Rounds       int
+	LangHint     string
+	ContextFiles []string
+	Interactive  bool
+}
 
 type ChatLiveConfig struct {
 	Model                 string
@@ -54,6 +79,17 @@ type ChatLiveConfig struct {
 	// wraps NotifyNudge with p.Send. The runtime goroutine reads through this
 	// pointer so its own nudge calls also reach the TUI program.
 	NotifyNudgeSink *func(string, string, string)
+	// StartPipeline, if set, starts a pipeline session from within chat mode.
+	// The prompt, writerModel, and auditorModel are provided by the /make command.
+	// Pipeline events should be sent through the existing events channel.
+	// Returns an error if the pipeline cannot be started.
+	StartPipeline func(prompt, writerModel, auditorModel string, rounds int) error
+	// LoadPipelineDefaults returns the saved default writer model, auditor model, and rounds
+	// for pipeline mode. If no defaults are saved, returns empty strings and 0.
+	LoadPipelineDefaults func() (writerModel, auditorModel string, rounds int)
+	// SavePipelineDefaults persists the given writer model, auditor model, and rounds
+	// as defaults for future pipeline sessions.
+	SavePipelineDefaults func(writerModel, auditorModel string, rounds int)
 }
 
 type ProviderOption struct {
@@ -387,4 +423,84 @@ func providerHasStoredCredential(t *auth.Tokens, id string) bool {
 		}
 		return strings.TrimSpace(t.CustomProviderKey(id)) != ""
 	}
+}
+
+// clamp constrains v to the [low, high] range.
+func clamp(v, low, high int) int {
+	if v < low {
+		return low
+	}
+	if v > high {
+		return high
+	}
+	return v
+}
+
+// fitCell truncates or pads s to exactly width runes.
+func fitCell(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) > width {
+		runes = runes[:width]
+	}
+	if len(runes) < width {
+		return string(runes) + strings.Repeat(" ", width-len(runes))
+	}
+	return string(runes)
+}
+
+// wrapPlain wraps text to a given width and returns lines.
+func wrapPlain(s string, width int) []string {
+	if width < 1 {
+		return []string{""}
+	}
+	wrapped := wordwrap.String(s, width)
+	return strings.Split(wrapped, "\n")
+}
+
+// foldForDisplay replaces code blocks with a summary line for pipeline display.
+func foldForDisplay(text string) string {
+	blocks := output.ParseCodeBlocks(text)
+	if len(blocks) == 0 {
+		return text
+	}
+
+	lines := strings.Split(text, "\n")
+	var out []string
+	i := 0
+	for i < len(lines) {
+		line := lines[i]
+		if !strings.HasPrefix(line, "```") {
+			out = append(out, line)
+			i++
+			continue
+		}
+
+		header := strings.TrimPrefix(line, "```")
+		colon := strings.Index(header, ":")
+		if colon < 0 {
+			out = append(out, line)
+			i++
+			continue
+		}
+
+		filename := header[colon+1:]
+		i++
+		codeLines := 0
+		for i < len(lines) && lines[i] != "```" {
+			codeLines++
+			i++
+		}
+		if i < len(lines) && lines[i] == "```" {
+			i++
+		}
+		if filename == "" {
+			filename = "unnamed"
+		}
+		out = append(out, fmt.Sprintf("[code: %s %d lines]", filename, codeLines))
+	}
+
+	return strings.TrimSpace(strings.Join(out, "\n"))
 }

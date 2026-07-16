@@ -35,6 +35,7 @@ import (
 	"forge/internal/protocol"
 	reactruntime "forge/internal/react"
 	reacttools "forge/internal/react/tools"
+	forgesession "forge/internal/session"
 	"forge/internal/sessionstore"
 	"forge/internal/skills"
 	"forge/internal/tui"
@@ -736,6 +737,59 @@ func RunChatLive(setup *ChatSetup) {
 	// calls through nudgeForwarder also reach the TUI mode badge.
 	liveCfg.NotifyNudge = func(mode, taskOp, suggestedSkill string) { /* forwarded by bubbletea */ }
 	liveCfg.NotifyNudgeSink = &nudgeSink
+	// StartPipeline starts a pipeline session from within chat mode.
+	// Pipeline events are forwarded through renderCh so the ChatModel can process them
+	// and the debug logger can capture them.
+	liveCfg.StartPipeline = func(prompt, writerModel, auditorModel string, rounds int) error {
+		go func() {
+			cfg, tokens := refreshChatSetupState(setup)
+			// Build a minimal registry with the required models
+			reg := llm.NewRegistry()
+			bootstrap.EnsureDriver(cfg, tokens, reg, writerModel)
+			bootstrap.EnsureDriver(cfg, tokens, reg, auditorModel)
+			bootstrap.EnsureDriver(cfg, tokens, reg, cfg.Models.Summarizer)
+
+			gate := forgesession.NewTurnGate()
+			tracker := llm.NewUsageTracker()
+
+			started := tui.SessionStarted{
+				Prompt:       prompt,
+				WriterModel:  writerModel,
+				AuditorModel: auditorModel,
+				Rounds:       rounds,
+			}
+
+			pipelineEvents, _ := StartSession(ctx, cfg, tokens, reg, started, gate, "", tracker, nil)
+			for ev := range pipelineEvents {
+				select {
+				case renderCh <- ev:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+		return nil
+	}
+	// LoadPipelineDefaults reads saved pipeline model defaults from config.
+	liveCfg.LoadPipelineDefaults = func() (string, string, int) {
+		cfg, _ := refreshChatSetupState(setup)
+		if cfg == nil {
+			return "", "", 0
+		}
+		return cfg.Models.Writer, cfg.Models.Auditor, cfg.Session.RoundsPerPass
+	}
+	// SavePipelineDefaults persists pipeline model defaults to config.
+	liveCfg.SavePipelineDefaults = func(writerModel, auditorModel string, rounds int) {
+		cfg, _ := refreshChatSetupState(setup)
+		if cfg == nil {
+			return
+		}
+		cfg.Models.Writer = writerModel
+		cfg.Models.Auditor = auditorModel
+		cfg.Session.RoundsPerPass = rounds
+		path := defaultConfigPath()
+		_ = config.Save(path, cfg)
+	}
 	runChatLiveUI(eventsCh, liveCfg, inputCh, doneCh)
 }
 

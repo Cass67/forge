@@ -195,8 +195,12 @@ func (r *Round) streamAgent(ctx context.Context, agent, systemPrompt, userConten
 			return sb.String(), tok.Err
 		}
 		if !tok.Done {
-			sb.WriteString(tok.Text)
-			r.events <- llm.Event{Kind: llm.EventToken, Agent: agent, Text: tok.Text, Pass: pass, Round: round}
+			text := tok.Text
+			if tok.ReasoningContent != "" {
+				text = tok.ReasoningContent
+			}
+			sb.WriteString(text)
+			r.events <- llm.Event{Kind: llm.EventToken, Agent: agent, Text: text, Pass: pass, Round: round}
 		}
 	}
 	if err := <-errCh; err != nil {
