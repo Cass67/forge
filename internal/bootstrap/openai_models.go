@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
+
+	"forge/internal/modelcatalog"
 )
 
 const openAIModelsBaseURL = "https://api.openai.com/v1"
@@ -25,6 +28,11 @@ var hardcodedOpenAIModels = []string{
 
 // hardcodedChatGPTModels is the fallback when the catalog has no data.
 var hardcodedChatGPTModels = []string{
+	"gpt-5.6",
+	"gpt-5.6-sol",
+	"gpt-5.6-terra",
+	"gpt-5.6-luna",
+	"gpt-5.5-pro",
 	"gpt-5.4",
 	"gpt-5.4-mini",
 	"gpt-5.5",
@@ -49,7 +57,25 @@ func OpenAIModels() []string {
 }
 
 func ChatGPTModels() []string {
-	return append([]string(nil), hardcodedChatGPTModels...)
+	out := append([]string(nil), hardcodedChatGPTModels...)
+	seen := make(map[string]struct{}, len(out))
+	for _, m := range out {
+		seen[m] = struct{}{}
+	}
+	catalog := modelcatalog.ProviderModels("chatgpt")
+	sort.Strings(catalog)
+	for _, m := range catalog {
+		// ponytail: ChatGPT/Codex backend only serves the gpt-5 family
+		if !strings.HasPrefix(m, "gpt-5") {
+			continue
+		}
+		if _, ok := seen[m]; ok {
+			continue
+		}
+		seen[m] = struct{}{}
+		out = append(out, m)
+	}
+	return out
 }
 
 func DiscoverOpenAIModels(apiKey string) []string {
