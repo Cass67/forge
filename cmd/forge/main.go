@@ -1876,6 +1876,7 @@ func runSkills(args []string) {
 func runChat(args []string) {
 	fs := flag.NewFlagSet("forge", flag.ExitOnError)
 	yolo := fs.Bool("yolo", false, "skip all approval prompts")
+	prompt := fs.String("p", "", "headless: run one prompt, print the final response, and exit")
 	model := fs.String("model", "", "model override")
 	workDir := fs.String("C", "", "working directory (default: cwd)")
 	autoSkills := fs.String("auto-skills", "", "auto skill mode: off, suggest, or auto")
@@ -1914,6 +1915,10 @@ func runChat(args []string) {
 			fmt.Fprintf(os.Stderr, "error enabling chat debug: %v\n", err)
 			os.Exit(1)
 		}
+	}
+	if strings.TrimSpace(*prompt) != "" {
+		osExit(runtimepkg.RunChatHeadless(setup, *prompt))
+		return
 	}
 	if shouldUseChatConsole(term.IsTerminal(int(os.Stdin.Fd()))) {
 		runtimepkg.RunChatConsole(setup)
