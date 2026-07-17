@@ -100,13 +100,30 @@ func (m *ChatModel) handlePipelineLLMEvent(ev llm.Event) (bool, tea.Cmd) {
 
 	case llm.EventDone:
 		m.pipelinePhase = "done"
+		m.pipelineActive = false
+		m.pipelineViewActive = false
+		content := "Pipeline complete."
+		if text := strings.TrimSpace(ev.Text); text != "" {
+			content += " " + text
+		}
 		m.AddMessage(ChatMessage{
 			Kind:    MsgStatus,
-			Content: "Pipeline complete.",
+			Content: content,
 		})
+
+	case llm.EventWarning:
+		if ev.Err != nil {
+			m.AddMessage(ChatMessage{
+				Kind:    MsgStatus,
+				Content: "⚠ " + ev.Err.Error(),
+			})
+		}
+		return true, nil
 
 	case llm.EventAbort, llm.EventError:
 		m.pipelinePhase = "aborted"
+		m.pipelineActive = false
+		m.pipelineViewActive = false
 		errMsg := eventErrorMessage(ev)
 		m.AddMessage(ChatMessage{
 			Kind:    MsgStatus,
@@ -203,8 +220,8 @@ func (m *ChatModel) handlePipelineKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		case tea.KeyRunes:
 			switch string(msg.Runes) {
 			case "q":
-				m.pipelinePhase = "aborted"
-				return true, tea.Quit
+				m.pipelineViewActive = false
+				return true, nil
 			case "m":
 				if m.pipelineGate != nil {
 					m.pipelineManualMode = m.pipelineGate.Toggle()
@@ -232,22 +249,10 @@ func (m *ChatModel) handlePipelineKey(msg tea.KeyMsg) (bool, tea.Cmd) {
 		case tea.KeyCtrlP:
 			m.pipelineViewActive = true
 			return true, nil
-		case tea.KeyEnter:
-			// When pipeline is done/aborted, Enter quits instead of sending a message
-			if m.pipelinePhase == "done" || m.pipelinePhase == "aborted" {
-				return true, tea.Quit
-			}
 		case tea.KeyRunes:
-			switch string(msg.Runes) {
-			case "v":
-				if strings.TrimSpace(m.inputBuf) == "" {
-					m.pipelineViewActive = true
-					return true, nil
-				}
-			case "q":
-				if m.pipelinePhase == "done" || m.pipelinePhase == "aborted" {
-					return true, tea.Quit
-				}
+			if string(msg.Runes) == "v" && strings.TrimSpace(m.inputBuf) == "" {
+				m.pipelineViewActive = true
+				return true, nil
 			}
 		}
 	}

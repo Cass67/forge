@@ -44,6 +44,7 @@ type SessionStarted struct {
 	LangHint     string
 	ContextFiles []string
 	Interactive  bool
+	WorkDir      string // where final code files are mirrored on completion
 }
 
 type ChatLiveConfig struct {

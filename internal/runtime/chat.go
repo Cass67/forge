@@ -728,6 +728,7 @@ func RunChatLive(setup *ChatSetup) {
 				WriterModel:  writerModel,
 				AuditorModel: auditorModel,
 				Rounds:       rounds,
+				WorkDir:      setup.WorkDir,
 			}
 
 			pipelineEvents, _ := StartSession(ctx, cfg, tokens, reg, started, gate, "", tracker, nil)

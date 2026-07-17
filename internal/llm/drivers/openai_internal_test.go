@@ -133,6 +133,26 @@ func TestResponseInstructionsCollectsSystemMessages(t *testing.T) {
 	}
 }
 
+func TestCoalesceSystemMessages(t *testing.T) {
+	msgs := []llm.Message{
+		{Role: llm.RoleSystem, Content: "one"},
+		{Role: llm.RoleSystem, Content: "two"},
+		{Role: llm.RoleSystem, Content: "three"},
+		{Role: llm.RoleUser, Content: "user"},
+		{Role: llm.RoleSystem, Content: "late"},
+	}
+	got := coalesceSystemMessages(msgs)
+	if len(got) != 3 {
+		t.Fatalf("got %d messages: %#v", len(got), got)
+	}
+	if got[0].Content != "one\n\ntwo\n\nthree" {
+		t.Fatalf("merged content %q", got[0].Content)
+	}
+	if got[1].Role != llm.RoleUser || got[2].Content != "late" {
+		t.Fatalf("got %#v", got)
+	}
+}
+
 func TestStripSystemMessages(t *testing.T) {
 	msgs := []llm.Message{
 		{Role: llm.RoleSystem, Content: "system"},
