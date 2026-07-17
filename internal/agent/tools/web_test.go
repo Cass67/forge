@@ -11,6 +11,25 @@ import (
 
 func noSSRF(_ string) error { return nil }
 
+// TestWebFetchDialGuardBlocksPrivateIP exercises the real checkPrivateHost via
+// safeDialContext: an httptest server binds to 127.0.0.1, so the fetch must be
+// blocked at dial time even though the URL passed initial validation.
+func TestWebFetchDialGuardBlocksPrivateIP(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, "should never be reached")
+	}))
+	defer srv.Close()
+
+	tool := newWebFetch(checkPrivateHost)
+	result, err := tool.Execute(context.Background(), map[string]any{"url": srv.URL})
+	if err != nil {
+		t.Fatalf("expected in-band error text, got err: %v", err)
+	}
+	if !strings.Contains(result, "private") && !strings.Contains(result, "blocked") {
+		t.Fatalf("expected private-address block, got: %s", result)
+	}
+}
+
 func TestWebFetchJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -287,7 +306,7 @@ func TestWebSearchMocked(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tool := newWebSearchWithEndpoint(srv.URL)
+	tool := newWebSearchWithEndpoint(noSSRF, srv.URL)
 	result, err := tool.Execute(context.Background(), map[string]any{"query": "golang tutorial"})
 	if err != nil {
 		t.Fatal(err)
@@ -316,7 +335,7 @@ func TestWebSearchCountLimit(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tool := newWebSearchWithEndpoint(srv.URL)
+	tool := newWebSearchWithEndpoint(noSSRF, srv.URL)
 	result, err := tool.Execute(context.Background(), map[string]any{"query": "test", "count": float64(2)})
 	if err != nil {
 		t.Fatal(err)
@@ -344,7 +363,7 @@ func TestWebSearchFallbackProvider(t *testing.T) {
 	}))
 	defer brave.Close()
 
-	tool := newWebSearchWithConfiguredEndpoints(
+	tool := newWebSearchWithConfiguredEndpoints(noSSRF,
 		searchEndpoint{url: ddg.URL, kind: searchKindDDG},
 		searchEndpoint{url: brave.URL, kind: searchKindBrave},
 	)
