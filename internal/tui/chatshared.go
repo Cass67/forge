@@ -91,6 +91,13 @@ type ChatLiveConfig struct {
 	// SavePipelineDefaults persists the given writer model, auditor model, and rounds
 	// as defaults for future pipeline sessions.
 	SavePipelineDefaults func(writerModel, auditorModel string, rounds int)
+	// CurrentThreadID returns the durable thread id the runtime is persisting
+	// this conversation to, so saved sessions can be resumed with full history.
+	CurrentThreadID func() string
+	// RestoreHistory reloads the LLM conversation history for threadID from the
+	// durable thread store into the live session. Returns the number of
+	// history messages restored.
+	RestoreHistory func(threadID string) (int, error)
 }
 
 type ProviderOption struct {
@@ -116,6 +123,7 @@ type chatSessionSnapshot struct {
 	SavedAt          time.Time `json:"saved_at"`
 	Model            string    `json:"model"`
 	WorkDir          string    `json:"work_dir"`
+	ThreadID         string    `json:"thread_id,omitempty"`
 	AgentBuf         string    `json:"agent_buf"`
 	ToolsBuf         string    `json:"tools_buf"`
 	InputBuf         string    `json:"input_buf"`

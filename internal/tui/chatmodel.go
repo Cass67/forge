@@ -297,6 +297,7 @@ type ChatModel struct {
 	activeSubAgent         string
 	lastEscapeTime         time.Time
 	flash                  string
+	restoreNote            string // set by applySnapshot when durable history replay ran
 	lastProgressCheckpoint string
 	lastProgressAt         time.Time
 	statsDuration          time.Duration
@@ -2746,7 +2747,7 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case msg.Type == tea.KeyCtrlC:
-			return m, tea.Quit
+			return m, m.quitCmd()
 		}
 		return m, nil
 	}
@@ -2775,7 +2776,7 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyCtrlC:
 		if !m.busy && strings.TrimSpace(m.inputBuf) == "" {
-			return m, tea.Quit
+			return m, m.quitCmd()
 		}
 	case tea.KeyEnter:
 	case tea.KeyPgUp:
@@ -2860,7 +2861,7 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case action.Exit:
-			return m, tea.Quit
+			return m, m.quitCmd()
 		default:
 			if msg.Type == tea.KeyRunes && !msg.Paste {
 				for _, r := range msg.Runes {
@@ -2883,7 +2884,7 @@ func (m ChatModel) trySubmitText(input string, attachments []chatstate.ChatAttac
 	}
 
 	if input == "/exit" || input == "/quit" {
-		return m, tea.Quit, true
+		return m, m.quitCmd(), true
 	}
 
 	// If a pipeline is pending, start the pipeline with this text instead of submitting as chat
@@ -3364,7 +3365,7 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.agentViewIndex = clamp(m.agentViewIndex, 0, max(0, len(m.activeAgentViewItems())-1))
 		m.flash = "agent view opened"
 	case input == "/sessions":
-		_ = m.saveSession("last-session")
+		m.saveLastSession()
 		if ok := m.refreshSessionsPicker(true); ok {
 			m.sessionsVisible = true
 			m.flash = "sessions opened"
@@ -3400,7 +3401,7 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		if err := m.restoreSession(name); err != nil {
 			m.flash = fmt.Sprintf("restore failed: %v", err)
 		} else {
-			m.flash = fmt.Sprintf("session restored: %s", name)
+			m.flash = m.restoredFlash(name)
 		}
 	case strings.HasPrefix(input, "/restore "):
 		name := sanitizeChatSessionName(strings.TrimSpace(strings.TrimPrefix(input, "/restore ")))
@@ -3411,7 +3412,7 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		if err := m.restoreSession(name); err != nil {
 			m.flash = fmt.Sprintf("restore failed: %v", err)
 		} else {
-			m.flash = fmt.Sprintf("session restored: %s", name)
+			m.flash = m.restoredFlash(name)
 		}
 	case input == "/tools" || input == "/toggle tools":
 		m.setToolPanelsVisible(!m.toolPanelsVisible)
@@ -4201,7 +4202,7 @@ func (m *ChatModel) restorePickedSession(idx int) {
 		return
 	}
 	m.sessionsVisible = false
-	m.flash = fmt.Sprintf("session restored: %s", name)
+	m.flash = m.restoredFlash(name)
 }
 
 func (m *ChatModel) beginRenamePickedSession(idx int) {
@@ -5448,11 +5449,31 @@ func (m ChatModel) renderProvidersOverlay() string {
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
 
+// saveLastSession persists the current conversation as "last-session" so it
+// survives a quit. No-op when the transcript is empty, so a fresh session
+// never clobbers the previous one.
+func (m *ChatModel) saveLastSession() {
+	if strings.TrimSpace(m.chatContent) == "" {
+		return
+	}
+	_ = m.saveSession("last-session")
+}
+
+func (m *ChatModel) quitCmd() tea.Cmd {
+	m.saveLastSession()
+	return tea.Quit
+}
+
 func (m ChatModel) snapshot() chatSessionSnapshot {
+	threadID := ""
+	if m.config.CurrentThreadID != nil {
+		threadID = m.config.CurrentThreadID()
+	}
 	return chatSessionSnapshot{
 		SavedAt:      time.Now(),
 		Model:        m.model,
 		WorkDir:      m.workDir,
+		ThreadID:     threadID,
 		AgentBuf:     m.chatContent,
 		ToolsBuf:     m.renderedToolsBuf(),
 		InputBuf:     m.inputBuf,
@@ -5465,6 +5486,14 @@ func (m ChatModel) snapshot() chatSessionSnapshot {
 
 func (m *ChatModel) applySnapshot(s chatSessionSnapshot) {
 	m.resetRecentActivity()
+	m.restoreNote = ""
+	if s.ThreadID != "" && m.config.RestoreHistory != nil {
+		if n, err := m.config.RestoreHistory(s.ThreadID); err != nil {
+			m.restoreNote = fmt.Sprintf("transcript restored; history replay failed: %v", err)
+		} else if n > 0 {
+			m.restoreNote = fmt.Sprintf("conversation restored (%d messages of history)", n)
+		}
+	}
 	m.model = s.Model
 	m.workDir = s.WorkDir
 	m.chatContent = s.AgentBuf
@@ -5503,6 +5532,15 @@ func (m *ChatModel) saveSession(name string) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0o644)
+}
+
+func (m *ChatModel) restoredFlash(name string) string {
+	if m.restoreNote != "" {
+		note := m.restoreNote
+		m.restoreNote = ""
+		return fmt.Sprintf("session restored: %s — %s", name, note)
+	}
+	return fmt.Sprintf("session restored: %s", name)
 }
 
 func (m *ChatModel) restoreSession(name string) error {
