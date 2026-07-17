@@ -45,6 +45,34 @@ func TestLiveAcceptanceStatusAndCancellationWithLocalProvider(t *testing.T) {
 	}
 }
 
+func TestLiveAcceptanceHeadlessPromptWithLocalProvider(t *testing.T) {
+	server := newLiveAcceptanceMock(t)
+	defer server.Close()
+	bin := buildForgeBinary(t)
+	workDir := initLiveAcceptanceFixture(t)
+	configHome := writeLiveAcceptanceConfig(t, server.URL())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "-yolo", "-C", workDir, "--model", "mock/mock-model", "-p", "HEADLESS_CHECK say hello")
+	cmd.Env = []string{
+		"XDG_CONFIG_HOME=" + configHome,
+		"HOME=" + filepath.Join(configHome, "home"),
+		"MOCK_API_KEY=mock-key",
+		"PATH=" + os.Getenv("PATH"),
+		"TMPDIR=" + os.TempDir(),
+	}
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("headless run failed: %v\nstderr:\n%s", err, stderr.String())
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "OK" {
+		t.Fatalf("stdout = %q, want clean final response %q\nstderr:\n%s", got, "OK", stderr.String())
+	}
+}
+
 func TestLiveAcceptanceDelegatedAuditWritesReportWithLocalProvider(t *testing.T) {
 	server := newLiveAcceptanceMock(t)
 	defer server.Close()
