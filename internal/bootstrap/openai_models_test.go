@@ -38,20 +38,6 @@ func TestFetchOpenAIModelsAddsHeadersAndFiltersResults(t *testing.T) {
 	}
 }
 
-func TestMergeOpenAIModelListsKeepsLiveOrderAndAppendsCuratedFallback(t *testing.T) {
-	t.Parallel()
-
-	got := mergeOpenAIModelLists(
-		[]string{"gpt-4o", "gpt-5.4", "gpt-4.1"},
-		[]string{"gpt-5", "gpt-4o-mini"},
-	)
-
-	want := []string{"gpt-4o", "gpt-5", "gpt-4.1", "gpt-4o-mini"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("mergeOpenAIModelLists() = %#v, want %#v", got, want)
-	}
-}
-
 func TestFetchCompatibleModelsAddsOpenRouterHeaders(t *testing.T) {
 	t.Parallel()
 

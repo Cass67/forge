@@ -105,22 +105,6 @@ func (r *PreviewRuntime) artifactByHandle(handle string) (artifactRecord, bool) 
 	return record, ok
 }
 
-func (r *PreviewRuntime) LastArtifactMetadata() (ArtifactMetadata, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	record, ok := r.artifacts[strings.TrimSpace(r.lastArtifact)]
-	if !ok {
-		return ArtifactMetadata{}, false
-	}
-	return ArtifactMetadata{
-		Handle:   record.Handle,
-		Path:     record.Path,
-		MIMEType: record.MIMEType,
-		Bytes:    record.Bytes,
-	}, true
-}
-
 func NewArtifactWrite(runtime *PreviewRuntime) Tool {
 	var lastDiff string
 	return Tool{

@@ -214,30 +214,3 @@ func sideEffectIntentToProtocol(intent SideEffectIntent) protocol.SideEffectInte
 	}
 	return out
 }
-
-func sideEffectIntentFromProtocol(item protocol.SideEffectIntentItem) SideEffectIntent {
-	out := SideEffectIntent{
-		ID:              item.ID,
-		SourceTurn:      item.SourceTurn,
-		ArtifactPaths:   append([]string(nil), item.ArtifactPaths...),
-		AllowedPaths:    append([]string(nil), item.AllowedPaths...),
-		TargetBranch:    item.TargetBranch,
-		Remote:          item.Remote,
-		WorkspaceRoot:   item.WorkspaceRoot,
-		IncidentMode:    item.IncidentMode,
-		Reason:          item.Reason,
-		RequiredActions: make([]SideEffectAction, 0, len(item.RequiredActions)),
-		Gates:           make([]SideEffectGate, 0, len(item.Gates)),
-	}
-	for _, action := range item.RequiredActions {
-		out.RequiredActions = append(out.RequiredActions, SideEffectAction(action))
-	}
-	for _, gate := range item.Gates {
-		out.Gates = append(out.Gates, SideEffectGate{
-			Name:     gate.Name,
-			Status:   SideEffectGateStatus(gate.Status),
-			Evidence: gate.Evidence,
-		})
-	}
-	return out
-}

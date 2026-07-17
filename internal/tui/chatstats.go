@@ -47,27 +47,6 @@ type statsSection struct {
 	Lines []string
 }
 
-func buildStatusLine1(data chatStatusData) string {
-	parts := []string{"forge"}
-	if model := strings.TrimSpace(data.Model); model != "" {
-		parts = append(parts, model)
-	}
-	if workDir := strings.TrimSpace(data.WorkDir); workDir != "" {
-		parts = append(parts, workDir)
-	}
-	if mode := strings.TrimSpace(data.AgentMode); mode != "" {
-		parts = append(parts, mode)
-	}
-	if count := data.ActiveTasks; count > 0 {
-		label := fmt.Sprintf("%d task", count)
-		if count != 1 {
-			label += "s"
-		}
-		parts = append(parts, "⟳ "+label)
-	}
-	return strings.Join(parts, " • ")
-}
-
 func (m ChatModel) statsSnapshot() chatStatsData {
 	return chatStatsData{
 		chatStatusData: m.statusSnapshot(),
@@ -76,26 +55,6 @@ func (m ChatModel) statsSnapshot() chatStatsData {
 		CodexLoading:   m.statsCodexLoading,
 		CodexErr:       m.statsCodexErr,
 	}
-}
-
-func buildStatusLine2(data chatStatusData) string {
-	parts := make([]string, 0, 5)
-	if status := strings.TrimSpace(data.Status); status != "" {
-		parts = append(parts, status)
-	}
-	if turn := buildTurnSummary(data.LastUsage); turn != "" {
-		parts = append(parts, turn)
-	}
-	if session := buildSessionSummary(data.SessionUsage); session != "" {
-		parts = append(parts, session)
-	}
-	if context := buildContextSummary(data); context != "" {
-		parts = append(parts, context)
-	}
-	if provider := buildProviderStatusSummary(data); provider != "" {
-		parts = append(parts, provider)
-	}
-	return strings.Join(parts, " • ")
 }
 
 func buildProviderStatusSummary(data chatStatusData) string {
@@ -386,19 +345,6 @@ func buildNarrowHeaderLines(theme chatTheme, modelValue, workDirValue string, wi
 	return lines
 }
 
-func renderCompactStatusHeader(theme chatTheme, data chatStatusData, width int) string {
-	if theme.AppBG == "" {
-		theme, _ = lookupChatTheme("default")
-	}
-	innerWidth := min(68, max(16, width-4))
-	wordmark := renderForgeWordmark(theme)
-	model := lipgloss.NewStyle().Foreground(theme.HeaderFG).Bold(true).Render(truncateRightEllipsis(headerModelValue(data.Model), max(1, innerWidth/2)))
-	dirWidth := max(1, innerWidth-ansiPrintableWidth(wordmark+"  "+model)-2)
-	dir := lipgloss.NewStyle().Foreground(theme.TextDim).Render(truncateLeftEllipsis(headerWorkDirValue(data.WorkDir), dirWidth))
-	line := padStyledWidth(wordmark+"  "+model+"  "+dir, innerWidth)
-	return fillHeaderSurface(line, width, theme)
-}
-
 func fillHeaderSurface(header string, width int, theme chatTheme) string {
 	return fillSurfaceRows(header, width, theme.appSurface())
 }
@@ -534,18 +480,6 @@ func deriveContextUsage(_ llm.Usage, info *modelcatalog.ModelInfo, existingUsed,
 		limit = info.ContextWindow
 	}
 	return used, limit
-}
-
-func buildTurnSummary(usage llm.Usage) string {
-	if usage.InputTokens == 0 && usage.OutputTokens == 0 {
-		return ""
-	}
-	return fmt.Sprintf("last %d in / %d out", usage.InputTokens, usage.OutputTokens)
-}
-
-func buildSessionSummary(usage llm.Usage) string {
-	total := usage.InputTokens + usage.OutputTokens
-	return fmt.Sprintf("session %d tok", total)
 }
 
 func providerFromModel(model string) string {

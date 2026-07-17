@@ -19,7 +19,6 @@ import (
 	"forge/internal/codexusage"
 	"forge/internal/copilot"
 	"forge/internal/llm"
-	"forge/internal/session"
 	"forge/internal/skills"
 
 	"github.com/charmbracelet/bubbles/viewport"
@@ -316,47 +315,6 @@ type ChatModel struct {
 	currentNudge           NudgeSuggestion
 	themeID                string
 	pendingQueuedInput     []string
-
-	// Pipeline/audit mode fields (for forge make / pipeline sessions)
-	pipelineActive         bool
-	pipelineViewActive     bool
-	pipelineTotalPasses    int
-	pipelineTotalRounds    int
-	pipelineCurrentPass    int
-	pipelineCurrentRound   int
-	pipelinePassName       string
-	pipelinePhase          string
-	pipelineWriterBuf      string
-	pipelineAuditorBuf     string
-	pipelineWriterScroll   int
-	pipelineAuditorScroll  int
-	pipelineFocusRight     bool
-	pipelineManualMode     bool
-	pipelineWaitingAdvance bool
-	pipelineWaitingAgent   string
-	pipelineWriterTurnGap  bool
-	pipelineAuditorTurnGap bool
-	pipelineGate           *session.TurnGate
-	// File preview fields (for task 2: live file preview)
-	pipelineFilePreviewVisible bool
-	pipelineFilePreviewPath    string
-	pipelineFilePreviewContent string
-	pipelineFilePreviewScroll  int
-	pipelineFilePreviewHeight  int
-
-	// Pipeline config dialog state (opened by /make)
-	pipelineConfigVisible       bool
-	pipelineConfigFocus         int // 0 = writer, 1 = auditor, 2 = rounds
-	pipelineConfigWriterModel   string
-	pipelineConfigAuditorModel  string
-	pipelineConfigRounds        int
-	pipelineConfigWriterCursor  int
-	pipelineConfigAuditorCursor int
-
-	// Pending pipeline start (after dialog closes, awaiting user prompt)
-	pipelinePendingWriter  string
-	pipelinePendingAuditor string
-	pipelinePendingRounds  int
 
 	helpVisible bool
 	helpTab     int
@@ -909,13 +867,6 @@ func (m ChatModel) delegateResultState() delegateTranscriptState {
 	return delegateTranscriptState{}
 }
 
-func (m ChatModel) delegateResultLabel() string {
-	if state := m.delegateResultState(); state.role != "" {
-		return displayAgentLabel(state.role)
-	}
-	return "Agent"
-}
-
 func looksLikeStructuredTranscript(text string) bool {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
@@ -1202,13 +1153,6 @@ func (m *ChatModel) resizeChatViewport() {
 
 func (m ChatModel) chatPaneWidth() int {
 	return m.width
-}
-
-func (m ChatModel) toolsPaneWidth() int {
-	if !m.hasAgentWorkPane() || m.width < 90 {
-		return 0
-	}
-	return clamp(m.width/3, 34, max(34, m.width-40))
 }
 
 func (m ChatModel) hasAgentWorkPane() bool {
@@ -1766,9 +1710,6 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.sessionsVisible {
 		return m.handleSessionsKey(msg)
 	}
-	if m.pipelineConfigVisible {
-		return m.handlePipelineConfigKey(msg)
-	}
 	if m.agentViewVisible {
 		switch msg.Type {
 		case tea.KeyEscape:
@@ -1794,11 +1735,6 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.toolsScroll = clamp(m.toolsScroll+1, 0, m.agentViewMaxScroll())
 			return m, nil
 		}
-	}
-
-	// Pipeline mode key handling (applies in both pipeline view and chat view)
-	if consumed, cmd := m.handlePipelineKey(msg); consumed {
-		return m, cmd
 	}
 
 	// Handle approval mode
@@ -1831,9 +1767,6 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyCtrlF:
 		m.openSearchOverlay("")
-		return m, nil
-	case tea.KeyCtrlP:
-		m.pipelineViewActive = !m.pipelineViewActive
 		return m, nil
 	case tea.KeyCtrlT:
 		m.setToolPanelsVisible(!m.toolPanelsVisible)
@@ -1961,51 +1894,6 @@ func (m ChatModel) trySubmitText(input string, attachments []chatstate.ChatAttac
 
 	if input == "/exit" || input == "/quit" {
 		return m, m.quitCmd(), true
-	}
-
-	// If a pipeline is pending, start the pipeline with this text instead of submitting as chat
-	if m.pipelinePendingWriter != "" {
-		writerModel := m.pipelinePendingWriter
-		auditorModel := m.pipelinePendingAuditor
-		rounds := m.pipelinePendingRounds
-		m.pipelinePendingWriter = ""
-		m.pipelinePendingAuditor = ""
-		m.pipelinePendingRounds = 0
-		if m.config.StartPipeline == nil {
-			m.flash = "pipeline mode not available"
-			return m, nil, false
-		}
-		m.pipelineActive = true
-		m.pipelineViewActive = true
-		m.pipelinePhase = "starting"
-		m.pipelinePassName = "starting"
-		m.pipelineTotalPasses = 4
-		m.pipelineTotalRounds = rounds
-		m.pipelineManualMode = false
-		m.pipelineCurrentPass = 0
-		m.pipelineCurrentRound = 0
-		m.pipelineWriterBuf = ""
-		m.pipelineAuditorBuf = ""
-		m.pipelineWriterScroll = 0
-		m.pipelineAuditorScroll = 0
-		m.pipelineFocusRight = false
-		m.pipelineWriterTurnGap = false
-		m.pipelineAuditorTurnGap = false
-		m.flash = "starting pipeline..."
-		m.AddMessage(ChatMessage{
-			Kind:    MsgStatus,
-			Content: fmt.Sprintf("Pipeline started — writer: %s  auditor: %s  rounds: %d", writerModel, auditorModel, rounds),
-		})
-		m.AddMessage(ChatMessage{
-			Kind:    MsgStatus,
-			Content: fmt.Sprintf("Prompt: %s", input),
-		})
-		if err := m.config.StartPipeline(input, writerModel, auditorModel, rounds); err != nil {
-			m.pipelineActive = false
-			m.pipelineViewActive = false
-			m.flash = fmt.Sprintf("pipeline error: %v", err)
-		}
-		return m, nil, true
 	}
 
 	if strings.HasPrefix(input, "/") {
@@ -2563,17 +2451,6 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		}
 		m.autoSkillsMode = mode
 		m.flash = fmt.Sprintf("auto-skills: %s", mode)
-	case strings.HasPrefix(input, "/make"):
-		raw := strings.TrimSpace(strings.TrimPrefix(input, "/make"))
-		if m.config.StartPipeline == nil {
-			m.flash = "pipeline mode not available"
-			break
-		}
-		if m.pipelineActive {
-			m.flash = "pipeline already running — Ctrl+P to view"
-			break
-		}
-		m.openPipelineConfig(raw)
 	case input == "/find":
 		m.openSearchOverlay("")
 		m.flash = "search opened"
@@ -2943,11 +2820,6 @@ func (m ChatModel) View() string {
 	headerData := m.statusSnapshot()
 	header := renderStatusHeaderForHeight(theme, headerData, m.width, m.height)
 
-	// Pipeline view: render the two-pane pipeline view (toggled with Ctrl+P)
-	if m.pipelineViewActive {
-		return m.pipelineRenderView(theme, header)
-	}
-
 	budget := m.normalChatLayoutBudget()
 
 	chatBodyHeight := budget.Chat
@@ -3045,9 +2917,6 @@ func (m ChatModel) View() string {
 		if overlay := m.renderTraceOverlay(); overlay != "" {
 			return fillSurfaceRows(overlay, m.width, theme.AppBG)
 		}
-	}
-	if m.pipelineConfigVisible {
-		return fillSurfaceRows(m.renderPipelineConfigOverlay(), m.width, theme.AppBG)
 	}
 	if m.searchVisible {
 		return fillSurfaceRows(m.renderSearchOverlay(), m.width, theme.AppBG)
@@ -3278,16 +3147,6 @@ func (m ChatModel) renderPendingInputPreview(theme chatTheme) string {
 		Foreground(theme.TextDim).
 		Width(max(10, m.width-2)).
 		Render(strings.Join(lines, "\n"))
-}
-
-func (m ChatModel) renderComposerGap(theme chatTheme) string {
-	if m.width <= 0 {
-		return ""
-	}
-	return lipgloss.NewStyle().
-		Width(m.width).
-		Foreground(theme.TextDim).
-		Render(strings.Repeat(" ", m.width))
 }
 
 func (m ChatModel) renderTraceDock(theme chatTheme) string {

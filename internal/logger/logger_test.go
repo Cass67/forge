@@ -65,12 +65,6 @@ func TestWith(t *testing.T) {
 	}
 }
 
-func TestNopDiscardsOutput(t *testing.T) {
-	l := Nop()
-	l.Error("something bad")
-	// Nop writes to io.Discard, so no way to check output — just verify no panic.
-}
-
 func TestConcurrentWrites(t *testing.T) {
 	var buf bytes.Buffer
 	l := New(&buf, LevelDebug)

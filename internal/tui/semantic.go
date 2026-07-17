@@ -766,14 +766,6 @@ func containsAlphaNum(text string) bool {
 	return false
 }
 
-func defaultSemanticTheme() chatTheme {
-	theme, ok := lookupChatTheme("default")
-	if !ok {
-		return chatTheme{}
-	}
-	return theme
-}
-
 func ansiPrintableWidth(text string) int {
 	return lipgloss.Width(text)
 }

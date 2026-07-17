@@ -2,7 +2,6 @@ package llm
 
 import (
 	"context"
-	"fmt"
 	"time"
 )
 
@@ -167,22 +166,6 @@ const (
 	EventProgress        EventKind = "progress"
 	EventAgentTask       EventKind = "agent_task"
 )
-
-// PassName returns a human-readable label for a 1-based pass number.
-func PassName(pass int) string {
-	switch pass {
-	case 1:
-		return "correctness"
-	case 2:
-		return "refactor"
-	case 3:
-		return "security"
-	case 4:
-		return "prod-ready"
-	default:
-		return fmt.Sprintf("pass %d", pass)
-	}
-}
 
 // Event carries session progress from the runner to the TUI.
 type Event struct {

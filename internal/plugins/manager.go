@@ -115,19 +115,6 @@ func (m *Manager) Tools() []pluginTool {
 	return append([]pluginTool(nil), m.tools...)
 }
 
-func (m *Manager) Agents() []agentDef {
-	if m == nil {
-		return nil
-	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	var all []agentDef
-	for _, state := range m.plugins {
-		all = append(all, state.agents...)
-	}
-	return all
-}
-
 type AgentDef struct {
 	Name         string
 	Description  string

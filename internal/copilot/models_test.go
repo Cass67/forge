@@ -51,22 +51,3 @@ func TestFetchModelsAddsHeadersAndPrefixes(t *testing.T) {
 		t.Fatalf("fetchModels() = %#v, want %#v", got, want)
 	}
 }
-
-func TestMergeModelListsKeepsLiveOrderAndAppendsKnownAliases(t *testing.T) {
-	t.Parallel()
-
-	got := mergeModelLists(
-		[]string{"copilot/gpt-4o", "copilot/custom-preview"},
-		[]string{"copilot/gpt-4o", "copilot/claude-sonnet-4.5", "copilot/gpt-5"},
-	)
-
-	want := []string{
-		"copilot/gpt-4o",
-		"copilot/custom-preview",
-		"copilot/claude-sonnet-4.5",
-		"copilot/gpt-5",
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("mergeModelLists() = %#v, want %#v", got, want)
-	}
-}

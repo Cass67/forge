@@ -236,7 +236,7 @@ func recordModelViolation(contract *TurnContract, reason, detail string) {
 
 func isReadEvidenceTool(toolName string) bool {
 	switch strings.TrimSpace(toolName) {
-	case "read_file", "list_dir", "search", "glob", "code_search", "read_output", "scratchpad_read", "git_status", "git_diff", "git_log":
+	case "read_file", "list_dir", "search", "glob", "code_search", "read_output", "git_status", "git_diff", "git_log":
 		return true
 	default:
 		return false
@@ -380,37 +380,6 @@ func turnContractToProtocol(contract TurnContract) protocol.TurnContractItem {
 	}
 	for _, gate := range contract.Gates {
 		out.Gates = append(out.Gates, protocol.ContractGateItem{Name: gate.Name, Status: string(gate.Status), Evidence: gate.Evidence})
-	}
-	return out
-}
-
-func turnContractFromProtocol(item protocol.TurnContractItem) TurnContract {
-	out := TurnContract{
-		ID:                   item.ID,
-		SourceTurn:           item.SourceTurn,
-		Intent:               TurnIntent(item.Intent),
-		Status:               ContractStatus(item.Status),
-		Reason:               item.Reason,
-		RequiredActions:      make([]ContractAction, 0, len(item.RequiredActions)),
-		RequiredArtifacts:    make([]ArtifactRequirement, 0, len(item.RequiredArtifacts)),
-		RequiredVerification: make([]VerificationRequirement, 0, len(item.RequiredVerification)),
-		Evidence:             make([]EvidenceRecord, 0, len(item.Evidence)),
-		Gates:                make([]ContractGate, 0, len(item.Gates)),
-	}
-	for _, action := range item.RequiredActions {
-		out.RequiredActions = append(out.RequiredActions, ContractAction{Kind: ContractActionKind(action.Kind), Description: action.Description})
-	}
-	for _, artifact := range item.RequiredArtifacts {
-		out.RequiredArtifacts = append(out.RequiredArtifacts, ArtifactRequirement{Path: artifact.Path, Description: artifact.Description})
-	}
-	for _, verification := range item.RequiredVerification {
-		out.RequiredVerification = append(out.RequiredVerification, VerificationRequirement{Command: verification.Command, Description: verification.Description})
-	}
-	for _, evidence := range item.Evidence {
-		out.Evidence = append(out.Evidence, EvidenceRecord{Kind: EvidenceKind(evidence.Kind), Summary: evidence.Summary})
-	}
-	for _, gate := range item.Gates {
-		out.Gates = append(out.Gates, ContractGate{Name: gate.Name, Status: ContractGateStatus(gate.Status), Evidence: gate.Evidence})
 	}
 	return out
 }

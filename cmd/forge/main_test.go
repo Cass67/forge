@@ -21,59 +21,15 @@ func TestStartsWithFlag(t *testing.T) {
 	}
 }
 
-func TestRunMakeWithoutArgsExitsWithUsage(t *testing.T) {
-	// forge make with no args now prints usage and exits instead of launching the TUI.
-	prev := runImproveArgsFn
-	runImproveArgsFn = func(_ string, _ []string) {
-		t.Fatal("unexpected call to runImproveArgsFn")
-	}
-	defer func() { runImproveArgsFn = prev }()
-
-	prevExit := osExit
-	var exitCode int
-	osExit = func(code int) { exitCode = code }
-	defer func() { osExit = prevExit }()
-
-	runMake(nil)
-
-	if exitCode != 1 {
-		t.Fatalf("exit code = %d, want 1", exitCode)
-	}
-}
-
-func TestRunMakeWithArgsUsesBatchMode(t *testing.T) {
-	var gotCommand string
-	var gotArgs []string
-	prev := runImproveArgsFn
-	runImproveArgsFn = func(commandName string, args []string) {
-		gotCommand = commandName
-		gotArgs = append([]string(nil), args...)
-	}
-	defer func() { runImproveArgsFn = prev }()
-
-	runMake([]string{"./repo", "--prompt", "build app"})
-
-	if gotCommand != "make" {
-		t.Fatalf("runMake() command = %q, want make", gotCommand)
-	}
-	if len(gotArgs) != 3 || gotArgs[0] != "./repo" || gotArgs[1] != "--prompt" || gotArgs[2] != "build app" {
-		t.Fatalf("runMake() args = %#v", gotArgs)
-	}
-}
-
-func TestPrintHelpPromotesMakeAndKeepsImproveAlias(t *testing.T) {
+func TestPrintHelpHasNoLegacyPipelineEntries(t *testing.T) {
 	output := captureStdout(t, printHelp)
 	if !strings.Contains(output, "forge                           Start interactive chat session") {
 		t.Fatalf("expected bare forge help entry, got:\n%s", output)
 	}
-	if strings.Contains(output, "forge chat [flags]") {
-		t.Fatalf("expected explicit chat alias to be removed from help, got:\n%s", output)
-	}
-	if !strings.Contains(output, "forge make                      Launch the legacy writer/auditor pipeline UI") {
-		t.Fatalf("expected forge make help entry, got:\n%s", output)
-	}
-	if !strings.Contains(output, "forge improve <path> [flags]    Compatibility alias for forge make <path> [flags]") {
-		t.Fatalf("expected forge improve alias help entry, got:\n%s", output)
+	for _, gone := range []string{"forge make", "forge improve", "forge list", "forge show", "forge perf", "pipeline"} {
+		if strings.Contains(output, gone) {
+			t.Fatalf("expected %q to be absent from help, got:\n%s", gone, output)
+		}
 	}
 	if !strings.Contains(output, "forge mcp [list|get|add|remove|login|logout]") {
 		t.Fatalf("expected forge mcp help entry, got:\n%s", output)

@@ -3,12 +3,31 @@ package tui
 import (
 	"strings"
 	"testing"
+	"unicode"
 
 	"forge/internal/chatstate"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+// strippedLine returns a line with ANSI codes and non-printable chars removed.
+func strippedLine(s string) string {
+	var b strings.Builder
+	inEsc := false
+	for _, r := range s {
+		if r == '\x1b' {
+			inEsc = true
+		} else if inEsc {
+			if r == 'm' || r == 'A' || r == 'B' || r == 'C' || r == 'D' || r == 'K' {
+				inEsc = false
+			}
+		} else if r == '\n' || r > 127 || unicode.IsPrint(r) {
+			b.WriteRune(r)
+		}
+	}
+	return strings.TrimRight(b.String(), " ")
+}
 
 func TestChatComposerEnterSubmitsAndClears(t *testing.T) {
 	c := NewChatComposer()

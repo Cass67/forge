@@ -13,10 +13,6 @@ import (
 )
 
 func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
-	if consumed, cmd := m.handlePipelineLLMEvent(ev); consumed {
-		return m, cmd
-	}
-
 	// Sub-agent events primarily render in the tools pane, with human-readable
 	// prose mirrored into the main transcript.
 	if ev.SubAgent != "" {

@@ -2,10 +2,9 @@
 
 Forge is a terminal-first coding agent for local repositories.
 
-It has one primary mode and one legacy compatibility mode:
-
-- `forge`: the primary interactive coding loop with a host-owned runtime, typed runtime hooks, provider switching, approvals, preview workflows, exec sessions, and bounded hidden worker delegation when the runtime decides it helps
-- `forge make`: a legacy writer/auditor pipeline retained for batch-style passes and compatibility workflows
+`forge` is an interactive coding loop with a host-owned runtime, typed runtime
+hooks, provider switching, approvals, preview workflows, exec sessions, and
+bounded hidden worker delegation when the runtime decides it helps.
 
 Forge is designed to run against your local working tree, use multiple model providers, and keep the user in control of destructive actions.
 
@@ -17,7 +16,6 @@ Forge is optimized for local software work:
 - run commands, tests, and git queries
 - switch models and providers without leaving the chat session
 - keep one coherent transcript while the runtime can optionally use hidden reader/editor/verifier/researcher workers behind the scenes
-- run a separate legacy writer/auditor pipeline for iterative or prompt-driven code generation
 
 Forge is not a hosted SaaS or remote coding sandbox. It is a native local tool that acts on the repository you launch it in.
 
@@ -28,7 +26,6 @@ Forge is not a hosted SaaS or remote coding sandbox. It is a native local tool t
 - host-owned React runtime with task/mode state, typed hook overlays, bounded memory summaries, and runtime completion gates
 - live chat TUI with model picker, provider picker, approvals, nudges, recent activity, quiet progress updates, and runtime stats
 - command exec sessions for long-running terminal work without blocking the visible chat loop
-- legacy pass-based improvement pipeline for correctness, refactor, security, and production-readiness work
 - session artifacts, summaries, audit logs, and usage tracking
 
 ## Quick Start
@@ -45,12 +42,6 @@ Run chat in the current repository:
 
 ```bash
 just run
-```
-
-Run the legacy writer/auditor pipeline:
-
-```bash
-./bin/forge make
 ```
 
 ## Typical Chat Flow
@@ -95,11 +86,6 @@ Environment variables override file-based keys where supported.
 Minimal example:
 
 ```toml
-[models]
-writer     = "claude-sonnet-4-6"
-auditor    = "gpt-4o"
-summarizer = "claude-haiku-4-5"
-
 [chat]
 model = "claude/claude-sonnet-4-6"
 last_model = "claude/claude-sonnet-4-6"
@@ -329,14 +315,8 @@ forge [--model MODEL] [-C PATH]
 forge -p "prompt"                # headless: one prompt, final answer to stdout, exit
 forge --continue                 # resume the most recent session
 forge --resume <thread-id>       # resume a specific stored session
-forge make [<path>] [--prompt "..."]
-forge improve <path> [--prompt "..."]
 forge plugin validate <path>
 forge plugin install <source>
-forge list
-forge show <session-id>
-forge perf
-forge perf show <session-id>
 forge auth copilot
 forge status
 forge skills
@@ -345,8 +325,6 @@ forge skills
 Useful command families:
 
 - `forge`: primary local interactive coding loop
-- `forge make`: legacy writer/auditor/summarizer pipeline
-- `forge perf`: session usage and throughput reporting
 - `forge plugin install`: installs an npm package, git URL, local filesystem path, or HTTP(S) `.js`/`.mjs` URL; local manifest directories are supported
 - `forge status`: auth and provider status snapshot
 
@@ -408,4 +386,3 @@ flowchart LR
 
 - Forge does not currently produce one native binary that runs unchanged on every OS. Build one binary per target OS/architecture pair.
 - `forge` currently uses the Bubble Tea chat frontend through [internal/tui/chatmodel.go](internal/tui/chatmodel.go).
-- `forge make` remains supported, but it is legacy compatibility surface rather than the main architectural direction.

@@ -247,36 +247,6 @@ func runRuntimeGit(t *testing.T, dir string, args ...string) {
 	_ = runtimeGitOut(t, dir, args...)
 }
 
-func TestToolSchemaFixtureMatchesGenerated(t *testing.T) {
-	cfg, err := config.Load(filepath.Join(t.TempDir(), "forge.toml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	reg := tools.NewRegistry()
-	session := reactruntime.NewSession()
-	approve := func(tools.Action) (bool, error) { return true, nil }
-	registerTools(reg, t.TempDir(), cfg, session, approve, nil, nil)
-
-	generated := map[string]any{}
-	for _, tool := range reg.All() {
-		if tool.Schema == nil {
-			continue
-		}
-		generated[tool.Name] = protocol.ToolSchemaToJSONSchema(tool.Schema)
-	}
-	encoded, err := json.MarshalIndent(generated, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	expected, err := os.ReadFile(filepath.Join("..", "protocol", "schemas", "forge_tools.schema.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(expected) != string(encoded)+"\n" {
-		t.Fatalf("tool schema fixture differs; regenerate internal/protocol/schemas/forge_tools.schema.json\n%s", encoded)
-	}
-}
-
 func TestChatRuntimeCreatesDurableThreadStoreWhenOutputDirConfigured(t *testing.T) {
 	cfg, err := config.Load(filepath.Join(t.TempDir(), "forge.toml"))
 	if err != nil {

@@ -17,18 +17,6 @@ func (c *Config) Validate() []ValidationIssue {
 		issues = append(issues, ValidationIssue{Field: field, Message: message})
 	}
 
-	if strings.TrimSpace(c.Models.Writer) == "" {
-		add("models.writer", "writer model must not be empty")
-	}
-	if strings.TrimSpace(c.Models.Auditor) == "" {
-		add("models.auditor", "auditor model must not be empty")
-	}
-	if strings.TrimSpace(c.Models.Summarizer) == "" {
-		add("models.summarizer", "summarizer model must not be empty")
-	}
-	if !ValidRounds(c.Session.RoundsPerPass) {
-		add("session.rounds_per_pass", fmt.Sprintf("must be between 1 and 10, got %d", c.Session.RoundsPerPass))
-	}
 	if strings.TrimSpace(c.Session.OutputDir) == "" {
 		add("session.output_dir", "output dir must not be empty")
 	}
@@ -164,14 +152,6 @@ func (c *Config) Validate() []ValidationIssue {
 	}
 	if c.Permissions.Auto.MaxTotalDenials < 1 {
 		add("permissions.auto.max_total_denials", "must be at least 1")
-	}
-	for i, pass := range c.Pipeline {
-		if strings.TrimSpace(pass.Name) == "" {
-			add(fmt.Sprintf("pipeline[%d].name", i), "must not be empty")
-		}
-		if pass.Rounds != 0 && !ValidRounds(pass.Rounds) {
-			add(fmt.Sprintf("pipeline[%d].rounds", i), fmt.Sprintf("must be between 1 and 10 when set, got %d", pass.Rounds))
-		}
 	}
 	seenPluginIDs := map[string]struct{}{}
 	for i, plugin := range c.Plugins {

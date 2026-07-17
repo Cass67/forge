@@ -52,11 +52,6 @@ func NewFileLogger(path string, level Level) (*Logger, error) {
 	return New(f, level), nil
 }
 
-// Nop returns a logger that discards all output.
-func Nop() *Logger {
-	return New(io.Discard, LevelError)
-}
-
 // With returns a new Logger that carries the given fields in every entry.
 func (l *Logger) With(fields map[string]any) *Logger {
 	merged := make(map[string]any, len(l.fields)+len(fields))
