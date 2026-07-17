@@ -856,20 +856,32 @@ func toOpenAIMessages(msgs []llm.Message, includeEmptyAssistantReasoning bool) [
 	return toOpenAIMessagesWithOptions(msgs, includeEmptyAssistantReasoning, true)
 }
 
-// coalesceSystemMessages merges runs of consecutive system messages into one.
-// Some chat templates (e.g. llama.cpp-served models) reject more than one
-// system message; concatenation is semantically equivalent everywhere else.
+// coalesceSystemMessages merges the leading run of system messages into one
+// and demotes any later system message to a user message. Some chat templates
+// (e.g. llama.cpp-served models) raise "System message must be at the
+// beginning" otherwise; forge emits several leading system messages and
+// injects more mid-history (skill context, runtime notes).
 func coalesceSystemMessages(msgs []llm.Message) []llm.Message {
 	out := make([]llm.Message, 0, len(msgs))
+	leading := true
 	for _, m := range msgs {
-		if m.Role == llm.RoleSystem && len(out) > 0 {
-			prev := &out[len(out)-1]
-			if prev.Role == llm.RoleSystem && !prev.HasContentParts() && !m.HasContentParts() {
-				prev.Content = strings.TrimRight(prev.Content, "\n") + "\n\n" + m.Content
-				continue
-			}
+		if m.Role != llm.RoleSystem {
+			leading = false
+			out = append(out, m)
+			continue
 		}
-		out = append(out, m)
+		if leading && len(out) == 1 && !out[0].HasContentParts() && !m.HasContentParts() {
+			out[0].Content = strings.TrimRight(out[0].Content, "\n") + "\n\n" + m.Content
+			continue
+		}
+		if leading && len(out) == 0 {
+			out = append(out, m)
+			continue
+		}
+		demoted := m
+		demoted.Role = llm.RoleUser
+		demoted.Content = "[system note]\n" + m.Content
+		out = append(out, demoted)
 	}
 	return out
 }
