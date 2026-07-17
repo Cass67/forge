@@ -119,7 +119,7 @@ func (s *FileOutputStore) Handle(ctx context.Context, id string) (OutputHandle, 
 	}
 	_, hash, ok := parseHandleID(id)
 	if !ok {
-		return OutputHandle{}, fmt.Errorf("invalid output handle")
+		return OutputHandle{}, errInvalidHandle(id)
 	}
 	handle := OutputHandle{ID: strings.TrimSpace(id), SHA256: hash}
 	path, err := s.pathForHandle(handle)
@@ -146,7 +146,7 @@ func (s *FileOutputStore) pathForHandle(handle OutputHandle) (string, error) {
 	}
 	thread, hash, ok := parseHandleID(handle.ID)
 	if !ok {
-		return "", fmt.Errorf("invalid output handle")
+		return "", errInvalidHandle(handle.ID)
 	}
 	outputRoot := s.outputRoot()
 	if err := rejectSymlink(outputRoot); err != nil {
@@ -165,6 +165,10 @@ func (s *FileOutputStore) pathForHandle(handle OutputHandle) (string, error) {
 
 func (s *FileOutputStore) outputRoot() string {
 	return filepath.Join(s.root, "outputs")
+}
+
+func errInvalidHandle(id string) error {
+	return fmt.Errorf("invalid output handle %q: expected \"<thread>/<sha256-hex>\" exactly as shown after \"Handle:\" in the stored-output message; tool call IDs are not output handles", id)
 }
 
 func parseHandleID(id string) (string, string, bool) {
