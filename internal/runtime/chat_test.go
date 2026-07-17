@@ -840,6 +840,47 @@ func TestHandleChatSlashCommandSkillArgumentsAppendedWhenNoPlaceholder(t *testin
 	}
 }
 
+func TestHandleChatSlashCommandRewindRestoresLatest(t *testing.T) {
+	var buf bytes.Buffer
+	renderer := agent.NewRenderer(&buf, 80, false)
+	session := &stubChatSessionControl{checkpoints: []reactruntime.CheckpointRef{
+		{TurnID: "turn-1", ID: "cp-1"},
+		{TurnID: "turn-2", ID: "cp-2"},
+	}}
+
+	if handled := handleChatSlashCommand("/rewind", renderer, nil, nil, session, &ChatSetup{}); !handled {
+		t.Fatal("expected slash command to be handled")
+	}
+	if session.restoredCheckpoint != "cp-2" {
+		t.Fatalf("restored = %q, want cp-2 (latest)", session.restoredCheckpoint)
+	}
+}
+
+func TestHandleChatSlashCommandRewindByTurn(t *testing.T) {
+	var buf bytes.Buffer
+	renderer := agent.NewRenderer(&buf, 80, false)
+	session := &stubChatSessionControl{checkpoints: []reactruntime.CheckpointRef{
+		{TurnID: "turn-1", ID: "cp-1"},
+		{TurnID: "turn-2", ID: "cp-2"},
+	}}
+
+	handleChatSlashCommand("/rewind turn-1", renderer, nil, nil, session, &ChatSetup{})
+	if session.restoredCheckpoint != "cp-1" {
+		t.Fatalf("restored = %q, want cp-1", session.restoredCheckpoint)
+	}
+}
+
+func TestHandleChatSlashCommandRewindNoCheckpoints(t *testing.T) {
+	var buf bytes.Buffer
+	renderer := agent.NewRenderer(&buf, 80, false)
+	session := &stubChatSessionControl{}
+
+	handleChatSlashCommand("/rewind", renderer, nil, nil, session, &ChatSetup{})
+	if session.restoredCheckpoint != "" {
+		t.Fatalf("unexpected restore %q", session.restoredCheckpoint)
+	}
+}
+
 func TestHandleChatSlashCommandClearAlsoClearsReactSession(t *testing.T) {
 	var buf bytes.Buffer
 	renderer := agent.NewRenderer(&buf, 80, false)
@@ -2283,6 +2324,10 @@ type stubChatSessionControl struct {
 	compactKeep     int
 	compactChanged  bool
 	compactStatus   string
+
+	checkpoints        []reactruntime.CheckpointRef
+	restoredCheckpoint string
+	restoreErr         error
 }
 
 func (s *stubChatSessionControl) SetDriver(driver llm.Driver) {
@@ -2321,6 +2366,15 @@ func (s *stubChatSessionControl) CompactHistory(keep int) bool {
 
 func (s *stubChatSessionControl) CompactionStatus() string {
 	return s.compactStatus
+}
+
+func (s *stubChatSessionControl) Checkpoints() []reactruntime.CheckpointRef {
+	return s.checkpoints
+}
+
+func (s *stubChatSessionControl) RestoreCheckpoint(_ context.Context, id string) error {
+	s.restoredCheckpoint = id
+	return s.restoreErr
 }
 
 func TestNewChildAgentRegistryCreatesToolsWithCorrectWorkDir(t *testing.T) {

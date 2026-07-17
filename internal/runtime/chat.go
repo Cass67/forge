@@ -1950,6 +1950,8 @@ type chatSessionControl interface {
 	SetTaskState(reactruntime.TaskState)
 	CompactHistory(keep int) bool
 	CompactionStatus() string
+	Checkpoints() []reactruntime.CheckpointRef
+	RestoreCheckpoint(context.Context, string) error
 }
 
 func handleChatSlashCommand(input string, renderer *agent.Renderer, loadedSkills []skills.Skill, state *chatstate.State, session chatSessionControl, setup *ChatSetup) bool {
@@ -2044,6 +2046,44 @@ func handleChatSlashCommand(input string, renderer *agent.Renderer, loadedSkills
 		default:
 			renderer.Error("usage: /compact, /compact recent N, or /compact status")
 		}
+	case input == "/rewind" || strings.HasPrefix(input, "/rewind "):
+		if session == nil {
+			renderer.Error("rewind unavailable")
+			return true
+		}
+		checkpoints := session.Checkpoints()
+		if len(checkpoints) == 0 {
+			renderer.Info("no workspace checkpoints yet")
+			return true
+		}
+		arg := strings.TrimSpace(strings.TrimPrefix(input, "/rewind"))
+		if arg == "list" {
+			fmt.Println()
+			for _, cp := range checkpoints {
+				fmt.Printf("  %s (%s)\n", cp.TurnID, cp.ID)
+			}
+			fmt.Println()
+			return true
+		}
+		target := checkpoints[len(checkpoints)-1]
+		if arg != "" {
+			found := false
+			for _, cp := range checkpoints {
+				if cp.TurnID == arg || cp.ID == arg {
+					target, found = cp, true
+					break
+				}
+			}
+			if !found {
+				renderer.Error(fmt.Sprintf("unknown checkpoint %q — try /rewind list", arg))
+				return true
+			}
+		}
+		if err := session.RestoreCheckpoint(context.Background(), target.ID); err != nil {
+			renderer.Error(fmt.Sprintf("rewind failed: %v", err))
+			return true
+		}
+		renderer.Info(fmt.Sprintf("workspace reverted to checkpoint %s (%s)", target.TurnID, target.ID))
 	case input == "/skills":
 		if len(loadedSkills) == 0 {
 			renderer.Info("no skills loaded")
@@ -2171,9 +2211,12 @@ func PrintChatHelp() {
 	fmt.Println("    /compact        compact conversation history")
 	fmt.Println("    /compact recent N  compact while preserving recent N turns")
 	fmt.Println("    /compact status show compaction status")
+	fmt.Println("    /rewind         revert workspace to the latest checkpoint")
+	fmt.Println("    /rewind list    list workspace checkpoints")
+	fmt.Println("    /rewind <turn>  revert to a specific checkpoint")
 	fmt.Println("    /trace          open debug trace overlay (requires forge -d)")
 	fmt.Println("    /skills         list available skills and how to activate them")
-	fmt.Println("    /<skill>        activate a loaded skill by name from /skills")
+	fmt.Println("    /<skill> [args] activate a loaded skill; args fill $ARGUMENTS")
 	fmt.Println("                     example: /skills, then /tdd")
 	fmt.Println("    /help           show this help")
 	fmt.Println("    /exit           exit chat")
