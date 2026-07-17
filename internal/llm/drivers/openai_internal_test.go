@@ -145,11 +145,14 @@ func TestCoalesceSystemMessages(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("got %d messages: %#v", len(got), got)
 	}
-	if got[0].Content != "one\n\ntwo\n\nthree" {
+	if got[0].Role != llm.RoleSystem || got[0].Content != "one\n\ntwo\n\nthree" {
 		t.Fatalf("merged content %q", got[0].Content)
 	}
-	if got[1].Role != llm.RoleUser || got[2].Content != "late" {
-		t.Fatalf("got %#v", got)
+	if got[1].Role != llm.RoleUser || got[1].Content != "user" {
+		t.Fatalf("got %#v", got[1])
+	}
+	if got[2].Role != llm.RoleUser || got[2].Content != "[system note]\nlate" {
+		t.Fatalf("mid-history system not demoted: %#v", got[2])
 	}
 }
 
