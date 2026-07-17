@@ -26,8 +26,6 @@ func TestProgressLineCoversCoreTools(t *testing.T) {
 		{tool: "tool_help", summary: "preview"},
 		{tool: "web_fetch", summary: "https://example.com"},
 		{tool: "web_search", summary: "forge harness progress events"},
-		{tool: "scratchpad_write", summary: "routing_notes"},
-		{tool: "scratchpad_read", summary: "routing_notes"},
 		{tool: "git_status", summary: ""},
 		{tool: "git_diff", summary: "HEAD"},
 		{tool: "git_log", summary: "5"},

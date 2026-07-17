@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -235,82 +234,6 @@ type DurableSink interface {
 
 func NewSession() *Session {
 	return &Session{mode: ModeChat}
-}
-
-func NewSessionFromItems(items []protocol.Item) (*Session, error) {
-	replay, err := sessionstore.ReplayItems(items)
-	if err != nil {
-		return nil, err
-	}
-	sorted := append([]protocol.Item(nil), items...)
-	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
-	s := NewSession()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.items = sorted
-	s.history = append([]llm.Message(nil), replay.History...)
-	s.recentInputs = append([]string(nil), replay.RecentInputs...)
-	s.pendingInput = append([]string(nil), replay.PendingInput...)
-	s.compactionSummary = replay.CompactionSummary
-	s.interrupted = replay.Interrupted
-	if replay.SideEffectIntent != nil {
-		intent := sideEffectIntentFromProtocol(*replay.SideEffectIntent)
-		s.sideEffectIntent = copySideEffectIntent(&intent)
-		if strings.TrimSpace(intent.WorkspaceRoot) != "" {
-			s.activeWorkspaceRoot = strings.TrimSpace(intent.WorkspaceRoot)
-		}
-	}
-	if replay.TurnContract != nil {
-		contract := turnContractFromProtocol(*replay.TurnContract)
-		s.turnContract = copyTurnContract(&contract)
-	}
-	if len(s.recentInputs) > 0 {
-		s.initialInput = strings.TrimSpace(s.recentInputs[0])
-		s.lastInput = strings.TrimSpace(s.recentInputs[len(s.recentInputs)-1])
-	}
-	for idx, replayTurn := range replay.Turns {
-		n := turnNumberFromID(replayTurn.TurnID)
-		if n == 0 {
-			n = idx + 1
-		}
-		turn := TurnRecord{Number: n, Input: replayTurn.Input, FinalResponse: replayTurn.FinalResponse, Error: strings.TrimSpace(replayTurn.Error)}
-		for _, call := range replayTurn.ToolCalls {
-			if strings.TrimSpace(call.ToolName) != "" {
-				turn.ToolCalls = append(turn.ToolCalls, TurnToolCall{Name: call.ToolName})
-			}
-		}
-		s.turns = append(s.turns, turn)
-		if n > s.turn {
-			s.turn = n
-		}
-	}
-	for _, item := range sorted {
-		if item.Kind != protocol.ItemAgentHandoff || item.AgentHandoff == nil {
-			continue
-		}
-		s.restoreAgentHandoffLocked(*item.AgentHandoff)
-	}
-	if s.turn == 0 {
-		s.turn = len(s.turns)
-	}
-	if len(replay.Turns) > 0 {
-		last := replay.Turns[len(replay.Turns)-1]
-		switch last.Status {
-		case protocol.TurnStatusFailed:
-			s.lastTurnEndReason = TurnEndReasonFailed
-		case protocol.TurnStatusResumable, protocol.TurnStatusInterrupted:
-			s.interrupted = true
-			s.lastTurnEndReason = TurnEndReasonCancelled
-			s.runtimeNote = "Last restored turn is resumable; no tools were restarted."
-		default:
-			s.lastTurnEndReason = TurnEndReasonCompleted
-		}
-	}
-	return s, nil
-}
-
-func RestoreSessionFromItems(items []protocol.Item) (*Session, error) {
-	return NewSessionFromItems(items)
 }
 
 func turnNumberFromID(turnID string) int {
@@ -1674,26 +1597,6 @@ func cloneAgentHandoff(in *AgentHandoff) *AgentHandoff {
 	return out
 }
 
-func (s *Session) restoreAgentHandoffLocked(item protocol.AgentHandoffItem) {
-	agentID := strings.TrimSpace(item.AgentID)
-	if agentID == "" {
-		return
-	}
-	if s.agentTasks == nil {
-		s.agentTasks = make(map[string]AgentTaskState)
-	}
-	if _, ok := s.agentTasks[agentID]; !ok {
-		s.agentTaskOrder = append(s.agentTaskOrder, agentID)
-	}
-	task := s.agentTasks[agentID]
-	task.ID = agentID
-	if task.Status == "" {
-		task.Status = AgentStatusCompleted
-	}
-	task.Handoff = agentHandoffFromProtocol(item)
-	s.agentTasks[agentID] = task
-}
-
 func agentHandoffToProtocol(agentID string, handoff AgentHandoff) *protocol.AgentHandoffItem {
 	out := &protocol.AgentHandoffItem{
 		AgentID:  strings.TrimSpace(agentID),
@@ -1715,31 +1618,6 @@ func agentHandoffToProtocol(agentID string, handoff AgentHandoff) *protocol.Agen
 			Description: strings.TrimSpace(incident.Description),
 			Blocking:    incident.Blocking,
 		})
-	}
-	return out
-}
-
-func agentHandoffFromProtocol(item protocol.AgentHandoffItem) *AgentHandoff {
-	out := &AgentHandoff{}
-	for _, action := range item.RemainingActions {
-		out.RemainingActions = append(out.RemainingActions, AgentFollowupAction{
-			Kind:             AgentActionKind(action.Kind),
-			TargetPath:       strings.TrimSpace(action.TargetPath),
-			Description:      strings.TrimSpace(action.Description),
-			SuggestedCommand: strings.TrimSpace(action.SuggestedCommand),
-			Blocking:         action.Blocking,
-		})
-	}
-	for _, incident := range item.Incidents {
-		out.Incidents = append(out.Incidents, AgentWorkspaceIncident{
-			Kind:        AgentIncidentKind(incident.Kind),
-			Paths:       append([]string(nil), incident.Paths...),
-			Description: strings.TrimSpace(incident.Description),
-			Blocking:    incident.Blocking,
-		})
-	}
-	if out.Empty() && !item.Blocking {
-		return nil
 	}
 	return out
 }

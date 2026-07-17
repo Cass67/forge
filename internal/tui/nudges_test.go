@@ -135,26 +135,3 @@ func TestAgentNudgeMsgDoesNotOverwriteExistingFlash(t *testing.T) {
 		t.Fatalf("existing flash should not be overwritten, got %q", cm.flash)
 	}
 }
-
-func TestBuildStatusLine1IncludesAgentModeWhenSet(t *testing.T) {
-	data := chatStatusData{
-		Model:     "anthropic/claude-opus-4-5",
-		WorkDir:   "/tmp/project",
-		AgentMode: "[plan]",
-	}
-	line := buildStatusLine1(data)
-	if !strings.Contains(line, "[plan]") {
-		t.Fatalf("status line 1 should include agent mode badge, got %q", line)
-	}
-}
-
-func TestBuildStatusLine1OmitsAgentModeWhenEmpty(t *testing.T) {
-	data := chatStatusData{
-		Model:   "anthropic/claude-opus-4-5",
-		WorkDir: "/tmp/project",
-	}
-	line := buildStatusLine1(data)
-	if strings.Contains(line, "[") {
-		t.Fatalf("status line 1 should not include mode badge when empty, got %q", line)
-	}
-}

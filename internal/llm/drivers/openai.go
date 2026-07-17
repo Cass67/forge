@@ -86,16 +86,8 @@ func NewOpenAIAlias(apiKey, registryName, apiModel string) *OpenAIDriver {
 	return newOpenAI(apiKey, "openai", registryName, apiModel, true, "", nil)
 }
 
-func NewOpenAICompatibleAlias(apiKey, baseURL, registryName, apiModel string) *OpenAIDriver {
-	return newOpenAI(apiKey, "openai", registryName, apiModel, false, baseURL, nil)
-}
-
 func NewOpenAICompatibleProviderAlias(providerLabel, apiKey, baseURL, registryName, apiModel string) *OpenAIDriver {
 	return newOpenAI(apiKey, providerLabel, registryName, apiModel, false, baseURL, nil)
-}
-
-func NewOpenAICompatible(apiKey, baseURL, model string) *OpenAIDriver {
-	return NewOpenAICompatibleAlias(apiKey, baseURL, model, model)
 }
 
 func NewCustomCompatProvider(providerLabel, apiKey, baseURL, registryName, apiModel string, supportsResponses bool, headers map[string]string) *OpenAIDriver {

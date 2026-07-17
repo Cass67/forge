@@ -201,14 +201,6 @@ func formatCount(n int) string {
 	return fmt.Sprintf("%d", n)
 }
 
-func Approval(action, path string) Line {
-	return Line{Spans: []Span{
-		{Text: " " + action + "?", Style: StyleWarning},
-		{Text: " [y]es", Style: StyleSuccess},
-		{Text: " [n]o", Style: StyleError},
-	}}
-}
-
 // NoColor returns true if colors should be disabled (NO_COLOR env var).
 func NoColor() bool {
 	_, set := os.LookupEnv("NO_COLOR")

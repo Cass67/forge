@@ -3521,64 +3521,6 @@ func TestRunnerRunsPostEditValidationWithMutationDiff(t *testing.T) {
 	}
 }
 
-func TestRunnerRunsPostEditValidationAfterScratchpadWriteSuccess(t *testing.T) {
-	reg := agenttools.NewRegistry()
-	reg.Register(agenttools.NewScratchpadWrite(t.TempDir()))
-	session := NewSession()
-	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cancel()
-	r := NewRunner(Config{
-		Tools:   reg,
-		Session: session,
-		PostEditValidator: &PostEditValidator{
-			Command:        []string{"/bin/sh", "-c", "printf scratchpad-validator >&2; exit 1"},
-			Timeout:        time.Second,
-			MaxOutputBytes: 1024,
-		},
-	})
-
-	if err := r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{ID: "scratch-1", Name: "scratchpad_write", ArgsJSON: `{"topic":"notes","content":"content"}`}}); err != nil {
-		t.Fatal(err)
-	}
-
-	if !sessionHistoryContains(session, "Runtime diagnostic feedback", "scratchpad-validator") {
-		t.Fatalf("session history missing scratchpad validation diagnostics: %#v", session.Snapshot().History)
-	}
-}
-
-func TestRunnerSkipsPostEditValidationAfterScratchpadWriteArgError(t *testing.T) {
-	root := t.TempDir()
-	marker := filepath.Join(root, "validator-ran")
-	reg := agenttools.NewRegistry()
-	reg.Register(agenttools.NewScratchpadWrite(root))
-	session := NewSession()
-	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cancel()
-	r := NewRunner(Config{
-		Tools:   reg,
-		Session: session,
-		PostEditValidator: &PostEditValidator{
-			Command:        []string{"/bin/sh", "-c", fmt.Sprintf("printf ran > %q; exit 1", marker)},
-			Timeout:        time.Second,
-			MaxOutputBytes: 1024,
-		},
-	})
-
-	if err := r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{ID: "scratch-1", Name: "scratchpad_write", ArgsJSON: `{"topic":"notes"}`}}); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("validator marker stat error = %v, want not exist", err)
-	}
-}
-
 func TestRunnerRunsPostEditValidationAfterGitCommitSuccess(t *testing.T) {
 	root := initReactTestGitRepo(t)
 	writeReactTestFile(t, filepath.Join(root, "a.txt"), "a\n")

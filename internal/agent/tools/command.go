@@ -20,15 +20,7 @@ var (
 )
 
 func NewRunCommand(workDir string, timeoutSecs int, manager *ExecSessionManager, approve ApprovalFunc, forcePrompt ...ApprovalFunc) Tool {
-	return newRunCommand(workDir, timeoutSecs, manager, approve, DefaultSecretPolicy(), forcePrompt...)
-}
-
-func NewRunCommandWithSecretPolicy(workDir string, timeoutSecs int, manager *ExecSessionManager, approve ApprovalFunc, policy SecretPolicy, forcePrompt ...ApprovalFunc) Tool {
-	return NewRunCommandWithWorkDirProvider(workDir, FixedWorkDirProvider(workDir), timeoutSecs, manager, approve, policy, forcePrompt...)
-}
-
-func newRunCommand(workDir string, timeoutSecs int, manager *ExecSessionManager, approve ApprovalFunc, policy SecretPolicy, forcePrompt ...ApprovalFunc) Tool {
-	return NewRunCommandWithWorkDirProvider(workDir, FixedWorkDirProvider(workDir), timeoutSecs, manager, approve, policy, forcePrompt...)
+	return NewRunCommandWithWorkDirProvider(workDir, FixedWorkDirProvider(workDir), timeoutSecs, manager, approve, DefaultSecretPolicy(), forcePrompt...)
 }
 
 func NewRunCommandWithWorkDirProvider(fallbackWorkDir string, provider WorkDirProvider, timeoutSecs int, manager *ExecSessionManager, approve ApprovalFunc, policy SecretPolicy, forcePrompt ...ApprovalFunc) Tool {

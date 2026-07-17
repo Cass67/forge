@@ -204,53 +204,6 @@ func TestBuildStatsOverlayShowsModelLimits(t *testing.T) {
 	}
 }
 
-func TestBuildStatusLine2ShowsContextForOpenRouterModels(t *testing.T) {
-	line := buildStatusLine2(chatStatusData{
-		Model:        "openrouter/arcee-ai/trinity-large-preview:free",
-		Status:       "ready",
-		SessionUsage: llm.Usage{InputTokens: 120, OutputTokens: 30},
-		ModelInfo: &modelcatalog.ModelInfo{
-			ContextWindow: 131072,
-			Temperature:   true,
-			ToolCall:      true,
-		},
-	})
-
-	for _, want := range []string{"ready", "session 150 tok", "ctx max 131072"} {
-		if !strings.Contains(line, want) {
-			t.Fatalf("status line missing %q: %s", want, line)
-		}
-	}
-	if strings.Contains(line, "est ctx") || strings.Contains(line, "150/131072") {
-		t.Fatalf("status line should not present cumulative session usage as current context: %s", line)
-	}
-}
-
-func TestBuildStatusLine2ShowsExplicitContextUsageWhenAvailable(t *testing.T) {
-	line := buildStatusLine2(chatStatusData{
-		Status:       "ready",
-		ContextUsed:  1200,
-		ContextLimit: 8000,
-	})
-
-	if !strings.Contains(line, "ctx 1200/8000") {
-		t.Fatalf("status line should show explicit context usage, got: %s", line)
-	}
-}
-
-func TestBuildStatusLine2MarksEstimatedContextUsage(t *testing.T) {
-	line := buildStatusLine2(chatStatusData{
-		Status:           "ready",
-		ContextUsed:      1200,
-		ContextLimit:     8000,
-		ContextEstimated: true,
-	})
-
-	if !strings.Contains(line, "ctx ~1200/8000") {
-		t.Fatalf("status line should mark estimated context usage, got: %s", line)
-	}
-}
-
 func TestRenderStatusHeaderUsesSplitRailCardAtWideWidths(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {

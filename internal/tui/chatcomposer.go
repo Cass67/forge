@@ -364,11 +364,6 @@ func (c ChatComposer) visibleBodyLineViews(width int) []composerVisibleLine {
 	return lines
 }
 
-func composerCursorLine(text string, cursor, width int) int {
-	line, _ := composerCursorPosition(text, cursor, width)
-	return line
-}
-
 func composerCursorPosition(text string, cursor, width int) (int, int) {
 	runes := []rune(text)
 	cursor = clamp(cursor, 0, len(runes))

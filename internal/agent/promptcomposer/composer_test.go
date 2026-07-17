@@ -51,26 +51,6 @@ func TestComposeOmitsEmptySections(t *testing.T) {
 	}
 }
 
-func TestComposeBudgetDropsLowestPriorityOverlayFirst(t *testing.T) {
-	got := Compose(StaticInput{
-		Identity: "identity",
-		System:   "system",
-	}, []Overlay{
-		{Key: "task", Priority: PriorityHigh, Content: strings.Repeat("A", 32)},
-		{Key: "memory", Priority: PriorityLow, Content: strings.Repeat("B", 32)},
-	}, WithMaxBytes(70))
-
-	if !strings.Contains(got, "identity") || !strings.Contains(got, "system") {
-		t.Fatalf("compose dropped static sections under budget: %q", got)
-	}
-	if !strings.Contains(got, strings.Repeat("A", 32)) {
-		t.Fatalf("compose dropped high-priority overlay before low-priority one: %q", got)
-	}
-	if strings.Contains(got, strings.Repeat("B", 32)) {
-		t.Fatalf("compose retained low-priority overlay despite budget pressure: %q", got)
-	}
-}
-
 func assertOrder(t *testing.T, got string, parts []string) {
 	t.Helper()
 	last := -1

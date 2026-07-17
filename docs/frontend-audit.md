@@ -157,7 +157,6 @@ All items from the audit have been implemented. See the "Future Ideas" section b
 
 The running screen (`running.go`) has been merged into the chat UI:
 
-1. **Merge running screen into chat UI** — `forge make` now uses `ChatModel` internally via `RunLivePipeline()`. The pipeline shows events as chat messages by default, and you can toggle to the traditional two-pane writer/auditor view with `Ctrl+P` or `v` (when chat input is empty). No separate CLI flag needed — it's an in-app toggle.
 
 2. **Live file preview in third pane** — when in the two-pane pipeline view, press `p` to open a file preview pane showing the content of the most recently modified file. The pane updates as files change. Arrow keys scroll the preview; `p` or `Escape` closes it. Files larger than 1 MB and binary files are gracefully refused.
 
@@ -184,13 +183,11 @@ The Forge frontend has addressed **all** items from the original audit. The chat
 - **Rich diff rendering** with line numbers, word-level highlighting, and approval overlay
 - **Tool visibility** through tool call cards and file changes panels
 - **Progress visibility** with stacked live status, plan progress bar, and file change counts
-- **Pipeline/audit mode** with toggleable two-pane writer/auditor view integrated into ChatModel (`ctrl+p` or `v`)
 - **Live file preview** in the pipeline view showing file content as it's modified (`p`)
 - **Unified architecture** — both chat and pipeline modes use ChatModel, eliminating the legacy separate running screen
 
 ## Pipeline Mode Reference
 
-When running `forge make`, the pipeline uses ChatModel with an integrated pipeline view:
 
 ### Key Bindings
 

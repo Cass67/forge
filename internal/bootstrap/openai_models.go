@@ -207,25 +207,6 @@ func fetchCompatibleModels(ctx context.Context, client *http.Client, baseURL, ap
 	return out, nil
 }
 
-func mergeOpenAIModelLists(groups ...[]string) []string {
-	var out []string
-	seen := map[string]struct{}{}
-	for _, group := range groups {
-		for _, model := range group {
-			model = canonicalOpenAIModel(model)
-			if model == "" {
-				continue
-			}
-			if _, ok := seen[model]; ok {
-				continue
-			}
-			seen[model] = struct{}{}
-			out = append(out, model)
-		}
-	}
-	return out
-}
-
 func qualifyCompatibleModelList(provider string, models []string) []string {
 	out := make([]string, 0, len(models))
 	for _, model := range models {

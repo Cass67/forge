@@ -17,8 +17,6 @@ func TestValidate_DefaultConfigHasNoIssues(t *testing.T) {
 func TestValidate_InvalidFields(t *testing.T) {
 	var cfg Config
 	setDefaults(&cfg)
-	cfg.Models.Writer = ""
-	cfg.Session.RoundsPerPass = 0
 	cfg.Log.Level = "verbose"
 	cfg.Retry.MaxAttempts = 0
 	cfg.Chat.AutoSkills = "maybe"
@@ -29,7 +27,7 @@ func TestValidate_InvalidFields(t *testing.T) {
 	}
 
 	issues := cfg.Validate()
-	if len(issues) < 8 {
+	if len(issues) < 6 {
 		t.Fatalf("expected multiple validation issues, got %v", issues)
 	}
 }
