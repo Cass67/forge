@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -309,5 +310,13 @@ func TestFileOutputStoreRejectsInvalidHandleParts(t *testing.T) {
 				t.Fatalf("parseHandleID(%q) = (%q, %q, true), want rejected", id, thread, gotHash)
 			}
 		})
+	}
+}
+
+func TestFileOutputStoreHandleRejectsMalformedIDWithGuidance(t *testing.T) {
+	store := NewFileOutputStore(t.TempDir())
+	_, err := store.Handle(context.Background(), "a4e83c0a-6b92-4c41-8940-e410238b6348")
+	if err == nil || !strings.Contains(err.Error(), `expected "<thread>/<sha256-hex>"`) {
+		t.Fatalf("want guidance in error, got %v", err)
 	}
 }
