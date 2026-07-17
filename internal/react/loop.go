@@ -2220,11 +2220,16 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 		}
 		if len(allowed) > 0 {
 			if _, ok := allowed[strings.TrimSpace(call.Name)]; !ok {
-				if err := r.ensureTurnCanMutate(ctx, turn); err != nil {
-					return err
+				// Under lean exposure the allowed list is the reduced core
+				// schema set, but registered-but-deferred tools (tool==ok
+				// above) stay callable — mirror rejectUnknownNativeToolCalls.
+				if !r.leanToolExposure {
+					if err := r.ensureTurnCanMutate(ctx, turn); err != nil {
+						return err
+					}
+					r.recordModelViolation("tool_unavailable_for_turn", call.Name)
+					return fmt.Errorf("react runtime: tool %q is not available for this turn. Available tools this turn: %s", call.Name, strings.Join(allowedList, ", "))
 				}
-				r.recordModelViolation("tool_unavailable_for_turn", call.Name)
-				return fmt.Errorf("react runtime: tool %q is not available for this turn. Available tools this turn: %s", call.Name, strings.Join(allowedList, ", "))
 			}
 		}
 		if err := r.ensureTurnCanMutate(ctx, turn); err != nil {

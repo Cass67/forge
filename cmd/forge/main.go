@@ -43,6 +43,7 @@ var (
 	mainConfigPathFn      = config.DefaultPath
 	promptMCPTokenFn      = promptMCPToken
 	runPluginInstallCmdFn = runPluginInstallCommand
+	osExit                = os.Exit
 )
 
 var mcpServerPresets = map[string]config.MCPServerConfig{
@@ -129,7 +130,8 @@ func runMake(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: forge make <path> --prompt \"...\"")
 		fmt.Fprintln(os.Stderr, "  (use /make in chat mode for interactive pipeline sessions)")
-		os.Exit(1)
+		osExit(1)
+		return
 	}
 	runImproveArgsFn("make", args)
 }
