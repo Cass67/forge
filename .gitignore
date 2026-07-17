@@ -105,3 +105,6 @@ $RECYCLE.BIN/
 .worktrees/
 cmd/forge/output/
 internal/runtime/output/
+
+# Stray test logs
+test_output.txt
