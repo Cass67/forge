@@ -2137,6 +2137,13 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 		}
 		// Track tool call for cards display
 		m.trackToolCall(ev)
+		if diff := strings.TrimSpace(ev.Content); !ev.IsError && diff != "" && looksLikeDiff(diff) {
+			m.AddMessage(ChatMessage{
+				Kind:    MsgAgent,
+				Header:  strings.TrimSpace(ev.Agent),
+				Content: "```diff\n" + compactDiffForDisplay(diff, 30) + "\n```",
+			})
+		}
 		if ev.Content != "" {
 			m.lastToolResult = ev.Content
 		} else if ev.Text != "" {
@@ -6085,7 +6092,7 @@ func (m *ChatModel) emitProgressCheckpoint(key, content string) {
 		return
 	}
 	m.AddMessage(ChatMessage{
-		Kind:    MsgStatus,
+		Kind:    MsgCheckpoint,
 		Content: content,
 	})
 	m.lastProgressCheckpoint = key
@@ -6240,7 +6247,8 @@ func checkpointOutputLines(output string, isError bool) []string {
 }
 
 func formatCheckpointRunMessage(command string, lines []string) string {
-	command = strings.TrimSpace(command)
+	// Collapse multiline/whitespace-heavy commands to one bounded line.
+	command = truncate(strings.Join(strings.Fields(command), " "), 100)
 	if command == "" {
 		command = "command"
 	}

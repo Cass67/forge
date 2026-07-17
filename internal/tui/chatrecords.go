@@ -74,6 +74,8 @@ func durableRecordKind(msg ChatMessage) (RecordKind, bool) {
 		return RecordSystem, true
 	case MsgPlan:
 		return RecordSystem, true
+	case MsgCheckpoint:
+		return RecordSystem, true
 	case MsgStatus:
 		content := strings.ToLower(strings.TrimSpace(msg.Content))
 		if strings.Contains(content, "error") || strings.Contains(content, "failed") || strings.Contains(content, "denied") {
