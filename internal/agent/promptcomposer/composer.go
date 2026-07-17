@@ -6,6 +6,7 @@ import (
 
 type StaticInput struct {
 	Identity       string
+	Instructions   string
 	System         string
 	Responsiveness string
 	Planning       string
@@ -89,6 +90,7 @@ func staticSections(in StaticInput) []string {
 	var sections []string
 	for _, part := range []string{
 		in.Identity,
+		in.Instructions,
 		in.System,
 		in.Responsiveness,
 		in.Planning,

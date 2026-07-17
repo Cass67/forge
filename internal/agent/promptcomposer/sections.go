@@ -2,12 +2,17 @@ package promptcomposer
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+
+	"forge/internal/fsutil"
 )
 
 func ForgeCorePrompt(workDir string) StaticInput {
 	return StaticInput{
 		Identity:       identitySection(workDir),
+		Instructions:   agentsInstructionsSection(workDir),
 		Responsiveness: responsivenessSection(),
 		System:         coreGuidelinesSection(),
 		Planning:       planningSection(),
@@ -22,10 +27,44 @@ func ForgeCorePrompt(workDir string) StaticInput {
 func ForgeChatPrompt(workDir string) StaticInput {
 	return StaticInput{
 		Identity:       identitySection(workDir),
+		Instructions:   agentsInstructionsSection(workDir),
 		System:         chatSystemSection(),
 		Responsiveness: chatResponsivenessSection(),
 		FinalAnswer:    chatFinalAnswerSection(),
 	}
+}
+
+// agentsInstructionsMaxBytes caps each embedded AGENTS.md file.
+const agentsInstructionsMaxBytes = 32 * 1024
+
+// agentsInstructionsSection embeds AGENTS.md contents directly into the
+// system prompt so instruction-following never depends on the model deciding
+// to read the file. Global (~/.config/forge/AGENTS.md) first, then the repo's;
+// later files take precedence on conflict.
+func agentsInstructionsSection(workDir string) string {
+	paths := []string{fsutil.ForgeConfigPath("AGENTS.md")}
+	if workDir = strings.TrimSpace(workDir); workDir != "" {
+		paths = append(paths, filepath.Join(workDir, "AGENTS.md"))
+	}
+	var parts []string
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		content := strings.TrimSpace(string(data))
+		if content == "" {
+			continue
+		}
+		if len(content) > agentsInstructionsMaxBytes {
+			content = content[:agentsInstructionsMaxBytes] + "\n[truncated]"
+		}
+		parts = append(parts, "### "+path+"\n"+content)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "## Project Instructions\nThe following instructions are loaded from AGENTS.md files and MUST be followed. When they conflict, later files win.\n\n" + strings.Join(parts, "\n\n")
 }
 
 func identitySection(workDir string) string {
