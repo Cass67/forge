@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"forge/internal/gitutil"
 	"forge/internal/llm"
@@ -36,6 +37,7 @@ type RunnerConfig struct {
 	GitAutoCommit  bool
 	Interactive    bool
 	FeedbackChan   chan string
+	MirrorDir      string // when set, final code files are copied here (the caller's working dir)
 }
 
 // Runner orchestrates the full session: all passes and rounds.
@@ -164,8 +166,53 @@ func (r *Runner) Run(ctx context.Context) {
 		}
 	}
 
+	doneText := "output: " + r.cfg.WriterW.Dir()
+	if copied, err := mirrorCodeFiles(codeDir, r.cfg.MirrorDir); err != nil {
+		r.warn("mirror code files failed", err, map[string]any{"dir": r.cfg.MirrorDir})
+	} else if len(copied) > 0 {
+		doneText = fmt.Sprintf("wrote %s to %s (full session output: %s)",
+			strings.Join(copied, ", "), r.cfg.MirrorDir, r.cfg.WriterW.Dir())
+	}
+
 	r.cfg.Log.Info("session complete")
-	r.cfg.Events <- llm.Event{Kind: llm.EventDone}
+	r.cfg.Events <- llm.Event{Kind: llm.EventDone, Text: doneText}
+}
+
+// mirrorCodeFiles copies the final code tree into dst so the generated files
+// land where the user is working, not only in the session output dir.
+// Returns the relative paths copied.
+func mirrorCodeFiles(codeDir, dst string) ([]string, error) {
+	dst = strings.TrimSpace(dst)
+	if dst == "" || dst == codeDir {
+		return nil, nil
+	}
+	var copied []string
+	err := filepath.WalkDir(codeDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if d.Name() == ".git" || strings.Contains(path, string(filepath.Separator)+".git"+string(filepath.Separator)) {
+			return nil
+		}
+		rel, err := filepath.Rel(codeDir, path)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(target, data, 0o644); err != nil {
+			return err
+		}
+		copied = append(copied, rel)
+		return nil
+	})
+	return copied, err
 }
 
 func (r *Runner) passPrompt(idx int) string {
