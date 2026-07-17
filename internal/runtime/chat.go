@@ -447,7 +447,23 @@ func RunChatLive(setup *ChatSetup) {
 	loadedSkills := skills.Load(setup.WorkDir)
 	state := chatstate.New()
 	memPipeline := memory.Pipeline{MaxRecords: 12}
-	memState := memory.State{}
+	memState := memory.LoadState(setup.WorkDir)
+	if memState.Summary != "" {
+		session.SetMemorySummary(memState.Summary)
+	}
+	var memMu sync.Mutex
+	remember := func(text string) bool {
+		memMu.Lock()
+		defer memMu.Unlock()
+		next, ok := memPipeline.Remember(memState, text)
+		if !ok {
+			return false
+		}
+		memState = next
+		session.SetMemorySummary(next.Summary)
+		_ = memory.SaveState(setup.WorkDir, next)
+		return true
+	}
 	lean := leanToolExposure(setup)
 	reactRunner := reactruntime.NewRunner(reactruntime.Config{
 		Driver:           setup.Driver,
@@ -466,9 +482,12 @@ func RunChatLive(setup *ChatSetup) {
 		},
 		Session: session,
 		TurnComplete: func(snapshot reactruntime.SessionSnapshot) {
+			memMu.Lock()
+			defer memMu.Unlock()
 			if next, ok := memPipeline.Process(memState, snapshot); ok {
 				memState = next
 				session.SetMemorySummary(next.Summary)
+				_ = memory.SaveState(setup.WorkDir, next)
 			}
 		},
 		ToolExposureObserver: debugToolExposureObserver(setup),
@@ -707,6 +726,7 @@ func RunChatLive(setup *ChatSetup) {
 				reactRunner.ClearHistory()
 			}
 		},
+		Remember: remember,
 		CurrentThreadID: func() string {
 			return session.DurableThreadID()
 		},
@@ -923,7 +943,23 @@ func RunChatConsole(setup *ChatSetup) {
 	loadedSkills := skills.Load(setup.WorkDir)
 	state := chatstate.New()
 	memPipeline := memory.Pipeline{MaxRecords: 12}
-	memState := memory.State{}
+	memState := memory.LoadState(setup.WorkDir)
+	if memState.Summary != "" {
+		session.SetMemorySummary(memState.Summary)
+	}
+	var memMu sync.Mutex
+	remember := func(text string) bool {
+		memMu.Lock()
+		defer memMu.Unlock()
+		next, ok := memPipeline.Remember(memState, text)
+		if !ok {
+			return false
+		}
+		memState = next
+		session.SetMemorySummary(next.Summary)
+		_ = memory.SaveState(setup.WorkDir, next)
+		return true
+	}
 	lean := leanToolExposure(setup)
 	reactRunner := reactruntime.NewRunner(reactruntime.Config{
 		Driver:           setup.Driver,
@@ -945,9 +981,12 @@ func RunChatConsole(setup *ChatSetup) {
 		},
 		Session: session,
 		TurnComplete: func(snapshot reactruntime.SessionSnapshot) {
+			memMu.Lock()
+			defer memMu.Unlock()
 			if next, ok := memPipeline.Process(memState, snapshot); ok {
 				memState = next
 				session.SetMemorySummary(next.Summary)
+				_ = memory.SaveState(setup.WorkDir, next)
 			}
 		},
 		ToolExposureObserver: debugToolExposureObserver(setup),
@@ -1019,6 +1058,18 @@ func RunChatConsole(setup *ChatSetup) {
 			break
 		}
 		if strings.HasPrefix(input, "/") {
+			if strings.HasPrefix(input, "/remember") {
+				text := strings.TrimSpace(strings.TrimPrefix(input, "/remember"))
+				switch {
+				case text == "":
+					renderer.Info("usage: /remember <text>")
+				case remember(text):
+					renderer.Info("remembered (pinned)")
+				default:
+					renderer.Info("nothing to remember")
+				}
+				continue
+			}
 			handled := handleChatSlashCommand(input, renderer, loadedSkills, state, reactRunner, setup)
 			if handled {
 				continue

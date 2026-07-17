@@ -3265,7 +3265,7 @@ var builtinCommands = []string{
 	"/agentview",
 	"/tools", "/toggle tools", "/toggle tools on", "/toggle tools off",
 	"/models", "/model", "/provider",
-	"/skills", "/auto-skills", "/sessions", "/save", "/restore",
+	"/skills", "/auto-skills", "/sessions", "/save", "/restore", "/remember",
 	"/find", "/files", "/copy agent", "/copy tools", "/copy code", "/copy result",
 	"/make", "/exit", "/quit",
 }
@@ -3388,6 +3388,18 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			m.flash = fmt.Sprintf("save failed: %v", err)
 		} else {
 			m.flash = fmt.Sprintf("session saved: %s", name)
+		}
+	case strings.HasPrefix(input, "/remember"):
+		text := strings.TrimSpace(strings.TrimPrefix(input, "/remember"))
+		switch {
+		case text == "":
+			m.flash = "usage: /remember <text>"
+		case m.config.Remember == nil:
+			m.flash = "memory not available"
+		case m.config.Remember(text):
+			m.flash = "remembered (pinned)"
+		default:
+			m.flash = "nothing to remember"
 		}
 	case strings.HasPrefix(input, "/save "):
 		name := sanitizeChatSessionName(strings.TrimSpace(strings.TrimPrefix(input, "/save ")))

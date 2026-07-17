@@ -10,6 +10,7 @@ type Record struct {
 	Mode      string
 	Objective string
 	Summary   string
+	Pinned    bool
 }
 
 const (

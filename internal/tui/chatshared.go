@@ -61,6 +61,7 @@ type ChatLiveConfig struct {
 	ContextFiles          []string
 	SwitchModel           func(name string) (newModel string, err error)
 	ClearHistory          func()
+	Remember              func(text string) bool
 	ApprovalCh            <-chan tools.Action
 	ResponseCh            chan<- bool
 	Skills                []skills.Skill

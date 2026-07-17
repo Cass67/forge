@@ -13,7 +13,17 @@ func ConsolidateRecords(records []Record, maxRecords int) State {
 	}
 	bounded := dedupeRecords(records)
 	if len(bounded) > maxRecords {
-		bounded = append([]Record(nil), bounded[len(bounded)-maxRecords:]...)
+		// drop oldest unpinned first; pinned records never rotate out
+		kept := make([]Record, 0, maxRecords)
+		drop := len(bounded) - maxRecords
+		for _, record := range bounded {
+			if drop > 0 && !record.Pinned {
+				drop--
+				continue
+			}
+			kept = append(kept, record)
+		}
+		bounded = kept
 	}
 	return State{
 		Records: bounded,
