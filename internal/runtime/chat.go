@@ -985,6 +985,10 @@ type consoleRuntime struct {
 	loadedSkills []skills.Skill
 	state        *chatstate.State
 	remember     func(string) bool
+	// execWake receives a signal when a background exec session exits, so an
+	// idle console loop can run a turn over the queued completion note
+	// instead of waiting for the next user message.
+	execWake chan struct{}
 }
 
 // buildConsoleRuntime wires the full chat runtime (tools, approval gate,
@@ -1026,6 +1030,7 @@ func buildConsoleRuntime(setup *ChatSetup, approve tools.ApprovalFunc, out io.Wr
 	// Late-bound so the exec-status callback can feed background command
 	// completions back to the runner (created further below).
 	var reactRunner *reactruntime.Runner
+	execWake := make(chan struct{}, 1)
 	previewRuntime, mcpManager := registerTools(reg, setup.WorkDir, setup.Config, session, approve, renderer.Info, func(status tools.ExecSessionStatus) {
 		payload, err := json.Marshal(status)
 		if err != nil {
@@ -1035,6 +1040,10 @@ func buildConsoleRuntime(setup *ChatSetup, approve tools.ApprovalFunc, out io.Wr
 		renderer.ToolResult("command_status", string(payload), "", false)
 		if status.Status == "exited" && reactRunner != nil {
 			reactRunner.QueuePendingInput(backgroundExitNote(status))
+			select {
+			case execWake <- struct{}{}:
+			default:
+			}
 		}
 	}, forcePromptApprove)
 	pluginManager := startChatPluginManager(setup.Config, setup.WorkDir, renderer.Info)
@@ -1125,6 +1134,7 @@ func buildConsoleRuntime(setup *ChatSetup, approve tools.ApprovalFunc, out io.Wr
 		loadedSkills: loadedSkills,
 		state:        state,
 		remember:     remember,
+		execWake:     execWake,
 	}, cleanup
 }
 
@@ -1171,7 +1181,16 @@ func RunChatConsole(setup *ChatSetup) {
 		}
 	}()
 
-	scanner := bufio.NewScanner(os.Stdin)
+	// Stdin lines arrive over a channel so the loop can also wake on
+	// background exec completions while idle.
+	lines := make(chan string)
+	go func() {
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			lines <- scanner.Text()
+		}
+		close(lines)
+	}()
 	for {
 		select {
 		case <-pendingShutdown:
@@ -1180,10 +1199,32 @@ func RunChatConsole(setup *ChatSetup) {
 		default:
 		}
 		renderer.Prompt()
-		if !scanner.Scan() {
-			break
+		var input string
+		select {
+		case <-pendingShutdown:
+			fmt.Println("\ninterrupted")
+			return
+		case <-rt.execWake:
+			// A background command finished while idle: run a turn over the
+			// queued completion note so the model reacts without user input.
+			queued := reactRunner.DiscardPendingInput()
+			if len(queued) == 0 {
+				continue
+			}
+			turnCtx, tc := context.WithCancel(ctx)
+			turnCancel.Store(tc)
+			note := strings.Join(queued, "\n\n")
+			if err := runChatTurn(turnCtx, reactRunner, chatstate.ChatUserInput{IsInput: true, Text: note}); err != nil {
+				renderer.Error(err.Error())
+			}
+			continue
+		case line, ok := <-lines:
+			if !ok {
+				fmt.Println()
+				return
+			}
+			input = strings.TrimSpace(line)
 		}
-		input := strings.TrimSpace(scanner.Text())
 		if input == "" {
 			continue
 		}
