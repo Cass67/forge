@@ -10,12 +10,13 @@ import (
 type MsgKind int
 
 const (
-	MsgUser    MsgKind = iota // User input
-	MsgAgent                  // Agent response
-	MsgForge                  // Forge steering input
-	MsgPlan                   // Persistent plan/todo state
-	MsgWorking                // Inline progress / working-state update
-	MsgStatus                 // Status line (e.g. "Agent complete")
+	MsgUser       MsgKind = iota // User input
+	MsgAgent                     // Agent response
+	MsgForge                     // Forge steering input
+	MsgPlan                      // Persistent plan/todo state
+	MsgWorking                   // Inline progress / working-state update
+	MsgStatus                    // Status line (e.g. "Agent complete")
+	MsgCheckpoint                // Tool progress checkpoint ("• Ran …" with output)
 )
 
 // ChatMessage is a single message in the conversation.
@@ -46,6 +47,10 @@ func (m ChatMessage) accentColor(theme chatTheme) lipgloss.Color {
 func (m ChatMessage) Render(width int, theme chatTheme) string {
 	if width < 10 {
 		width = 10
+	}
+
+	if m.Kind == MsgCheckpoint {
+		return renderCheckpointBlock(m.Content, width, theme)
 	}
 
 	if m.Kind == MsgStatus {
@@ -116,6 +121,28 @@ func renderMessageHeader(header string, width int, theme chatTheme, accent lipgl
 		lipgloss.NewStyle().Foreground(theme.Border).Render(" • "),
 		lipgloss.NewStyle().Foreground(theme.TextDim).Render(strings.TrimSpace(meta)),
 	)
+}
+
+// renderCheckpointBlock renders a tool checkpoint ("• Ran cmd" + output lines)
+// as a compact left-railed block: command highlighted, output dimmed.
+func renderCheckpointBlock(content string, width int, theme chatTheme) string {
+	lines := strings.Split(strings.TrimSpace(content), "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	innerWidth := max(10, width-2)
+	head := strings.TrimPrefix(lines[0], "• ")
+	headStyle := lipgloss.NewStyle().Foreground(theme.AccentSecondary).Width(innerWidth)
+	dimStyle := lipgloss.NewStyle().Foreground(theme.TextDim).Width(innerWidth)
+	out := []string{headStyle.Render(head)}
+	for _, line := range lines[1:] {
+		out = append(out, dimStyle.Render(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "└"))))
+	}
+	return lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(theme.Border).
+		PaddingLeft(1).
+		Render(strings.Join(out, "\n"))
 }
 
 func indentRenderedBlock(text, prefix string) string {

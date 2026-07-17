@@ -604,7 +604,7 @@ func TestChatModelToolResultEmitsRanCheckpointWithSnippet(t *testing.T) {
 
 	var sawCheckpoint bool
 	for _, msg := range m.messages {
-		if msg.Kind != MsgStatus {
+		if msg.Kind != MsgCheckpoint {
 			continue
 		}
 		if strings.Contains(msg.Content, "• Ran git status --short") &&
@@ -1581,7 +1581,7 @@ func TestChatModelCompactionProgressIsPersisted(t *testing.T) {
 	m = updated.(ChatModel)
 
 	for _, msg := range m.messages {
-		if msg.Kind == MsgStatus && strings.Contains(msg.Content, "Compacted context ~50000 -> ~12000") {
+		if (msg.Kind == MsgStatus || msg.Kind == MsgCheckpoint) && strings.Contains(msg.Content, "Compacted context ~50000 -> ~12000") {
 			return
 		}
 	}
@@ -5458,7 +5458,7 @@ func TestChatModelToolCallCheckpointIncludesSemanticToolName(t *testing.T) {
 	m = updated.(ChatModel)
 
 	for _, msg := range m.messages {
-		if msg.Kind == MsgStatus && strings.Contains(msg.Content, "• lsp_definition") && strings.Contains(msg.Content, "main.go:12:4") {
+		if msg.Kind == MsgCheckpoint && strings.Contains(msg.Content, "• lsp_definition") && strings.Contains(msg.Content, "main.go:12:4") {
 			return
 		}
 	}

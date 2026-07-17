@@ -8,6 +8,52 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// compactDiffForDisplay trims a diff to its interesting parts for inline transcript
+// display: headers and changed lines with up to 2 context lines around each change,
+// capped at maxLines total with a trailing "… N more lines" marker.
+func compactDiffForDisplay(diff string, maxLines int) string {
+	lines := strings.Split(strings.TrimRight(diff, "\n"), "\n")
+	keep := make([]bool, len(lines))
+	isChange := func(l string) bool {
+		return (strings.HasPrefix(l, "+") || strings.HasPrefix(l, "-")) &&
+			!strings.HasPrefix(l, "+++") && !strings.HasPrefix(l, "---")
+	}
+	for i, l := range lines {
+		if strings.HasPrefix(l, "---") || strings.HasPrefix(l, "+++") ||
+			strings.HasPrefix(l, "@@") || strings.HasPrefix(l, "diff --git") {
+			keep[i] = true
+			continue
+		}
+		if isChange(l) {
+			for j := max(0, i-2); j <= min(len(lines)-1, i+2); j++ {
+				keep[j] = true
+			}
+		}
+	}
+	var out []string
+	skipped := 0
+	gap := false
+	for i, l := range lines {
+		if !keep[i] {
+			gap = true
+			continue
+		}
+		if gap && len(out) > 0 {
+			out = append(out, "@@")
+			gap = false
+		}
+		if len(out) >= maxLines {
+			skipped = len(lines) - i
+			break
+		}
+		out = append(out, l)
+	}
+	if skipped > 0 {
+		out = append(out, fmt.Sprintf("… %d more lines", skipped))
+	}
+	return strings.Join(out, "\n")
+}
+
 // enhancedDiffBlock parses a raw diff body and returns a richer rendering
 // with line numbers, file headers, hunk headers, +/- styling, and word-level highlighting.
 func enhancedDiffBlock(body string, width int, theme chatTheme) string {
