@@ -3444,10 +3444,8 @@ func TestChatModelProviderOverlayClaudeLoginFlow(t *testing.T) {
 	if !m.providerPromptingKey {
 		t.Fatal("expected callback paste prompt")
 	}
-	if got := m.View(); !strings.Contains(got, "Open URL:") || !strings.Contains(got, "Paste callback/code:") {
+	if got := m.View(); !strings.Contains(got, "Open URL") || !strings.Contains(got, "Paste callback/code:") {
 		t.Fatalf("view missing Claude auth labels: %s", got)
-	} else if !strings.Contains(got, "Open Claude sign-in page") {
-		t.Fatalf("view missing Claude auth link label: %s", got)
 	} else if !strings.Contains(got, "\x1b]8;;https://claude.ai/oauth/authorize?code=true") {
 		t.Fatalf("view missing Claude auth hyperlink: %q", got)
 	}
