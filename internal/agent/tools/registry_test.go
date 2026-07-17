@@ -59,7 +59,6 @@ func TestMutatingToolsDeclareWorkspaceMutation(t *testing.T) {
 		NewApplyPatch(t.TempDir(), approve),
 		NewArtifactWrite(previewRuntime),
 		NewGitCommit(t.TempDir(), approve),
-		NewScratchpadWrite(t.TempDir()),
 	} {
 		if !tool.MutatesWorkspace {
 			t.Fatalf("%s MutatesWorkspace = false, want true", tool.Name)

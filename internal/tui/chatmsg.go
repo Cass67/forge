@@ -144,11 +144,3 @@ func renderCheckpointBlock(content string, width int, theme chatTheme) string {
 		PaddingLeft(1).
 		Render(strings.Join(out, "\n"))
 }
-
-func indentRenderedBlock(text, prefix string) string {
-	lines := strings.Split(text, "\n")
-	for i, line := range lines {
-		lines[i] = prefix + line
-	}
-	return strings.Join(lines, "\n")
-}

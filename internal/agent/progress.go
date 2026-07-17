@@ -49,10 +49,6 @@ func progressLine(role, toolName, summary string) string {
 		return fmt.Sprintf("Fetching %q", summary)
 	case "web_search":
 		return fmt.Sprintf("Searching the web for %q", summary)
-	case "scratchpad_write":
-		return "Saving notes for this step"
-	case "scratchpad_read":
-		return "Loading saved notes"
 	case "git_status":
 		return "Checking current working-tree changes"
 	case "git_diff":

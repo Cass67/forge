@@ -716,9 +716,6 @@ func containsTestString(list []string, want string) bool {
 
 func testConfig() *config.Config {
 	cfg := &config.Config{}
-	cfg.Models.Writer = "claude-3-7-sonnet-latest"
-	cfg.Models.Auditor = "gpt-4o"
-	cfg.Models.Summarizer = "claude-3-5-haiku-latest"
 	cfg.Session.OutputDir = "."
 	cfg.Retry.MaxAttempts = 3
 	cfg.Retry.InitialWait = 1000
@@ -726,8 +723,6 @@ func testConfig() *config.Config {
 	cfg.Retry.Timeout = 300
 	cfg.Chat.CommandTimeout = 60
 	cfg.Log.Level = "info"
-	cfg.Models.WriterParams.Temperature = -1
-	cfg.Models.AuditorParams.Temperature = -1
 	return cfg
 }
 

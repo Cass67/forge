@@ -85,7 +85,7 @@ func TestUseResponsesAPI(t *testing.T) {
 		},
 		{
 			name:              "compat providers stay on chat completions",
-			driver:            NewOpenAICompatible("sk-test", "https://example.com/v1", "gpt-5.4"),
+			driver:            NewOpenAICompatibleProviderAlias("compat", "sk-test", "https://example.com/v1", "gpt-5.4", "gpt-5.4"),
 			wantUsesResponses: false,
 		},
 	}

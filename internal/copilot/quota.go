@@ -2,7 +2,6 @@ package copilot
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -277,12 +276,4 @@ func headerFloat(h http.Header, key string) float64 {
 		return 0
 	}
 	return f
-}
-
-func FormatQuotaSource(h http.Header) string {
-	q := ExtractQuotaHeaders(h)
-	if q == nil {
-		return ""
-	}
-	return fmt.Sprintf("%s", q.Type)
 }

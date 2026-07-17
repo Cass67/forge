@@ -37,20 +37,6 @@ func (t chatTheme) appSurface() lipgloss.Color {
 	return t.AppBG
 }
 
-func (t chatTheme) panelSurface() lipgloss.Color {
-	if t.PanelBG == "" {
-		return t.appSurface()
-	}
-	return t.PanelBG
-}
-
-func (t chatTheme) headerSurface() lipgloss.Color {
-	if t.HeaderBG == "" {
-		return t.panelSurface()
-	}
-	return t.HeaderBG
-}
-
 var chatThemeRegistry = []chatTheme{
 	{
 		ID:              "default",

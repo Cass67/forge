@@ -29,13 +29,6 @@ var (
 	discoverCompatModels    = DiscoverOpenAICompatibleModels
 )
 
-type Runtime struct {
-	Config   *config.Config
-	Tokens   *auth.Tokens
-	Registry *llm.Registry
-	Models   []string
-}
-
 type CompatProvider struct {
 	Name         string
 	Label        string
@@ -79,34 +72,6 @@ func LoadTokens() (*auth.Tokens, error) {
 		return &auth.Tokens{}, err
 	}
 	return tokens, nil
-}
-
-func LoadRuntime() (*Runtime, error) {
-	cfg, err := LoadConfig()
-	if err != nil {
-		return nil, err
-	}
-	tokens, _ := LoadTokens()
-	return &Runtime{
-		Config:   cfg,
-		Tokens:   tokens,
-		Registry: BuildRegistry(cfg, tokens, cfg.Models.Writer, cfg.Models.Auditor, cfg.Models.Summarizer),
-		Models:   AvailableModels(cfg, tokens),
-	}, nil
-}
-
-func BuildRegistry(cfg *config.Config, tokens *auth.Tokens, models ...string) *llm.Registry {
-	reg := llm.NewRegistry()
-	registered := map[string]bool{}
-	for _, model := range models {
-		d := DriverForModel(cfg, tokens, model)
-		if d == nil || registered[d.Name()] {
-			continue
-		}
-		reg.Register(d)
-		registered[d.Name()] = true
-	}
-	return reg
 }
 
 func EnsureDriver(cfg *config.Config, tokens *auth.Tokens, reg *llm.Registry, model string) {
@@ -378,26 +343,12 @@ func SupportedProviderBackends(cfg *config.Config, tokens *auth.Tokens) []Provid
 	return backends
 }
 
-func FindCompatProvider(providers []CompatProvider, model string) *CompatProvider {
-	for i := range providers {
-		p := &providers[i]
-		if p.KeyFn() != "" && p.IsModel(model) {
-			return p
-		}
-	}
-	return nil
-}
-
 func AnthropicModels() []string {
 	return []string{
 		"claude-opus-4-6",
 		"claude-sonnet-4-6",
 		"claude-haiku-4-5",
 	}
-}
-
-func AllModels() []string {
-	return append(AnthropicModels(), OpenAIModels()...)
 }
 
 func IsAnthropicModel(name string) bool {

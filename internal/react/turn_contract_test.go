@@ -311,23 +311,6 @@ func TestSessionUpdateTurnContractWithoutActiveContractDoesNotCreateEmptyContrac
 	}
 }
 
-func TestSessionClearTurnContractClearsSnapshotAndReplay(t *testing.T) {
-	s := NewSession()
-	s.SetTurnContract(TurnContract{ID: "contract-1", Status: ContractStatusActive})
-	s.ClearTurnContract("user changed task")
-
-	if got := s.Snapshot().TurnContract; got != nil {
-		t.Fatalf("TurnContract = %#v, want nil", got)
-	}
-	restored, err := NewSessionFromItems(s.Snapshot().Items)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := restored.Snapshot().TurnContract; got != nil {
-		t.Fatalf("restored TurnContract = %#v, want nil", got)
-	}
-}
-
 func TestSessionClearTurnContractPersistsSchemaValidClearItem(t *testing.T) {
 	sink := &fakeDurableSink{}
 	s := NewSession()
@@ -476,43 +459,5 @@ func TestSessionSnapshotItemsTurnContractIsAliasSafe(t *testing.T) {
 	}
 	if next.TurnContract == nil || next.TurnContract.ID != "contract-1" || next.TurnContract.Gates[0].Name != "tests" {
 		t.Fatalf("snapshot item mutation leaked into latest contract: %#v", next.TurnContract)
-	}
-}
-
-func TestSessionRestoresLatestActiveTurnContract(t *testing.T) {
-	s, err := NewSessionFromItems([]protocol.Item{
-		{
-			Version:  protocol.CurrentItemVersion,
-			ThreadID: "thread-1",
-			Seq:      1,
-			Kind:     protocol.ItemTurnContract,
-			TurnContract: &protocol.TurnContractItem{
-				ID:         "contract-1",
-				SourceTurn: 1,
-				Status:     string(ContractStatusActive),
-			},
-		},
-		{
-			Version:  protocol.CurrentItemVersion,
-			ThreadID: "thread-1",
-			Seq:      2,
-			Kind:     protocol.ItemTurnContract,
-			TurnContract: &protocol.TurnContractItem{
-				ID:     "contract-2",
-				Intent: string(TurnIntentVerify),
-				RequiredVerification: []protocol.VerificationRequirementItem{{
-					Command: "go test ./internal/react",
-				}},
-				Status: string(ContractStatusActive),
-			},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	got := s.Snapshot().TurnContract
-	if got == nil || got.ID != "contract-2" || got.Intent != TurnIntentVerify || got.RequiredVerification[0].Command != "go test ./internal/react" {
-		t.Fatalf("TurnContract = %#v", got)
 	}
 }

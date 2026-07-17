@@ -210,32 +210,6 @@ type planStep struct {
 	Status planStepStatus
 }
 
-// parsePlanStep parses a single line into a planStep.
-func parsePlanStep(line string) planStep {
-	m := planStepRegex.FindStringSubmatch(line)
-	if len(m) >= 3 {
-		status := strings.ToLower(strings.TrimSpace(m[1]))
-		var s planStepStatus
-		switch status {
-		case planStepCompleted, "done", "finished", "complete":
-			s = planStepCompleted
-		case planStepInProgress, "active", "running", "doing":
-			s = planStepInProgress
-		case planStepBlocked, "waiting", "stuck":
-			s = planStepBlocked
-		case planStepFailed, "error", "errored":
-			s = planStepFailed
-		default:
-			s = planStepPending
-		}
-		return planStep{Text: strings.TrimSpace(m[2]), Status: s}
-	}
-	text := strings.TrimSpace(line)
-	// Strip common list markers for plain items
-	text = regexp.MustCompile(`^\s*[-*0-9.]+\s*`).ReplaceAllString(text, "")
-	return planStep{Text: text, Status: planStepPlain}
-}
-
 // stickyPlan returns the parsed plan content for the sticky plan,
 // or empty string if no plan is active.
 func (m ChatModel) stickyPlan() string {
@@ -382,83 +356,4 @@ type planProgressStats struct {
 	Blocked    int
 	Failed     int
 	Percent    int
-}
-
-// computePlanProgress aggregates step statuses into stats.
-func computePlanProgress(steps []planStep) planProgressStats {
-	var s planProgressStats
-	s.Total = len(steps)
-	for _, step := range steps {
-		switch step.Status {
-		case planStepCompleted:
-			s.Completed++
-		case planStepInProgress:
-			s.InProgress++
-		case planStepBlocked:
-			s.Blocked++
-		case planStepFailed:
-			s.Failed++
-		}
-	}
-	if s.Total > 0 {
-		s.Percent = (s.Completed * 100) / s.Total
-	}
-	return s
-}
-
-// renderPlanProgressBar renders a compact progress bar string.
-func renderPlanProgressBar(stats planProgressStats, width int, theme chatTheme) string {
-	if stats.Total == 0 {
-		return ""
-	}
-	barWidth := max(8, min(30, width-20))
-	filled := (stats.Percent * barWidth) / 100
-	bar := strings.Repeat("━", filled) + strings.Repeat("─", barWidth-filled)
-
-	statsStr := fmt.Sprintf("%d/%d", stats.Completed, stats.Total)
-	if stats.InProgress > 0 {
-		statsStr += fmt.Sprintf(" · %d active", stats.InProgress)
-	}
-	if stats.Blocked > 0 {
-		statsStr += fmt.Sprintf(" · %d blocked", stats.Blocked)
-	}
-	if stats.Failed > 0 {
-		statsStr += fmt.Sprintf(" · %d failed", stats.Failed)
-	}
-
-	barStyle := lipgloss.NewStyle().Foreground(theme.AccentPrimary)
-	if stats.Failed > 0 || stats.Blocked > 0 {
-		barStyle = lipgloss.NewStyle().Foreground(theme.Warning)
-	}
-	if stats.Completed == stats.Total {
-		barStyle = lipgloss.NewStyle().Foreground(theme.Success)
-	}
-
-	return lipgloss.NewStyle().Foreground(theme.TextDim).Render("Progress ") +
-		barStyle.Render(bar) + " " +
-		lipgloss.NewStyle().Foreground(theme.Text).Render(statsStr)
-}
-
-// renderPlanStepIcon returns the styled icon for a plan step.
-func renderPlanStepIcon(step planStep, theme chatTheme) string {
-	var icon string
-	var color lipgloss.Color
-	switch step.Status {
-	case planStepCompleted:
-		icon = "✓"
-		color = theme.TaskCompleted
-	case planStepInProgress:
-		icon = "▶"
-		color = theme.TaskActive
-	case planStepBlocked:
-		icon = "⊘"
-		color = theme.TaskBlocked
-	case planStepFailed:
-		icon = "✗"
-		color = theme.Error
-	default:
-		icon = "○"
-		color = theme.TaskPending
-	}
-	return lipgloss.NewStyle().Foreground(color).Render(icon)
 }

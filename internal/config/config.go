@@ -16,17 +16,8 @@ type ModelParams struct {
 	Temperature float64 `toml:"temperature"` // -1 = use provider default
 }
 
-type Models struct {
-	Writer        string      `toml:"writer"`
-	Auditor       string      `toml:"auditor"`
-	Summarizer    string      `toml:"summarizer"`
-	WriterParams  ModelParams `toml:"writer_params"`
-	AuditorParams ModelParams `toml:"auditor_params"`
-}
-
 type Session struct {
-	RoundsPerPass int    `toml:"rounds_per_pass"`
-	OutputDir     string `toml:"output_dir"`
+	OutputDir string `toml:"output_dir"`
 }
 
 type Keys struct {
@@ -48,13 +39,6 @@ type Keys struct {
 
 type Copilot struct {
 	ClientID string `toml:"client_id"`
-}
-
-type Passes struct {
-	Correctness string `toml:"correctness"`
-	Refactor    string `toml:"refactor"`
-	Security    string `toml:"security"`
-	Prod        string `toml:"prod"`
 }
 
 type Log struct {
@@ -86,18 +70,6 @@ type SecretSecurityConfig struct {
 
 type SecurityConfig struct {
 	Secrets SecretSecurityConfig `toml:"secrets"`
-}
-
-type Git struct {
-	Enabled    bool `toml:"enabled"`
-	AutoCommit bool `toml:"auto_commit"`
-}
-
-type PipelinePass struct {
-	Name          string `toml:"name"`
-	WriterPrompt  string `toml:"writer_prompt"`  // path to prompt file; empty = use built-in
-	AuditorPrompt string `toml:"auditor_prompt"` // path to prompt file; empty = use built-in
-	Rounds        int    `toml:"rounds"`         // 0 = use default
 }
 
 type ChatConfig struct {
@@ -187,17 +159,13 @@ type AgentOverride struct {
 }
 
 type Config struct {
-	Models           Models                     `toml:"models"`
 	Session          Session                    `toml:"session"`
 	Keys             Keys                       `toml:"keys"`
-	Passes           Passes                     `toml:"passes"`
-	Pipeline         []PipelinePass             `toml:"pipeline"`
 	Copilot          Copilot                    `toml:"copilot"`
 	Log              Log                        `toml:"log"`
 	Retry            Retry                      `toml:"retry"`
 	Resilience       Resilience                 `toml:"resilience"`
 	Security         SecurityConfig             `toml:"security"`
-	Git              Git                        `toml:"git"`
 	Chat             ChatConfig                 `toml:"chat"`
 	Approval         ApprovalConfig             `toml:"approval"`
 	Permissions      PermissionsConfig          `toml:"permissions"`
@@ -318,10 +286,6 @@ func DefaultPath() string {
 }
 
 func setDefaults(c *Config) {
-	c.Models.Writer = "claude-sonnet-4-6"
-	c.Models.Auditor = "gpt-4o"
-	c.Models.Summarizer = "claude-haiku-4-5"
-	c.Session.RoundsPerPass = 5
 	c.Session.OutputDir = "./output"
 	c.Log.Level = "info"
 	c.Retry.MaxAttempts = 3
@@ -342,7 +306,6 @@ func setDefaults(c *Config) {
 	c.Permissions.Auto.MaxTotalDenials = 20
 	c.Permissions.Auto.FailureBehavior = "ask"
 	c.Permissions.Auto.TimeoutMS = 5000
-	c.Git.AutoCommit = true
 	c.Chat.CommandTimeout = 60
 	c.Chat.IgnoreDirs = []string{".git", "node_modules", "__pycache__", ".venv", "vendor"}
 	c.Chat.AutoSkills = "suggest"
@@ -365,8 +328,6 @@ func setDefaults(c *Config) {
 		"npm test",
 		"npm run lint",
 	}
-	c.Models.WriterParams.Temperature = -1
-	c.Models.AuditorParams.Temperature = -1
 }
 
 func (c MCPServerConfig) IsEnabled() bool {
@@ -564,10 +525,6 @@ func (c *Config) CopilotClientID() string {
 		return c.Copilot.ClientID
 	}
 	return defaultCopilotClientID
-}
-
-func ValidRounds(n int) bool {
-	return n >= 1 && n <= 10
 }
 
 func expandTilde(s *string) {

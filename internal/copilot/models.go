@@ -112,25 +112,6 @@ func fetchModels(ctx context.Context, client *http.Client, baseURL, token string
 	return out, nil
 }
 
-func mergeModelLists(groups ...[]string) []string {
-	var out []string
-	seen := map[string]struct{}{}
-	for _, group := range groups {
-		for _, model := range group {
-			model = strings.TrimSpace(model)
-			if model == "" {
-				continue
-			}
-			if _, ok := seen[model]; ok {
-				continue
-			}
-			seen[model] = struct{}{}
-			out = append(out, model)
-		}
-	}
-	return out
-}
-
 func prefixModel(id string) string {
 	id = strings.TrimSpace(id)
 	if id == "" {

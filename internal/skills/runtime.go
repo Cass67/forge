@@ -28,40 +28,8 @@ func NewRuntime(loaded []Skill) *Runtime {
 	return &Runtime{loaded: copied}
 }
 
-func (r *Runtime) ListSkills() []Descriptor {
-	return Descriptors(r.loaded)
-}
-
-func (r *Runtime) LoadByName(name string) (Skill, bool) {
-	return Get(r.loaded, name)
-}
-
-func (r *Runtime) ResolveRequired(input string) (Skill, bool) {
-	name := resolveRequiredSkillName(input)
-	if name == "" {
-		return Skill{}, false
-	}
-	return r.LoadByName(name)
-}
-
 func (r *Runtime) ResolveAuto(input string) (Skill, bool) {
 	return resolveAutoSkill(r.loaded, input)
-}
-
-func (r *Runtime) InjectableMessage(skill Skill) string {
-	return "[Skill: " + skill.Name + "]\n\n" + skill.Body
-}
-
-func (r *Runtime) RecordSkillUse(name, workerID, outcome string) {
-	r.uses = append(r.uses, UseRecord{
-		Name:     strings.TrimSpace(name),
-		WorkerID: strings.TrimSpace(workerID),
-		Outcome:  strings.TrimSpace(outcome),
-	})
-}
-
-func (r *Runtime) UseRecords() []UseRecord {
-	return append([]UseRecord(nil), r.uses...)
 }
 
 func resolveRequiredSkillName(input string) string {

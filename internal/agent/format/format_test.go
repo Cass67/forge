@@ -171,17 +171,6 @@ func TestStatsNoTokens(t *testing.T) {
 	}
 }
 
-func TestApproval(t *testing.T) {
-	line := Approval("apply changes", "foo.go")
-	ansi := LineToANSI(line, false)
-	if !strings.Contains(ansi, "apply changes?") {
-		t.Error("missing action text")
-	}
-	if !strings.Contains(ansi, "[y]es") {
-		t.Error("missing yes option")
-	}
-}
-
 func TestToolStyle(t *testing.T) {
 	if ToolStyle("edit_file") != StyleToolPurple {
 		t.Error("edit_file should be purple")

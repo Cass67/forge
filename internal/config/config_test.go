@@ -34,18 +34,6 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Models.Writer == "" {
-		t.Error("expected default writer model")
-	}
-	if cfg.Session.RoundsPerPass < 1 {
-		t.Error("expected positive default rounds")
-	}
-	if cfg.Models.Writer != "claude-sonnet-4-6" {
-		t.Fatalf("default writer = %q, want %q", cfg.Models.Writer, "claude-sonnet-4-6")
-	}
-	if cfg.Models.Summarizer != "claude-haiku-4-5" {
-		t.Fatalf("default summarizer = %q, want %q", cfg.Models.Summarizer, "claude-haiku-4-5")
-	}
 	if cfg.Resilience.StreamIdleTimeoutMS != 120000 {
 		t.Fatalf("default stream idle timeout = %d, want %d", cfg.Resilience.StreamIdleTimeoutMS, 120000)
 	}
@@ -75,13 +63,7 @@ func TestLoadPreservesCustomStreamIdleTimeout(t *testing.T) {
 
 func TestLoadExplicit(t *testing.T) {
 	toml := `
-[models]
-writer     = "claude-opus-4-6"
-auditor    = "gpt-4o"
-summarizer = "claude-haiku-4-5-20251001"
-
 [session]
-rounds_per_pass = 5
 output_dir = "/tmp/forge-out"
 `
 	path := writeTemp(t, toml)
@@ -89,11 +71,8 @@ output_dir = "/tmp/forge-out"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Models.Writer != "claude-opus-4-6" {
-		t.Errorf("got %s", cfg.Models.Writer)
-	}
-	if cfg.Session.RoundsPerPass != 5 {
-		t.Errorf("got %d", cfg.Session.RoundsPerPass)
+	if cfg.Session.OutputDir != "/tmp/forge-out" {
+		t.Errorf("got %s", cfg.Session.OutputDir)
 	}
 }
 
@@ -488,19 +467,6 @@ func TestZAIKeyFromConfig(t *testing.T) {
 	cfg.Keys.ZAI = "from-config"
 	if got := cfg.ZAIKey(); got != "from-config" {
 		t.Fatalf("ZAIKey() = %q, want %q", got, "from-config")
-	}
-}
-
-func TestRoundsValidation(t *testing.T) {
-	for _, n := range []int{0, -1, 11} {
-		if config.ValidRounds(n) {
-			t.Errorf("expected %d to be invalid", n)
-		}
-	}
-	for _, n := range []int{1, 3, 10} {
-		if !config.ValidRounds(n) {
-			t.Errorf("expected %d to be valid", n)
-		}
 	}
 }
 

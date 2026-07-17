@@ -165,27 +165,6 @@ func Describe(skills []Skill) string {
 	return sb.String()
 }
 
-// DescribeForPrompt returns a system-prompt-ready skills section for injection
-// into the system prompt. Skills are auto-activated by the platform based on
-// keyword detection — the model must not ask the user to activate them.
-func DescribeForPrompt(skills []Skill) string {
-	if len(skills) == 0 {
-		return ""
-	}
-	var sb strings.Builder
-	sb.WriteString("## Skills\n\n")
-	sb.WriteString("Skills provide specialized workflows for specific tasks. ")
-	sb.WriteString("The platform automatically activates relevant skills based on keywords in the user's input. ")
-	sb.WriteString("Skills are MANDATORY — do not skip them and do not ask the user to activate them. ")
-	sb.WriteString("Just follow whatever skill content is active. ")
-	sb.WriteString("A coding task typically follows: brainstorm design, then write tests, then implement.\n\n")
-	sb.WriteString("Available skills (auto-activated by the platform):\n")
-	for _, d := range Descriptors(skills) {
-		fmt.Fprintf(&sb, "  - /%s: %s\n", d.Name, d.Description)
-	}
-	return sb.String()
-}
-
 // Get finds a skill by exact name, or by unambiguous prefix/abbreviation.
 // For example, "tdd" matches "test-driven-development" if it's the only skill
 // whose initials or name starts with "tdd".

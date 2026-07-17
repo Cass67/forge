@@ -1,6 +1,6 @@
 # Forge Architecture
 
-This document explains how Forge works today at the code level: entrypoints, runtime composition, model/provider routing, the host-owned chat runtime, the TUI event flow, and the legacy pass-based session runner.
+This document explains how Forge works today at the code level: entrypoints, runtime composition, model/provider routing, the host-owned chat runtime, and the TUI event flow.
 
 ## System Overview
 
@@ -29,29 +29,19 @@ flowchart TD
 
 ## Top-Level Shape
 
-Forge has two distinct execution models:
-
-1. Chat mode
-   - interactive
-   - acts directly on the current working tree
-   - centered around a host-owned React runner, one visible `forge` assistant, typed runtime hooks, approvals, and optional bounded hidden workers
-2. Improvement pipeline
-   - batch-oriented
-   - runs a sequence of writer/auditor/summarizer passes
-   - writes artifacts into a timestamped output directory
+Forge has one execution model: interactive chat that acts directly on the
+current working tree, centered around a host-owned React runner, one visible
+`forge` assistant, typed runtime hooks, approvals, and optional bounded hidden
+workers. Headless execution (`forge -p`) runs the same runtime without the UI.
 
 The main CLI entrypoint is [cmd/forge/main.go](./cmd/forge/main.go).
 
 Important command families:
 
-- `forge`
-- `forge make`
-- `forge improve` (compatibility alias for batch pipeline runs)
-- `forge list`
-- `forge show`
-- `forge perf`
+- `forge` (interactive, plus `-p` headless and `--resume`/`--continue`)
 - `forge auth copilot`
 - `forge status`
+- `forge mcp`, `forge plugin`, `forge skills`
 
 ## Package Map
 
@@ -77,20 +67,14 @@ The core package boundaries are:
   - typed runtime hook registry, dispatch, overlay/note/block normalization
 - [internal/memory/](./internal/memory)
   - bounded retained-context extraction, redaction, consolidation, and prompt-summary generation
-- [internal/agent/agent.go](./internal/agent/agent.go)
-  - shared prompting, rendering, and lower-level agent helpers still used by runtime surfaces
-- [internal/agent/subagent.go](./internal/agent/subagent.go)
-  - legacy delegated sub-agent execution retained for compatibility paths
-- [internal/agent/roles.go](./internal/agent/roles.go)
-  - legacy visible-role definitions and tool restrictions used only by compatibility paths
+- [internal/agent/](./internal/agent)
+  - shared prompting, rendering, and approval helpers used by runtime surfaces
 - [internal/agent/tools/](./internal/agent/tools)
   - tool implementations, preview/runtime helpers, git tools, web tools, and exec-session management
 - [internal/tui/](./internal/tui)
   - startup UI, chat UI, post-run screens, overlays, message rendering
-- [internal/session/runner.go](./internal/session/runner.go)
-  - legacy pass-based pipeline orchestration
 - [internal/llm/](./internal/llm)
-  - driver interface, event types, retry wrapper, usage tracking
+  - driver interface, event types, retry wrapper
 - [internal/llm/drivers/](./internal/llm/drivers)
   - provider-specific driver implementations
 - [internal/config/config.go](./internal/config/config.go)
@@ -102,12 +86,8 @@ The core package boundaries are:
 
 The CLI starts in [cmd/forge/main.go](./cmd/forge/main.go).
 
-There are two important top-level flows:
-
-- default chat flow via `forge`
-  - builds a chat session and launches the host-owned live chat runtime
-- legacy writer/auditor flow via `forge make`
-  - starts the older writer/auditor pipeline UI or batch pipeline entrypoint depending on arguments
+The default chat flow via `forge` builds a chat session and launches the
+host-owned live chat runtime (or the console/headless variants).
 
 The current chat runtime path is:
 
@@ -402,12 +382,6 @@ The active UI now surfaces:
 - command-session lifecycle updates
 - recent activity and runtime stats
 
-## Session / Pipeline Runner
-
-The non-chat session runner starts in [internal/runtime/session.go](./internal/runtime/session.go) and delegates orchestration to [internal/session/runner.go](./internal/session/runner.go).
-
-This is the legacy `forge make` path. It remains supported, but it is not the main architectural direction of the repository.
-
 ## Auth Flows
 
 Forge currently supports three classes of auth:
@@ -430,9 +404,7 @@ Key property: Forge-owned auth storage is the source of truth for these provider
 
 ## Output, Logging, And Auditability
 
-Pipeline mode persists artifacts under the configured output directory.
-
-Chat mode operates in-place but still tracks:
+Chat mode operates in-place and tracks:
 
 - usage snapshots
 - session stats
@@ -448,8 +420,6 @@ The event model in [internal/llm/types.go](./internal/llm/types.go) is the share
 
 There are a few architectural seams worth knowing about:
 
-- the repository still contains a legacy pipeline surface (`forge make`) alongside the primary chat/runtime path
-- chat mode and pipeline mode share drivers and some config, but their orchestration models are intentionally different
 - prompt-visible behavior is increasingly host-owned via `internal/react`, `internal/hooks`, and `internal/memory`, but some older compatibility surfaces still exist
 - provider routing is centralized, which is convenient, but it means model/provider/auth changes often touch one high-leverage file: [internal/bootstrap/runtime.go](./internal/bootstrap/runtime.go)
 

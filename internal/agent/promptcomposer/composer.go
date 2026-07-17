@@ -37,12 +37,6 @@ type composeOptions struct {
 
 type Option func(*composeOptions)
 
-func WithMaxBytes(max int) Option {
-	return func(cfg *composeOptions) {
-		cfg.maxBytes = max
-	}
-}
-
 func Compose(static StaticInput, overlays []Overlay, opts ...Option) string {
 	cfg := composeOptions{}
 	for _, opt := range opts {
