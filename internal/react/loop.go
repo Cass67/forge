@@ -183,6 +183,10 @@ func toolThrashThreshold(configured, fallback int) int {
 const sameFileSearchThrashThreshold = 5
 const repeatToolCallThreshold = 3
 const repeatToolCallWindow = 10
+
+// ponytail: nudge only, no hard block — 6/10 same-file reads is a verification
+// spiral, but linear paging of a big file stays under it.
+const rereadSameFileThreshold = 6
 const maxCompletionRetriesPerTurn = 3
 const maxCompletionGateRejectionsPerTurn = 2
 const retryNoticeText = "Revising answer..."
@@ -5782,10 +5786,34 @@ func readRangeKey(args map[string]any) string {
 }
 
 func (s repeatToolCallState) overlayContent(threshold int) string {
-	if s.streak < toolThrashThreshold(threshold, repeatToolCallThreshold) {
-		return ""
+	if s.streak >= toolThrashThreshold(threshold, repeatToolCallThreshold) {
+		return fmt.Sprintf("Loop detection: you have called %s on the same target %q %d times recently without making progress. Stop repeating this action. Either the approach is wrong or you already have the information you need. Switch to a different tool or synthesize your findings now.", s.lastToolName, s.lastTarget, s.streak)
 	}
-	return fmt.Sprintf("Loop detection: you have called %s on the same target %q %d times recently without making progress. Stop repeating this action. Either the approach is wrong or you already have the information you need. Switch to a different tool or synthesize your findings now.", s.lastToolName, s.lastTarget, s.streak)
+	if path, count := s.rereadPathCount(); count >= rereadSameFileThreshold {
+		return fmt.Sprintf("Loop detection: you have read %q %d times recently (different ranges) without editing anything. The file has not changed; re-reading it will not reveal anything new. Stop verifying and act on what you already know.", path, count)
+	}
+	return ""
+}
+
+// rereadPathCount counts recent read_file calls on the most recent read path,
+// ignoring the line range, so verification spirals that page through the same
+// file with varying ranges are still caught.
+func (s repeatToolCallState) rereadPathCount() (string, int) {
+	if s.lastToolName != "read_file" {
+		return "", 0
+	}
+	path, _, _ := strings.Cut(s.lastTarget, "#")
+	if path == "" {
+		return "", 0
+	}
+	prefix := "read_file:" + path
+	count := 0
+	for _, k := range s.recent {
+		if k == prefix || strings.HasPrefix(k, prefix+"#") {
+			count++
+		}
+	}
+	return path, count
 }
 
 func isExplorationToolCall(toolName string, args map[string]any) bool {

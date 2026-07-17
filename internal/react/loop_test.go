@@ -7473,3 +7473,31 @@ func assertContainsAll(t *testing.T, text string, parts ...string) {
 		}
 	}
 }
+
+func TestRepeatOverlayCatchesVariedRangeRereads(t *testing.T) {
+	s := repeatToolCallState{
+		lastToolName: "read_file",
+		lastTarget:   "game.js#500-600",
+		recent: []string{
+			"read_file:game.js#1-100",
+			"read_file:game.js#100-200",
+			"read_file:game.js",
+			"read_file:other.js#1-50",
+			"read_file:game.js#200-300",
+			"read_file:game.js#300-400",
+			"read_file:game.js#400-500",
+			"read_file:game.js#500-600",
+		},
+		streak: 1,
+	}
+	got := s.overlayContent(repeatToolCallThreshold)
+	if !strings.Contains(got, "Loop detection") || !strings.Contains(got, `"game.js"`) {
+		t.Fatalf("overlay = %q, want same-file reread nudge", got)
+	}
+
+	// Linear paging under the threshold stays silent.
+	s.recent = s.recent[:4]
+	if got := s.overlayContent(repeatToolCallThreshold); got != "" {
+		t.Fatalf("overlay = %q, want empty for light paging", got)
+	}
+}
