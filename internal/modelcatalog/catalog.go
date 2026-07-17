@@ -219,6 +219,10 @@ func refreshLoop() {
 		mu.Lock()
 		catalog = cached
 		mu.Unlock()
+	} else {
+		// No fresh disk cache: refresh now instead of running on the
+		// stale bundled snapshot for the first hour.
+		refresh()
 	}
 	for {
 		time.Sleep(time.Hour)

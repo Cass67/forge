@@ -1798,6 +1798,14 @@ func (m ChatModel) handleModelsMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m ChatModel) handleProvidersMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.providerAuthWaiting || m.providerPromptingKey {
+		// ponytail: mouse tracking swallows OSC 8 clicks, so any click during
+		// auth opens the URL instead of selecting/closing underneath it
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft && strings.TrimSpace(m.providerAuthURL) != "" {
+			return m, openProviderAuthURL(m.providerAuthURL)
+		}
+		return m, nil
+	}
 	x0, y0, boxW, boxH, listY, contentHeight, start := m.providersOverlayLayout()
 	if tea.MouseEvent(msg).IsWheel() {
 		switch msg.Button {
@@ -4503,6 +4511,12 @@ func (m *ChatModel) openProviderPicker() {
 func (m ChatModel) handleProvidersKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.providerAuthWaiting {
 		switch msg.Type {
+		case tea.KeyCtrlO:
+			return m, openProviderAuthURL(m.providerAuthURL)
+		case tea.KeyRunes:
+			if len(msg.Runes) == 1 && (msg.Runes[0] == 'o' || msg.Runes[0] == 'O') {
+				return m, openProviderAuthURL(m.providerAuthURL)
+			}
 		case tea.KeyEscape:
 			if m.providerAuthCancel != nil {
 				m.providerAuthCancel()
@@ -5408,14 +5422,14 @@ func (m ChatModel) renderProvidersOverlay() string {
 			footerText = "Enter save key • Esc cancel"
 		}
 	} else if m.providerAuthWaiting {
-		footerText = "Complete sign-in in browser • Esc cancel"
+		footerText = "o/click open browser • complete sign-in there • Esc cancel"
 	}
 	authLines := []string{}
 	authWidth := max(1, boxW-6)
 	if m.providerAuthWaiting || (m.providerPromptingKey && m.providerAuthProvider == "claude" && m.providerAuthURL != "") {
 		if m.providerAuthURL != "" {
-			authLines = append(authLines, textStyle.Render("Open URL:"))
-			authLines = append(authLines, textStyle.Render(providerAuthHyperlink("Open Claude sign-in page", m.providerAuthURL)))
+			authLines = append(authLines, textStyle.Render("Open URL (click here or press o):"))
+			authLines = append(authLines, textStyle.Render(providerAuthHyperlink(wrapProviderAuthValue(m.providerAuthURL, authWidth), m.providerAuthURL)))
 		}
 		if m.providerAuthCode != "" {
 			authLines = append(authLines, textStyle.Render("Code:"))
