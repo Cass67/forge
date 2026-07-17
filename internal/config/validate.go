@@ -53,13 +53,6 @@ func (c *Config) Validate() []ValidationIssue {
 	if c.Chat.CommandTimeout < 1 {
 		add("chat.command_timeout", "must be at least 1")
 	}
-	if c.Chat.AutoSkills != "" {
-		switch strings.ToLower(strings.TrimSpace(c.Chat.AutoSkills)) {
-		case "off", "suggest", "auto":
-		default:
-			add("chat.auto_skills", fmt.Sprintf("must be one of off, suggest, auto, got %q", c.Chat.AutoSkills))
-		}
-	}
 	if c.Approval.DefaultPolicy != "" {
 		switch strings.ToLower(strings.TrimSpace(c.Approval.DefaultPolicy)) {
 		case "never", "on_failure", "on_request", "unless_trusted":

@@ -78,7 +78,6 @@ type ChatConfig struct {
 	CommandTimeout int      `toml:"command_timeout"`
 	Yolo           bool     `toml:"yolo"`
 	IgnoreDirs     []string `toml:"ignore_dirs"`
-	AutoSkills     string   `toml:"auto_skills"`
 	// ToolProfile: "lean" exposes a reduced tool-schema set (rest callable
 	// via tool_help), "full" always sends every schema, "" auto-detects
 	// (lean for local/self-hosted providers).
@@ -308,7 +307,6 @@ func setDefaults(c *Config) {
 	c.Permissions.Auto.TimeoutMS = 5000
 	c.Chat.CommandTimeout = 60
 	c.Chat.IgnoreDirs = []string{".git", "node_modules", "__pycache__", ".venv", "vendor"}
-	c.Chat.AutoSkills = "suggest"
 	c.LiveCompatModels = true
 	c.Approval.DefaultPolicy = "on_request"
 	c.Approval.SandboxPolicy = "workspace_write"

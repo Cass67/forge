@@ -49,7 +49,7 @@ var (
 	loadChatTokens    = bootstrap.LoadTokens
 	saveLastChatModel = config.SaveChatLastModel
 	defaultConfigPath = config.DefaultPath
-	runChatLiveUI     = tui.RunChatLive
+	runChatLiveUI     = tui.RunChatLiveBubbleTea
 	newChatMCPManager = func() *mcp.Manager { return mcp.NewManager() }
 )
 
@@ -77,12 +77,6 @@ func loadChatApprovalConfig(setup *ChatSetup) reactruntime.ApprovalConfig {
 	cfg.ClassifierFailureBehavior = reactruntime.ClassifierFailureBehavior(setup.Config.Permissions.Auto.FailureBehavior)
 	return cfg
 }
-
-type chatRuntimeMode string
-
-const (
-	chatRuntimeReact chatRuntimeMode = "react"
-)
 
 type ChatSetup struct {
 	Config     *config.Config
@@ -591,15 +585,6 @@ func RunChatLive(setup *ChatSetup) {
 
 	var turnCancel atomic.Value
 
-	// nudgeForwarder routes nudge calls from the goroutine to liveCfg.NotifyNudge.
-	// The bubbletea layer publishes its wrapped NotifyNudge into nudgeSink after
-	// creating the tea program, so goroutine calls also trigger p.Send.
-	var nudgeSink func(string, string, string)
-	nudgeForwarder := func(mode, taskOp, suggestedSkill string) {
-		if nudgeSink != nil {
-			nudgeSink(mode, taskOp, suggestedSkill)
-		}
-	}
 	var wg sync.WaitGroup
 
 	go func() {
@@ -619,13 +604,6 @@ func RunChatLive(setup *ChatSetup) {
 			text := ui.Text
 			if setup != nil && setup.debugRec != nil {
 				setup.debugRec.logInput("user", text)
-			}
-			applySuggestedSkillOverlay(session, text, loadedSkills, state)
-			if nudge, skillName := suggestedSkillNudgeWithName(text, loadedSkills, state); nudge != "" {
-				evRenderer.Info(nudge)
-				if nudgeForwarder != nil {
-					nudgeForwarder("", "", skillName)
-				}
 			}
 			turnCtx, tc := context.WithCancel(ctx)
 			turnCancel.Store(tc)
@@ -825,17 +803,9 @@ func RunChatLive(setup *ChatSetup) {
 		ApprovalCh:      evRenderer.ApprovalChan(),
 		ResponseCh:      evRenderer.ResponseChan(),
 		Skills:          loadedSkills,
-		AutoSkillsMode:  setup.Config.Chat.AutoSkills,
 		State:           state,
 		CopilotClientID: setup.Config.CopilotClientID(),
 	}
-	// NotifyNudge is intentionally set after the struct literal so that
-	// nudgeForwarder can be assigned the same function reference. The goroutine
-	// captures nudgeForwarder by closure, so it calls the correct function once
-	// populated. The bubbletea layer wraps liveCfg.NotifyNudge with p.Send, so
-	// calls through nudgeForwarder also reach the TUI mode badge.
-	liveCfg.NotifyNudge = func(mode, taskOp, suggestedSkill string) { /* forwarded by bubbletea */ }
-	liveCfg.NotifyNudgeSink = &nudgeSink
 	runChatLiveUI(eventsCh, liveCfg, inputCh, doneCh)
 }
 
@@ -1080,7 +1050,6 @@ func buildConsoleRuntime(setup *ChatSetup, approve tools.ApprovalFunc, out io.Wr
 func RunChatConsole(setup *ChatSetup) {
 	rt, cleanup := buildConsoleRuntime(setup, nil, os.Stdout, true)
 	defer cleanup()
-	session := rt.session
 	renderer := rt.renderer
 	reactRunner := rt.runner
 	loadedSkills := rt.loadedSkills
@@ -1189,16 +1158,6 @@ func RunChatConsole(setup *ChatSetup) {
 			}
 		}
 		ui := chatstate.ChatUserInput{IsInput: true, Text: input}
-		if setup.Config.Chat.AutoSkills == skills.AutoSkillsAuto {
-			if skillInput, ok := autoSkillChatInput(loadedSkills, state, input); ok {
-				renderer.Info(fmt.Sprintf("skill activated: %s", skillInput.SkillName))
-				ui = skillInput
-			}
-		}
-		applySuggestedSkillOverlay(session, input, loadedSkills, state)
-		if nudge := suggestedSkillNudge(input, loadedSkills, state); nudge != "" {
-			renderer.Info(nudge)
-		}
 		turnCtx, tc := context.WithCancel(ctx)
 		turnCancel.Store(tc)
 		err := runChatTurn(turnCtx, reactRunner, ui)
@@ -1666,10 +1625,6 @@ func (r agentProgressRenderTarget) StatsWithContext(duration time.Duration, usag
 func (r agentProgressRenderTarget) Error(msg string) { r.target.Error(msg) }
 func (r agentProgressRenderTarget) Info(msg string)  { r.target.Info(msg) }
 
-func resolveChatRuntimeMode() chatRuntimeMode {
-	return chatRuntimeReact
-}
-
 type chatTurnRunner interface {
 	Run(context.Context, string) error
 	RunWithParts(context.Context, string, []llm.MessageContentPart) error
@@ -1702,17 +1657,6 @@ func runChatTurn(ctx context.Context, reactRunner chatTurnRunner, input chatstat
 	return reactRunner.Run(ctx, text)
 }
 
-func autoSkillChatInput(loadedSkills []skills.Skill, state *chatstate.State, input string) (chatstate.ChatUserInput, bool) {
-	s, ok := skills.DetectAuto(loadedSkills, input)
-	if !ok {
-		return chatstate.ChatUserInput{}, false
-	}
-	if state != nil {
-		state.ActivateSkill(s.Name)
-	}
-	return chatstate.ChatUserInput{IsInput: true, Text: input, SkillName: s.Name, SkillBody: s.Body}, true
-}
-
 func chatInputToContentParts(attachments []chatstate.ChatAttachment) []llm.MessageContentPart {
 	if len(attachments) == 0 {
 		return nil
@@ -1732,40 +1676,6 @@ func chatInputToContentParts(attachments []chatstate.ChatAttachment) []llm.Messa
 	return parts
 }
 
-func suggestedSkillNudge(input string, loadedSkills []skills.Skill, state *chatstate.State) string {
-	nudge, _ := suggestedSkillNudgeWithName(input, loadedSkills, state)
-	return nudge
-}
-
-// suggestedSkillNudgeWithName returns the human-readable nudge string and the
-// raw skill name separately so callers can forward the name to NotifyNudge.
-func suggestedSkillNudgeWithName(input string, loadedSkills []skills.Skill, state *chatstate.State) (nudge, skillName string) {
-	if len(loadedSkills) == 0 || strings.TrimSpace(input) == "" {
-		return "", ""
-	}
-	active := map[string]bool{}
-	if state != nil {
-		for _, name := range state.ActiveSkills() {
-			active[name] = true
-		}
-	}
-	suggestion, ok := skills.Suggest(loadedSkills, "", input, active)
-	if !ok {
-		return "", ""
-	}
-	return fmt.Sprintf("suggested skill: /%s (%s)", suggestion.Name, suggestion.Reason), suggestion.Name
-}
-
-func applySuggestedSkillOverlay(session *reactruntime.Session, input string, loadedSkills []skills.Skill, state *chatstate.State) {
-	if session == nil {
-		return
-	}
-	registry := newChatHookRegistry()
-	session.SetHookOutput(chatPromptHookOutput(context.Background(), session, registry, chatPromptHookPayload{
-		SuggestedSkillNudge: suggestedSkillNudge(input, loadedSkills, state),
-	}, "suggested_skill"))
-}
-
 func applyGuardianOverlay(session *reactruntime.Session, event reactruntime.GuardianEvent) {
 	if session == nil {
 		return
@@ -1777,32 +1687,13 @@ func applyGuardianOverlay(session *reactruntime.Session, event reactruntime.Guar
 }
 
 type chatPromptHookPayload struct {
-	SuggestedSkillNudge string
-	GuardianEvent       *reactruntime.GuardianEvent
+	GuardianEvent *reactruntime.GuardianEvent
 }
 
 func newChatHookRegistry() *hooks.Registry {
 	registry := hooks.NewRegistry()
-	registry.Register(hooks.PointPromptContext, "suggested_skill", suggestedSkillPromptHook)
 	registry.Register(hooks.PointPromptContext, "guardian_warning", guardianWarningPromptHook)
 	return registry
-}
-
-func suggestedSkillPromptHook(_ context.Context, event hooks.Event) []hooks.Result {
-	payload, ok := event.Transient.(chatPromptHookPayload)
-	if !ok {
-		return nil
-	}
-	nudge := strings.TrimSpace(payload.SuggestedSkillNudge)
-	if nudge == "" {
-		return nil
-	}
-	return []hooks.Result{hooks.OverlayResult{
-		Key:        "suggested_skill",
-		Content:    nudge,
-		Priority:   hooks.PriorityNormal,
-		Provenance: "runtime",
-	}}
 }
 
 func guardianWarningPromptHook(_ context.Context, event hooks.Event) []hooks.Result {

@@ -49,7 +49,6 @@ type ChatLiveConfig struct {
 	ApprovalCh            <-chan tools.Action
 	ResponseCh            chan<- bool
 	Skills                []skills.Skill
-	AutoSkillsMode        string
 	State                 *chatstate.State
 	CopilotClientID       string
 	FetchLiveCopilotQuota func(context.Context) (*copilot.UserQuota, error)
@@ -57,14 +56,6 @@ type ChatLiveConfig struct {
 	ModelInfo             func(model string) *modelcatalog.ModelInfo
 	DescribeModel         func(model string) string
 	RequestMode           func() string
-	// NotifyNudge is called by the runtime when it wants to push a nudge update
-	// to the TUI. The arguments map to SelectNudge(mode, taskOp, suggestedSkill).
-	// When nil, nudges are not pushed from the runtime.
-	NotifyNudge func(mode, taskOp, suggestedSkill string)
-	// NotifyNudgeSink, if non-nil, is written by the bubbletea layer after it
-	// wraps NotifyNudge with p.Send. The runtime goroutine reads through this
-	// pointer so its own nudge calls also reach the TUI program.
-	NotifyNudgeSink *func(string, string, string)
 	// CurrentThreadID returns the durable thread id the runtime is persisting
 	// this conversation to, so saved sessions can be resumed with full history.
 	CurrentThreadID func() string
@@ -132,10 +123,6 @@ func (cfg ChatLiveConfig) SurfaceMode() SurfaceModeConfig {
 		EnableMouseCapture:   true,
 	}
 	return mode
-}
-
-func RunChatLive(events <-chan llm.Event, cfg ChatLiveConfig, inputCh chan<- string, doneCh <-chan struct{}) ChatLiveResult {
-	return RunChatLiveBubbleTea(events, cfg, inputCh, doneCh)
 }
 
 func boolPtr(v bool) *bool {

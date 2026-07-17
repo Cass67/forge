@@ -16,6 +16,14 @@ type Skill struct {
 	Source      string // file path it was loaded from
 }
 
+// Descriptor is the stable skill catalog entry shared with the primary
+// assistant and hidden workers.
+type Descriptor struct {
+	Name        string
+	Description string
+	Source      string
+}
+
 // LoadFile parses a single skill markdown file with YAML-style frontmatter.
 func LoadFile(path string) (Skill, error) {
 	data, err := os.ReadFile(path)

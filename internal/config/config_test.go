@@ -164,9 +164,6 @@ func TestChatConfigDefaults(t *testing.T) {
 	if len(cfg.Chat.IgnoreDirs) == 0 {
 		t.Error("IgnoreDirs should have defaults")
 	}
-	if cfg.Chat.AutoSkills != "suggest" {
-		t.Errorf("AutoSkills = %q, want %q", cfg.Chat.AutoSkills, "suggest")
-	}
 	if cfg.Approval.DefaultPolicy != "on_request" {
 		t.Errorf("Approval.DefaultPolicy = %q, want %q", cfg.Approval.DefaultPolicy, "on_request")
 	}

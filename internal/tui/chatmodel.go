@@ -30,8 +30,6 @@ import (
 type chatTickMsg time.Time
 type chatApprovalMsg tools.Action
 
-// agentNudgeMsg carries a nudge update from the runtime to the TUI.
-type agentNudgeMsg NudgeSuggestion
 type providerAuthStartedMsg struct {
 	providerID string
 	verifyURL  string
@@ -310,9 +308,7 @@ type ChatModel struct {
 	turnAnchorMessageIndex int
 	pendingSubAgentSummary *subAgentSummary
 	skills                 []skills.Skill
-	autoSkillsMode         string
 	state                  *chatstate.State
-	currentNudge           NudgeSuggestion
 	themeID                string
 	pendingQueuedInput     []string
 
@@ -412,7 +408,6 @@ func NewChatModel(cfg ChatLiveConfig) ChatModel {
 		debugEnabled:           cfg.DebugEnabled,
 		status:                 "ready",
 		skills:                 cfg.Skills,
-		autoSkillsMode:         cfg.AutoSkillsMode,
 		state:                  state,
 		toolsVisible:           false,
 		paneFocus:              focusChat,
@@ -1653,15 +1648,6 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case agentNudgeMsg:
-		nudge := NudgeSuggestion(msg)
-		m.currentNudge = nudge
-		m.statusData.AgentMode = nudge.Label
-		if nudge.Flash != "" && m.flash == "" {
-			m.flash = nudge.Flash
-		}
-		return m, nil
-
 	case tea.KeyMsg:
 		if m.discardMouseCSI {
 			if isMouseTrackingFragment(msg) {
@@ -1962,32 +1948,6 @@ submitChatInput:
 		}
 	}
 
-	// Auto-skill detection
-	if !m.busy && input != "" {
-		switch m.autoSkillsMode {
-		case skills.AutoSkillsAuto:
-			if s, ok := skills.DetectAuto(m.skills, input); ok {
-				if m.state != nil && m.state.SkillActivated(s.Name) {
-					break
-				}
-				updated, submitCmd := m.submitSkillInput(s, input, input)
-				return updated.(ChatModel), submitCmd, true
-			}
-		case "", skills.AutoSkillsSuggest:
-			if s, ok := skills.DetectAuto(m.skills, input); ok {
-				m.flash = fmt.Sprintf("suggested skill: /%s", s.Name)
-			}
-		}
-	}
-
-	// Required skill check
-	requiredSkill := skills.RequiredForInput(input)
-	if requiredSkill != "" && !m.state.SkillActivated(requiredSkill) {
-		if _, ok := skills.Get(m.skills, requiredSkill); ok {
-			m.flash = fmt.Sprintf("required skill: /%s", requiredSkill)
-		}
-	}
-
 	stamp := time.Now().Format("15:04:05")
 	displayText := input
 	if len(attachments) > 0 {
@@ -2221,7 +2181,7 @@ var builtinCommands = []string{
 	"/agentview",
 	"/tools", "/toggle tools", "/toggle tools on", "/toggle tools off",
 	"/models", "/model", "/provider",
-	"/skills", "/auto-skills", "/sessions", "/save", "/restore", "/remember",
+	"/skills", "/sessions", "/save", "/restore", "/remember",
 	"/find", "/files", "/copy agent", "/copy tools", "/copy code", "/copy result",
 	"/make", "/exit", "/quit",
 }
@@ -2437,20 +2397,6 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			sb.WriteString("  " + marker + " /" + s.Name + " — " + s.Description + "\n")
 		}
 		m.AddMessage(ChatMessage{Kind: MsgStatus, Content: sb.String()})
-	case input == "/auto-skills":
-		mode := skills.NormalizeAutoMode(m.autoSkillsMode)
-		if mode == "" {
-			mode = skills.AutoSkillsSuggest
-		}
-		m.flash = fmt.Sprintf("auto-skills: %s", mode)
-	case strings.HasPrefix(input, "/auto-skills "):
-		mode := skills.NormalizeAutoMode(strings.TrimSpace(strings.TrimPrefix(input, "/auto-skills ")))
-		if mode == "" {
-			m.flash = "auto-skills must be one of: off, suggest, auto"
-			break
-		}
-		m.autoSkillsMode = mode
-		m.flash = fmt.Sprintf("auto-skills: %s", mode)
 	case input == "/find":
 		m.openSearchOverlay("")
 		m.flash = "search opened"
@@ -2527,8 +2473,6 @@ func (m ChatModel) helpLines() []string {
 			"  /model             list available models",
 			"  /model <name>      switch to a model",
 			"  /provider          open provider picker",
-			"  /auto-skills       show auto-skills mode",
-			"  /auto-skills <m>   set off, suggest, or auto",
 			"",
 			"Session state:",
 			"  /new               start a clean session",

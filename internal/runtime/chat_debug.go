@@ -51,13 +51,12 @@ func EnableChatDebug(setup *ChatSetup, path string) (string, error) {
 		return "", err
 	}
 	rec := &chatDebugRecorder{log: log}
-	runtimeMode := string(resolveChatRuntimeMode())
 	rec.log.Info("chat.debug.enabled", map[string]any{
 		"path":           resolved,
 		"model":          setup.ChatModel,
 		"work_dir":       setup.WorkDir,
 		"surface_mode":   "debug",
-		"runtime_mode":   runtimeMode,
+		"runtime_mode":   "react",
 		"agents_enabled": false,
 		"commit":         version.Commit,
 	})

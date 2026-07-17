@@ -79,6 +79,22 @@ func TestJSONLThreadStoreMetadataRoundTripAndList(t *testing.T) {
 	}
 }
 
+func TestJSONLThreadStoreReadsLineOver64KB(t *testing.T) {
+	store := NewJSONLThreadStore(t.TempDir())
+	ctx := context.Background()
+	big := strings.Repeat("x", 200*1024)
+	if _, err := store.AppendItems(ctx, "thread-1", []protocol.Item{{Version: 1, ID: "item-1", ThreadID: "thread-1", Seq: 1, Kind: protocol.ItemUserMessage, Message: &protocol.MessageItem{Role: "user", Text: big}}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.ReadItems(ctx, "thread-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Message.Text != big {
+		t.Fatalf("items = %d", len(got))
+	}
+}
+
 func TestJSONLThreadStoreCorruptLineReportsLineNumber(t *testing.T) {
 	dir := t.TempDir()
 	store := NewJSONLThreadStore(dir)
