@@ -15,6 +15,15 @@ func (p Pipeline) Process(current State, snapshot reactruntime.SessionSnapshot) 
 	return ConsolidateRecords(records, p.maxRecords()), true
 }
 
+func (p Pipeline) Remember(current State, text string) (State, bool) {
+	summary := clipText(RedactText(normalizeMemoryText(text)), maxRecordLen)
+	if summary == "" {
+		return current, false
+	}
+	records := append(append([]Record(nil), current.Records...), Record{Summary: summary, Pinned: true})
+	return ConsolidateRecords(records, p.maxRecords()), true
+}
+
 func (p Pipeline) maxRecords() int {
 	if p.MaxRecords < 1 {
 		return 10

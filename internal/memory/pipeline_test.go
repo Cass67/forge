@@ -249,3 +249,20 @@ func TestPipelineSkipsUnsafeRetentionAndKeepsUsefulSummary(t *testing.T) {
 		t.Fatalf("summary = %q", next.Summary)
 	}
 }
+
+func TestRememberPinnedSurvivesRotation(t *testing.T) {
+	p := Pipeline{MaxRecords: 3}
+	state, ok := p.Remember(State{}, "user prefers bun over npm")
+	if !ok || !state.Records[0].Pinned {
+		t.Fatalf("expected pinned record, got %+v", state)
+	}
+	for i := 0; i < 10; i++ {
+		state = ConsolidateRecords(append(state.Records, Record{Summary: fmt.Sprintf("turn %d", i)}), 3)
+	}
+	if len(state.Records) != 3 || !state.Records[0].Pinned {
+		t.Fatalf("pinned record rotated out: %+v", state.Records)
+	}
+	if _, ok := p.Remember(state, "   "); ok {
+		t.Fatal("blank text should not be remembered")
+	}
+}
