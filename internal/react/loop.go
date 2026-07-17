@@ -42,6 +42,9 @@ type Config struct {
 	OutputStore               sessionstore.OutputStore
 	OutputStoreThresholdBytes int
 	PostEditValidator         *PostEditValidator
+	// LeanToolExposure exposes only LeanCoreToolNames schemas to the model.
+	// Every other registered tool stays callable (schema via tool_help).
+	LeanToolExposure bool
 }
 
 type ToolExposureDecision struct {
@@ -82,6 +85,7 @@ type Runner struct {
 	checkpointedTurns         map[string]bool
 	checkpointIDsByTurn       map[string]string
 	postEditValidator         *PostEditValidator
+	leanToolExposure          bool
 }
 
 type gitCommitBlocker int
@@ -257,6 +261,7 @@ func NewRunner(cfg Config) *Runner {
 		checkpointedTurns:         make(map[string]bool),
 		checkpointIDsByTurn:       make(map[string]string),
 		postEditValidator:         cfg.PostEditValidator,
+		leanToolExposure:          cfg.LeanToolExposure,
 	}
 	if snap := session.Snapshot(); snap.TaskState != nil && isSynthesisGuardOperation(snap.TaskState.Operation) {
 		runner.planWorkflow.active = true
@@ -1881,6 +1886,13 @@ func (r *Runner) rejectUnknownNativeToolCalls(ctx context.Context, turn int, cal
 		name := strings.TrimSpace(call.Name)
 		if _, ok := available[name]; ok {
 			continue
+		}
+		if r.leanToolExposure {
+			if _, registered := r.tools.Get(name); registered {
+				// Deferred tool under lean exposure: registered but its
+				// schema wasn't attached this turn. Execute it anyway.
+				continue
+			}
 		}
 		if err := r.ensureTurnCanMutate(ctx, turn); err != nil {
 			return err
@@ -3780,6 +3792,17 @@ var (
 	agentStatusToolNames = []string{"agent_status"}
 )
 
+// LeanCoreToolNames is the reduced schema set exposed under lean tool
+// exposure (weak/local models). Everything else stays registered and
+// callable; deferred tools are advertised by name in the system prompt
+// with schemas available via tool_help.
+var LeanCoreToolNames = []string{
+	"read_file", "write_file", "edit_file", "list_dir", "glob", "search",
+	"run_command", "read_output",
+	"git_status", "git_diff", "git_log", "git_commit", "git_push",
+	"update_plan", "ask_user_question", "tool_help",
+}
+
 func (r *Runner) selectToolDefsWithDecision(snapshot SessionSnapshot) ([]llm.ToolDef, ToolExposureDecision) {
 	decision := newToolExposureDecision(snapshot)
 	if r == nil || r.tools == nil {
@@ -3789,6 +3812,23 @@ func (r *Runner) selectToolDefsWithDecision(snapshot SessionSnapshot) ([]llm.Too
 	// is the model's call; keyword-routing tool exposure from the user's
 	// phrasing caused most of the runtime's unreliability.
 	defs := r.tools.ToLLMToolDefs()
+	if r.leanToolExposure {
+		// Static per-session profile, not per-turn keyword routing: the
+		// exposed set never changes between turns, so no flip-flopping.
+		core := make(map[string]bool, len(LeanCoreToolNames))
+		for _, name := range LeanCoreToolNames {
+			core[name] = true
+		}
+		lean := make([]llm.ToolDef, 0, len(LeanCoreToolNames))
+		for _, def := range defs {
+			if core[def.Name] {
+				lean = append(lean, def)
+			}
+		}
+		if len(lean) > 0 {
+			return lean, decision.withTools("lean", lean)
+		}
+	}
 	return defs, decision.withTools("all", defs)
 }
 func newToolExposureDecision(snapshot SessionSnapshot) ToolExposureDecision {

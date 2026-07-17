@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -25,6 +27,7 @@ import (
 	"forge/internal/codexusage"
 	"forge/internal/config"
 	"forge/internal/copilot"
+	"forge/internal/fsutil"
 	"forge/internal/hooks"
 	"forge/internal/llm"
 	"forge/internal/mcp"
@@ -445,13 +448,21 @@ func RunChatLive(setup *ChatSetup) {
 	state := chatstate.New()
 	memPipeline := memory.Pipeline{MaxRecords: 12}
 	memState := memory.State{}
+	lean := leanToolExposure(setup)
 	reactRunner := reactruntime.NewRunner(reactruntime.Config{
-		Driver:   setup.Driver,
-		Tools:    reg,
-		Renderer: evRenderer,
+		Driver:           setup.Driver,
+		Tools:            reg,
+		Renderer:         evRenderer,
+		LeanToolExposure: lean,
 		SystemPrompt: func() string {
 			snap := session.Snapshot()
-			return agent.BuildNativeSystemPromptForMode(setup.WorkDir, string(snap.Mode), snap.TaskState != nil)
+			base := agent.BuildNativeSystemPromptForMode(setup.WorkDir, string(snap.Mode), snap.TaskState != nil)
+			if lean {
+				if note := deferredToolsNote(reg); note != "" {
+					base += "\n\n" + note
+				}
+			}
+			return base
 		},
 		Session: session,
 		TurnComplete: func(snapshot reactruntime.SessionSnapshot) {
@@ -798,6 +809,71 @@ func providerOptionsFromBootstrap(backends []bootstrap.ProviderBackend) []tui.Pr
 	return out
 }
 
+// leanToolExposure decides whether to expose the reduced tool-schema set.
+// Explicit config wins; otherwise lean is auto-enabled for local/self-hosted
+// providers, where huge tool menus burn context and confuse small models.
+func leanToolExposure(setup *ChatSetup) bool {
+	if setup == nil || setup.Config == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(setup.Config.Chat.ToolProfile)) {
+	case "lean":
+		return true
+	case "full":
+		return false
+	}
+	provider, _, ok := strings.Cut(strings.TrimSpace(setup.ChatModel), "/")
+	if !ok {
+		return false
+	}
+	defs, err := bootstrap.LoadCustomCompatProviders(fsutil.ForgeConfigDir())
+	if err != nil {
+		return false
+	}
+	for _, def := range defs {
+		if def.ID == provider {
+			return isLocalBaseURL(def.BaseURL)
+		}
+	}
+	return false
+}
+
+func isLocalBaseURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return false
+	}
+	host := u.Hostname()
+	if host == "localhost" || strings.HasSuffix(host, ".local") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback() || ip.IsPrivate()
+	}
+	// ponytail: plain-http named hosts are treated as LAN; hosted APIs are https
+	return u.Scheme == "http"
+}
+
+// deferredToolsNote lists registered tools whose schemas are not attached
+// under lean exposure, so the model knows they exist and how to reach them.
+func deferredToolsNote(reg *tools.Registry) string {
+	core := make(map[string]bool, len(reactruntime.LeanCoreToolNames))
+	for _, name := range reactruntime.LeanCoreToolNames {
+		core[name] = true
+	}
+	var names []string
+	for _, tool := range reg.All() {
+		if name := strings.TrimSpace(tool.Name); name != "" && !core[name] {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	sort.Strings(names)
+	return "## Additional Tools\nThese tools also exist but their schemas are not attached: " + strings.Join(names, ", ") + ".\nTo use one, first call tool_help with its name to get its parameters, then call it like any other tool."
+}
+
 func RunChatConsole(setup *ChatSetup) {
 	session := reactruntime.NewSession()
 	session.SetActiveWorkspaceRoot(setup.WorkDir)
@@ -848,15 +924,22 @@ func RunChatConsole(setup *ChatSetup) {
 	state := chatstate.New()
 	memPipeline := memory.Pipeline{MaxRecords: 12}
 	memState := memory.State{}
+	lean := leanToolExposure(setup)
 	reactRunner := reactruntime.NewRunner(reactruntime.Config{
-		Driver:   setup.Driver,
-		Tools:    reg,
-		Renderer: renderer,
+		Driver:           setup.Driver,
+		Tools:            reg,
+		Renderer:         renderer,
+		LeanToolExposure: lean,
 		SystemPrompt: func() string {
 			snap := session.Snapshot()
 			base := agent.BuildNativeSystemPromptForMode(setup.WorkDir, string(snap.Mode), snap.TaskState != nil)
 			if skillText := skills.Describe(loadedSkills); skillText != "" {
 				base += "\n\n" + skillText
+			}
+			if lean {
+				if note := deferredToolsNote(reg); note != "" {
+					base += "\n\n" + note
+				}
 			}
 			return base
 		},
