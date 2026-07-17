@@ -101,7 +101,70 @@ type ChatSetup struct {
 	Providers  []tui.ProviderOption
 	MakeDriver func(string) llm.Driver
 	DebugLog   string
-	debugRec   *chatDebugRecorder
+	// ResumeThreadID, when set, seeds the session with a stored thread's
+	// history before the first turn (forge --resume / --continue).
+	ResumeThreadID string
+	debugRec       *chatDebugRecorder
+}
+
+// ResolveResumeThreadID maps CLI resume flags to a stored thread ID. An
+// explicit id is returned as-is; continueLast picks the most recently updated
+// thread. Returns "" when nothing matches (caller decides whether to error).
+func ResolveResumeThreadID(cfg *config.Config, explicitID string, continueLast bool) (string, error) {
+	if id := strings.TrimSpace(explicitID); id != "" {
+		return id, nil
+	}
+	if !continueLast {
+		return "", nil
+	}
+	outputDir := ""
+	if cfg != nil {
+		outputDir = strings.TrimSpace(cfg.Session.OutputDir)
+	}
+	if outputDir == "" {
+		return "", fmt.Errorf("session output dir not configured")
+	}
+	store := sessionstore.NewJSONLThreadStore(filepath.Join(outputDir, "threads"))
+	records, err := store.ListThreads(context.Background(), sessionstore.ListOptions{Limit: 1})
+	if err != nil {
+		return "", err
+	}
+	if len(records) == 0 {
+		return "", fmt.Errorf("no previous sessions to continue")
+	}
+	return records[0].ThreadID, nil
+}
+
+// adoptResumeThread seeds session with a stored thread's history. It is a no-op
+// when setup.ResumeThreadID is empty. Errors are reported to stderr and the
+// session starts fresh rather than aborting the launch.
+func adoptResumeThread(setup *ChatSetup, session *reactruntime.Session) {
+	threadID := strings.TrimSpace(setup.ResumeThreadID)
+	if threadID == "" || session == nil {
+		return
+	}
+	outputDir := strings.TrimSpace(setup.Config.Session.OutputDir)
+	if outputDir == "" {
+		fmt.Fprintln(os.Stderr, "resume: session output dir not configured; starting fresh")
+		return
+	}
+	store := sessionstore.NewJSONLThreadStore(filepath.Join(outputDir, "threads"))
+	items, err := store.ReadItems(context.Background(), threadID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "resume: %v; starting fresh\n", err)
+		return
+	}
+	if len(items) == 0 {
+		fmt.Fprintf(os.Stderr, "resume: thread %s not found; starting fresh\n", threadID)
+		return
+	}
+	n, err := session.AdoptReplayItems(items)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "resume: %v; starting fresh\n", err)
+		return
+	}
+	session.SetDurableThreadID(threadID)
+	fmt.Fprintf(os.Stderr, "resumed thread %s (%d turns)\n", threadID, n)
 }
 
 func BuildChatSetup(cfg *config.Config, tokens any, modelOverride, workDir string, yolo bool) (*ChatSetup, error) {
@@ -334,7 +397,10 @@ func configureDurableSessionSink(cfg *config.Config, session *reactruntime.Sessi
 	if model == "" {
 		model = strings.TrimSpace(cfg.Chat.LastModel)
 	}
-	threadID := durableThreadID(session)
+	threadID := strings.TrimSpace(session.DurableThreadID())
+	if threadID == "" {
+		threadID = durableThreadID(session)
+	}
 	session.SetDurableThreadID(threadID)
 	live := sessionstore.NewLiveSession(threadID, store, sessionstore.DefaultPersistencePolicy())
 	metadataErr := live.UpdateMetadata(context.Background(), sessionstore.ThreadMetadataPatch{
@@ -402,6 +468,7 @@ func RunChatLive(setup *ChatSetup) {
 	evRenderer := agent.NewEventRenderer(renderCh)
 	session := reactruntime.NewSession()
 	session.SetActiveWorkspaceRoot(setup.WorkDir)
+	adoptResumeThread(setup, session)
 
 	var approve tools.ApprovalFunc
 	gate := reactruntime.NewApprovalGate(setup.WorkDir, loadChatApprovalConfig(setup), nil, func(text string) {
@@ -915,6 +982,7 @@ func buildConsoleRuntime(setup *ChatSetup, approve tools.ApprovalFunc, out io.Wr
 	}
 	session := reactruntime.NewSession()
 	session.SetActiveWorkspaceRoot(setup.WorkDir)
+	adoptResumeThread(setup, session)
 	if approve == nil {
 		if setup.Yolo {
 			approve = agent.YoloApproval()

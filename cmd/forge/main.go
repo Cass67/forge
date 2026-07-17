@@ -1596,6 +1596,9 @@ Pipeline flags:
 
 Chat flags:
   --yolo            Skip all approval prompts
+  -p "PROMPT"       Headless: run one prompt, print the final response, exit
+  --resume ID       Resume a stored session by thread id
+  --continue        Resume the most recent session
   --model MODEL     Override chat model
   --auto-skills M   Auto skill mode: off, suggest, or auto
   -d                Open advanced debug view and write a fresh debug log
@@ -1877,6 +1880,8 @@ func runChat(args []string) {
 	fs := flag.NewFlagSet("forge", flag.ExitOnError)
 	yolo := fs.Bool("yolo", false, "skip all approval prompts")
 	prompt := fs.String("p", "", "headless: run one prompt, print the final response, and exit")
+	resume := fs.String("resume", "", "resume a stored session by thread id")
+	continueLast := fs.Bool("continue", false, "resume the most recent session")
 	model := fs.String("model", "", "model override")
 	workDir := fs.String("C", "", "working directory (default: cwd)")
 	autoSkills := fs.String("auto-skills", "", "auto skill mode: off, suggest, or auto")
@@ -1909,6 +1914,14 @@ func runChat(args []string) {
 	}
 	if setup == nil {
 		return
+	}
+	if *resume != "" || *continueLast {
+		threadID, err := runtimepkg.ResolveResumeThreadID(setup.Config, *resume, *continueLast)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		setup.ResumeThreadID = threadID
 	}
 	if *debug {
 		if _, err := runtimepkg.EnableChatDebug(setup, *debugFile); err != nil {
