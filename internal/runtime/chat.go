@@ -420,6 +420,22 @@ func configureDurableSessionSink(cfg *config.Config, session *reactruntime.Sessi
 	}
 }
 
+// backgroundExitNote renders a concise system note about a finished background
+// command session so the runner surfaces it to the model on the next turn
+// instead of the model having to poll command_status.
+func backgroundExitNote(status tools.ExecSessionStatus) string {
+	tail := strings.TrimSpace(status.Output)
+	if len(tail) > 2000 {
+		tail = "…" + tail[len(tail)-2000:]
+	}
+	note := fmt.Sprintf("[background command session %d exited with code %d: %s]",
+		status.SessionID, status.ExitCode, strings.TrimSpace(status.Command))
+	if tail != "" {
+		note += "\nfinal output:\n" + tail
+	}
+	return note
+}
+
 func configuredOutputStore(cfg *config.Config) sessionstore.OutputStore {
 	if cfg == nil || strings.TrimSpace(cfg.Session.OutputDir) == "" {
 		return nil
@@ -1007,6 +1023,9 @@ func buildConsoleRuntime(setup *ChatSetup, approve tools.ApprovalFunc, out io.Wr
 	reg := tools.NewRegistry()
 	renderer := agent.NewRenderer(out, 80, colors)
 	forcePromptApprove := approve
+	// Late-bound so the exec-status callback can feed background command
+	// completions back to the runner (created further below).
+	var reactRunner *reactruntime.Runner
 	previewRuntime, mcpManager := registerTools(reg, setup.WorkDir, setup.Config, session, approve, renderer.Info, func(status tools.ExecSessionStatus) {
 		payload, err := json.Marshal(status)
 		if err != nil {
@@ -1014,6 +1033,9 @@ func buildConsoleRuntime(setup *ChatSetup, approve tools.ApprovalFunc, out io.Wr
 			return
 		}
 		renderer.ToolResult("command_status", string(payload), "", false)
+		if status.Status == "exited" && reactRunner != nil {
+			reactRunner.QueuePendingInput(backgroundExitNote(status))
+		}
 	}, forcePromptApprove)
 	pluginManager := startChatPluginManager(setup.Config, setup.WorkDir, renderer.Info)
 	if pluginManager != nil {
@@ -1052,7 +1074,7 @@ func buildConsoleRuntime(setup *ChatSetup, approve tools.ApprovalFunc, out io.Wr
 		return true
 	}
 	lean := leanToolExposure(setup)
-	reactRunner := reactruntime.NewRunner(reactruntime.Config{
+	reactRunner = reactruntime.NewRunner(reactruntime.Config{
 		Driver:           setup.Driver,
 		Tools:            reg,
 		Renderer:         renderer,
