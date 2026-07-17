@@ -5064,6 +5064,7 @@ func TestChatModelSlashSessionsOpensOverlay(t *testing.T) {
 	if err := m.saveSession("example-session"); err != nil {
 		t.Fatalf("saveSession: %v", err)
 	}
+	m.chatContent = "You: hello\nAssistant: hi"
 
 	m.inputBuf = "/sessions"
 	m.inputPos = len("/sessions")
@@ -5076,6 +5077,38 @@ func TestChatModelSlashSessionsOpensOverlay(t *testing.T) {
 	if len(m.sessionsList) < 2 || m.sessionsList[0].name != "last-session" || m.sessionsList[1].name != "example-session" {
 		t.Fatalf("expected sessions picker to show last-session first and saved session next, got %#v", m.sessionsList)
 	}
+}
+
+func TestChatModelSlashSessionsDoesNotSaveEmptySession(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.width = 100
+	m.height = 24
+	before := lastSessionModTime(t)
+	m.saveLastSession()
+	if after := lastSessionModTime(t); !after.Equal(before) {
+		t.Fatal("empty transcript must not write last-session")
+	}
+}
+
+// lastSessionModTime returns the zero time when last-session.json does not
+// exist. XDG_CONFIG_HOME does not isolate os.UserConfigDir on darwin, so the
+// test asserts the file is untouched rather than absent.
+func lastSessionModTime(t *testing.T) time.Time {
+	t.Helper()
+	path, err := chatSessionFile("last-session")
+	if err != nil {
+		t.Fatalf("chatSessionFile: %v", err)
+	}
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return time.Time{}
+	}
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	return info.ModTime()
 }
 
 func TestChatModelSessionsOverlayRenamesSession(t *testing.T) {

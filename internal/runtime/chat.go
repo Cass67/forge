@@ -330,7 +330,9 @@ func configureDurableSessionSink(cfg *config.Config, session *reactruntime.Sessi
 	if model == "" {
 		model = strings.TrimSpace(cfg.Chat.LastModel)
 	}
-	live := sessionstore.NewLiveSession(durableThreadID(session), store, sessionstore.DefaultPersistencePolicy())
+	threadID := durableThreadID(session)
+	session.SetDurableThreadID(threadID)
+	live := sessionstore.NewLiveSession(threadID, store, sessionstore.DefaultPersistencePolicy())
 	metadataErr := live.UpdateMetadata(context.Background(), sessionstore.ThreadMetadataPatch{
 		Title:     "Forge chat",
 		Preview:   strings.TrimSpace(session.Snapshot().InitialInput),
@@ -693,6 +695,24 @@ func RunChatLive(setup *ChatSetup) {
 			if reactRunner != nil {
 				reactRunner.ClearHistory()
 			}
+		},
+		CurrentThreadID: func() string {
+			return session.DurableThreadID()
+		},
+		RestoreHistory: func(threadID string) (int, error) {
+			outputDir := strings.TrimSpace(setup.Config.Session.OutputDir)
+			if outputDir == "" {
+				return 0, fmt.Errorf("session output dir not configured")
+			}
+			store := sessionstore.NewJSONLThreadStore(filepath.Join(outputDir, "threads"))
+			items, err := store.ReadItems(context.Background(), threadID)
+			if err != nil {
+				return 0, err
+			}
+			if len(items) == 0 {
+				return 0, fmt.Errorf("thread %s not found", threadID)
+			}
+			return session.AdoptReplayItems(items)
 		},
 		ApprovalCh:      evRenderer.ApprovalChan(),
 		ResponseCh:      evRenderer.ResponseChan(),

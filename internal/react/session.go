@@ -224,6 +224,7 @@ type Session struct {
 	sideEffectIntent        *SideEffectIntent
 	turnContract            *TurnContract
 	durableSink             DurableSink
+	durableThreadID         string
 	lastDurableError        string
 	activeTurn              *ActiveTurn
 }
@@ -331,6 +332,48 @@ func (s *Session) SetDurableSink(sink DurableSink) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.durableSink = sink
+}
+
+func (s *Session) SetDurableThreadID(id string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.durableThreadID = id
+}
+
+func (s *Session) DurableThreadID() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.durableThreadID
+}
+
+// AdoptReplayItems replaces this session's conversation state with the history
+// replayed from a previously persisted thread, so a restored chat continues
+// with full model context. Turn bookkeeping and durable persistence of the
+// current thread are left untouched; new turns append to the current thread.
+func (s *Session) AdoptReplayItems(items []protocol.Item) (int, error) {
+	if s == nil {
+		return 0, nil
+	}
+	replay, err := sessionstore.ReplayItems(items)
+	if err != nil {
+		return 0, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.history = append([]llm.Message(nil), replay.History...)
+	s.recentInputs = append([]string(nil), replay.RecentInputs...)
+	s.compactionSummary = replay.CompactionSummary
+	if len(s.recentInputs) > 0 {
+		s.initialInput = strings.TrimSpace(s.recentInputs[0])
+		s.lastInput = strings.TrimSpace(s.recentInputs[len(s.recentInputs)-1])
+	}
+	return len(s.history), nil
 }
 
 func (s *Session) DurableSink() DurableSink {
