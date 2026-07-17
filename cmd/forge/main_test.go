@@ -29,10 +29,16 @@ func TestRunMakeWithoutArgsExitsWithUsage(t *testing.T) {
 	}
 	defer func() { runImproveArgsFn = prev }()
 
-	// runMake calls os.Exit(1) — we can at least verify it doesn't panic and
-	// doesn't call runImproveArgsFn. A full exit-code test would require
-	// os.Exec or an init() guard.
+	prevExit := osExit
+	var exitCode int
+	osExit = func(code int) { exitCode = code }
+	defer func() { osExit = prevExit }()
+
 	runMake(nil)
+
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, want 1", exitCode)
+	}
 }
 
 func TestRunMakeWithArgsUsesBatchMode(t *testing.T) {
