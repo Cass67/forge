@@ -2483,3 +2483,24 @@ func captureRuntimeStdout(t *testing.T, fn func()) string {
 type assertErr string
 
 func (e assertErr) Error() string { return string(e) }
+
+func TestBackgroundExitNote(t *testing.T) {
+	note := backgroundExitNote(tools.ExecSessionStatus{
+		Status:    "exited",
+		SessionID: 3,
+		Command:   "go build ./...",
+		ExitCode:  2,
+		Output:    "compile error: x",
+	})
+	for _, want := range []string{"session 3", "code 2", "go build ./...", "compile error: x"} {
+		if !strings.Contains(note, want) {
+			t.Fatalf("note missing %q:\n%s", want, note)
+		}
+	}
+
+	long := strings.Repeat("y", 5000)
+	trimmed := backgroundExitNote(tools.ExecSessionStatus{Status: "exited", SessionID: 1, Output: long})
+	if len(trimmed) > 2200 {
+		t.Fatalf("expected tail truncation, len=%d", len(trimmed))
+	}
+}
