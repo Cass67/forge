@@ -244,7 +244,7 @@ func refreshChatSetupState(setup *ChatSetup) (*config.Config, *auth.Tokens) {
 	return cfg, tokens
 }
 
-func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, session *reactruntime.Session, approve tools.ApprovalFunc, notify func(string), emitCommandStatus func(tools.ExecSessionStatus), forcePrompt ...tools.ApprovalFunc) (*tools.PreviewRuntime, *mcp.Manager) {
+func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, session *reactruntime.Session, approve tools.ApprovalFunc, notify func(string), emitCommandStatus func(tools.ExecSessionStatus), forcePrompt ...tools.ApprovalFunc) (*tools.PreviewRuntime, *mcp.Manager, *tools.ExecSessionManager) {
 	configureDurableSessionSink(cfg, session, workDir)
 	fp := approve
 	if len(forcePrompt) > 0 {
@@ -354,7 +354,7 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 	webSearch := tools.NewWebSearch()
 	webSearch.PromptVisibility = tools.PromptHidden
 	reg.Register(webSearch)
-	return previewRuntime, mcpManager
+	return previewRuntime, mcpManager, execManager
 }
 
 func gitScopeProviderForSession(session *reactruntime.Session) tools.GitScopeProvider {
@@ -495,7 +495,7 @@ func RunChatLive(setup *ChatSetup) {
 	approve = gate.Approve
 
 	reg := tools.NewRegistry()
-	previewRuntime, mcpManager := registerTools(reg, setup.WorkDir, setup.Config, session, approve, evRenderer.Info, func(status tools.ExecSessionStatus) {
+	previewRuntime, mcpManager, execManager := registerTools(reg, setup.WorkDir, setup.Config, session, approve, evRenderer.Info, func(status tools.ExecSessionStatus) {
 		payload, err := json.Marshal(status)
 		if err != nil {
 			evRenderer.Info(fmt.Sprintf("command session %d changed state", status.SessionID))
@@ -508,6 +508,9 @@ func RunChatLive(setup *ChatSetup) {
 	}
 	if mcpManager != nil {
 		defer func() { _ = mcpManager.Close() }()
+	}
+	if execManager != nil {
+		defer execManager.Close()
 	}
 	pluginManager := startChatPluginManager(setup.Config, setup.WorkDir, evRenderer.Info)
 	if pluginManager != nil {
@@ -940,7 +943,7 @@ func buildConsoleRuntime(setup *ChatSetup, approve tools.ApprovalFunc, out io.Wr
 	// completions back to the runner (created further below).
 	var reactRunner *reactruntime.Runner
 	execWake := make(chan struct{}, 1)
-	previewRuntime, mcpManager := registerTools(reg, setup.WorkDir, setup.Config, session, approve, renderer.Info, func(status tools.ExecSessionStatus) {
+	previewRuntime, mcpManager, execManager := registerTools(reg, setup.WorkDir, setup.Config, session, approve, renderer.Info, func(status tools.ExecSessionStatus) {
 		payload, err := json.Marshal(status)
 		if err != nil {
 			renderer.Info(fmt.Sprintf("command session %d changed state", status.SessionID))
@@ -965,6 +968,9 @@ func buildConsoleRuntime(setup *ChatSetup, approve tools.ApprovalFunc, out io.Wr
 		}
 		if mcpManager != nil {
 			_ = mcpManager.Close()
+		}
+		if execManager != nil {
+			execManager.Close()
 		}
 		if pluginManager != nil {
 			_ = pluginManager.Close()
