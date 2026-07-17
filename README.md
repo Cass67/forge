@@ -103,6 +103,32 @@ summarizer = "claude-haiku-4-5"
 [chat]
 model = "claude/claude-sonnet-4-6"
 last_model = "claude/claude-sonnet-4-6"
+tool_profile = ""  # "", "lean", or "full" — see Tool Profiles
+```
+
+### Tool Profiles
+
+Forge registers ~50 native tools. Frontier models handle the full schema set
+fine, but for small local models it burns context and causes tool-choice
+errors. `tool_profile` in `[chat]` controls how many tool schemas are sent
+per request:
+
+- `""` (default) — auto-detect: lean for custom providers with a local base
+  URL (localhost, private IPs, `.local` hosts, plain-http hosts), full for
+  everything else.
+- `"lean"` — always send only the core set (~16 schemas): file read/write/edit,
+  list/glob/search, `run_command`/`read_output`, git status/diff/log/commit/push,
+  `update_plan`, `ask_user_question`, `tool_help`.
+- `"full"` — always send every schema.
+
+Lean mode removes nothing: every other tool stays registered and callable.
+The system prompt lists the deferred tool names, and the model can fetch any
+schema with `tool_help` and then call the tool normally.
+
+```toml
+[chat]
+model = "localllm/my-local-model"
+tool_profile = "lean"
 ```
 
 Permissions can be scoped by source. Precedence is fixed from broadest to narrowest: managed, user, project, local, session, then CLI. A narrower scope wins over a broader scope; within the same scope, `deny` wins over `ask`, and `ask` wins over `allow`.

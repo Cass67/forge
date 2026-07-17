@@ -107,6 +107,10 @@ type ChatConfig struct {
 	Yolo           bool     `toml:"yolo"`
 	IgnoreDirs     []string `toml:"ignore_dirs"`
 	AutoSkills     string   `toml:"auto_skills"`
+	// ToolProfile: "lean" exposes a reduced tool-schema set (rest callable
+	// via tool_help), "full" always sends every schema, "" auto-detects
+	// (lean for local/self-hosted providers).
+	ToolProfile string `toml:"tool_profile"`
 }
 
 type ApprovalRuleConfig struct {
