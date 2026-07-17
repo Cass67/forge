@@ -85,7 +85,8 @@ func NewWriteFileWithWorkDirProvider(fallbackWorkDir string, provider WorkDirPro
 				return fmt.Sprintf("error writing file: %v", err), nil
 			}
 
-			return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
+			_, ins, del := diffStat(detail)
+			return fmt.Sprintf("wrote %s (%d lines, %d insertions(+), %d deletions(-))", path, len(strings.Split(content, "\n")), ins, del), nil
 		},
 	}
 }
@@ -117,4 +118,41 @@ func simpleDiff(old, new_, path string) string {
 		}
 	}
 	return sb.String()
+}
+
+// diffStat counts files, insertions, and deletions from a unified diff.
+// It parses +++/--- headers for file count and +/- lines for insertions/deletions.
+func diffStat(patch string) (files, insertions, deletions int) {
+	seen := map[string]bool{}
+	var inHeader bool
+	for _, line := range strings.Split(patch, "\n") {
+		if strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "+++ ") {
+			// Extract filename after "a/" or "b/" prefix
+			parts := strings.SplitN(line, " ", 2)
+			if len(parts) == 2 {
+				name := strings.TrimPrefix(parts[1], "a/")
+				name = strings.TrimPrefix(name, "b/")
+				if name != "" && name != "/dev/null" {
+					seen[name] = true
+				}
+			}
+			inHeader = true
+			continue
+		}
+		if strings.HasPrefix(line, "diff ") || strings.HasPrefix(line, "index ") {
+			inHeader = true
+			continue
+		}
+		if inHeader && (strings.HasPrefix(line, "@@") || strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++")) {
+			inHeader = false
+		}
+		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+			insertions++
+		}
+		if strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---") {
+			deletions++
+		}
+	}
+	files = len(seen)
+	return
 }

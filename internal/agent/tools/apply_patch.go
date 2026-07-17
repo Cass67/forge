@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 )
 
@@ -92,7 +91,8 @@ func NewApplyPatchWithWorkDirProvider(fallbackWorkDir string, provider WorkDirPr
 				return fmt.Sprintf("apply_patch failed: %s", strings.TrimSpace(string(out))), nil
 			}
 
-			return fmt.Sprintf("applied patch from %s", filepath.Base(tmpPath)), nil
+			files, ins, del := diffStat(patch)
+			return fmt.Sprintf("applied patch (%d files, %d insertions(+), %d deletions(-))", files, ins, del), nil
 		},
 	}
 }

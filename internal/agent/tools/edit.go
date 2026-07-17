@@ -91,7 +91,8 @@ func NewEditFileWithWorkDirProvider(fallbackWorkDir string, provider WorkDirProv
 				return fmt.Sprintf("error writing file: %v", err), nil
 			}
 
-			return fmt.Sprintf("edited %s", path), nil
+			_, ins, del := diffStat(diff)
+			return fmt.Sprintf("edited %s (%d insertions(+), %d deletions(-))", path, ins, del), nil
 		},
 	}
 }
