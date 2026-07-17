@@ -810,6 +810,36 @@ func TestHandleChatSlashCommandExpandIsUnknown(t *testing.T) {
 	}
 }
 
+func TestHandleChatSlashCommandSkillArgumentsSubstitution(t *testing.T) {
+	var buf bytes.Buffer
+	renderer := agent.NewRenderer(&buf, 80, false)
+	session := &stubChatSessionControl{}
+	state := chatstate.New()
+	loaded := []skills.Skill{{Name: "pr", Body: "Open a PR titled: $ARGUMENTS"}}
+
+	if handled := handleChatSlashCommand("/pr fix the login bug", renderer, loaded, state, session, &ChatSetup{}); !handled {
+		t.Fatal("expected slash command to be handled")
+	}
+	if session.lastSkillBody != "Open a PR titled: fix the login bug" {
+		t.Fatalf("skill body = %q", session.lastSkillBody)
+	}
+}
+
+func TestHandleChatSlashCommandSkillArgumentsAppendedWhenNoPlaceholder(t *testing.T) {
+	var buf bytes.Buffer
+	renderer := agent.NewRenderer(&buf, 80, false)
+	session := &stubChatSessionControl{}
+	state := chatstate.New()
+	loaded := []skills.Skill{{Name: "review", Body: "Review the diff."}}
+
+	if handled := handleChatSlashCommand("/review focus on error handling", renderer, loaded, state, session, &ChatSetup{}); !handled {
+		t.Fatal("expected slash command to be handled")
+	}
+	if session.lastSkillBody != "Review the diff.\n\nfocus on error handling" {
+		t.Fatalf("skill body = %q", session.lastSkillBody)
+	}
+}
+
 func TestHandleChatSlashCommandClearAlsoClearsReactSession(t *testing.T) {
 	var buf bytes.Buffer
 	renderer := agent.NewRenderer(&buf, 80, false)

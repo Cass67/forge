@@ -2033,23 +2033,40 @@ func handleChatSlashCommand(input string, renderer *agent.Renderer, loadedSkills
 			fmt.Println()
 		}
 	default:
-		// Check for skill activation
+		// Skill/command activation: /<name> or /<name> <args>. A skill body
+		// with $ARGUMENTS has the remainder substituted in (falling back to
+		// appending it), so a skill file doubles as a parameterized command.
 		cmd := strings.TrimPrefix(input, "/")
-		if s, ok := skills.Get(loadedSkills, cmd); ok {
-			if state != nil && state.SkillActivated(s.Name) {
-				renderer.Info(fmt.Sprintf("skill already active: %s", s.Name))
-				return true
-			}
-			if state != nil {
-				state.ActivateSkill(s.Name)
-			}
-			if session != nil {
-				session.AppendSkillContext(s.Name, s.Body)
-			}
-			renderer.Info(fmt.Sprintf("skill activated: %s", s.Name))
+		name, args, hasArgs := strings.Cut(cmd, " ")
+		args = strings.TrimSpace(args)
+		s, ok := skills.Get(loadedSkills, name)
+		if !ok {
+			// Skill names may contain spaces; retry against the whole token.
+			s, ok = skills.Get(loadedSkills, cmd)
+			hasArgs, args = false, ""
+		}
+		if !ok {
+			renderer.Error(fmt.Sprintf("unknown command: %s (try /help)", input))
 			return true
 		}
-		renderer.Error(fmt.Sprintf("unknown command: %s (try /help)", input))
+		if !hasArgs && state != nil && state.SkillActivated(s.Name) {
+			renderer.Info(fmt.Sprintf("skill already active: %s", s.Name))
+			return true
+		}
+		body := s.Body
+		switch {
+		case strings.Contains(body, "$ARGUMENTS"):
+			body = strings.ReplaceAll(body, "$ARGUMENTS", args)
+		case args != "":
+			body = body + "\n\n" + args
+		}
+		if state != nil {
+			state.ActivateSkill(s.Name)
+		}
+		if session != nil {
+			session.AppendSkillContext(s.Name, body)
+		}
+		renderer.Info(fmt.Sprintf("skill activated: %s", s.Name))
 	}
 	return true
 }
