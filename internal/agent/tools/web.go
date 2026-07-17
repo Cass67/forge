@@ -58,7 +58,8 @@ func newWebFetch(checkHost func(string) error) Tool {
 			}
 
 			client := &http.Client{
-				Timeout: 30 * time.Second,
+				Timeout:   30 * time.Second,
+				Transport: &http.Transport{DialContext: safeDialContext(checkHost)},
 				CheckRedirect: func(req *http.Request, via []*http.Request) error {
 					if len(via) >= 5 {
 						return fmt.Errorf("too many redirects")
@@ -447,6 +448,33 @@ func resolveAndValidateURL(baseURL, candidate string, checkHost func(string) err
 	return resolved.String(), nil
 }
 
+// safeDialContext returns a DialContext that resolves the host, rejects the
+// connection if any resolved address fails checkHost, and then dials the exact
+// vetted IP. Validating and dialing the same resolved address closes the DNS
+// rebinding window that a check-then-fetch (resolve twice) leaves open.
+func safeDialContext(checkHost func(string) error) func(context.Context, string, string) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: 30 * time.Second}
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("cannot resolve host %q", host)
+		}
+		for _, ip := range ips {
+			if err := checkHost(ip.IP.String()); err != nil {
+				return nil, err
+			}
+		}
+		return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+	}
+}
+
 func checkPrivateHost(host string) error {
 	ips, err := net.LookupHost(host)
 	if err != nil {
@@ -609,17 +637,20 @@ type searchEndpoint struct {
 }
 
 func NewWebSearch() Tool {
-	return newWebSearchWithConfiguredEndpoints(
+	return newWebSearchWithConfiguredEndpoints(checkPrivateHost,
 		searchEndpoint{url: ddgSearchURL, kind: searchKindDDG},
 		searchEndpoint{url: braveSearchURL, kind: searchKindBrave},
 	)
 }
 
-func newWebSearchWithEndpoint(endpoint string) Tool {
-	return newWebSearchWithConfiguredEndpoints(searchEndpoint{url: endpoint, kind: searchKindDDG})
+func newWebSearchWithEndpoint(checkHost func(string) error, endpoint string) Tool {
+	return newWebSearchWithConfiguredEndpoints(checkHost, searchEndpoint{url: endpoint, kind: searchKindDDG})
 }
 
-func newWebSearchWithConfiguredEndpoints(endpoints ...searchEndpoint) Tool {
+func newWebSearchWithConfiguredEndpoints(checkHost func(string) error, endpoints ...searchEndpoint) Tool {
+	if checkHost == nil {
+		checkHost = checkPrivateHost
+	}
 	if len(endpoints) == 0 {
 		endpoints = []searchEndpoint{{url: ddgSearchURL, kind: searchKindDDG}, {url: braveSearchURL, kind: searchKindBrave}}
 	}
@@ -642,7 +673,7 @@ func newWebSearchWithConfiguredEndpoints(endpoints ...searchEndpoint) Tool {
 				}
 			}
 
-			results, errText := runWebSearch(ctx, query, count, endpoints)
+			results, errText := runWebSearch(ctx, query, count, endpoints, checkHost)
 			if errText != "" {
 				return errText, nil
 			}
@@ -663,8 +694,14 @@ func newWebSearchWithConfiguredEndpoints(endpoints ...searchEndpoint) Tool {
 	}
 }
 
-func runWebSearch(ctx context.Context, query string, count int, endpoints []searchEndpoint) ([]ddgResult, string) {
-	client := &http.Client{Timeout: 15 * time.Second}
+func runWebSearch(ctx context.Context, query string, count int, endpoints []searchEndpoint, checkHost func(string) error) ([]ddgResult, string) {
+	if checkHost == nil {
+		checkHost = checkPrivateHost
+	}
+	client := &http.Client{
+		Timeout:   15 * time.Second,
+		Transport: &http.Transport{DialContext: safeDialContext(checkHost)},
+	}
 	var errs []string
 
 	for _, endpoint := range endpoints {
