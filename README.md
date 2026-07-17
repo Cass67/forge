@@ -333,12 +333,6 @@ Advanced: `--yolo` skips approval prompts; use only in an isolated disposable en
 Useful chat slash commands:
 
 ```text
-/compact
-/compact recent 20
-/compact status
-/rewind            # revert workspace to the latest pre-mutation checkpoint
-/rewind list       # list checkpoints
-/rewind turn-3     # revert to a specific checkpoint
 /<skill> [args]    # activate a skill; args replace $ARGUMENTS in its body
 ```
 

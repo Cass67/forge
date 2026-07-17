@@ -913,7 +913,6 @@ Chat flags:
   --resume ID       Resume a stored session by thread id
   --continue        Resume the most recent session
   --model MODEL     Override chat model
-  --auto-skills M   Auto skill mode: off, suggest, or auto
   -d                Open advanced debug view and write a fresh debug log
   --debug-file PATH Write debug log to PATH (default: temp dir forge-chat-debug-<timestamp>.jsonl)
   -C PATH           Set working directory (default: cwd)
@@ -1175,7 +1174,6 @@ func runChat(args []string) {
 	continueLast := fs.Bool("continue", false, "resume the most recent session")
 	model := fs.String("model", "", "model override")
 	workDir := fs.String("C", "", "working directory (default: cwd)")
-	autoSkills := fs.String("auto-skills", "", "auto skill mode: off, suggest, or auto")
 	debug := fs.Bool("d", false, "open advanced debug view and write a fresh chat debug log")
 	debugFile := fs.String("debug-file", "", "chat debug log path (default: temp dir forge-chat-debug-<timestamp>.jsonl)")
 	if err := fs.Parse(args); err != nil {
@@ -1193,9 +1191,6 @@ func runChat(args []string) {
 	}
 	if cfg.Chat.Yolo {
 		*yolo = true
-	}
-	if *autoSkills != "" {
-		cfg.Chat.AutoSkills = *autoSkills
 	}
 
 	setup, err := runtimepkg.BuildChatSetup(cfg, nil, *model, *workDir, *yolo)

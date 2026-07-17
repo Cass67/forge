@@ -137,6 +137,8 @@ func (s *JSONLThreadStore) readItemsNoLock(ctx context.Context, threadID string)
 		}
 	}()
 	scanner := bufio.NewScanner(f)
+	// ponytail: 16MB line cap, raise if items legitimately grow past that
+	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	line := 0
 	for scanner.Scan() {
 		line++

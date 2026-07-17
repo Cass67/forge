@@ -19,7 +19,6 @@ func TestValidate_InvalidFields(t *testing.T) {
 	setDefaults(&cfg)
 	cfg.Log.Level = "verbose"
 	cfg.Retry.MaxAttempts = 0
-	cfg.Chat.AutoSkills = "maybe"
 	cfg.Approval.DefaultPolicy = "sometimes"
 	cfg.Approval.SandboxPolicy = "sandboxed"
 	cfg.Approval.Rules = []ApprovalRuleConfig{
@@ -27,7 +26,7 @@ func TestValidate_InvalidFields(t *testing.T) {
 	}
 
 	issues := cfg.Validate()
-	if len(issues) < 6 {
+	if len(issues) < 5 {
 		t.Fatalf("expected multiple validation issues, got %v", issues)
 	}
 }

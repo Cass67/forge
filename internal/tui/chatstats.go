@@ -30,8 +30,7 @@ type chatStatusData struct {
 	CopilotLive      *copilot.UserQuota
 	CodexUsage       *codexusage.Snapshot
 	ModelInfo        *modelcatalog.ModelInfo
-	AgentMode        string // non-empty mode badge e.g. "[plan]" surfaced by runtime nudges
-	ActiveTasks      int    // number of non-terminal agent tasks
+	ActiveTasks      int // number of non-terminal agent tasks
 }
 
 type chatStatsData struct {

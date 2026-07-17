@@ -1063,50 +1063,6 @@ func TestRunChatTurnKeepsOriginalTextSeparateFromSkillContext(t *testing.T) {
 	}
 }
 
-func TestAutoSkillChatInputKeepsSkillContextSeparate(t *testing.T) {
-	state := chatstate.New()
-	loadedSkills := []skills.Skill{{Name: "brainstorming", Description: "Plan first", Body: "Write docs/plans/design.md"}}
-
-	ui, ok := autoSkillChatInput(loadedSkills, state, "design /buddy")
-
-	if !ok {
-		t.Fatal("expected auto skill input")
-	}
-	if ui.Text != "design /buddy" || ui.SkillName != "brainstorming" || !strings.Contains(ui.SkillBody, "docs/plans/design.md") {
-		t.Fatalf("auto skill input = %#v", ui)
-	}
-	if strings.Contains(ui.Text, "[Skill:") {
-		t.Fatalf("skill body leaked into user text: %q", ui.Text)
-	}
-}
-
-func TestResolveChatRuntimeModeReadsEnv(t *testing.T) {
-	t.Setenv("FORGE_CHAT_RUNTIME", "")
-	if got := resolveChatRuntimeMode(); got != chatRuntimeReact {
-		t.Fatalf("mode = %q, want %q", got, chatRuntimeReact)
-	}
-
-	t.Setenv("FORGE_CHAT_RUNTIME", "legacy")
-	if got := resolveChatRuntimeMode(); got != chatRuntimeReact {
-		t.Fatalf("mode = %q, want %q", got, chatRuntimeReact)
-	}
-
-	t.Setenv("FORGE_CHAT_RUNTIME", "react")
-	if got := resolveChatRuntimeMode(); got != chatRuntimeReact {
-		t.Fatalf("mode = %q, want %q", got, chatRuntimeReact)
-	}
-
-	t.Setenv("FORGE_CHAT_RUNTIME", " ReAcT ")
-	if got := resolveChatRuntimeMode(); got != chatRuntimeReact {
-		t.Fatalf("mode = %q, want %q", got, chatRuntimeReact)
-	}
-
-	t.Setenv("FORGE_CHAT_RUNTIME", "unexpected")
-	if got := resolveChatRuntimeMode(); got != chatRuntimeReact {
-		t.Fatalf("mode = %q, want %q", got, chatRuntimeReact)
-	}
-}
-
 func TestRunChatLiveUsesSurfaceMode(t *testing.T) {
 	t.Setenv("FORGE_CHAT_RUNTIME", "react")
 
@@ -1192,66 +1148,6 @@ func TestRunChatTurnReturnsErrorForTypedNilReactRunner(t *testing.T) {
 	}
 }
 
-func TestSuggestedSkillNudgePrefersModeAwareSkill(t *testing.T) {
-	loaded := []skills.Skill{
-		{Name: "brainstorming"},
-		{Name: "test-driven-development"},
-	}
-	state := chatstate.New()
-
-	got := suggestedSkillNudge("please implement the runtime change", loaded, state)
-	if !strings.Contains(got, "test-driven-development") {
-		t.Fatalf("nudge = %q", got)
-	}
-}
-
-func TestSuggestedSkillNudgeSkipsActiveSkill(t *testing.T) {
-	loaded := []skills.Skill{
-		{Name: "brainstorming"},
-	}
-	state := chatstate.New()
-	state.ActivateSkill("brainstorming")
-
-	if got := suggestedSkillNudge("plan this change", loaded, state); got != "" {
-		t.Fatalf("nudge = %q, want empty", got)
-	}
-}
-
-func TestSuggestedSkillNudgeSkipsCrossRepoComparisonDoc(t *testing.T) {
-	loaded := []skills.Skill{
-		{Name: "test-driven-development"},
-	}
-	state := chatstate.New()
-	input := "take a look at this repo and compare it to the tier 1 operators like claude, codex, opencode, deepseek. The code is in ~/git, codex, cci, opencode, deepseek. look at forges features and write me a nice doc when your done"
-
-	if got := suggestedSkillNudge(input, loaded, state); got != "" {
-		t.Fatalf("nudge = %q, want empty", got)
-	}
-}
-
-func TestChatSuggestedSkillHookProducesOverlay(t *testing.T) {
-	results := suggestedSkillPromptHook(context.Background(), hooks.Event{
-		Point: hooks.PointPromptContext,
-		Transient: chatPromptHookPayload{
-			SuggestedSkillNudge: "suggested skill: /test-driven-development (implementation request matched)",
-		},
-	})
-
-	if len(results) != 1 {
-		t.Fatalf("results = %#v", results)
-	}
-	overlay, ok := results[0].(hooks.OverlayResult)
-	if !ok {
-		t.Fatalf("result type = %T, want hooks.OverlayResult", results[0])
-	}
-	if overlay.Key != "suggested_skill" {
-		t.Fatalf("overlay key = %q", overlay.Key)
-	}
-	if !strings.Contains(overlay.Content, "/test-driven-development") {
-		t.Fatalf("overlay content = %q", overlay.Content)
-	}
-}
-
 func TestChatGuardianWarningHookProducesOverlay(t *testing.T) {
 	results := guardianWarningPromptHook(context.Background(), hooks.Event{
 		Point: hooks.PointPromptContext,
@@ -1279,93 +1175,6 @@ func TestChatGuardianWarningHookProducesOverlay(t *testing.T) {
 	}
 	if !strings.Contains(overlay.Content, "high-impact command") {
 		t.Fatalf("overlay content = %q", overlay.Content)
-	}
-}
-
-func TestApplySuggestedSkillOverlayAddsHookOverlay(t *testing.T) {
-	session := reactruntime.NewSession()
-	loaded := []skills.Skill{
-		{Name: "test-driven-development"},
-	}
-	state := chatstate.New()
-
-	applySuggestedSkillOverlay(session, "please implement the runtime change", loaded, state)
-
-	snap := session.Snapshot()
-	if !snap.HookOutputSet {
-		t.Fatal("expected normalized hook output to be set")
-	}
-	if len(snap.HookOutput.Overlays) != 1 {
-		t.Fatalf("hook output overlays = %#v", snap.HookOutput.Overlays)
-	}
-	if !strings.Contains(snap.HookOutput.Overlays[0].Content, "/test-driven-development") {
-		t.Fatalf("hook output overlay = %#v", snap.HookOutput.Overlays[0])
-	}
-}
-
-func TestApplySuggestedSkillOverlayClearsWhenNoSuggestion(t *testing.T) {
-	session := reactruntime.NewSession()
-	session.SetHookOverlays([]reactruntime.HookOverlay{{
-		Key:        "suggested_skill",
-		Content:    "old",
-		Priority:   reactruntime.HookPriorityNormal,
-		Provenance: "runtime",
-	}})
-	state := chatstate.New()
-
-	applySuggestedSkillOverlay(session, "describe this repo", nil, state)
-
-	snap := session.Snapshot()
-	if !snap.HookOutputSet {
-		t.Fatal("expected normalized hook output to stay authoritative")
-	}
-	if got := snap.HookOutput.Overlays; len(got) != 0 {
-		t.Fatalf("hook output overlays = %#v", got)
-	}
-}
-
-func TestApplySuggestedSkillOverlayPreservesOtherPromptOverlays(t *testing.T) {
-	session := reactruntime.NewSession()
-	session.SetHookOutput(hooks.ExecutionOutput{
-		Overlays: []hooks.OverlayResult{
-			{
-				Key:        "guardian_warning",
-				Content:    "guardian warning",
-				Priority:   hooks.PriorityHigh,
-				Provenance: "runtime",
-			},
-			{
-				Key:        "git_workflow",
-				Content:    "loop-owned overlay",
-				Priority:   hooks.PriorityHigh,
-				Provenance: "runtime",
-			},
-		},
-		Failures: []hooks.Failure{{Handler: "stale"}},
-		Block:    &hooks.BlockResult{Message: "stale block"},
-	})
-	state := chatstate.New()
-
-	applySuggestedSkillOverlay(session, "please implement the runtime change", []skills.Skill{{Name: "test-driven-development"}}, state)
-
-	snap := session.Snapshot()
-	if got := snap.HookOutput.Block; got != nil {
-		t.Fatalf("expected prompt-only merge to clear stale block, got %#v", got)
-	}
-	if got := snap.HookOutput.Failures; len(got) != 0 {
-		t.Fatalf("expected prompt-only merge to clear stale failures, got %#v", got)
-	}
-	if got := len(snap.HookOutput.Overlays); got != 3 {
-		t.Fatalf("hook output overlays = %#v", snap.HookOutput.Overlays)
-	}
-	if !containsHookOverlay(snap.HookOutput.Overlays, "guardian_warning", "guardian warning") {
-		t.Fatalf("hook output overlays = %#v", snap.HookOutput.Overlays)
-	}
-	if !containsHookOverlay(snap.HookOutput.Overlays, "git_workflow", "loop-owned overlay") {
-		t.Fatalf("hook output overlays = %#v", snap.HookOutput.Overlays)
-	}
-	if !containsHookOverlay(snap.HookOutput.Overlays, "suggested_skill", "/test-driven-development") {
-		t.Fatalf("hook output overlays = %#v", snap.HookOutput.Overlays)
 	}
 }
 
@@ -2153,60 +1962,6 @@ func TestBehaviorStackDoesNotCorruptBasePromptAssembly(t *testing.T) {
 	}
 	if !hasTask {
 		t.Error("task state not found in messages")
-	}
-}
-
-// TestSuggestedSkillNudgeReachesNotifyCallback verifies that when a skill is
-// loaded and matches the input heuristic, suggestedSkillNudge returns a non-empty
-// nudge that could be forwarded to tui.NotifyNudge.
-func TestSuggestedSkillNudgeReachesNotifyCallback(t *testing.T) {
-	// "brainstorming" is auto-detected when input contains "plan", "design", etc.
-	loaded := []skills.Skill{
-		{Name: "brainstorming", Description: "structured planning"},
-	}
-	state := chatstate.New()
-	nudge := suggestedSkillNudge("make a plan for this feature", loaded, state)
-	if nudge == "" {
-		t.Fatal("expected non-empty nudge for matching skill")
-	}
-	if !strings.Contains(nudge, "brainstorming") {
-		t.Fatalf("nudge should mention the skill name, got %q", nudge)
-	}
-}
-
-// TestMemoryAndSkillOverlaysCoexistInPromptAssembly verifies that both a memory
-// summary overlay and a skill hook overlay can appear together in the assembled
-// messages without one displacing the other.
-func TestMemoryAndSkillOverlaysCoexistInPromptAssembly(t *testing.T) {
-	session := reactruntime.NewSession()
-	session.SetMemorySummary("last session: worked on auth module")
-	session.SetTaskState(reactruntime.TaskState{
-		Objective: "inspect the auth module",
-		Operation: "inspect",
-	})
-	session.SetHookOverlay(reactruntime.HookOverlay{
-		Key:        "suggested_skill",
-		Content:    "suggested skill: /code-review (change set looks reviewable)",
-		Priority:   reactruntime.HookPriorityNormal,
-		Provenance: "runtime",
-	})
-
-	msgs := session.Messages("system")
-
-	var memCount, skillCount int
-	for _, msg := range msgs {
-		if strings.Contains(msg.Content, "Memory summary") {
-			memCount++
-		}
-		if strings.Contains(msg.Content, "suggested skill") {
-			skillCount++
-		}
-	}
-	if memCount != 1 {
-		t.Errorf("expected exactly 1 memory message, got %d", memCount)
-	}
-	if skillCount != 1 {
-		t.Errorf("expected exactly 1 skill overlay message, got %d", skillCount)
 	}
 }
 
