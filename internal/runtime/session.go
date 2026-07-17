@@ -152,6 +152,7 @@ func StartSession(ctx context.Context, cfg *config.Config, tokens *auth.Tokens, 
 			GitAutoCommit:  cfg.Git.AutoCommit,
 			Interactive:    started.Interactive,
 			FeedbackChan:   feedbackChan,
+			MirrorDir:      started.WorkDir,
 		})
 
 		runner.Run(ctx)

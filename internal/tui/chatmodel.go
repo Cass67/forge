@@ -1067,15 +1067,14 @@ func (m ChatModel) normalModeStatsFooterHeight() int {
 	return 2
 }
 
+// liveStatusSlotHeight includes one blank gap row above the status line so
+// the spinner isn't cramped against the chat transcript.
 func (m ChatModel) liveStatusSlotHeight() int {
 	if n := len(m.liveProgress.Entries); n > 0 {
-		return min(n, 3)
+		return 1 + min(n, 3)
 	}
 	// Reserve a slot even when empty so the layout doesn't jump
-	if m.flash != "" || m.busy || m.status != "" {
-		return 1
-	}
-	return 1
+	return 2
 }
 
 func (m ChatModel) shouldShowPendingInputPreview() bool {
@@ -3633,7 +3632,7 @@ func (m ChatModel) helpLines() []string {
 			"  ↑ / ↓              scroll active pane",
 			"  p                  toggle file preview pane",
 			"  Space              advance turn (manual mode)",
-			"  q                  quit when complete",
+			"  q / v              return to chat view",
 			"",
 			"Help navigation:",
 			"  F1                 open help",
@@ -5826,16 +5825,18 @@ func looksLikeDiff(content string) bool {
 }
 
 func (m ChatModel) renderLiveProgressSlot(theme chatTheme) string {
+	gap := lipgloss.NewStyle().Width(m.width).Render("")
 	message, busy := m.transientStatusMessage()
 	if message == "" {
-		return lipgloss.NewStyle().
+		return gap + "\n" + lipgloss.NewStyle().
 			Foreground(theme.TextDim).
 			Width(m.width).
 			Render("")
 	}
 
 	lines := strings.Split(message, "\n")
-	rendered := make([]string, 0, len(lines))
+	rendered := make([]string, 0, len(lines)+1)
+	rendered = append(rendered, gap)
 
 	for i, line := range lines {
 		prefix := "·"

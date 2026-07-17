@@ -1385,7 +1385,7 @@ func TestChatModelViewportReservesLiveStatusSlot(t *testing.T) {
 	})
 	m = updated.(ChatModel)
 
-	want := m.height - m.headerHeight() - chatHeaderGapHeight - m.inputHeight() - m.normalModeStatsFooterHeight() - 1
+	want := m.height - m.headerHeight() - chatHeaderGapHeight - m.inputHeight() - m.normalModeStatsFooterHeight() - m.liveStatusSlotHeight()
 	if m.chatViewport.Height != want {
 		t.Fatalf("chat viewport height = %d, want %d", m.chatViewport.Height, want)
 	}

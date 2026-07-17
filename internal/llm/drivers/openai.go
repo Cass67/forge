@@ -68,6 +68,7 @@ func newOpenAI(apiKey, providerLabel, registryName, apiModel string, supportsRes
 		opts = append(opts, option.WithHTTPClient(httpClient))
 	}
 	opts = append(opts, providerHeaders(providerLabel)...)
+	opts = append(opts, legibleErrorBodies(), filterSSEComments())
 	client := openai.NewClient(opts...)
 	wsURL := wsBaseURLFromHTTP(baseURL)
 	return &OpenAIDriver{
@@ -106,6 +107,7 @@ func NewCustomCompatProvider(providerLabel, apiKey, baseURL, registryName, apiMo
 		opts = append(opts, option.WithHeader(k, v))
 	}
 	opts = append(opts, providerHeaders(providerLabel)...)
+	opts = append(opts, legibleErrorBodies(), filterSSEComments())
 	client := openai.NewClient(opts...)
 	return &OpenAIDriver{
 		client:            &client,
@@ -129,6 +131,8 @@ func NewCopilot(token, registryName, apiModel string) *OpenAIDriver {
 		option.WithHeader("Openai-Intent", "conversation-agent"),
 		option.WithHeader("X-Initiator", "user"),
 		option.WithHeader("X-GitHub-Api-Version", "2025-05-01"),
+		legibleErrorBodies(),
+		filterSSEComments(),
 	)
 	return &OpenAIDriver{
 		client:            &client,
@@ -852,7 +856,26 @@ func toOpenAIMessages(msgs []llm.Message, includeEmptyAssistantReasoning bool) [
 	return toOpenAIMessagesWithOptions(msgs, includeEmptyAssistantReasoning, true)
 }
 
+// coalesceSystemMessages merges runs of consecutive system messages into one.
+// Some chat templates (e.g. llama.cpp-served models) reject more than one
+// system message; concatenation is semantically equivalent everywhere else.
+func coalesceSystemMessages(msgs []llm.Message) []llm.Message {
+	out := make([]llm.Message, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Role == llm.RoleSystem && len(out) > 0 {
+			prev := &out[len(out)-1]
+			if prev.Role == llm.RoleSystem && !prev.HasContentParts() && !m.HasContentParts() {
+				prev.Content = strings.TrimRight(prev.Content, "\n") + "\n\n" + m.Content
+				continue
+			}
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
 func toOpenAIMessagesWithOptions(msgs []llm.Message, includeEmptyAssistantReasoning bool, allowImageParts bool) []openai.ChatCompletionMessageParamUnion {
+	msgs = coalesceSystemMessages(msgs)
 	out := make([]openai.ChatCompletionMessageParamUnion, 0, len(msgs))
 	for _, m := range msgs {
 		switch m.Role {
@@ -956,6 +979,9 @@ func extractReasoningContent(raw string) string {
 		Choices []struct {
 			Delta struct {
 				ReasoningContent string `json:"reasoning_content"`
+				// OpenRouter-style gateways (incl. opencode-go) emit the
+				// interleaved reasoning stream as "reasoning" instead.
+				Reasoning string `json:"reasoning"`
 			} `json:"delta"`
 		} `json:"choices"`
 	}
@@ -965,6 +991,9 @@ func extractReasoningContent(raw string) string {
 	for _, ch := range chunk.Choices {
 		if ch.Delta.ReasoningContent != "" {
 			return ch.Delta.ReasoningContent
+		}
+		if ch.Delta.Reasoning != "" {
+			return ch.Delta.Reasoning
 		}
 	}
 	return ""

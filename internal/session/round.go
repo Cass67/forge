@@ -8,6 +8,7 @@ import (
 	"forge/internal/llm"
 	"forge/internal/logger"
 	"forge/internal/output"
+	resilience "forge/internal/resilience/errors"
 	"forge/internal/summarizer"
 )
 
@@ -171,7 +172,37 @@ func auditorApproved(text string) bool {
 	return false
 }
 
+// streamAgent runs one agent turn, retrying from scratch when the stream
+// fails mid-response with a transient error (e.g. idle timeout). The retry
+// driver below only retries calls that fail before the first token, so
+// mid-stream stalls must be handled here by rerunning the whole turn.
 func (r *Round) streamAgent(ctx context.Context, agent, systemPrompt, userContent string, pass, round int) (string, error) {
+	const maxTurnAttempts = 3
+	var lastErr error
+	for attempt := 1; attempt <= maxTurnAttempts; attempt++ {
+		text, err := r.streamAgentOnce(ctx, agent, systemPrompt, userContent, pass, round)
+		if err == nil {
+			return text, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil || !resilience.ClassifyError(err).Retryable {
+			return text, err
+		}
+		if attempt < maxTurnAttempts {
+			r.log.Warn("agent turn failed mid-stream, retrying", map[string]any{
+				"agent": agent, "pass": pass, "round": round,
+				"attempt": attempt, "error": err.Error(),
+			})
+			r.events <- llm.Event{
+				Kind: llm.EventWarning, Agent: agent, Pass: pass, Round: round,
+				Err: fmt.Errorf("%s turn failed (attempt %d/%d), restarting turn: %w", agent, attempt, maxTurnAttempts, err),
+			}
+		}
+	}
+	return "", fmt.Errorf("%s turn: all %d attempts failed: %w", agent, maxTurnAttempts, lastErr)
+}
+
+func (r *Round) streamAgentOnce(ctx context.Context, agent, systemPrompt, userContent string, pass, round int) (string, error) {
 	messages := []llm.Message{
 		{Role: llm.RoleSystem, Content: systemPrompt},
 		{Role: llm.RoleUser, Content: userContent},
