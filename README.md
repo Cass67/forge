@@ -326,6 +326,9 @@ Core commands:
 
 ```bash
 forge [--model MODEL] [-C PATH]
+forge -p "prompt"                # headless: one prompt, final answer to stdout, exit
+forge --continue                 # resume the most recent session
+forge --resume <thread-id>       # resume a specific stored session
 forge make [<path>] [--prompt "..."]
 forge improve <path> [--prompt "..."]
 forge plugin validate <path>
@@ -355,7 +358,15 @@ Useful chat slash commands:
 /compact
 /compact recent 20
 /compact status
+/rewind            # revert workspace to the latest pre-mutation checkpoint
+/rewind list       # list checkpoints
+/rewind turn-3     # revert to a specific checkpoint
+/<skill> [args]    # activate a skill; args replace $ARGUMENTS in its body
 ```
+
+Headless mode (`forge -p`) writes progress and tool activity to stderr and only
+the final assistant response to stdout, so it is pipeable. Without `--yolo`,
+approval-gated actions are denied rather than prompted.
 
 ## Output
 
