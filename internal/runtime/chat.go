@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -894,17 +895,35 @@ func deferredToolsNote(reg *tools.Registry) string {
 	return "## Additional Tools\nThese tools also exist but their schemas are not attached: " + strings.Join(names, ", ") + ".\nTo use one, first call tool_help with its name to get its parameters, then call it like any other tool."
 }
 
-func RunChatConsole(setup *ChatSetup) {
+type consoleRuntime struct {
+	session      *reactruntime.Session
+	renderer     *agent.Renderer
+	runner       *reactruntime.Runner
+	loadedSkills []skills.Skill
+	state        *chatstate.State
+	remember     func(string) bool
+}
+
+// buildConsoleRuntime wires the full chat runtime (tools, approval gate,
+// plugins, MCP, memory, react runner) shared by the interactive console and
+// headless (-p) execution. When approve is nil the console default applies
+// (yolo or interactive stdin). The returned cleanup closes preview/MCP/plugin
+// resources and must be called by the caller.
+func buildConsoleRuntime(setup *ChatSetup, approve tools.ApprovalFunc, out io.Writer, colors bool) (*consoleRuntime, func()) {
+	if out == nil {
+		out = os.Stdout
+	}
 	session := reactruntime.NewSession()
 	session.SetActiveWorkspaceRoot(setup.WorkDir)
-	var approve tools.ApprovalFunc
-	if setup.Yolo {
-		approve = agent.YoloApproval()
-	} else {
-		approve = agent.InteractiveApproval(os.Stdin, os.Stdout)
+	if approve == nil {
+		if setup.Yolo {
+			approve = agent.YoloApproval()
+		} else {
+			approve = agent.InteractiveApproval(os.Stdin, os.Stdout)
+		}
 	}
 	gate := reactruntime.NewApprovalGate(setup.WorkDir, loadChatApprovalConfig(setup), approve, func(text string) {
-		_, _ = fmt.Fprintln(os.Stdout, text)
+		_, _ = fmt.Fprintln(out, text)
 	})
 	gate.SetGuardianReviewer(func(transcript string, action tools.Action) tools.GuardianReview {
 		return tools.ReviewApprovalAction(transcript, action)
@@ -918,7 +937,7 @@ func RunChatConsole(setup *ChatSetup) {
 	approve = gate.Approve
 
 	reg := tools.NewRegistry()
-	renderer := agent.NewRenderer(os.Stdout, 80, true)
+	renderer := agent.NewRenderer(out, 80, colors)
 	forcePromptApprove := approve
 	previewRuntime, mcpManager := registerTools(reg, setup.WorkDir, setup.Config, session, approve, renderer.Info, func(status tools.ExecSessionStatus) {
 		payload, err := json.Marshal(status)
@@ -928,16 +947,20 @@ func RunChatConsole(setup *ChatSetup) {
 		}
 		renderer.ToolResult("command_status", string(payload), "", false)
 	}, forcePromptApprove)
-	if previewRuntime != nil {
-		defer previewRuntime.Close()
-	}
-	if mcpManager != nil {
-		defer func() { _ = mcpManager.Close() }()
-	}
 	pluginManager := startChatPluginManager(setup.Config, setup.WorkDir, renderer.Info)
 	if pluginManager != nil {
-		defer func() { _ = pluginManager.Close() }()
 		pluginManager.RegisterTools(reg, approve)
+	}
+	cleanup := func() {
+		if previewRuntime != nil {
+			_ = previewRuntime.Close()
+		}
+		if mcpManager != nil {
+			_ = mcpManager.Close()
+		}
+		if pluginManager != nil {
+			_ = pluginManager.Close()
+		}
 	}
 	baseReg := reg.Filter(nil)
 	loadedSkills := skills.Load(setup.WorkDir)
@@ -1004,6 +1027,26 @@ func RunChatConsole(setup *ChatSetup) {
 		OutputStore:              configuredOutputStore(setup.Config),
 	})
 	registerReactDelegationTools(reg, setup, baseReg, approve, nil, pluginManager, session)
+
+	return &consoleRuntime{
+		session:      session,
+		renderer:     renderer,
+		runner:       reactRunner,
+		loadedSkills: loadedSkills,
+		state:        state,
+		remember:     remember,
+	}, cleanup
+}
+
+func RunChatConsole(setup *ChatSetup) {
+	rt, cleanup := buildConsoleRuntime(setup, nil, os.Stdout, true)
+	defer cleanup()
+	session := rt.session
+	renderer := rt.renderer
+	reactRunner := rt.runner
+	loadedSkills := rt.loadedSkills
+	state := rt.state
+	remember := rt.remember
 
 	fmt.Printf("forge (%s) — %s\n", setup.ChatModel, setup.WorkDir)
 	fmt.Println("type your request, or /help for commands")
@@ -1094,6 +1137,42 @@ func RunChatConsole(setup *ChatSetup) {
 		}
 	}
 	fmt.Println()
+}
+
+// RunChatHeadless runs a single prompt non-interactively and returns a process
+// exit code. Progress, tool activity, and errors go to stderr; only the final
+// assistant response is written to stdout so it can be piped. Approvals are not
+// interactive: without --yolo every approval-gated action is denied.
+func RunChatHeadless(setup *ChatSetup, prompt string) int {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		fmt.Fprintln(os.Stderr, "error: empty prompt")
+		return 2
+	}
+	var approve tools.ApprovalFunc
+	if !setup.Yolo {
+		approve = func(tools.Action) (bool, error) { return false, nil }
+	}
+	rt, cleanup := buildConsoleRuntime(setup, approve, os.Stderr, false)
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
+	go func() {
+		<-sigCh
+		cancel()
+	}()
+
+	if err := runChatTurn(ctx, rt.runner, chatstate.ChatUserInput{IsInput: true, Text: prompt}); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+	if resp := strings.TrimSpace(rt.runner.LastResponse()); resp != "" {
+		_, _ = fmt.Fprintln(os.Stdout, resp)
+	}
+	return 0
 }
 
 func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg *tools.Registry, approve tools.ApprovalFunc, renderer *agent.EventRenderer, pluginManager *pluginruntime.Manager, sessions ...*reactruntime.Session) {
