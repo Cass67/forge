@@ -31,6 +31,13 @@ import (
 type chatTickMsg time.Time
 type chatApprovalMsg tools.Action
 
+// pluginCommandResultMsg carries the output of a plugin slash command
+// back into the Bubble Tea update loop.
+type pluginCommandResultMsg struct {
+	content string
+	err     error
+}
+
 type providerAuthStartedMsg struct {
 	providerID string
 	verifyURL  string
@@ -1598,6 +1605,22 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pendingApproval = &action
 		return m, nil
 
+	case pluginCommandResultMsg:
+		header := "Plugin Result"
+		content := msg.content
+		if msg.err != nil {
+			header = "Plugin Error"
+			if content != "" {
+				content += "\n" + msg.err.Error()
+			} else {
+				content = msg.err.Error()
+			}
+		}
+		if content != "" {
+			m.AddMessage(ChatMessage{Kind: MsgForge, Header: header, Content: content})
+		}
+		return m, nil
+
 	case providerAuthStartedMsg:
 		return m.handleProviderAuthStarted(msg)
 
@@ -1899,32 +1922,23 @@ func (m ChatModel) trySubmitText(input string, attachments []chatstate.ChatAttac
 				cmdName := strings.TrimPrefix(pluginCmd.Name, "/")
 				// Match exact command name (first word after /), allowing trailing args
 				if input == "/"+cmdName || strings.HasPrefix(input, "/"+cmdName+" ") || strings.HasPrefix(input, "/"+cmdName+"\t") {
-					// Execute plugin command in background, show result as message
+					// Run plugin command async; result re-enters via Update so
+					// the message is appended to the live model, not a copy.
 					args := ""
 					if idx := strings.Index(input, " "); idx != -1 {
 						args = input[idx+1:]
 					}
-					go func(pc plugin.Command) {
-						result, err := pc.Handler(context.Background(), args)
-						if err != nil {
-							m.AddMessage(ChatMessage{
-								Kind:    MsgForge,
-								Header:  "Plugin Error",
-								Content: err.Error(),
-							})
-							return
-						}
-						if result != "" {
-							m.AddMessage(ChatMessage{
-								Kind:    MsgForge,
-								Header:  "Plugin Result",
-								Content: result,
-							})
-						}
-					}(pluginCmd)
+					pc := pluginCmd
+					m.AddMessage(ChatMessage{
+						Kind:    MsgStatus,
+						Content: fmt.Sprintf("running %s ...", pc.Name),
+					})
 					m.inputBuf = ""
 					m.inputPos = 0
-					return m, nil, true
+					return m, func() tea.Msg {
+						result, err := pc.Handler(context.Background(), args)
+						return pluginCommandResultMsg{content: result, err: err}
+					}, true
 				}
 			}
 		}
