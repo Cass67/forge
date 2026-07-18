@@ -85,6 +85,8 @@ Auth/token storage lives in:
 
 Environment variables override file-based keys where supported.
 
+Full annotated example with every option: [`config.example.toml`](config.example.toml).
+
 Minimal example:
 
 ```toml

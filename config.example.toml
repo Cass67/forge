@@ -1,0 +1,167 @@
+# Forge configuration — full example.
+# Copy to ~/.config/forge/config.toml (or $XDG_CONFIG_HOME/forge/config.toml).
+# Every key below is optional; values shown are the built-in defaults unless noted.
+# Source of truth: internal/config/config.go, internal/config/validate.go.
+
+# Fetch live model lists for OpenAI-compatible providers.
+live_compat_models = true
+
+[session]
+output_dir = "./output"
+
+# API keys. Environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, ...)
+# override these; `forge login` tokens in auth.json are the final fallback.
+[keys]
+anthropic = ""
+openai = ""
+groq = ""
+mistral = ""
+xai = ""
+zai = ""        # env: ZAI_API_KEY or ZHIPU_API_KEY
+nvidia = ""
+openrouter = ""
+together = ""   # env: TOGETHER_AI_API_KEY
+perplexity = ""
+deepinfra = ""
+cerebras = ""
+opencode = ""
+brave = ""
+
+[copilot]
+# GitHub OAuth App client ID for Copilot device-flow auth.
+# Empty = bundled default. Env override: FORGE_COPILOT_CLIENT_ID.
+client_id = ""
+
+[log]
+level = "info" # debug | info | warn | error
+file = ""      # empty = <session dir>/session.log
+
+[retry]
+max_attempts = 3
+initial_wait_ms = 1000
+max_wait_ms = 30000
+timeout_seconds = 600
+
+[resilience]
+compaction_max_failures = 3
+token_diminishing_threshold = 500
+token_diminishing_checks = 2
+tool_thrash_circuit_breaker = 8
+stream_idle_timeout_ms = 120000
+
+[security.secrets]
+# Each: allow | redact | ask | block
+read = "redact"
+write = "block"
+command_output = "redact"
+approval_detail = "redact"
+
+[chat]
+model = ""              # default model, e.g. "claude/claude-sonnet-4-6"
+last_model = ""         # updated automatically by the model picker
+command_timeout = 60    # seconds
+yolo = false
+ignore_dirs = [".git", "node_modules", "__pycache__", ".venv", "vendor"]
+# Tool-schema set sent per request:
+#   ""     auto-detect (lean for local/self-hosted providers)
+#   "lean" core ~16 schemas, rest callable via tool_help
+#   "full" every schema
+tool_profile = ""
+
+[approval]
+default_policy = "on_request" # never | on_failure | on_request | unless_trusted
+sandbox_policy = "workspace_write" # read_only | workspace_write | danger_full_access
+known_safe_prefixes = [
+  "git status", "git diff", "git log", "ls", "pwd", "cat", "head", "tail",
+  "sed -n", "rg", "go test", "go build", "npm test", "npm run lint",
+]
+
+# Approval rules: set exactly one of command_prefix or command per rule.
+# decision: allow | prompt | forbidden
+#[[approval.rules]]
+#tool = "run_command"
+#command_prefix = ["just", "build"]
+#decision = "allow"
+#
+#[[approval.rules]]
+#tool = "run_command"
+#command = "rm -rf *"
+#decision = "forbidden"
+
+# Permission rules, layered by scope (managed > user > project > local >
+# session > cli). behavior: allow | ask | deny.
+# tool: apply_patch, artifact_read, artifact_write, code_search, edit_file,
+# exec_session_start, glob, lsp_definition, lsp_document_symbols, lsp_hover,
+# lsp_references, read_file, run_command, search, view_image, web_fetch,
+# write_file, or an MCP tool name (mcp__server__tool).
+#[[permissions.user.rules]]
+#behavior = "deny"
+#tool = "write_file"
+#pattern = "**/.env"
+
+[permissions.auto]
+# LLM-based auto-approval of permission prompts.
+enabled = false
+posture = "balanced" # conservative | balanced
+model = ""           # empty = default classifier model
+max_consecutive_denials = 3
+max_total_denials = 20
+failure_behavior = "ask" # ask | deny
+timeout_ms = 5000
+
+# MCP servers: type "remote" (url, headers) or "local" (command, env).
+#[mcp_servers.context7]
+#type = "remote"
+#url = "https://mcp.context7.com/mcp"
+#headers = { Authorization = "Bearer TOKEN" }
+#enabled = true
+#timeout_ms = 0 # 0 = default
+#
+#[mcp_servers.myserver]
+#type = "local"
+#command = ["npx", "-y", "my-mcp-server"]
+#env = { MY_VAR = "value" }
+
+# Plugins. kind: forge-stdio (external process, command required) | native.
+# Native plugins are compiled into the binary but only load when listed here.
+#[[plugins]]
+#id = "docker"
+#kind = "native"
+#
+#[[plugins]]
+#id = "sandbox"
+#kind = "native"
+#  [plugins.settings]
+#  default_on = false          # start sandbox at session start
+#  image = "ubuntu:22.04"      # fallback image when no dockerfile
+#  dockerfile = ""             # built on demand, content-hash tagged
+#
+#[[plugins]]
+#id = "my-plugin"
+#kind = "forge-stdio"
+#source = "github.com/me/my-plugin"
+#enabled = true
+#command = ["my-plugin", "--stdio"]
+#env = { PLUGIN_VAR = "value" }
+#inherit_env = ["HOME", "PATH"]
+#auto_approve_tools = ["my_plugin_tool"]
+#startup_timeout_ms = 0 # 0 = default
+#request_timeout_ms = 0
+#  # Per-agent model overrides.
+#  [plugins.agent_overrides.reviewer]
+#  model = "claude/claude-sonnet-4-6"
+#  fallbacks = ["openai/gpt-5.2"]
+#  # Plugin-specific settings, interpreted by the plugin itself.
+#  [plugins.settings]
+#  default_on = true
+
+# Custom OpenAI-compatible providers. Also loadable from separate files in
+# ~/.config/forge/providers/*.toml. See internal/bootstrap/custom_providers.go.
+#[model_providers.localllm]
+#name = "Local LLM"
+#base_url = "http://127.0.0.1:8080/v1"
+#wire_api = "chat"
+#model_info_url = ""
+#default_model = "my-model"
+#models = ["my-model", "other-model"]
+#http_headers = { X-Custom = "value" }
