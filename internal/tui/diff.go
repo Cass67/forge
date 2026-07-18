@@ -54,9 +54,23 @@ func compactDiffForDisplay(diff string, maxLines int) string {
 	return strings.Join(out, "\n")
 }
 
+// sideBySideMinWidth is the minimum terminal width for the two-column diff
+// view; below it the unified single-column rendering is used instead.
+const sideBySideMinWidth = 100
+
 // enhancedDiffBlock parses a raw diff body and returns a richer rendering
-// with line numbers, file headers, hunk headers, +/- styling, and word-level highlighting.
+// with line numbers, +/- styling, and word-level highlighting. Wide terminals
+// get a side-by-side two-column view; narrow ones the unified view.
 func enhancedDiffBlock(body string, width int, theme chatTheme) string {
+	if width >= sideBySideMinWidth {
+		if out := sideBySideDiffBlock(body, width, theme); out != "" {
+			return out
+		}
+	}
+	return unifiedDiffBlock(body, width, theme)
+}
+
+func unifiedDiffBlock(body string, width int, theme chatTheme) string {
 	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
 	if len(lines) == 0 || (len(lines) == 1 && lines[0] == "") {
 		return ""
@@ -141,6 +155,125 @@ func enhancedDiffBlock(body string, width int, theme chatTheme) string {
 	flushPending()
 
 	return strings.Join(out, "\n")
+}
+
+// sideBySideDiffBlock renders a diff as two aligned columns: old file on the
+// left, new file on the right, each with its own line numbers. Deleted lines
+// leave a gap on the right, added lines a gap on the left; changed pairs sit
+// on the same row with word-level highlighting.
+func sideBySideDiffBlock(body string, width int, theme chatTheme) string {
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	if len(lines) == 0 || (len(lines) == 1 && lines[0] == "") {
+		return ""
+	}
+	const gap = 2
+	cellW := (width - gap) / 2
+	reHunk := regexp.MustCompile(`^@@ -(\d+),(\d+) \+(\d+),(\d+) @@(.*)`)
+
+	oldLnum := 0
+	newLnum := 0
+
+	joinRow := func(left, right string) string {
+		return lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", gap), right)
+	}
+	blank := renderSBSCell(0, "", "", theme, cellW)
+
+	type pendingOld struct {
+		content string
+		oldNum  int
+	}
+	var pending []pendingOld
+	var out []string
+
+	flushPending := func() {
+		for _, p := range pending {
+			out = append(out, joinRow(renderSBSCell(p.oldNum, "-"+p.content, "", theme, cellW), blank))
+		}
+		pending = nil
+	}
+
+	for _, line := range lines {
+		trim := strings.TrimRight(line, "\n\r")
+
+		switch {
+		case strings.HasPrefix(trim, "+++ ") || strings.HasPrefix(trim, "--- "):
+			flushPending()
+			out = append(out, lipgloss.NewStyle().Foreground(theme.TextDim).Width(width).Render(trim))
+
+		case strings.HasPrefix(trim, "@@"):
+			flushPending()
+			if m := reHunk.FindStringSubmatch(trim); m != nil {
+				oldLnum = parseIntOrZero(m[1])
+				newLnum = parseIntOrZero(m[3])
+			}
+			out = append(out, lipgloss.NewStyle().Foreground(theme.AccentSecondary).Width(width).Render(trim))
+
+		case strings.HasPrefix(trim, "+"):
+			content := trim[1:]
+			if len(pending) > 0 {
+				p := pending[0]
+				pending = pending[1:]
+				oldHL, newHL := wordDiff(p.content, content)
+				out = append(out, joinRow(
+					renderSBSCell(p.oldNum, "-"+p.content, oldHL, theme, cellW),
+					renderSBSCell(newLnum, "+"+content, newHL, theme, cellW)))
+			} else {
+				out = append(out, joinRow(blank, renderSBSCell(newLnum, "+"+content, "", theme, cellW)))
+			}
+			newLnum++
+
+		case strings.HasPrefix(trim, "-"):
+			pending = append(pending, pendingOld{content: trim[1:], oldNum: oldLnum})
+			oldLnum++
+
+		default:
+			flushPending()
+			if oldLnum > 0 || newLnum > 0 {
+				content := strings.TrimPrefix(trim, " ")
+				out = append(out, joinRow(
+					renderSBSCell(oldLnum, content, "", theme, cellW),
+					renderSBSCell(newLnum, content, "", theme, cellW)))
+				oldLnum++
+				newLnum++
+			} else {
+				out = append(out, lipgloss.NewStyle().Foreground(theme.Text).Width(width).Render(trim))
+			}
+		}
+	}
+	flushPending()
+
+	return strings.Join(out, "\n")
+}
+
+// renderSBSCell renders one column cell: right-aligned line number, a thin
+// border, then the (possibly word-highlighted) content wrapped to the cell
+// width. A zero num with empty line yields an empty placeholder cell.
+func renderSBSCell(num int, line string, wordHighlight string, theme chatTheme, cellWidth int) string {
+	numWidth := 4
+	numStr := ""
+	if num > 0 {
+		numStr = fmt.Sprintf("%d", num)
+	}
+	prefix := lipgloss.NewStyle().Foreground(theme.TextDim).Render(fmt.Sprintf("%*s", numWidth, numStr)) +
+		lipgloss.NewStyle().Foreground(theme.Border).Render(" │ ")
+	remaining := max(1, cellWidth-numWidth-3)
+
+	var content string
+	if wordHighlight != "" {
+		content = renderWordHighlightedLine(line, wordHighlight, theme, remaining)
+	} else {
+		var style lipgloss.Style
+		switch {
+		case strings.HasPrefix(line, "+"):
+			style = lipgloss.NewStyle().Foreground(theme.Success)
+		case strings.HasPrefix(line, "-"):
+			style = lipgloss.NewStyle().Foreground(theme.Error)
+		default:
+			style = lipgloss.NewStyle().Foreground(theme.Text)
+		}
+		content = style.Width(remaining).Render(line)
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, prefix, content)
 }
 
 // renderDiffLine renders a single diff line with formatted line numbers

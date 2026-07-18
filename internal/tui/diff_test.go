@@ -36,3 +36,24 @@ func TestCompactDiffForDisplay(t *testing.T) {
 		t.Fatalf("truncation marker missing:\n%s", got)
 	}
 }
+
+func TestSideBySideDiffBlock(t *testing.T) {
+	theme := chatThemeRegistry[0]
+	diff := "@@ -10,3 +10,4 @@\n ctx line\n-old text\n+new text\n+added only\n"
+
+	got := sideBySideDiffBlock(diff, 120, theme)
+	rows := strings.Split(got, "\n")
+	if len(rows) != 4 {
+		t.Fatalf("want 4 rows (hunk, ctx, pair, add), got %d:\n%s", len(rows), got)
+	}
+	if !strings.Contains(rows[2], "old text") || !strings.Contains(rows[2], "new text") {
+		t.Fatalf("changed pair not on one row:\n%s", rows[2])
+	}
+	if !strings.Contains(rows[3], "added only") || strings.Contains(rows[3], "old") {
+		t.Fatalf("add-only row wrong:\n%s", rows[3])
+	}
+
+	if narrow := enhancedDiffBlock(diff, 80, theme); strings.Contains(strings.Split(narrow, "\n")[2], "new text") && strings.Contains(strings.Split(narrow, "\n")[2], "old text") {
+		t.Fatalf("narrow width should fall back to unified")
+	}
+}
