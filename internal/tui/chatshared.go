@@ -63,6 +63,9 @@ type ChatLiveConfig struct {
 	// durable thread store into the live session. Returns the number of
 	// history messages restored.
 	RestoreHistory func(threadID string) (int, error)
+	// ReloadPlugins re-scans for plugins and reloads all external plugin
+	// processes. Returns a human-readable summary of what changed.
+	ReloadPlugins func() string
 }
 
 type ProviderOption struct {

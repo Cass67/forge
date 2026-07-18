@@ -28,6 +28,9 @@ import (
 	pluginruntime "forge/internal/plugins"
 	runtimepkg "forge/internal/runtime"
 	"forge/internal/skills"
+
+	// Import plugin packages to trigger init() registration.
+	_ "forge/plugins"
 )
 
 var (
@@ -171,50 +174,34 @@ func (f *stringListFlag) Set(value string) error {
 func runPluginInstall(args []string) {
 	fs := flag.NewFlagSet("plugin install", flag.ExitOnError)
 	idFlag := fs.String("id", "", "plugin id in Forge config")
-	runtimeFlag := fs.String("runtime", "opencode", "plugin runtime: opencode")
-	moduleFlag := fs.String("module", "", "OpenCode module specifier to import after install")
+	kindFlag := fs.String("kind", "external", "plugin kind: external (subprocess) or native (compiled-in)")
 	disabled := fs.Bool("disabled", false, "install plugin disabled")
-	noInstall := fs.Bool("no-install", false, "skip npm install for package sources")
 	var autoApprove stringListFlag
 	fs.Var(&autoApprove, "auto-approve", "plugin tool to auto-approve; may be repeated")
 	fs.SetOutput(io.Discard)
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(os.Stderr, "usage: forge plugin install [--id ID] [--module NAME] [--auto-approve TOOL] <npm-package|git-url|local-js-url|local-path>")
+		fmt.Fprintln(os.Stderr, "usage: forge plugin install [--id ID] [--kind native|external] [--auto-approve TOOL] <source>")
 		os.Exit(1)
 	}
-	source := cli.RequireArg(fs.Args(), "usage: forge plugin install [--id ID] [--module NAME] <npm-package|git-url|local-js-url|local-path>")
-	if _, err := os.Stat(filepath.Join(source, pluginruntime.ManifestFilename)); err == nil && strings.TrimSpace(*moduleFlag) == "" && len(autoApprove) == 0 {
-		store := pluginruntime.NewInstallStore(fsutil.ForgeConfigDir())
-		installed, err := store.InstallLocal(source, pluginruntime.InstallOptions{})
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error installing plugin manifest: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("Installed local plugin %s@%s.\n", installed.Name, installed.Version)
-		return
-	}
-	kind := strings.ToLower(strings.TrimSpace(*runtimeFlag))
-	if kind == "" {
-		kind = "opencode"
-	}
-	if kind != "opencode" {
-		fmt.Fprintln(os.Stderr, "error: forge plugin install currently supports OpenCode plugins through --runtime opencode")
+	kind := strings.ToLower(strings.TrimSpace(*kindFlag))
+	if kind != "native" && kind != "external" {
+		fmt.Fprintf(os.Stderr, "error: --kind must be 'native' or 'external', got %q\n", kind)
 		os.Exit(1)
 	}
 	id := strings.TrimSpace(*idFlag)
+	remaining := fs.Args()
+	if len(remaining) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: forge plugin install [--id ID] [--kind native|external] <source> [command args...]")
+		os.Exit(1)
+	}
+	source := remaining[0]
 	if id == "" {
-		id = inferPluginID(firstNonEmpty(*moduleFlag, source))
+		id = inferPluginID(source)
 	}
 	if !validCLIPluginID(id) {
 		fmt.Fprintf(os.Stderr, "error: invalid plugin id %q; use only letters, digits, underscores, or hyphens\n", id)
 		os.Exit(1)
 	}
-	command, err := prepareOpenCodePluginCommand(id, source, strings.TrimSpace(*moduleFlag), *noInstall)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error installing plugin: %v\n", err)
-		os.Exit(1)
-	}
-
 	cfg, err := loadMainConfigFn()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
@@ -224,10 +211,12 @@ func runPluginInstall(args []string) {
 		ID:               id,
 		Kind:             kind,
 		Source:           source,
-		Command:          command,
 		AutoApproveTools: compactStrings(autoApprove),
-		StartupTimeoutMS: 3000,
-		RequestTimeoutMS: 10000,
+	}
+	if kind == "external" {
+		plugin.Command = remaining
+		plugin.StartupTimeoutMS = 3000
+		plugin.RequestTimeoutMS = 10000
 	}
 	if *disabled {
 		plugin.Enabled = boolPtr(false)
@@ -237,8 +226,10 @@ func runPluginInstall(args []string) {
 		fmt.Fprintf(os.Stderr, "error saving config: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("Installed OpenCode plugin %s from %s.\n", id, source)
-	fmt.Println("Note: Forge OpenCode compatibility supports plugin tools, hooks, and agent registration. Session, provider, and model APIs are available via Node.js built-ins. The OpenCode shell helper ($) and SSE events are not supported.")
+	fmt.Printf("Installed %s plugin %s from %s.\n", kind, id, source)
+	if kind == "native" {
+		fmt.Println("Note: Native plugins must be imported in plugins/imports.go and recompiled.")
+	}
 }
 
 func runPluginList() {
@@ -298,66 +289,6 @@ func runPluginRemove(id string) {
 		os.Exit(1)
 	}
 	fmt.Printf("Removed plugin %s.\n", id)
-}
-
-func prepareOpenCodePluginCommand(id, source, moduleOverride string, noInstall bool) ([]string, error) {
-	configDir := filepath.Dir(mainConfigPathFn())
-	if configDir == "." || configDir == "" {
-		configDir = fsutil.ForgeConfigDir()
-	}
-	pluginDir := filepath.Join(configDir, "plugins")
-	hostPath := filepath.Join(pluginDir, pluginruntime.OpenCodeHostFileName)
-	if err := pluginruntime.WriteOpenCodeHost(hostPath); err != nil {
-		return nil, err
-	}
-
-	moduleRef := moduleOverride
-	installDir := ""
-	if localPath, ok := localPluginPath(source); ok {
-		if moduleRef == "" {
-			moduleRef = localPath
-		}
-	} else if isRawJavaScriptURL(source) {
-		downloadDir := filepath.Join(pluginDir, "opencode", id)
-		modulePath := filepath.Join(downloadDir, "plugin"+filepath.Ext(urlPath(source)))
-		if err := downloadPluginModule(source, modulePath); err != nil {
-			return nil, err
-		}
-		if moduleRef == "" {
-			moduleRef = modulePath
-		}
-	} else {
-		installDir = filepath.Join(pluginDir, "opencode", id)
-		if err := os.MkdirAll(installDir, 0o700); err != nil {
-			return nil, err
-		}
-		if err := ensurePluginPackageJSON(installDir); err != nil {
-			return nil, err
-		}
-		if !noInstall {
-			if err := runPluginInstallCmdFn("npm", "install", "--silent", "--ignore-scripts", "--prefix", installDir, source); err != nil {
-				return nil, err
-			}
-		}
-		if moduleRef == "" {
-			moduleRef = inferInstalledModule(source, installDir)
-		}
-	}
-	if strings.TrimSpace(moduleRef) == "" {
-		return nil, fmt.Errorf("could not infer OpenCode module; pass --module")
-	}
-	command := []string{openCodeRuntime(), hostPath, "--module", moduleRef}
-	if installDir != "" {
-		command = append(command, "--install-dir", installDir)
-	}
-	return command, nil
-}
-
-func openCodeRuntime() string {
-	if _, err := exec.LookPath("bun"); err == nil {
-		return "bun"
-	}
-	return "node"
 }
 
 func runPluginInstallCommand(name string, args ...string) error {
@@ -889,7 +820,7 @@ Usage:
   forge status                    Show auth and Copilot allowance status
   forge mcp [list|get|add|remove|login|logout]
                                   Manage MCP server configuration
-  forge plugin install <source>   Install an OpenCode plugin package, URL, or local module
+  forge plugin install <source>   Add a native or external plugin to Forge config
   forge plugin list               List configured plugins
   forge skills list               List loaded skills
   forge skills dir                Show global/project skill directories

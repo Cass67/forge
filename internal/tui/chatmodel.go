@@ -19,6 +19,7 @@ import (
 	"forge/internal/codexusage"
 	"forge/internal/copilot"
 	"forge/internal/llm"
+	"forge/internal/plugin"
 	"forge/internal/skills"
 
 	"github.com/charmbracelet/bubbles/viewport"
@@ -304,7 +305,6 @@ type ChatModel struct {
 	recentActivityLines    []string
 	recentActivityIndex    int
 	liveProgress           LiveProgressState
-	stickyPlanContent      string // pinned plan rendered above chat, not in scroll viewport
 	turnAnchorMessageIndex int
 	pendingSubAgentSummary *subAgentSummary
 	skills                 []skills.Skill
@@ -460,7 +460,6 @@ func (m *ChatModel) upsertPlanMessage(content string) {
 		return
 	}
 	msg := ChatMessage{Kind: MsgPlan, Header: "Plan", Content: content}
-	m.stickyPlanContent = content
 	for i := range m.messages {
 		if m.messages[i].Kind != MsgPlan {
 			continue
@@ -1097,7 +1096,6 @@ func (m ChatModel) headerHeight() int {
 type normalChatLayoutBudget struct {
 	Header      int
 	HeaderGap   int
-	StickyPlan  int
 	Chat        int
 	DebugDock   int
 	Pending     int
@@ -1114,7 +1112,6 @@ func (m ChatModel) normalChatLayoutBudget() normalChatLayoutBudget {
 	b := normalChatLayoutBudget{
 		Header:      m.headerHeight(),
 		HeaderGap:   chatHeaderGapHeight,
-		StickyPlan:  m.stickyPlanHeight(),
 		DebugDock:   m.debugDockHeight(),
 		TaskPanel:   m.agentTaskPanelHeight(),
 		ToolCards:   m.toolCardsPanelHeight(),
@@ -1124,8 +1121,8 @@ func (m ChatModel) normalChatLayoutBudget() normalChatLayoutBudget {
 		Input:       m.inputHeight(),
 		StatsFooter: m.normalModeStatsFooterHeight(),
 	}
-	b.Chat = max(1, m.height-b.Header-b.HeaderGap-b.StickyPlan-b.DebugDock-b.TaskPanel-b.ToolCards-b.FileChanges-b.Pending-b.LiveStatus-b.Input-b.StatsFooter)
-	b.Total = b.Header + b.HeaderGap + b.StickyPlan + b.Chat + b.DebugDock + b.TaskPanel + b.ToolCards + b.FileChanges + b.Pending + b.LiveStatus + b.Input + b.StatsFooter
+	b.Chat = max(1, m.height-b.Header-b.HeaderGap-b.DebugDock-b.TaskPanel-b.ToolCards-b.FileChanges-b.Pending-b.LiveStatus-b.Input-b.StatsFooter)
+	b.Total = b.Header + b.HeaderGap + b.Chat + b.DebugDock + b.TaskPanel + b.ToolCards + b.FileChanges + b.Pending + b.LiveStatus + b.Input + b.StatsFooter
 	return b
 }
 
@@ -1896,6 +1893,41 @@ func (m ChatModel) trySubmitText(input string, attachments []chatstate.ChatAttac
 			updated, submitCmd := m.submitSkillInput(s, fmt.Sprintf("/%s", s.Name), "")
 			return updated.(ChatModel), submitCmd, true
 		}
+		// Check plugin commands (Name may be "sandbox" or "/sandbox")
+		if pluginCommands := plugin.Global().GetAllCommands(); len(pluginCommands) > 0 {
+			for _, pluginCmd := range pluginCommands {
+				cmdName := strings.TrimPrefix(pluginCmd.Name, "/")
+				// Match exact command name (first word after /), allowing trailing args
+				if input == "/"+cmdName || strings.HasPrefix(input, "/"+cmdName+" ") || strings.HasPrefix(input, "/"+cmdName+"\t") {
+					// Execute plugin command in background, show result as message
+					args := ""
+					if idx := strings.Index(input, " "); idx != -1 {
+						args = input[idx+1:]
+					}
+					go func(pc plugin.Command) {
+						result, err := pc.Handler(context.Background(), args)
+						if err != nil {
+							m.AddMessage(ChatMessage{
+								Kind:    MsgForge,
+								Header:  "Plugin Error",
+								Content: err.Error(),
+							})
+							return
+						}
+						if result != "" {
+							m.AddMessage(ChatMessage{
+								Kind:    MsgForge,
+								Header:  "Plugin Result",
+								Content: result,
+							})
+						}
+					}(pluginCmd)
+					m.inputBuf = ""
+					m.inputPos = 0
+					return m, nil, true
+				}
+			}
+		}
 		if looksLikeAbsolutePathInput(input) {
 			goto submitChatInput
 		}
@@ -2066,6 +2098,14 @@ func (m ChatModel) matchingSlashCommands(input string) []string {
 			matches = append(matches, cmd)
 		}
 	}
+	// include plugin-registered slash commands
+	if pluginCommands := plugin.Global().GetAllCommands(); len(pluginCommands) > 0 {
+		for _, pc := range pluginCommands {
+			if strings.HasPrefix(pc.Name, input) {
+				matches = append(matches, pc.Name)
+			}
+		}
+	}
 	return matches
 }
 
@@ -2184,6 +2224,7 @@ var builtinCommands = []string{
 	"/skills", "/sessions", "/save", "/restore", "/remember",
 	"/find", "/files", "/copy agent", "/copy tools", "/copy code", "/copy result",
 	"/make", "/exit", "/quit",
+	"/reload",
 }
 
 func (m ChatModel) isBuiltinCommand(input string) bool {
@@ -2436,6 +2477,14 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		} else {
 			m.flash = "result copied"
 		}
+	case input == "/reload":
+		if m.config.ReloadPlugins == nil {
+			m.flash = "plugin reload not available in this session"
+		} else {
+			summary := m.config.ReloadPlugins()
+			m.skills = skills.Load(m.config.WorkDir)
+			m.flash = fmt.Sprintf("%s; %d skill(s) loaded", summary, len(m.skills))
+		}
 	default:
 		m.flash = "unknown command: " + input
 	}
@@ -2500,6 +2549,7 @@ func (m ChatModel) helpLines() []string {
 			"  /clear tools       clear debug trace buffer",
 			"  /exit              leave live mode",
 			"  /quit              leave live mode",
+			"  /reload            reload plugins, skills, and config",
 		})
 	case 2:
 		return applyKeyLabels([]string{
@@ -2815,12 +2865,7 @@ func (m ChatModel) View() string {
 	}
 
 	headerGap := lipgloss.NewStyle().Width(m.width).Render("")
-	stickyPlan := m.renderStickyPlan(theme)
-	parts := []string{header, headerGap}
-	if stickyPlan != "" {
-		parts = append(parts, stickyPlan)
-	}
-	parts = append(parts, chatPane)
+	parts := []string{header, headerGap, chatPane}
 	if debugDock != "" {
 		parts = append(parts, debugDock)
 	}

@@ -206,3 +206,53 @@ func TestCompactionManagerUserPartialCompactsSelectedRange(t *testing.T) {
 		t.Fatalf("recent inputs = %d, want 5", got)
 	}
 }
+
+func TestCompactionManagerPromptBudgetScalesToContextWindow(t *testing.T) {
+	// ~500KB prompt: over the 256KB default, well under a 1M-token window budget.
+	messages := []llm.Message{
+		{Role: llm.RoleUser, Content: "go"},
+		{Role: llm.RoleUser, Content: strings.Repeat("x", 500*1024)},
+	}
+
+	mgr := NewCompactionManager(CompactionConfig{})
+	if d := mgr.DecidePromptPressure(messages); d.Mode == CompactionNone {
+		t.Fatalf("default budget: Mode = %q, want compaction", d.Mode)
+	}
+
+	mgr = NewCompactionManager(CompactionConfig{PromptBudgetFn: promptBudgetFromWindow(func() int { return 1_000_000 })})
+	if d := mgr.DecidePromptPressure(messages); d.Mode != CompactionNone {
+		t.Fatalf("1M window: Mode = %q, want %q", d.Mode, CompactionNone)
+	}
+
+	// Unknown window falls back to the 256KB default.
+	mgr = NewCompactionManager(CompactionConfig{PromptBudgetFn: promptBudgetFromWindow(func() int { return 0 })})
+	if d := mgr.DecidePromptPressure(messages); d.Mode == CompactionNone {
+		t.Fatalf("unknown window: Mode = %q, want compaction", d.Mode)
+	}
+}
+
+func TestCompactionManagerLeanBudgetCapAndEarlyCrush(t *testing.T) {
+	if b := promptBudgetFromWindow(func() int { return 1_000_000 })(); b != maxPromptBudgetBytes {
+		t.Fatalf("budget = %d, want cap %d", b, maxPromptBudgetBytes)
+	}
+
+	// Past half budget with a stale big tool result: crush it, don't summarize.
+	budget := 100 * 1024
+	messages := []llm.Message{
+		{Role: llm.RoleUser, Content: "go"},
+		{Role: llm.RoleTool, Content: strings.Repeat("x", 60*1024)},
+		{Role: llm.RoleUser, Content: "next"},
+		{Role: llm.RoleAssistant, Content: "ok"},
+		{Role: llm.RoleUser, Content: "next2"},
+		{Role: llm.RoleAssistant, Content: "ok"},
+		{Role: llm.RoleUser, Content: "next3"},
+		{Role: llm.RoleAssistant, Content: "ok"},
+		{Role: llm.RoleUser, Content: "next4"},
+		{Role: llm.RoleAssistant, Content: "ok"},
+	}
+	mgr := NewCompactionManager(CompactionConfig{PromptBudgetFn: func() int { return budget }})
+	d := mgr.DecidePromptPressure(messages)
+	if d.Mode != CompactionMicro || d.Reason != "half prompt budget" {
+		t.Fatalf("Mode = %q reason %q, want micro / half prompt budget", d.Mode, d.Reason)
+	}
+}

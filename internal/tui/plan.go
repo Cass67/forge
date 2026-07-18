@@ -210,61 +210,6 @@ type planStep struct {
 	Status planStepStatus
 }
 
-// stickyPlan returns the parsed plan content for the sticky plan,
-// or empty string if no plan is active.
-func (m ChatModel) stickyPlan() string {
-	return strings.TrimSpace(m.stickyPlanContent)
-}
-
-// stickyPlanHeight returns the rendered height of the sticky plan,
-// or 0 if no plan is active.
-func (m ChatModel) stickyPlanHeight() int {
-	if m.stickyPlan() == "" {
-		return 0
-	}
-	// Collapsed plan: accent header + 1 line for each step + progress bar
-	steps := parsePlanSteps(m.stickyPlanContent)
-	n := len(steps)
-	if n == 0 {
-		return 0
-	}
-	// 1 for header, 1 for progress bar, n for steps + trailing blank line
-	return min(n, 5) + 3
-}
-
-// renderStickyPlan renders the pinned plan above the chat viewport.
-func (m ChatModel) renderStickyPlan(theme chatTheme) string {
-	content := m.stickyPlan()
-	if content == "" {
-		return ""
-	}
-	width := max(10, m.width)
-
-	header := lipgloss.NewStyle().
-		Foreground(theme.Warning).
-		Bold(true).
-		Render(fitCell(" Plan ", width))
-
-	body := renderPlanContent(content, width, theme)
-
-	// Limit the sticky plan height so it doesn't consume the whole screen
-	lines := strings.Split(body, "\n")
-	maxLines := 7
-	if len(lines) > maxLines {
-		lines = lines[:maxLines]
-		lines = append(lines, lipgloss.NewStyle().
-			Foreground(theme.TextDim).
-			Italic(true).
-			Render("… more steps — scroll in chat"))
-	}
-
-	panel := header + "\n" + strings.Join(lines, "\n")
-
-	return lipgloss.NewStyle().
-		Width(width).
-		Render(panel)
-}
-
 // currentPlanProgress returns the progress stats for the current plan,
 // or nil if no plan is active.
 func (m ChatModel) currentPlanProgress() *planProgressStats {

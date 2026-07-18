@@ -155,65 +155,43 @@ func TestRunMCPAddListGetAndRemove(t *testing.T) {
 	}
 }
 
-func TestRunPluginInstallLocalOpenCodePlugin(t *testing.T) {
+func TestRunPluginInstallNative(t *testing.T) {
 	oldLoad := loadMainConfigFn
 	oldSave := saveMainConfigFn
 	oldPath := mainConfigPathFn
-	oldInstall := runPluginInstallCmdFn
 	defer func() {
 		loadMainConfigFn = oldLoad
 		saveMainConfigFn = oldSave
 		mainConfigPathFn = oldPath
-		runPluginInstallCmdFn = oldInstall
 	}()
 
-	tmp := t.TempDir()
-	pluginPath := filepath.Join(tmp, "plugin.mjs")
-	if err := os.WriteFile(pluginPath, []byte("export default { server: async () => ({ tool: {} }) }\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	cfg := &config.Config{}
 	loadMainConfigFn = func() (*config.Config, error) { return cfg, nil }
 	saveMainConfigFn = func(_ string, in *config.Config) error {
 		cfg = in
 		return nil
 	}
-	mainConfigPathFn = func() string { return filepath.Join(tmp, "forge", "config.toml") }
-	runPluginInstallCmdFn = func(name string, args ...string) error {
-		t.Fatalf("local plugin install should not run %s %#v", name, args)
-		return nil
-	}
+	mainConfigPathFn = func() string { return filepath.Join(t.TempDir(), "config.toml") }
 
 	output := captureStdout(t, func() {
-		runPlugin([]string{"install", "--id", "simple", "--auto-approve", "echo", pluginPath})
+		runPlugin([]string{"install", "--kind", "native", "--id", "my-native", "some-package"})
 	})
-	if !strings.Contains(output, "Installed OpenCode plugin simple") {
+	if !strings.Contains(output, "Installed native plugin my-native") {
 		t.Fatalf("install output = %q", output)
 	}
 	if len(cfg.Plugins) != 1 {
 		t.Fatalf("plugins = %d, want 1", len(cfg.Plugins))
 	}
 	plugin := cfg.Plugins[0]
-	if plugin.ID != "simple" || plugin.Kind != "opencode" || plugin.Source != pluginPath {
-		t.Fatalf("plugin config = %#v", plugin)
+	if plugin.ID != "my-native" || plugin.Kind != "native" {
+		t.Fatalf("plugin = %#v", plugin)
 	}
-	if len(plugin.Command) < 4 || (plugin.Command[0] != "node" && plugin.Command[0] != "bun") || !strings.Contains(plugin.Command[1], "opencode-host.mjs") || plugin.Command[2] != "--module" || plugin.Command[3] != pluginPath {
-		t.Fatalf("plugin command = %#v", plugin.Command)
-	}
-	if got := strings.Join(plugin.AutoApproveTools, ","); got != "echo" {
-		t.Fatalf("auto approve = %q", got)
-	}
-	if _, err := os.Stat(plugin.Command[1]); err != nil {
-		t.Fatalf("expected host script to be written: %v", err)
-	}
-
-	listOutput := captureStdout(t, runPluginList)
-	if !strings.Contains(listOutput, "simple") || !strings.Contains(listOutput, "opencode") {
-		t.Fatalf("plugin list = %q", listOutput)
+	if len(plugin.Command) != 0 {
+		t.Fatalf("native plugin should have empty command, got %#v", plugin.Command)
 	}
 }
 
-func TestRunPluginInstallPackageRunsNPM(t *testing.T) {
+func TestRunPluginInstallExternal(t *testing.T) {
 	oldLoad := loadMainConfigFn
 	oldSave := saveMainConfigFn
 	oldPath := mainConfigPathFn
@@ -225,33 +203,30 @@ func TestRunPluginInstallPackageRunsNPM(t *testing.T) {
 		runPluginInstallCmdFn = oldInstall
 	}()
 
-	tmp := t.TempDir()
 	cfg := &config.Config{}
 	loadMainConfigFn = func() (*config.Config, error) { return cfg, nil }
 	saveMainConfigFn = func(_ string, in *config.Config) error {
 		cfg = in
 		return nil
 	}
-	mainConfigPathFn = func() string { return filepath.Join(tmp, "forge", "config.toml") }
-	var ran string
-	runPluginInstallCmdFn = func(name string, args ...string) error {
-		ran = name + " " + strings.Join(args, " ")
-		return nil
-	}
+	mainConfigPathFn = func() string { return filepath.Join(t.TempDir(), "config.toml") }
+	runPluginInstallCmdFn = func(name string, args ...string) error { return nil }
 
-	runPlugin([]string{"install", "oh-my-openagent"})
-	if !strings.Contains(ran, "npm install") || !strings.Contains(ran, "oh-my-openagent") {
-		t.Fatalf("install command = %q", ran)
+	output := captureStdout(t, func() {
+		runPlugin([]string{"install", "--kind", "external", "--id", "my-ext", "node", "plugin.js"})
+	})
+	if !strings.Contains(output, "Installed external plugin my-ext") {
+		t.Fatalf("install output = %q", output)
 	}
 	if len(cfg.Plugins) != 1 {
 		t.Fatalf("plugins = %d, want 1", len(cfg.Plugins))
 	}
 	plugin := cfg.Plugins[0]
-	if plugin.ID != "oh-my-openagent" || plugin.Kind != "opencode" {
+	if plugin.ID != "my-ext" || plugin.Kind != "external" {
 		t.Fatalf("plugin = %#v", plugin)
 	}
-	if got := strings.Join(plugin.Command, " "); !strings.Contains(got, "--module oh-my-openagent") || !strings.Contains(got, "--install-dir") {
-		t.Fatalf("command = %q", got)
+	if len(plugin.Command) != 2 || plugin.Command[0] != "node" || plugin.Command[1] != "plugin.js" {
+		t.Fatalf("command = %#v", plugin.Command)
 	}
 }
 

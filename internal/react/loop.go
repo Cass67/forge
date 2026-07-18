@@ -21,16 +21,19 @@ import (
 )
 
 type Config struct {
-	Driver                    llm.Driver
-	Tools                     *agenttools.Registry
-	Renderer                  agent.RenderTarget
-	SystemPrompt              func() string
-	Session                   *Session
-	Progress                  func(string)
-	TurnComplete              func(SessionSnapshot)
-	ToolExposureObserver      func(ToolExposureDecision)
-	ConfigureHooks            func(*hooks.Registry)
-	CompactionMaxFailures     int
+	Driver                llm.Driver
+	Tools                 *agenttools.Registry
+	Renderer              agent.RenderTarget
+	SystemPrompt          func() string
+	Session               *Session
+	Progress              func(string)
+	TurnComplete          func(SessionSnapshot)
+	ToolExposureObserver  func(ToolExposureDecision)
+	ConfigureHooks        func(*hooks.Registry)
+	CompactionMaxFailures int
+	// ContextWindowTokens returns the active model's context window in tokens
+	// (0 if unknown). Compaction budgets scale to it instead of the fixed default.
+	ContextWindowTokens       func() int
 	Interactive               bool
 	MaxSteps                  int
 	ToolThrashCircuitBreaker  int
@@ -223,6 +226,32 @@ type afterToolHookPayload struct {
 	Error    string
 }
 
+// maxPromptBudgetBytes caps the prompt budget at ~200k tokens regardless of
+// window size: history is resent on every request, so on huge-window models an
+// uncapped budget costs far more than an occasional summarize.
+const maxPromptBudgetBytes = 200_000 * 4
+
+// promptBudgetFromWindow converts a model context window (tokens) into a prompt
+// byte budget: 70% of the window leaves headroom for system prompt and output,
+// at ~4 bytes/token, capped at maxPromptBudgetBytes. Returns nil so the 256KB
+// default applies when the window is unknown.
+func promptBudgetFromWindow(windowTokens func() int) func() int {
+	if windowTokens == nil {
+		return nil
+	}
+	return func() int {
+		w := windowTokens()
+		if w <= 0 {
+			return 0
+		}
+		b := w * 7 / 10 * 4
+		if b > maxPromptBudgetBytes {
+			b = maxPromptBudgetBytes
+		}
+		return b
+	}
+}
+
 func NewRunner(cfg Config) *Runner {
 	session := cfg.Session
 	if session == nil {
@@ -248,6 +277,7 @@ func NewRunner(cfg Config) *Runner {
 			KeepTurns:            40,
 			HistoryPressureTurns: 40,
 			MaxFailures:          cfg.CompactionMaxFailures,
+			PromptBudgetFn:       promptBudgetFromWindow(cfg.ContextWindowTokens),
 		}),
 		compactionMaxFailures:     cfg.CompactionMaxFailures,
 		turnComplete:              cfg.TurnComplete,

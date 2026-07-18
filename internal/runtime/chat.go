@@ -35,6 +35,7 @@ import (
 	"forge/internal/memory"
 	"forge/internal/modelcatalog"
 	"forge/internal/permissions"
+	"forge/internal/plugin"
 	pluginruntime "forge/internal/plugins"
 	"forge/internal/protocol"
 	reactruntime "forge/internal/react"
@@ -441,18 +442,96 @@ func durableThreadID(session *reactruntime.Session) string {
 }
 
 func startChatPluginManager(cfg *config.Config, workDir string, notify func(string)) *pluginruntime.Manager {
-	if cfg == nil || len(cfg.Plugins) == 0 {
+	// Auto-discover plugins from ~/.forge/plugins/
+	if cfg != nil {
+		discovered, err := pluginruntime.ScanPluginsDir("")
+		if err != nil && notify != nil {
+			notify("plugin scan: " + err.Error())
+		}
+		if len(discovered) > 0 {
+			added, _, _ := pluginruntime.MergeDiscovered(cfg, discovered)
+			if added > 0 && notify != nil {
+				notify(fmt.Sprintf("auto-discovered %d plugin(s)", added))
+			}
+		}
+	}
+	hasConfigPlugins := cfg != nil && len(cfg.Plugins) > 0
+	if !hasConfigPlugins && !pluginruntime.HasNativePlugins() {
 		return nil
 	}
 	manager := pluginruntime.NewManager(workDir, cfg.Plugins)
-	if err := manager.Start(context.Background()); err != nil && notify != nil {
-		notify("plugin service: " + err.Error())
+	if hasConfigPlugins {
+		if err := manager.Start(context.Background()); err != nil && notify != nil {
+			notify("plugin service: " + err.Error())
+		}
 	}
+	manager.CollectNativePlugins()
 	if !manager.HasPlugins() {
 		_ = manager.Close()
 		return nil
 	}
 	return manager
+}
+
+func reloadPluginsHandler(existing **pluginruntime.Manager, cfg *config.Config, workDir string, reg *tools.Registry, approve tools.ApprovalFunc, notify func(string)) string {
+	// Re-read config from disk
+	freshCfg, err := config.Load(config.DefaultPath())
+	if err != nil {
+		if notify != nil {
+			notify("reload: " + err.Error())
+		}
+		return fmt.Sprintf("reload failed: config read error: %v", err)
+	}
+
+	// Scan for auto-discovered plugins in ~/.forge/plugins/
+	discovered, err := pluginruntime.ScanPluginsDir("")
+	if err != nil && notify != nil {
+		notify("reload: scan: " + err.Error())
+	}
+	added, _, updated := pluginruntime.MergeDiscovered(freshCfg, discovered)
+
+	// Update the live config in place
+	if cfg != nil {
+		cfg.Plugins = freshCfg.Plugins
+	}
+
+	// Kill old plugin manager
+	if *existing != nil {
+		_ = (*existing).Close()
+	}
+
+	// Start new plugin manager with updated configs
+	newManager := pluginruntime.NewManager(workDir, freshCfg.Plugins)
+	if len(freshCfg.Plugins) > 0 {
+		if err := newManager.Start(context.Background()); err != nil && notify != nil {
+			notify("reload: " + err.Error())
+		}
+	}
+	newManager.CollectNativePlugins()
+
+	if newManager.HasPlugins() {
+		newManager.RegisterTools(reg, approve)
+	}
+
+	*existing = newManager
+
+	parts := make([]string, 0, 3)
+	if added > 0 {
+		parts = append(parts, fmt.Sprintf("%d plugin(s) added", added))
+	}
+	if updated > 0 {
+		parts = append(parts, fmt.Sprintf("%d updated", updated))
+	}
+	if len(discovered) > 0 && added == 0 && updated == 0 {
+		parts = append(parts, "all plugins up to date")
+	}
+	if len(parts) == 0 {
+		if len(discovered) > 0 {
+			return fmt.Sprintf("reload: %d auto-discovered plugin(s) unchanged", len(discovered))
+		}
+		return "reload: no changes detected"
+	}
+	return "reload: " + strings.Join(parts, ", ")
 }
 
 func RunChatLive(setup *ChatSetup) {
@@ -517,6 +596,9 @@ func RunChatLive(setup *ChatSetup) {
 		defer func() { _ = pluginManager.Close() }()
 		pluginManager.RegisterTools(reg, approve)
 	}
+	reloadPlugins := func() string {
+		return reloadPluginsHandler(&pluginManager, setup.Config, setup.WorkDir, reg, approve, evRenderer.Info)
+	}
 	baseReg := reg.Filter(nil)
 	loadedSkills := skills.Load(setup.WorkDir)
 	state := chatstate.New()
@@ -574,6 +656,7 @@ func RunChatLive(setup *ChatSetup) {
 			}
 		},
 		CompactionMaxFailures:    setup.Config.Resilience.CompactionMaxFailures,
+		ContextWindowTokens:      func() int { return lookupContextWindow(setup.ChatModel) },
 		Interactive:              true,
 		ToolThrashCircuitBreaker: setup.Config.Resilience.ToolThrashCircuitBreaker,
 		OutputStore:              configuredOutputStore(setup.Config),
@@ -808,6 +891,7 @@ func RunChatLive(setup *ChatSetup) {
 		Skills:          loadedSkills,
 		State:           state,
 		CopilotClientID: setup.Config.CopilotClientID(),
+		ReloadPlugins:   reloadPlugins,
 	}
 	runChatLiveUI(eventsCh, liveCfg, inputCh, doneCh)
 }
@@ -828,6 +912,14 @@ func providerOptionsFromBootstrap(backends []bootstrap.ProviderBackend) []tui.Pr
 // leanToolExposure decides whether to expose the reduced tool-schema set.
 // Explicit config wins; otherwise lean is auto-enabled for local/self-hosted
 // providers, where huge tool menus burn context and confuse small models.
+func lookupContextWindow(model string) int {
+	ref := bootstrap.ParseModelRef(model)
+	if info := modelcatalog.Lookup(ref.Provider, ref.Model); info != nil {
+		return info.ContextWindow
+	}
+	return 0
+}
+
 func leanToolExposure(setup *ChatSetup) bool {
 	if setup == nil || setup.Config == nil {
 		return false
@@ -1036,6 +1128,7 @@ func buildConsoleRuntime(setup *ChatSetup, approve tools.ApprovalFunc, out io.Wr
 			}
 		},
 		CompactionMaxFailures:    setup.Config.Resilience.CompactionMaxFailures,
+		ContextWindowTokens:      func() int { return lookupContextWindow(setup.ChatModel) },
 		Interactive:              true,
 		ToolThrashCircuitBreaker: setup.Config.Resilience.ToolThrashCircuitBreaker,
 		OutputStore:              configuredOutputStore(setup.Config),
@@ -1156,6 +1249,31 @@ func RunChatConsole(setup *ChatSetup) {
 				default:
 					renderer.Info("nothing to remember")
 				}
+				continue
+			}
+			// Check plugin commands first
+			pluginHandled := false
+			if pluginCommands := plugin.Global().GetAllCommands(); len(pluginCommands) > 0 {
+				for _, cmd := range pluginCommands {
+					cmdName := strings.TrimPrefix(cmd.Name, "/")
+					prefix := "/" + cmdName
+					if input == prefix || strings.HasPrefix(input, prefix+" ") {
+						args := ""
+						if len(input) > len(prefix) {
+							args = strings.TrimSpace(input[len(prefix):])
+						}
+						result, err := cmd.Handler(ctx, args)
+						if err != nil {
+							renderer.Error(fmt.Sprintf("plugin command failed: %v", err))
+						} else if result != "" {
+							renderer.Info(result)
+						}
+						pluginHandled = true
+						break
+					}
+				}
+			}
+			if pluginHandled {
 				continue
 			}
 			handled := handleChatSlashCommand(input, renderer, loadedSkills, state, reactRunner, setup)
@@ -1302,6 +1420,7 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 			Session:                  reactruntime.NewSession(),
 			ToolExposureObserver:     debugToolExposureObserver(setup),
 			CompactionMaxFailures:    setup.Config.Resilience.CompactionMaxFailures,
+			ContextWindowTokens:      func() int { return lookupContextWindow(model) },
 			Interactive:              false,
 			ToolThrashCircuitBreaker: setup.Config.Resilience.ToolThrashCircuitBreaker,
 			OutputStore:              configuredOutputStore(setup.Config),
@@ -1972,12 +2091,33 @@ func handleChatSlashCommand(input string, renderer *agent.Renderer, loadedSkills
 			fmt.Println()
 		}
 	default:
-		// Skill/command activation: /<name> or /<name> <args>. A skill body
-		// with $ARGUMENTS has the remainder substituted in (falling back to
-		// appending it), so a skill file doubles as a parameterized command.
+		// Check plugin commands first
 		cmd := strings.TrimPrefix(input, "/")
 		name, args, hasArgs := strings.Cut(cmd, " ")
 		args = strings.TrimSpace(args)
+
+		// Look for plugin commands
+		if p := plugin.GetPlugin(name); p != nil {
+			for _, c := range p.Commands {
+				if c.Name == name {
+					if hasArgs {
+						output, err := c.Handler(context.Background(), args)
+						if err != nil {
+							renderer.Error(err.Error())
+						} else {
+							renderer.Info(output)
+						}
+					} else {
+						renderer.Error(fmt.Sprintf("usage: /%s <args>", name))
+					}
+					return true
+				}
+			}
+		}
+
+		// Skill/command activation: /<name> or /<name> <args>. A skill body
+		// with $ARGUMENTS has the remainder substituted in (falling back to
+		// appending it), so a skill file doubles as a parameterized command.
 		s, ok := skills.Get(loadedSkills, name)
 		if !ok {
 			// Skill names may contain spaces; retry against the whole token.

@@ -128,9 +128,20 @@ func openCodeGoOpenAICompatibleReasoningModel() OpenCodeGoModelCapability {
 
 func OpenCodeGoSupportedChatModels() []string {
 	out := make([]string, 0, len(openCodeGoModelOrder))
+	seen := make(map[string]bool, len(openCodeGoModelOrder))
 	for _, model := range openCodeGoModelOrder {
 		cap, ok := openCodeGoModelCapabilities[model]
 		if ok && cap.SupportedByOpenAICompatibleChat {
+			out = append(out, model)
+			seen[model] = true
+		}
+	}
+	// New models from the models.dev catalog (refreshed hourly / on launch)
+	// that the hardcoded list doesn't know about yet.
+	live := ProviderModels("opencode-go")
+	sort.Strings(live)
+	for _, model := range live {
+		if !seen[model] && OpenCodeGoModelSupportedByOpenAICompatibleChat(model) {
 			out = append(out, model)
 		}
 	}
@@ -143,7 +154,16 @@ func OpenCodeGoModelCapabilityFor(model string) (OpenCodeGoModelCapability, bool
 		return OpenCodeGoModelCapability{}, false
 	}
 	cap, ok := openCodeGoModelCapabilities[model]
-	return cap, ok
+	if ok {
+		return cap, true
+	}
+	// Unknown model present in the models.dev opencode-go catalog: assume the
+	// provider's default openai-compatible chat wire (only anthropic/alibaba-wire
+	// models need explicit entries above).
+	if Lookup("opencode-go", model) != nil {
+		return openCodeGoOpenAICompatibleReasoningModel(), true
+	}
+	return OpenCodeGoModelCapability{}, false
 }
 
 func OpenCodeGoModelSupportedByOpenAICompatibleChat(model string) bool {

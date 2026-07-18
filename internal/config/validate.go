@@ -164,12 +164,13 @@ func (c *Config) Validate() []ValidationIssue {
 		}
 		if strings.TrimSpace(plugin.Kind) != "" {
 			switch strings.ToLower(strings.TrimSpace(plugin.Kind)) {
-			case "forge-stdio", "opencode":
+			case "forge-stdio", "native":
 			default:
-				add(pluginField+".kind", fmt.Sprintf("must be one of forge-stdio, opencode, got %q", plugin.Kind))
+				add(pluginField+".kind", fmt.Sprintf("must be one of forge-stdio, native, got %q", plugin.Kind))
 			}
 		}
-		if len(plugin.Command) == 0 {
+		kind := strings.ToLower(strings.TrimSpace(plugin.Kind))
+		if kind != "native" && len(plugin.Command) == 0 {
 			add(pluginField+".command", "must not be empty")
 		}
 		for j, token := range plugin.Command {
