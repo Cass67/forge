@@ -24,6 +24,12 @@ func TestReviewApprovalActionCommands(t *testing.T) {
 		{"truncate zero", "ctx", "truncate -s 0 app.log", GuardianBlock},
 		{"chmod 777", "ctx", "chmod -R 777 /srv", GuardianBlock},
 		{"dd to device", "ctx", "dd if=img.iso of=/dev/sda", GuardianBlock},
+		{"bash -c wrapped rm", "ctx", `bash -c "rm -rf /"`, GuardianBlock},
+		{"sh -c single quoted rm", "ctx", "sh -c 'rm -rf ~'", GuardianBlock},
+		{"bash -lc wrapped push", "ctx", `bash -lc "git push --force"`, GuardianBlock},
+		{"eval quoted rm", "ctx", `eval "rm -rf /"`, GuardianBlock},
+		{"nested sh -c rm", "ctx", `bash -c "sh -c \"rm -rf /\""`, GuardianBlock},
+		{"zsh chained wrapped rm", "ctx", `true && zsh -c 'rm -rf /tmp'`, GuardianBlock},
 
 		// False positives the old substring matcher would have blocked.
 		{"rm targeted abs path", "ctx", "rm -rf /var/tmp/build-cache", GuardianAllow},
@@ -31,6 +37,8 @@ func TestReviewApprovalActionCommands(t *testing.T) {
 		{"dangerous string in heredoc", "ctx", "cat > patch.diff << 'PATCH'\n+git push --force\n+rm -rf /\nPATCH", GuardianAllow},
 		{"push follow-tags", "ctx", "git push --follow-tags", GuardianAllow},
 		{"redirect to dev null", "ctx", "make test > /dev/null 2>&1", GuardianAllow},
+		{"bash -c harmless", "ctx", `bash -c "make build"`, GuardianAllow},
+		{"echo mentions bash -c rm", "ctx", `echo 'bash -c "rm -rf /"'`, GuardianAllow},
 
 		{"merge no context", "", "git merge feature/runtime", GuardianWarn},
 		{"mutating no context", "", "mv a.go b.go", GuardianWarn},
