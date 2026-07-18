@@ -10,7 +10,7 @@ run:
     ./bin/forge
 
 install: build
-    cp ./bin/forge ~/.local/bin/forge
+    install -m 0755 ./bin/forge ~/.local/bin/forge
 
 all: install
 
