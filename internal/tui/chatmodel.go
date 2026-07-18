@@ -479,6 +479,23 @@ func (m *ChatModel) upsertPlanMessage(content string) {
 	m.AddMessage(msg)
 }
 
+func (m *ChatModel) upsertStatusMessage(key, content string) {
+	if key == "" {
+		m.AddMessage(ChatMessage{Kind: MsgStatus, Content: content})
+		return
+	}
+	msg := ChatMessage{Kind: MsgStatus, Key: key, Content: content}
+	for i := len(m.messages) - 1; i >= 0; i-- {
+		if m.messages[i].Kind == MsgStatus && m.messages[i].Key == key {
+			m.messages[i] = msg
+			m.rebuildTranscriptStateFromMessages()
+			m.refreshViewport()
+			return
+		}
+	}
+	m.AddMessage(msg)
+}
+
 func (m *ChatModel) upsertTaskContextMessage(content string) {
 	content = strings.TrimSpace(content)
 	if content == "" {

@@ -26,6 +26,12 @@ Run the binary:
 just run
 ```
 
+Build and install to `~/.local/bin/forge` (make sure `~/.local/bin` is on your `PATH`):
+
+```bash
+just install    # or: just all
+```
+
 Run tests:
 
 ```bash

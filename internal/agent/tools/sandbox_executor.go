@@ -12,19 +12,41 @@ import (
 // fall through to host execution.
 type SandboxExecutor func(ctx context.Context, workDir, command string) (output string, handled bool, err error)
 
+// SandboxArgvFunc rewrites an exec_session command into an argv that runs it
+// inside the sandbox (e.g. docker exec). handled=false means run on the host.
+// A non-nil error fails the session start: when a sandbox is active we fail
+// closed rather than silently falling back to host execution.
+type SandboxArgvFunc func(workDir, command string, tty bool) (argv []string, handled bool, err error)
+
 var (
-	sandboxMu sync.RWMutex
-	sandboxFn SandboxExecutor
+	sandboxMu     sync.RWMutex
+	sandboxFn     SandboxExecutor
+	sandboxArgvFn SandboxArgvFunc
 )
 
 // SetSandboxExecutor installs the executor run_command delegates foreground
-// commands to. Pass nil to restore host execution. Background (&) and
-// exec_session PTY commands always stay on the host.
-// ponytail: no PTY/background routing, add when docker exec -i sessions needed.
+// commands to. Pass nil to restore host execution. Background (&) commands
+// stay on the host; PTY sessions route via SetSandboxArgv.
+// ponytail: no background routing, add when needed.
 func SetSandboxExecutor(ex SandboxExecutor) {
 	sandboxMu.Lock()
 	sandboxFn = ex
 	sandboxMu.Unlock()
+}
+
+// SetSandboxArgv installs the argv rewriter exec_session starts consult.
+// Pass nil to restore host execution.
+func SetSandboxArgv(fn SandboxArgvFunc) {
+	sandboxMu.Lock()
+	sandboxArgvFn = fn
+	sandboxMu.Unlock()
+}
+
+// CurrentSandboxArgv returns the installed argv rewriter, or nil.
+func CurrentSandboxArgv() SandboxArgvFunc {
+	sandboxMu.RLock()
+	defer sandboxMu.RUnlock()
+	return sandboxArgvFn
 }
 
 // CurrentSandboxExecutor returns the installed executor, or nil.

@@ -21,6 +21,21 @@ func TestRenderMessageContentRendersFencedCodeBlocks(t *testing.T) {
 	}
 }
 
+func TestRenderCodeBlockSyntaxHighlighting(t *testing.T) {
+	withTrueColorProfile(t)
+	theme := lookupThemeForTest(t, "default")
+
+	got := renderCodeBlock("go", "if x := f(); x != nil {\n\treturn x\n}", 60, theme)
+	if !strings.Contains(got, "\x1b[38;2;") {
+		t.Fatalf("expected truecolor syntax highlighting escapes: %q", got)
+	}
+
+	plain := renderCodeBlock("", "just some output", 60, theme)
+	if strings.Contains(plain, "\x1b[38;2;249;") {
+		t.Fatalf("plain output should not be keyword-highlighted: %q", plain)
+	}
+}
+
 func TestRenderMessageContentDoesNotInsertBlankRowsInsideFencedCodeBlock(t *testing.T) {
 	theme := lookupThemeForTest(t, "default")
 	content := "```go\nfirst()\nsecond()\n```"
