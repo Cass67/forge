@@ -34,6 +34,9 @@ func (m *Manager) CollectNativePlugins() {
 		if info == nil {
 			continue
 		}
+		if c, ok := info.Instance.(plugin.Configurable); ok {
+			c.Configure(cfg.Settings)
+		}
 		state := &pluginState{config: cfg, hooks: make(map[hooks.Point]struct{})}
 		for _, t := range info.Tools {
 			pt := pluginTool{

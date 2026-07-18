@@ -314,7 +314,7 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 	reg.Register(tools.NewLSPReferences(workDir))
 	reg.Register(tools.NewLSPHover(workDir))
 	reg.Register(tools.NewLSPDocumentSymbols(workDir))
-	reg.Register(tools.NewRunCommandWithWorkDirProvider(workDir, workDirProvider, cfg.Chat.CommandTimeout, execManager, approve, secretPolicy, fp))
+	reg.Register(tools.WithSandboxExecutor(tools.NewRunCommandWithWorkDirProvider(workDir, workDirProvider, cfg.Chat.CommandTimeout, execManager, approve, secretPolicy, fp), approve, workDirProvider, workDir, secretPolicy))
 	reg.Register(tools.NewExecSessionStartWithWorkDirProvider(workDir, workDirProvider, execManager, approve))
 	reg.Register(tools.NewExecSessionStatus(execManager))
 	reg.Register(tools.NewExecSessionWrite(execManager))
