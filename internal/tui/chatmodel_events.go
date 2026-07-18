@@ -123,8 +123,8 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 				m.UpdateRecentActivity("", line)
 			}
 		}
-		if status := runtimeStatusMessage(ev); status != "" {
-			m.AddMessage(ChatMessage{Kind: MsgStatus, Content: status})
+		if status, key := runtimeStatusMessage(ev); status != "" {
+			m.upsertStatusMessage(key, status)
 			m.flash = status
 		}
 		if ev.Agent == "delegate" {
@@ -444,9 +444,9 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen] + "…"
 }
 
-func runtimeStatusMessage(ev llm.Event) string {
+func runtimeStatusMessage(ev llm.Event) (string, string) {
 	if status := previewStatusMessage(ev); status != "" {
-		return status
+		return status, ""
 	}
 	return commandSessionStatusMessage(ev)
 }
@@ -485,14 +485,14 @@ func previewStatusMessage(ev llm.Event) string {
 	}
 }
 
-func commandSessionStatusMessage(ev llm.Event) string {
+func commandSessionStatusMessage(ev llm.Event) (string, string) {
 	if ev.IsError {
-		return ""
+		return "", ""
 	}
 	switch ev.Agent {
 	case "run_command", "command_status", "exec_session_start", "exec_session_status", "exec_session_write", "exec_session_resize", "exec_session_stop":
 	default:
-		return ""
+		return "", ""
 	}
 
 	var payload struct {
@@ -506,11 +506,12 @@ func commandSessionStatusMessage(ev llm.Event) string {
 		Rows      int    `json:"rows"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(ev.Text)), &payload); err != nil {
-		return ""
+		return "", ""
 	}
 	if payload.SessionID == 0 || strings.TrimSpace(payload.Status) == "" {
-		return ""
+		return "", ""
 	}
+	key := fmt.Sprintf("cmd-session-%d", payload.SessionID)
 	command := strings.TrimSpace(payload.Command)
 	sessionLabel := "command session"
 	if payload.PTY || strings.HasPrefix(strings.TrimSpace(ev.Agent), "exec_session_") {
@@ -524,35 +525,35 @@ func commandSessionStatusMessage(ev llm.Event) string {
 	case "running":
 		if ev.Agent == "exec_session_resize" && sizeLabel != "" {
 			if command == "" {
-				return fmt.Sprintf("%s %d resized to %s", sessionLabel, payload.SessionID, sizeLabel)
+				return fmt.Sprintf("%s %d resized to %s", sessionLabel, payload.SessionID, sizeLabel), key
 			}
-			return fmt.Sprintf("%s %d resized to %s: %s", sessionLabel, payload.SessionID, sizeLabel, command)
+			return fmt.Sprintf("%s %d resized to %s: %s", sessionLabel, payload.SessionID, sizeLabel, command), key
 		}
 		output := summarizeCommandSessionOutput(payload.Output)
 		if command == "" {
 			if output == "" {
-				return fmt.Sprintf("%s %d running", sessionLabel, payload.SessionID)
+				return fmt.Sprintf("%s %d running", sessionLabel, payload.SessionID), key
 			}
-			return fmt.Sprintf("%s %d running\n  └ %s", sessionLabel, payload.SessionID, output)
+			return fmt.Sprintf("%s %d running\n  └ %s", sessionLabel, payload.SessionID, output), key
 		}
 		if output == "" {
-			return fmt.Sprintf("%s %d running: %s", sessionLabel, payload.SessionID, command)
+			return fmt.Sprintf("%s %d running: %s", sessionLabel, payload.SessionID, command), key
 		}
-		return fmt.Sprintf("%s %d running: %s\n  └ %s", sessionLabel, payload.SessionID, command, output)
+		return fmt.Sprintf("%s %d running: %s\n  └ %s", sessionLabel, payload.SessionID, command, output), key
 	case "exited":
 		output := summarizeCommandSessionOutput(payload.Output)
 		if command == "" {
 			if output == "" {
-				return fmt.Sprintf("%s %d exited with code %d", sessionLabel, payload.SessionID, payload.ExitCode)
+				return fmt.Sprintf("%s %d exited with code %d", sessionLabel, payload.SessionID, payload.ExitCode), key
 			}
-			return fmt.Sprintf("%s %d exited with code %d\n  └ %s", sessionLabel, payload.SessionID, payload.ExitCode, output)
+			return fmt.Sprintf("%s %d exited with code %d\n  └ %s", sessionLabel, payload.SessionID, payload.ExitCode, output), key
 		}
 		if output == "" {
-			return fmt.Sprintf("%s %d exited with code %d: %s", sessionLabel, payload.SessionID, payload.ExitCode, command)
+			return fmt.Sprintf("%s %d exited with code %d: %s", sessionLabel, payload.SessionID, payload.ExitCode, command), key
 		}
-		return fmt.Sprintf("%s %d exited with code %d: %s\n  └ %s", sessionLabel, payload.SessionID, payload.ExitCode, command, output)
+		return fmt.Sprintf("%s %d exited with code %d: %s\n  └ %s", sessionLabel, payload.SessionID, payload.ExitCode, command, output), key
 	default:
-		return ""
+		return "", ""
 	}
 }
 

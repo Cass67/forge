@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"os/exec"
@@ -21,11 +22,12 @@ import (
 // default_on    -> [plugins.settings] default_on = true enables at session start
 
 var (
-	sessionMu sync.Mutex
-	manualOn  bool
-	configOn  bool
-	cfgImage  string
-	sess      *sessionState
+	sessionMu     sync.Mutex
+	manualOn      bool
+	configOn      bool
+	cfgImage      string
+	cfgDockerfile string
+	sess          *sessionState
 )
 
 type sessionState struct {
@@ -50,6 +52,11 @@ func (Plugin) Configure(settings map[string]any) {
 	} else {
 		cfgImage = ""
 	}
+	if v, ok := settings["dockerfile"].(string); ok {
+		cfgDockerfile = v
+	} else {
+		cfgDockerfile = ""
+	}
 	syncExecutorLocked()
 }
 
@@ -59,14 +66,35 @@ func on() bool {
 	return manualOn || configOn
 }
 
-// syncExecutorLocked installs or clears the run_command sandbox executor.
-// Caller must hold sessionMu.
+// syncExecutorLocked installs or clears the run_command sandbox executor and
+// the exec_session argv rewriter. Caller must hold sessionMu.
 func syncExecutorLocked() {
 	if manualOn || configOn {
 		agenttools.SetSandboxExecutor(sandboxExec)
+		agenttools.SetSandboxArgv(sandboxArgv)
 	} else {
 		agenttools.SetSandboxExecutor(nil)
+		agenttools.SetSandboxArgv(nil)
 	}
+}
+
+// sandboxArgv implements agenttools.SandboxArgvFunc: rewrites an exec_session
+// command to run inside the persistent session container. Errors fail the
+// session start (fail closed) so a broken sandbox never leaks onto the host.
+func sandboxArgv(workDir, command string, tty bool) ([]string, bool, error) {
+	if !on() {
+		return nil, false, nil
+	}
+	s, err := ensureSession(context.Background())
+	if err != nil {
+		return nil, false, err
+	}
+	argv := []string{"docker", "exec", "-i"}
+	if tty {
+		argv = append(argv, "-t")
+	}
+	argv = append(argv, "-w", containerWorkDir(s, workDir), s.ContainerName, "sh", "-c", command)
+	return argv, true, nil
 }
 
 func sessionContainerName(dir string) string {
@@ -140,9 +168,9 @@ func ensureSession(ctx context.Context) (*sessionState, error) {
 		sess = nil
 	}
 
-	image := cfgImage
-	if image == "" {
-		image = detectImage(nil)
+	image, err := resolveImageLocked(ctx, false)
+	if err != nil {
+		return nil, err
 	}
 	out, err := dockerRunner(ctx, "run", "-d",
 		"--name", name,
@@ -155,6 +183,59 @@ func ensureSession(ctx context.Context) (*sessionState, error) {
 	}
 	sess = &sessionState{ContainerName: name, Dir: dir, Image: image, StartedAt: time.Now()}
 	return sess, nil
+}
+
+// resolveImageLocked picks the session image: explicit image setting wins,
+// then a configured Dockerfile (built on demand), then project auto-detect.
+// Caller must hold sessionMu.
+func resolveImageLocked(ctx context.Context, forceBuild bool) (string, error) {
+	if cfgImage != "" {
+		return cfgImage, nil
+	}
+	if cfgDockerfile != "" {
+		return builtImageLocked(ctx, forceBuild)
+	}
+	return detectImage(nil), nil
+}
+
+// builtImageLocked builds the configured Dockerfile into a content-hash-tagged
+// image, skipping the build when that tag already exists (unless forced).
+// Editing the Dockerfile changes the hash, so rebuilds happen automatically.
+// Caller must hold sessionMu.
+func builtImageLocked(ctx context.Context, force bool) (string, error) {
+	content, err := os.ReadFile(cfgDockerfile)
+	if err != nil {
+		return "", fmt.Errorf("read dockerfile %s: %w", cfgDockerfile, err)
+	}
+	tag := fmt.Sprintf("forge-sandbox:%x", sha256.Sum256(content))[:len("forge-sandbox:")+12]
+	if !force {
+		if _, err := dockerRunner(ctx, "image", "inspect", tag); err == nil {
+			return tag, nil
+		}
+	}
+	out, err := dockerRunner(ctx, "build", "-t", tag, "-f", cfgDockerfile, filepath.Dir(cfgDockerfile))
+	if err != nil {
+		return "", fmt.Errorf("docker build %s: %w: %s", cfgDockerfile, err, strings.TrimSpace(string(out)))
+	}
+	return tag, nil
+}
+
+// cmdBuild handles "/sandbox build [dockerfile]": force-build the image now.
+func cmdBuild(ctx context.Context, dockerfileArg string) (string, error) {
+	sessionMu.Lock()
+	defer sessionMu.Unlock()
+	if dockerfileArg != "" {
+		cfgDockerfile = dockerfileArg
+	}
+	if cfgDockerfile == "" {
+		return "", fmt.Errorf("no dockerfile configured: /sandbox build <path> or set [plugins.settings] dockerfile")
+	}
+	cfgImage = "" // a built image outranks a stale explicit image setting
+	tag, err := builtImageLocked(ctx, true)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Sandbox image built: %s (from %s)\nSession containers will use it. Restart with /sandbox off && /sandbox on if one is already running.", tag, cfgDockerfile), nil
 }
 
 // cmdOn handles "/sandbox on [image]".
@@ -171,7 +252,7 @@ func cmdOn(ctx context.Context, imageArg string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Sandbox ON\nContainer: %s\nImage: %s\nDirectory: %s (mounted at /workspace)\nAll run_command shell commands now execute inside this container. /sandbox off to stop.", s.ContainerName, s.Image, s.Dir), nil
+	return fmt.Sprintf("Sandbox ON\nContainer: %s\nImage: %s\nDirectory: %s (mounted at /workspace)\nAll run_command and terminal (exec_session) commands now execute inside this container. /sandbox off to stop.", s.ContainerName, s.Image, s.Dir), nil
 }
 
 // cmdOff handles "/sandbox off": stop container, restore host execution.

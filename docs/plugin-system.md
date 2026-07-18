@@ -448,6 +448,29 @@ enabled = false       # disable without removing import
 
 Native plugins are controlled purely by `enabled`. No `command`, `source`, or timeout fields needed — they run in-process.
 
+### Plugin Settings
+
+A plugin that implements the `Configurable` interface receives its `[plugins.settings]` table once at load:
+
+```go
+// implement on your plugin type
+func (Plugin) Configure(settings map[string]any) { ... }
+```
+
+```toml
+[[plugins]]
+id = "sandbox"
+kind = "native"
+enabled = true
+
+[plugins.settings]
+default_on = true              # start session mode automatically
+image = "golang:1.26"          # explicit image, or:
+dockerfile = "Dockerfile.dev"  # built on demand, content-hash tagged
+```
+
+The sandbox plugin's image precedence: explicit `image` > `dockerfile` > project auto-detect.
+
 ---
 
 ## Migration from OpenCode Plugins

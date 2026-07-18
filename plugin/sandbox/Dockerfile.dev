@@ -1,0 +1,43 @@
+# Forge sandbox dev image: Ubuntu 24.04 with common language toolchains and linters.
+# Use via forge config:
+#   [plugins.settings]
+#   default_on = true
+#   dockerfile = "plugin/sandbox/Dockerfile.dev"
+# or build explicitly with: /sandbox build plugin/sandbox/Dockerfile.dev
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential pkg-config cmake \
+    git curl wget ca-certificates \
+    openssh-client rsync \
+    jq ripgrep unzip zip \
+    shellcheck \
+    clang-format \
+    python3 python3-pip python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+# Go — official tarball; apt's version lags
+ARG GO_VERSION=1.26.5
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-$(dpkg --print-architecture).tar.gz" \
+    | tar -C /usr/local -xz
+ENV PATH=/usr/local/go/bin:/usr/local/bin:$PATH \
+    GOPATH=/usr/local/gopath
+RUN go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest \
+    && mv /usr/local/gopath/bin/golangci-lint /usr/local/bin/
+
+# Node 22 + bun
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && npm install -g bun \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python linting/typechecking
+RUN pip3 install --break-system-packages ruff pyright
+
+# Sanity check every toolchain so a broken build fails here, not mid-session
+RUN go version && node --version && bun --version && python3 --version \
+    && ruff --version && pyright --version && golangci-lint --version \
+    && shellcheck --version && clang-format --version

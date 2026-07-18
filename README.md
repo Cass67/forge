@@ -25,6 +25,8 @@ Forge is not a hosted SaaS or remote coding sandbox. It is a native local tool t
 - provider-aware model routing across ChatGPT, Claude.ai, OpenAI, Anthropic, Copilot, and OpenAI-compatible backends
 - host-owned React runtime with task/mode state, typed hook overlays, bounded memory summaries, and runtime completion gates
 - live chat TUI with model picker, provider picker, approvals, nudges, recent activity, quiet progress updates, and runtime stats
+- syntax-highlighted code blocks and side-by-side diffs on wide terminals
+- Docker sandbox plugin: route command execution through a persistent container (`/sandbox on`)
 - command exec sessions for long-running terminal work without blocking the visible chat loop
 - session artifacts, summaries, audit logs, and usage tracking
 
@@ -334,12 +336,31 @@ Useful chat slash commands:
 
 ```text
 /<skill> [args]    # activate a skill; args replace $ARGUMENTS in its body
-/sandbox on [image] # session mode: route all run_command execution through a
-                    # persistent Docker container bind-mounting the cwd
+/sandbox on [image] # session mode: route all run_command and terminal
+                    # (exec_session) execution through a persistent Docker
+                    # container bind-mounting the cwd
 /sandbox off        # stop the sandbox container, restore host execution
 /sandbox status     # show sandbox session state
+/sandbox build      # force-rebuild the configured Dockerfile image
 /sandbox <cmd>      # one-shot command in a throwaway container
 ```
+
+Sandbox settings live in `forge.toml` under the plugin entry:
+
+```toml
+[[plugins]]
+id = "sandbox"
+kind = "native"
+enabled = true
+
+[plugins.settings]
+default_on = true              # enable session mode at startup
+image = "golang:1.26"          # explicit image, or:
+dockerfile = "Dockerfile.dev"  # built on demand, content-hash tagged;
+                               # edits rebuild automatically
+```
+
+Image precedence: explicit `image` > `dockerfile` > project auto-detect.
 
 Headless mode (`forge -p`) writes progress and tool activity to stderr and only
 the final assistant response to stdout, so it is pipeable. Without `--yolo`,

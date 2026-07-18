@@ -77,7 +77,7 @@ var skill = plugin.Skill{
 
 var command = plugin.Command{
 	Name:        "/sandbox",
-	Description: "Run a command in a Docker sandbox. Subcommands: /sandbox on [image] (session mode: run_command executes in a persistent container), /sandbox off, /sandbox status. Otherwise alias for sandbox_run.",
+	Description: "Run a command in a Docker sandbox. Subcommands: /sandbox on [image] (session mode: run_command executes in a persistent container), /sandbox off, /sandbox status, /sandbox build [dockerfile] (build the configured Dockerfile image). Otherwise alias for sandbox_run.",
 	Handler: func(ctx context.Context, args string) (string, error) {
 		fields := strings.Fields(args)
 		if len(fields) == 0 {
@@ -90,6 +90,8 @@ var command = plugin.Command{
 			return cmdOff(ctx)
 		case "status":
 			return sessionStatus(), nil
+		case "build":
+			return cmdBuild(ctx, strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(args), "build")))
 		}
 		if on() {
 			out, _, err := sandboxExec(ctx, "", args)
@@ -343,8 +345,8 @@ because the container mounts the project directory as /workspace.
 
 ## Commands
 
-### /sandbox on [image] | off | status
-Session mode: ` + "`" + `on` + "`" + ` starts one persistent container (project dir bind-mounted at /workspace) and routes ALL run_command shell execution through it until ` + "`" + `off` + "`" + `. Config default: ` + "`" + `[plugins.settings] default_on = true` + "`" + `, optional ` + "`" + `image = "..."` + "`" + `.
+### /sandbox on [image] | off | status | build [dockerfile]
+Session mode: ` + "`" + `on` + "`" + ` starts one persistent container (project dir bind-mounted at /workspace) and routes ALL run_command and terminal (exec_session) execution through it until ` + "`" + `off` + "`" + `. Config: ` + "`" + `[plugins.settings] default_on = true` + "`" + `, optional ` + "`" + `image = "..."` + "`" + ` or ` + "`" + `dockerfile = "path/to/Dockerfile"` + "`" + ` (built on demand, content-hash tagged; edits rebuild automatically). ` + "`" + `build` + "`" + ` forces a rebuild now. Image precedence: explicit image > dockerfile > auto-detect.
 
 ### /sandbox <command>
 Alias for ` + "`" + `sandbox_run` + "`" + `. Runs a shell command in a Docker container with the current directory bind-mounted. When session mode is on, runs in the session container instead.

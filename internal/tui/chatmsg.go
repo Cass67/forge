@@ -24,6 +24,7 @@ type ChatMessage struct {
 	Kind    MsgKind
 	Header  string // e.g. "You • 22:59:50" (empty for agent streaming)
 	Content string // message body (may be multi-line)
+	Key     string // dedupe key for upserted status messages (e.g. per exec session)
 }
 
 func (m ChatMessage) accentColor(theme chatTheme) lipgloss.Color {

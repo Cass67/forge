@@ -9,6 +9,11 @@ build:
 run:
     ./bin/forge
 
+install: build
+    cp ./bin/forge ~/.local/bin/forge
+
+all: install
+
 test:
     go test ./...
 

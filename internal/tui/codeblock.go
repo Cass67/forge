@@ -4,8 +4,13 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/alecthomas/chroma/v2"
+	"github.com/alecthomas/chroma/v2/formatters"
+	"github.com/alecthomas/chroma/v2/lexers"
+	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/reflow/wordwrap"
+	"github.com/muesli/termenv"
 )
 
 type messageBlock struct {
@@ -383,6 +388,24 @@ func renderCodeBlockBody(lang, body string, width int, theme chatTheme) string {
 		return enhancedDiffBlock(body, width, theme)
 	}
 	lines := normalizeCodeBlockBodyLines(lang, body)
+	if highlighted, ok := highlightCodeLines(lang, lines, theme); ok {
+		bg := ""
+		if c := lipgloss.ColorProfile().Color(string(theme.AppBG)); c != nil {
+			if seq := c.Sequence(true); seq != "" {
+				bg = "\x1b[" + seq + "m"
+			}
+		}
+		rendered := make([]string, 0, len(highlighted))
+		for _, line := range highlighted {
+			padded := padStyledWidth(line, width)
+			if bg != "" {
+				// Chroma resets clear the background mid-line; restore it after each reset.
+				padded = bg + strings.ReplaceAll(padded, "\x1b[0m", "\x1b[0m"+bg) + "\x1b[0m"
+			}
+			rendered = append(rendered, padded)
+		}
+		return strings.Join(rendered, "\n")
+	}
 	rendered := make([]string, 0, len(lines))
 	for _, line := range lines {
 		style := lipgloss.NewStyle().
@@ -393,6 +416,45 @@ func renderCodeBlockBody(lang, body string, width int, theme chatTheme) string {
 		rendered = append(rendered, style.Render(line))
 	}
 	return strings.Join(rendered, "\n")
+}
+
+func highlightCodeLines(lang string, lines []string, theme chatTheme) ([]string, bool) {
+	if isPlainTextOutputLang(lang) {
+		return nil, false
+	}
+	lexer := lexers.Get(strings.ToLower(strings.TrimSpace(lang)))
+	if lexer == nil {
+		return nil, false
+	}
+	formatterName := ""
+	switch lipgloss.ColorProfile() {
+	case termenv.TrueColor:
+		formatterName = "terminal16m"
+	case termenv.ANSI256:
+		formatterName = "terminal256"
+	case termenv.ANSI:
+		formatterName = "terminal16"
+	default:
+		return nil, false
+	}
+	styleName := "monokai"
+	if theme.ID == "light" {
+		styleName = "friendly"
+	}
+	style := styles.Get(styleName)
+	iterator, err := chroma.Coalesce(lexer).Tokenise(nil, strings.Join(lines, "\n"))
+	if err != nil {
+		return nil, false
+	}
+	var buf strings.Builder
+	if err := formatters.Get(formatterName).Format(&buf, style, iterator); err != nil {
+		return nil, false
+	}
+	out := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	if len(out) != len(lines) {
+		return nil, false
+	}
+	return out, true
 }
 
 func normalizeCodeBlockBodyLines(lang, body string) []string {

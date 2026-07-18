@@ -428,6 +428,40 @@ func TestChatModelShowsExecSessionOutputPreviewInTranscript(t *testing.T) {
 	}
 }
 
+func TestChatModelUpsertsExecSessionStatusMessages(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test-model", WorkDir: "/tmp"})
+	m.width = 80
+	m.height = 24
+
+	events := []llm.Event{
+		{Kind: llm.EventToolResult, Agent: "exec_session_start", Text: `{"status":"running","session_id":9,"command":"npm run dev","pty":true}`},
+		{Kind: llm.EventToolResult, Agent: "exec_session_status", Text: `{"status":"running","session_id":9,"command":"npm run dev","pty":true,"output":"compiling"}`},
+		{Kind: llm.EventToolResult, Agent: "exec_session_status", Text: `{"status":"running","session_id":9,"command":"npm run dev","pty":true,"output":"ready"}`},
+		{Kind: llm.EventToolResult, Agent: "exec_session_status", Text: `{"status":"running","session_id":10,"command":"tail -f log","pty":true}`},
+		{Kind: llm.EventToolResult, Agent: "exec_session_stop", Text: `{"status":"exited","session_id":9,"command":"npm run dev","pty":true,"exit_code":0}`},
+	}
+	for _, ev := range events {
+		updated, _ := m.Update(ev)
+		m = updated.(ChatModel)
+	}
+
+	var statuses []string
+	for _, msg := range m.messages {
+		if msg.Kind == MsgStatus {
+			statuses = append(statuses, msg.Content)
+		}
+	}
+	if len(statuses) != 2 {
+		t.Fatalf("expected one status message per session, got %d: %q", len(statuses), statuses)
+	}
+	if !strings.Contains(statuses[0], "terminal session 9 exited with code 0") {
+		t.Fatalf("session 9 status = %q", statuses[0])
+	}
+	if !strings.Contains(statuses[1], "terminal session 10 running") {
+		t.Fatalf("session 10 status = %q", statuses[1])
+	}
+}
+
 func TestChatModelShowsExecSessionResizeInTranscript(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test-model", WorkDir: "/tmp"})
 	m.width = 80

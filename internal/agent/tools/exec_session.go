@@ -87,6 +87,15 @@ func (m *ExecSessionManager) start(workDir, command string, cols, rows int, ptyM
 	}
 
 	cmd := exec.Command("sh", "-c", command)
+	if fn := CurrentSandboxArgv(); fn != nil {
+		argv, handled, err := fn(workDir, command, ptyMode)
+		if err != nil {
+			return 0, fmt.Errorf("sandbox session: %w", err)
+		}
+		if handled && len(argv) > 0 {
+			cmd = exec.Command(argv[0], argv[1:]...)
+		}
+	}
 	cmd.Dir = workDir
 	var (
 		stream io.Reader
