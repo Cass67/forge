@@ -96,8 +96,8 @@ func TestSandboxStatusTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(output, "No active sandboxes") {
-		t.Errorf("expected 'No active sandboxes', got: %s", output)
+	if !strings.Contains(output, "No one-shot sandboxes") {
+		t.Errorf("expected 'No one-shot sandboxes', got: %s", output)
 	}
 }
 

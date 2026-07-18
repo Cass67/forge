@@ -77,8 +77,24 @@ var skill = plugin.Skill{
 
 var command = plugin.Command{
 	Name:        "/sandbox",
-	Description: "Run a shell command inside a Docker sandbox container. Alias for sandbox_run tool.",
+	Description: "Run a command in a Docker sandbox. Subcommands: /sandbox on [image] (session mode: run_command executes in a persistent container), /sandbox off, /sandbox status. Otherwise alias for sandbox_run.",
 	Handler: func(ctx context.Context, args string) (string, error) {
+		fields := strings.Fields(args)
+		if len(fields) == 0 {
+			return sessionStatus(), nil
+		}
+		switch fields[0] {
+		case "on":
+			return cmdOn(ctx, strings.TrimSpace(strings.TrimPrefix(args, "on")))
+		case "off":
+			return cmdOff(ctx)
+		case "status":
+			return sessionStatus(), nil
+		}
+		if on() {
+			out, _, err := sandboxExec(ctx, "", args)
+			return out, err
+		}
 		return toolRun(ctx, map[string]any{"command": args})
 	},
 }
@@ -201,7 +217,7 @@ func toolStatus(ctx context.Context, args map[string]any) (string, error) {
 	defer mu.Unlock()
 
 	if len(containers) == 0 {
-		return "No active sandboxes. Use /sandbox or sandbox_run to start one.", nil
+		return sessionStatus() + "\nNo one-shot sandboxes running.", nil
 	}
 
 	var lines []string
@@ -327,8 +343,11 @@ because the container mounts the project directory as /workspace.
 
 ## Commands
 
+### /sandbox on [image] | off | status
+Session mode: ` + "`" + `on` + "`" + ` starts one persistent container (project dir bind-mounted at /workspace) and routes ALL run_command shell execution through it until ` + "`" + `off` + "`" + `. Config default: ` + "`" + `[plugins.settings] default_on = true` + "`" + `, optional ` + "`" + `image = "..."` + "`" + `.
+
 ### /sandbox <command>
-Alias for ` + "`" + `sandbox_run` + "`" + `. Runs a shell command in a Docker container with the current directory bind-mounted.
+Alias for ` + "`" + `sandbox_run` + "`" + `. Runs a shell command in a Docker container with the current directory bind-mounted. When session mode is on, runs in the session container instead.
 
 ### sandbox_run
 Parameters:

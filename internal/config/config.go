@@ -150,6 +150,9 @@ type PluginConfig struct {
 	AgentOverrides   map[string]AgentOverride `toml:"agent_overrides,omitempty"`
 	StartupTimeoutMS int                      `toml:"startup_timeout_ms"`
 	RequestTimeoutMS int                      `toml:"request_timeout_ms"`
+	// Settings holds plugin-specific options (e.g. [plugins.settings] default_on = true).
+	// Interpreted by the plugin itself via plugin.Configurable.
+	Settings map[string]any `toml:"settings,omitempty"`
 }
 
 type AgentOverride struct {

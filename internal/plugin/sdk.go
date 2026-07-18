@@ -187,6 +187,13 @@ type ProviderProvider interface {
 	Providers() []Provider
 }
 
+// Configurable: plugin accepts plugin-specific settings from the user's
+// [[plugins]] config entry ([plugins.settings] table). Called once when the
+// plugin is collected at session start (and on config reload).
+type Configurable interface {
+	Configure(settings map[string]any)
+}
+
 var global = &Registry{}
 
 // HookHandler is a function that handles a hook event and returns results.
@@ -197,6 +204,7 @@ type HookHandler = func(context.Context, HookEvent) []HookResult
 // Returned by GetPlugin for the plugins bridge to consume.
 type PluginInfo struct {
 	Name         string
+	Instance     Plugin // the registered plugin, for optional interface checks (e.g. Configurable)
 	Tools        []Tool
 	HookPoints   []HookPoint
 	HookHandlers map[string]HookHandler
@@ -236,7 +244,7 @@ func (r *Registry) Register(p Plugin) {
 	if r.byName == nil {
 		r.byName = make(map[string]*PluginInfo)
 	}
-	info := &PluginInfo{Name: name}
+	info := &PluginInfo{Name: name, Instance: p}
 
 	if tp, ok := p.(ToolProvider); ok {
 		tools := tp.Tools()

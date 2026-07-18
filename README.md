@@ -334,6 +334,11 @@ Useful chat slash commands:
 
 ```text
 /<skill> [args]    # activate a skill; args replace $ARGUMENTS in its body
+/sandbox on [image] # session mode: route all run_command execution through a
+                    # persistent Docker container bind-mounting the cwd
+/sandbox off        # stop the sandbox container, restore host execution
+/sandbox status     # show sandbox session state
+/sandbox <cmd>      # one-shot command in a throwaway container
 ```
 
 Headless mode (`forge -p`) writes progress and tool activity to stderr and only
