@@ -195,6 +195,9 @@ func (m *Manager) RegisterTools(reg *agenttools.Registry, approve agenttools.App
 						return namespacedName + " denied by user", nil
 					}
 				}
+				if tool.ExecuteFunc != nil {
+					return tool.ExecuteFunc(ctx, args)
+				}
 				return m.CallTool(ctx, tool.PluginID, tool.Name, args)
 			},
 		})

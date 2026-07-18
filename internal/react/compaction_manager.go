@@ -37,10 +37,13 @@ type CompactionHookPayload struct {
 }
 
 type CompactionConfig struct {
-	KeepTurns             int
-	HistoryPressureTurns  int
-	LargeToolResultBytes  int
-	PromptBudgetBytes     int
+	KeepTurns            int
+	HistoryPressureTurns int
+	LargeToolResultBytes int
+	PromptBudgetBytes    int
+	// PromptBudgetFn, when set and returning > 0, overrides PromptBudgetBytes.
+	// Resolved per decision so a mid-session model switch picks up the new window.
+	PromptBudgetFn        func() int
 	PromptToolResultBytes int
 	MaxFailures           int
 }
@@ -84,32 +87,58 @@ func (m *CompactionManager) Decide(snapshot SessionSnapshot) CompactionDecision 
 	return CompactionDecision{Mode: CompactionNone, Reason: "below threshold", KeepTurns: m.cfg.KeepTurns}
 }
 
+func (m *CompactionManager) promptBudgetBytes() int {
+	if m.cfg.PromptBudgetFn != nil {
+		if b := m.cfg.PromptBudgetFn(); b > 0 {
+			return b
+		}
+	}
+	return m.cfg.PromptBudgetBytes
+}
+
 func (m *CompactionManager) DecidePromptPressure(messages []llm.Message) CompactionDecision {
-	if m == nil || m.CircuitOpen() || m.cfg.PromptBudgetBytes < 1 {
+	if m == nil || m.CircuitOpen() {
 		return CompactionDecision{Mode: CompactionNone, Reason: "compaction unavailable"}
 	}
-	if estimatePromptBytes(messages) <= m.cfg.PromptBudgetBytes {
+	budget := m.promptBudgetBytes()
+	est := estimatePromptBytes(messages)
+	if est <= budget {
+		// Stale tool results are dead weight resent on every request: crush
+		// them once the prompt passes half budget, well before summarize
+		// pressure would rewrite (and cache-bust) real history.
+		if est > budget/2 {
+			if d, ok := m.microCompactableDecision(messages, "half prompt budget"); ok {
+				return d
+			}
+		}
 		return CompactionDecision{Mode: CompactionNone, Reason: "below prompt budget", KeepTurns: m.cfg.KeepTurns}
 	}
-	// Only pick micro when a compactable (non tail-protected) result exists;
-	// the apply step skips the freshest microCompactProtectedTail messages, so
-	// deciding on those would fire a no-op micro compaction on every step and
-	// never escalate to summarization.
+	if d, ok := m.microCompactableDecision(messages, "prompt budget"); ok {
+		return d
+	}
+	if !promptHasOlderTurns(messages) {
+		return CompactionDecision{Mode: CompactionNone, Reason: "prompt budget current turn only", KeepTurns: m.cfg.KeepTurns}
+	}
+	return CompactionDecision{Mode: CompactionSummarize, Reason: "prompt budget", KeepTurns: m.cfg.KeepTurns}
+}
+
+// microCompactableDecision picks micro only when a compactable (non
+// tail-protected) result exists; the apply step skips the freshest
+// microCompactProtectedTail messages, so deciding on those would fire a no-op
+// micro compaction on every step and never escalate to summarization. The tail
+// stays protected because crushing what the model is actively using forces
+// re-reads that look like tool-call loops.
+func (m *CompactionManager) microCompactableDecision(messages []llm.Message, reason string) (CompactionDecision, bool) {
 	compactableEnd := len(messages) - microCompactProtectedTail
 	for i, msg := range messages {
 		if i >= compactableEnd {
 			break
 		}
 		if msg.Role == llm.RoleTool && len(msg.Content) > m.cfg.PromptToolResultBytes {
-			// Protect the freshest results: crushing what the model is actively
-			// using forces re-reads that look like tool-call loops.
-			return CompactionDecision{Mode: CompactionMicro, Reason: "prompt budget", KeepTurns: m.cfg.KeepTurns, ToolResultBytes: m.cfg.PromptToolResultBytes, ProtectTail: microCompactProtectedTail}
+			return CompactionDecision{Mode: CompactionMicro, Reason: reason, KeepTurns: m.cfg.KeepTurns, ToolResultBytes: m.cfg.PromptToolResultBytes, ProtectTail: microCompactProtectedTail}, true
 		}
 	}
-	if !promptHasOlderTurns(messages) {
-		return CompactionDecision{Mode: CompactionNone, Reason: "prompt budget current turn only", KeepTurns: m.cfg.KeepTurns}
-	}
-	return CompactionDecision{Mode: CompactionSummarize, Reason: "prompt budget", KeepTurns: m.cfg.KeepTurns}
+	return CompactionDecision{}, false
 }
 
 func promptHasOlderTurns(messages []llm.Message) bool {

@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"time"
@@ -116,6 +117,9 @@ type pluginTool struct {
 	Name        string
 	Description string
 	Parameters  []tools.ParameterDef
+	// ExecuteFunc is non-nil for native plugins. Subprocess tools use
+	// the JSON-RPC client via CallTool instead.
+	ExecuteFunc func(context.Context, map[string]any) (string, error)
 }
 
 type pluginState struct {
