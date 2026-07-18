@@ -59,12 +59,42 @@ var mutatingCommandRes = []*regexp.Regexp{
 }
 
 var (
+	// Shell interpreters running an inline command string (bash -c "..."),
+	// plus eval, which executes its argument the same way.
+	shellPayloadRe = regexp.MustCompile(`(?m)(?:^\s*|[;&|(` + "`" + `]\s*|\bsudo\s+)(?:(?:ba|da|k|z|fi)?sh\s+(?:-{1,2}[^c\s]\S*\s+)*-\S*c\S*\s+|eval\s+)("(?:\\.|[^"\\])*"|'[^']*'|\S+)`)
 	// <<TAG heredoc opener; (^|[^<]) excludes <<< herestrings.
 	heredocOpenRe = regexp.MustCompile(`(?:^|[^<])<<-?\s*["']?([A-Za-z_]\w*)["']?`)
 	// Redirects that don't mutate files: fd dups and /dev sinks.
 	redirectNoiseRe = regexp.MustCompile(`\d?>&\d?|>{1,2}\s*/dev/\S*`)
 	redirectRe      = regexp.MustCompile(`>>?`)
 )
+
+// unwrapShellPayloads appends the command strings passed to `sh -c`, `bash -c`,
+// eval, etc. as their own lines, so the (?m)^ anchor in cmdRule sees them as
+// commands. Loops to peel nested wrappers (sh -c 'sh -c "..."'), capped.
+func unwrapShellPayloads(command string) string {
+	for range 4 {
+		matches := shellPayloadRe.FindAllStringSubmatch(command, -1)
+		var extracted []string
+		for _, m := range matches {
+			p := m[1]
+			switch {
+			case strings.HasPrefix(p, `'`) && len(p) >= 2:
+				p = p[1 : len(p)-1]
+			case strings.HasPrefix(p, `"`) && len(p) >= 2:
+				p = strings.NewReplacer(`\"`, `"`, `\\`, `\`).Replace(p[1 : len(p)-1])
+			}
+			if !strings.Contains(command, "\n"+p) {
+				extracted = append(extracted, p)
+			}
+		}
+		if len(extracted) == 0 {
+			return command
+		}
+		command += "\n" + strings.Join(extracted, "\n")
+	}
+	return command
+}
 
 // stripHeredocBodies removes heredoc content so text fed to a command (like a
 // patch being written with cat <<EOF) is not mistaken for a command.
@@ -97,7 +127,7 @@ func ReviewApprovalAction(transcript string, action Action) GuardianReview {
 	hasContext := strings.TrimSpace(transcript) != ""
 
 	if carriesShellCommand(action.Tool) {
-		command := stripHeredocBodies(strings.ToLower(strings.TrimSpace(action.Detail)))
+		command := unwrapShellPayloads(stripHeredocBodies(strings.ToLower(strings.TrimSpace(action.Detail))))
 		for _, rule := range guardianBlockRules {
 			if rule.re.MatchString(command) {
 				return GuardianReview{
