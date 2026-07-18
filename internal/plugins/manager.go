@@ -42,6 +42,9 @@ func (m *Manager) Start(ctx context.Context) error {
 		if !cfg.IsEnabled() {
 			continue
 		}
+		if strings.TrimSpace(cfg.Kind) == "native" {
+			continue
+		}
 		id := strings.TrimSpace(cfg.ID)
 		if id == "" {
 			errs = append(errs, fmt.Errorf("plugin requires id"))
