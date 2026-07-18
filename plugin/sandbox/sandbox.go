@@ -150,24 +150,26 @@ func toolRun(ctx context.Context, args map[string]any) (string, error) {
 		return "", fmt.Errorf("failed to resolve working directory: %w", err)
 	}
 
-	// Build a unique container name based on directory to avoid collisions
+	// Container name derived from directory so sandbox_status/sandbox_stop can target it.
 	dirHash := containerName(absDir)
 
-	// Check if a container already exists for this directory
+	// Track the container only while it actually runs; docker --rm removes it
+	// on exit, so state recorded after the run would be stale.
 	mu.Lock()
-	for id, cs := range containers {
-		if cs.Dir == absDir {
-			mu.Unlock()
-			return fmt.Sprintf("Sandbox already running for %s\nContainer: %s\nImage: %s\nRun commands with: sandbox_run\n\nThe container is persistent — files written inside persist to %s",
-				absDir, id, cs.Image, absDir), nil
-		}
+	containers[dirHash] = &containerState{
+		ContainerID: dirHash,
+		Dir:         absDir,
+		Image:       image,
+		CreatedAt:   time.Now(),
 	}
 	mu.Unlock()
+	defer func() {
+		mu.Lock()
+		delete(containers, dirHash)
+		mu.Unlock()
+	}()
 
-	// Build docker run command
-	// Use a non-root user inside the container to avoid permission issues with bind mounts
-	containerCmd := fmt.Sprintf("%s -c '%s'", shell, strings.ReplaceAll(command, "'", "'\\''"))
-
+	// One-shot container: bind-mount cwd at /workspace, run command, stream output back.
 	dockerArgs := []string{
 		"run",
 		"--name", dirHash,
@@ -177,7 +179,7 @@ func toolRun(ctx context.Context, args map[string]any) (string, error) {
 		"--rm",
 		image,
 		shell,
-		"-c", containerCmd,
+		"-c", command,
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
@@ -189,17 +191,6 @@ func toolRun(ctx context.Context, args map[string]any) (string, error) {
 	if err != nil {
 		return fmt.Sprintf("Command failed:\n%s\n\nDocker args: %v", strings.TrimSpace(string(output)), dockerArgs), err
 	}
-
-	// Record the container state for status tracking
-	mu.Lock()
-	cs := &containerState{
-		ContainerID: dirHash,
-		Dir:         absDir,
-		Image:       image,
-		CreatedAt:   time.Now(),
-	}
-	containers[dirHash] = cs
-	mu.Unlock()
 
 	result := fmt.Sprintf("Sandbox executed in container %s\nDirectory: %s\nImage: %s\nOutput:\n%s", dirHash, absDir, image, strings.TrimSpace(string(output)))
 	return result, nil
