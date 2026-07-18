@@ -1,6 +1,9 @@
 package tools
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 type GuardianDecision string
 
@@ -15,32 +18,113 @@ type GuardianReview struct {
 	Reason   string
 }
 
+// carriesShellCommand reports whether the action's Detail is a shell command.
+// Destructive-command rules only run for these tools, so a diff or file body
+// that merely mentions "rm -rf /" (e.g. a patch to this file) never trips them.
+func carriesShellCommand(tool string) bool {
+	return tool == "run_command" || tool == "exec_session_start"
+}
+
+// cmdRule anchors a pattern to a command position — start of line, after a
+// separator (; & | subshell backtick), or after sudo — so dangerous strings
+// inside arguments (echo "rm -rf /") don't match.
+func cmdRule(pattern string) *regexp.Regexp {
+	return regexp.MustCompile(`(?m)(?:^\s*|[;&|(` + "`" + `]\s*|\bsudo\s+)` + pattern)
+}
+
+var guardianBlockRules = []struct {
+	re     *regexp.Regexp
+	reason string
+}{
+	{cmdRule(`rm\s+(?:-{1,2}[^\s;&|]+\s+)*(?:/|/\*|~|~/|\$home|/tmp/?)\s*(?:$|[;&|)])`), "rm targeting a root, home, or temp path"},
+	{cmdRule(`rm\b[^\n;&|]*--no-preserve-root`), "rm with --no-preserve-root"},
+	{cmdRule(`git\s+push\b[^\n;&|]*\s(?:--force(?:-with-lease)?|-f)\b`), "git force push rewrites remote history"},
+	{cmdRule(`git\s+push\b[^\n;&|]*\s(?:--delete|-d)\b`), "git push --delete removes remote refs"},
+	{cmdRule(`git\s+reset\b[^\n;&|]*--hard\b`), "git reset --hard discards local changes"},
+	{cmdRule(`git\s+clean\b[^\n;&|]*\s-\w*[fx]`), "git clean -f/-x deletes untracked files"},
+	{cmdRule(`docker\s+system\s+prune\b[^\n;&|]*(?:--force\b|\s-\w*f)`), "forced docker prune wipes containers, images, and volumes"},
+	{cmdRule(`truncate\s+[^\n;&|]*(?:-s\s*0|--size[=\s]*0)\b`), "truncate to zero destroys file contents"},
+	{cmdRule(`chmod\s+(?:-{1,2}\S+\s+)*0?777\b`), "chmod 777 grants world write"},
+	{cmdRule(`mkfs(?:\.\w+)?\s`), "mkfs formats a filesystem"},
+	{cmdRule(`dd\b[^\n;&|]*\bof=/dev/`), "dd writing to a raw device"},
+	{cmdRule(`heroku\s+pg:reset\b`), "heroku pg:reset wipes a database"},
+}
+
+var gitHighImpactRe = cmdRule(`git\s+(?:push|rebase|merge)\b`)
+
+var mutatingCommandRes = []*regexp.Regexp{
+	cmdRule(`git\s+(?:add|commit|checkout|switch|merge|rebase|push)\b`),
+	cmdRule(`(?:rm|mv|cp|tee)\s`),
+	cmdRule(`(?:sed|perl)\s+-i\b`),
+}
+
+var (
+	// <<TAG heredoc opener; (^|[^<]) excludes <<< herestrings.
+	heredocOpenRe = regexp.MustCompile(`(?:^|[^<])<<-?\s*["']?([A-Za-z_]\w*)["']?`)
+	// Redirects that don't mutate files: fd dups and /dev sinks.
+	redirectNoiseRe = regexp.MustCompile(`\d?>&\d?|>{1,2}\s*/dev/\S*`)
+	redirectRe      = regexp.MustCompile(`>>?`)
+)
+
+// stripHeredocBodies removes heredoc content so text fed to a command (like a
+// patch being written with cat <<EOF) is not mistaken for a command.
+func stripHeredocBodies(command string) string {
+	if !strings.Contains(command, "<<") {
+		return command
+	}
+	lines := strings.Split(command, "\n")
+	kept := make([]string, 0, len(lines))
+	var term string
+	for _, line := range lines {
+		if term != "" {
+			if strings.TrimSpace(line) == term {
+				term = ""
+			}
+			continue
+		}
+		kept = append(kept, line)
+		if m := heredocOpenRe.FindStringSubmatch(line); m != nil {
+			term = m[1]
+		}
+	}
+	return strings.Join(kept, "\n")
+}
+
 // ReviewApprovalAction performs a compact, deterministic pre-approval review.
 // It is intentionally conservative: obviously destructive commands are blocked,
 // risky mutations without session context are warned, and ordinary edits pass.
 func ReviewApprovalAction(transcript string, action Action) GuardianReview {
-	summary := strings.ToLower(strings.TrimSpace(action.Summary))
-	detail := strings.ToLower(strings.TrimSpace(action.Detail))
-	combined := strings.TrimSpace(summary + "\n" + detail)
 	hasContext := strings.TrimSpace(transcript) != ""
 
-	switch {
-	case strings.Contains(combined, "rm -rf /"), strings.Contains(combined, "git push --force"), strings.Contains(combined, "git reset --hard"):
-		return GuardianReview{
-			Decision: GuardianBlock,
-			Reason:   "action looks destructive and should not be auto-approved",
+	if carriesShellCommand(action.Tool) {
+		command := stripHeredocBodies(strings.ToLower(strings.TrimSpace(action.Detail)))
+		for _, rule := range guardianBlockRules {
+			if rule.re.MatchString(command) {
+				return GuardianReview{
+					Decision: GuardianBlock,
+					Reason:   rule.reason + "; not auto-approvable",
+				}
+			}
 		}
-	case action.Tool == "run_command" && (strings.Contains(combined, "git push") || strings.Contains(combined, "git rebase") || strings.Contains(combined, "git merge")) && !hasContext:
-		return GuardianReview{
-			Decision: GuardianWarn,
-			Reason:   "high-impact command has no compact task context",
+		if !hasContext {
+			if gitHighImpactRe.MatchString(command) {
+				return GuardianReview{
+					Decision: GuardianWarn,
+					Reason:   "high-impact command has no compact task context",
+				}
+			}
+			if commandLooksMutating(command) {
+				return GuardianReview{
+					Decision: GuardianWarn,
+					Reason:   "mutating command is missing task context",
+				}
+			}
 		}
-	case action.Tool == "run_command" && commandLooksMutating(combined) && !hasContext:
-		return GuardianReview{
-			Decision: GuardianWarn,
-			Reason:   "mutating command is missing task context",
-		}
-	case action.Tool == "write_file" || action.Tool == "edit_file" || action.Tool == "apply_patch" || action.Tool == "artifact_write":
+		return GuardianReview{Decision: GuardianAllow}
+	}
+
+	switch action.Tool {
+	case "write_file", "edit_file", "apply_patch", "artifact_write":
 		if strings.TrimSpace(action.Detail) == "" {
 			return GuardianReview{
 				Decision: GuardianWarn,
@@ -52,15 +136,11 @@ func ReviewApprovalAction(transcript string, action Action) GuardianReview {
 	return GuardianReview{Decision: GuardianAllow}
 }
 
-func commandLooksMutating(text string) bool {
-	markers := []string{
-		"git add", "git commit", "git checkout", "git switch", "git merge", "git rebase", "git push",
-		"rm ", "mv ", "cp ", "sed -i", "perl -i", "tee ", "cat >", ">>",
-	}
-	for _, marker := range markers {
-		if strings.Contains(text, marker) {
+func commandLooksMutating(command string) bool {
+	for _, re := range mutatingCommandRes {
+		if re.MatchString(command) {
 			return true
 		}
 	}
-	return false
+	return redirectRe.MatchString(redirectNoiseRe.ReplaceAllString(command, ""))
 }
