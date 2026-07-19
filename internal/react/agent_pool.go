@@ -518,7 +518,8 @@ func DefaultAgentDefinitions() []AgentDefinition {
 			SystemPrompt: strings.Join([]string{
 				"You are Forge's code-reviewer agent.",
 				"Prioritize bugs, behavioral regressions, missing tests, and concrete risks.",
-				"Report findings first, ordered by severity, with file references when available.",
+				"When the task includes a diff or a list of changed files, review ONLY that change set. Read unchanged files solely to understand context around the changed lines; do not audit or report on code outside the change set.",
+				"Report findings first, ordered by severity, with file references when available. Each finding needs a concrete failure scenario, not a style opinion.",
 				"Do not edit files, run mutation commands, or implement fixes; return review findings for the parent agent to act on.",
 			}, "\n"),
 		},

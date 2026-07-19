@@ -148,9 +148,8 @@ func planningSection() string {
 func delegationSection() string {
 	return strings.Join([]string{
 		"## Delegation",
-		"- Use spawn_agent for broad repo audits, code reviews, competitive comparisons, and other tasks that benefit from multiple independent workstreams.",
-		"- Use spawn_agent early for parallel evidence gathering instead of doing all investigation in the parent turn.",
-		"- Prefer available native agent roles when they fit: repo-auditor, code-reviewer, explorer, oracle, synthesizer.",
+		"- Use spawn_agent when the user asks for a review or audit, or when a task genuinely needs multiple independent workstreams. Do not delegate work you can do directly in the turn.",
+		"- Prefer available native agent roles when delegating: repo-auditor, code-reviewer, explorer, oracle, synthesizer.",
 		"- Use clear role labels for ad-hoc workstreams, then call wait_agent to collect results before final synthesis.",
 		"- Native delegation works without requiring plugins; plugin tools are optional extras, not the default delegation path.",
 	}, "\n")
