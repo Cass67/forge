@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/pmezard/go-difflib/difflib"
 )
 
 func NewWriteFile(workDir string, approve ApprovalFunc, policies ...SecretPolicy) Tool {
@@ -92,32 +94,17 @@ func NewWriteFileWithWorkDirProvider(fallbackWorkDir string, provider WorkDirPro
 }
 
 func simpleDiff(old, new_, path string) string {
-	oldLines := strings.Split(old, "\n")
-	newLines := strings.Split(new_, "\n")
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("--- a/%s\n+++ b/%s\n", path, path))
-
-	maxLen := len(oldLines)
-	if len(newLines) > maxLen {
-		maxLen = len(newLines)
+	text, err := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
+		A:        difflib.SplitLines(old),
+		B:        difflib.SplitLines(new_),
+		FromFile: "a/" + path,
+		ToFile:   "b/" + path,
+		Context:  3,
+	})
+	if err != nil {
+		return ""
 	}
-
-	for i := 0; i < maxLen; i++ {
-		haveOld := i < len(oldLines)
-		haveNew := i < len(newLines)
-		switch {
-		case haveOld && haveNew && oldLines[i] == newLines[i]:
-			sb.WriteString(" " + oldLines[i] + "\n")
-		case haveOld && haveNew:
-			sb.WriteString("-" + oldLines[i] + "\n")
-			sb.WriteString("+" + newLines[i] + "\n")
-		case haveOld:
-			sb.WriteString("-" + oldLines[i] + "\n")
-		case haveNew:
-			sb.WriteString("+" + newLines[i] + "\n")
-		}
-	}
-	return sb.String()
+	return text
 }
 
 // diffStat counts files, insertions, and deletions from a unified diff.

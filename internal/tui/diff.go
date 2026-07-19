@@ -460,13 +460,14 @@ func renderWordHighlightedLine(line string, markup string, theme chatTheme, widt
 		contentStyle = lipgloss.NewStyle().Foreground(theme.Text)
 	}
 
+	// ponytail: Reverse instead of a painted background — adapts to any terminal theme
 	delStyle := lipgloss.NewStyle().
 		Foreground(theme.Error).
-		Background(theme.HeaderBG)
+		Reverse(true)
 
 	addStyle := lipgloss.NewStyle().
 		Foreground(theme.Success).
-		Background(theme.HeaderBG)
+		Reverse(true)
 
 	delMarker := string([]byte{0, 'd', 0})
 	addMarker := string([]byte{0, 'a', 0})
