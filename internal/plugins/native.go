@@ -23,7 +23,7 @@ func (m *Manager) CollectNativePlugins() {
 			continue
 		}
 		kind := strings.TrimSpace(cfg.Kind)
-		if kind != "native" {
+		if !strings.EqualFold(kind, "native") {
 			continue
 		}
 		id := strings.TrimSpace(cfg.ID)
