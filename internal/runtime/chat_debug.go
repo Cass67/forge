@@ -220,9 +220,6 @@ func (r *chatDebugRecorder) logToolExposure(decision reactruntime.ToolExposureDe
 	if decision.OutstandingAgentCount > 0 {
 		fields["outstanding_agent_count"] = decision.OutstandingAgentCount
 	}
-	if strings.TrimSpace(decision.PendingActionKind) != "" {
-		fields["pending_action_kind"] = redactDebugString(decision.PendingActionKind)
-	}
 	r.log.Debug("chat.tool_exposure", fields)
 }
 

@@ -74,23 +74,6 @@ type AgentTaskState struct {
 	RecentActivity []AgentTaskActivity `json:"recent_activity,omitempty"`
 }
 
-type DelegationActionKind string
-
-const (
-	DelegationActionNone            DelegationActionKind = "none"
-	DelegationActionWriteDoc        DelegationActionKind = "write_doc"
-	DelegationActionRunVerification DelegationActionKind = "run_verification"
-	DelegationActionCommit          DelegationActionKind = "commit"
-	DelegationActionAskUser         DelegationActionKind = "ask_user"
-)
-
-type DelegationActionState struct {
-	Kind        DelegationActionKind `json:"kind"`
-	TargetPath  string               `json:"target_path,omitempty"`
-	SourceAgent string               `json:"source_agent,omitempty"`
-	Description string               `json:"description,omitempty"`
-}
-
 type PlanStep struct {
 	Step    string `json:"step"`
 	Status  string `json:"status"`
@@ -164,68 +147,62 @@ type ActiveTurn struct {
 }
 
 type SessionSnapshot struct {
-	Turn                    int
-	LastInput               string
-	InitialInput            string
-	RecentInputs            []string
-	History                 []llm.Message
-	Turns                   []TurnRecord
-	Items                   []protocol.Item
-	CompactedTurns          int
-	CompactionSummary       string
-	MemorySummary           string
-	HookOutputSet           bool
-	HookOutput              hooks.ExecutionOutput
-	HookOverlays            []hooks.Overlay
-	RuntimeNote             string
-	Mode                    Mode
-	TaskState               *TaskState
-	PlanState               *PlanState
-	AgentTasks              []AgentTaskState
-	PendingDelegationAction *DelegationActionState
-	PendingInput            []string
-	Interrupted             bool
-	LastDurableError        string
-	LastTurnEndReason       TurnEndReason
-	LastTurnCancelReason    string
-	ActiveWorkspaceRoot     string
-	SideEffectIntent        *SideEffectIntent
-	TurnContract            *TurnContract
+	Turn                 int
+	LastInput            string
+	InitialInput         string
+	RecentInputs         []string
+	History              []llm.Message
+	Turns                []TurnRecord
+	Items                []protocol.Item
+	CompactedTurns       int
+	CompactionSummary    string
+	MemorySummary        string
+	HookOutputSet        bool
+	HookOutput           hooks.ExecutionOutput
+	HookOverlays         []hooks.Overlay
+	RuntimeNote          string
+	Mode                 Mode
+	TaskState            *TaskState
+	PlanState            *PlanState
+	AgentTasks           []AgentTaskState
+	PendingInput         []string
+	Interrupted          bool
+	LastDurableError     string
+	LastTurnEndReason    TurnEndReason
+	LastTurnCancelReason string
+	ActiveWorkspaceRoot  string
 }
 
 type Session struct {
-	mu                      sync.Mutex
-	turn                    int
-	lastInput               string
-	initialInput            string
-	recentInputs            []string
-	history                 []llm.Message
-	turns                   []TurnRecord
-	items                   []protocol.Item
-	compactedTurns          int
-	compactionSummary       string
-	memorySummary           string
-	hookOutputSet           bool
-	hookOutput              hooks.ExecutionOutput
-	hookOverlays            []hooks.Overlay
-	runtimeNote             string
-	mode                    Mode
-	taskState               *TaskState
-	planState               *PlanState
-	agentTasks              map[string]AgentTaskState
-	agentTaskOrder          []string
-	pendingDelegationAction *DelegationActionState
-	pendingInput            []string
-	interrupted             bool
-	lastTurnEndReason       TurnEndReason
-	lastTurnCancelReason    string
-	activeWorkspaceRoot     string
-	sideEffectIntent        *SideEffectIntent
-	turnContract            *TurnContract
-	durableSink             DurableSink
-	durableThreadID         string
-	lastDurableError        string
-	activeTurn              *ActiveTurn
+	mu                   sync.Mutex
+	turn                 int
+	lastInput            string
+	initialInput         string
+	recentInputs         []string
+	history              []llm.Message
+	turns                []TurnRecord
+	items                []protocol.Item
+	compactedTurns       int
+	compactionSummary    string
+	memorySummary        string
+	hookOutputSet        bool
+	hookOutput           hooks.ExecutionOutput
+	hookOverlays         []hooks.Overlay
+	runtimeNote          string
+	mode                 Mode
+	taskState            *TaskState
+	planState            *PlanState
+	agentTasks           map[string]AgentTaskState
+	agentTaskOrder       []string
+	pendingInput         []string
+	interrupted          bool
+	lastTurnEndReason    TurnEndReason
+	lastTurnCancelReason string
+	activeWorkspaceRoot  string
+	durableSink          DurableSink
+	durableThreadID      string
+	lastDurableError     string
+	activeTurn           *ActiveTurn
 }
 
 type DurableSink interface {
@@ -957,114 +934,35 @@ func (s *Session) Snapshot() SessionSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return SessionSnapshot{
-		Turn:                    s.turn,
-		LastInput:               s.lastInput,
-		InitialInput:            s.initialInput,
-		RecentInputs:            append([]string(nil), s.recentInputs...),
-		History:                 append([]llm.Message(nil), s.history...),
-		Turns:                   append([]TurnRecord(nil), s.turns...),
-		Items:                   cloneProtocolItems(s.items),
-		CompactedTurns:          s.compactedTurns,
-		CompactionSummary:       s.compactionSummary,
-		MemorySummary:           s.memorySummary,
-		HookOutputSet:           s.hookOutputSet,
-		HookOutput:              cloneHookOutput(s.hookOutput),
-		HookOverlays:            append([]hooks.Overlay(nil), s.hookOverlays...),
-		RuntimeNote:             s.runtimeNote,
-		Mode:                    s.mode,
-		TaskState:               cloneTaskState(s.taskState),
-		PlanState:               clonePlanState(s.planState),
-		AgentTasks:              cloneAgentTasksLocked(s.agentTaskOrder, s.agentTasks),
-		PendingDelegationAction: cloneDelegationActionState(s.pendingDelegationAction),
-		PendingInput:            append([]string(nil), s.pendingInput...),
-		Interrupted:             s.interrupted,
-		LastDurableError:        s.lastDurableError,
-		LastTurnEndReason:       s.lastTurnEndReason,
-		LastTurnCancelReason:    s.lastTurnCancelReason,
-		ActiveWorkspaceRoot:     s.activeWorkspaceRoot,
-		SideEffectIntent:        copySideEffectIntent(s.sideEffectIntent),
-		TurnContract:            copyTurnContract(s.turnContract),
+		Turn:                 s.turn,
+		LastInput:            s.lastInput,
+		InitialInput:         s.initialInput,
+		RecentInputs:         append([]string(nil), s.recentInputs...),
+		History:              append([]llm.Message(nil), s.history...),
+		Turns:                append([]TurnRecord(nil), s.turns...),
+		Items:                cloneProtocolItems(s.items),
+		CompactedTurns:       s.compactedTurns,
+		CompactionSummary:    s.compactionSummary,
+		MemorySummary:        s.memorySummary,
+		HookOutputSet:        s.hookOutputSet,
+		HookOutput:           cloneHookOutput(s.hookOutput),
+		HookOverlays:         append([]hooks.Overlay(nil), s.hookOverlays...),
+		RuntimeNote:          s.runtimeNote,
+		Mode:                 s.mode,
+		TaskState:            cloneTaskState(s.taskState),
+		PlanState:            clonePlanState(s.planState),
+		AgentTasks:           cloneAgentTasksLocked(s.agentTaskOrder, s.agentTasks),
+		PendingInput:         append([]string(nil), s.pendingInput...),
+		Interrupted:          s.interrupted,
+		LastDurableError:     s.lastDurableError,
+		LastTurnEndReason:    s.lastTurnEndReason,
+		LastTurnCancelReason: s.lastTurnCancelReason,
+		ActiveWorkspaceRoot:  s.activeWorkspaceRoot,
 	}
-}
-
-func (s *Session) SetTurnContract(contract TurnContract) {
-	if s == nil {
-		return
-	}
-	if strings.TrimSpace(contract.ID) == "" {
-		return
-	}
-	s.mu.Lock()
-	copy := normalizeTurnContract(copyTurnContract(&contract))
-	s.turnContract = copy
-	protocolContract := turnContractToProtocol(*copy)
-	item := s.appendItemLocked(protocol.Item{Kind: protocol.ItemTurnContract, TurnContract: &protocolContract})
-	sink := s.durableSink
-	s.mu.Unlock()
-	_ = s.persistDurableItem(item, sink)
-}
-
-func (s *Session) UpdateTurnContract(update func(*TurnContract)) {
-	if s == nil || update == nil {
-		return
-	}
-	s.mu.Lock()
-	next := copyTurnContract(s.turnContract)
-	if next == nil {
-		s.mu.Unlock()
-		return
-	}
-	update(next)
-	stored := normalizeTurnContract(copyTurnContract(next))
-	if strings.TrimSpace(stored.ID) == "" {
-		s.mu.Unlock()
-		return
-	}
-	s.turnContract = stored
-	protocolContract := turnContractToProtocol(*stored)
-	item := s.appendItemLocked(protocol.Item{Kind: protocol.ItemTurnContract, TurnContract: &protocolContract})
-	sink := s.durableSink
-	s.mu.Unlock()
-	_ = s.persistDurableItem(item, sink)
-}
-
-func (s *Session) ClearTurnContract(reason string) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	protocolContract := protocol.TurnContractItem{ID: "cleared", Status: string(ContractStatusCleared), Reason: strings.TrimSpace(reason)}
-	if protocolContract.Reason == "" {
-		protocolContract.Reason = "cleared"
-	}
-	item := s.appendItemLocked(protocol.Item{Kind: protocol.ItemTurnContract, TurnContract: &protocolContract})
-	s.turnContract = nil
-	sink := s.durableSink
-	s.mu.Unlock()
-	_ = s.persistDurableItem(item, sink)
 }
 
 func cloneProtocolItems(items []protocol.Item) []protocol.Item {
-	out := append([]protocol.Item(nil), items...)
-	for i := range out {
-		if out[i].TurnContract != nil {
-			out[i].TurnContract = cloneProtocolTurnContract(out[i].TurnContract)
-		}
-	}
-	return out
-}
-
-func cloneProtocolTurnContract(contract *protocol.TurnContractItem) *protocol.TurnContractItem {
-	if contract == nil {
-		return nil
-	}
-	copy := *contract
-	copy.RequiredActions = append([]protocol.ContractActionItem(nil), contract.RequiredActions...)
-	copy.RequiredArtifacts = append([]protocol.ArtifactRequirementItem(nil), contract.RequiredArtifacts...)
-	copy.RequiredVerification = append([]protocol.VerificationRequirementItem(nil), contract.RequiredVerification...)
-	copy.Evidence = append([]protocol.EvidenceRecordItem(nil), contract.Evidence...)
-	copy.Gates = append([]protocol.ContractGateItem(nil), contract.Gates...)
-	return &copy
+	return append([]protocol.Item(nil), items...)
 }
 
 func (s *Session) SetActiveWorkspaceRoot(root string) {
@@ -1074,73 +972,6 @@ func (s *Session) SetActiveWorkspaceRoot(root string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.activeWorkspaceRoot = strings.TrimSpace(root)
-}
-
-func (s *Session) SetSideEffectIntent(intent SideEffectIntent) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	copy := copySideEffectIntent(&intent)
-	if copy.WorkspaceRoot == "" {
-		copy.WorkspaceRoot = strings.TrimSpace(s.activeWorkspaceRoot)
-	}
-	if strings.TrimSpace(copy.WorkspaceRoot) != "" {
-		s.activeWorkspaceRoot = strings.TrimSpace(copy.WorkspaceRoot)
-		copy.WorkspaceRoot = s.activeWorkspaceRoot
-	}
-	s.sideEffectIntent = copy
-	protocolIntent := sideEffectIntentToProtocol(*copy)
-	item := s.appendItemLocked(protocol.Item{Kind: protocol.ItemSideEffectIntent, SideEffectIntent: &protocolIntent})
-	sink := s.durableSink
-	s.mu.Unlock()
-	_ = s.persistDurableItem(item, sink)
-}
-
-func (s *Session) UpdateSideEffectIntent(update func(*SideEffectIntent)) {
-	if s == nil || update == nil {
-		return
-	}
-	s.mu.Lock()
-	next := copySideEffectIntent(s.sideEffectIntent)
-	if next == nil {
-		next = &SideEffectIntent{}
-	}
-	if next.WorkspaceRoot == "" {
-		next.WorkspaceRoot = strings.TrimSpace(s.activeWorkspaceRoot)
-	}
-	s.mu.Unlock()
-
-	update(next)
-
-	s.mu.Lock()
-	stored := copySideEffectIntent(next)
-	if stored.WorkspaceRoot == "" {
-		stored.WorkspaceRoot = strings.TrimSpace(s.activeWorkspaceRoot)
-	}
-	if strings.TrimSpace(stored.WorkspaceRoot) != "" {
-		s.activeWorkspaceRoot = strings.TrimSpace(stored.WorkspaceRoot)
-		stored.WorkspaceRoot = s.activeWorkspaceRoot
-	}
-	s.sideEffectIntent = stored
-	protocolIntent := sideEffectIntentToProtocol(*stored)
-	item := s.appendItemLocked(protocol.Item{Kind: protocol.ItemSideEffectIntent, SideEffectIntent: &protocolIntent})
-	sink := s.durableSink
-	s.mu.Unlock()
-	_ = s.persistDurableItem(item, sink)
-}
-
-func (s *Session) ClearSideEffectIntent() {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	protocolIntent := protocol.SideEffectIntentItem{Reason: "cleared"}
-	item := s.appendItemLocked(protocol.Item{Kind: protocol.ItemSideEffectIntent, SideEffectIntent: &protocolIntent})
-	s.sideEffectIntent = nil
-	sink := s.durableSink
-	s.mu.Unlock()
-	_ = s.persistDurableItem(item, sink)
 }
 
 func (s *Session) Clear() {
@@ -1167,43 +998,13 @@ func (s *Session) Clear() {
 	s.planState = nil
 	s.agentTasks = nil
 	s.agentTaskOrder = nil
-	s.pendingDelegationAction = nil
 	s.pendingInput = nil
 	s.interrupted = false
 	s.lastDurableError = ""
 	s.lastTurnEndReason = ""
 	s.lastTurnCancelReason = ""
 	s.activeWorkspaceRoot = ""
-	s.sideEffectIntent = nil
 	s.activeTurn = nil
-}
-
-func (s *Session) SetPendingDelegationAction(state DelegationActionState) {
-	if s == nil {
-		return
-	}
-	state.Kind = normalizeDelegationActionKind(state.Kind)
-	if state.Kind == DelegationActionNone {
-		s.ClearPendingDelegationAction()
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.pendingDelegationAction = &DelegationActionState{
-		Kind:        state.Kind,
-		TargetPath:  strings.TrimSpace(state.TargetPath),
-		SourceAgent: strings.TrimSpace(state.SourceAgent),
-		Description: strings.TrimSpace(state.Description),
-	}
-}
-
-func (s *Session) ClearPendingDelegationAction() {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.pendingDelegationAction = nil
 }
 
 func (s *Session) ClearBlockingAgentHandoffs() {
@@ -1229,15 +1030,6 @@ func (s *Session) ClearBlockingAgentHandoffs() {
 	sink := s.durableSink
 	s.mu.Unlock()
 	_ = s.persistDurableItems(items, sink)
-}
-
-func normalizeDelegationActionKind(kind DelegationActionKind) DelegationActionKind {
-	switch kind {
-	case DelegationActionWriteDoc, DelegationActionRunVerification, DelegationActionCommit, DelegationActionAskUser:
-		return kind
-	default:
-		return DelegationActionNone
-	}
 }
 
 func (s *Session) UpsertAgentTask(state AgentTaskState) {
@@ -1620,14 +1412,6 @@ func agentHandoffToProtocol(agentID string, handoff AgentHandoff) *protocol.Agen
 		})
 	}
 	return out
-}
-
-func cloneDelegationActionState(state *DelegationActionState) *DelegationActionState {
-	if state == nil {
-		return nil
-	}
-	cloned := *state
-	return &cloned
 }
 
 func cloneHookOutput(output hooks.ExecutionOutput) hooks.ExecutionOutput {

@@ -105,5 +105,5 @@ func NewGitLogWithWorkDirProvider(fallbackWorkDir string, provider WorkDirProvid
 }
 
 func NewGitCommit(workDir string, approve ApprovalFunc) Tool {
-	return NewGitCommitScopedWithWorkDirProvider(workDir, FixedWorkDirProvider(workDir), approve, nil)
+	return NewGitCommitWithWorkDirProvider(workDir, FixedWorkDirProvider(workDir), approve)
 }

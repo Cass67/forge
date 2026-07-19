@@ -17,7 +17,6 @@ func newLoopHookRegistry() *hooks.Registry {
 	registry.Register(hooks.PointPromptContext, "review_guidance", reviewPromptHook)
 	registry.Register(hooks.PointPromptContext, "preview_workflow", previewWorkflowPromptHook)
 	registry.Register(hooks.PointPromptContext, "plan_blocker", blockedPlanPromptHook)
-	registry.Register(hooks.PointPromptContext, "post_delegation_write", postDelegationWritePromptHook)
 	registry.Register(hooks.PointPromptContext, "agent_handoff", agentHandoffPromptHook)
 	registry.Register(hooks.PointPromptContext, "synthesis_guidance", synthesisPromptHook)
 	registry.Register(hooks.PointPromptContext, "validation_failure", validationPromptHook)
@@ -290,27 +289,6 @@ func blockedPlanPromptHook(_ context.Context, event hooks.Event) []hooks.Result 
 	}}
 }
 
-func postDelegationWritePromptHook(_ context.Context, event hooks.Event) []hooks.Result {
-	snap, ok := event.Snapshot.(SessionSnapshot)
-	if !ok || !historyIncludesCompletedToolCall(snap, "wait_agent") {
-		return nil
-	}
-	if !pendingDelegationWriteAction(snap) {
-		return nil
-	}
-	target := "the requested document path"
-	if snap.PendingDelegationAction != nil && strings.TrimSpace(snap.PendingDelegationAction.TargetPath) != "" {
-		target = strings.TrimSpace(snap.PendingDelegationAction.TargetPath)
-	}
-	content := "Post-delegation document write active. Use completed child-agent results as source material, but synthesize the requested document instead of concatenating reports. Do not paste raw child-agent outputs or role headings such as `## explorer`. Write the final, user-facing document with write_file to " + target + ". Include prioritized findings, evidence paths, and concrete next steps when the user requested a gaps/findings report."
-	return []hooks.Result{hooks.OverlayResult{
-		Key:        "post_delegation_write",
-		Content:    content,
-		Priority:   hooks.PriorityHigh,
-		Provenance: "runtime",
-	}}
-}
-
 func agentHandoffPromptHook(_ context.Context, event hooks.Event) []hooks.Result {
 	snap, ok := event.Snapshot.(SessionSnapshot)
 	if !ok {
@@ -533,12 +511,6 @@ func beforeToolGitCommitBlockHook(_ context.Context, event hooks.Event) []hooks.
 	if !ok {
 		return nil
 	}
-	if blocksScopedIntentShellGitMutation(event.Snapshot, payload) {
-		return []hooks.Result{hooks.BlockResult{
-			Message:    "blocked: scoped git transaction is active. Use git_commit/git_push so Forge can enforce allowed paths, branch, remote, and verification gates.",
-			Provenance: "runtime",
-		}}
-	}
 	if !isCommitToolCall(payload.ToolName, payload.Args) {
 		return nil
 	}
@@ -549,9 +521,6 @@ func beforeToolGitCommitBlockHook(_ context.Context, event hooks.Event) []hooks.
 			Provenance: "runtime",
 		}}
 	case payload.GitWorkflow.commitBlocker == commitBlockerRestage:
-		if snap, ok := event.Snapshot.(SessionSnapshot); ok && snap.SideEffectIntent != nil && payload.ToolName == "git_commit" {
-			return nil
-		}
 		if payload.ToolName == "run_command" && strings.Contains(strings.ToLower(stringArg(payload.Args, "command")), "git add") {
 			return nil
 		}
@@ -566,21 +535,6 @@ func beforeToolGitCommitBlockHook(_ context.Context, event hooks.Event) []hooks.
 		}}
 	default:
 		return nil
-	}
-}
-
-func blocksScopedIntentShellGitMutation(snapshot any, payload beforeToolHookPayload) bool {
-	snap, ok := snapshot.(SessionSnapshot)
-	if !ok || snap.SideEffectIntent == nil {
-		return false
-	}
-	switch payload.ToolName {
-	case "run_command", "exec_session_start":
-		return shellCommandHasGitMutation(stringArg(payload.Args, "command"))
-	case "exec_session_write", "command_write_stdin":
-		return true
-	default:
-		return false
 	}
 }
 
