@@ -353,3 +353,16 @@ func writePluginResult(enc *json.Encoder, id int64, result any) {
 func writePluginError(enc *json.Encoder, id int64, message string) {
 	_ = enc.Encode(map[string]any{"id": id, "error": responseError{Message: message}})
 }
+
+func TestManagerStartSkipsMixedCaseNativePlugins(t *testing.T) {
+	m := NewManager(t.TempDir(), []config.PluginConfig{{ID: "builtin", Kind: "Native"}})
+	defer func() { _ = m.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := m.Start(ctx); err != nil {
+		t.Fatalf("mixed-case native plugin should be skipped, got: %v", err)
+	}
+	if m.HasPlugins() {
+		t.Fatal("native plugin must not be started as stdio plugin")
+	}
+}
