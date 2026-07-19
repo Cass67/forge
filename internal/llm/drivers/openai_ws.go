@@ -250,6 +250,8 @@ func (d *OpenAIDriver) wsReadEvents(ctx context.Context, conn *websocket.Conn, o
 					d.mu.Unlock()
 				}
 				sawCompleted = true
+				errCh <- nil
+				return
 
 			case "error":
 				var errMsg struct {
