@@ -335,7 +335,7 @@ func (r *Runner) RunWithParts(ctx context.Context, input string, parts []llm.Mes
 	r.pendingRetryPrompt = ""
 	r.completionGateRejections = 0
 	if r.driver == nil {
-		err := fmt.Errorf("react runner: driver is nil")
+		err := fmt.Errorf("no model selected (LLM driver not configured) — pick a model with the model switcher")
 		return r.completeTurn(turn, "", nil, err)
 	}
 	return r.runLoop(ctx, turn)

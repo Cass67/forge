@@ -89,6 +89,9 @@ type ChatSetup struct {
 	Providers  []tui.ProviderOption
 	MakeDriver func(string) llm.Driver
 	DebugLog   string
+	// DroppedModel is the saved chat model that was discarded at startup
+	// because no provider currently offers it.
+	DroppedModel string
 	// ResumeThreadID, when set, seeds the session with a stored thread's
 	// history before the first turn (forge --resume / --continue).
 	ResumeThreadID string
@@ -175,7 +178,10 @@ func BuildChatSetup(cfg *config.Config, tokens any, modelOverride, workDir strin
 	chatModel := cfg.ChatModel()
 	if modelOverride != "" {
 		chatModel = modelOverride
-	} else if chatModel != "" && !ContainsModel(available, chatModel) {
+	}
+	droppedModel := ""
+	if modelOverride == "" && chatModel != "" && !ContainsModel(available, chatModel) {
+		droppedModel = chatModel
 		chatModel = ""
 	}
 
@@ -213,14 +219,15 @@ func BuildChatSetup(cfg *config.Config, tokens any, modelOverride, workDir strin
 	}
 
 	return &ChatSetup{
-		Config:     cfg,
-		ChatModel:  chatModel,
-		WorkDir:    absWd,
-		Driver:     driver,
-		Yolo:       yolo,
-		Available:  available,
-		Providers:  providers,
-		MakeDriver: makeChatDriver,
+		Config:       cfg,
+		ChatModel:    chatModel,
+		WorkDir:      absWd,
+		Driver:       driver,
+		Yolo:         yolo,
+		Available:    available,
+		Providers:    providers,
+		MakeDriver:   makeChatDriver,
+		DroppedModel: droppedModel,
 	}, nil
 }
 
@@ -530,6 +537,11 @@ func RunChatLive(setup *ChatSetup) {
 		}()
 	}
 	evRenderer := agent.NewEventRenderer(renderCh)
+	if setup.DroppedModel != "" {
+		evRenderer.Info(fmt.Sprintf(
+			"saved model %q is no longer available — no model selected; pick one with the model switcher",
+			setup.DroppedModel))
+	}
 	session := reactruntime.NewSession()
 	session.SetActiveWorkspaceRoot(setup.WorkDir)
 	adoptResumeThread(setup, session)
