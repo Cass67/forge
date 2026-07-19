@@ -17,8 +17,6 @@ type Replay struct {
 	PendingInput      []string
 	CompactionSummary string
 	Interrupted       bool
-	SideEffectIntent  *protocol.SideEffectIntentItem
-	TurnContract      *protocol.TurnContractItem
 }
 
 type ReplayTurn struct {
@@ -42,22 +40,6 @@ func ReplayItems(items []protocol.Item) (Replay, error) {
 
 	for _, item := range sorted {
 		switch item.Kind {
-		case protocol.ItemSideEffectIntent:
-			if item.SideEffectIntent == nil || item.SideEffectIntent.ID == "" {
-				replay.SideEffectIntent = nil
-			} else {
-				replay.SideEffectIntent = copyProtocolSideEffectIntent(item.SideEffectIntent)
-			}
-			continue
-		case protocol.ItemTurnContract:
-			if item.TurnContract == nil || strings.EqualFold(strings.TrimSpace(item.TurnContract.Status), "cleared") || (item.TurnContract.ID == "" && strings.TrimSpace(item.TurnContract.Status) == "") {
-				replay.TurnContract = nil
-			} else if item.TurnContract.ID == "" {
-				continue
-			} else {
-				replay.TurnContract = copyProtocolTurnContract(item.TurnContract)
-			}
-			continue
 		case protocol.ItemCompaction:
 			if item.Compaction != nil {
 				replay.CompactionSummary = strings.TrimSpace(item.Compaction.Summary)
@@ -164,31 +146,6 @@ func ReplayItems(items []protocol.Item) (Replay, error) {
 
 func skillContextContent(name, body string) string {
 	return fmt.Sprintf("[Skill: %s]\n\n%s", strings.TrimSpace(name), strings.TrimSpace(body))
-}
-
-func copyProtocolSideEffectIntent(intent *protocol.SideEffectIntentItem) *protocol.SideEffectIntentItem {
-	if intent == nil {
-		return nil
-	}
-	copy := *intent
-	copy.ArtifactPaths = append([]string(nil), intent.ArtifactPaths...)
-	copy.AllowedPaths = append([]string(nil), intent.AllowedPaths...)
-	copy.RequiredActions = append([]string(nil), intent.RequiredActions...)
-	copy.Gates = append([]protocol.SideEffectGateItem(nil), intent.Gates...)
-	return &copy
-}
-
-func copyProtocolTurnContract(contract *protocol.TurnContractItem) *protocol.TurnContractItem {
-	if contract == nil {
-		return nil
-	}
-	copy := *contract
-	copy.RequiredActions = append([]protocol.ContractActionItem(nil), contract.RequiredActions...)
-	copy.RequiredArtifacts = append([]protocol.ArtifactRequirementItem(nil), contract.RequiredArtifacts...)
-	copy.RequiredVerification = append([]protocol.VerificationRequirementItem(nil), contract.RequiredVerification...)
-	copy.Evidence = append([]protocol.EvidenceRecordItem(nil), contract.Evidence...)
-	copy.Gates = append([]protocol.ContractGateItem(nil), contract.Gates...)
-	return &copy
 }
 
 func removeFirstPendingInput(inputs []string, consumed string) []string {

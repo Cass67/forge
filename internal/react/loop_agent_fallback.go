@@ -88,9 +88,6 @@ func (r *Runner) tryCompletedAgentResultFallbackWithOptions(ctx context.Context,
 	fallback := "Parent model connection failed while composing the final response. Showing completed child-agent result instead.\n\n" + content
 	r.pendingRetryPrompt = ""
 	if ok, err := r.validateFinalCompletion(ctx, turn, fallback, false); !ok || err != nil {
-		if err != nil && r.hasTurnSnapshot(turn) {
-			r.recordModelViolation("completed-agent fallback blocked", fallbackBlockDetail(err))
-		}
 		return false, err
 	}
 	if err := r.appendFinalAssistantMessageAndCompleteTurn(ctx, turn, fallback, nil); err != nil {
@@ -157,34 +154,6 @@ func completedAgentResultFallbackContent(snap SessionSnapshot) string {
 }
 
 func completedAgentResultTurn(snap SessionSnapshot) int {
-	if agentTaskCompletedResultForTurn(snap.AgentTasks, snap.Turn) || sameTurnAgentStillOutstanding(snap.AgentTasks, snap.Turn) {
-		return snap.Turn
-	}
-	if !pendingDelegationWriteAction(snap) {
-		return snap.Turn
-	}
-	if snap.PendingDelegationAction != nil {
-		sourceAgent := strings.TrimSpace(snap.PendingDelegationAction.SourceAgent)
-		if sourceAgent != "" {
-			for _, task := range snap.AgentTasks {
-				if task.ID == sourceAgent && task.ParentTurn != 0 {
-					return task.ParentTurn
-				}
-			}
-		}
-	}
-	latest := 0
-	for _, task := range snap.AgentTasks {
-		if task.Status != AgentStatusCompleted || strings.TrimSpace(task.Result) == "" || task.ParentTurn == 0 {
-			continue
-		}
-		if task.ParentTurn > latest {
-			latest = task.ParentTurn
-		}
-	}
-	if latest != 0 {
-		return latest
-	}
 	return snap.Turn
 }
 

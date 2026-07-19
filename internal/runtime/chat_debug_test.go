@@ -916,7 +916,6 @@ func TestChatDebugRecorderLogsToolExposureDecisionWithoutRawInput(t *testing.T) 
 		ToolNames:             []string{"wait_agent", "agent_status", "kill_agent"},
 		RequireToolCall:       true,
 		OutstandingAgentCount: 1,
-		PendingActionKind:     "write_doc",
 	})
 
 	entry := lastDebugEntryWithMessage(t, path, "chat.tool_exposure")
@@ -932,9 +931,6 @@ func TestChatDebugRecorderLogsToolExposureDecisionWithoutRawInput(t *testing.T) 
 	}
 	if got := fields["outstanding_agent_count"]; got != float64(1) {
 		t.Fatalf("outstanding_agent_count = %#v, want 1", got)
-	}
-	if got := fields["pending_action_kind"]; got != "write_doc" {
-		t.Fatalf("pending_action_kind = %#v, want write_doc", got)
 	}
 	if _, ok := fields["last_input"]; ok {
 		t.Fatalf("tool exposure debug log should not include raw input: %#v", fields)

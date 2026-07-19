@@ -221,9 +221,7 @@ func TestGitCommit(t *testing.T) {
 		return true, nil
 	}
 
-	tool := NewGitCommitScoped(dir, approve, func() GitScope {
-		return GitScope{AllowedPaths: []string{"new.go"}}
-	})
+	tool := NewGitCommit(dir, approve)
 	if tool.Name != "git_commit" {
 		t.Fatalf("expected name 'git_commit', got %q", tool.Name)
 	}
@@ -256,34 +254,7 @@ func TestGitCommit(t *testing.T) {
 	}
 }
 
-func TestGitCommitScopedStagesOnlyAllowedPaths(t *testing.T) {
-	dir := initGitRepo(t)
-	mustWriteFile(t, filepath.Join(dir, "FORGE_VS_CODEX.md"), "doc\n")
-	mustWriteFile(t, filepath.Join(dir, "unrelated.go"), "package main\n")
-
-	scope := func() GitScope {
-		return GitScope{AllowedPaths: []string{"FORGE_VS_CODEX.md"}, TargetBranch: "main"}
-	}
-	tool := NewGitCommitScoped(dir, func(Action) (bool, error) { return true, nil }, scope)
-	result, err := tool.Execute(context.Background(), map[string]any{"message": "add comparison"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(result, "commit") {
-		t.Fatalf("result = %q", result)
-	}
-
-	out := gitOut(t, dir, "show", "--name-only", "--format=", "HEAD")
-	if !strings.Contains(out, "FORGE_VS_CODEX.md") || strings.Contains(out, "unrelated.go") {
-		t.Fatalf("commit files = %q", out)
-	}
-	status := gitOut(t, dir, "status", "--porcelain")
-	if !strings.Contains(status, "unrelated.go") {
-		t.Fatalf("unrelated file should remain dirty, status=%q", status)
-	}
-}
-
-func TestGitPushScopedVerifiesRemoteContainsCommit(t *testing.T) {
+func TestGitPushVerifiesRemoteContainsCommit(t *testing.T) {
 	dir := initGitRepo(t)
 	remote := filepath.Join(t.TempDir(), "remote.git")
 	runGit(t, t.TempDir(), "init", "--bare", remote)
@@ -291,15 +262,12 @@ func TestGitPushScopedVerifiesRemoteContainsCommit(t *testing.T) {
 	runGit(t, dir, "remote", "add", "origin", remote)
 
 	mustWriteFile(t, filepath.Join(dir, "FORGE_VS_CODEX.md"), "doc\n")
-	scope := func() GitScope {
-		return GitScope{AllowedPaths: []string{"FORGE_VS_CODEX.md"}, TargetBranch: "main", Remote: "origin", RequireBranch: true}
-	}
-	commit := NewGitCommitScoped(dir, func(Action) (bool, error) { return true, nil }, scope)
+	commit := NewGitCommit(dir, func(Action) (bool, error) { return true, nil })
 	if _, err := commit.Execute(context.Background(), map[string]any{"message": "add comparison"}); err != nil {
 		t.Fatal(err)
 	}
 
-	push := NewGitPushScoped(dir, func(Action) (bool, error) { return true, nil }, scope)
+	push := NewGitPush(dir, func(Action) (bool, error) { return true, nil })
 	result, err := push.Execute(context.Background(), map[string]any{})
 	if err != nil {
 		t.Fatal(err)
@@ -309,147 +277,41 @@ func TestGitPushScopedVerifiesRemoteContainsCommit(t *testing.T) {
 	}
 }
 
-func TestGitPushScopedRequiresRemoteAndTargetBranchBeforeApproval(t *testing.T) {
+func TestGitPushWithoutRemoteFailsBeforeApproval(t *testing.T) {
 	dir := initGitRepo(t)
-	for _, tc := range []struct {
-		name  string
-		scope GitScope
-	}{
-		{name: "missing remote", scope: GitScope{TargetBranch: "main"}},
-		{name: "missing target", scope: GitScope{Remote: "origin"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			approved := false
-			push := NewGitPushScoped(dir, func(Action) (bool, error) {
-				approved = true
-				return true, nil
-			}, func() GitScope { return tc.scope })
-			result, err := push.Execute(context.Background(), map[string]any{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if approved {
-				t.Fatal("git_push should block before approval")
-			}
-			if !strings.Contains(result, "blocked") {
-				t.Fatalf("result = %q", result)
-			}
-		})
-	}
-}
-
-func TestGitPushScopedRequiresCurrentBranchWhenConfigured(t *testing.T) {
-	dir := initGitRepo(t)
-	remote := filepath.Join(t.TempDir(), "remote.git")
-	runGit(t, t.TempDir(), "init", "--bare", remote)
-	runGit(t, dir, "branch", "-M", "feature")
-	runGit(t, dir, "remote", "add", "origin", remote)
 	approved := false
-	push := NewGitPushScoped(dir, func(Action) (bool, error) {
+	push := NewGitPush(dir, func(Action) (bool, error) {
 		approved = true
 		return true, nil
-	}, func() GitScope {
-		return GitScope{Remote: "origin", TargetBranch: "main", RequireBranch: true}
 	})
-
 	result, err := push.Execute(context.Background(), map[string]any{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if approved {
-		t.Fatal("git_push should block branch mismatch before approval")
+		t.Fatal("git_push without a remote should not request approval")
 	}
-	if !strings.Contains(result, "blocked") || !strings.Contains(result, "does not match") {
+	if !strings.Contains(result, "no configured remote") {
 		t.Fatalf("result = %q", result)
 	}
 }
 
-func TestGitPushScopedRejectsNonBranchTargetBeforeApproval(t *testing.T) {
-	dir := initGitRepo(t)
-	remote := filepath.Join(t.TempDir(), "remote.git")
-	runGit(t, t.TempDir(), "init", "--bare", remote)
-	runGit(t, dir, "branch", "-M", "main")
-	runGit(t, dir, "remote", "add", "origin", remote)
-	approved := false
-	push := NewGitPushScoped(dir, func(Action) (bool, error) {
-		approved = true
-		return true, nil
-	}, func() GitScope { return GitScope{TargetBranch: "refs/tags/pwn", Remote: "origin"} })
-
-	result, err := push.Execute(context.Background(), map[string]any{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if approved {
-		t.Fatal("git_push with non-branch target should not request approval")
-	}
-	if !strings.Contains(result, "blocked") || !strings.Contains(result, "target branch") {
-		t.Fatalf("result = %q", result)
-	}
-	if out := gitOut(t, dir, "ls-remote", "origin", "refs/tags/pwn"); strings.TrimSpace(out) != "" {
-		t.Fatalf("remote tag was mutated: %q", out)
-	}
-}
-
-func TestGitPushScopedRejectsUnsafeRemoteBeforeApproval(t *testing.T) {
-	dir := initGitRepo(t)
-	approved := false
-	push := NewGitPushScoped(dir, func(Action) (bool, error) {
-		approved = true
-		return true, nil
-	}, func() GitScope { return GitScope{TargetBranch: "main", Remote: "https://example.com/repo.git"} })
-
-	result, err := push.Execute(context.Background(), map[string]any{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if approved {
-		t.Fatal("git_push with unsafe remote should not request approval")
-	}
-	if !strings.Contains(result, "blocked") || !strings.Contains(result, "remote") {
-		t.Fatalf("result = %q", result)
-	}
-}
-
-func TestGitPushScopedRejectsUnconfiguredRemoteBeforeApproval(t *testing.T) {
-	dir := initGitRepo(t)
-	approved := false
-	push := NewGitPushScoped(dir, func(Action) (bool, error) {
-		approved = true
-		return true, nil
-	}, func() GitScope { return GitScope{TargetBranch: "main", Remote: "evil"} })
-
-	result, err := push.Execute(context.Background(), map[string]any{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if approved {
-		t.Fatal("git_push with unconfigured remote should not request approval")
-	}
-	if !strings.Contains(result, "blocked") || !strings.Contains(result, "configured remote") {
-		t.Fatalf("result = %q", result)
-	}
-}
-
-func TestGitPushScopedDenialDoesNotPush(t *testing.T) {
+func TestGitPushDenialDoesNotPush(t *testing.T) {
 	dir := initGitRepo(t)
 	remote := filepath.Join(t.TempDir(), "remote.git")
 	runGit(t, t.TempDir(), "init", "--bare", remote)
 	runGit(t, dir, "branch", "-M", "main")
 	runGit(t, dir, "remote", "add", "origin", remote)
 	mustWriteFile(t, filepath.Join(dir, "FORGE_VS_CODEX.md"), "doc\n")
-	scope := func() GitScope {
-		return GitScope{AllowedPaths: []string{"FORGE_VS_CODEX.md"}, TargetBranch: "main", Remote: "origin"}
-	}
-	commit := NewGitCommitScoped(dir, func(Action) (bool, error) { return true, nil }, scope)
+	commit := NewGitCommit(dir, func(Action) (bool, error) { return true, nil })
 	if _, err := commit.Execute(context.Background(), map[string]any{"message": "add comparison"}); err != nil {
 		t.Fatal(err)
 	}
 	approved := false
-	push := NewGitPushScoped(dir, func(Action) (bool, error) {
+	push := NewGitPush(dir, func(Action) (bool, error) {
 		approved = true
 		return false, nil
-	}, scope)
+	})
 
 	result, err := push.Execute(context.Background(), map[string]any{})
 	if err != nil {
@@ -466,114 +328,6 @@ func TestGitPushScopedDenialDoesNotPush(t *testing.T) {
 	}
 }
 
-func TestGitCommitScopedRejectsPreStagedUnrelatedFile(t *testing.T) {
-	dir := initGitRepo(t)
-	mustWriteFile(t, filepath.Join(dir, "FORGE_VS_CODEX.md"), "doc\n")
-	mustWriteFile(t, filepath.Join(dir, "AI-1.md"), "agent report\n")
-	runGit(t, dir, "add", "AI-1.md")
-
-	scope := func() GitScope { return GitScope{AllowedPaths: []string{"FORGE_VS_CODEX.md"}} }
-	tool := NewGitCommitScoped(dir, func(Action) (bool, error) { return true, nil }, scope)
-	result, err := tool.Execute(context.Background(), map[string]any{"message": "add comparison"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(result, "blocked") || !strings.Contains(result, "AI-1.md") {
-		t.Fatalf("result = %q", result)
-	}
-}
-
-func TestGitCommitRequiresScope(t *testing.T) {
-	dir := initGitRepo(t)
-	mustWriteFile(t, filepath.Join(dir, "new.go"), "package main\n")
-
-	approved := false
-	tool := NewGitCommit(dir, func(Action) (bool, error) {
-		approved = true
-		return true, nil
-	})
-	result, err := tool.Execute(context.Background(), map[string]any{"message": "add new file"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if approved {
-		t.Fatal("legacy git_commit without scope should not request approval")
-	}
-	if !strings.Contains(result, "blocked") || !strings.Contains(result, "requires an active side-effect intent") {
-		t.Fatalf("result = %q", result)
-	}
-}
-
-func TestGitCommitScopedRequiresAllowedPaths(t *testing.T) {
-	dir := initGitRepo(t)
-	mustWriteFile(t, filepath.Join(dir, "new.go"), "package main\n")
-	approved := false
-	tool := NewGitCommitScoped(dir, func(Action) (bool, error) {
-		approved = true
-		return true, nil
-	}, func() GitScope { return GitScope{} })
-
-	result, err := tool.Execute(context.Background(), map[string]any{"message": "add new file"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if approved {
-		t.Fatal("git_commit with empty scope should not request approval")
-	}
-	if !strings.Contains(result, "blocked") || !strings.Contains(result, "requires an active side-effect intent") {
-		t.Fatalf("result = %q", result)
-	}
-}
-
-func TestGitCommitScopedRejectsUnsafeAllowedPath(t *testing.T) {
-	dir := initGitRepo(t)
-	mustWriteFile(t, filepath.Join(dir, "FORGE_VS_CODEX.md"), "doc\n")
-	approved := false
-	tool := NewGitCommitScoped(dir, func(Action) (bool, error) {
-		approved = true
-		return true, nil
-	}, func() GitScope { return GitScope{AllowedPaths: []string{"FORGE_VS_CODEX.md", "../bad.md"}} })
-
-	result, err := tool.Execute(context.Background(), map[string]any{"message": "add comparison"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if approved {
-		t.Fatal("git_commit with unsafe allowed path should not request approval")
-	}
-	if !strings.Contains(result, "blocked") || !strings.Contains(result, "unsafe") || !strings.Contains(result, "../bad.md") {
-		t.Fatalf("result = %q", result)
-	}
-	if staged := gitOut(t, dir, "diff", "--cached", "--name-only"); strings.TrimSpace(staged) != "" {
-		t.Fatalf("staged files = %q, want none", staged)
-	}
-}
-
-func TestGitCommitScopedRejectsPathspecMetacharacters(t *testing.T) {
-	dir := initGitRepo(t)
-	mustWriteFile(t, filepath.Join(dir, "one.go"), "package main\n")
-	mustWriteFile(t, filepath.Join(dir, "two.go"), "package main\n")
-	approved := false
-	tool := NewGitCommitScoped(dir, func(Action) (bool, error) {
-		approved = true
-		return true, nil
-	}, func() GitScope { return GitScope{AllowedPaths: []string{"*.go"}} })
-
-	result, err := tool.Execute(context.Background(), map[string]any{"message": "add go files"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if approved {
-		t.Fatal("git_commit with pathspec metacharacters should not request approval")
-	}
-	if !strings.Contains(result, "blocked") || !strings.Contains(result, "unsafe") || !strings.Contains(result, "*.go") {
-		t.Fatalf("result = %q", result)
-	}
-	if staged := gitOut(t, dir, "diff", "--cached", "--name-only"); strings.TrimSpace(staged) != "" {
-		t.Fatalf("staged files = %q, want none", staged)
-	}
-}
-
 func TestGitCommitApprovalRedactsSecretPaths(t *testing.T) {
 	dir := initGitRepo(t)
 	secret := dummySecret()
@@ -583,10 +337,10 @@ func TestGitCommitApprovalRedactsSecretPaths(t *testing.T) {
 	}
 
 	var capturedAction Action
-	tool := NewGitCommitScoped(dir, func(a Action) (bool, error) {
+	tool := NewGitCommit(dir, func(a Action) (bool, error) {
 		capturedAction = a
 		return false, nil
-	}, func() GitScope { return GitScope{AllowedPaths: []string{secretPath}} })
+	})
 	if _, err := tool.Execute(context.Background(), map[string]any{"message": "add token file"}); err != nil {
 		t.Fatal(err)
 	}
@@ -602,9 +356,7 @@ func TestGitCommitDenied(t *testing.T) {
 	dir := initGitRepo(t)
 	os.WriteFile(filepath.Join(dir, "new.go"), []byte("package main\n"), 0o644)
 
-	tool := NewGitCommitScoped(dir, func(a Action) (bool, error) { return false, nil }, func() GitScope {
-		return GitScope{AllowedPaths: []string{"new.go"}}
-	})
+	tool := NewGitCommit(dir, func(a Action) (bool, error) { return false, nil })
 	result, err := tool.Execute(context.Background(), map[string]any{"message": "should not happen"})
 	if err != nil {
 		t.Fatal(err)
@@ -617,9 +369,7 @@ func TestGitCommitDenied(t *testing.T) {
 func TestGitCommitNothingToCommit(t *testing.T) {
 	dir := initGitRepo(t)
 
-	tool := NewGitCommitScoped(dir, func(a Action) (bool, error) { return true, nil }, func() GitScope {
-		return GitScope{AllowedPaths: []string{"main.go"}}
-	})
+	tool := NewGitCommit(dir, func(a Action) (bool, error) { return true, nil })
 	result, err := tool.Execute(context.Background(), map[string]any{"message": "empty"})
 	if err != nil {
 		t.Fatal(err)

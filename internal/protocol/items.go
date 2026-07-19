@@ -24,8 +24,6 @@ const (
 	ItemCheckpoint       ItemKind = "checkpoint"
 	ItemAgentHandoff     ItemKind = "agent_handoff"
 	ItemSkillContext     ItemKind = "skill_context"
-	ItemSideEffectIntent ItemKind = "side_effect_intent"
-	ItemTurnContract     ItemKind = "turn_contract"
 	ItemTurnComplete     ItemKind = "turn_complete"
 )
 
@@ -39,28 +37,26 @@ const (
 )
 
 type Item struct {
-	Version          int                   `json:"version"`
-	ID               string                `json:"id"`
-	ThreadID         string                `json:"thread_id"`
-	TurnID           string                `json:"turn_id,omitempty"`
-	Seq              int64                 `json:"seq"`
-	Kind             ItemKind              `json:"kind"`
-	At               time.Time             `json:"at"`
-	SessionMeta      *SessionMetaItem      `json:"session_meta,omitempty"`
-	TurnContext      *TurnContextItem      `json:"turn_context,omitempty"`
-	Message          *MessageItem          `json:"message,omitempty"`
-	ToolCall         *ToolCallItem         `json:"tool_call,omitempty"`
-	ToolResult       *ToolResultItem       `json:"tool_result,omitempty"`
-	Retry            *RetryItem            `json:"retry,omitempty"`
-	Failure          *FailureItem          `json:"failure,omitempty"`
-	Stats            *StatsItem            `json:"stats,omitempty"`
-	Compaction       *CompactionItem       `json:"compaction,omitempty"`
-	Checkpoint       *CheckpointItem       `json:"checkpoint,omitempty"`
-	AgentHandoff     *AgentHandoffItem     `json:"agent_handoff,omitempty"`
-	SkillContext     *SkillContextItem     `json:"skill_context,omitempty"`
-	SideEffectIntent *SideEffectIntentItem `json:"side_effect_intent,omitempty"`
-	TurnContract     *TurnContractItem     `json:"turn_contract,omitempty"`
-	TurnComplete     *TurnCompleteItem     `json:"turn_complete,omitempty"`
+	Version      int               `json:"version"`
+	ID           string            `json:"id"`
+	ThreadID     string            `json:"thread_id"`
+	TurnID       string            `json:"turn_id,omitempty"`
+	Seq          int64             `json:"seq"`
+	Kind         ItemKind          `json:"kind"`
+	At           time.Time         `json:"at"`
+	SessionMeta  *SessionMetaItem  `json:"session_meta,omitempty"`
+	TurnContext  *TurnContextItem  `json:"turn_context,omitempty"`
+	Message      *MessageItem      `json:"message,omitempty"`
+	ToolCall     *ToolCallItem     `json:"tool_call,omitempty"`
+	ToolResult   *ToolResultItem   `json:"tool_result,omitempty"`
+	Retry        *RetryItem        `json:"retry,omitempty"`
+	Failure      *FailureItem      `json:"failure,omitempty"`
+	Stats        *StatsItem        `json:"stats,omitempty"`
+	Compaction   *CompactionItem   `json:"compaction,omitempty"`
+	Checkpoint   *CheckpointItem   `json:"checkpoint,omitempty"`
+	AgentHandoff *AgentHandoffItem `json:"agent_handoff,omitempty"`
+	SkillContext *SkillContextItem `json:"skill_context,omitempty"`
+	TurnComplete *TurnCompleteItem `json:"turn_complete,omitempty"`
 }
 
 type SessionMetaItem struct {
@@ -148,65 +144,6 @@ type AgentHandoffItem struct {
 type SkillContextItem struct {
 	Name string `json:"name"`
 	Body string `json:"body,omitempty"`
-}
-
-type SideEffectGateItem struct {
-	Name     string `json:"name"`
-	Status   string `json:"status"`
-	Evidence string `json:"evidence,omitempty"`
-}
-
-type SideEffectIntentItem struct {
-	ID              string               `json:"id"`
-	SourceTurn      int                  `json:"source_turn,omitempty"`
-	ArtifactPaths   []string             `json:"artifact_paths,omitempty"`
-	AllowedPaths    []string             `json:"allowed_paths,omitempty"`
-	RequiredActions []string             `json:"required_actions,omitempty"`
-	TargetBranch    string               `json:"target_branch,omitempty"`
-	Remote          string               `json:"remote,omitempty"`
-	WorkspaceRoot   string               `json:"workspace_root,omitempty"`
-	Gates           []SideEffectGateItem `json:"gates,omitempty"`
-	IncidentMode    bool                 `json:"incident_mode,omitempty"`
-	Reason          string               `json:"reason,omitempty"`
-}
-
-type ContractActionItem struct {
-	Kind        string `json:"kind"`
-	Description string `json:"description,omitempty"`
-}
-
-type ArtifactRequirementItem struct {
-	Path        string `json:"path"`
-	Description string `json:"description,omitempty"`
-}
-
-type VerificationRequirementItem struct {
-	Command     string `json:"command"`
-	Description string `json:"description,omitempty"`
-}
-
-type EvidenceRecordItem struct {
-	Kind    string `json:"kind"`
-	Summary string `json:"summary,omitempty"`
-}
-
-type ContractGateItem struct {
-	Name     string `json:"name"`
-	Status   string `json:"status"`
-	Evidence string `json:"evidence,omitempty"`
-}
-
-type TurnContractItem struct {
-	ID                   string                        `json:"id"`
-	SourceTurn           int                           `json:"source_turn,omitempty"`
-	Intent               string                        `json:"intent,omitempty"`
-	RequiredActions      []ContractActionItem          `json:"required_actions,omitempty"`
-	RequiredArtifacts    []ArtifactRequirementItem     `json:"required_artifacts,omitempty"`
-	RequiredVerification []VerificationRequirementItem `json:"required_verification,omitempty"`
-	Evidence             []EvidenceRecordItem          `json:"evidence,omitempty"`
-	Gates                []ContractGateItem            `json:"gates,omitempty"`
-	Status               string                        `json:"status,omitempty"`
-	Reason               string                        `json:"reason,omitempty"`
 }
 
 type TurnCompleteItem struct {

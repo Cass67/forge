@@ -11,29 +11,12 @@ import (
 	"strings"
 )
 
-const gitCommitRequiresScopeMessage = "blocked: git_commit requires an active side-effect intent with allowed_paths; use scoped git transaction tools after the runtime captures the requested target files."
-
-const gitPushRequiresScopeMessage = "blocked: git_push requires an active side-effect intent with remote and target_branch."
-
-type GitScope struct {
-	AllowedPaths  []string
-	TargetBranch  string
-	Remote        string
-	RequireBranch bool
-}
-
-type GitScopeProvider func() GitScope
-
-func NewGitCommitScoped(workDir string, approve ApprovalFunc, scope GitScopeProvider) Tool {
-	return NewGitCommitScopedWithWorkDirProvider(workDir, FixedWorkDirProvider(workDir), approve, scope)
-}
-
-func NewGitCommitScopedWithWorkDirProvider(fallbackWorkDir string, workDirProvider WorkDirProvider, approve ApprovalFunc, scope GitScopeProvider) Tool {
+func NewGitCommitWithWorkDirProvider(fallbackWorkDir string, workDirProvider WorkDirProvider, approve ApprovalFunc) Tool {
 	secretPolicy := DefaultSecretPolicy()
 	var lastDiff string
 	return Tool{
 		Name:        "git_commit",
-		Description: "Commit only files in the active side-effect intent allowlist. Shows you what will be committed for approval.",
+		Description: "Stage and commit the working-tree changes. Shows the user the file list and diff stat for approval before committing.",
 		Parameters: []ParameterDef{
 			{Name: "message", Type: "string", Description: "commit message", Required: true},
 		},
@@ -46,43 +29,10 @@ func NewGitCommitScopedWithWorkDirProvider(fallbackWorkDir string, workDirProvid
 		},
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			lastDiff = ""
-			if scope == nil {
-				return gitCommitRequiresScopeMessage, nil
-			}
-			gitScope := scope()
-			allowed, rejected := normalizeGitAllowedPaths(gitScope.AllowedPaths)
-			if len(rejected) > 0 {
-				return "blocked: active side-effect intent allowed_paths contains unsafe paths: " + strings.Join(rejected, ", "), nil
-			}
-			if len(allowed) == 0 {
-				return gitCommitRequiresScopeMessage, nil
-			}
-
 			workDir := currentWorkDir(workDirProvider, fallbackWorkDir)
-			if gitScope.RequireBranch && strings.TrimSpace(gitScope.TargetBranch) != "" {
-				current, err := gitOutput(ctx, workDir, "git", "branch", "--show-current")
-				if err != nil {
-					result, _ := secretPolicy.ApplyCommandOutput(fmt.Sprintf("error checking branch: %s\n%s", err, current))
-					return result, nil
-				}
-				if strings.TrimSpace(current) != strings.TrimSpace(gitScope.TargetBranch) {
-					return fmt.Sprintf("blocked: current branch %q does not match required target branch %q", strings.TrimSpace(current), strings.TrimSpace(gitScope.TargetBranch)), nil
-				}
-			}
-
 			message, _ := args["message"].(string)
-			stagedBefore, err := gitNulPaths(ctx, workDir, "diff", "--cached", "--name-only", "-z")
-			if err != nil {
-				result, _ := secretPolicy.ApplyCommandOutput(fmt.Sprintf("error checking staged files: %s", err))
-				return result, nil
-			}
-			if outside := pathsOutsideAllowlist(stagedBefore, allowed); len(outside) > 0 {
-				return "blocked: pre-staged files outside active side-effect intent allowlist: " + strings.Join(outside, ", "), nil
-			}
-
-			addArgs := append([]string{"add", "--"}, allowed...)
-			if out, err := gitCombinedOutput(ctx, workDir, addArgs...); err != nil {
-				result, _ := secretPolicy.ApplyCommandOutput(fmt.Sprintf("error staging scoped paths: %s\n%s", err, out))
+			if out, err := gitCombinedOutput(ctx, workDir, "add", "-A"); err != nil {
+				result, _ := secretPolicy.ApplyCommandOutput(fmt.Sprintf("error staging changes: %s\n%s", err, out))
 				return result, nil
 			}
 
@@ -93,9 +43,6 @@ func NewGitCommitScopedWithWorkDirProvider(fallbackWorkDir string, workDirProvid
 			}
 			if len(staged) == 0 {
 				return "nothing to commit", nil
-			}
-			if outside := pathsOutsideAllowlist(staged, allowed); len(outside) > 0 {
-				return "blocked: staged files outside active side-effect intent allowlist: " + strings.Join(outside, ", "), nil
 			}
 
 			stat, err := gitOutput(ctx, workDir, "git", "diff", "--cached", "--stat")
@@ -124,15 +71,15 @@ func NewGitCommitScopedWithWorkDirProvider(fallbackWorkDir string, workDirProvid
 			}
 			commitFiles, err := gitOutputLines(ctx, workDir, "show", "--name-only", "--format=", "HEAD")
 			if err != nil {
-				result, _ := secretPolicy.ApplyCommandOutput(fmt.Sprintf("blocked: committed, but failed to verify commit files: %s", err))
+				result, _ := secretPolicy.ApplyCommandOutput(fmt.Sprintf("committed, but failed to verify commit files: %s", err))
 				return result, nil
 			}
 			if !sameStringSet(staged, commitFiles) {
-				return fmt.Sprintf("blocked: committed files did not match staged allowlist files; staged=%s committed=%s", strings.Join(staged, ", "), strings.Join(commitFiles, ", ")), nil
+				return fmt.Sprintf("committed files did not match approved staged files; staged=%s committed=%s", strings.Join(staged, ", "), strings.Join(commitFiles, ", ")), nil
 			}
 			hash, err := gitOutput(ctx, workDir, "git", "rev-parse", "--short", "HEAD")
 			if err != nil {
-				result, _ := secretPolicy.ApplyCommandOutput(fmt.Sprintf("blocked: committed, but failed to read commit hash: %s", err))
+				result, _ := secretPolicy.ApplyCommandOutput(fmt.Sprintf("committed, but failed to read commit hash: %s", err))
 				return result, nil
 			}
 			lastDiff = strings.TrimSpace(detail)
@@ -143,53 +90,29 @@ func NewGitCommitScopedWithWorkDirProvider(fallbackWorkDir string, workDirProvid
 	}
 }
 
-func NewGitPushScoped(workDir string, approve ApprovalFunc, scope GitScopeProvider) Tool {
-	return NewGitPushScopedWithWorkDirProvider(workDir, FixedWorkDirProvider(workDir), approve, scope)
+func NewGitPush(workDir string, approve ApprovalFunc) Tool {
+	return NewGitPushWithWorkDirProvider(workDir, FixedWorkDirProvider(workDir), approve)
 }
 
-func NewGitPushScopedWithWorkDirProvider(fallbackWorkDir string, workDirProvider WorkDirProvider, approve ApprovalFunc, scope GitScopeProvider) Tool {
+func NewGitPushWithWorkDirProvider(fallbackWorkDir string, workDirProvider WorkDirProvider, approve ApprovalFunc) Tool {
 	secretPolicy := DefaultSecretPolicy()
 	return Tool{
 		Name:             "git_push",
-		Description:      "Push the current HEAD to the active side-effect intent remote and target branch, then verify the remote advertises that commit.",
+		Description:      "Push the current HEAD to the remote (origin by default) for the current branch, after user approval, then verify the remote advertises that commit.",
 		AutoApprove:      false,
 		MutatesWorkspace: true,
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			_ = args
-			if scope == nil {
-				return gitPushRequiresScopeMessage, nil
-			}
-			gitScope := scope()
-			remote := strings.TrimSpace(gitScope.Remote)
-			targetBranch := strings.TrimSpace(gitScope.TargetBranch)
-			if remote == "" || targetBranch == "" {
-				return gitPushRequiresScopeMessage, nil
-			}
-			if !validGitRemoteName(remote) {
-				return "blocked: git_push remote must be a configured remote name", nil
-			}
-			if !validGitTargetBranch(targetBranch) {
-				return "blocked: git_push target branch is not a safe branch name", nil
-			}
-
 			workDir := currentWorkDir(workDirProvider, fallbackWorkDir)
-			if remoteURL, err := gitOutput(ctx, workDir, "git", "remote", "get-url", remote); err != nil || strings.TrimSpace(remoteURL) == "" {
-				return fmt.Sprintf("blocked: git_push remote %q is not a configured remote", remote), nil
+			remote, err := defaultGitRemote(ctx, workDir)
+			if err != nil {
+				return "git_push failed: no configured remote to push to", nil
 			}
-			currentBranch := ""
-			if gitScope.RequireBranch {
-				current, err := gitOutput(ctx, workDir, "git", "branch", "--show-current")
-				if err != nil {
-					result, _ := secretPolicy.ApplyCommandOutput(fmt.Sprintf("error checking branch: %s\n%s", err, current))
-					return result, nil
-				}
-				currentBranch = strings.TrimSpace(current)
-				if currentBranch != targetBranch {
-					return fmt.Sprintf("blocked: current branch %q does not match required target branch %q", currentBranch, targetBranch), nil
-				}
-			} else if current, err := gitOutput(ctx, workDir, "git", "branch", "--show-current"); err == nil {
-				currentBranch = strings.TrimSpace(current)
+			current, err := gitOutput(ctx, workDir, "git", "branch", "--show-current")
+			if err != nil || strings.TrimSpace(current) == "" {
+				return "git_push failed: cannot determine current branch (detached HEAD?)", nil
 			}
+			targetBranch := strings.TrimSpace(current)
 
 			head, err := gitOutput(ctx, workDir, "git", "rev-parse", "HEAD")
 			if err != nil {
@@ -198,7 +121,7 @@ func NewGitPushScopedWithWorkDirProvider(fallbackWorkDir string, workDirProvider
 			}
 			head = strings.TrimSpace(head)
 			remoteRef := "refs/heads/" + targetBranch
-			detail := fmt.Sprintf("Current branch: %s\nHEAD: %s\nRemote: %s\nTarget branch: %s\nRemote ref: %s\nAllowed paths:\n%s", currentBranch, head, remote, targetBranch, remoteRef, strings.Join(gitScope.AllowedPaths, "\n"))
+			detail := fmt.Sprintf("Current branch: %s\nHEAD: %s\nRemote: %s\nRemote ref: %s", targetBranch, head, remote, remoteRef)
 			approved, err := approve(Action{
 				Context: ctx,
 				Tool:    "git_push",
@@ -218,12 +141,12 @@ func NewGitPushScopedWithWorkDirProvider(fallbackWorkDir string, workDirProvider
 			}
 			remoteOut, err := gitOutput(ctx, workDir, "git", "ls-remote", remote, remoteRef)
 			if err != nil {
-				result, _ := secretPolicy.ApplyCommandOutput(fmt.Sprintf("blocked: pushed, but failed to verify remote: %s\n%s", err, remoteOut))
+				result, _ := secretPolicy.ApplyCommandOutput(fmt.Sprintf("pushed, but failed to verify remote: %s\n%s", err, remoteOut))
 				return result, nil
 			}
 			remoteSHA := strings.Fields(remoteOut)
 			if len(remoteSHA) == 0 || remoteSHA[0] != head {
-				return fmt.Sprintf("blocked: pushed, but remote %s %s advertised %q instead of %s", remote, remoteRef, strings.TrimSpace(remoteOut), head), nil
+				return fmt.Sprintf("pushed, but remote %s %s advertised %q instead of %s", remote, remoteRef, strings.TrimSpace(remoteOut), head), nil
 			}
 			result := fmt.Sprintf("remote contains %s at %s/%s", head, remote, targetBranch)
 			result, _ = secretPolicy.ApplyCommandOutput(result)
@@ -232,77 +155,19 @@ func NewGitPushScopedWithWorkDirProvider(fallbackWorkDir string, workDirProvider
 	}
 }
 
-func normalizeGitAllowedPaths(paths []string) ([]string, []string) {
-	seen := map[string]bool{}
-	var out []string
-	var rejected []string
-	for _, path := range paths {
-		original := strings.TrimSpace(path)
-		path = strings.TrimSpace(path)
-		if path == "" || filepath.IsAbs(path) || strings.ContainsAny(path, "*?[]") || strings.Contains(path, "\\") || strings.Contains(path, ":") || strings.Contains(path, "://") {
-			if original != "" {
-				rejected = append(rejected, original)
-			}
-			continue
-		}
-		path = filepath.ToSlash(filepath.Clean(filepath.ToSlash(path)))
-		if path == "." || path == "" || strings.HasPrefix(path, "../") || path == ".." {
-			rejected = append(rejected, original)
-			continue
-		}
-		invalid := false
-		for _, segment := range strings.Split(path, "/") {
-			if segment == ".." || segment == "" {
-				invalid = true
-				break
-			}
-		}
-		if invalid {
-			rejected = append(rejected, original)
-			continue
-		}
-		if seen[path] {
-			continue
-		}
-		seen[path] = true
-		out = append(out, path)
+func defaultGitRemote(ctx context.Context, workDir string) (string, error) {
+	out, err := gitOutput(ctx, workDir, "git", "remote")
+	if err != nil {
+		return "", err
 	}
-	sort.Strings(out)
-	sort.Strings(rejected)
-	return out, rejected
-}
-
-func validGitRemoteName(remote string) bool {
-	remote = strings.TrimSpace(remote)
-	if remote == "" || strings.HasPrefix(remote, "-") || strings.Contains(remote, ":") || strings.Contains(remote, "/") || strings.Contains(remote, "\\") {
-		return false
+	remotes := strings.Fields(out)
+	if len(remotes) == 0 {
+		return "", fmt.Errorf("no remotes configured")
 	}
-	for _, r := range remote {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
-			continue
-		}
-		return false
+	if slices.Contains(remotes, "origin") {
+		return "origin", nil
 	}
-	return true
-}
-
-func validGitTargetBranch(branch string) bool {
-	branch = strings.TrimSpace(branch)
-	if branch == "" || strings.HasPrefix(branch, "-") || strings.HasPrefix(branch, "/") || strings.HasSuffix(branch, "/") || strings.HasPrefix(branch, "refs/") {
-		return false
-	}
-	if branch == "@" || strings.Contains(branch, "@{") || strings.Contains(branch, "//") {
-		return false
-	}
-	if strings.ContainsAny(branch, "\\~^:?*[") || strings.Contains(branch, "..") || strings.HasSuffix(branch, ".") || strings.HasSuffix(branch, ".lock") {
-		return false
-	}
-	for _, segment := range strings.Split(branch, "/") {
-		if segment == "" || strings.HasPrefix(segment, ".") || strings.HasSuffix(segment, ".lock") {
-			return false
-		}
-	}
-	return true
+	return remotes[0], nil
 }
 
 func gitCombinedOutput(ctx context.Context, workDir string, args ...string) (string, error) {
@@ -345,26 +210,6 @@ func gitOutputLines(ctx context.Context, workDir string, args ...string) ([]stri
 	}
 	sort.Strings(lines)
 	return lines, nil
-}
-
-func pathsOutsideAllowlist(paths, allowed []string) []string {
-	var outside []string
-	for _, path := range paths {
-		if !pathInAllowlist(path, allowed) {
-			outside = append(outside, path)
-		}
-	}
-	return outside
-}
-
-func pathInAllowlist(path string, allowed []string) bool {
-	path = filepath.ToSlash(path)
-	for _, allowedPath := range allowed {
-		if path == allowedPath || strings.HasPrefix(path, allowedPath+"/") {
-			return true
-		}
-	}
-	return false
 }
 
 func sameStringSet(a, b []string) bool {

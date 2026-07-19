@@ -7,87 +7,34 @@ import (
 	"strings"
 )
 
-func mutationPathsFromShellCommand(command string) []string {
-	fields := shellLikeFields(command)
-	if len(fields) == 0 {
-		return nil
+// clearBlockingHandoffsAfterWrite clears blocking child-agent handoffs once the
+// parent has written to a path one of their remaining actions named.
+func (r *Runner) clearBlockingHandoffsAfterWrite(toolName string, args map[string]any) {
+	if r == nil || r.session == nil {
+		return
 	}
-	var paths []string
-	for i, field := range fields {
-		switch {
-		case field == ">" || field == ">>":
-			if i+1 < len(fields) {
-				paths = append(paths, fields[i+1])
-			}
-		case strings.HasPrefix(field, ">>") && len(field) > 2:
-			paths = append(paths, strings.TrimSpace(field[2:]))
-		case strings.HasPrefix(field, ">") && len(field) > 1:
-			paths = append(paths, strings.TrimSpace(field[1:]))
-		}
+	toolName = strings.TrimSpace(toolName)
+	if toolName != "write_file" && toolName != "edit_file" && toolName != "apply_patch" {
+		return
 	}
-	if len(fields) >= 3 && fields[0] == "sed" {
-		for _, field := range fields[1:] {
-			if field == "-i" || strings.HasPrefix(field, "-i") {
-				paths = append(paths, fields[len(fields)-1])
-				break
-			}
-		}
+	writtenPaths := checkpointScopePaths(toolName, args)
+	if len(writtenPaths) == 0 {
+		return
 	}
-	return uniqueStrings(paths)
-}
-
-func shellLikeFields(command string) []string {
-	var fields []string
-	var b strings.Builder
-	inSingle := false
-	inDouble := false
-	escaped := false
-	flush := func() {
-		if b.Len() == 0 {
-			return
-		}
-		fields = append(fields, b.String())
-		b.Reset()
-	}
-	for _, r := range command {
-		if escaped {
-			b.WriteRune(r)
-			escaped = false
-			continue
-		}
-		if r == '\\' {
-			escaped = true
-			continue
-		}
-		switch r {
-		case '\'':
-			if !inDouble {
-				inSingle = !inSingle
+	for _, task := range blockingAgentHandoffs(r.session.Snapshot()) {
+		for _, action := range task.Handoff.RemainingActions {
+			target := normalizeIntentPath(action.TargetPath)
+			if target == "" {
 				continue
 			}
-		case '"':
-			if !inSingle {
-				inDouble = !inDouble
-				continue
-			}
-		case ' ', '\t', '\n', '\r':
-			if !inSingle && !inDouble {
-				flush()
-				continue
+			for _, written := range writtenPaths {
+				if normalizeIntentPath(written) == target {
+					r.session.ClearBlockingAgentHandoffs()
+					return
+				}
 			}
 		}
-		b.WriteRune(r)
 	}
-	flush()
-	return fields
-}
-
-func outOfScopeSideEffectBlockMessage(path string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		path = "unknown path"
-	}
-	return "blocked: refusing workspace mutation outside active side-effect intent allowed paths: " + path
 }
 
 func checkpointScopePaths(toolName string, args map[string]any) []string {
@@ -101,88 +48,6 @@ func checkpointScopePaths(toolName string, args map[string]any) []string {
 		return pathsFromPatch(patch)
 	}
 	return nil
-}
-
-func normalizeArtifactToolPath(path string, intent *SideEffectIntent) string {
-	path = strings.TrimSpace(strings.Trim(path, "`'\".,:;()[]{}<>"))
-	if path == "" || looksLikeWindowsAbsolutePath(path) || strings.Contains(path, "\\") || strings.Contains(path, ":") {
-		return ""
-	}
-	if normalized := normalizeIntentPath(path); normalized != "" {
-		return normalized
-	}
-	if filepath.IsAbs(path) {
-		if intent == nil || strings.TrimSpace(intent.WorkspaceRoot) == "" {
-			return ""
-		}
-		root := filepath.Clean(strings.TrimSpace(intent.WorkspaceRoot))
-		rel, err := filepath.Rel(root, filepath.Clean(path))
-		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return ""
-		}
-		return normalizeIntentPath(filepath.ToSlash(rel))
-	}
-	return normalizeIntentPath(filepath.ToSlash(filepath.Clean(path)))
-}
-
-func patchArtifactTarget(patch string, intent *SideEffectIntent) string {
-	for _, path := range pathsFromPatch(patch) {
-		path = normalizeArtifactToolPath(path, intent)
-		if path == "" {
-			continue
-		}
-		for _, artifact := range intent.ArtifactPaths {
-			artifact = normalizeIntentPath(artifact)
-			if artifact != "" && artifact == path {
-				return artifact
-			}
-		}
-	}
-	for _, line := range strings.Split(patch, "\n") {
-		line = strings.TrimSpace(line)
-		for _, prefix := range []string{"*** Add File:", "*** Update File:", "*** Delete File:"} {
-			if !strings.HasPrefix(line, prefix) {
-				continue
-			}
-			path := normalizeArtifactToolPath(strings.TrimSpace(strings.TrimPrefix(line, prefix)), intent)
-			if path == "" {
-				continue
-			}
-			for _, artifact := range intent.ArtifactPaths {
-				artifact = normalizeIntentPath(artifact)
-				if artifact != "" && artifact == path {
-					return artifact
-				}
-			}
-		}
-	}
-	return ""
-}
-
-func commandWriteArtifactTarget(command string, intent *SideEffectIntent) string {
-	if intent == nil {
-		return ""
-	}
-	command = strings.TrimSpace(command)
-	if command == "" {
-		return ""
-	}
-	for _, artifact := range append(append([]string(nil), intent.ArtifactPaths...), intent.AllowedPaths...) {
-		normalized := normalizeIntentPath(artifact)
-		if normalized == "" || !commandLooksLikeWriteToPath(command, commandWritePathRefs(normalized, intent)) {
-			continue
-		}
-		return normalized
-	}
-	return ""
-}
-
-func commandWritePathRefs(path string, intent *SideEffectIntent) []string {
-	refs := []string{path, "./" + path}
-	if intent != nil && strings.TrimSpace(intent.WorkspaceRoot) != "" {
-		refs = append(refs, filepath.Join(strings.TrimSpace(intent.WorkspaceRoot), filepath.FromSlash(path)))
-	}
-	return uniqueStrings(refs)
 }
 
 func commandLooksLikeWriteToPath(command string, paths []string) bool {
