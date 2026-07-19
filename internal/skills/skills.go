@@ -104,11 +104,38 @@ func LoadDir(dir string) ([]Skill, error) {
 	return out, nil
 }
 
-// Load discovers skills from plugin, user-global, and project-local directories.
-// Later sources take precedence over earlier ones on name conflict.
+// Builtin returns skills that ship with forge. They have the lowest
+// precedence, so a user or project skill with the same name overrides them.
+func Builtin() []Skill {
+	return []Skill{reviewSkill}
+}
+
+var reviewSkill = Skill{
+	Name:        "review",
+	Description: "Review the current uncommitted changes for bugs and regressions via the code-reviewer agent.",
+	Source:      "builtin",
+	Body: strings.Join([]string{
+		"Review the current working-tree changes for bugs, regressions, and missing tests.",
+		"",
+		"Determine the scope deterministically before anything else:",
+		"1. Run `git status --porcelain` and `git diff HEAD`.",
+		"2. `git diff HEAD` covers staged and unstaged edits to tracked files but NOT untracked files — read every untracked file from `git status` and treat it as fully added.",
+		"3. If the working tree is clean, review the latest commit (`git show HEAD`) instead. If the user named a commit, branch, or range, review that instead.",
+		"",
+		"Then spawn the code-reviewer agent. Its task must contain the full diff text, the untracked-file contents, and the changed-file list — the reviewer must not re-derive scope.",
+		"",
+		"When the reviewer returns, verify each finding against the actual code and drop anything you cannot confirm. Report the surviving findings ordered by severity with file:line references. Do not change any code unless the user asks.",
+	}, "\n"),
+}
+
+// Load discovers skills from builtin, plugin, user-global, and project-local
+// sources. Later sources take precedence over earlier ones on name conflict.
 func Load(workDir string) []Skill {
 	projectDir := filepath.Join(workDir, ".forge", "skills")
 	byName := make(map[string]Skill)
+	for _, s := range Builtin() {
+		byName[s.Name] = s
+	}
 
 	if h, err := os.UserHomeDir(); err == nil {
 		// Load plugin skills (lowest priority)

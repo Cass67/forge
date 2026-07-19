@@ -110,7 +110,7 @@ func TestBuildNativeSystemPromptIncludesNativeDelegationGuidance(t *testing.T) {
 	for _, want := range []string{
 		"spawn_agent",
 		"wait_agent",
-		"broad repo audits",
+		"when the user asks for a review or audit",
 		"multiple independent workstreams",
 		"without requiring plugins",
 	} {
