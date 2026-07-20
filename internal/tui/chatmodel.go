@@ -30,7 +30,11 @@ import (
 
 type chatTickMsg time.Time
 type chatApprovalMsg tools.Action
-type shellFinishedMsg struct{ err error }
+type shellFinishedMsg struct {
+	command string
+	output  string
+	err     error
+}
 
 // pluginCommandResultMsg carries the output of a plugin slash command
 // back into the Bubble Tea update loop.
@@ -1643,9 +1647,14 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case shellFinishedMsg:
-		if msg.err != nil {
-			m.flash = fmt.Sprintf("shell command failed: %v", msg.err)
+		content := "$ " + msg.command
+		if out := strings.TrimRight(msg.output, "\n"); out != "" {
+			content += "\n" + out
 		}
+		if msg.err != nil {
+			content += fmt.Sprintf("\n[exit: %v]", msg.err)
+		}
+		m.AddMessage(ChatMessage{Kind: MsgCheckpoint, Content: content})
 		return m, nil
 
 	case pluginCommandResultMsg:
@@ -1960,9 +1969,25 @@ func (m ChatModel) trySubmitText(input string, attachments []chatstate.ChatAttac
 			return m, nil, false
 		}
 		cmd := shellCommand(command, m.workDir)
-		return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
-			return shellFinishedMsg{err: err}
-		}), true
+		// Route through the sandbox (e.g. docker exec) when one is active, so
+		// !ls/!df run in the container like agent commands do. Fail closed.
+		if fn := tools.CurrentSandboxArgv(); fn != nil {
+			argv, handled, err := fn(m.workDir, command, false)
+			if err != nil {
+				m.flash = "sandbox: " + err.Error()
+				return m, nil, false
+			}
+			if handled {
+				cmd = exec.Command(argv[0], argv[1:]...)
+				cmd.Dir = m.workDir
+			}
+		}
+		// Capture output into the chat buffer instead of tea.ExecProcess: the
+		// alt-screen repaint on resume wipes transient output for fast commands.
+		return m, func() tea.Msg {
+			out, err := cmd.CombinedOutput()
+			return shellFinishedMsg{command: command, output: string(out), err: err}
+		}, true
 	}
 
 	if input == "/exit" || input == "/quit" {
