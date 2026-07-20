@@ -1134,6 +1134,41 @@ func TestChatModelStructuredSubAgentEnvelopeDoesNotLeakIntoChat(t *testing.T) {
 	}
 }
 
+func TestChatModelBangCommandGuardianBlocksDangerousCommand(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.inputBuf = "!rm -rf /"
+	m.inputPos = len(m.inputBuf)
+
+	updated, cmd := m.submitInput()
+	m = updated.(ChatModel)
+
+	if cmd != nil {
+		t.Fatal("dangerous bang command returned executable command")
+	}
+	if !strings.Contains(m.flash, "guardian blocked shell command") {
+		t.Fatalf("flash = %q, want guardian block", m.flash)
+	}
+	if m.inputBuf != "!rm -rf /" {
+		t.Fatalf("input = %q, want blocked command preserved", m.inputBuf)
+	}
+}
+
+func TestChatModelBangCommandGuardianAllowsReadOnlyCommand(t *testing.T) {
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
+	m.inputBuf = "!ls"
+	m.inputPos = len(m.inputBuf)
+
+	updated, cmd := m.submitInput()
+	m = updated.(ChatModel)
+
+	if cmd == nil {
+		t.Fatal("safe bang command did not return executable command")
+	}
+	if m.inputBuf != "" {
+		t.Fatalf("input = %q, want cleared after accepted command", m.inputBuf)
+	}
+}
+
 func TestChatModelSlashClear(t *testing.T) {
 	clearCalls := 0
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp", ClearHistory: func() { clearCalls++ }})

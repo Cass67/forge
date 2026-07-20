@@ -30,6 +30,7 @@ import (
 
 type chatTickMsg time.Time
 type chatApprovalMsg tools.Action
+type shellFinishedMsg struct{ err error }
 
 // pluginCommandResultMsg carries the output of a plugin slash command
 // back into the Bubble Tea update loop.
@@ -144,6 +145,25 @@ func openExternalURL(target string) error {
 		cmd = exec.Command("xdg-open", target)
 	}
 	return cmd.Start()
+}
+
+func shellCommand(command, workDir string) *exec.Cmd {
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		shell := os.Getenv("COMSPEC")
+		if shell == "" {
+			shell = "cmd.exe"
+		}
+		cmd = exec.Command(shell, "/C", command)
+	} else {
+		shell := os.Getenv("SHELL")
+		if shell == "" {
+			shell = "/bin/sh"
+		}
+		cmd = exec.Command(shell, "-c", command)
+	}
+	cmd.Dir = workDir
+	return cmd
 }
 
 // toolsSection represents a contiguous block in the tools pane, either from
@@ -1622,6 +1642,12 @@ func (m ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pendingApproval = &action
 		return m, nil
 
+	case shellFinishedMsg:
+		if msg.err != nil {
+			m.flash = fmt.Sprintf("shell command failed: %v", msg.err)
+		}
+		return m, nil
+
 	case pluginCommandResultMsg:
 		header := "Plugin Result"
 		content := msg.content
@@ -1913,6 +1939,30 @@ func (m ChatModel) trySubmitText(input string, attachments []chatstate.ChatAttac
 	input = strings.TrimSpace(input)
 	if input == "" && len(attachments) == 0 {
 		return m, nil, false
+	}
+	if strings.HasPrefix(input, "!") {
+		if len(attachments) > 0 {
+			m.flash = "cannot combine shell commands with image attachments — remove attachments first"
+			return m, nil, false
+		}
+		command := strings.TrimSpace(strings.TrimPrefix(input, "!"))
+		if command == "" {
+			m.flash = "usage: !<shell command>"
+			return m, nil, false
+		}
+		review := tools.ReviewApprovalAction("interactive shell escape", tools.Action{
+			Tool:    "run_command",
+			Summary: command,
+			Detail:  command,
+		})
+		if review.Decision == tools.GuardianBlock {
+			m.flash = "guardian blocked shell command: " + review.Reason
+			return m, nil, false
+		}
+		cmd := shellCommand(command, m.workDir)
+		return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+			return shellFinishedMsg{err: err}
+		}), true
 	}
 
 	if input == "/exit" || input == "/quit" {
