@@ -79,6 +79,15 @@ func loadChatApprovalConfig(setup *ChatSetup) reactruntime.ApprovalConfig {
 	return cfg
 }
 
+// applyChatParams pushes the currently selected generation params (reasoning
+// effort) onto a driver. Temperature stays at the provider default (-1). Called
+// after every MakeDriver so the effort survives model/provider switches.
+func (s *ChatSetup) applyChatParams(d llm.Driver) {
+	if c, ok := d.(llm.Configurable); ok {
+		c.SetParams(llm.Params{Temperature: -1, ReasoningEffort: s.ReasoningEffort})
+	}
+}
+
 type ChatSetup struct {
 	Config     *config.Config
 	ChatModel  string
@@ -89,6 +98,9 @@ type ChatSetup struct {
 	Providers  []tui.ProviderOption
 	MakeDriver func(string) llm.Driver
 	DebugLog   string
+	// ReasoningEffort is the currently selected provider reasoning-effort level,
+	// re-applied to each driver built via MakeDriver so it survives model switches.
+	ReasoningEffort string
 	// DroppedModel is the saved chat model that was discarded at startup
 	// because no provider currently offers it.
 	DroppedModel string
@@ -849,11 +861,45 @@ func RunChatLive(setup *ChatSetup) {
 			}
 			setup.ChatModel = name
 			setup.Driver = d
+			setup.applyChatParams(d)
 			if reactRunner != nil {
 				reactRunner.SetDriver(setup.Driver)
 			}
 			persistChatLastModel(setup.Config, name)
 			return name, nil
+		},
+		SetEffort: func(effort string) error {
+			effort = strings.TrimSpace(effort)
+			ref := bootstrap.ParseModelRef(setup.ChatModel)
+			info := modelcatalog.Lookup(ref.Provider, ref.Model)
+			if effort != "" {
+				supported := false
+				if info != nil {
+					for _, v := range info.ReasoningEfforts {
+						if strings.EqualFold(v, effort) {
+							effort = v
+							supported = true
+							break
+						}
+					}
+				}
+				if !supported {
+					return fmt.Errorf("model %q does not support reasoning effort %q", setup.ChatModel, effort)
+				}
+			}
+			setup.ReasoningEffort = effort
+			if setup.Driver != nil {
+				setup.applyChatParams(setup.Driver)
+			}
+			return nil
+		},
+		CurrentEffort: func() string { return setup.ReasoningEffort },
+		ModelEfforts: func(model string) []string {
+			ref := bootstrap.ParseModelRef(model)
+			if info := modelcatalog.Lookup(ref.Provider, ref.Model); info != nil {
+				return append([]string(nil), info.ReasoningEfforts...)
+			}
+			return nil
 		},
 		ClearHistory: func() {
 			state.Clear()

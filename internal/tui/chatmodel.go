@@ -2124,6 +2124,52 @@ func (m *ChatModel) resetSlashCompletion() {
 	m.slashComplete = chatSlashCompletionState{}
 }
 
+// handleEffortCommand handles /effort [level]. With no argument it reports the
+// current level and the options the active model advertises. "off"/"default"
+// clears the override. Available levels come from the provider catalog, not a
+// hardcoded list.
+func (m *ChatModel) handleEffortCommand(arg string) {
+	if m.config.SetEffort == nil || m.config.ModelEfforts == nil {
+		m.flash = "reasoning effort not supported"
+		return
+	}
+	options := m.config.ModelEfforts(m.model)
+	if arg == "" {
+		current := ""
+		if m.config.CurrentEffort != nil {
+			current = m.config.CurrentEffort()
+		}
+		if current == "" {
+			current = "default"
+		}
+		if len(options) == 0 {
+			m.flash = fmt.Sprintf("%s exposes no reasoning-effort control", m.model)
+			return
+		}
+		m.flash = fmt.Sprintf("effort: %s — options: %s (/effort off to reset)", current, strings.Join(options, ", "))
+		return
+	}
+	if len(options) == 0 {
+		m.flash = fmt.Sprintf("%s exposes no reasoning-effort control", m.model)
+		return
+	}
+	if arg == "off" || arg == "default" || arg == "none" {
+		if err := m.config.SetEffort(""); err != nil {
+			m.flash = fmt.Sprintf("error: %v", err)
+			return
+		}
+		m.syncStatusData()
+		m.flash = "reasoning effort reset to provider default"
+		return
+	}
+	if err := m.config.SetEffort(arg); err != nil {
+		m.flash = fmt.Sprintf("error: %v — options: %s", err, strings.Join(options, ", "))
+		return
+	}
+	m.syncStatusData()
+	m.flash = fmt.Sprintf("reasoning effort → %s", arg)
+}
+
 func (m *ChatModel) completeSlashCommand() bool {
 	if strings.Contains(m.inputBuf, "\n") {
 		m.resetSlashCompletion()
@@ -2301,7 +2347,7 @@ var builtinCommands = []string{
 	"/theme", "/theme low", "/theme default", "/theme light", "/theme dusk", "/theme midnight-ink", "/theme eclipse",
 	"/agentview",
 	"/tools", "/toggle tools", "/toggle tools on", "/toggle tools off",
-	"/models", "/model", "/provider",
+	"/models", "/model", "/provider", "/effort",
 	"/skills", "/sessions", "/save", "/restore", "/remember",
 	"/find", "/files", "/copy agent", "/copy tools", "/copy code", "/copy result",
 	"/make", "/exit", "/quit",
@@ -2508,6 +2554,8 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 				m.flash = fmt.Sprintf("switched to %s", newModel)
 			}
 		}
+	case input == "/effort" || strings.HasPrefix(input, "/effort "):
+		m.handleEffortCommand(strings.TrimSpace(strings.TrimPrefix(input, "/effort")))
 	case input == "/skills":
 		var sb strings.Builder
 		sb.WriteString("Skills:\n")

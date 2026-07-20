@@ -32,18 +32,26 @@ type CheckResult struct {
 type StartupComplete struct{}
 
 type ChatLiveConfig struct {
-	Model                 string
-	WorkDir               string
-	DebugLogPath          string
-	SurfaceKind           ChatSurfaceKind
-	DebugEnabled          bool
-	AvailableModels       []string
-	Providers             []ProviderOption
-	RefreshModels         func() []string
-	ProbeModels           func(currentModel string, available []string) []string
-	RefreshProviders      func() []ProviderOption
-	ContextFiles          []string
-	SwitchModel           func(name string) (newModel string, err error)
+	Model            string
+	WorkDir          string
+	DebugLogPath     string
+	SurfaceKind      ChatSurfaceKind
+	DebugEnabled     bool
+	AvailableModels  []string
+	Providers        []ProviderOption
+	RefreshModels    func() []string
+	ProbeModels      func(currentModel string, available []string) []string
+	RefreshProviders func() []ProviderOption
+	ContextFiles     []string
+	SwitchModel      func(name string) (newModel string, err error)
+	// SetEffort applies a reasoning-effort level to the active model. An empty
+	// string clears it (provider default). Returns an error when the model does
+	// not advertise the requested level.
+	SetEffort func(effort string) error
+	// CurrentEffort returns the reasoning-effort level currently in force ("" = default).
+	CurrentEffort func() string
+	// ModelEfforts returns the reasoning-effort levels a model advertises.
+	ModelEfforts          func(model string) []string
 	ClearHistory          func()
 	Remember              func(text string) bool
 	ApprovalCh            <-chan tools.Action
