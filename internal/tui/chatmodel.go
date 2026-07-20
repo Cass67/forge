@@ -2219,6 +2219,9 @@ func (m *ChatModel) completeSlashCommand() bool {
 }
 
 func (m ChatModel) matchingSlashCommands(input string) []string {
+	if opts := m.effortCompletions(input); opts != nil {
+		return opts
+	}
 	matches := make([]string, 0)
 	for _, cmd := range builtinCommands {
 		if strings.HasPrefix(cmd, input) {
@@ -2231,6 +2234,37 @@ func (m ChatModel) matchingSlashCommands(input string) []string {
 			if strings.HasPrefix(pc.Name, input) {
 				matches = append(matches, pc.Name)
 			}
+		}
+	}
+	return matches
+}
+
+// effortCompletions expands "/effort" tab-completion into the active model's
+// advertised reasoning-effort levels (from the provider catalog) plus "off".
+// Returns nil when the input isn't the effort command or the model exposes no
+// effort control, so normal command matching takes over.
+func (m ChatModel) effortCompletions(input string) []string {
+	if input != "/effort" && !strings.HasPrefix(input, "/effort ") {
+		return nil
+	}
+	if m.config.ModelEfforts == nil {
+		return nil
+	}
+	levels := m.config.ModelEfforts(m.model)
+	if len(levels) == 0 {
+		return nil
+	}
+	candidates := make([]string, 0, len(levels)+1)
+	for _, l := range levels {
+		candidates = append(candidates, "/effort "+l)
+	}
+	candidates = append(candidates, "/effort off")
+
+	arg := strings.TrimSpace(strings.TrimPrefix(input, "/effort"))
+	matches := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		if strings.HasPrefix(c, "/effort "+arg) {
+			matches = append(matches, c)
 		}
 	}
 	return matches
