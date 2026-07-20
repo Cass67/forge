@@ -17,6 +17,7 @@ type CustomProviderDef struct {
 	HTTPHeaders  map[string]string
 	DefaultModel string
 	Models       []string
+	ImageModels  []string
 }
 
 type tomlProviderBlock struct {
@@ -27,6 +28,7 @@ type tomlProviderBlock struct {
 	HTTPHeaders  map[string]string `toml:"http_headers"`
 	DefaultModel string            `toml:"default_model"`
 	Models       []string          `toml:"models"`
+	ImageModels  []string          `toml:"image_models"`
 }
 
 type tomlProviderFile struct {
@@ -90,6 +92,7 @@ func parseProviderFile(path string) ([]CustomProviderDef, error) {
 			HTTPHeaders:  block.HTTPHeaders,
 			DefaultModel: block.DefaultModel,
 			Models:       block.Models,
+			ImageModels:  block.ImageModels,
 		})
 	}
 	return defs, nil

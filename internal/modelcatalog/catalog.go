@@ -184,12 +184,14 @@ var (
 	customSources  = map[string]customSource{}
 )
 
-// imageCapableModels maps provider/model to image capability metadata.
-// These override the catalog (which doesn't yet carry image metadata).
-var imageCapableModels = map[string]map[string]struct {
+type imageCapability struct {
 	MaxBytes int64
 	MIMEs    []string
-}{
+}
+
+// imageCapableModels maps provider/model to image capability metadata.
+// These override the catalog (which doesn't yet carry image metadata).
+var imageCapableModels = map[string]map[string]imageCapability{
 	"openai": {
 		"gpt-4o":      {MaxBytes: 20 * 1024 * 1024, MIMEs: []string{"image/png", "image/jpeg", "image/gif"}},
 		"gpt-4-turbo": {MaxBytes: 20 * 1024 * 1024, MIMEs: []string{"image/png", "image/jpeg", "image/gif"}},
@@ -206,6 +208,54 @@ var imageCapableModels = map[string]map[string]struct {
 		"o3":          {MaxBytes: 20 * 1024 * 1024, MIMEs: []string{"image/png", "image/jpeg", "image/gif"}},
 		"o4-mini":     {MaxBytes: 20 * 1024 * 1024, MIMEs: []string{"image/png", "image/jpeg", "image/gif"}},
 	},
+}
+
+// imageGatedProviders lists providers whose models must be explicitly
+// declared image-capable (via image_models in a custom provider TOML) before
+// forge sends image chat parts. Guarded by mu together with the custom
+// entries added to imageCapableModels.
+var imageGatedProviders = map[string]bool{}
+
+// RegisterCustomProviderImageModels gates providerID's image sending and marks
+// the given models (exact name or prefix, same matching as the builtin table)
+// as accepting image chat parts.
+func RegisterCustomProviderImageModels(providerID string, models []string) {
+	providerID = strings.TrimSpace(providerID)
+	if providerID == "" {
+		return
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	imageGatedProviders[providerID] = true
+	if len(models) == 0 {
+		return
+	}
+	caps, ok := imageCapableModels[providerID]
+	if !ok {
+		caps = map[string]imageCapability{}
+		imageCapableModels[providerID] = caps
+	}
+	for _, m := range models {
+		m = strings.TrimSpace(m)
+		if m == "" {
+			continue
+		}
+		caps[m] = imageCapability{MaxBytes: 20 * 1024 * 1024, MIMEs: []string{"image/png", "image/jpeg", "image/gif"}}
+	}
+}
+
+// AllowsImageParts reports whether image chat parts may be sent to
+// providerID/modelID. Non-gated providers always allow (capability unknown);
+// gated (custom TOML) providers allow only declared image_models.
+func AllowsImageParts(providerID, modelID string) bool {
+	mu.RLock()
+	gated := imageGatedProviders[strings.TrimSpace(providerID)]
+	mu.RUnlock()
+	if !gated {
+		return true
+	}
+	info := lookupImageCapabilityOnly(providerID, modelID)
+	return info != nil && info.SupportsImages
 }
 
 type customSource struct {
@@ -311,6 +361,7 @@ func writeDiskCache(data map[string]providerData) {
 func RegisterCustomProviderSource(providerID, url string, headers map[string]string, keyFn func() string) {
 	providerID = strings.TrimSpace(providerID)
 	url = strings.TrimSpace(url)
+	refreshedThisRun.Delete(providerID)
 	mu.Lock()
 	defer mu.Unlock()
 	if providerID == "" || url == "" {
@@ -372,6 +423,8 @@ func Lookup(providerID, modelID string) *ModelInfo {
 }
 
 func lookupImageCapabilityOnly(providerID, modelID string) *ModelInfo {
+	mu.RLock()
+	defer mu.RUnlock()
 	providerImages, ok := imageCapableModels[providerID]
 	if !ok {
 		return nil
@@ -400,11 +453,9 @@ func injectImageCapability(providerID, modelID string, info *ModelInfo) {
 	if info == nil {
 		return
 	}
-	providerImages, ok := imageCapableModels[providerID]
-	if !ok {
-		return
-	}
-	cap, ok := providerImages[modelID]
+	mu.RLock()
+	cap, ok := imageCapableModels[providerID][modelID]
+	mu.RUnlock()
 	if !ok {
 		return
 	}
@@ -530,33 +581,29 @@ func customProviderCachePath(providerID string) string {
 	return filepath.Join(fsutil.ForgeConfigDir(), "providers", providerID+"-models.json")
 }
 
+// refreshedThisRun ensures each provider is fetched live once per process,
+// so a fresh start always shows the source's current model list; the on-disk
+// cache is only a fallback when the fetch fails.
+var refreshedThisRun sync.Map
+
 func loadCustomProviderData(providerID string) (customProviderCache, bool) {
 	providerID = strings.TrimSpace(providerID)
 	if providerID == "" {
 		return customProviderCache{}, false
 	}
-	if data, ok := loadCustomProviderCache(providerID); ok {
-		if customProviderCacheNeedsRefresh(providerID, data) {
-			if refreshed, ok := refreshCustomProviderCache(providerID); ok {
-				return refreshed, true
-			}
+	if _, done := refreshedThisRun.Load(providerID); !done {
+		if refreshed, ok := refreshCustomProviderCache(providerID); ok {
+			refreshedThisRun.Store(providerID, true)
+			return refreshed, true
 		}
+	}
+	if data, ok := loadCustomProviderCache(providerID); ok {
 		return data, true
 	}
 	if data, ok := refreshCustomProviderCache(providerID); ok {
 		return data, true
 	}
 	return customProviderCache{}, false
-}
-
-func customProviderCacheNeedsRefresh(providerID string, data customProviderCache) bool {
-	if len(data.Models) == 0 || len(data.Routes) > 0 {
-		return false
-	}
-	mu.RLock()
-	source, ok := customSources[providerID]
-	mu.RUnlock()
-	return ok && strings.TrimSpace(source.URL) != "" && source.KeyFn != nil
 }
 
 func loadCustomProviderCache(providerID string) (customProviderCache, bool) {

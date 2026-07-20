@@ -833,7 +833,10 @@ func providerSupportsChatImageParts(providerLabel, registryName, apiModel string
 	if providerLabel == "opencode-go" && (strings.Contains(registryName, "deepseek") || strings.Contains(apiModel, "deepseek")) {
 		return false
 	}
-	return true
+	// Custom TOML providers are image-gated: only models declared via
+	// image_models receive image parts; the rest get a text placeholder.
+	return modelcatalog.AllowsImageParts(providerLabel, apiModel) ||
+		modelcatalog.AllowsImageParts(providerLabel, registryName)
 }
 
 func (d *OpenAIDriver) shouldFallbackToNonStreaming(err error) bool {

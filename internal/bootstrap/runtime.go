@@ -654,6 +654,7 @@ func BuildCompatProviders(cfg *config.Config, tokens *auth.Tokens) []CompatProvi
 	customDefs, _ := LoadCustomCompatProviders(fsutil.ForgeConfigDir())
 	for _, def := range customDefs {
 		RegisterCustomProviderName(def.ID)
+		modelcatalog.RegisterCustomProviderImageModels(def.ID, def.ImageModels)
 		defID := def.ID
 		modelcatalog.RegisterCustomProviderSource(defID, def.ModelInfoURL, def.HTTPHeaders, func() string {
 			if tokens != nil {
