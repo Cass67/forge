@@ -108,6 +108,10 @@ type UsageReporter interface {
 type Params struct {
 	MaxTokens   int
 	Temperature float64 // -1 means unset (use provider default)
+	// ReasoningEffort is the provider reasoning-effort level (e.g. "low",
+	// "medium", "high", "xhigh"). Empty means unset (use provider default).
+	// Values are validated against the model's advertised options upstream.
+	ReasoningEffort string
 }
 
 // Configurable is optionally implemented by drivers that accept generation params.

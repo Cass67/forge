@@ -30,6 +30,10 @@ type ModelInfo struct {
 	SupportsImages      bool
 	MaxImageBytes       int64
 	SupportedImageMIMEs []string
+	// ReasoningEfforts lists the effort levels the provider advertises for this
+	// model (e.g. ["low","medium","high"]), taken from models.dev
+	// reasoning_options. Empty when the model exposes no effort control.
+	ReasoningEfforts []string
 }
 
 type OpenCodeGoModelCapability struct {
@@ -52,13 +56,30 @@ type providerData struct {
 }
 
 type modelEntry struct {
-	Reasoning   bool `json:"reasoning"`
-	Temperature bool `json:"temperature"`
-	ToolCall    bool `json:"tool_call"`
-	Limit       struct {
+	Reasoning        bool              `json:"reasoning"`
+	Temperature      bool              `json:"temperature"`
+	ToolCall         bool              `json:"tool_call"`
+	ReasoningOptions []reasoningOption `json:"reasoning_options"`
+	Limit            struct {
 		Context int `json:"context"`
 		Output  int `json:"output"`
 	} `json:"limit"`
+}
+
+type reasoningOption struct {
+	Type   string   `json:"type"`
+	Values []string `json:"values"`
+}
+
+// effortValues extracts the effort-type reasoning levels from a model's
+// reasoning_options. Returns nil when the model advertises no effort control.
+func (e modelEntry) effortValues() []string {
+	for _, opt := range e.ReasoningOptions {
+		if opt.Type == "effort" && len(opt.Values) > 0 {
+			return append([]string(nil), opt.Values...)
+		}
+	}
+	return nil
 }
 
 // forgeToModelsDev maps forge provider labels to models.dev provider IDs.
@@ -473,11 +494,12 @@ func lookupModelInfo(provider providerData, providerOK bool, modelID string) (*M
 		return nil, false
 	}
 	return &ModelInfo{
-		Reasoning:     entry.Reasoning,
-		Temperature:   entry.Temperature,
-		ToolCall:      entry.ToolCall,
-		ContextWindow: entry.Limit.Context,
-		OutputLimit:   entry.Limit.Output,
+		Reasoning:        entry.Reasoning,
+		Temperature:      entry.Temperature,
+		ToolCall:         entry.ToolCall,
+		ContextWindow:    entry.Limit.Context,
+		OutputLimit:      entry.Limit.Output,
+		ReasoningEfforts: entry.effortValues(),
 	}, true
 }
 
@@ -497,6 +519,9 @@ func mergeModelInfo(primary, fallback *ModelInfo) *ModelInfo {
 	}
 	if out.OutputLimit <= 0 {
 		out.OutputLimit = fallback.OutputLimit
+	}
+	if len(out.ReasoningEfforts) == 0 {
+		out.ReasoningEfforts = fallback.ReasoningEfforts
 	}
 	return &out
 }

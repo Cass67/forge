@@ -274,3 +274,29 @@ func TestAllowsImageParts(t *testing.T) {
 		t.Error("gated provider with no image_models should not allow image parts")
 	}
 }
+
+func TestEffortValuesFromReasoningOptions(t *testing.T) {
+	data := []byte(`{"openai":{"models":{"gpt-eff":{"reasoning":true,"tool_call":true,"reasoning_options":[{"type":"effort","values":["low","medium","high","xhigh"]}]},"gpt-plain":{"reasoning":true,"tool_call":true}}}}`)
+	parsed := parseSnapshot(data)
+	origCatalog := catalog
+	t.Cleanup(func() { catalog = origCatalog })
+	catalog = parsed
+
+	info := Lookup("openai", "gpt-eff")
+	if info == nil {
+		t.Fatal("expected model info")
+	}
+	want := []string{"low", "medium", "high", "xhigh"}
+	if len(info.ReasoningEfforts) != len(want) {
+		t.Fatalf("got %v, want %v", info.ReasoningEfforts, want)
+	}
+	for i, v := range want {
+		if info.ReasoningEfforts[i] != v {
+			t.Fatalf("got %v, want %v", info.ReasoningEfforts, want)
+		}
+	}
+
+	if plain := Lookup("openai", "gpt-plain"); plain == nil || len(plain.ReasoningEfforts) != 0 {
+		t.Fatalf("model without reasoning_options should expose no efforts, got %+v", plain)
+	}
+}

@@ -296,6 +296,9 @@ func (d *OpenAIDriver) chatCompletionParamsWithTools(messages []llm.Message, opt
 	if d.params.Temperature >= 0 && d.modelSupportsTemperature() {
 		params.Temperature = openai.Float(d.params.Temperature)
 	}
+	if effort := d.reasoningEffort(); effort != "" {
+		params.ReasoningEffort = shared.ReasoningEffort(effort)
+	}
 	if d.providerLabel == "openrouter" {
 		params.PromptCacheKey = openai.String(responsePromptCacheKey(d.apiModel, chatPromptCacheSeed(messages)))
 	}
@@ -520,6 +523,9 @@ func (d *OpenAIDriver) responsesParamsWithTools(ctx context.Context, messages []
 	}
 	if d.params.Temperature >= 0 && d.modelSupportsTemperature() {
 		params.Temperature = openai.Float(d.params.Temperature)
+	}
+	if effort := d.reasoningEffort(); effort != "" {
+		params.Reasoning = shared.ReasoningParam{Effort: shared.ReasoningEffort(effort)}
 	}
 	if len(tools) > 0 {
 		params.Tools = toolDefsToResponses(tools)
@@ -1747,6 +1753,27 @@ func modelSupportsTemperature(providerLabel, model string) bool {
 		return info.Temperature
 	}
 	return !isReasoningModel(model)
+}
+
+// reasoningEffort returns the effort level to send on the request: the
+// configured value when the model advertises it as a supported option,
+// otherwise "". This keeps the wire value provider-driven rather than
+// hardcoded — an effort the catalog doesn't list is dropped.
+func (d *OpenAIDriver) reasoningEffort() string {
+	want := strings.TrimSpace(d.params.ReasoningEffort)
+	if want == "" {
+		return ""
+	}
+	info := modelcatalog.Lookup(d.providerLabel, d.apiModel)
+	if info == nil {
+		return ""
+	}
+	for _, v := range info.ReasoningEfforts {
+		if strings.EqualFold(v, want) {
+			return v
+		}
+	}
+	return ""
 }
 
 func modelRequiresResponses(providerLabel, model string) bool {
