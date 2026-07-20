@@ -24,6 +24,7 @@ model_info_url = "https://example.com/v1/model/info"
 http_headers = { client = "codex-cli" }
 default_model = "gpt-5.4"
 models = ["gpt-5.4", "gpt-5.4-mini"]
+image_models = ["gpt-5.4"]
 `
 		if err := os.WriteFile(filepath.Join(providersDir, "oca.toml"), []byte(content), 0o644); err != nil {
 			t.Fatal(err)
@@ -55,6 +56,9 @@ models = ["gpt-5.4", "gpt-5.4-mini"]
 		}
 		if d.DefaultModel != "gpt-5.4" {
 			t.Errorf("DefaultModel = %q, want %q", d.DefaultModel, "gpt-5.4")
+		}
+		if len(d.ImageModels) != 1 || d.ImageModels[0] != "gpt-5.4" {
+			t.Errorf("ImageModels = %v, want [gpt-5.4]", d.ImageModels)
 		}
 		if len(d.Models) != 2 || d.Models[0] != "gpt-5.4" || d.Models[1] != "gpt-5.4-mini" {
 			t.Errorf("Models = %v, want [gpt-5.4 gpt-5.4-mini]", d.Models)

@@ -257,3 +257,20 @@ func TestImageCapabilityMetadata(t *testing.T) {
 		t.Error("SupportedImageMIMEs should not be empty")
 	}
 }
+
+func TestAllowsImageParts(t *testing.T) {
+	if !AllowsImageParts("openai", "gpt-4o-mini") {
+		t.Error("non-gated providers should always allow image parts")
+	}
+	RegisterCustomProviderImageModels("testgated", []string{"visionmodel"})
+	if !AllowsImageParts("testgated", "visionmodel") {
+		t.Error("declared image model should allow image parts")
+	}
+	if AllowsImageParts("testgated", "textmodel") {
+		t.Error("undeclared model on gated provider should not allow image parts")
+	}
+	RegisterCustomProviderImageModels("testgated2", nil)
+	if AllowsImageParts("testgated2", "anymodel") {
+		t.Error("gated provider with no image_models should not allow image parts")
+	}
+}

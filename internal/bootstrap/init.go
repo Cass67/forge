@@ -19,6 +19,10 @@ const providerTemplateContent = `# Example custom provider definition for Forge.
 # http_headers = { client = "forge" }
 # default_model = "gpt-5.4"
 # models = ["gpt-5.4", "gpt-5.4-mini"]
+#
+# Models that accept image input (screenshots/attachments). Anything not
+# listed gets images replaced with a text placeholder instead of failing.
+# image_models = ["gpt-5.4"]
 `
 
 func ensureDefaultConfigScaffold() error {
