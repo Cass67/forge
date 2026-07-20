@@ -2176,6 +2176,9 @@ func (m *ChatModel) completeSlashCommand() bool {
 		return false
 	}
 	input := strings.TrimSpace(m.inputBuf)
+	if m.completeEffort(input) {
+		return true
+	}
 	if !strings.HasPrefix(input, "/") {
 		m.resetSlashCompletion()
 		return false
@@ -2219,9 +2222,6 @@ func (m *ChatModel) completeSlashCommand() bool {
 }
 
 func (m ChatModel) matchingSlashCommands(input string) []string {
-	if opts := m.effortCompletions(input); opts != nil {
-		return opts
-	}
 	matches := make([]string, 0)
 	for _, cmd := range builtinCommands {
 		if strings.HasPrefix(cmd, input) {
@@ -2239,35 +2239,41 @@ func (m ChatModel) matchingSlashCommands(input string) []string {
 	return matches
 }
 
-// effortCompletions expands "/effort" tab-completion into the active model's
-// advertised reasoning-effort levels (from the provider catalog) plus "off".
-// Returns nil when the input isn't the effort command or the model exposes no
-// effort control, so normal command matching takes over.
-func (m ChatModel) effortCompletions(input string) []string {
+// completeEffort handles tab-completion for the /effort command: it shows the
+// active model's advertised reasoning-effort levels (from the provider catalog)
+// on the flash line and cycles through them — "/effort" → "/effort low" →
+// "/effort medium" → … → "/effort off" → back. Returns false when the input
+// isn't the effort command or the model exposes no effort control.
+func (m *ChatModel) completeEffort(input string) bool {
 	if input != "/effort" && !strings.HasPrefix(input, "/effort ") {
-		return nil
+		return false
 	}
 	if m.config.ModelEfforts == nil {
-		return nil
+		return false
 	}
 	levels := m.config.ModelEfforts(m.model)
 	if len(levels) == 0 {
-		return nil
+		return false
 	}
-	candidates := make([]string, 0, len(levels)+1)
+	options := make([]string, 0, len(levels)+1)
 	for _, l := range levels {
-		candidates = append(candidates, "/effort "+l)
+		options = append(options, "/effort "+l)
 	}
-	candidates = append(candidates, "/effort off")
+	options = append(options, "/effort off")
 
-	arg := strings.TrimSpace(strings.TrimPrefix(input, "/effort"))
-	matches := make([]string, 0, len(candidates))
-	for _, c := range candidates {
-		if strings.HasPrefix(c, "/effort "+arg) {
-			matches = append(matches, c)
+	// Advance from the current selection; -1 (nothing selected yet) → first.
+	next := 0
+	for i, o := range options {
+		if o == input {
+			next = (i + 1) % len(options)
+			break
 		}
 	}
-	return matches
+	m.resetSlashCompletion()
+	m.inputBuf = options[next]
+	m.inputPos = len([]rune(m.inputBuf))
+	m.flash = strings.Join(options, "  ")
+	return true
 }
 
 func longestCommonPrefix(values []string) string {
