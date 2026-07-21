@@ -172,6 +172,15 @@ func ensureSession(ctx context.Context) (*sessionState, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A container from a prior forge run may still exist under this name. Adopt
+	// it if running; otherwise remove the stale one so run --name won't collide.
+	if out, err := dockerRunner(ctx, "inspect", "-f", "{{.State.Running}}", name); err == nil {
+		if strings.TrimSpace(string(out)) == "true" {
+			sess = &sessionState{ContainerName: name, Dir: dir, Image: image, StartedAt: time.Now()}
+			return sess, nil
+		}
+		_, _ = dockerRunner(ctx, "rm", "-f", name)
+	}
 	out, err := dockerRunner(ctx, "run", "-d",
 		"--name", name,
 		"-v", dir+":/workspace:rw",
