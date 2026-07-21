@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -334,23 +335,55 @@ func TestEnsureSessionRestartsDeadContainer(t *testing.T) {
 	}
 }
 
-func TestEnsureSessionAdoptsRunningContainer(t *testing.T) {
-	// New forge process (sess==nil) but a container from a prior run is still
-	// up. Must adopt it, not `run --name` into a name collision.
+func TestEnsureSessionReplacesStaleSameNameContainer(t *testing.T) {
+	// sess==nil but a container already exists under our per-process name: a
+	// leftover from a crashed process that reused this PID. It must be removed
+	// and replaced with a fresh one, never adopted (no inherited pollution).
 	f := resetSession(t)
-	f.created = true // container already exists and is running (inspectOut="true")
+	f.created = true
 
-	s, err := ensureSession(context.Background())
-	if err != nil {
+	if _, err := ensureSession(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if s == nil {
-		t.Fatal("expected adopted session")
-	}
-	for _, c := range f.calls {
-		if len(c) > 0 && c[0] == "run" {
-			t.Fatalf("must not run a second container, got %v", f.calls)
+	var rmBeforeRun bool
+	for i, c := range f.calls {
+		if len(c) >= 2 && c[0] == "rm" && c[1] == "-f" {
+			for _, later := range f.calls[i+1:] {
+				if len(later) > 0 && later[0] == "run" {
+					rmBeforeRun = true
+				}
+			}
 		}
+	}
+	if !rmBeforeRun {
+		t.Fatalf("expected stale container removed before run, calls=%v", f.calls)
+	}
+}
+
+func TestReapOrphansRemovesDeadOwnersOnly(t *testing.T) {
+	f := resetSession(t)
+	dead := exec.Command("true")
+	if err := dead.Run(); err != nil { // exits immediately; its PID is now dead
+		t.Fatal(err)
+	}
+	f.out = fmt.Sprintf("%d live-cid\n%d dead-cid", os.Getpid(), dead.Process.Pid)
+
+	reapOrphans(context.Background())
+
+	var removedDead, removedLive bool
+	for _, c := range f.calls {
+		if len(c) == 3 && c[0] == "rm" && c[1] == "-f" && c[2] == "dead-cid" {
+			removedDead = true
+		}
+		if len(c) == 3 && c[0] == "rm" && c[1] == "-f" && c[2] == "live-cid" {
+			removedLive = true
+		}
+	}
+	if !removedDead {
+		t.Fatalf("dead-owner container not reaped, calls=%v", f.calls)
+	}
+	if removedLive {
+		t.Fatal("live-owner container must not be reaped")
 	}
 }
 
