@@ -7,8 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	agenttools "forge/internal/agent/tools"
@@ -98,7 +100,7 @@ func sandboxArgv(workDir, command string, tty bool) ([]string, bool, error) {
 }
 
 func sessionContainerName(dir string) string {
-	return containerName(dir) + "-session"
+	return fmt.Sprintf("%s-session-%d", containerName(dir), os.Getpid())
 }
 
 // sandboxExec implements agenttools.SandboxExecutor: runs the command inside
@@ -172,17 +174,15 @@ func ensureSession(ctx context.Context) (*sessionState, error) {
 	if err != nil {
 		return nil, err
 	}
-	// A container from a prior forge run may still exist under this name. Adopt
-	// it if running; otherwise remove the stale one so run --name won't collide.
-	if out, err := dockerRunner(ctx, "inspect", "-f", "{{.State.Running}}", name); err == nil {
-		if strings.TrimSpace(string(out)) == "true" {
-			sess = &sessionState{ContainerName: name, Dir: dir, Image: image, StartedAt: time.Now()}
-			return sess, nil
-		}
-		_, _ = dockerRunner(ctx, "rm", "-f", name)
-	}
+	// Names are per-process, so a live collision with another forge instance
+	// can't happen. A same-named container here is a leftover from a crashed
+	// prior process that reused our PID: remove it and start clean rather than
+	// inherit a polluted environment.
+	_, _ = dockerRunner(ctx, "rm", "-f", name)
 	out, err := dockerRunner(ctx, "run", "-d",
 		"--name", name,
+		"--label", "forge.sandbox=1",
+		"--label", "forge.pid="+strconv.Itoa(os.Getpid()),
 		"-v", dir+":/workspace:rw",
 		"-w", "/workspace",
 		"-e", "HOME=/workspace",
@@ -302,6 +302,44 @@ func sessionStatus() string {
 		src, sess.ContainerName, sess.Image, sess.Dir, sess.StartedAt.Format(time.RFC3339))
 }
 
+// reapOrphans removes sandbox containers whose owning forge process is gone.
+// A crashed instance never runs its session-end cleanup, so without this its
+// container would leak. Cross-instance safe: containers owned by a still-live
+// forge PID are left untouched. Called at session start.
+func reapOrphans(ctx context.Context) {
+	out, err := dockerRunner(ctx, "ps", "-a",
+		"--filter", "label=forge.sandbox=1",
+		"--format", `{{.Label "forge.pid"}} {{.ID}}`)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil || pidAlive(pid) {
+			continue
+		}
+		_, _ = dockerRunner(ctx, "rm", "-f", fields[1])
+	}
+}
+
+// pidAlive reports whether a process exists. signal 0 does no work but still
+// checks the target: nil means alive, ESRCH means gone.
+// ponytail: ignores PID reuse — a reused PID just delays reaping one container.
+func pidAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return p.Signal(syscall.Signal(0)) == nil
+}
+
 // cleanupSession tears down the session container on session end.
 func cleanupSession(ctx context.Context) {
 	sessionMu.Lock()
@@ -319,6 +357,13 @@ func cleanupSession(ctx context.Context) {
 // the chat session ends so no containers are orphaned.
 func (Plugin) Hooks() []plugin.Hook {
 	return []plugin.Hook{
+		{
+			Point: plugin.PointSessionStart,
+			Handler: func(ctx context.Context, _ plugin.HookEvent) []plugin.HookResult {
+				reapOrphans(ctx)
+				return nil
+			},
+		},
 		{
 			Point: plugin.PointSessionEnd,
 			Handler: func(ctx context.Context, _ plugin.HookEvent) []plugin.HookResult {
