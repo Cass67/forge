@@ -18,6 +18,9 @@ type fakeDocker struct {
 	err   error
 	// inspectOut controls what "docker inspect -f ..." returns.
 	inspectOut string
+	// created tracks whether a "run" has made the container exist. Until then,
+	// inspect fails as it would against a nonexistent container.
+	created bool
 	// imageInspectErr controls "docker image inspect" (nil = image exists).
 	imageInspectErr error
 }
@@ -25,7 +28,16 @@ type fakeDocker struct {
 func (f *fakeDocker) run(ctx context.Context, args ...string) ([]byte, error) {
 	f.calls = append(f.calls, args)
 	if len(args) > 0 && args[0] == "inspect" {
+		if !f.created {
+			return nil, exec.ErrNotFound // no such container
+		}
 		return []byte(f.inspectOut), nil
+	}
+	if len(args) > 0 && args[0] == "run" {
+		f.created = true
+	}
+	if len(args) > 1 && args[0] == "rm" {
+		f.created = false
 	}
 	if len(args) > 1 && args[0] == "image" && args[1] == "inspect" {
 		return nil, f.imageInspectErr
@@ -319,6 +331,26 @@ func TestEnsureSessionRestartsDeadContainer(t *testing.T) {
 	}
 	if runs2 != runs+1 {
 		t.Fatalf("expected restart, runs before=%d after=%d", runs, runs2)
+	}
+}
+
+func TestEnsureSessionAdoptsRunningContainer(t *testing.T) {
+	// New forge process (sess==nil) but a container from a prior run is still
+	// up. Must adopt it, not `run --name` into a name collision.
+	f := resetSession(t)
+	f.created = true // container already exists and is running (inspectOut="true")
+
+	s, err := ensureSession(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s == nil {
+		t.Fatal("expected adopted session")
+	}
+	for _, c := range f.calls {
+		if len(c) > 0 && c[0] == "run" {
+			t.Fatalf("must not run a second container, got %v", f.calls)
+		}
 	}
 }
 
