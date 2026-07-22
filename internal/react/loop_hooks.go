@@ -521,16 +521,13 @@ func beforeToolGitCommitBlockHook(_ context.Context, event hooks.Event) []hooks.
 			Provenance: "runtime",
 		}}
 	case payload.GitWorkflow.commitBlocker == commitBlockerRestage:
-		if payload.ToolName == "run_command" && strings.Contains(strings.ToLower(stringArg(payload.Args, "command")), "git add") {
-			return nil
-		}
 		return []hooks.Result{hooks.BlockResult{
-			Message:    "blocked: the previous commit attempt modified files via hooks. Re-stage those files and call git_merge_status before retrying commit.",
+			Message:    "blocked: pre-commit hooks modified files. Review and stage the intended hook changes before retrying commit.",
 			Provenance: "runtime",
 		}}
 	case payload.GitWorkflow.commitBlocker == commitBlockerEdit:
 		return []hooks.Result{hooks.BlockResult{
-			Message:    "blocked: the previous commit attempt already failed and nothing has changed since then. Fix the reported hook issues and call git_merge_status before retrying commit.",
+			Message:    "blocked: the previous commit attempt already failed and nothing has changed since then. Fix the reported errors and stage the fixes before retrying commit.",
 			Provenance: "runtime",
 		}}
 	default:
@@ -709,7 +706,7 @@ func (s gitWorkflowState) overlayContent() string {
 		if summary == "" {
 			summary = "commit blockers remain"
 		}
-		return "Git merge workflow active. " + summary + ". Call git_merge_status after each fix and do not retry the same commit until the blockers are cleared."
+		return "Git commit blocked. " + summary + ". Inspect the failed commit output, fix the reported errors, stage only the intended fixes, and then retry."
 	}
 	if s.mergeActive {
 		return "Git merge workflow active. Call git_merge_status to inspect the current merge state, then keep resolving and validating the merge until commit succeeds."

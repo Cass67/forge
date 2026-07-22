@@ -212,6 +212,7 @@ func TestGitLogPath(t *testing.T) {
 func TestGitCommit(t *testing.T) {
 	dir := initGitRepo(t)
 	os.WriteFile(filepath.Join(dir, "new.go"), []byte("package main\n"), 0o644)
+	runGit(t, dir, "add", "new.go")
 
 	approved := false
 	var capturedAction Action
@@ -254,6 +255,69 @@ func TestGitCommit(t *testing.T) {
 	}
 }
 
+func TestGitCommitPreservesUnstagedChanges(t *testing.T) {
+	dir := initGitRepo(t)
+	mustWriteFile(t, filepath.Join(dir, "staged.go"), "package main\n")
+	mustWriteFile(t, filepath.Join(dir, "unrelated.go"), "package main\n")
+	runGit(t, dir, "add", "staged.go")
+
+	var capturedAction Action
+	tool := NewGitCommit(dir, func(a Action) (bool, error) {
+		capturedAction = a
+		return true, nil
+	})
+	result, err := tool.Execute(context.Background(), map[string]any{"message": "add staged file"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(capturedAction.Detail, "unrelated.go") || strings.Contains(result, "unrelated.go") {
+		t.Fatalf("commit included unrelated unstaged file: approval=%q result=%q", capturedAction.Detail, result)
+	}
+	if committed := gitOut(t, dir, "show", "--name-only", "--format=", "HEAD"); strings.TrimSpace(committed) != "staged.go" {
+		t.Fatalf("committed files = %q, want staged.go", committed)
+	}
+	if status := gitOut(t, dir, "status", "--short", "--", "unrelated.go"); !strings.Contains(status, "?? unrelated.go") {
+		t.Fatalf("unrelated file status = %q, want untracked", status)
+	}
+}
+
+func TestGitCommitRetriesAfterHookFixWithoutStagingUnrelatedFiles(t *testing.T) {
+	dir := initGitRepo(t)
+	mustWriteFile(t, filepath.Join(dir, "staged.txt"), "bad\n")
+	mustWriteFile(t, filepath.Join(dir, "unrelated.txt"), "leave me alone\n")
+	runGit(t, dir, "add", "staged.txt")
+
+	hook := filepath.Join(dir, ".git", "hooks", "pre-commit")
+	mustWriteFile(t, hook, "#!/bin/sh\nif grep -q bad staged.txt; then\n  printf 'good\\n' > staged.txt\n  echo 'files were modified by this hook'\n  exit 1\nfi\n")
+	if err := os.Chmod(hook, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := NewGitCommit(dir, func(Action) (bool, error) { return true, nil })
+	first, err := tool.Execute(context.Background(), map[string]any{"message": "add staged file"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(first, "files were modified by this hook") {
+		t.Fatalf("first commit result = %q, want hook failure", first)
+	}
+
+	runGit(t, dir, "add", "staged.txt")
+	second, err := tool.Execute(context.Background(), map[string]any{"message": "add staged file"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(second, "commit ") {
+		t.Fatalf("second commit result = %q, want success", second)
+	}
+	if content := gitOut(t, dir, "show", "HEAD:staged.txt"); content != "good\n" {
+		t.Fatalf("committed content = %q, want hook fix", content)
+	}
+	if status := gitOut(t, dir, "status", "--short", "--", "unrelated.txt"); !strings.Contains(status, "?? unrelated.txt") {
+		t.Fatalf("unrelated file status = %q, want untracked", status)
+	}
+}
+
 func TestGitPushVerifiesRemoteContainsCommit(t *testing.T) {
 	dir := initGitRepo(t)
 	remote := filepath.Join(t.TempDir(), "remote.git")
@@ -262,6 +326,7 @@ func TestGitPushVerifiesRemoteContainsCommit(t *testing.T) {
 	runGit(t, dir, "remote", "add", "origin", remote)
 
 	mustWriteFile(t, filepath.Join(dir, "FORGE_VS_CODEX.md"), "doc\n")
+	runGit(t, dir, "add", "FORGE_VS_CODEX.md")
 	commit := NewGitCommit(dir, func(Action) (bool, error) { return true, nil })
 	if _, err := commit.Execute(context.Background(), map[string]any{"message": "add comparison"}); err != nil {
 		t.Fatal(err)
@@ -303,6 +368,7 @@ func TestGitPushDenialDoesNotPush(t *testing.T) {
 	runGit(t, dir, "branch", "-M", "main")
 	runGit(t, dir, "remote", "add", "origin", remote)
 	mustWriteFile(t, filepath.Join(dir, "FORGE_VS_CODEX.md"), "doc\n")
+	runGit(t, dir, "add", "FORGE_VS_CODEX.md")
 	commit := NewGitCommit(dir, func(Action) (bool, error) { return true, nil })
 	if _, err := commit.Execute(context.Background(), map[string]any{"message": "add comparison"}); err != nil {
 		t.Fatal(err)
@@ -335,6 +401,7 @@ func TestGitCommitApprovalRedactsSecretPaths(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, secretPath), []byte("placeholder\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	runGit(t, dir, "add", secretPath)
 
 	var capturedAction Action
 	tool := NewGitCommit(dir, func(a Action) (bool, error) {
@@ -355,6 +422,7 @@ func TestGitCommitApprovalRedactsSecretPaths(t *testing.T) {
 func TestGitCommitDenied(t *testing.T) {
 	dir := initGitRepo(t)
 	os.WriteFile(filepath.Join(dir, "new.go"), []byte("package main\n"), 0o644)
+	runGit(t, dir, "add", "new.go")
 
 	tool := NewGitCommit(dir, func(a Action) (bool, error) { return false, nil })
 	result, err := tool.Execute(context.Background(), map[string]any{"message": "should not happen"})

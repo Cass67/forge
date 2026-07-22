@@ -2324,7 +2324,7 @@ func (r *Runner) updateGitWorkflow(toolName string, args map[string]any, result 
 		r.updateGitWorkflowForCommand(strings.ToLower(strings.TrimSpace(stringArg(args, "command"))), result)
 	case "git_commit":
 		r.updateGitWorkflowForCommitResult(result)
-	case "edit_file", "write_file":
+	case "edit_file", "write_file", "apply_patch":
 		r.gitWorkflow.commitBlocker = commitBlockerNone
 		r.gitWorkflow.blockerSummary = ""
 	}
@@ -2365,11 +2365,9 @@ func (r *Runner) updateGitWorkflowForCommand(command, result string) {
 		r.gitWorkflow.blockerSummary = ""
 	case isGitCommitLike(command):
 		r.updateGitWorkflowForCommitResult(result)
-	case strings.Contains(command, "git add"):
-		if r.gitWorkflow.commitBlocker == commitBlockerRestage {
-			r.gitWorkflow.commitBlocker = commitBlockerNone
-			r.gitWorkflow.blockerSummary = ""
-		}
+	case strings.Contains(command, "git add") && isValidationPass(result):
+		r.gitWorkflow.commitBlocker = commitBlockerNone
+		r.gitWorkflow.blockerSummary = ""
 	}
 }
 
@@ -2379,11 +2377,9 @@ func (r *Runner) updateGitWorkflowForCommitResult(result string) {
 	case isSuccessfulGitCommit(result):
 		r.gitWorkflow = gitWorkflowState{}
 	case strings.Contains(lower, "files were modified by this hook"):
-		r.gitWorkflow.mergeActive = true
 		r.gitWorkflow.commitBlocker = commitBlockerRestage
 		r.gitWorkflow.blockerSummary = "pre-commit modified files; re-stage them before retrying commit"
 	case strings.Contains(lower, "hook id:") || strings.Contains(lower, "line too long") || strings.Contains(lower, "error committing:"):
-		r.gitWorkflow.mergeActive = true
 		r.gitWorkflow.commitBlocker = commitBlockerEdit
 		r.gitWorkflow.blockerSummary = summarizeCommitFailure(result)
 	}
