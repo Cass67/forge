@@ -16,7 +16,7 @@ func NewGitCommitWithWorkDirProvider(fallbackWorkDir string, workDirProvider Wor
 	var lastDiff string
 	return Tool{
 		Name:        "git_commit",
-		Description: "Stage and commit the working-tree changes. Shows the user the file list and diff stat for approval before committing.",
+		Description: "Commit the currently staged changes. Stage only the intended paths first; unstaged and untracked files are left untouched. Shows the user the file list and diff stat for approval before committing.",
 		Parameters: []ParameterDef{
 			{Name: "message", Type: "string", Description: "commit message", Required: true},
 		},
@@ -31,18 +31,13 @@ func NewGitCommitWithWorkDirProvider(fallbackWorkDir string, workDirProvider Wor
 			lastDiff = ""
 			workDir := currentWorkDir(workDirProvider, fallbackWorkDir)
 			message, _ := args["message"].(string)
-			if out, err := gitCombinedOutput(ctx, workDir, "add", "-A"); err != nil {
-				result, _ := secretPolicy.ApplyCommandOutput(fmt.Sprintf("error staging changes: %s\n%s", err, out))
-				return result, nil
-			}
-
 			staged, err := gitNulPaths(ctx, workDir, "diff", "--cached", "--name-only", "-z")
 			if err != nil {
 				result, _ := secretPolicy.ApplyCommandOutput(fmt.Sprintf("error checking staged files: %s", err))
 				return result, nil
 			}
 			if len(staged) == 0 {
-				return "nothing to commit", nil
+				return "nothing to commit: no staged changes; stage only the intended paths and retry", nil
 			}
 
 			stat, err := gitOutput(ctx, workDir, "git", "diff", "--cached", "--stat")

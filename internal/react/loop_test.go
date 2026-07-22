@@ -1769,6 +1769,7 @@ func TestRunnerRunsPostEditValidationWithMutationDiff(t *testing.T) {
 func TestRunnerRunsPostEditValidationAfterGitCommitSuccess(t *testing.T) {
 	root := initReactTestGitRepo(t)
 	writeReactTestFile(t, filepath.Join(root, "a.txt"), "a\n")
+	runReactGit(t, root, "add", "a.txt")
 	reg := agenttools.NewRegistry()
 	reg.Register(agenttools.NewGitCommit(root, func(agenttools.Action) (bool, error) { return true, nil }))
 	session := NewSession()
@@ -1815,6 +1816,7 @@ func TestRunnerSkipsPostEditValidationAfterGitCommitNoopAndDenied(t *testing.T) 
 			name: "denied",
 			prepare: func(t *testing.T, root string) {
 				writeReactTestFile(t, filepath.Join(root, "a.txt"), "a\n")
+				runReactGit(t, root, "add", "a.txt")
 			},
 			approve: false,
 		},
@@ -3696,6 +3698,50 @@ func TestRunnerGitWorkflowOverlayShiftsAfterConflictResolution(t *testing.T) {
 	}
 	if strings.Contains(gitMsg, "Resolve each conflicted file") {
 		t.Fatalf("expected shorter merge-active message, got: %q", gitMsg)
+	}
+}
+
+func TestRunnerCommitFailureDoesNotActivateMergeWorkflow(t *testing.T) {
+	r := NewRunner(Config{})
+
+	r.updateGitWorkflowForCommitResult("error committing: exit status 1\n- hook id: ruff")
+
+	if r.gitWorkflow.mergeActive {
+		t.Fatal("pre-commit failure should not activate merge workflow")
+	}
+	if r.gitWorkflow.commitBlocker != commitBlockerEdit {
+		t.Fatalf("commit blocker = %v, want edit blocker", r.gitWorkflow.commitBlocker)
+	}
+	if overlay := r.gitWorkflow.overlayContent(); strings.Contains(overlay, "git_merge_status") || !strings.Contains(overlay, "Git commit blocked") {
+		t.Fatalf("commit failure overlay = %q", overlay)
+	}
+}
+
+func TestRunnerStagingFixesClearsCommitBlocker(t *testing.T) {
+	r := NewRunner(Config{})
+	r.gitWorkflow.commitBlocker = commitBlockerEdit
+	r.gitWorkflow.blockerSummary = "commit blocked by pre-commit hook failures"
+
+	r.updateGitWorkflowForCommand("git add -- fixed.go", "fatal: pathspec failed\nexit 1")
+	if r.gitWorkflow.commitBlocker != commitBlockerEdit {
+		t.Fatalf("failed git add cleared blocker: %#v", r.gitWorkflow)
+	}
+
+	r.updateGitWorkflowForCommand("git add -- fixed.go", "\nexit 0")
+	if r.gitWorkflow.commitBlocker != commitBlockerNone || r.gitWorkflow.blockerSummary != "" {
+		t.Fatalf("git workflow = %#v, want cleared commit blocker", r.gitWorkflow)
+	}
+}
+
+func TestRunnerApplyPatchClearsCommitBlocker(t *testing.T) {
+	r := NewRunner(Config{})
+	r.gitWorkflow.commitBlocker = commitBlockerEdit
+	r.gitWorkflow.blockerSummary = "commit blocked by pre-commit hook failures"
+
+	r.updateGitWorkflow("apply_patch", nil, "Done")
+
+	if r.gitWorkflow.commitBlocker != commitBlockerNone || r.gitWorkflow.blockerSummary != "" {
+		t.Fatalf("git workflow = %#v, want cleared commit blocker", r.gitWorkflow)
 	}
 }
 
