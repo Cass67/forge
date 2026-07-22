@@ -2456,10 +2456,22 @@ func (m ChatModel) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.pendingQueuedInput = nil
 		m.followMode = followBottom
 		m.refreshViewport()
+		m.flash = "new session started"
+		if m.busy && m.inputCh != nil {
+			// A turn is in flight. Stop the spinner now and let the runtime
+			// cancel the run then clear, serialized after the cancel so the
+			// new session doesn't inherit the old run's history.
+			ch := m.inputCh
+			m.busy = false
+			m.status = ""
+			return m, func() tea.Msg {
+				ch <- "__new_session__"
+				return nil
+			}
+		}
 		if m.config.ClearHistory != nil {
 			m.config.ClearHistory()
 		}
-		m.flash = "new session started"
 	case input == "/clear" || input == "/clear all":
 		m.messages = nil
 		m.resetRecentActivity()

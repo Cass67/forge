@@ -1217,6 +1217,45 @@ func TestChatModelSlashNewStartsCleanSession(t *testing.T) {
 	}
 }
 
+func TestChatModelSlashNewWhileBusyCancelsAndClears(t *testing.T) {
+	inputCh := make(chan string, 1)
+	clearCalls := 0
+	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp", ClearHistory: func() { clearCalls++ }})
+	m.width = 80
+	m.height = 24
+	m.inputCh = inputCh
+	m.busy = true
+	m.status = "running"
+	m.AddMessage(ChatMessage{Kind: MsgUser, Header: "You", Content: "hello"})
+
+	m.inputBuf = "/new"
+	m.inputPos = len(m.inputBuf)
+	updated, cmd := m.submitInput()
+	m = updated.(ChatModel)
+
+	if m.busy {
+		t.Fatal("expected spinner stopped (busy=false) after /new while busy")
+	}
+	if len(m.messages) != 0 {
+		t.Fatalf("expected 0 messages after /new, got %d", len(m.messages))
+	}
+	if clearCalls != 0 {
+		t.Fatalf("busy path must clear via runtime, not ClearHistory; calls = %d", clearCalls)
+	}
+	if cmd == nil {
+		t.Fatal("expected a cancel/clear command")
+	}
+	cmd()
+	select {
+	case raw := <-inputCh:
+		if raw != "__new_session__" {
+			t.Fatalf("sent %q, want __new_session__", raw)
+		}
+	default:
+		t.Fatal("expected __new_session__ on inputCh")
+	}
+}
+
 func TestChatModelHelpMentionsNewSessionCommand(t *testing.T) {
 	m := NewChatModel(ChatLiveConfig{Model: "test", WorkDir: "/tmp"})
 	m.helpTab = 1

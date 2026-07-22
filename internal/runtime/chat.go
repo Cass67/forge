@@ -757,6 +757,23 @@ func RunChatLive(setup *ChatSetup) {
 					running = false
 					evRenderer.Info("turn canceled")
 				}
+			case "__new_session__":
+				if setup != nil && setup.debugRec != nil {
+					setup.debugRec.logInput("control", rawInput)
+				}
+				// Cancel any in-flight turn first, then clear, so a new session
+				// never inherits the old run's history or queued steering.
+				if running {
+					reactRunner.MarkInterrupted()
+					if tc, ok := turnCancel.Load().(context.CancelFunc); ok {
+						tc()
+					}
+					_ = reactRunner.DiscardPendingInput()
+					running = false
+				}
+				state.Clear()
+				reactRunner.ClearHistory()
+				evRenderer.Info("new session started")
 			case "__turn_done__":
 				evRenderer.TurnDone()
 				running = false
