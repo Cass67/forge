@@ -6,7 +6,7 @@ It does not cover packaging or distribution systems such as Homebrew, Scoop, `.d
 
 ## Requirements
 
-- Go `1.26.3`
+- Go `1.26.7`
 - `just` installed and available on your `PATH`
 - a working C toolchain is not required for the current default build
 
