@@ -5,60 +5,14 @@ import (
 	"strings"
 )
 
-// deviceWriteCommands have no legitimate agent use at all: unlike a delete,
-// there is no target that makes them safe, so they are matched by name.
-var deviceWriteCommands = []string{"mkfs", "mke2fs", "fdisk", "parted"}
-
-// blockedDestructiveTarget reports the path a command would destroy when that
-// path is one nothing should destroy, or "" when the command may run.
-//
-// The question asked is deliberately narrow and decidable: not "does this look
-// dangerous", which no amount of pattern matching answers, but "which path does
-// this resolve to, and is that path a system or home root". Deleting inside the
-// workspace is ordinary work and stays untouched.
-func blockedDestructiveTarget(command, workDir, home string) string {
-	for _, segment := range splitCommandSegments(command) {
-		fields := strings.Fields(segment)
-		if len(fields) == 0 {
-			continue
-		}
-		fields = stripCommandPrefixes(fields)
-		if len(fields) == 0 {
-			continue
-		}
-		if target := blockedDeviceWrite(fields); target != "" {
-			return target
-		}
-		if target := blockedRecursiveDelete(fields, workDir, home); target != "" {
-			return target
-		}
-	}
-	return ""
-}
-
-// blockedDeviceWrite catches writes that address a block device directly.
-func blockedDeviceWrite(fields []string) string {
-	name := filepath.Base(fields[0])
-	for _, blocked := range deviceWriteCommands {
-		if name == blocked || strings.HasPrefix(name, blocked+".") {
-			return strings.Join(fields, " ")
-		}
-	}
-	if name != "dd" {
-		return ""
-	}
-	for _, field := range fields[1:] {
-		if value, ok := strings.CutPrefix(field, "of="); ok && strings.HasPrefix(value, "/dev/") {
-			return value
-		}
-	}
-	return ""
-}
-
-// blockedRecursiveDelete resolves each target of a recursive delete and returns
-// the first that names a protected root.
-func blockedRecursiveDelete(fields []string, workDir, home string) string {
-	if filepath.Base(fields[0]) != "rm" {
+// blockedPathTarget resolves each target of a recursive, destructive path
+// operation and returns the first that names a protected root. Deleting a
+// directory and recursively rewriting its ownership or permissions are the
+// same catastrophe when aimed at /, so they share one rule.
+func blockedPathTarget(fields []string, workDir, home string) string {
+	switch filepath.Base(fields[0]) {
+	case "rm", "chmod", "chown", "chgrp", "shred":
+	default:
 		return ""
 	}
 	recursive := false
@@ -123,8 +77,15 @@ func isProtectedRoot(path, home string) bool {
 	if path == string(filepath.Separator) {
 		return true
 	}
-	if home != "" && path == filepath.Clean(home) {
-		return true
+	if home != "" {
+		if path == filepath.Clean(home) {
+			return true
+		}
+		for _, secret := range []string{".ssh", ".gnupg", ".aws", ".kube"} {
+			if path == filepath.Join(home, secret) {
+				return true
+			}
+		}
 	}
 	switch path {
 	case "/bin", "/boot", "/dev", "/etc", "/home", "/lib", "/opt", "/private",

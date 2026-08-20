@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestBlockedDestructiveTarget(t *testing.T) {
+func TestBlockedCommandPathTargets(t *testing.T) {
 	home := t.TempDir()
 	work := filepath.Join(home, "projects", "app")
 
@@ -28,8 +28,8 @@ func TestBlockedDestructiveTarget(t *testing.T) {
 		"dd if=/dev/zero of=/dev/sda",
 	}
 	for _, cmd := range blocked {
-		if got := blockedDestructiveTarget(cmd, work, home); got == "" {
-			t.Errorf("blockedDestructiveTarget(%q) = \"\", want it refused", cmd)
+		if got := blockedCommand(cmd, work, home); got == "" {
+			t.Errorf("blockedCommand(%q) = \"\", want it refused", cmd)
 		}
 	}
 
@@ -47,8 +47,8 @@ func TestBlockedDestructiveTarget(t *testing.T) {
 		"grep -rn 'rm -rf /' docs/",
 	}
 	for _, cmd := range allowed {
-		if got := blockedDestructiveTarget(cmd, work, home); got != "" {
-			t.Errorf("blockedDestructiveTarget(%q) = %q, want it allowed", cmd, got)
+		if got := blockedCommand(cmd, work, home); got != "" {
+			t.Errorf("blockedCommand(%q) = %q, want it allowed", cmd, got)
 		}
 	}
 }
