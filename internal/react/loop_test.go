@@ -153,7 +153,7 @@ func (r *recordingRenderer) Stats(_ time.Duration, usage llm.Usage) {
 	r.statsCalls++
 	r.statsUsage = append(r.statsUsage, usage)
 }
-func (r *recordingRenderer) StatsWithContext(_ time.Duration, usage llm.Usage, contextUsed int) {
+func (r *recordingRenderer) StatsWithContext(_ time.Duration, usage llm.Usage, contextUsed, _ int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.events = append(r.events, "stats")
@@ -1680,6 +1680,94 @@ func TestRunnerAppendsPostEditDiagnosticsAfterSuccessfulMutatingTool(t *testing.
 	}
 	if !found {
 		t.Fatalf("session history missing post-edit validation feedback: %#v", session.Snapshot().History)
+	}
+}
+
+// Language-server errors must reach the model in the same turn as the edit,
+// without waiting for it to think of running a build.
+func TestRunnerAppendsLSPDiagnosticsAfterMutatingTool(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:             "write_file",
+		Description:      "write file",
+		AutoApprove:      true,
+		MutatesWorkspace: true,
+		LastDiff: func() string {
+			return "diff --git a/a.go b/a.go"
+		},
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return "ok", nil
+		},
+	})
+	session := NewSession()
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	var sawFiles []string
+	r := NewRunner(Config{
+		Tools:   reg,
+		Session: session,
+		DiagnosticsProvider: func(_ context.Context, changedFiles []string) string {
+			sawFiles = changedFiles
+			return "a.go:3:2: undefined: greet"
+		},
+	})
+
+	if err := r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{ID: "write-1", Name: "write_file", ArgsJSON: `{"path":"a.go","content":"x"}`}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(sawFiles) != 1 || sawFiles[0] != "a.go" {
+		t.Fatalf("changed files = %#v, want [a.go]", sawFiles)
+	}
+	var found bool
+	for _, msg := range session.Snapshot().History {
+		if msg.Role == llm.RoleUser && strings.Contains(msg.Content, "language server reports errors") && strings.Contains(msg.Content, "undefined: greet") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("session history missing lsp diagnostics feedback: %#v", session.Snapshot().History)
+	}
+}
+
+// A clean type-check must inject nothing at all.
+func TestRunnerSkipsEmptyLSPDiagnostics(t *testing.T) {
+	reg := agenttools.NewRegistry()
+	reg.Register(agenttools.Tool{
+		Name:             "write_file",
+		Description:      "write file",
+		AutoApprove:      true,
+		MutatesWorkspace: true,
+		LastDiff:         func() string { return "diff --git a/a.go b/a.go" },
+		Execute: func(_ context.Context, _ map[string]any) (string, error) {
+			return "ok", nil
+		},
+	})
+	session := NewSession()
+	active, cancel, err := session.BeginTurn(context.Background(), "turn-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	r := NewRunner(Config{
+		Tools:               reg,
+		Session:             session,
+		DiagnosticsProvider: func(context.Context, []string) string { return "  \n " },
+	})
+
+	if err := r.executeNativeToolCalls(active.Context, active.Number, []llm.NativeToolCall{{ID: "write-1", Name: "write_file", ArgsJSON: `{"path":"a.go","content":"x"}`}}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, msg := range session.Snapshot().History {
+		if msg.Role == llm.RoleUser && strings.Contains(msg.Content, "Runtime diagnostic feedback") {
+			t.Fatalf("clean diagnostics still injected feedback: %q", msg.Content)
+		}
 	}
 }
 

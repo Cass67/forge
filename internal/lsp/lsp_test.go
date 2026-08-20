@@ -91,6 +91,199 @@ func TestClientSessionRoundTrip(t *testing.T) {
 	}
 }
 
+// A server is pooled per (workDir, language): spawning a fresh one per call
+// made every request pay the cold index, which is what the 8s timeout used to
+// be spent on.
+func TestServiceReusesPooledSession(t *testing.T) {
+	if len(os.Args) > 1 && os.Args[len(os.Args)-1] == "--forge-fake-lsp" {
+		runFakeLSPServer()
+		return
+	}
+
+	dir := t.TempDir()
+	source := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(source, []byte("package main\n\nfunc greet() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewService()
+	svc.servers["go"] = ServerConfig{
+		Command:    exe,
+		Args:       []string{"-test.run=TestServiceReusesPooledSession", "--", "--forge-fake-lsp"},
+		LanguageID: "go",
+	}
+	svc.lookPath = func(name string) (string, error) { return name, nil }
+	defer svc.Close(context.Background())
+
+	for i := 0; i < 2; i++ {
+		out, err := svc.Hover(context.Background(), dir, source, 3, 6)
+		if err != nil {
+			t.Fatalf("hover %d: %v", i, err)
+		}
+		if !strings.Contains(out, "fake hover") {
+			t.Fatalf("hover %d = %q", i, out)
+		}
+	}
+
+	if len(svc.sessions) != 1 {
+		t.Fatalf("pooled sessions = %d, want 1", len(svc.sessions))
+	}
+	var pid int
+	for _, sess := range svc.sessions {
+		pid = sess.cmd.Process.Pid
+	}
+
+	if _, err := svc.DocumentSymbols(context.Background(), dir, source); err != nil {
+		t.Fatalf("document symbols: %v", err)
+	}
+	if len(svc.sessions) != 1 {
+		t.Fatalf("pooled sessions after third call = %d, want 1", len(svc.sessions))
+	}
+	for _, sess := range svc.sessions {
+		if sess.cmd.Process.Pid != pid {
+			t.Fatalf("server respawned: pid %d then %d", pid, sess.cmd.Process.Pid)
+		}
+	}
+}
+
+// A server that died must not be handed out again.
+func TestServiceReplacesDeadSession(t *testing.T) {
+	if len(os.Args) > 1 && os.Args[len(os.Args)-1] == "--forge-fake-lsp" {
+		runFakeLSPServer()
+		return
+	}
+
+	dir := t.TempDir()
+	source := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(source, []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewService()
+	svc.servers["go"] = ServerConfig{
+		Command:    exe,
+		Args:       []string{"-test.run=TestServiceReplacesDeadSession", "--", "--forge-fake-lsp"},
+		LanguageID: "go",
+	}
+	svc.lookPath = func(name string) (string, error) { return name, nil }
+	defer svc.Close(context.Background())
+
+	if _, err := svc.Hover(context.Background(), dir, source, 1, 1); err != nil {
+		t.Fatalf("first hover: %v", err)
+	}
+	var first *session
+	for _, sess := range svc.sessions {
+		first = sess
+	}
+	_ = first.cmd.Process.Kill()
+	deadline := time.Now().Add(2 * time.Second)
+	for first.alive() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if first.alive() {
+		t.Fatal("killed server still reports alive")
+	}
+
+	if _, err := svc.Hover(context.Background(), dir, source, 1, 1); err != nil {
+		t.Fatalf("second hover: %v", err)
+	}
+	for _, sess := range svc.sessions {
+		if sess == first {
+			t.Fatal("dead session was handed out again")
+		}
+	}
+}
+
+// Diagnostics are unsolicited notifications, not a request/response pair; the
+// service must hold them per URI and hand back errors only.
+func TestServiceDiagnosticsReturnsErrorsOnly(t *testing.T) {
+	if len(os.Args) > 1 && os.Args[len(os.Args)-1] == "--forge-fake-lsp" {
+		runFakeLSPServer()
+		return
+	}
+
+	dir := t.TempDir()
+	source := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(source, []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewService()
+	svc.servers["go"] = ServerConfig{
+		Command:    exe,
+		Args:       []string{"-test.run=TestServiceDiagnosticsReturnsErrorsOnly", "--", "--forge-fake-lsp"},
+		LanguageID: "go",
+	}
+	svc.lookPath = func(name string) (string, error) { return name, nil }
+	defer svc.Close(context.Background())
+
+	out, err := svc.Diagnostics(context.Background(), dir, []string{source})
+	if err != nil {
+		t.Fatalf("diagnostics: %v", err)
+	}
+	if !strings.Contains(out, "undefined: greet") {
+		t.Fatalf("diagnostics = %q, want the error", out)
+	}
+	if strings.Contains(out, "unused variable") {
+		t.Fatalf("diagnostics = %q, want warnings dropped", out)
+	}
+	if !strings.Contains(out, "main.go:3:2") {
+		t.Fatalf("diagnostics = %q, want 1-based line:column", out)
+	}
+}
+
+// A clean file publishes an empty set (or nothing at all); either way the
+// report must be empty so no feedback is injected into the turn.
+func TestServiceDiagnosticsQuietWhenClean(t *testing.T) {
+	if len(os.Args) > 1 && os.Args[len(os.Args)-1] == "--forge-fake-lsp" {
+		runFakeLSPServer()
+		return
+	}
+
+	dir := t.TempDir()
+	source := filepath.Join(dir, "clean.go")
+	if err := os.WriteFile(source, []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewService()
+	svc.servers["go"] = ServerConfig{
+		Command:    exe,
+		Args:       []string{"-test.run=TestServiceDiagnosticsQuietWhenClean", "--", "--forge-fake-lsp"},
+		LanguageID: "go",
+	}
+	svc.lookPath = func(name string) (string, error) { return name, nil }
+	defer svc.Close(context.Background())
+
+	out, err := svc.Diagnostics(context.Background(), dir, []string{source})
+	if err != nil {
+		t.Fatalf("diagnostics: %v", err)
+	}
+	if out != "" {
+		t.Fatalf("diagnostics = %q, want empty", out)
+	}
+}
+
 func runFakeLSPServer() {
 	reader := bufio.NewReader(os.Stdin)
 	writer := bufio.NewWriter(os.Stdout)
@@ -110,7 +303,44 @@ func runFakeLSPServer() {
 		var method string
 		_ = json.Unmarshal(msg["method"], &method)
 
-		if method == "initialized" || method == "textDocument/didOpen" || method == "exit" {
+		if method == "textDocument/didOpen" || method == "textDocument/didChange" {
+			var params map[string]json.RawMessage
+			_ = json.Unmarshal(msg["params"], &params)
+			var doc struct {
+				URI string `json:"uri"`
+			}
+			_ = json.Unmarshal(params["textDocument"], &doc)
+			if strings.Contains(doc.URI, "clean.go") {
+				writeNotification(writer, "textDocument/publishDiagnostics", map[string]any{
+					"uri":         doc.URI,
+					"diagnostics": []any{},
+				})
+				continue
+			}
+			writeNotification(writer, "textDocument/publishDiagnostics", map[string]any{
+				"uri": doc.URI,
+				"diagnostics": []map[string]any{
+					{
+						"severity": 1,
+						"message":  "undefined: greet",
+						"range": map[string]any{
+							"start": map[string]any{"line": 2, "character": 1},
+							"end":   map[string]any{"line": 2, "character": 6},
+						},
+					},
+					{
+						"severity": 2,
+						"message":  "unused variable",
+						"range": map[string]any{
+							"start": map[string]any{"line": 4, "character": 0},
+							"end":   map[string]any{"line": 4, "character": 3},
+						},
+					},
+				},
+			})
+			continue
+		}
+		if method == "initialized" || method == "exit" {
 			continue
 		}
 		if method == "initialize" {
@@ -192,6 +422,10 @@ func readMessage(r *bufio.Reader) ([]byte, error) {
 		return nil, err
 	}
 	return buf, nil
+}
+
+func writeNotification(w *bufio.Writer, method string, params any) {
+	writeMessage(w, map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
 }
 
 func writeResponse(w *bufio.Writer, id json.RawMessage, result any) {

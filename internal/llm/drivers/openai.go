@@ -222,8 +222,9 @@ func (d *OpenAIDriver) streamChatCompletions(ctx context.Context, messages []llm
 		chunk := stream.Current()
 		if chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0 {
 			usage := llm.Usage{
-				InputTokens:  int(chunk.Usage.PromptTokens),
-				OutputTokens: int(chunk.Usage.CompletionTokens),
+				InputTokens:       int(chunk.Usage.PromptTokens),
+				OutputTokens:      int(chunk.Usage.CompletionTokens),
+				CachedInputTokens: int(chunk.Usage.PromptTokensDetails.CachedTokens),
 			}
 			if quota := copilot.ExtractQuotaJSON(chunk.RawJSON()); quota != nil {
 				usage.CopilotQuota = quota
@@ -371,6 +372,7 @@ func (d *OpenAIDriver) chatCompletionsFallback(ctx context.Context, messages []l
 	if res.Usage.PromptTokens > 0 || res.Usage.CompletionTokens > 0 {
 		usage.InputTokens = int(res.Usage.PromptTokens)
 		usage.OutputTokens = int(res.Usage.CompletionTokens)
+		usage.CachedInputTokens = int(res.Usage.PromptTokensDetails.CachedTokens)
 	}
 	if usage.OutputTokens == 0 && outputChars > 0 {
 		usage.OutputTokens = (outputChars + 3) / 4
@@ -444,6 +446,7 @@ func (d *OpenAIDriver) streamResponsesWithTools(ctx context.Context, messages []
 			if event.Response.Usage.InputTokens > 0 || event.Response.Usage.OutputTokens > 0 {
 				usage.InputTokens = int(event.Response.Usage.InputTokens)
 				usage.OutputTokens = int(event.Response.Usage.OutputTokens)
+				usage.CachedInputTokens = int(event.Response.Usage.InputTokensDetails.CachedTokens)
 			}
 			if quota := copilot.ExtractQuotaJSON(event.Response.RawJSON()); quota != nil {
 				usage.CopilotQuota = quota
@@ -1398,8 +1401,9 @@ func (d *OpenAIDriver) streamChatCompletionsWithTools(ctx context.Context, messa
 		chunk := stream.Current()
 		if chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0 {
 			usage := llm.Usage{
-				InputTokens:  int(chunk.Usage.PromptTokens),
-				OutputTokens: int(chunk.Usage.CompletionTokens),
+				InputTokens:       int(chunk.Usage.PromptTokens),
+				OutputTokens:      int(chunk.Usage.CompletionTokens),
+				CachedInputTokens: int(chunk.Usage.PromptTokensDetails.CachedTokens),
 			}
 			d.mu.Lock()
 			d.lastUsage = usage

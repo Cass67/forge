@@ -25,14 +25,28 @@ type ServerConfig struct {
 type Service struct {
 	servers  map[string]ServerConfig
 	lookPath func(string) (string, error)
-	timeout  time.Duration
+	// coldTimeout covers the first call against a server, which pays for the
+	// initial index (gopls and rust-analyzer spend most of a cold start there).
+	// Once the server is warm and pooled, later calls answer in milliseconds
+	// and a short timeout is what keeps a wedged server from stalling a turn.
+	coldTimeout time.Duration
+	timeout     time.Duration
+
+	mu       sync.Mutex
+	sessions map[string]*session
 }
+
+// Shared is the process-wide service. Language servers are pooled inside it,
+// so every caller must go through the same instance or the pool buys nothing.
+var Shared = sync.OnceValue(NewService)
 
 func NewService() *Service {
 	return &Service{
-		servers:  defaultServers(),
-		lookPath: exec.LookPath,
-		timeout:  8 * time.Second,
+		servers:     defaultServers(),
+		lookPath:    exec.LookPath,
+		coldTimeout: 8 * time.Second,
+		timeout:     2 * time.Second,
+		sessions:    map[string]*session{},
 	}
 }
 
@@ -112,6 +126,20 @@ type hoverResponse struct {
 	Range    *rangeValue `json:"range,omitempty"`
 }
 
+type diagnostic struct {
+	Range    rangeValue `json:"range"`
+	Severity int        `json:"severity"`
+	Source   string     `json:"source,omitempty"`
+	Code     any        `json:"code,omitempty"`
+	Message  string     `json:"message"`
+}
+
+type publishDiagnosticsParams struct {
+	URI         string       `json:"uri"`
+	Version     *int         `json:"version,omitempty"`
+	Diagnostics []diagnostic `json:"diagnostics"`
+}
+
 type documentSymbol struct {
 	Name           string           `json:"name"`
 	Kind           int              `json:"kind"`
@@ -141,10 +169,20 @@ type session struct {
 	mu      sync.Mutex
 	nextID  int64
 	pending map[int64]chan rpcEnvelope
+	opened  map[string]int
+	dead    bool
+
+	// Diagnostics arrive unsolicited, at the server's leisure, and replace the
+	// previous set for a URI wholesale.
+	diagnostics map[string][]diagnostic
+	published   map[string]chan struct{}
 }
 
+// newSession starts a language server. The process is deliberately not tied to
+// ctx: pooled servers outlive the call that spawned them, and ctx only bounds
+// the initialize handshake below.
 func newSession(ctx context.Context, cfg ServerConfig, workDir string) (*session, error) {
-	cmd := exec.CommandContext(ctx, cfg.Command, cfg.Args...)
+	cmd := exec.Command(cfg.Command, cfg.Args...)
 	cmd.Dir = workDir
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -159,19 +197,26 @@ func newSession(ctx context.Context, cfg ServerConfig, workDir string) (*session
 		return nil, err
 	}
 	s := &session{
-		cmd:     cmd,
-		stdin:   stdin,
-		stdout:  bufio.NewReader(stdout),
-		pending: map[int64]chan rpcEnvelope{},
+		cmd:         cmd,
+		stdin:       stdin,
+		stdout:      bufio.NewReader(stdout),
+		pending:     map[int64]chan rpcEnvelope{},
+		opened:      map[string]int{},
+		diagnostics: map[string][]diagnostic{},
+		published:   map[string]chan struct{}{},
 	}
 	go s.readLoop()
 
 	rootURI := pathToURI(workDir)
 	var initResult map[string]any
 	if err := s.Request(ctx, "initialize", map[string]any{
-		"processId":    os.Getpid(),
-		"rootUri":      rootURI,
-		"capabilities": map[string]any{},
+		"processId": os.Getpid(),
+		"rootUri":   rootURI,
+		"capabilities": map[string]any{
+			"textDocument": map[string]any{
+				"publishDiagnostics": map[string]any{"relatedInformation": false},
+			},
+		},
 	}, &initResult); err != nil {
 		_ = s.cmd.Process.Kill()
 		return nil, err
@@ -183,6 +228,9 @@ func newSession(ctx context.Context, cfg ServerConfig, workDir string) (*session
 	return s, nil
 }
 
+// OpenDocument syncs a file into a pooled server. A second didOpen for the same
+// URI is a protocol error, so an already-open document is re-sent as didChange
+// with a bumped version — which also picks up edits made since the last call.
 func (s *session) OpenDocument(ctx context.Context, path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -192,11 +240,27 @@ func (s *session) OpenDocument(ctx context.Context, path string) error {
 	if !ok {
 		return fmt.Errorf("unsupported language for %s", path)
 	}
+	uri := pathToURI(path)
+
+	s.mu.Lock()
+	version, already := s.opened[uri]
+	version++
+	s.opened[uri] = version
+	s.mu.Unlock()
+
+	if already {
+		return s.Notify("textDocument/didChange", map[string]any{
+			"textDocument": map[string]any{"uri": uri, "version": version},
+			"contentChanges": []map[string]any{
+				{"text": string(data)},
+			},
+		})
+	}
 	return s.Notify("textDocument/didOpen", map[string]any{
 		"textDocument": textDocumentItem{
-			URI:        pathToURI(path),
+			URI:        uri,
 			LanguageID: cfg.LanguageID,
-			Version:    1,
+			Version:    version,
 			Text:       string(data),
 		},
 	})
@@ -243,6 +307,57 @@ func (s *session) Notify(method string, params any) error {
 	return s.writeMessage(rpcEnvelope{JSONRPC: "2.0", Method: method, Params: mustMarshal(params)})
 }
 
+func (s *session) storeDiagnostics(params json.RawMessage) {
+	var payload publishDiagnosticsParams
+	if err := json.Unmarshal(params, &payload); err != nil {
+		return
+	}
+	s.mu.Lock()
+	s.diagnostics[payload.URI] = payload.Diagnostics
+	waiter := s.published[payload.URI]
+	delete(s.published, payload.URI)
+	s.mu.Unlock()
+	if waiter != nil {
+		close(waiter)
+	}
+}
+
+// waitForDiagnostics blocks until the server publishes for uri, or ctx expires.
+// A server with nothing to say never publishes, so the timeout is the normal
+// exit for clean files, not an error.
+func (s *session) waitForDiagnostics(ctx context.Context, uri string) []diagnostic {
+	s.mu.Lock()
+	waiter, ok := s.published[uri]
+	if !ok {
+		waiter = make(chan struct{})
+		s.published[uri] = waiter
+	}
+	s.mu.Unlock()
+
+	select {
+	case <-waiter:
+	case <-ctx.Done():
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.diagnostics[uri]
+}
+
+// invalidateDiagnostics drops the previous set for uri so a stale publish from
+// an earlier version is never mistaken for a fresh one.
+func (s *session) invalidateDiagnostics(uri string) {
+	s.mu.Lock()
+	delete(s.diagnostics, uri)
+	s.mu.Unlock()
+}
+
+func (s *session) alive() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return !s.dead
+}
+
 func (s *session) allocateID() int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -265,6 +380,11 @@ func (s *session) writeMessage(msg rpcEnvelope) error {
 }
 
 func (s *session) readLoop() {
+	defer func() {
+		s.mu.Lock()
+		s.dead = true
+		s.mu.Unlock()
+	}()
 	for {
 		payload, err := readFrame(s.stdout)
 		if err != nil {
@@ -275,6 +395,9 @@ func (s *session) readLoop() {
 			continue
 		}
 		if env.ID == 0 {
+			if env.Method == "textDocument/publishDiagnostics" {
+				s.storeDiagnostics(env.Params)
+			}
 			continue
 		}
 		s.mu.Lock()
@@ -379,30 +502,92 @@ func (s *Service) configForPath(path string) (ServerConfig, error) {
 	return cfg, nil
 }
 
-func (s *Service) withSession(ctx context.Context, workDir, path string, fn func(*session) (string, error)) (string, error) {
+// acquire returns a pooled server for (workDir, language), starting one if there
+// is none or the previous one died. cold reports whether the server was just
+// started and still owes an index.
+func (s *Service) acquire(ctx context.Context, cfg ServerConfig, workDir string) (sess *session, cold bool, err error) {
+	key := workDir + "\x00" + cfg.LanguageID
+
+	s.mu.Lock()
+	if s.sessions == nil {
+		s.sessions = map[string]*session{}
+	}
+	existing := s.sessions[key]
+	s.mu.Unlock()
+
+	if existing != nil {
+		if existing.alive() {
+			return existing, false, nil
+		}
+		s.mu.Lock()
+		if s.sessions[key] == existing {
+			delete(s.sessions, key)
+		}
+		s.mu.Unlock()
+	}
+
+	started, err := newSession(ctx, cfg, workDir)
+	if err != nil {
+		return nil, false, err
+	}
+
+	s.mu.Lock()
+	// Another call may have raced us to a server for the same key; keep theirs
+	// so the pool never holds two servers for one workspace.
+	if winner := s.sessions[key]; winner != nil && winner.alive() {
+		s.mu.Unlock()
+		started.Close(context.Background())
+		return winner, false, nil
+	}
+	s.sessions[key] = started
+	s.mu.Unlock()
+	return started, true, nil
+}
+
+// Close shuts down every pooled server. Safe to call more than once.
+func (s *Service) Close(ctx context.Context) {
+	s.mu.Lock()
+	pooled := s.sessions
+	s.sessions = map[string]*session{}
+	s.mu.Unlock()
+	for _, sess := range pooled {
+		sess.Close(ctx)
+	}
+}
+
+func (s *Service) withSession(ctx context.Context, workDir, path string, fn func(context.Context, *session) (string, error)) (string, error) {
 	cfg, err := s.configForPath(path)
 	if err != nil {
 		return "", err
 	}
-	timeout := s.timeout
-	if timeout <= 0 {
-		timeout = 8 * time.Second
+	cold := s.coldTimeout
+	if cold <= 0 {
+		cold = 8 * time.Second
 	}
-	callCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	sess, err := newSession(callCtx, cfg, workDir)
+	spawnCtx, cancelSpawn := context.WithTimeout(ctx, cold)
+	defer cancelSpawn()
+	sess, wasCold, err := s.acquire(spawnCtx, cfg, workDir)
 	if err != nil {
 		return "", err
 	}
-	defer sess.Close(context.Background())
+
+	timeout := s.timeout
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	if wasCold {
+		timeout = cold
+	}
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	if err := sess.OpenDocument(callCtx, path); err != nil {
 		return "", err
 	}
-	return fn(sess)
+	return fn(callCtx, sess)
 }
 
 func (s *Service) Definition(ctx context.Context, workDir, path string, line, column int) (string, error) {
-	return s.withSession(ctx, workDir, path, func(sess *session) (string, error) {
+	return s.withSession(ctx, workDir, path, func(ctx context.Context, sess *session) (string, error) {
 		var locations []location
 		err := sess.Request(ctx, "textDocument/definition", textDocumentPositionParams{
 			TextDocument: textDocumentIdentifier{URI: pathToURI(path)},
@@ -416,7 +601,7 @@ func (s *Service) Definition(ctx context.Context, workDir, path string, line, co
 }
 
 func (s *Service) References(ctx context.Context, workDir, path string, line, column int, includeDeclaration bool) (string, error) {
-	return s.withSession(ctx, workDir, path, func(sess *session) (string, error) {
+	return s.withSession(ctx, workDir, path, func(ctx context.Context, sess *session) (string, error) {
 		var locations []location
 		err := sess.Request(ctx, "textDocument/references", referenceParams{
 			TextDocument: textDocumentIdentifier{URI: pathToURI(path)},
@@ -431,7 +616,7 @@ func (s *Service) References(ctx context.Context, workDir, path string, line, co
 }
 
 func (s *Service) Hover(ctx context.Context, workDir, path string, line, column int) (string, error) {
-	return s.withSession(ctx, workDir, path, func(sess *session) (string, error) {
+	return s.withSession(ctx, workDir, path, func(ctx context.Context, sess *session) (string, error) {
 		var hover hoverResponse
 		err := sess.Request(ctx, "textDocument/hover", textDocumentPositionParams{
 			TextDocument: textDocumentIdentifier{URI: pathToURI(path)},
@@ -449,7 +634,7 @@ func (s *Service) Hover(ctx context.Context, workDir, path string, line, column 
 }
 
 func (s *Service) DocumentSymbols(ctx context.Context, workDir, path string) (string, error) {
-	return s.withSession(ctx, workDir, path, func(sess *session) (string, error) {
+	return s.withSession(ctx, workDir, path, func(ctx context.Context, sess *session) (string, error) {
 		var symbols []documentSymbol
 		err := sess.Request(ctx, "textDocument/documentSymbol", map[string]any{
 			"textDocument": textDocumentIdentifier{URI: pathToURI(path)},
@@ -466,6 +651,71 @@ func (s *Service) DocumentSymbols(ctx context.Context, workDir, path string) (st
 		}
 		return strings.Join(parts, "\n"), nil
 	})
+}
+
+// maxReportedDiagnostics caps what goes back into the turn. A file with 40
+// errors is usually one broken import; the model does not need every line.
+const maxReportedDiagnostics = 20
+
+// diagnosticSettleWindow is how long to wait for a server to publish after a
+// document is synced. Diagnostics are unsolicited, so there is nothing to
+// block on except time.
+const diagnosticSettleWindow = 3 * time.Second
+
+// Diagnostics type-checks the given files through their language servers and
+// returns errors only, formatted one per line. Files with no configured server
+// are skipped rather than reported: a missing gopls is not a code problem.
+func (s *Service) Diagnostics(ctx context.Context, workDir string, paths []string) (string, error) {
+	var lines []string
+	truncated := false
+
+	for _, path := range paths {
+		if truncated {
+			break
+		}
+		cfg, err := s.configForPath(path)
+		if err != nil {
+			continue
+		}
+		sess, _, err := s.acquire(ctx, cfg, workDir)
+		if err != nil {
+			continue
+		}
+		uri := pathToURI(path)
+		sess.invalidateDiagnostics(uri)
+		if err := sess.OpenDocument(ctx, path); err != nil {
+			continue
+		}
+		waitCtx, cancel := context.WithTimeout(ctx, diagnosticSettleWindow)
+		found := sess.waitForDiagnostics(waitCtx, uri)
+		cancel()
+
+		for _, diag := range found {
+			// Severity 1 is Error; warnings, hints, and info are noise here and
+			// cost tokens on every edit.
+			if diag.Severity != 1 {
+				continue
+			}
+			lines = append(lines, fmt.Sprintf("%s:%d:%d: %s",
+				uriToPath(uri),
+				diag.Range.Start.Line+1,
+				diag.Range.Start.Character+1,
+				strings.TrimSpace(diag.Message)))
+			if len(lines) >= maxReportedDiagnostics {
+				truncated = true
+				break
+			}
+		}
+	}
+
+	if len(lines) == 0 {
+		return "", nil
+	}
+	out := strings.Join(lines, "\n")
+	if truncated {
+		out += "\n... (more diagnostics not shown)"
+	}
+	return out, nil
 }
 
 func formatLocations(label string, locations []location) string {

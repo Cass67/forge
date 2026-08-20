@@ -22,7 +22,7 @@ type RenderTarget interface {
 }
 
 type ContextStatsTarget interface {
-	StatsWithContext(duration time.Duration, usage llm.Usage, contextUsed int)
+	StatsWithContext(duration time.Duration, usage llm.Usage, contextUsed, contextLimit int)
 }
 
 // ReasoningTarget is optionally implemented by renderers that can show the

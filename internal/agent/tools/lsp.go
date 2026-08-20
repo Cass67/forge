@@ -14,7 +14,9 @@ type lspService interface {
 	DocumentSymbols(ctx context.Context, workDir, path string) (string, error)
 }
 
-var newLSPService = func() lspService { return lsp.NewService() }
+// The shared service pools language servers; a per-call service would spawn and
+// kill a fresh gopls every time, paying the cold index on every request.
+var newLSPService = func() lspService { return lsp.Shared() }
 
 func NewLSPDefinition(workDir string) Tool {
 	return Tool{

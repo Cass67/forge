@@ -196,6 +196,7 @@ func (d *OpenAIDriver) wsSendAndRead(ctx context.Context, conn *websocket.Conn, 
 
 func (d *OpenAIDriver) wsReadEvents(ctx context.Context, conn *websocket.Conn, out chan<- llm.Token, hasTools bool) error {
 	var outputChars int
+	var sawReasoning bool
 	var completedOutput []responses.ResponseOutputItemUnion
 	var responseID string
 	var sawCompleted bool
@@ -250,8 +251,22 @@ func (d *OpenAIDriver) wsReadEvents(ctx context.Context, conn *websocket.Conn, o
 				if err := json.Unmarshal(raw, &delta); err != nil || delta.Delta == "" {
 					continue
 				}
+				sawReasoning = true
 				select {
 				case out <- llm.Token{ReasoningContent: delta.Delta}:
+				case <-ctx.Done():
+					errCh <- ctx.Err()
+					return
+				}
+
+			// Each summary part carries its own bold header. Without a break
+			// between parts they concatenate into one run of text.
+			case "response.reasoning_summary_part.added":
+				if !sawReasoning {
+					continue
+				}
+				select {
+				case out <- llm.Token{ReasoningContent: "\n\n"}:
 				case <-ctx.Done():
 					errCh <- ctx.Err()
 					return
@@ -277,6 +292,7 @@ func (d *OpenAIDriver) wsReadEvents(ctx context.Context, conn *websocket.Conn, o
 				if done.Response.Usage.InputTokens > 0 || done.Response.Usage.OutputTokens > 0 {
 					usage.InputTokens = int(done.Response.Usage.InputTokens)
 					usage.OutputTokens = int(done.Response.Usage.OutputTokens)
+					usage.CachedInputTokens = int(done.Response.Usage.InputTokensDetails.CachedTokens)
 				}
 				if usage.InputTokens > 0 || usage.OutputTokens > 0 {
 					d.mu.Lock()
@@ -306,7 +322,7 @@ func (d *OpenAIDriver) wsReadEvents(ctx context.Context, conn *websocket.Conn, o
 			case "response.created", "response.in_progress", "response.output_item.added",
 				"response.content_part.added", "response.content_part.done",
 				"response.function_call_arguments.delta", "response.function_call_arguments.done",
-				"response.reasoning_summary_part.added", "response.reasoning_summary_part.done",
+				"response.reasoning_summary_part.done",
 				"response.reasoning_summary_text.done", "response.reasoning_text.done":
 			}
 		}

@@ -40,13 +40,15 @@ func (discardRuntimeRenderTarget) Info(string)                             {}
 
 type contextRuntimeRenderTarget struct {
 	discardRuntimeRenderTarget
-	contextUsed int
-	usage       llm.Usage
+	contextUsed  int
+	contextLimit int
+	usage        llm.Usage
 }
 
-func (r *contextRuntimeRenderTarget) StatsWithContext(_ time.Duration, usage llm.Usage, contextUsed int) {
+func (r *contextRuntimeRenderTarget) StatsWithContext(_ time.Duration, usage llm.Usage, contextUsed, contextLimit int) {
 	r.usage = usage
 	r.contextUsed = contextUsed
+	r.contextLimit = contextLimit
 }
 
 func TestToolContractsDoNotUseJSONInStringParameters(t *testing.T) {
@@ -489,10 +491,13 @@ func TestAgentProgressRendererForwardsContextStats(t *testing.T) {
 		t.Fatalf("wrapped renderer should preserve ContextStatsTarget support")
 	}
 
-	contextRenderer.StatsWithContext(time.Second, llm.Usage{InputTokens: 12, OutputTokens: 3}, 456)
+	contextRenderer.StatsWithContext(time.Second, llm.Usage{InputTokens: 12, OutputTokens: 3}, 456, 200000)
 
 	if target.contextUsed != 456 {
 		t.Fatalf("contextUsed = %d, want 456", target.contextUsed)
+	}
+	if target.contextLimit != 200000 {
+		t.Fatalf("contextLimit = %d, want 200000", target.contextLimit)
 	}
 	if target.usage.InputTokens != 12 || target.usage.OutputTokens != 3 {
 		t.Fatalf("usage = %#v", target.usage)

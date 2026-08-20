@@ -45,6 +45,10 @@ type Config struct {
 	OutputStore               sessionstore.OutputStore
 	OutputStoreThresholdBytes int
 	PostEditValidator         *PostEditValidator
+	// DiagnosticsProvider type-checks the files a turn changed and returns
+	// errors only (empty when clean). It runs after a mutating turn so the
+	// model sees type errors before it spends a turn discovering them.
+	DiagnosticsProvider func(ctx context.Context, changedFiles []string) string
 	// LeanToolExposure exposes only LeanCoreToolNames schemas to the model.
 	// Every other registered tool stays callable (schema via tool_help).
 	LeanToolExposure bool
@@ -88,6 +92,8 @@ type Runner struct {
 	checkpointIDsByTurn       map[string]string
 	postEditValidator         *PostEditValidator
 	leanToolExposure          bool
+	contextWindowTokens       func() int
+	diagnosticsProvider       func(context.Context, []string) string
 }
 
 type gitCommitBlocker int
@@ -316,6 +322,8 @@ func NewRunner(cfg Config) *Runner {
 		checkpointIDsByTurn:       make(map[string]string),
 		postEditValidator:         cfg.PostEditValidator,
 		leanToolExposure:          cfg.LeanToolExposure,
+		contextWindowTokens:       cfg.ContextWindowTokens,
+		diagnosticsProvider:       cfg.DiagnosticsProvider,
 	}
 	if snap := session.Snapshot(); snap.TaskState != nil && isSynthesisGuardOperation(snap.TaskState.Operation) {
 		runner.planWorkflow.active = true
@@ -1658,8 +1666,33 @@ func runCommandResultExitZero(result string) bool {
 	return false
 }
 
+func (r *Runner) reportLSPDiagnostics(ctx context.Context, changedFiles []string) {
+	if r == nil || r.diagnosticsProvider == nil || r.session == nil {
+		return
+	}
+	files := uniqueStrings(changedFiles)
+	if len(files) == 0 {
+		return
+	}
+	report := strings.TrimSpace(r.diagnosticsProvider(ctx, files))
+	if report == "" {
+		return
+	}
+	if r.progress != nil {
+		r.progress(fmt.Sprintf("lsp diagnostics: %d error(s) across %d changed file(s)", len(strings.Split(report, "\n")), len(files)))
+	}
+	message := "Runtime diagnostic feedback (not a user instruction): the language server reports errors in the files just changed:\n\n" + report
+	if err := r.session.AppendUserMessage(message); err != nil && r.progress != nil {
+		r.progress("lsp diagnostics feedback was not persisted: " + err.Error())
+	}
+}
+
 func (r *Runner) runPostEditValidator(ctx context.Context, changedFiles []string, mutated bool) {
-	if r == nil || r.postEditValidator == nil || !mutated {
+	if r == nil || !mutated {
+		return
+	}
+	r.reportLSPDiagnostics(ctx, changedFiles)
+	if r.postEditValidator == nil {
 		return
 	}
 	result := r.postEditValidator.Validate(ctx, PostEditValidationRequest{ChangedFiles: uniqueStrings(changedFiles)})
@@ -2172,9 +2205,13 @@ func (r *Runner) emitStats(start time.Time) {
 	if r.renderer != nil {
 		contextUsed := r.lastPromptContextTokens
 		r.lastPromptContextTokens = 0
-		if contextUsed > 0 {
+		contextLimit := 0
+		if r.contextWindowTokens != nil {
+			contextLimit = r.contextWindowTokens()
+		}
+		if contextUsed > 0 || contextLimit > 0 {
 			if renderer, ok := r.renderer.(agent.ContextStatsTarget); ok {
-				renderer.StatsWithContext(duration, usage, contextUsed)
+				renderer.StatsWithContext(duration, usage, contextUsed, contextLimit)
 				return
 			}
 		}

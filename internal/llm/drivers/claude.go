@@ -90,9 +90,15 @@ func (d *ClaudeDriver) Stream(ctx context.Context, messages []llm.Message, out c
 	}
 
 	d.mu.Lock()
+	// Anthropic reports input_tokens net of cache; fold the cache counts back
+	// in so InputTokens means the same thing as it does for OpenAI.
+	cacheRead := int(acc.Usage.CacheReadInputTokens)
+	cacheWrite := int(acc.Usage.CacheCreationInputTokens)
 	d.lastUsage = llm.Usage{
-		InputTokens:  int(acc.Usage.InputTokens),
-		OutputTokens: int(acc.Usage.OutputTokens),
+		InputTokens:       int(acc.Usage.InputTokens) + cacheRead + cacheWrite,
+		OutputTokens:      int(acc.Usage.OutputTokens),
+		CachedInputTokens: cacheRead,
+		CacheWriteTokens:  cacheWrite,
 	}
 	d.mu.Unlock()
 

@@ -32,6 +32,7 @@ import (
 	"forge/internal/fsutil"
 	"forge/internal/hooks"
 	"forge/internal/llm"
+	"forge/internal/lsp"
 	"forge/internal/mcp"
 	"forge/internal/memory"
 	"forge/internal/modelcatalog"
@@ -787,6 +788,7 @@ func RunChatLive(setup *ChatSetup) {
 		},
 		CompactionMaxFailures:    setup.Config.Resilience.CompactionMaxFailures,
 		ContextWindowTokens:      func() int { return lookupContextWindow(setup.ChatModel) },
+		DiagnosticsProvider:      lspDiagnosticsProvider(setup.WorkDir),
 		Interactive:              true,
 		ToolThrashCircuitBreaker: setup.Config.Resilience.ToolThrashCircuitBreaker,
 		OutputStore:              configuredOutputStore(setup.Config),
@@ -1204,6 +1206,26 @@ func providerOptionsFromBootstrap(backends []bootstrap.ProviderBackend) []tui.Pr
 // leanToolExposure decides whether to expose the reduced tool-schema set.
 // Explicit config wins; otherwise lean is auto-enabled for local/self-hosted
 // providers, where huge tool menus burn context and confuse small models.
+// lspDiagnosticsProvider type-checks the files a turn changed through the
+// pooled language servers, so type errors reach the model before it spends a
+// turn running the build to find them.
+func lspDiagnosticsProvider(workDir string) func(context.Context, []string) string {
+	return func(ctx context.Context, changedFiles []string) string {
+		resolved := make([]string, 0, len(changedFiles))
+		for _, path := range changedFiles {
+			if !filepath.IsAbs(path) {
+				path = filepath.Join(workDir, path)
+			}
+			resolved = append(resolved, path)
+		}
+		out, err := lsp.Shared().Diagnostics(ctx, workDir, resolved)
+		if err != nil {
+			return ""
+		}
+		return out
+	}
+}
+
 func lookupContextWindow(model string) int {
 	ref := bootstrap.ParseModelRef(model)
 	if info := modelcatalog.Lookup(ref.Provider, ref.Model); info != nil {
@@ -1422,6 +1444,7 @@ func buildConsoleRuntime(setup *ChatSetup, approve tools.ApprovalFunc, out io.Wr
 		},
 		CompactionMaxFailures:    setup.Config.Resilience.CompactionMaxFailures,
 		ContextWindowTokens:      func() int { return lookupContextWindow(setup.ChatModel) },
+		DiagnosticsProvider:      lspDiagnosticsProvider(setup.WorkDir),
 		Interactive:              true,
 		ToolThrashCircuitBreaker: setup.Config.Resilience.ToolThrashCircuitBreaker,
 		OutputStore:              configuredOutputStore(setup.Config),
@@ -1892,9 +1915,9 @@ func (r agentProgressRenderTarget) ToolResult(name, output, diff string, isError
 func (r agentProgressRenderTarget) Stats(duration time.Duration, usage llm.Usage) {
 	r.target.Stats(duration, usage)
 }
-func (r agentProgressRenderTarget) StatsWithContext(duration time.Duration, usage llm.Usage, contextUsed int) {
+func (r agentProgressRenderTarget) StatsWithContext(duration time.Duration, usage llm.Usage, contextUsed, contextLimit int) {
 	if target, ok := r.target.(agent.ContextStatsTarget); ok {
-		target.StatsWithContext(duration, usage, contextUsed)
+		target.StatsWithContext(duration, usage, contextUsed, contextLimit)
 		return
 	}
 	r.target.Stats(duration, usage)

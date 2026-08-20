@@ -88,12 +88,13 @@ func (r *EventRenderer) Stats(duration time.Duration, usage llm.Usage) {
 	}
 }
 
-func (r *EventRenderer) StatsWithContext(duration time.Duration, usage llm.Usage, contextUsed int) {
+func (r *EventRenderer) StatsWithContext(duration time.Duration, usage llm.Usage, contextUsed, contextLimit int) {
 	r.events <- llm.Event{
 		Kind:             llm.EventStats,
 		Duration:         duration,
 		Usage:            usage,
 		ContextUsed:      contextUsed,
+		ContextLimit:     contextLimit,
 		ContextEstimated: true,
 	}
 }
@@ -214,12 +215,13 @@ func (r *SubAgentRenderer) Stats(duration time.Duration, usage llm.Usage) {
 	}
 }
 
-func (r *SubAgentRenderer) StatsWithContext(duration time.Duration, usage llm.Usage, contextUsed int) {
+func (r *SubAgentRenderer) StatsWithContext(duration time.Duration, usage llm.Usage, contextUsed, contextLimit int) {
 	r.parent.events <- llm.Event{
 		Kind:             llm.EventStats,
 		Duration:         duration,
 		Usage:            usage,
 		ContextUsed:      contextUsed,
+		ContextLimit:     contextLimit,
 		ContextEstimated: true,
 		SubAgent:         r.role,
 	}
