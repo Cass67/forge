@@ -169,7 +169,7 @@ repos:
           "$@"; fi' --
         language: system
         files: \.(js|jsx|mjs|cjs|json|md|yaml|yml)$
-        exclude: ^\.pre-commit-config\.yaml$
+        exclude: ^(\.pre-commit-config\.yaml|web/dist/)
 # repo-guard:javascript:end
 
 # repo-guard:typescript:start
@@ -196,7 +196,7 @@ repos:
           "$@"; fi' --
         language: system
         files: \.(ts|tsx|mts|cts|json|md|yaml|yml)$
-        exclude: ^\.pre-commit-config\.yaml$
+        exclude: ^(\.pre-commit-config\.yaml|web/dist/)
       - id: tsc-noemit
         name: tsc --noEmit
         entry: >-
