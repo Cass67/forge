@@ -193,7 +193,22 @@ func (d *RetryDriver) Stream(ctx context.Context, messages []Message, out chan<-
 			errCh <- d.inner.Stream(callCtx, messages, internal)
 		}()
 
-		idleTimer, idleC := newStreamIdleTimer(d.streamIdleTimeout)
+		// The idle timeout detects a stream that stopped producing, so it
+		// should not be armed until something has been produced. Time to first
+		// token is prompt processing, and a large prompt on a cold cache can
+		// legitimately sit silent for minutes; arming early cancels that work,
+		// and because every retry restarts it the request can never finish.
+		//
+		// The request timeout already bounds that phase, so when one is set
+		// the idle timer waits for the first token. With no request timeout
+		// the idle timer is the only wall-clock bound, so it stays armed from
+		// the start rather than letting a dead stream hang forever. A nil
+		// timer yields a nil channel, which blocks forever in the select.
+		var idleTimer *time.Timer
+		var idleC <-chan time.Time
+		if d.timeout <= 0 {
+			idleTimer, idleC = newStreamIdleTimer(d.streamIdleTimeout)
+		}
 		var emittedAny bool
 		var idleErr error
 		for {
@@ -202,8 +217,12 @@ func (d *RetryDriver) Stream(ctx context.Context, messages []Message, out chan<-
 				if !ok {
 					goto done
 				}
+				if idleTimer == nil {
+					idleTimer, idleC = newStreamIdleTimer(d.streamIdleTimeout)
+				} else {
+					resetStreamIdleTimer(idleTimer, d.streamIdleTimeout)
+				}
 				emittedAny = true
-				resetStreamIdleTimer(idleTimer, d.streamIdleTimeout)
 				select {
 				case out <- tok:
 				case <-ctx.Done():
@@ -314,7 +333,22 @@ func (d *RetryDriver) StreamWithToolsOptions(ctx context.Context, messages []Mes
 			errCh <- caller.StreamWithTools(callCtx, messages, tools, internal)
 		}()
 
-		idleTimer, idleC := newStreamIdleTimer(d.streamIdleTimeout)
+		// The idle timeout detects a stream that stopped producing, so it
+		// should not be armed until something has been produced. Time to first
+		// token is prompt processing, and a large prompt on a cold cache can
+		// legitimately sit silent for minutes; arming early cancels that work,
+		// and because every retry restarts it the request can never finish.
+		//
+		// The request timeout already bounds that phase, so when one is set
+		// the idle timer waits for the first token. With no request timeout
+		// the idle timer is the only wall-clock bound, so it stays armed from
+		// the start rather than letting a dead stream hang forever. A nil
+		// timer yields a nil channel, which blocks forever in the select.
+		var idleTimer *time.Timer
+		var idleC <-chan time.Time
+		if d.timeout <= 0 {
+			idleTimer, idleC = newStreamIdleTimer(d.streamIdleTimeout)
+		}
 		var emittedAny bool
 		var idleErr error
 		for {
@@ -323,8 +357,12 @@ func (d *RetryDriver) StreamWithToolsOptions(ctx context.Context, messages []Mes
 				if !ok {
 					goto done
 				}
+				if idleTimer == nil {
+					idleTimer, idleC = newStreamIdleTimer(d.streamIdleTimeout)
+				} else {
+					resetStreamIdleTimer(idleTimer, d.streamIdleTimeout)
+				}
 				emittedAny = true
-				resetStreamIdleTimer(idleTimer, d.streamIdleTimeout)
 				select {
 				case out <- tok:
 				case <-ctx.Done():
