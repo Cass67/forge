@@ -125,6 +125,15 @@ export type RestoreResult = {
   items: StoredItem[];
 };
 
+export type WorkspaceEntry = { name: string; path: string; is_dir: boolean; size?: number };
+export type WorkspaceFile = { path: string; content: string; version: string };
+export type GitStatusResult = {
+  repository: boolean;
+  branch?: string;
+  files: { path: string; status: string }[];
+};
+export type TerminalEvent = { id: string; data?: string; closed?: boolean };
+
 // Wails delivers a payload as event.data, sometimes wrapped in an array.
 function payload<T>(event: unknown): T {
   const data = (event as { data?: unknown })?.data;
@@ -169,6 +178,15 @@ export const forge = {
   attachImage: (name: string, dataB64: string) => call<Attachment>("AttachImage", name, dataB64),
   attachPath: (path: string) => call<Attachment>("AttachPath", path),
   imagePreview: (path: string) => call<string>("ImagePreview", path),
+  listWorkspaceDir: (path: string) => call<WorkspaceEntry[]>("ListWorkspaceDir", path),
+  readWorkspaceFile: (path: string) => call<WorkspaceFile>("ReadWorkspaceFile", path),
+  writeWorkspaceFile: (path: string, content: string, version: string) =>
+    call<WorkspaceFile>("WriteWorkspaceFile", path, content, version),
+  gitStatus: () => call<GitStatusResult>("GitStatus"),
+  startTerminal: (id: string, rows: number, cols: number) => call<void>("StartTerminal", id, rows, cols),
+  writeTerminal: (id: string, data: string) => call<void>("WriteTerminal", id, data),
+  resizeTerminal: (id: string, rows: number, cols: number) => call<void>("ResizeTerminal", id, rows, cols),
+  closeTerminal: (id: string) => call<void>("CloseTerminal", id),
 
   onEvent: (fn: (ev: WireEvent) => void) =>
     Events.On("forge:event", (e: unknown) => fn(payload<WireEvent>(e))),
@@ -185,4 +203,6 @@ export const forge = {
       fn(Array.isArray(raw) ? raw.filter((v): v is string => typeof v === "string") : []);
     }),
   onReady: (fn: () => void) => Events.On("forge:ready", () => fn()),
+  onTerminal: (fn: (event: TerminalEvent) => void) =>
+    Events.On("forge:terminal", (event: unknown) => fn(payload<TerminalEvent>(event))),
 };

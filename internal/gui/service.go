@@ -32,6 +32,7 @@ const (
 	EventApproval = "forge:approval"
 	EventTurnDone = "forge:done"
 	EventReady    = "forge:ready"
+	EventTerminal = "forge:terminal"
 )
 
 var (
@@ -66,6 +67,8 @@ type Service struct {
 	PickDir func() (string, error)
 	// Registry remembers opened workspaces across launches.
 	Registry *workspace.Registry
+
+	terminals map[string]*terminalSession
 }
 
 // Controller drives the service from the Go side. It is deliberately a
@@ -75,7 +78,10 @@ type Controller struct{ s *Service }
 
 // New returns the bound service and the controller that feeds it.
 func New(emit func(name string, data any)) (*Service, *Controller) {
-	s := &Service{emit: emit, flows: providerauth.NewFlows(), switchSig: make(chan struct{}, 1)}
+	s := &Service{
+		emit: emit, flows: providerauth.NewFlows(), switchSig: make(chan struct{}, 1),
+		terminals: make(map[string]*terminalSession),
+	}
 	return s, &Controller{s: s}
 }
 
@@ -542,6 +548,7 @@ func (s *Service) SwitchWorkspace(dir string) error {
 	s.ready = false
 	s.nextDir = clean
 	s.mu.Unlock()
+	s.closeTerminals()
 
 	select {
 	case s.switchSig <- struct{}{}:

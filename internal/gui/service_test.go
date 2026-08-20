@@ -27,6 +27,8 @@ func TestBoundMethodSurface(t *testing.T) {
 		"Providers", "RenameThread", "Restore", "Send",
 		"SendWithImages", "SetEffort", "SetProviderKey", "SignOutProvider",
 		"StartProviderLogin", "SwitchModel", "SwitchWorkspace", "Threads", "Workspaces",
+		"ListWorkspaceDir", "ReadWorkspaceFile", "WriteWorkspaceFile", "GitStatus",
+		"StartTerminal", "WriteTerminal", "ResizeTerminal", "CloseTerminal",
 		"Yolo", "SetYolo",
 	}
 	var got []string
@@ -142,6 +144,33 @@ func TestSwitchWorkspaceUnwindsTheEventPump(t *testing.T) {
 	// writes to a channel the runtime is about to close.
 	if err := s.Send("hello"); err == nil {
 		t.Fatal("Send accepted input while detached")
+	}
+}
+
+func TestSwitchWorkspaceClosesTerminals(t *testing.T) {
+	dir := t.TempDir()
+	s, c := New(func(string, any) {})
+	c.Attach(tui.ChatLiveConfig{WorkDir: t.TempDir()}, make(chan string, 1))
+
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := reader.Close(); err != nil {
+			t.Errorf("close pipe reader: %v", err)
+		}
+	})
+	s.terminals["terminal"] = &terminalSession{ptmx: writer}
+
+	if err := s.SwitchWorkspace(dir); err != nil {
+		t.Fatalf("SwitchWorkspace: %v", err)
+	}
+	if len(s.terminals) != 0 {
+		t.Fatal("SwitchWorkspace left a terminal registered")
+	}
+	if _, err := writer.Write([]byte("x")); err == nil {
+		t.Fatal("SwitchWorkspace left a terminal open")
 	}
 }
 

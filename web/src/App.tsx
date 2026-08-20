@@ -19,6 +19,7 @@ import { ModelPicker } from "./components/ModelPicker";
 import { SettingsPanel, type Prefs } from "./components/SettingsPanel";
 import { HelpOverlay } from "./components/HelpOverlay";
 import { WorkspaceMenu } from "./components/WorkspaceMenu";
+import { WorkspaceShell } from "./components/WorkspaceShell";
 import { applyTheme, isTheme, loadTheme, nextTheme, type Theme } from "./theme";
 import { applyScale, clampScale, formatScale, loadScale, step, DEFAULT_SCALE } from "./scale";
 
@@ -75,6 +76,7 @@ export default function App() {
   scaleRef.current = scale;
   const dragDepth = useRef(0);
   const [dragging, setDragging] = useState(false);
+  const [workspaceMode, setWorkspaceMode] = useState(false);
 
   useEffect(() => applyTheme(theme), [theme]);
   useEffect(() => applyScale(scale), [scale]);
@@ -498,6 +500,9 @@ export default function App() {
         <button className="pill" onClick={() => setOverlay("models")} title="Switch model (⌘K)">
           {stats.model || "—"}
         </button>
+        <button className={`pill ${workspaceMode ? "on" : ""}`} onClick={() => setWorkspaceMode((on) => !on)}>
+          {workspaceMode ? "Chat" : "Workspace"}
+        </button>
         {init && init.efforts && init.efforts.length > 0 ? (
           <div className="seg">
             {init.efforts.map((e) => (
@@ -539,23 +544,29 @@ export default function App() {
             }
           />
         ) : null}
-        <main className="center">
-          <Transcript entries={entries} prefs={prefs} busy={busy} />
-          <Composer
-            yolo={yolo}
-            onToggleYolo={() => toggleYolo(!yolo)}
-            busy={busy}
-            skills={init?.skills ?? []}
-            history={history}
-            attachments={pending}
-            onRemoveAttachment={(id) => setPending((p) => p.filter((a) => a.id !== id))}
-            onFiles={(files) => void attachFiles(files)}
-            onSend={sendInput}
-            onCancel={cancel}
-            onCommand={runCommand}
-          />
-        </main>
-        {prefs.showActivity ? <ActivityPanel entries={entries} stats={stats} /> : null}
+        {workspaceMode ? (
+          <WorkspaceShell workDir={init?.work_dir ?? ""} onNotify={notify} />
+        ) : (
+          <>
+            <main className="center">
+              <Transcript entries={entries} prefs={prefs} busy={busy} />
+              <Composer
+                yolo={yolo}
+                onToggleYolo={() => toggleYolo(!yolo)}
+                busy={busy}
+                skills={init?.skills ?? []}
+                history={history}
+                attachments={pending}
+                onRemoveAttachment={(id) => setPending((p) => p.filter((a) => a.id !== id))}
+                onFiles={(files) => void attachFiles(files)}
+                onSend={sendInput}
+                onCancel={cancel}
+                onCommand={runCommand}
+              />
+            </main>
+            {prefs.showActivity ? <ActivityPanel entries={entries} stats={stats} /> : null}
+          </>
+        )}
       </div>
 
       <StatsBar stats={stats} connected={init !== null} />
