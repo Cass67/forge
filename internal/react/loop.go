@@ -1935,7 +1935,13 @@ func (r *Runner) toolResultItem(ctx context.Context, turn int, toolName, toolCal
 	item.Handle = handle.ID
 	item.OriginalBytes = handle.Bytes
 	item.SHA256 = handle.SHA256
-	item.Text = fmt.Sprintf("Tool output stored out-of-band. Handle: %s. Size: %d bytes. SHA256: %s. Retrieval by handle will be available later.", handle.ID, handle.Bytes, handle.SHA256)
+	// Tell the model how to read it, now. Saying retrieval "will be available
+	// later" made models treat large output as permanently unreachable and
+	// abandon the task, when read_output serves it immediately.
+	item.Text = fmt.Sprintf(
+		"Tool output was large (%d bytes) and is stored under handle %s (sha256 %s). "+
+			"Read it now with read_output(handle=%q), optionally with offset and limit to page through it.",
+		handle.Bytes, handle.ID, handle.SHA256, handle.ID)
 	return item, nil
 }
 

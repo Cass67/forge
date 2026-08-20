@@ -28,7 +28,7 @@ func NewReadOutput(store sessionstore.OutputStore, policies ...SecretPolicy) Too
 	secretPolicy := secretPolicyFromOptions(policies)
 	return Tool{
 		Name:        "read_output",
-		Description: "Read a slice of stored tool output by handle.",
+		Description: "Read stored tool output by handle. Large tool results are kept out of band and referenced by a handle; this returns their content. Page through anything big with offset and limit.",
 		Parameters: []ParameterDef{
 			{Name: "handle", Type: "string", Description: "output handle returned with stored tool output", Required: true},
 			{Name: "offset", Type: "int", Description: "byte offset to start reading from", Required: false},

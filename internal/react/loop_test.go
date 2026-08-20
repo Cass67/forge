@@ -4753,8 +4753,17 @@ func TestExecuteNativeToolCallsHidesOutputStoreHandleFromRenderer(t *testing.T) 
 	}
 
 	result := lastToolResult(t, session)
-	if result.Handle == "" || !strings.Contains(result.Text, result.Handle) || !strings.Contains(result.Text, "SHA256") {
+	// The model must be told the handle, the checksum, and how to read it:
+	// wording that implied retrieval was not yet possible made models give up
+	// on large output instead of calling read_output.
+	if result.Handle == "" || !strings.Contains(result.Text, result.Handle) {
 		t.Fatalf("session result = %#v, want handle-bearing model-visible result", result)
+	}
+	if !strings.Contains(result.Text, result.SHA256) {
+		t.Fatalf("session result text omits the checksum: %q", result.Text)
+	}
+	if !strings.Contains(result.Text, "read_output") {
+		t.Fatalf("session result text does not tell the model how to read it: %q", result.Text)
 	}
 	if len(renderer.toolTexts) != 1 {
 		t.Fatalf("renderer tool texts = %#v, want one", renderer.toolTexts)
