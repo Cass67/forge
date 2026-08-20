@@ -22,6 +22,7 @@ import (
 	"forge/internal/protocol"
 	"forge/internal/providerauth"
 	"forge/internal/tui"
+	"forge/internal/workspace"
 )
 
 // Event names emitted to the frontend.
@@ -61,6 +62,8 @@ type Service struct {
 	// PickDir opens the platform's folder chooser. Set by the window layer,
 	// which owns the dialog API.
 	PickDir func() (string, error)
+	// Registry remembers opened workspaces across launches.
+	Registry *workspace.Registry
 }
 
 // Controller drives the service from the Go side. It is deliberately a
@@ -163,6 +166,7 @@ func (s *Service) Init() InitPayload {
 		Skills:      skillPayloads(cfg.Skills),
 		ThreadID:    call(cfg.CurrentThreadID),
 		RequestMode: call(cfg.RequestMode),
+		Yolo:        cfg.Yolo != nil && cfg.Yolo(),
 	}
 }
 
@@ -213,6 +217,25 @@ func (s *Service) Approve(ok bool) {
 	if ready && cfg.ResponseCh != nil {
 		cfg.ResponseCh <- ok
 	}
+}
+
+// Yolo reports whether tool approvals are being skipped.
+func (s *Service) Yolo() bool {
+	cfg, _, ready := s.snapshot()
+	if !ready || cfg.Yolo == nil {
+		return false
+	}
+	return cfg.Yolo()
+}
+
+// SetYolo turns approval prompts off or back on for the running session.
+func (s *Service) SetYolo(on bool) (bool, error) {
+	cfg, _, ready := s.snapshot()
+	if !ready || cfg.SetYolo == nil {
+		return false, errNotReady
+	}
+	cfg.SetYolo(on)
+	return s.Yolo(), nil
 }
 
 // Cancel interrupts the running turn.
@@ -342,6 +365,7 @@ type Workspace struct {
 	LastUse time.Time `json:"last_use"`
 	Active  bool      `json:"active"`
 	Missing bool      `json:"missing"`
+	Pinned  bool      `json:"pinned"`
 }
 
 // Workspaces derives the workspace list from the CWD recorded on each stored
@@ -356,6 +380,21 @@ func (s *Service) Workspaces() []Workspace {
 	byPath := map[string]*Workspace{}
 	if active != "" && active != "." {
 		byPath[active] = &Workspace{Path: active, Name: filepath.Base(active), Active: true}
+	}
+	// Remembered workspaces appear even before they have any threads, and
+	// survive a relaunch.
+	if s.Registry != nil {
+		for _, e := range s.Registry.List() {
+			w, ok := byPath[e.Path]
+			if !ok {
+				w = &Workspace{Path: e.Path, Name: filepath.Base(e.Path), Active: e.Path == active}
+				byPath[e.Path] = w
+			}
+			w.Pinned = e.Pinned
+			if e.LastUsed.After(w.LastUse) {
+				w.LastUse = e.LastUsed
+			}
+		}
 	}
 	if cfg.ListThreads != nil {
 		for _, t := range cfg.ListThreads() {
@@ -386,9 +425,40 @@ func (s *Service) Workspaces() []Workspace {
 		if out[i].Active != out[j].Active {
 			return out[i].Active
 		}
+		if out[i].Pinned != out[j].Pinned {
+			return out[i].Pinned
+		}
 		return out[i].LastUse.After(out[j].LastUse)
 	})
 	return out
+}
+
+// PinWorkspace keeps a workspace in the list regardless of how long ago it was
+// last opened.
+func (s *Service) PinWorkspace(path string, pinned bool) ([]Workspace, error) {
+	if s.Registry == nil {
+		return s.Workspaces(), errNoWorkDir
+	}
+	if err := s.Registry.SetPinned(path, pinned); err != nil {
+		return s.Workspaces(), err
+	}
+	return s.Workspaces(), nil
+}
+
+// ForgetWorkspace drops a workspace from the list. The directory and its
+// threads are left alone.
+func (s *Service) ForgetWorkspace(path string) ([]Workspace, error) {
+	if s.Registry == nil {
+		return s.Workspaces(), errNoWorkDir
+	}
+	cfg, _, _ := s.snapshot()
+	if filepath.Clean(strings.TrimSpace(cfg.WorkDir)) == filepath.Clean(strings.TrimSpace(path)) {
+		return s.Workspaces(), errors.New("cannot remove the workspace you are in")
+	}
+	if err := s.Registry.Forget(path); err != nil {
+		return s.Workspaces(), err
+	}
+	return s.Workspaces(), nil
 }
 
 // ChooseWorkspace prompts for a folder and switches to it. Returns the chosen

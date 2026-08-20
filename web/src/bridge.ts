@@ -87,6 +87,7 @@ export type InitPayload = {
   skills: { name: string; description?: string }[];
   thread_id?: string;
   request_mode?: string;
+  yolo: boolean;
 };
 
 export type Workspace = {
@@ -96,6 +97,7 @@ export type Workspace = {
   last_use: string;
   active: boolean;
   missing: boolean;
+  pinned: boolean;
 };
 
 export type Attachment = {
@@ -148,6 +150,10 @@ export const forge = {
   openURL: (url: string) => call<void>("OpenURL", url),
   chooseWorkspace: () => call<string>("ChooseWorkspace"),
   switchWorkspace: (dir: string) => call<void>("SwitchWorkspace", dir),
+  pinWorkspace: (dir: string, pinned: boolean) => call<Workspace[]>("PinWorkspace", dir, pinned),
+  forgetWorkspace: (dir: string) => call<Workspace[]>("ForgetWorkspace", dir),
+  yolo: () => call<boolean>("Yolo"),
+  setYolo: (on: boolean) => call<boolean>("SetYolo", on),
   attachImage: (name: string, dataB64: string) => call<Attachment>("AttachImage", name, dataB64),
 
   onEvent: (fn: (ev: WireEvent) => void) =>

@@ -22,6 +22,7 @@ type InitPayload struct {
 	Skills      []SkillPayload    `json:"skills"`
 	ThreadID    string            `json:"thread_id,omitempty"`
 	RequestMode string            `json:"request_mode,omitempty"`
+	Yolo        bool              `json:"yolo"`
 }
 
 type ProviderPayload struct {

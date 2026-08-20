@@ -22,10 +22,12 @@ import (
 func TestBoundMethodSurface(t *testing.T) {
 	want := []string{
 		"Approve", "AttachImage", "AwaitProviderLogin", "Cancel", "ChooseWorkspace",
-		"Clear", "CompleteProviderLogin", "DeleteThread", "Efforts", "History", "Init", "Models",
-		"NewSession", "OpenURL", "Providers", "Restore", "Send",
+		"Clear", "CompleteProviderLogin", "DeleteThread", "Efforts", "ForgetWorkspace",
+		"History", "Init", "Models", "NewSession", "OpenURL", "PinWorkspace",
+		"Providers", "Restore", "Send",
 		"SendWithImages", "SetEffort", "SetProviderKey", "SignOutProvider",
 		"StartProviderLogin", "SwitchModel", "SwitchWorkspace", "Threads", "Workspaces",
+		"Yolo", "SetYolo",
 	}
 	var got []string
 	typ := reflect.TypeOf(&Service{})

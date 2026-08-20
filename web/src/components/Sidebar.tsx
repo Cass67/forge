@@ -23,6 +23,8 @@ export function Sidebar({
   onAddWorkspace,
   onOpenWorkspace,
   onDelete,
+  onPin,
+  onForget,
 }: {
   threads: ThreadSummary[];
   workspaces: Workspace[];
@@ -34,6 +36,8 @@ export function Sidebar({
   onAddWorkspace: () => void;
   onOpenWorkspace: (dir: string) => void;
   onDelete: (id: string) => void;
+  onPin: (dir: string, pinned: boolean) => void;
+  onForget: (dir: string) => void;
 }) {
   const [confirming, setConfirming] = useState("");
   const [closed, setClosed] = useState<Record<string, boolean>>({});
@@ -68,14 +72,26 @@ export function Sidebar({
                   <span className="ws-section-name">{ws.name}</span>
                   <span className="ws-section-count">{list.length || ""}</span>
                 </button>
+                <button
+                  className={`ws-pin ${ws.pinned ? "on" : ""}`}
+                  onClick={() => onPin(ws.path, !ws.pinned)}
+                  title={ws.pinned ? "Pinned — click to unpin" : "Pin so it always stays in the list"}
+                >
+                  {ws.pinned ? "★" : "☆"}
+                </button>
                 {isActive ? (
                   <button className="btn" onClick={onNew} disabled={busy} title="New thread (⌘N)">
                     +
                   </button>
                 ) : (
-                  <button className="btn" onClick={() => onOpenWorkspace(ws.path)} title={`Work in ${ws.path}`}>
-                    Open
-                  </button>
+                  <>
+                    <button className="btn" onClick={() => onOpenWorkspace(ws.path)} title={`Work in ${ws.path}`}>
+                      Open
+                    </button>
+                    <button className="ws-pin" onClick={() => onForget(ws.path)} title="Remove from the list">
+                      ✕
+                    </button>
+                  </>
                 )}
               </div>
               {!collapsed ? (

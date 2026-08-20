@@ -60,6 +60,7 @@ export default function App() {
   const [approval, setApproval] = useState<WireAction | null>(null);
   const [stats, setStats] = useState<Stats>(initialStats);
   const [effort, setEffort] = useState("");
+  const [yolo, setYoloState] = useState(false);
   const [overlay, setOverlay] = useState<Overlay>("none");
   const [theme, setThemeState] = useState<Theme>(loadTheme);
   const [scale, setScaleState] = useState<number>(loadScale);
@@ -92,6 +93,7 @@ export default function App() {
       setInit(payload);
       setStats((s) => ({ ...s, model: payload.model }));
       if (payload.effort) setEffort(payload.effort);
+      setYoloState(payload.yolo);
       if (payload.thread_id) setActiveID(payload.thread_id);
       refreshThreads();
     });
@@ -217,6 +219,20 @@ export default function App() {
     [notify],
   );
 
+  const toggleYolo = useCallback(
+    (on: boolean) => {
+      setYoloState(on);
+      void forge
+        .setYolo(on)
+        .then((now) => {
+          setYoloState(now);
+          notify(now ? "yolo on — tools run without asking" : "yolo off — tools ask first");
+        })
+        .catch((e: unknown) => notify(String(e)));
+    },
+    [notify],
+  );
+
   const setTheme = useCallback(
     (t: Theme) => {
       setThemeState(t);
@@ -308,6 +324,8 @@ export default function App() {
           return setOverlay("settings");
         case "/help":
           return setOverlay("help");
+        case "/yolo":
+          return toggleYolo(arg === "" ? !yolo : arg === "on" || arg === "true");
         case "/cancel":
           return cancel();
         case "/copy":
@@ -318,7 +336,7 @@ export default function App() {
           return sendInput(raw);
       }
     },
-    [cancel, lastAgentText, newThread, notify, sendInput, setEffortAction, setTheme, switchModel, theme],
+    [cancel, lastAgentText, newThread, notify, sendInput, setEffortAction, setTheme, switchModel, theme, toggleYolo, yolo],
   );
 
   useEffect(() => {
@@ -454,11 +472,19 @@ export default function App() {
             onAddWorkspace={addWorkspace}
             onOpenWorkspace={openWorkspace}
             onDelete={deleteThread}
+            onPin={(dir, pinned) =>
+              void forge.pinWorkspace(dir, pinned).then(setWorkspaces).catch((e: unknown) => notify(String(e)))
+            }
+            onForget={(dir) =>
+              void forge.forgetWorkspace(dir).then(setWorkspaces).catch((e: unknown) => notify(String(e)))
+            }
           />
         ) : null}
         <main className="center">
           <Transcript entries={entries} prefs={prefs} busy={busy} />
           <Composer
+            yolo={yolo}
+            onToggleYolo={() => toggleYolo(!yolo)}
             busy={busy}
             skills={init?.skills ?? []}
             history={history}

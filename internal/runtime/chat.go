@@ -635,12 +635,17 @@ func RunChatLive(setup *ChatSetup) {
 	gate.SetGuardianObserver(func(event reactruntime.GuardianEvent) {
 		applyGuardianOverlay(session, event)
 	})
-	if setup.Yolo {
-		approve = agent.YoloApproval()
-	} else {
-		approve = evRenderer.LiveApproval()
-	}
-	gate.SetPrompt(approve)
+	// Yolo is a live toggle rather than a start-up flag: the prompt consults
+	// it per action, so it can be flipped mid-session from the UI.
+	var yoloOn atomic.Bool
+	yoloOn.Store(setup.Yolo)
+	livePrompt := evRenderer.LiveApproval()
+	gate.SetPrompt(func(action tools.Action) (bool, error) {
+		if yoloOn.Load() {
+			return true, nil
+		}
+		return livePrompt(action)
+	})
 	approve = gate.Approve
 
 	reg := tools.NewRegistry()
@@ -909,6 +914,15 @@ func RunChatLive(setup *ChatSetup) {
 		DescribeModel: func(model string) string {
 			cfg, authTokens := refreshChatSetupState(setup)
 			return bootstrap.ModelDisplayLabel(cfg, authTokens, model)
+		},
+		Yolo: func() bool { return yoloOn.Load() },
+		SetYolo: func(on bool) {
+			yoloOn.Store(on)
+			if on {
+				evRenderer.Info("yolo on — tool approvals skipped")
+			} else {
+				evRenderer.Info("yolo off — tools ask before running")
+			}
 		},
 		RequestMode: func() string {
 			if reporter, ok := setup.Driver.(llm.RequestModeReporter); ok {

@@ -4,6 +4,8 @@ import { CommandPalette } from "./CommandPalette";
 import type { Attachment } from "../bridge";
 
 export function Composer({
+  yolo,
+  onToggleYolo,
   busy,
   skills,
   history,
@@ -14,6 +16,8 @@ export function Composer({
   onCancel,
   onCommand,
 }: {
+  yolo: boolean;
+  onToggleYolo: () => void;
   busy: boolean;
   skills: { name: string; description?: string }[];
   history: string[];
@@ -142,6 +146,13 @@ export function Composer({
           rows={1}
         />
         <div className="composer-actions">
+          <button
+            className={`yolo-btn ${yolo ? "on" : ""}`}
+            onClick={onToggleYolo}
+            title={yolo ? "Tools run without asking — click to require approval" : "Tools ask before running — click for yolo"}
+          >
+            yolo
+          </button>
           {busy ? (
             <button className="btn danger" onClick={onCancel} title="Esc">
               Stop

@@ -804,3 +804,19 @@ input, textarea, .selectable, .md, .tc-out, .diffbox, .reasoning-body, .msg .bod
 .ws-section-count { color: var(--muted); font-size: 0.625rem; font-weight: 400; }
 .ws-section .thread-list { max-height: none; }
 .ws-section-head .btn { padding: 1px 7px; height: auto; font-size: 0.6875rem; }
+
+/* ---- yolo toggle + workspace pins ---- */
+.yolo-btn {
+  height: var(--control-h); padding: 0 9px;
+  background: transparent; border: 1px solid var(--border); border-radius: var(--radius);
+  color: var(--muted); font: inherit; font-size: 0.6875rem;
+  text-transform: uppercase; letter-spacing: 0.4px; cursor: pointer;
+}
+.yolo-btn:hover { color: var(--text); }
+.yolo-btn.on { background: var(--warn); border-color: var(--warn); color: var(--bg); font-weight: 700; }
+.ws-pin {
+  flex: none; padding: 1px 5px; background: transparent; border: none;
+  color: var(--muted); font: inherit; font-size: 0.75rem; cursor: pointer; border-radius: 3px;
+}
+.ws-pin:hover { background: var(--hover); color: var(--text); }
+.ws-pin.on { color: var(--warn); }

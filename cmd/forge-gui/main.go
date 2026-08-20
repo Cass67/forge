@@ -24,6 +24,7 @@ import (
 	"forge/internal/llm"
 	runtimepkg "forge/internal/runtime"
 	"forge/internal/tui"
+	"forge/internal/workspace"
 	forgeweb "forge/web"
 )
 
@@ -58,7 +59,11 @@ func run() error {
 		*yolo = true
 	}
 
-	setup, err := buildSetup(*workDir, *model, *yolo)
+	registry := workspace.LoadRegistry()
+	startDir := startupWorkspace(*workDir, registry)
+	_ = registry.Remember(startDir)
+
+	setup, err := buildSetup(startDir, *model, *yolo)
 	if err != nil {
 		return err
 	}
@@ -100,6 +105,7 @@ func run() error {
 		Assets:   application.AssetOptions{Handler: http.FileServer(http.FS(assets))},
 	})
 
+	service.Registry = registry
 	service.PickDir = func() (string, error) {
 		return app.Dialog.OpenFile().
 			SetTitle("Choose a workspace folder").
@@ -137,6 +143,7 @@ func run() error {
 				app.Quit()
 				return
 			}
+			_ = registry.Remember(next)
 			rebuilt, err := buildSetup(next, *model, *yolo)
 			if err != nil {
 				log.Printf("forge-gui: cannot open %s: %v", next, err)
@@ -149,6 +156,26 @@ func run() error {
 	}()
 
 	return app.Run()
+}
+
+// startupWorkspace picks the directory to open on launch. An app bundle
+// launched from Finder inherits "/" as its working directory, so the process
+// cwd is only trusted when it is actually usable; otherwise the most recently
+// opened workspace is reopened, falling back to the home directory.
+func startupWorkspace(flagDir string, registry *workspace.Registry) string {
+	if dir, err := workspace.Clean(flagDir); err == nil {
+		return dir
+	}
+	if cwd, err := os.Getwd(); err == nil && workspace.Usable(cwd) {
+		return cwd
+	}
+	if last := registry.MostRecent(); last != "" {
+		return last
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return home
+	}
+	return "."
 }
 
 // buildSetup constructs a chat runtime rooted at workDir. Config is reloaded

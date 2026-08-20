@@ -22,6 +22,7 @@ export const COMMANDS: Command[] = [
   { name: "/stats", desc: "toggle the activity panel" },
   { name: "/tools", desc: "show or hide tool cards" },
   { name: "/copy", desc: "copy the last response" },
+  { name: "/yolo", arg: "[on|off]", desc: "run tools without asking for approval" },
   { name: "/cancel", desc: "cancel the running turn" },
   { name: "/help", desc: "show commands and shortcuts" },
 ];

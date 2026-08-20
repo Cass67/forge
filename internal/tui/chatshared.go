@@ -66,6 +66,10 @@ type ChatLiveConfig struct {
 	ModelInfo             func(model string) *modelcatalog.ModelInfo
 	DescribeModel         func(model string) string
 	RequestMode           func() string
+	// Yolo reports whether tool approvals are being skipped, and SetYolo
+	// changes it mid-session.
+	Yolo    func() bool
+	SetYolo func(on bool)
 	// CurrentThreadID returns the durable thread id the runtime is persisting
 	// this conversation to, so saved sessions can be resumed with full history.
 	CurrentThreadID func() string
