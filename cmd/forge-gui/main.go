@@ -62,6 +62,7 @@ func run() error {
 	registry := workspace.LoadRegistry()
 	startDir := startupWorkspace(*workDir, registry)
 	_ = registry.Remember(startDir)
+	enterWorkspace(startDir)
 
 	setup, err := buildSetup(startDir, *model, *yolo)
 	if err != nil {
@@ -144,6 +145,7 @@ func run() error {
 				return
 			}
 			_ = registry.Remember(next)
+			enterWorkspace(next)
 			rebuilt, err := buildSetup(next, *model, *yolo)
 			if err != nil {
 				log.Printf("forge-gui: cannot open %s: %v", next, err)
@@ -176,6 +178,17 @@ func startupWorkspace(flagDir string, registry *workspace.Registry) string {
 		return home
 	}
 	return "."
+}
+
+// enterWorkspace makes the workspace the process working directory. Config
+// carries relative paths — session.output_dir defaults to "./output" — and an
+// app bundle starts at "/", where those resolve to unwritable root paths
+// ("mkdir output: read-only file system"). A terminal launch gets this for
+// free by virtue of where it was started.
+func enterWorkspace(dir string) {
+	if err := os.Chdir(dir); err != nil {
+		log.Printf("forge-gui: cannot enter %s: %v", dir, err)
+	}
 }
 
 // buildSetup constructs a chat runtime rooted at workDir. Config is reloaded
