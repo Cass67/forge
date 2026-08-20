@@ -15,19 +15,6 @@ var (
 	pseudoGitStatusCommandPattern = regexp.MustCompile(`(^|(?:&&|\|\||;|\|)\s*)git_status(\s|$)`)
 	pseudoGitLogCommandPattern    = regexp.MustCompile(`(^|(?:&&|\|\||;|\|)\s*)git_log(?:\s+([0-9]+))?(\s|$)`)
 	pseudoGitDiffCommandPattern   = regexp.MustCompile(`(^|(?:&&|\|\||;|\|)\s*)git_diff(?:\s+([^\s;&|]+))?(\s|$)`)
-	adHocPreviewServerPattern     = regexp.MustCompile(`(?i)(python(?:3)?\s+-m\s+http\.server|npx\s+http-server|python(?:3)?\s+-m\s+simplehttpserver|ruby\s+-run\s+-e\s+httpd|busybox\s+httpd)`)
-	// Multi-word invocations are specific enough to match anywhere in a command
-	// line; they cannot collide with an ordinary filename or argument.
-	interactiveCommandPattern = regexp.MustCompile(`(?i)\b(npm run dev|pnpm dev|yarn dev|npm run start|pnpm start|yarn start|next dev|tail -f|python(?:3)?\s+-i|rails console|python manage\.py shell)\b`)
-	// Single-word programs only count when they are the program being run.
-	// Matching them anywhere diverted ordinary commands that merely named one:
-	// `cat vite.config.ts`, `grep watch src/`, `go test ./internal/top/...`.
-	// The command then never ran and returned advice as a successful result,
-	// so a model retrying it made no progress.
-	interactiveInvocationPattern = regexp.MustCompile(`(?i)(^|[|&;]\s*)(\S*/)?(vite|top|htop|less|more|vim|nvim|nano|watch|irb)\b`)
-	// A bare `node`, optionally with an interactive flag, is a REPL. Anything
-	// with a script or other flag exits on its own.
-	interactiveNodePattern = regexp.MustCompile(`(?i)(^|[|&;]\s*)(\S*/)?node(\s+(-i|--interactive))?\s*$`)
 )
 
 func NewRunCommand(workDir string, timeoutSecs int, manager *ExecSessionManager, approve ApprovalFunc, forcePrompt ...ApprovalFunc) Tool {
@@ -40,23 +27,26 @@ func NewRunCommandWithWorkDirProvider(fallbackWorkDir string, provider WorkDirPr
 	}
 	secretPolicy := policy.WithDefaults()
 	return Tool{
-		Name:        "run_command",
-		Description: "Execute a shell command.",
+		Name: "run_command",
+		Description: "Execute a shell command. Set run_in_background for anything " +
+			"that does not exit on its own -- dev servers, watchers, REPLs, TUIs: " +
+			"the call returns a session handle immediately and you read its output " +
+			"with read_output. Foreground commands must finish within the timeout.",
 		Parameters: []ParameterDef{
 			{Name: "command", Type: "string", Description: "command to run", Required: true},
+			{Name: "run_in_background", Type: "boolean", Description: "run without waiting for the command to exit"},
 		},
 		AutoApprove: false,
 		Timeout:     effectiveRunCommandTimeout("", timeoutSecs),
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			command, _ := args["command"].(string)
 			command = normalizePseudoToolCommands(command)
-			if looksLikeAdHocPreviewServer(command) {
-				return "use preview_server_ensure instead of launching an ad-hoc web server with run_command", nil
-			}
-			if requiresExecSession(command) {
-				return "use exec_session_start instead of run_command for interactive or long-running terminal work", nil
-			}
-			background := isBackgroundCommand(command)
+			// Whether a command is interactive or long-running is the model's
+			// to declare, not this tool's to infer. Guessing it from the text
+			// refused ordinary commands that merely named a program, and the
+			// refusal came back as a successful result, so a retry changed
+			// nothing. Anything that does run is bounded by the tool timeout.
+			background := isBackgroundCommand(command) || boolArg(args, "run_in_background")
 			if background {
 				command = stripBackgroundCommandSuffix(command)
 			}
@@ -196,12 +186,17 @@ func isDestructive(cmd string) bool {
 	return false
 }
 
-func looksLikeAdHocPreviewServer(cmd string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(cmd))
-	if normalized == "" {
+// boolArg reads a boolean tool argument, tolerating the string form some
+// providers emit for boolean parameters.
+func boolArg(args map[string]any, key string) bool {
+	switch v := args[key].(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(strings.TrimSpace(v), "true")
+	default:
 		return false
 	}
-	return adHocPreviewServerPattern.MatchString(normalized)
 }
 
 func isBackgroundCommand(cmd string) bool {
@@ -212,14 +207,4 @@ func stripBackgroundCommandSuffix(cmd string) string {
 	trimmed := strings.TrimSpace(cmd)
 	trimmed = strings.TrimSuffix(trimmed, "&")
 	return strings.TrimSpace(trimmed)
-}
-
-func requiresExecSession(cmd string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(cmd))
-	if normalized == "" {
-		return false
-	}
-	return interactiveCommandPattern.MatchString(normalized) ||
-		interactiveInvocationPattern.MatchString(normalized) ||
-		interactiveNodePattern.MatchString(normalized)
 }

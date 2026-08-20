@@ -11,7 +11,7 @@ import (
 func TestRepeatedIdenticalCommandIsBlocked(t *testing.T) {
 	r := &Runner{}
 	args := map[string]any{"command": "cd /tmp && npm exec -- node --version"}
-	const sameResult = "use exec_session_start instead of run_command for interactive or long-running terminal work"
+	const sameResult = "npm error code ENOENT: no package.json"
 
 	for range repeatToolCallBlockThreshold {
 		r.updateRepeatToolCallWorkflow("run_command", args, sameResult)
@@ -96,7 +96,7 @@ func TestMutatingToolResetsRepeatChain(t *testing.T) {
 func TestNudgeComesBeforeBlock(t *testing.T) {
 	r := &Runner{}
 	args := map[string]any{"command": "cd /tmp && npm exec -- node --version"}
-	const same = "use exec_session_start instead of run_command"
+	const same = "npm error code ENOENT: no package.json"
 
 	for range repeatToolCallThreshold {
 		r.updateRepeatToolCallWorkflow("run_command", args, same)
