@@ -67,15 +67,15 @@ func TestDropOrphanedToolCallsDropsPartiallyPaired(t *testing.T) {
 		{Role: llm.RoleTool, ToolCallID: "c1", Content: "result1"},
 		// c2 missing — orphaned
 	}
+	// Dropping the assistant message must take c1's result with it. Keeping the
+	// result behind leaves a tool message with no preceding call, which
+	// providers reject exactly as they reject the dangling call.
 	got := dropOrphanedToolCalls(msgs)
-	if len(got) != 2 {
-		t.Fatalf("want 2 messages after dropping partially-paired assistant, got %d", len(got))
+	if len(got) != 1 {
+		t.Fatalf("want only the user message after dropping the partially-paired step, got %d: %#v", len(got), got)
 	}
 	if got[0].Role != llm.RoleUser || got[0].Content != "hello" {
 		t.Fatal("first should be user hello")
-	}
-	if got[1].Role != llm.RoleTool || got[1].ToolCallID != "c1" {
-		t.Fatal("second should be tool result for c1")
 	}
 }
 

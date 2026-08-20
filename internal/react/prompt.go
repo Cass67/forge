@@ -126,19 +126,23 @@ func BuildMessages(systemPrompt string, snapshot SessionSnapshot) []llm.Message 
 	return dropOrphanedToolCalls(truncateToolResults(truncateAssistantToolCalls(messages), toolResultMaxLines))
 }
 
-// dropOrphanedToolCalls removes assistant tool-call messages that lack a
-// corresponding tool result later in the sequence. Providers such as DeepSeek
-// reject requests containing assistant messages with dangling tool_calls.
+// dropOrphanedToolCalls removes tool-call/tool-result pairs that are no longer
+// whole. Providers reject an assistant message with a dangling tool_call, and
+// reject a tool result with no preceding call just as firmly, so the repair has
+// to run in both directions: dropping a partially answered assistant message
+// strands the results that did arrive, and leaving them behind trades one
+// invalid request for another.
 func dropOrphanedToolCalls(messages []llm.Message) []llm.Message {
 	if len(messages) == 0 {
 		return messages
 	}
 	seenResults := map[string]bool{}
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == llm.RoleTool {
-			seenResults[messages[i].ToolCallID] = true
+	for _, msg := range messages {
+		if msg.Role == llm.RoleTool {
+			seenResults[msg.ToolCallID] = true
 		}
 	}
+	keptCalls := map[string]bool{}
 	filtered := make([]llm.Message, 0, len(messages))
 	for _, msg := range messages {
 		if msg.Role == llm.RoleAssistant && len(msg.ToolCalls) > 0 {
@@ -152,6 +156,12 @@ func dropOrphanedToolCalls(messages []llm.Message) []llm.Message {
 			if !allPaired {
 				continue
 			}
+			for _, tc := range msg.ToolCalls {
+				keptCalls[tc.ID] = true
+			}
+		}
+		if msg.Role == llm.RoleTool && !keptCalls[msg.ToolCallID] {
+			continue
 		}
 		filtered = append(filtered, msg)
 	}
