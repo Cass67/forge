@@ -1,15 +1,71 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { createPortal } from "react-dom";
 import {
   forge,
   type GitStatusResult,
   type WorkspaceEntry,
   type WorkspaceFile,
 } from "../bridge";
+import {
+  acceptSavedFile,
+  filterPaths,
+  isDirty,
+  type OpenFile,
+} from "../workspaceFiles";
+import { CodeEditor } from "./CodeEditor";
+import { TerminalWorkspace } from "./TerminalWorkspace";
 
-type Props = { workDir: string; onNotify: (message: string) => void };
-type TreeNode = WorkspaceEntry & { loaded?: boolean; expanded?: boolean; children?: TreeNode[] };
+type Props = {
+  workDir: string;
+  active: boolean;
+  children: ReactNode;
+  onDirtyChange: (dirty: boolean) => void;
+  onNotify: (message: string) => void;
+};
+type TreeNode = WorkspaceEntry & {
+  loaded?: boolean;
+  expanded?: boolean;
+  children?: TreeNode[];
+};
+type DockSide = "left" | "right";
+type ToolKind = "explorer" | "editor" | "git" | "terminal";
+type DockTool = { id: string; kind: ToolKind; title: string; side: DockSide };
 
-function patchTree(nodes: TreeNode[], path: string, patch: Partial<TreeNode>): TreeNode[] {
+function DockToolHost({
+  target,
+  active,
+  side,
+  children,
+}: {
+  target: HTMLDivElement | null;
+  active: boolean;
+  side: DockSide;
+  children: ReactNode;
+}) {
+  const [host] = useState(() => document.createElement("div"));
+
+  useLayoutEffect(() => {
+    host.className = `workspace-tool workspace-tool-${side} ${active ? "active" : ""}`;
+    target?.appendChild(host);
+  }, [active, host, side, target]);
+
+  useEffect(() => () => host.remove(), [host]);
+  return createPortal(children, host);
+}
+
+function patchTree(
+  nodes: TreeNode[],
+  path: string,
+  patch: Partial<TreeNode>,
+): TreeNode[] {
   return nodes.map((node) =>
     node.path === path
       ? { ...node, ...patch }
@@ -19,7 +75,12 @@ function patchTree(nodes: TreeNode[], path: string, patch: Partial<TreeNode>): T
   );
 }
 
-function FileTree({ nodes, active, onOpen, onExpand }: {
+function FileTree({
+  nodes,
+  active,
+  onOpen,
+  onExpand,
+}: {
   nodes: TreeNode[];
   active: string;
   onOpen: (path: string) => void;
@@ -31,14 +92,21 @@ function FileTree({ nodes, active, onOpen, onExpand }: {
         <li key={node.path}>
           <button
             className={node.path === active ? "active" : ""}
-            onClick={() => node.is_dir ? onExpand(node) : onOpen(node.path)}
+            onClick={() => (node.is_dir ? onExpand(node) : onOpen(node.path))}
             title={node.path}
           >
-            <span aria-hidden="true">{node.is_dir ? (node.expanded ? "▾" : "▸") : "·"}</span>
+            <span aria-hidden="true">
+              {node.is_dir ? (node.expanded ? "▾" : "▸") : "·"}
+            </span>
             {node.name}
           </button>
           {node.is_dir && node.expanded && node.children ? (
-            <FileTree nodes={node.children} active={active} onOpen={onOpen} onExpand={onExpand} />
+            <FileTree
+              nodes={node.children}
+              active={active}
+              onOpen={onOpen}
+              onExpand={onExpand}
+            />
           ) : null}
         </li>
       ))}
@@ -46,159 +114,499 @@ function FileTree({ nodes, active, onOpen, onExpand }: {
   );
 }
 
-export function WorkspaceShell({ workDir, onNotify }: Props) {
+function toOpenFile(file: WorkspaceFile): OpenFile {
+  return { ...file, savedContent: file.content };
+}
+
+export function WorkspaceShell({
+  workDir,
+  active,
+  children,
+  onDirtyChange,
+  onNotify,
+}: Props) {
   const [tree, setTree] = useState<TreeNode[]>([]);
-  const [file, setFile] = useState<WorkspaceFile | null>(null);
-  const [content, setContent] = useState("");
+  const [files, setFiles] = useState<OpenFile[]>([]);
+  const [activePath, setActivePath] = useState("");
   const [git, setGit] = useState<GitStatusResult | null>(null);
-  const [terminalOpen, setTerminalOpen] = useState(false);
-  const [terminalText, setTerminalText] = useState("");
-  const [terminalInput, setTerminalInput] = useState("");
-  const terminalID = useRef(`workspace-${Date.now()}`);
-  const outputRef = useRef<HTMLPreElement>(null);
-  const dirty = file !== null && content !== file.content;
+  const [tools, setTools] = useState<DockTool[]>([
+    { id: "explorer", kind: "explorer", title: "Explorer", side: "left" },
+    { id: "editor", kind: "editor", title: "Editor", side: "right" },
+    { id: "git", kind: "git", title: "Source Control", side: "right" },
+  ]);
+  const [activeTool, setActiveTool] = useState<Record<DockSide, string>>({
+    left: "explorer",
+    right: "editor",
+  });
+  const nextTerminal = useRef(1);
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [workspacePaths, setWorkspacePaths] = useState<string[]>([]);
+  const [dockBodies, setDockBodies] = useState<
+    Record<DockSide, HTMLDivElement | null>
+  >({ left: null, right: null });
+  const dockBodyRefs = useMemo(() => {
+    const assign = (side: DockSide) => (element: HTMLDivElement | null) =>
+      setDockBodies((current) =>
+        current[side] === element ? current : { ...current, [side]: element },
+      );
+    return { left: assign("left"), right: assign("right") };
+  }, []);
+  const workspaceGeneration = useRef(0);
+  const openRequest = useRef(0);
+  const file = files.find((candidate) => candidate.path === activePath) ?? null;
+  const dirty = file ? isDirty(file) : false;
+  const hasDirtyFiles = files.some(isDirty);
+
+  useEffect(() => onDirtyChange(hasDirtyFiles), [hasDirtyFiles, onDirtyChange]);
+
+  useEffect(() => {
+    const warn = (event: BeforeUnloadEvent) => {
+      if (!hasDirtyFiles) return;
+      event.preventDefault();
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [hasDirtyFiles]);
 
   const refreshGit = useCallback(() => {
-    void forge.gitStatus().then(setGit).catch((error: unknown) => onNotify(String(error)));
+    void forge
+      .gitStatus()
+      .then(setGit)
+      .catch((error: unknown) => onNotify(String(error)));
   }, [onNotify]);
 
+  const indexWorkspace = useCallback(async (generation: number) => {
+    const paths: string[] = [];
+    const visit = async (path: string) => {
+      const entries = await forge.listWorkspaceDir(path);
+      for (const entry of entries) {
+        if (generation !== workspaceGeneration.current) return;
+        if (entry.is_dir) await visit(entry.path);
+        else paths.push(entry.path);
+      }
+    };
+    await visit("");
+    if (generation !== workspaceGeneration.current) return;
+    paths.sort((a, b) => a.localeCompare(b));
+    setWorkspacePaths(paths);
+  }, []);
+
   useEffect(() => {
-    setFile(null);
-    setContent("");
-    void forge.listWorkspaceDir("").then(setTree).catch((error: unknown) => onNotify(String(error)));
+    const generation = ++workspaceGeneration.current;
+    openRequest.current++;
+    setFiles([]);
+    setActivePath("");
+    setWorkspacePaths([]);
+    void forge
+      .listWorkspaceDir("")
+      .then((next) => {
+        if (generation === workspaceGeneration.current) setTree(next);
+      })
+      .catch((error: unknown) => onNotify(String(error)));
+    void indexWorkspace(generation).catch((error: unknown) =>
+      onNotify(String(error)),
+    );
     refreshGit();
-  }, [workDir, onNotify, refreshGit]);
-
-  useEffect(() => forge.onTerminal((event) => {
-    if (event.id !== terminalID.current) return;
-    if (event.data) setTerminalText((text) => text + event.data);
-    if (event.closed) setTerminalOpen(false);
-  }), []);
-
-  useEffect(() => {
-    outputRef.current?.scrollTo({ top: outputRef.current.scrollHeight });
-  }, [terminalText]);
-
-  useEffect(() => () => {
-    if (terminalOpen) void forge.closeTerminal(terminalID.current);
-  }, [terminalOpen]);
+  }, [workDir, onNotify, refreshGit, indexWorkspace]);
 
   const expand = (node: TreeNode) => {
     if (node.loaded) {
-      setTree((current) => patchTree(current, node.path, { expanded: !node.expanded }));
+      setTree((current) =>
+        patchTree(current, node.path, { expanded: !node.expanded }),
+      );
       return;
     }
-    void forge.listWorkspaceDir(node.path)
-      .then((children) => setTree((current) => patchTree(current, node.path, {
-        children,
-        expanded: true,
-        loaded: true,
-      })))
+    void forge
+      .listWorkspaceDir(node.path)
+      .then((children) =>
+        setTree((current) =>
+          patchTree(current, node.path, {
+            children,
+            expanded: true,
+            loaded: true,
+          }),
+        ),
+      )
       .catch((error: unknown) => onNotify(String(error)));
   };
 
-  const openFile = (path: string) => {
-    if (dirty && !window.confirm("Discard unsaved changes?")) return;
-    void forge.readWorkspaceFile(path)
-      .then((next) => {
-        setFile(next);
-        setContent(next.content);
-      })
-      .catch((error: unknown) => onNotify(String(error)));
+  const openFile = useCallback(
+    (path: string) => {
+      if (files.some((candidate) => candidate.path === path)) {
+        openRequest.current++;
+        setActivePath(path);
+        setQuickOpen(false);
+        return;
+      }
+      const request = ++openRequest.current;
+      const generation = workspaceGeneration.current;
+      void forge
+        .readWorkspaceFile(path)
+        .then((next) => {
+          if (generation !== workspaceGeneration.current) return;
+          setFiles((current) =>
+            current.some((candidate) => candidate.path === path)
+              ? current
+              : [...current, toOpenFile(next)],
+          );
+          if (request === openRequest.current) setActivePath(path);
+          setQuickOpen(false);
+        })
+        .catch((error: unknown) => onNotify(String(error)));
+    },
+    [files, onNotify],
+  );
+
+  const closeFile = (path: string) => {
+    const closing = files.find((candidate) => candidate.path === path);
+    if (
+      !closing ||
+      (isDirty(closing) &&
+        !window.confirm(`Discard unsaved changes to ${path}?`))
+    )
+      return;
+    const index = files.findIndex((candidate) => candidate.path === path);
+    const remaining = files.filter((candidate) => candidate.path !== path);
+    setFiles(remaining);
+    if (activePath === path)
+      setActivePath(
+        remaining[Math.min(index, remaining.length - 1)]?.path ?? "",
+      );
   };
 
-  const save = () => {
-    if (!file || !dirty) return;
-    void forge.writeWorkspaceFile(file.path, content, file.version)
+  const save = useCallback(() => {
+    if (!file || !isDirty(file)) return;
+    const expectedVersion = file.version;
+    void forge
+      .writeWorkspaceFile(file.path, file.content, file.version)
       .then((saved) => {
-        setFile(saved);
-        setContent(saved.content);
+        setFiles((current) =>
+          current.map((candidate) =>
+            candidate.path === saved.path
+              ? acceptSavedFile(candidate, saved, expectedVersion)
+              : candidate,
+          ),
+        );
         refreshGit();
         onNotify(`saved ${saved.path}`);
       })
       .catch((error: unknown) => onNotify(String(error)));
+  }, [file, onNotify, refreshGit]);
+
+  const updateContent = (content: string) => {
+    if (!file) return;
+    setFiles((current) =>
+      current.map((candidate) =>
+        candidate.path === file.path ? { ...candidate, content } : candidate,
+      ),
+    );
   };
 
-  const toggleTerminal = () => {
-    if (terminalOpen) {
-      void forge.closeTerminal(terminalID.current);
-      setTerminalOpen(false);
-      return;
+  const revert = () => {
+    if (!file) return;
+    setFiles((current) =>
+      current.map((candidate) =>
+        candidate.path === file.path
+          ? { ...candidate, content: candidate.savedContent }
+          : candidate,
+      ),
+    );
+  };
+
+  useEffect(() => {
+    if (!active) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "p") {
+        event.preventDefault();
+        setQuery("");
+        setQuickOpen(true);
+      }
+      if (event.key === "Escape") setQuickOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [active]);
+
+  const matches = useMemo(
+    () => filterPaths(workspacePaths, query),
+    [workspacePaths, query],
+  );
+
+  const moveTool = (id: string, side: DockSide) => {
+    setTools((current) => {
+      const moving = current.find((tool) => tool.id === id);
+      if (!moving || moving.side === side) return current;
+      const next = current.map((tool) =>
+        tool.id === id ? { ...tool, side } : tool,
+      );
+      setActiveTool((activeTools) => ({
+        ...activeTools,
+        [moving.side]:
+          activeTools[moving.side] === id
+            ? (next.find((tool) => tool.side === moving.side)?.id ?? "")
+            : activeTools[moving.side],
+        [side]: id,
+      }));
+      return next;
+    });
+  };
+
+  const launchTerminal = (side: DockSide) => {
+    const number = nextTerminal.current++;
+    const id = `terminal-${number}`;
+    setTools((current) => [
+      ...current,
+      { id, kind: "terminal", title: `Terminal ${number}`, side },
+    ]);
+    setActiveTool((current) => ({ ...current, [side]: id }));
+  };
+
+  const closeTerminal = (id: string) => {
+    const closing = tools.find((tool) => tool.id === id);
+    if (!closing || closing.kind !== "terminal") return;
+    const remaining = tools.filter((tool) => tool.id !== id);
+    setTools(remaining);
+    if (activeTool[closing.side] === id) {
+      setActiveTool((current) => ({
+        ...current,
+        [closing.side]:
+          remaining.find((tool) => tool.side === closing.side)?.id ?? "",
+      }));
     }
-    setTerminalText("");
-    void forge.startTerminal(terminalID.current, 24, 100)
-      .then(() => setTerminalOpen(true))
-      .catch((error: unknown) => onNotify(String(error)));
   };
 
-  const submitTerminal = (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!terminalOpen) return;
-    void forge.writeTerminal(terminalID.current, `${terminalInput}\n`).catch((error: unknown) => onNotify(String(error)));
-    setTerminalInput("");
+  const renderTool = (tool: DockTool) => {
+    if (tool.kind === "explorer")
+      return (
+        <>
+          <div className="workspace-panel-title">EXPLORER</div>
+          <div className="workspace-root" title={workDir}>
+            {workDir.split("/").pop() || workDir}
+          </div>
+          <FileTree
+            nodes={tree}
+            active={activePath}
+            onOpen={openFile}
+            onExpand={expand}
+          />
+        </>
+      );
+    if (tool.kind === "git")
+      return (
+        <>
+          <div className="workspace-panel-title">
+            SOURCE CONTROL{" "}
+            <button onClick={refreshGit} title="Refresh Git status">
+              ↻
+            </button>
+          </div>
+          {!git?.repository ? (
+            <div className="workspace-muted">Not a Git repository</div>
+          ) : (
+            <>
+              <div className="workspace-branch">
+                {git.branch || "Git repository"}
+              </div>
+              {git.files.length === 0 ? (
+                <div className="workspace-muted">No changes</div>
+              ) : (
+                <ul>
+                  {git.files.map((entry) => (
+                    <li key={`${entry.status}-${entry.path}`}>
+                      <button
+                        onClick={() => openFile(entry.path)}
+                        title={entry.path}
+                      >
+                        <span>{entry.path}</span>
+                        <b>{entry.status}</b>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
+        </>
+      );
+    if (tool.kind === "terminal")
+      return (
+        <TerminalWorkspace
+          workDir={workDir}
+          instanceID={tool.id}
+          onNotify={onNotify}
+        />
+      );
+    return (
+      <section className="workspace-editor">
+        <div className="workspace-tabs">
+          {files.map((open) => (
+            <div
+              className={`workspace-tab ${open.path === activePath ? "active" : ""}`}
+              key={open.path}
+              title={open.path}
+            >
+              <button onClick={() => setActivePath(open.path)}>
+                {open.path.split("/").pop()}
+                {isDirty(open) ? " ●" : ""}
+              </button>
+              <button
+                className="workspace-tab-close"
+                onClick={() => closeFile(open.path)}
+                aria-label={`Close ${open.path}`}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          <span className="workspace-tab-spacer" />
+          <button
+            className="workspace-quick-open-button"
+            onClick={() => {
+              setQuery("");
+              setQuickOpen(true);
+            }}
+            title="Quick open (Ctrl/Command+P)"
+          >
+            ⌕
+          </button>
+        </div>
+        <div className="workspace-toolbar">
+          <span className="workspace-file-name">
+            {file ? file.path : "No file open"}
+          </span>
+          <button disabled={!dirty} onClick={revert}>
+            Revert
+          </button>
+          <button disabled={!dirty} onClick={save}>
+            Save
+          </button>
+        </div>
+        {file ? (
+          <CodeEditor
+            key={file.path}
+            path={file.path}
+            value={file.content}
+            onChange={updateContent}
+            onSave={save}
+            onNotify={onNotify}
+          />
+        ) : (
+          <div className="workspace-empty">Select a text file to edit</div>
+        )}
+      </section>
+    );
   };
 
   return (
-    <div className="workspace-shell">
-      <aside className="workspace-explorer">
-        <div className="workspace-panel-title">EXPLORER</div>
-        <div className="workspace-root" title={workDir}>{workDir.split("/").pop() || workDir}</div>
-        <FileTree nodes={tree} active={file?.path ?? ""} onOpen={openFile} onExpand={expand} />
-      </aside>
-
-      <section className="workspace-editor">
-        <div className="workspace-toolbar">
-          <span className="workspace-file-name">{file ? `${file.path}${dirty ? " ●" : ""}` : "No file open"}</span>
-          <button disabled={!dirty} onClick={() => file && setContent(file.content)}>Revert</button>
-          <button disabled={!dirty} onClick={save}>Save</button>
-          <button onClick={toggleTerminal}>{terminalOpen ? "Close terminal" : "Terminal"}</button>
-        </div>
-        {file ? (
-          <textarea
-            className="workspace-textarea"
-            aria-label={`Edit ${file.path}`}
-            spellCheck={false}
-            value={content}
-            onChange={(event) => setContent(event.target.value)}
-            onKeyDown={(event) => {
-              if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
-                event.preventDefault();
-                save();
-              }
-            }}
-          />
-        ) : <div className="workspace-empty">Select a text file to edit</div>}
-        {terminalOpen ? (
-          <div className="workspace-terminal">
-            <pre ref={outputRef}>{terminalText}</pre>
-            <form onSubmit={submitTerminal}>
-              <span>$</span>
-              <input autoFocus value={terminalInput} onChange={(event) => setTerminalInput(event.target.value)} aria-label="Terminal input" />
-            </form>
+    <div
+      className={`workspace-shell ${active ? "docks-open" : "docks-closed"}`}
+    >
+      {(["left", "right"] as const).map((side) => (
+        <aside className={`workspace-dock workspace-dock-${side}`} key={side}>
+          <div className="workspace-dock-tabs">
+            {tools
+              .filter((tool) => tool.side === side)
+              .map((tool) => (
+                <button
+                  className={activeTool[side] === tool.id ? "active" : ""}
+                  key={tool.id}
+                  onClick={() =>
+                    setActiveTool((current) => ({
+                      ...current,
+                      [side]: tool.id,
+                    }))
+                  }
+                >
+                  {tool.title}
+                  {tool.kind === "terminal" ? (
+                    <span
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        closeTerminal(tool.id);
+                      }}
+                    >
+                      {" "}
+                      ×
+                    </span>
+                  ) : null}
+                </button>
+              ))}
+            <button
+              onClick={() => launchTerminal(side)}
+              title={`New terminal in ${side} dock`}
+            >
+              ＋
+            </button>
           </div>
-        ) : null}
-      </section>
-
-      <aside className="workspace-git">
-        <div className="workspace-panel-title">
-          SOURCE CONTROL
-          <button onClick={refreshGit} title="Refresh Git status">↻</button>
-        </div>
-        {!git?.repository ? <div className="workspace-muted">Not a Git repository</div> : (
-          <>
-            <div className="workspace-branch">{git.branch || "Git repository"}</div>
-            {git.files.length === 0 ? <div className="workspace-muted">No changes</div> : (
-              <ul>{git.files.map((entry) => (
-                <li key={`${entry.status}-${entry.path}`}>
-                  <button onClick={() => openFile(entry.path)} title={entry.path}>
-                    <span>{entry.path}</span><b>{entry.status}</b>
+        </aside>
+      ))}
+      <div className="workspace-chat">{children}</div>
+      {(["left", "right"] as const).map((side) => (
+        <div
+          className={`workspace-dock-body workspace-dock-body-${side}`}
+          key={`${side}-body`}
+          ref={dockBodyRefs[side]}
+        />
+      ))}
+      {tools.map((tool) => (
+        <DockToolHost
+          active={activeTool[tool.side] === tool.id}
+          key={tool.id}
+          side={tool.side}
+          target={dockBodies[tool.side]}
+        >
+          <div className="workspace-tool-actions">
+            <button
+              onClick={() =>
+                moveTool(tool.id, tool.side === "left" ? "right" : "left")
+              }
+              title={`Move to ${tool.side === "left" ? "right" : "left"} dock`}
+            >
+              {tool.side === "left" ? "→" : "←"}
+            </button>
+          </div>
+          {renderTool(tool)}
+        </DockToolHost>
+      ))}
+      {quickOpen ? (
+        <div
+          className="workspace-quick-open"
+          role="dialog"
+          aria-label="Quick open file"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setQuickOpen(false);
+          }}
+        >
+          <div className="workspace-quick-open-panel">
+            <input
+              autoFocus
+              aria-label="File name"
+              placeholder="Search files by name"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && matches[0]) openFile(matches[0]);
+              }}
+            />
+            <ul>
+              {matches.map((path, index) => (
+                <li key={path}>
+                  <button
+                    className={index === 0 ? "selected" : ""}
+                    onClick={() => openFile(path)}
+                  >
+                    {path}
                   </button>
                 </li>
-              ))}</ul>
-            )}
-          </>
-        )}
-      </aside>
+              ))}
+            </ul>
+            {matches.length === 0 ? (
+              <div className="workspace-muted">No matching files</div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

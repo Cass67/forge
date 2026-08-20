@@ -1,6 +1,7 @@
 export type Stats = {
   inTok: number;
   outTok: number;
+  cachedTok: number;
   lastOut: number;
   lastMs: number;
   contextUsed: number;
@@ -27,9 +28,18 @@ function fmtRate(outTokens: number, ms: number): string {
   return `${(outTokens / (ms / 1000)).toFixed(1)}/s`;
 }
 
-export function StatsBar({ stats, connected }: { stats: Stats; connected: boolean }) {
+export function StatsBar({
+  stats,
+  connected,
+}: {
+  stats: Stats;
+  connected: boolean;
+}) {
   const total = stats.inTok + stats.outTok;
-  const pct = stats.contextLimit > 0 ? Math.round((stats.contextUsed / stats.contextLimit) * 100) : 0;
+  const pct =
+    stats.contextLimit > 0
+      ? Math.round((stats.contextUsed / stats.contextLimit) * 100)
+      : 0;
   return (
     <div className="stats-bar">
       <span className={`conn ${connected ? "on" : "off"}`}>
@@ -39,8 +49,14 @@ export function StatsBar({ stats, connected }: { stats: Stats; connected: boolea
       <span className="stat">
         <span className="stat-k">model</span> {stats.model || "—"}
       </span>
-      <span className="stat" title="Tokens sent to the model this session">
+      <span
+        className="stat"
+        title="Tokens sent to the model this session, cache hits included. Every tool step re-sends the whole conversation."
+      >
         <span className="stat-k">in</span> {fmt(stats.inTok)}
+        {stats.cachedTok > 0 ? (
+          <span className="stat-sub"> ({fmt(stats.cachedTok)} cached)</span>
+        ) : null}
       </span>
       <span className="stat" title="Tokens generated this session">
         <span className="stat-k">out</span> {fmt(stats.outTok)}
@@ -49,11 +65,14 @@ export function StatsBar({ stats, connected }: { stats: Stats; connected: boolea
         <span className="stat-k">total</span> {fmt(total)}
       </span>
       <span className="stat" title="Output tokens per second on the last turn">
-        <span className="stat-k">rate</span> {fmtRate(stats.lastOut, stats.lastMs)}
+        <span className="stat-k">rate</span>{" "}
+        {fmtRate(stats.lastOut, stats.lastMs)}
       </span>
       <span className="stat" title="Context used of the model's window">
         <span className="stat-k">ctx</span>{" "}
-        {stats.contextLimit ? `${fmt(stats.contextUsed)}/${fmt(stats.contextLimit)} (${pct}%)` : "—"}
+        {stats.contextLimit
+          ? `${fmt(stats.contextUsed)}/${fmt(stats.contextLimit)} (${pct}%)`
+          : "—"}
       </span>
       <span className="stat" title="Wall time of the last turn">
         <span className="stat-k">turn</span> {fmtDur(stats.durationMs)}

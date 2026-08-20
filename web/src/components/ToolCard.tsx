@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { Entry } from "../entries";
+import { highlightBlock, languageForPath, parseGutter } from "../toolOutput";
 import { DiffView } from "./DiffView";
 import { ImagePreview } from "./ImagePreview";
 
@@ -15,7 +16,45 @@ type ToolEntry = Extract<Entry, { t: "tool" }>;
 
 const MAX_PREVIEW = 4000;
 
-export function ToolCard({ entry, defaultOpen = false }: { entry: ToolEntry; defaultOpen?: boolean }) {
+// File reads come back with a "  120 | " gutter. Split it off so the code can be
+// highlighted as one block and the numbers ride in their own column.
+function ToolOutput({ text, path }: { text: string; path: string }) {
+  const view = useMemo(() => {
+    const parsed = parseGutter(text);
+    if (!parsed) return null;
+    const html = highlightBlock(parsed.code, languageForPath(path));
+    return { ...parsed, html };
+  }, [text, path]);
+
+  if (!view) return <pre className="tc-out">{text}</pre>;
+
+  return (
+    <div className="tc-code">
+      {view.header ? <div className="tc-code-header">{view.header}</div> : null}
+      <div className="tc-code-rows">
+        <pre className="tc-gutter" aria-hidden="true">
+          {view.numbers.map((n) => (n ? n : "")).join("\n")}
+        </pre>
+        {view.html ? (
+          <pre
+            className="tc-out hljs"
+            dangerouslySetInnerHTML={{ __html: view.html }}
+          />
+        ) : (
+          <pre className="tc-out">{view.code}</pre>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function ToolCard({
+  entry,
+  defaultOpen = false,
+}: {
+  entry: ToolEntry;
+  defaultOpen?: boolean;
+}) {
   const [open, setOpen] = useState(defaultOpen);
   const [full, setFull] = useState(false);
   const status = entry.isError ? "err" : entry.done ? "ok" : "run";
@@ -34,11 +73,16 @@ export function ToolCard({ entry, defaultOpen = false }: { entry: ToolEntry; def
       {open && (
         <div className="tc-body">
           {!entry.done ? <div className="tc-pending">running…</div> : null}
-          {imagePathIn(entry) ? <ImagePreview path={imagePathIn(entry)} alt={entry.name} /> : null}
+          {imagePathIn(entry) ? (
+            <ImagePreview path={imagePathIn(entry)} alt={entry.name} />
+          ) : null}
           {entry.diff ? <DiffView diff={entry.diff} /> : null}
           {out ? (
             <>
-              <pre className="tc-out">{truncated ? out.slice(0, MAX_PREVIEW) : out}</pre>
+              <ToolOutput
+                text={truncated ? out.slice(0, MAX_PREVIEW) : out}
+                path={entry.summary || ""}
+              />
               {truncated ? (
                 <button className="btn" onClick={() => setFull(true)}>
                   show all {out.length.toLocaleString()} chars

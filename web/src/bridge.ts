@@ -7,7 +7,7 @@
 import { Call, Events } from "/wails/runtime.js";
 
 const SERVICE = "forge/internal/gui.Service";
-const call = <T,>(method: string, ...args: unknown[]): Promise<T> =>
+const call = <T>(method: string, ...args: unknown[]): Promise<T> =>
   Call.ByName(`${SERVICE}.${method}`, ...args) as Promise<T>;
 
 export type WireEvent = {
@@ -20,7 +20,12 @@ export type WireEvent = {
   is_error?: boolean;
   content?: string;
   duration_ms?: number;
-  usage?: { input_tokens: number; output_tokens: number };
+  usage?: {
+    input_tokens: number;
+    output_tokens: number;
+    cached_input_tokens?: number;
+    cache_write_tokens?: number;
+  };
   context_used?: number;
   context_limit?: number;
   context_estimated?: boolean;
@@ -49,7 +54,11 @@ export type StoredItem = {
   kind: string;
   at: string;
   message?: { role: string; text?: string; reasoning_content?: string };
-  tool_call?: { tool_name: string; tool_call_id?: string; args?: Record<string, unknown> };
+  tool_call?: {
+    tool_name: string;
+    tool_call_id?: string;
+    args?: Record<string, unknown>;
+  };
   tool_result?: {
     tool_name: string;
     tool_call_id?: string;
@@ -125,7 +134,12 @@ export type RestoreResult = {
   items: StoredItem[];
 };
 
-export type WorkspaceEntry = { name: string; path: string; is_dir: boolean; size?: number };
+export type WorkspaceEntry = {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  size?: number;
+};
 export type WorkspaceFile = { path: string; content: string; version: string };
 export type GitStatusResult = {
   repository: boolean;
@@ -156,36 +170,46 @@ export const forge = {
   threads: () => call<ThreadSummary[]>("Threads"),
   history: (threadID: string) => call<StoredItem[]>("History", threadID),
   restore: (threadID: string) => call<RestoreResult>("Restore", threadID),
-  deleteThread: (threadID: string) => call<ThreadSummary[]>("DeleteThread", threadID),
+  deleteThread: (threadID: string) =>
+    call<ThreadSummary[]>("DeleteThread", threadID),
   renameThread: (threadID: string, title: string) =>
     call<ThreadSummary[]>("RenameThread", threadID, title),
   workspaces: () => call<Workspace[]>("Workspaces"),
   providers: () => call<Provider[]>("Providers"),
   mcpServers: () => call<MCPServer[]>("MCPServers"),
   signOutProvider: (id: string) => call<Provider[]>("SignOutProvider", id),
-  setProviderKey: (id: string, key: string) => call<Provider[]>("SetProviderKey", id, key),
+  setProviderKey: (id: string, key: string) =>
+    call<Provider[]>("SetProviderKey", id, key),
   startProviderLogin: (id: string) => call<Login>("StartProviderLogin", id),
-  awaitProviderLogin: (id: string) => call<Provider[]>("AwaitProviderLogin", id),
+  awaitProviderLogin: (id: string) =>
+    call<Provider[]>("AwaitProviderLogin", id),
   completeProviderLogin: (id: string, pasted: string) =>
     call<Provider[]>("CompleteProviderLogin", id, pasted),
   openURL: (url: string) => call<void>("OpenURL", url),
   chooseWorkspace: () => call<string>("ChooseWorkspace"),
   switchWorkspace: (dir: string) => call<void>("SwitchWorkspace", dir),
-  pinWorkspace: (dir: string, pinned: boolean) => call<Workspace[]>("PinWorkspace", dir, pinned),
+  pinWorkspace: (dir: string, pinned: boolean) =>
+    call<Workspace[]>("PinWorkspace", dir, pinned),
   forgetWorkspace: (dir: string) => call<Workspace[]>("ForgetWorkspace", dir),
   yolo: () => call<boolean>("Yolo"),
   setYolo: (on: boolean) => call<boolean>("SetYolo", on),
-  attachImage: (name: string, dataB64: string) => call<Attachment>("AttachImage", name, dataB64),
+  attachImage: (name: string, dataB64: string) =>
+    call<Attachment>("AttachImage", name, dataB64),
   attachPath: (path: string) => call<Attachment>("AttachPath", path),
   imagePreview: (path: string) => call<string>("ImagePreview", path),
-  listWorkspaceDir: (path: string) => call<WorkspaceEntry[]>("ListWorkspaceDir", path),
-  readWorkspaceFile: (path: string) => call<WorkspaceFile>("ReadWorkspaceFile", path),
+  listWorkspaceDir: (path: string) =>
+    call<WorkspaceEntry[]>("ListWorkspaceDir", path),
+  readWorkspaceFile: (path: string) =>
+    call<WorkspaceFile>("ReadWorkspaceFile", path),
   writeWorkspaceFile: (path: string, content: string, version: string) =>
     call<WorkspaceFile>("WriteWorkspaceFile", path, content, version),
   gitStatus: () => call<GitStatusResult>("GitStatus"),
-  startTerminal: (id: string, rows: number, cols: number) => call<void>("StartTerminal", id, rows, cols),
-  writeTerminal: (id: string, data: string) => call<void>("WriteTerminal", id, data),
-  resizeTerminal: (id: string, rows: number, cols: number) => call<void>("ResizeTerminal", id, rows, cols),
+  startTerminal: (id: string, rows: number, cols: number) =>
+    call<void>("StartTerminal", id, rows, cols),
+  writeTerminal: (id: string, data: string) =>
+    call<void>("WriteTerminal", id, data),
+  resizeTerminal: (id: string, rows: number, cols: number) =>
+    call<void>("ResizeTerminal", id, rows, cols),
   closeTerminal: (id: string) => call<void>("CloseTerminal", id),
 
   onEvent: (fn: (ev: WireEvent) => void) =>
@@ -199,10 +223,17 @@ export const forge = {
   onFilesDropped: (fn: (paths: string[]) => void) =>
     Events.On("forge:files", (e: unknown) => {
       const data = (e as { data?: unknown })?.data;
-      const raw = Array.isArray(data) && Array.isArray(data[0]) ? data[0] : data;
-      fn(Array.isArray(raw) ? raw.filter((v): v is string => typeof v === "string") : []);
+      const raw =
+        Array.isArray(data) && Array.isArray(data[0]) ? data[0] : data;
+      fn(
+        Array.isArray(raw)
+          ? raw.filter((v): v is string => typeof v === "string")
+          : [],
+      );
     }),
   onReady: (fn: () => void) => Events.On("forge:ready", () => fn()),
   onTerminal: (fn: (event: TerminalEvent) => void) =>
-    Events.On("forge:terminal", (event: unknown) => fn(payload<TerminalEvent>(event))),
+    Events.On("forge:terminal", (event: unknown) =>
+      fn(payload<TerminalEvent>(event)),
+    ),
 };

@@ -227,8 +227,10 @@ func newWindow(app *application.App, workDir string) application.Window {
 	return app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title: title,
 		// The webview's stock right-click menu offers Reload and Inspect
-		// Element, which belong to a browser, not to this app.
-		DefaultContextMenuDisabled: true,
+		// Element, which belong to a browser, not to this app. Set
+		// FORGE_GUI_DEVTOOLS=1 to get them back when the UI itself misbehaves
+		// (a blank window has no other way to report a frontend error).
+		DefaultContextMenuDisabled: os.Getenv("FORGE_GUI_DEVTOOLS") != "1",
 		// The webview swallows OS file drags: they never surface as DOM drop
 		// events with files attached. Wails delivers them as a window event
 		// instead, for elements marked data-file-drop-target.

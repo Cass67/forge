@@ -7,7 +7,13 @@ import { ToolCard } from "./ToolCard";
 import { ImagePreview } from "./ImagePreview";
 import type { Prefs } from "./SettingsPanel";
 
-function CopyButton({ text, label = "copy" }: { text: string; label?: string }) {
+function CopyButton({
+  text,
+  label = "copy",
+}: {
+  text: string;
+  label?: string;
+}) {
   const [done, setDone] = useState(false);
   return (
     <button
@@ -27,7 +33,10 @@ function CopyButton({ text, label = "copy" }: { text: string; label?: string }) 
 function AgentText({ text, streaming }: { text: string; streaming?: boolean }) {
   return (
     <div className="md">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeHighlight]}
+      >
         {text}
       </ReactMarkdown>
       {streaming ? <span className="cursor" /> : null}
@@ -35,7 +44,15 @@ function AgentText({ text, streaming }: { text: string; streaming?: boolean }) {
   );
 }
 
-export function Transcript({ entries, prefs, busy }: { entries: Entry[]; prefs: Prefs; busy: boolean }) {
+export function Transcript({
+  entries,
+  prefs,
+  busy,
+}: {
+  entries: Entry[];
+  prefs: Prefs;
+  busy: boolean;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
 
@@ -97,20 +114,25 @@ export function Transcript({ entries, prefs, busy }: { entries: Entry[]; prefs: 
           case "reasoning":
             if (!prefs.showReasoning) return null;
             return (
-              <details key={e.id} className="reasoning" open={e.streaming || prefs.expandReasoning}>
+              <details
+                key={e.id}
+                className="reasoning"
+                open={e.streaming || prefs.expandReasoning}
+              >
                 <summary>
                   <span className="think-dot" />
                   {e.streaming ? "thinking…" : "thought process"}
                 </summary>
                 <div className="reasoning-body">
-                  {e.text}
-                  {e.streaming ? <span className="cursor" /> : null}
+                  <AgentText text={e.text} streaming={e.streaming} />
                 </div>
               </details>
             );
           case "tool":
             if (!prefs.showTools) return null;
-            return <ToolCard key={e.id} entry={e} defaultOpen={prefs.expandTools} />;
+            return (
+              <ToolCard key={e.id} entry={e} defaultOpen={prefs.expandTools} />
+            );
           case "info":
             return (
               <div key={e.id} className="info-line">
@@ -124,7 +146,9 @@ export function Transcript({ entries, prefs, busy }: { entries: Entry[]; prefs: 
               </div>
             );
           case "turn":
-            return <div key={e.id} className={`turn-sep ${e.ok ? "ok" : "bad"}`} />;
+            return (
+              <div key={e.id} className={`turn-sep ${e.ok ? "ok" : "bad"}`} />
+            );
           default:
             return null;
         }

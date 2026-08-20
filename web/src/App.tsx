@@ -21,11 +21,19 @@ import { HelpOverlay } from "./components/HelpOverlay";
 import { WorkspaceMenu } from "./components/WorkspaceMenu";
 import { WorkspaceShell } from "./components/WorkspaceShell";
 import { applyTheme, isTheme, loadTheme, nextTheme, type Theme } from "./theme";
-import { applyScale, clampScale, formatScale, loadScale, step, DEFAULT_SCALE } from "./scale";
+import {
+  applyScale,
+  clampScale,
+  formatScale,
+  loadScale,
+  step,
+  DEFAULT_SCALE,
+} from "./scale";
 
 const initialStats: Stats = {
   inTok: 0,
   outTok: 0,
+  cachedTok: 0,
   lastOut: 0,
   lastMs: 0,
   contextUsed: 0,
@@ -46,7 +54,10 @@ const defaultPrefs: Prefs = {
 
 function loadPrefs(): Prefs {
   try {
-    return { ...defaultPrefs, ...JSON.parse(localStorage.getItem("forge.prefs") ?? "{}") };
+    return {
+      ...defaultPrefs,
+      ...JSON.parse(localStorage.getItem("forge.prefs") ?? "{}"),
+    };
   } catch {
     return defaultPrefs;
   }
@@ -77,10 +88,14 @@ export default function App() {
   const dragDepth = useRef(0);
   const [dragging, setDragging] = useState(false);
   const [workspaceMode, setWorkspaceMode] = useState(false);
+  const [workspaceDirty, setWorkspaceDirty] = useState(false);
 
   useEffect(() => applyTheme(theme), [theme]);
   useEffect(() => applyScale(scale), [scale]);
-  useEffect(() => localStorage.setItem("forge.prefs", JSON.stringify(prefs)), [prefs]);
+  useEffect(
+    () => localStorage.setItem("forge.prefs", JSON.stringify(prefs)),
+    [prefs],
+  );
 
   const notify = useCallback((msg: string) => {
     setFlash(msg);
@@ -130,6 +145,7 @@ export default function App() {
           ...s,
           inTok: s.inTok + u.input_tokens,
           outTok: s.outTok + u.output_tokens,
+          cachedTok: s.cachedTok + (u.cached_input_tokens || 0),
           // Kept separately so the rate describes the last turn rather than
           // an average dragged down by time spent idle.
           lastOut: u.output_tokens || s.lastOut,
@@ -141,9 +157,14 @@ export default function App() {
           contextUsed: ev.context_used || s.contextUsed,
           contextLimit: ev.context_limit || s.contextLimit,
           durationMs: ev.duration_ms || s.durationMs,
+          lastMs: ev.duration_ms || s.lastMs,
         }));
       }
-      if (ev.kind === "done" || ev.kind === "agent_done" || ev.kind === "abort") {
+      if (
+        ev.kind === "done" ||
+        ev.kind === "agent_done" ||
+        ev.kind === "abort"
+      ) {
         setBusy(false);
         refreshThreads();
       }
@@ -172,11 +193,20 @@ export default function App() {
   const sendInput = useCallback(
     (text: string) => {
       const images = pending;
-      setEntries((prev) => [...prev, userEntry(text, images.map((a) => a.path))]);
+      setEntries((prev) => [
+        ...prev,
+        userEntry(
+          text,
+          images.map((a) => a.path),
+        ),
+      ]);
       setHistory((h) => [...h, text]);
       setBusy(true);
       setPending([]);
-      const p = images.length > 0 ? forge.sendWithImages(text, images) : forge.send(text);
+      const p =
+        images.length > 0
+          ? forge.sendWithImages(text, images)
+          : forge.send(text);
       void p.catch((e: unknown) => {
         setBusy(false);
         notify(String(e));
@@ -226,6 +256,37 @@ export default function App() {
     [notify],
   );
 
+  // Bulk removal runs one call at a time: the thread store and the workspace
+  // registry both rewrite a whole file per call, so parallel writes would race.
+  const bulkDelete = useCallback(
+    (threadIDs: string[], dirs: string[]) => {
+      void (async () => {
+        let failed = 0;
+        for (const id of threadIDs) {
+          try {
+            setThreads(await forge.deleteThread(id));
+          } catch {
+            failed++;
+          }
+        }
+        for (const dir of dirs) {
+          try {
+            setWorkspaces(await forge.forgetWorkspace(dir));
+          } catch {
+            failed++;
+          }
+        }
+        const removed = threadIDs.length + dirs.length - failed;
+        notify(
+          failed
+            ? `removed ${removed}, ${failed} failed`
+            : `removed ${removed} item${removed === 1 ? "" : "s"}`,
+        );
+      })();
+    },
+    [notify],
+  );
+
   const switchModel = useCallback(
     (model: string) => {
       setOverlay("none");
@@ -257,7 +318,11 @@ export default function App() {
         .setYolo(on)
         .then((now) => {
           setYoloState(now);
-          notify(now ? "yolo on — tools run without asking" : "yolo off — tools ask first");
+          notify(
+            now
+              ? "yolo on — tools run without asking"
+              : "yolo off — tools ask first",
+          );
         })
         .catch((e: unknown) => notify(String(e)));
     },
@@ -285,16 +350,30 @@ export default function App() {
   // when the backend signals it is ready again.
   const openWorkspace = useCallback(
     (dir: string) => {
+      if (
+        workspaceDirty &&
+        !window.confirm(
+          "Discard unsaved workspace changes and switch workspaces?",
+        )
+      )
+        return;
       setEntries([]);
       setActiveID("");
       setBusy(false);
       notify(`opening ${dir.split("/").pop()}…`);
       void forge.switchWorkspace(dir).catch((e: unknown) => notify(String(e)));
     },
-    [notify],
+    [notify, workspaceDirty],
   );
 
   const addWorkspace = useCallback(() => {
+    if (
+      workspaceDirty &&
+      !window.confirm(
+        "Discard unsaved workspace changes and switch workspaces?",
+      )
+    )
+      return;
     void forge
       .chooseWorkspace()
       .then((dir) => {
@@ -304,7 +383,7 @@ export default function App() {
         }
       })
       .catch((e: unknown) => notify(String(e)));
-  }, [notify]);
+  }, [notify, workspaceDirty]);
 
   const lastAgentText = useMemo(() => {
     for (let i = entries.length - 1; i >= 0; i--) {
@@ -345,7 +424,10 @@ export default function App() {
         case "/sessions":
           return setPrefsState((p) => ({ ...p, showSidebar: !p.showSidebar }));
         case "/stats":
-          return setPrefsState((p) => ({ ...p, showActivity: !p.showActivity }));
+          return setPrefsState((p) => ({
+            ...p,
+            showActivity: !p.showActivity,
+          }));
         case "/tools":
           return setPrefsState((p) => ({ ...p, showTools: !p.showTools }));
         case "/skills":
@@ -356,7 +438,9 @@ export default function App() {
         case "/help":
           return setOverlay("help");
         case "/yolo":
-          return toggleYolo(arg === "" ? !yolo : arg === "on" || arg === "true");
+          return toggleYolo(
+            arg === "" ? !yolo : arg === "on" || arg === "true",
+          );
         case "/cancel":
           return cancel();
         case "/copy":
@@ -367,7 +451,19 @@ export default function App() {
           return sendInput(raw);
       }
     },
-    [cancel, lastAgentText, newThread, notify, sendInput, setEffortAction, setTheme, switchModel, theme, toggleYolo, yolo],
+    [
+      cancel,
+      lastAgentText,
+      newThread,
+      notify,
+      sendInput,
+      setEffortAction,
+      setTheme,
+      switchModel,
+      theme,
+      toggleYolo,
+      yolo,
+    ],
   );
 
   useEffect(() => {
@@ -396,7 +492,8 @@ export default function App() {
       const map: Record<string, () => void> = {
         k: () => setOverlay((o) => (o === "models" ? "none" : "models")),
         ",": () => setOverlay((o) => (o === "settings" ? "none" : "settings")),
-        o: () => setOverlay((o) => (o === "workspaces" ? "none" : "workspaces")),
+        o: () =>
+          setOverlay((o) => (o === "workspaces" ? "none" : "workspaces")),
         n: newThread,
         b: () => setPrefsState((p) => ({ ...p, showSidebar: !p.showSidebar })),
       };
@@ -446,7 +543,11 @@ export default function App() {
         await attachFiles(files);
         return;
       }
-      const uris = (data.getData("text/uri-list") || data.getData("text/plain") || "")
+      const uris = (
+        data.getData("text/uri-list") ||
+        data.getData("text/plain") ||
+        ""
+      )
         .split(/[\r\n]+/)
         .map((line) => line.trim())
         .filter((line) => line.startsWith("file://") || line.startsWith("/"));
@@ -485,34 +586,57 @@ export default function App() {
       <header className="topbar">
         <button
           className="icon-btn"
-          onClick={() => setPrefsState((p) => ({ ...p, showSidebar: !p.showSidebar }))}
+          onClick={() =>
+            setPrefsState((p) => ({ ...p, showSidebar: !p.showSidebar }))
+          }
           title="Toggle sidebar (⌘B)"
         >
           ☰
         </button>
         <span className="brand">FORGE</span>
-        <button className="workspace-btn" onClick={() => setOverlay("workspaces")} title="Switch workspace (⌘O)">
-          <span className="ws-name">{init?.work_dir ? init.work_dir.split("/").pop() : "no workspace"}</span>
+        <button
+          className="workspace-btn"
+          onClick={() => setOverlay("workspaces")}
+          title="Switch workspace (⌘O)"
+        >
+          <span className="ws-name">
+            {init?.work_dir ? init.work_dir.split("/").pop() : "no workspace"}
+          </span>
           <span className="ws-path">{workDirLabel}</span>
         </button>
         <span className="topbar-spacer" />
         {flash ? <span className="flash">{flash}</span> : null}
-        <button className="pill" onClick={() => setOverlay("models")} title="Switch model (⌘K)">
+        <button
+          className="pill"
+          onClick={() => setOverlay("models")}
+          title="Switch model (⌘K)"
+        >
           {stats.model || "—"}
         </button>
-        <button className={`pill ${workspaceMode ? "on" : ""}`} onClick={() => setWorkspaceMode((on) => !on)}>
-          {workspaceMode ? "Chat" : "Workspace"}
+        <button
+          className={`pill ${workspaceMode ? "on" : ""}`}
+          onClick={() => setWorkspaceMode((on) => !on)}
+        >
+          {workspaceMode ? "Hide Docks" : "Show Docks"}
         </button>
         {init && init.efforts && init.efforts.length > 0 ? (
           <div className="seg">
             {init.efforts.map((e) => (
-              <button key={e} className={`seg-btn ${e === effort ? "on" : ""}`} onClick={() => setEffortAction(e)}>
+              <button
+                key={e}
+                className={`seg-btn ${e === effort ? "on" : ""}`}
+                onClick={() => setEffortAction(e)}
+              >
                 {e}
               </button>
             ))}
           </div>
         ) : null}
-        <button className="icon-btn" onClick={() => setOverlay("settings")} title="Settings (⌘,)">
+        <button
+          className="icon-btn"
+          onClick={() => setOverlay("settings")}
+          title="Settings (⌘,)"
+        >
           ⚙
         </button>
       </header>
@@ -537,36 +661,48 @@ export default function App() {
                 .catch((e: unknown) => notify(String(e)))
             }
             onPin={(dir, pinned) =>
-              void forge.pinWorkspace(dir, pinned).then(setWorkspaces).catch((e: unknown) => notify(String(e)))
+              void forge
+                .pinWorkspace(dir, pinned)
+                .then(setWorkspaces)
+                .catch((e: unknown) => notify(String(e)))
             }
             onForget={(dir) =>
-              void forge.forgetWorkspace(dir).then(setWorkspaces).catch((e: unknown) => notify(String(e)))
+              void forge
+                .forgetWorkspace(dir)
+                .then(setWorkspaces)
+                .catch((e: unknown) => notify(String(e)))
             }
+            onBulkDelete={bulkDelete}
           />
         ) : null}
-        {workspaceMode ? (
-          <WorkspaceShell workDir={init?.work_dir ?? ""} onNotify={notify} />
-        ) : (
-          <>
-            <main className="center">
-              <Transcript entries={entries} prefs={prefs} busy={busy} />
-              <Composer
-                yolo={yolo}
-                onToggleYolo={() => toggleYolo(!yolo)}
-                busy={busy}
-                skills={init?.skills ?? []}
-                history={history}
-                attachments={pending}
-                onRemoveAttachment={(id) => setPending((p) => p.filter((a) => a.id !== id))}
-                onFiles={(files) => void attachFiles(files)}
-                onSend={sendInput}
-                onCancel={cancel}
-                onCommand={runCommand}
-              />
-            </main>
-            {prefs.showActivity ? <ActivityPanel entries={entries} stats={stats} /> : null}
-          </>
-        )}
+        <WorkspaceShell
+          workDir={init?.work_dir ?? ""}
+          active={workspaceMode}
+          onDirtyChange={setWorkspaceDirty}
+          onNotify={notify}
+        >
+          <main className="center">
+            <Transcript entries={entries} prefs={prefs} busy={busy} />
+            <Composer
+              yolo={yolo}
+              onToggleYolo={() => toggleYolo(!yolo)}
+              busy={busy}
+              skills={init?.skills ?? []}
+              history={history}
+              attachments={pending}
+              onRemoveAttachment={(id) =>
+                setPending((p) => p.filter((a) => a.id !== id))
+              }
+              onFiles={(files) => void attachFiles(files)}
+              onSend={sendInput}
+              onCancel={cancel}
+              onCommand={runCommand}
+            />
+          </main>
+          {prefs.showActivity ? (
+            <ActivityPanel entries={entries} stats={stats} />
+          ) : null}
+        </WorkspaceShell>
       </div>
 
       <StatsBar stats={stats} connected={init !== null} />
@@ -574,7 +710,11 @@ export default function App() {
       {dragging ? <div className="drop-veil">drop images to attach</div> : null}
 
       {approval ? (
-        <ApprovalModal action={approval} onApprove={() => approve(true)} onDeny={() => approve(false)} />
+        <ApprovalModal
+          action={approval}
+          onApprove={() => approve(true)}
+          onDeny={() => approve(false)}
+        />
       ) : null}
       {overlay === "models" && init ? (
         <ModelPicker
@@ -611,7 +751,9 @@ export default function App() {
           onModel={() => setOverlay("models")}
           onEffort={setEffortAction}
           onPrefs={setPrefsState}
-          onProviders={(next) => setInit((i) => (i ? { ...i, providers: next } : i))}
+          onProviders={(next) =>
+            setInit((i) => (i ? { ...i, providers: next } : i))
+          }
           onAddWorkspace={() => {
             setOverlay("none");
             addWorkspace();
@@ -621,7 +763,9 @@ export default function App() {
           onClose={() => setOverlay("none")}
         />
       ) : null}
-      {overlay === "help" ? <HelpOverlay onClose={() => setOverlay("none")} /> : null}
+      {overlay === "help" ? (
+        <HelpOverlay onClose={() => setOverlay("none")} />
+      ) : null}
     </div>
   );
 }
