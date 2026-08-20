@@ -16,7 +16,7 @@ const events: { kind: string; agent?: string; text?: string; is_error?: boolean 
   { kind: "token", text: "Shortlist research now: SecureCRT baseline plus Royal TS/X, Termius, Tabby." },
   { kind: "done" },
 ];
-for (let i = 0; i < 12; i++) {
+for (let i = 0; i < 18; i++) {
   events.push({ kind: "tool_call", agent: "spawn_agent", text: `Researcher ${i}: gather pricing and features` });
   events.push({ kind: "tool_call", agent: "runtime", text: "" });
   events.push({ kind: "tool_result", agent: "spawn_agent", text: "ok" });

@@ -444,6 +444,13 @@ input, textarea, .selectable, .md, .tc-out, .diffbox, .reasoning-body, .msg .bod
   flex: 1; overflow-y: auto; padding: 16px 20px 4px;
   display: flex; flex-direction: column; gap: 12px;
 }
+/* Flex children shrink by default. In a scrolling column that squashes every
+   panel into a thin line once the thread outgrows the viewport, instead of
+   letting the column scroll. Nothing in the transcript may shrink. */
+.transcript > * {
+  flex: 0 0 auto;
+  min-height: 0;
+}
 .transcript.empty { align-items: center; justify-content: center; padding: 0; }
 .splash { text-align: center; color: var(--muted); }
 .splash-mark { font-size: 1.375rem; font-weight: 700; letter-spacing: 3px; color: var(--accent); }
@@ -543,6 +550,7 @@ input, textarea, .selectable, .md, .tc-out, .diffbox, .reasoning-body, .msg .bod
 }
 .tc-caret { color: var(--muted); font-size: 0.625rem; flex: none; }
 .tc-body { border-top: 1px solid var(--border); padding: 8px 9px; display: flex; flex-direction: column; gap: 8px; }
+.tc-body > * { flex: 0 0 auto; }
 .tc-pending { color: var(--warn); font-size: 0.75rem; }
 .tc-out {
   background: var(--input); border: 1px solid var(--border); border-radius: 3px;
@@ -581,6 +589,7 @@ input, textarea, .selectable, .md, .tc-out, .diffbox, .reasoning-body, .msg .bod
 /* ---- composer ---- */
 .composer-wrap { position: relative; padding: 8px 20px 12px; flex: none; }
 .attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.attachments > * { flex: 0 0 auto; }
 .chip {
   display: inline-flex; align-items: center; gap: 6px;
   background: var(--input); border: 1px solid var(--border); border-radius: var(--radius);
@@ -630,6 +639,7 @@ input, textarea, .selectable, .md, .tc-out, .diffbox, .reasoning-body, .msg .bod
 .ctx-label { font-size: 0.625rem; color: var(--muted); font-family: var(--mono); }
 .act-head { margin-top: 6px; }
 .activity-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.activity-list > * { flex: 0 0 auto; }
 .act { display: flex; align-items: center; gap: 7px; font-size: 0.6875rem; padding: 2px 0; }
 .act-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--muted); flex: none; }
 .act.ok .act-dot { background: var(--ok); }
@@ -791,6 +801,7 @@ input, textarea, .selectable, .md, .tc-out, .diffbox, .reasoning-body, .msg .bod
 
 /* ---- workspace sections ---- */
 .ws-sections { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+.ws-sections > * { flex: 0 0 auto; }
 .ws-section { border-bottom: 1px solid var(--border); }
 .ws-section-head {
   display: flex; align-items: center; gap: 6px; padding: 4px 8px 4px 6px;
