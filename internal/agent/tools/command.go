@@ -16,7 +16,18 @@ var (
 	pseudoGitLogCommandPattern    = regexp.MustCompile(`(^|(?:&&|\|\||;|\|)\s*)git_log(?:\s+([0-9]+))?(\s|$)`)
 	pseudoGitDiffCommandPattern   = regexp.MustCompile(`(^|(?:&&|\|\||;|\|)\s*)git_diff(?:\s+([^\s;&|]+))?(\s|$)`)
 	adHocPreviewServerPattern     = regexp.MustCompile(`(?i)(python(?:3)?\s+-m\s+http\.server|npx\s+http-server|python(?:3)?\s+-m\s+simplehttpserver|ruby\s+-run\s+-e\s+httpd|busybox\s+httpd)`)
-	interactiveCommandPattern     = regexp.MustCompile(`(?i)\b(npm run dev|pnpm dev|yarn dev|npm run start|pnpm start|yarn start|vite|next dev|tail -f|top|htop|less|more|vim|nvim|nano|watch\b|python(?:3)?\s+-i|node\b|irb\b|rails console|python manage\.py shell)\b`)
+	// Multi-word invocations are specific enough to match anywhere in a command
+	// line; they cannot collide with an ordinary filename or argument.
+	interactiveCommandPattern = regexp.MustCompile(`(?i)\b(npm run dev|pnpm dev|yarn dev|npm run start|pnpm start|yarn start|next dev|tail -f|python(?:3)?\s+-i|rails console|python manage\.py shell)\b`)
+	// Single-word programs only count when they are the program being run.
+	// Matching them anywhere diverted ordinary commands that merely named one:
+	// `cat vite.config.ts`, `grep watch src/`, `go test ./internal/top/...`.
+	// The command then never ran and returned advice as a successful result,
+	// so a model retrying it made no progress.
+	interactiveInvocationPattern = regexp.MustCompile(`(?i)(^|[|&;]\s*)(\S*/)?(vite|top|htop|less|more|vim|nvim|nano|watch|irb)\b`)
+	// A bare `node`, optionally with an interactive flag, is a REPL. Anything
+	// with a script or other flag exits on its own.
+	interactiveNodePattern = regexp.MustCompile(`(?i)(^|[|&;]\s*)(\S*/)?node(\s+(-i|--interactive))?\s*$`)
 )
 
 func NewRunCommand(workDir string, timeoutSecs int, manager *ExecSessionManager, approve ApprovalFunc, forcePrompt ...ApprovalFunc) Tool {
@@ -208,5 +219,7 @@ func requiresExecSession(cmd string) bool {
 	if normalized == "" {
 		return false
 	}
-	return interactiveCommandPattern.MatchString(normalized)
+	return interactiveCommandPattern.MatchString(normalized) ||
+		interactiveInvocationPattern.MatchString(normalized) ||
+		interactiveNodePattern.MatchString(normalized)
 }
