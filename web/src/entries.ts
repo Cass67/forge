@@ -1,4 +1,4 @@
-import type { WireEvent } from "./ws";
+import type { WireEvent } from "./bridge";
 
 export type Entry =
   | { id: number; t: "text"; role: "user" | "agent"; agent?: string; text: string; streaming?: boolean }
@@ -13,6 +13,17 @@ const nid = () => nextId++;
 
 export function userEntry(text: string): Entry {
   return { id: nid(), t: "text", role: "user", text };
+}
+
+// closeStreaming marks the trailing streaming entry (agent text or reasoning)
+// as complete. Call it before appending a non-streaming entry so the cursor
+// stops and the block is finalized.
+export function closeStreaming(entries: Entry[]): Entry[] {
+  const last = entries[entries.length - 1];
+  if (last && ((last.t === "text" && last.streaming) || (last.t === "reasoning" && last.streaming))) {
+    return [...entries.slice(0, -1), { ...last, streaming: false }];
+  }
+  return entries;
 }
 
 export function applyEvent(entries: Entry[], ev: WireEvent): Entry[] {

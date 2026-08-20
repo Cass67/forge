@@ -183,3 +183,7 @@ func merge(dst, src *Tokens) *Tokens {
 	}
 	return dst
 }
+
+// Path returns the credential file location. Exported so tests can assert
+// they have been redirected away from the user's real store.
+func Path() string { return defaultPath() }

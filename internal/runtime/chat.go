@@ -29,7 +29,6 @@ import (
 	"forge/internal/config"
 	"forge/internal/copilot"
 	"forge/internal/fsutil"
-	"forge/internal/gui"
 	"forge/internal/hooks"
 	"forge/internal/llm"
 	"forge/internal/mcp"
@@ -156,11 +155,17 @@ type ChatSetup struct {
 	// ResumeThreadID, when set, seeds the session with a stored thread's
 	// history before the first turn (forge --resume / --continue).
 	ResumeThreadID string
-	// GUI renders the live chat in the embedded web app instead of the TUI
-	// (forge --gui).
-	GUI      bool
-	debugRec *chatDebugRecorder
+	// LiveRunner, when set, renders the live chat instead of the terminal UI.
+	// forge-gui sets it to drive a native Wails window; leaving it nil keeps
+	// the Bubble Tea surface. Declared as a function so this package stays
+	// free of any GUI dependency.
+	LiveRunner LiveRunner
+	debugRec   *chatDebugRecorder
 }
+
+// LiveRunner renders the live chat event stream. It has the same contract as
+// tui.RunChatLiveBubbleTea: it blocks until the surface is closed.
+type LiveRunner func(events <-chan llm.Event, cfg tui.ChatLiveConfig, inputCh chan<- string, doneCh <-chan struct{}) tui.ChatLiveResult
 
 // ResolveResumeThreadID maps CLI resume flags to a stored thread ID. An
 // explicit id is returned as-is; continueLast picks the most recently updated
@@ -1021,7 +1026,7 @@ func RunChatLive(setup *ChatSetup) {
 				return nil
 			}
 			store := sessionstore.NewJSONLThreadStore(filepath.Join(outputDir, "threads"))
-			records, err := store.ListThreads(context.Background(), sessionstore.ListOptions{Limit: 50})
+			records, err := store.ListThreads(context.Background(), sessionstore.ListOptions{Limit: 500})
 			if err != nil {
 				return nil
 			}
@@ -1032,6 +1037,7 @@ func RunChatLive(setup *ChatSetup) {
 					Title:     r.Metadata.Title,
 					Preview:   r.Metadata.Preview,
 					Model:     r.Metadata.Model,
+					CWD:       r.Metadata.CWD,
 					UpdatedAt: r.Metadata.UpdatedAt,
 					ItemCount: r.ItemCount,
 				})
@@ -1051,8 +1057,8 @@ func RunChatLive(setup *ChatSetup) {
 			return items
 		},
 	}
-	if setup.GUI {
-		gui.RunChatLiveWeb(eventsCh, liveCfg, inputCh, doneCh)
+	if setup.LiveRunner != nil {
+		setup.LiveRunner(eventsCh, liveCfg, inputCh, doneCh)
 		return
 	}
 	runChatLiveUI(eventsCh, liveCfg, inputCh, doneCh)

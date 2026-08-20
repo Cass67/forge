@@ -1107,7 +1107,6 @@ func runChat(args []string) {
 	workDir := fs.String("C", "", "working directory (default: cwd)")
 	debug := fs.Bool("d", false, "open advanced debug view and write a fresh chat debug log")
 	debugFile := fs.String("debug-file", "", "chat debug log path (default: temp dir forge-chat-debug-<timestamp>.jsonl)")
-	gui := fs.Bool("gui", false, "render the chat in the embedded web app (localhost)")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
@@ -1146,9 +1145,6 @@ func runChat(args []string) {
 			fmt.Fprintf(os.Stderr, "error enabling chat debug: %v\n", err)
 			os.Exit(1)
 		}
-	}
-	if *gui {
-		setup.GUI = true
 	}
 	if strings.TrimSpace(*prompt) != "" {
 		osExit(runtimepkg.RunChatHeadless(setup, *prompt))

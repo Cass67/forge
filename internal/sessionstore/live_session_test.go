@@ -2,6 +2,7 @@ package sessionstore
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -229,6 +230,21 @@ func TestLiveSessionAppendConcurrentAssignsUniqueOrderedSequences(t *testing.T) 
 	for seq := int64(1); seq <= count; seq++ {
 		if !seen[seq] {
 			t.Fatalf("missing seq %d in items %#v", seq, items)
+		}
+	}
+}
+
+func TestThreadTitle(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"add a workspace picker", "add a workspace picker"},
+		{"  first line\nsecond line  ", "first line"},
+		{"/review the diff", "review the diff"},
+		{"", "Forge chat"},
+		{strings.Repeat("x", 80), strings.Repeat("x", 59) + "…"},
+	}
+	for _, c := range cases {
+		if got := ThreadTitle(c.in); got != c.want {
+			t.Errorf("ThreadTitle(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }

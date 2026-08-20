@@ -1,5 +1,5 @@
 // Package web exposes the built frontend assets for embedding into the
-// forge binary. Rebuild with: cd web && npm ci && npm run build
+// forge binary. Rebuild with: cd web && bun install && bun run build
 package web
 
 import "embed"
