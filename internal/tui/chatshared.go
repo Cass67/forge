@@ -18,6 +18,7 @@ import (
 	"forge/internal/copilot"
 	"forge/internal/llm"
 	"forge/internal/modelcatalog"
+	"forge/internal/protocol"
 	"forge/internal/skills"
 )
 
@@ -74,6 +75,22 @@ type ChatLiveConfig struct {
 	// ReloadPlugins re-scans for plugins and reloads all external plugin
 	// processes. Returns a human-readable summary of what changed.
 	ReloadPlugins func() string
+	// ListThreads returns stored threads (newest first) for the GUI thread
+	// sidebar. Returns nil when no session output dir is configured.
+	ListThreads func() []ThreadSummary
+	// ReadThreadItems returns the stored items for threadID so the GUI can
+	// render a restored thread's transcript.
+	ReadThreadItems func(threadID string) []protocol.Item
+}
+
+// ThreadSummary is the stored-thread metadata shown in the GUI thread sidebar.
+type ThreadSummary struct {
+	ThreadID  string    `json:"thread_id"`
+	Title     string    `json:"title"`
+	Preview   string    `json:"preview,omitempty"`
+	Model     string    `json:"model,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
+	ItemCount int       `json:"item_count"`
 }
 
 type ProviderOption struct {

@@ -29,6 +29,7 @@ import (
 	"forge/internal/config"
 	"forge/internal/copilot"
 	"forge/internal/fsutil"
+	"forge/internal/gui"
 	"forge/internal/hooks"
 	"forge/internal/llm"
 	"forge/internal/mcp"
@@ -84,8 +85,47 @@ func loadChatApprovalConfig(setup *ChatSetup) reactruntime.ApprovalConfig {
 // after every MakeDriver so the effort survives model/provider switches.
 func (s *ChatSetup) applyChatParams(d llm.Driver) {
 	if c, ok := d.(llm.Configurable); ok {
-		c.SetParams(llm.Params{Temperature: -1, ReasoningEffort: s.ReasoningEffort})
+		c.SetParams(llm.Params{Temperature: -1, ReasoningEffort: s.effectiveReasoningEffort()})
 	}
+}
+
+// effectiveReasoningEffort is the level actually sent to the provider. With no
+// level chosen it falls back to the lowest the model advertises: sending none
+// meant a reasoning-capable model never reasoned, so its thinking could never
+// be displayed however the renderer was configured. "none" opts out.
+func (s *ChatSetup) effectiveReasoningEffort() string {
+	chosen := strings.TrimSpace(s.ReasoningEffort)
+	if strings.EqualFold(chosen, "none") {
+		return ""
+	}
+	if s.reasoningEffortChosen || chosen != "" {
+		return chosen
+	}
+	ref := bootstrap.ParseModelRef(s.ChatModel)
+	info := modelcatalog.Lookup(ref.Provider, ref.Model)
+	if info == nil {
+		return ""
+	}
+	return lowestReasoningEffort(info.ReasoningEfforts)
+}
+
+// lowestReasoningEffort picks the cheapest advertised level, preferring the
+// conventional names before falling back to the first the provider lists.
+func lowestReasoningEffort(efforts []string) string {
+	for _, want := range []string{"minimal", "none", "low"} {
+		for _, have := range efforts {
+			if strings.EqualFold(have, want) {
+				if strings.EqualFold(have, "none") {
+					return ""
+				}
+				return have
+			}
+		}
+	}
+	if len(efforts) > 0 {
+		return efforts[0]
+	}
+	return ""
 }
 
 type ChatSetup struct {
@@ -101,13 +141,19 @@ type ChatSetup struct {
 	// ReasoningEffort is the currently selected provider reasoning-effort level,
 	// re-applied to each driver built via MakeDriver so it survives model switches.
 	ReasoningEffort string
+	// reasoningEffortChosen records that the level came from configuration or
+	// from the user, so the advertised default no longer applies.
+	reasoningEffortChosen bool
 	// DroppedModel is the saved chat model that was discarded at startup
 	// because no provider currently offers it.
 	DroppedModel string
 	// ResumeThreadID, when set, seeds the session with a stored thread's
 	// history before the first turn (forge --resume / --continue).
 	ResumeThreadID string
-	debugRec       *chatDebugRecorder
+	// GUI renders the live chat in the embedded web app instead of the TUI
+	// (forge --gui).
+	GUI      bool
+	debugRec *chatDebugRecorder
 }
 
 // ResolveResumeThreadID maps CLI resume flags to a stored thread ID. An
@@ -240,6 +286,9 @@ func BuildChatSetup(cfg *config.Config, tokens any, modelOverride, workDir strin
 		Providers:    providers,
 		MakeDriver:   makeChatDriver,
 		DroppedModel: droppedModel,
+
+		ReasoningEffort:       strings.TrimSpace(cfg.Chat.ReasoningEffort),
+		reasoningEffortChosen: strings.TrimSpace(cfg.Chat.ReasoningEffort) != "",
 	}, nil
 }
 
@@ -536,6 +585,11 @@ func reloadPluginsHandler(existing **pluginruntime.Manager, cfg *config.Config, 
 }
 
 func RunChatLive(setup *ChatSetup) {
+	// The initial driver was never given generation params: they were only
+	// applied on a model switch or an /effort change, so a configured effort
+	// did nothing until one of those happened, and a model that only reasons
+	// when asked never reasoned at all.
+	setup.applyChatParams(setup.Driver)
 	eventsCh := make(chan llm.Event, 256)
 	renderCh := chan<- llm.Event(eventsCh)
 	if setup != nil && setup.debugRec != nil {
@@ -906,6 +960,7 @@ func RunChatLive(setup *ChatSetup) {
 				}
 			}
 			setup.ReasoningEffort = effort
+			setup.reasoningEffortChosen = true
 			if setup.Driver != nil {
 				setup.applyChatParams(setup.Driver)
 			}
@@ -950,6 +1005,45 @@ func RunChatLive(setup *ChatSetup) {
 		State:           state,
 		CopilotClientID: setup.Config.CopilotClientID(),
 		ReloadPlugins:   reloadPlugins,
+		ListThreads: func() []tui.ThreadSummary {
+			outputDir := strings.TrimSpace(setup.Config.Session.OutputDir)
+			if outputDir == "" {
+				return nil
+			}
+			store := sessionstore.NewJSONLThreadStore(filepath.Join(outputDir, "threads"))
+			records, err := store.ListThreads(context.Background(), sessionstore.ListOptions{Limit: 50})
+			if err != nil {
+				return nil
+			}
+			out := make([]tui.ThreadSummary, 0, len(records))
+			for _, r := range records {
+				out = append(out, tui.ThreadSummary{
+					ThreadID:  r.ThreadID,
+					Title:     r.Metadata.Title,
+					Preview:   r.Metadata.Preview,
+					Model:     r.Metadata.Model,
+					UpdatedAt: r.Metadata.UpdatedAt,
+					ItemCount: r.ItemCount,
+				})
+			}
+			return out
+		},
+		ReadThreadItems: func(threadID string) []protocol.Item {
+			outputDir := strings.TrimSpace(setup.Config.Session.OutputDir)
+			if outputDir == "" {
+				return nil
+			}
+			store := sessionstore.NewJSONLThreadStore(filepath.Join(outputDir, "threads"))
+			items, err := store.ReadItems(context.Background(), threadID)
+			if err != nil {
+				return nil
+			}
+			return items
+		},
+	}
+	if setup.GUI {
+		gui.RunChatLiveWeb(eventsCh, liveCfg, inputCh, doneCh)
+		return
 	}
 	runChatLiveUI(eventsCh, liveCfg, inputCh, doneCh)
 }
@@ -1206,6 +1300,11 @@ func buildConsoleRuntime(setup *ChatSetup, approve tools.ApprovalFunc, out io.Wr
 }
 
 func RunChatConsole(setup *ChatSetup) {
+	// The initial driver was never given generation params: they were only
+	// applied on a model switch or an /effort change, so a configured effort
+	// did nothing until one of those happened, and a model that only reasons
+	// when asked never reasoned at all.
+	setup.applyChatParams(setup.Driver)
 	rt, cleanup := buildConsoleRuntime(setup, nil, os.Stdout, true)
 	defer cleanup()
 	renderer := rt.renderer
@@ -1356,6 +1455,11 @@ func RunChatConsole(setup *ChatSetup) {
 // assistant response is written to stdout so it can be piped. Approvals are not
 // interactive: without --yolo every approval-gated action is denied.
 func RunChatHeadless(setup *ChatSetup, prompt string) int {
+	// The initial driver was never given generation params: they were only
+	// applied on a model switch or an /effort change, so a configured effort
+	// did nothing until one of those happened, and a model that only reasons
+	// when asked never reasoned at all.
+	setup.applyChatParams(setup.Driver)
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		fmt.Fprintln(os.Stderr, "error: empty prompt")

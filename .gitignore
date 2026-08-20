@@ -108,3 +108,4 @@ internal/runtime/output/
 
 # Stray test logs
 test_output.txt
+web/node_modules

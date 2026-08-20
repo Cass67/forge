@@ -58,6 +58,7 @@ approval_detail = "redact"
 
 [chat]
 # show_reasoning = true    # display the model's thinking while it works
+# reasoning_effort = ""    # "" uses the lowest level the model advertises; "none" sends none
 model = ""              # default model, e.g. "claude/claude-sonnet-4-6"
 last_model = ""         # updated automatically by the model picker
 command_timeout = 60    # seconds
