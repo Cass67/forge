@@ -163,6 +163,10 @@ func (s *JSONLThreadStore) UpdateThreadMetadata(ctx context.Context, threadID st
 	if patch.UpdatedAt.IsZero() {
 		patch.UpdatedAt = time.Now().UTC()
 	}
+	// Merge onto what is already stored: callers patch individual fields (a
+	// title once the first message names the thread, say) and must not blank
+	// out the CWD and model recorded when the thread was created.
+	patch = mergeMetadata(s.readMetadata(threadID), patch)
 	data, err := json.MarshalIndent(patch, "", "  ")
 	if err != nil {
 		return err
@@ -292,4 +296,36 @@ func (s *JSONLThreadStore) readThreadMetadata(ctx context.Context, threadID stri
 		return ThreadMetadataPatch{}, fmt.Errorf("%s metadata: %w", threadID, err)
 	}
 	return metadata, nil
+}
+
+// readMetadata returns the stored metadata for a thread, or the zero value
+// when the thread has none yet.
+func (s *JSONLThreadStore) readMetadata(threadID string) ThreadMetadataPatch {
+	var cur ThreadMetadataPatch
+	data, err := os.ReadFile(filepath.Join(s.root, threadID+".meta.json"))
+	if err != nil {
+		return cur
+	}
+	_ = json.Unmarshal(data, &cur)
+	return cur
+}
+
+// mergeMetadata overlays the non-zero fields of patch onto cur.
+func mergeMetadata(cur, patch ThreadMetadataPatch) ThreadMetadataPatch {
+	if strings.TrimSpace(patch.Title) != "" {
+		cur.Title = patch.Title
+	}
+	if strings.TrimSpace(patch.Preview) != "" {
+		cur.Preview = patch.Preview
+	}
+	if strings.TrimSpace(patch.CWD) != "" {
+		cur.CWD = patch.CWD
+	}
+	if strings.TrimSpace(patch.Model) != "" {
+		cur.Model = patch.Model
+	}
+	if !patch.UpdatedAt.IsZero() {
+		cur.UpdatedAt = patch.UpdatedAt
+	}
+	return cur
 }

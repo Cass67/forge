@@ -109,3 +109,9 @@ internal/runtime/output/
 # Stray test logs
 test_output.txt
 web/node_modules
+
+# Generated icon assets (just icon / build/macapp.sh)
+build/Forge.iconset/
+build/icon.icns
+build/icon.png
+bin/Forge.app/

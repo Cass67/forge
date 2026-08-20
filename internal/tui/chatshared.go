@@ -19,6 +19,7 @@ import (
 	"forge/internal/llm"
 	"forge/internal/modelcatalog"
 	"forge/internal/protocol"
+	"forge/internal/providerauth"
 	"forge/internal/skills"
 )
 
@@ -89,6 +90,7 @@ type ThreadSummary struct {
 	Title     string    `json:"title"`
 	Preview   string    `json:"preview,omitempty"`
 	Model     string    `json:"model,omitempty"`
+	CWD       string    `json:"cwd,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
 	ItemCount int       `json:"item_count"`
 }
@@ -306,121 +308,16 @@ func copyToClipboard(content string) error {
 	return fmt.Errorf("no clipboard command available")
 }
 
-func providerUsesAPIKey(id string) bool {
-	switch strings.ToLower(strings.TrimSpace(id)) {
-	case "chatgpt", "claude", "copilot":
-		return false
-	default:
-		return true
-	}
-}
+// The per-provider credential rules live in internal/providerauth so the
+// desktop app can apply the same ones.
+func providerUsesAPIKey(id string) bool { return providerauth.UsesAPIKey(id) }
 
-func setProviderToken(t *auth.Tokens, id, value string) {
-	id = strings.ToLower(strings.TrimSpace(id))
-	value = strings.TrimSpace(value)
-	switch id {
-	case "anthropic":
-		t.AnthropicAPIKey = value
-	case "openai":
-		t.OpenAIAPIKey = value
-	case "groq":
-		t.GroqAPIKey = value
-	case "mistral":
-		t.MistralAPIKey = value
-	case "xai":
-		t.XAIAPIKey = value
-	case "zai", "zai-coding-plan":
-		t.ZAIAPIKey = value
-	case "nvidia":
-		t.NVIDIAAPIKey = value
-	case "openrouter":
-		t.OpenRouterAPIKey = value
-	case "together":
-		t.TogetherAPIKey = value
-	case "perplexity":
-		t.PerplexityAPIKey = value
-	case "deepinfra":
-		t.DeepInfraAPIKey = value
-	case "cerebras":
-		t.CerebrasAPIKey = value
-	case "opencode", "opencode-go":
-		t.OpenCodeAPIKey = value
-	case "brave":
-		t.BraveAPIKey = value
-	default:
-		if value == "" {
-			t.ClearCustomProviderKey(id)
-			return
-		}
-		t.SetCustomProviderKey(id, value)
-	}
-}
+func setProviderToken(t *auth.Tokens, id, value string) { providerauth.SetKey(t, id, value) }
 
-func clearProviderToken(t *auth.Tokens, id string) {
-	id = strings.ToLower(strings.TrimSpace(id))
-	switch id {
-	case "chatgpt":
-		t.ChatGPTAccessToken = ""
-		t.ChatGPTRefreshToken = ""
-		t.ChatGPTAccountID = ""
-		t.ChatGPTExpiresAt = time.Time{}
-	case "claude":
-		t.ClaudeAccessToken = ""
-		t.ClaudeRefreshToken = ""
-		t.ClaudeExpiresAt = time.Time{}
-	case "copilot":
-		t.CopilotToken = ""
-	default:
-		if providerUsesAPIKey(id) {
-			setProviderToken(t, id, "")
-		}
-	}
-}
+func clearProviderToken(t *auth.Tokens, id string) { providerauth.Clear(t, id) }
 
 func providerHasStoredCredential(t *auth.Tokens, id string) bool {
-	if t == nil {
-		return false
-	}
-	id = strings.ToLower(strings.TrimSpace(id))
-	switch id {
-	case "chatgpt":
-		return strings.TrimSpace(t.ChatGPTAccessToken) != "" || strings.TrimSpace(t.ChatGPTRefreshToken) != ""
-	case "claude":
-		return strings.TrimSpace(t.ClaudeAccessToken) != "" || strings.TrimSpace(t.ClaudeRefreshToken) != ""
-	case "copilot":
-		return strings.TrimSpace(t.CopilotToken) != ""
-	case "anthropic":
-		return strings.TrimSpace(t.AnthropicAPIKey) != ""
-	case "openai":
-		return strings.TrimSpace(t.OpenAIAPIKey) != ""
-	case "groq":
-		return strings.TrimSpace(t.GroqAPIKey) != ""
-	case "mistral":
-		return strings.TrimSpace(t.MistralAPIKey) != ""
-	case "xai":
-		return strings.TrimSpace(t.XAIAPIKey) != ""
-	case "nvidia":
-		return strings.TrimSpace(t.NVIDIAAPIKey) != ""
-	case "openrouter":
-		return strings.TrimSpace(t.OpenRouterAPIKey) != ""
-	case "together":
-		return strings.TrimSpace(t.TogetherAPIKey) != ""
-	case "perplexity":
-		return strings.TrimSpace(t.PerplexityAPIKey) != ""
-	case "deepinfra":
-		return strings.TrimSpace(t.DeepInfraAPIKey) != ""
-	case "cerebras":
-		return strings.TrimSpace(t.CerebrasAPIKey) != ""
-	case "opencode", "opencode-go":
-		return strings.TrimSpace(t.OpenCodeAPIKey) != ""
-	case "brave":
-		return strings.TrimSpace(t.BraveAPIKey) != ""
-	default:
-		if !providerUsesAPIKey(id) {
-			return false
-		}
-		return strings.TrimSpace(t.CustomProviderKey(id)) != ""
-	}
+	return providerauth.HasCredential(t, id)
 }
 
 // clamp constrains v to the [low, high] range.
