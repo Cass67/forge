@@ -35,6 +35,7 @@ const (
 var (
 	errNotReady   = errors.New("the chat runtime is still starting")
 	errNoRestore  = errors.New("restore is not available in this session")
+	errNoDelete   = errors.New("deleting threads is not available in this session")
 	errNoWorkDir  = errors.New("no workspace directory")
 	errBadImage   = errors.New("unsupported image")
 	errTooManyImg = fmt.Errorf("at most %d images per message", chatstate.MaxAttachments)
@@ -254,6 +255,22 @@ func (s *Service) History(threadID string) []protocol.Item {
 		return []protocol.Item{}
 	}
 	return readItems(cfg.ReadThreadItems, threadID)
+}
+
+// DeleteThread permanently removes a stored thread and returns the updated
+// list. The active thread is refused: it is still being written to.
+func (s *Service) DeleteThread(threadID string) ([]tui.ThreadSummary, error) {
+	cfg, _, ready := s.snapshot()
+	if !ready {
+		return []tui.ThreadSummary{}, errNotReady
+	}
+	if cfg.DeleteThread == nil {
+		return s.Threads(), errNoDelete
+	}
+	if err := cfg.DeleteThread(threadID); err != nil {
+		return s.Threads(), err
+	}
+	return s.Threads(), nil
 }
 
 // RestoreResult reports what a restore loaded.

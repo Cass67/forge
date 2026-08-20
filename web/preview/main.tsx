@@ -1,7 +1,11 @@
 import { createRoot } from "react-dom/client";
 import { Transcript } from "../src/components/Transcript";
 import type { Entry } from "../src/entries";
+import { applyScale, DEFAULT_SCALE } from "../src/scale";
 import "../src/styles.css";
+
+// ?scale=1.5 exercises the real scaling path for screenshots.
+applyScale(Number(new URLSearchParams(location.search).get("scale")) || DEFAULT_SCALE);
 
 const entries: Entry[] = [
   { id: 1, t: "text", role: "user", text: "think carefully about how internal/react/loop.go decides when to compact, then explain it in two sentences" },

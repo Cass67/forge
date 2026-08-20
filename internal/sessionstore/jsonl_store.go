@@ -329,3 +329,38 @@ func mergeMetadata(cur, patch ThreadMetadataPatch) ThreadMetadataPatch {
 	}
 	return cur
 }
+
+// DeleteThread removes a thread's items and metadata. Deleting a thread that
+// does not exist is not an error.
+func (s *JSONLThreadStore) DeleteThread(ctx context.Context, threadID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validThreadID(threadID); err != nil {
+		return err
+	}
+	unlock := s.lockThread(threadID)
+	defer unlock()
+	for _, path := range []string{s.threadPath(threadID), s.metadataPath(threadID)} {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+// validThreadID rejects anything that would escape the thread directory. The
+// id reaches this package from the UI, so it is untrusted input.
+func validThreadID(threadID string) error {
+	id := strings.TrimSpace(threadID)
+	if id == "" {
+		return errors.New("empty thread id")
+	}
+	if id != filepath.Base(id) || strings.Contains(id, string(filepath.Separator)) {
+		return fmt.Errorf("invalid thread id %q", threadID)
+	}
+	if id == "." || id == ".." || strings.HasPrefix(id, ".") {
+		return fmt.Errorf("invalid thread id %q", threadID)
+	}
+	return nil
+}

@@ -110,6 +110,10 @@ internal/runtime/output/
 test_output.txt
 web/node_modules
 
+# Binaries built into the repo root by a bare `go build ./cmd/...`
+/forge
+/forge-gui
+
 # Generated icon assets (just icon / build/macapp.sh)
 build/Forge.iconset/
 build/icon.icns

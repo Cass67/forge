@@ -82,6 +82,8 @@ type ChatLiveConfig struct {
 	// ReadThreadItems returns the stored items for threadID so the GUI can
 	// render a restored thread's transcript.
 	ReadThreadItems func(threadID string) []protocol.Item
+	// DeleteThread permanently removes a stored thread.
+	DeleteThread func(threadID string) error
 }
 
 // ThreadSummary is the stored-thread metadata shown in the GUI thread sidebar.

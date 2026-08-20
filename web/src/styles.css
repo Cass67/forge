@@ -298,6 +298,12 @@
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #root { height: 100%; }
+
+/* One knob for the whole interface: a native webview has no browser zoom, and
+   scaling the root scales every px value in this file at once. */
+html {
+  zoom: var(--ui-scale, 1.15);
+}
 body {
   background: var(--bg);
   color: var(--text);
@@ -404,12 +410,27 @@ input, textarea, .selectable, .md, .tc-out, .diffbox, .reasoning-body, .msg .bod
 .scope-toggle.on { color: var(--text); }
 .thread-list { flex: 1; overflow-y: auto; }
 .thread {
-  display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left;
-  padding: 6px 10px; background: transparent; border: none;
-  border-left: 2px solid transparent; color: var(--text); font: inherit; cursor: pointer;
+  display: flex; align-items: center; width: 100%;
+  border-left: 2px solid transparent; background: transparent;
 }
 .thread:hover { background: var(--hover); }
 .thread.active { background: var(--selected); border-left-color: var(--accent); }
+.thread-open {
+  display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; text-align: left;
+  padding: 6px 4px 6px 10px; background: transparent; border: none;
+  color: var(--text); font: inherit; cursor: pointer;
+}
+.thread-x {
+  flex: none; padding: 2px 8px; margin-right: 4px;
+  background: transparent; border: none; border-radius: 3px;
+  color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; opacity: 0;
+}
+.thread:hover .thread-x { opacity: 1; }
+.thread-x:hover { background: var(--panel2); color: var(--text); }
+.thread-x:disabled { opacity: 0; cursor: default; }
+.thread-x.danger { color: var(--err); opacity: 1; }
+.thread-confirm { display: flex; align-items: center; gap: 2px; }
+.thread-confirm .thread-x { opacity: 1; }
 .thread-title { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .thread-meta { display: flex; justify-content: space-between; gap: 8px; font-size: 10px; color: var(--muted); }
 .thread-model { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -737,3 +758,29 @@ input, textarea, .selectable, .md, .tc-out, .diffbox, .reasoning-body, .msg .bod
   font-family: var(--mono); font-size: 13px; font-weight: 700; letter-spacing: 1px;
   background: var(--panel2); border: 1px solid var(--border); border-radius: 3px; padding: 1px 7px;
 }
+
+/* ---- workspace section in the sidebar ---- */
+.ws-current {
+  display: flex; align-items: center; gap: 6px; width: 100%; text-align: left;
+  padding: 5px 10px; background: transparent; border: none;
+  border-bottom: 1px solid var(--border); color: var(--text);
+  font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.ws-current:hover { background: var(--hover); }
+.ws-current.open { background: var(--panel2); }
+.ws-caret { color: var(--muted); font-size: 9px; flex: none; }
+.ws-current-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-current-count { color: var(--muted); font-size: 10px; font-weight: 400; }
+.ws-recent {
+  display: flex; flex-direction: column;
+  background: var(--bg); border-bottom: 1px solid var(--border);
+}
+.ws-recent-row {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  padding: 4px 10px 4px 24px; background: transparent; border: none;
+  color: var(--text); font: inherit; font-size: 12px; cursor: pointer;
+}
+.ws-recent-row:hover { background: var(--hover); }
+.ws-recent-row.missing { opacity: 0.45; cursor: default; }
+.ws-recent-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-recent-meta { color: var(--muted); font-size: 10px; }

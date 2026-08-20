@@ -91,9 +91,14 @@ func run() error {
 	app = application.New(application.Options{
 		Name:        "Forge",
 		Description: "Coding agent",
-		Icon:        appIcon,
-		Services:    []application.Service{application.NewService(service)},
-		Assets:      application.AssetOptions{Handler: http.FileServer(http.FS(assets))},
+		// Without this the process survives its last window on macOS, so the
+		// app has to be quit from the Dock before it can be started again.
+		Mac: application.MacOptions{
+			ApplicationShouldTerminateAfterLastWindowClosed: true,
+		},
+		Icon:     appIcon,
+		Services: []application.Service{application.NewService(service)},
+		Assets:   application.AssetOptions{Handler: http.FileServer(http.FS(assets))},
 	})
 
 	service.PickDir = func() (string, error) {
@@ -131,11 +136,14 @@ func newWindow(app *application.App, workDir string) {
 		title = "Forge — " + dir
 	}
 	app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title:     title,
-		Width:     1280,
-		Height:    860,
-		MinWidth:  900,
-		MinHeight: 600,
+		Title: title,
+		// The webview's stock right-click menu offers Reload and Inspect
+		// Element, which belong to a browser, not to this app.
+		DefaultContextMenuDisabled: true,
+		Width:                      1280,
+		Height:                     860,
+		MinWidth:                   900,
+		MinHeight:                  600,
 	})
 }
 

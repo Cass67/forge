@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -1043,6 +1044,17 @@ func RunChatLive(setup *ChatSetup) {
 				})
 			}
 			return out
+		},
+		DeleteThread: func(threadID string) error {
+			outputDir := strings.TrimSpace(setup.Config.Session.OutputDir)
+			if outputDir == "" {
+				return errors.New("no session output directory configured")
+			}
+			if threadID != "" && threadID == session.DurableThreadID() {
+				return errors.New("cannot delete the thread you are in")
+			}
+			store := sessionstore.NewJSONLThreadStore(filepath.Join(outputDir, "threads"))
+			return store.DeleteThread(context.Background(), threadID)
 		},
 		ReadThreadItems: func(threadID string) []protocol.Item {
 			outputDir := strings.TrimSpace(setup.Config.Session.OutputDir)

@@ -1,4 +1,5 @@
 import { THEMES, type Theme } from "../theme";
+import { SCALES, formatScale } from "../scale";
 import type { InitPayload, Provider } from "../bridge";
 import { ProviderPanel } from "./ProviderPanel";
 
@@ -15,12 +16,16 @@ export function SettingsPanel({
   model,
   effort,
   theme,
+  scale,
   prefs,
   onTheme,
+  onScale,
   onModel,
   onEffort,
   onPrefs,
   onProviders,
+  onAddWorkspace,
+  onOpenWorkspaces,
   onNotify,
   onClose,
 }: {
@@ -28,12 +33,16 @@ export function SettingsPanel({
   model: string;
   effort: string;
   theme: Theme;
+  scale: number;
   prefs: Prefs;
   onTheme: (t: Theme) => void;
+  onScale: (s: number) => void;
   onModel: () => void;
   onEffort: (e: string) => void;
   onPrefs: (p: Prefs) => void;
   onProviders: (next: Provider[]) => void;
+  onAddWorkspace: () => void;
+  onOpenWorkspaces: () => void;
   onNotify: (msg: string) => void;
   onClose: () => void;
 }) {
@@ -68,6 +77,23 @@ export function SettingsPanel({
           </div>
         ) : null}
 
+        <div className="set-section">appearance</div>
+        <div className="set-row">
+          <span className="set-k">text size</span>
+          <div className="seg">
+            {SCALES.map((s) => (
+              <button
+                key={s}
+                className={`seg-btn ${Math.abs(s - scale) < 0.001 ? "on" : ""}`}
+                onClick={() => onScale(s)}
+                title={`Scale the whole interface to ${formatScale(s)}`}
+              >
+                {formatScale(s)}
+              </button>
+            ))}
+          </div>
+        </div>
+
         <div className="set-section">theme</div>
         <div className="set-row">
           <div className="seg wrap">
@@ -97,8 +123,17 @@ export function SettingsPanel({
 
         <div className="set-section">workspace</div>
         <div className="set-row">
-          <span className="set-k">dir</span>
+          <span className="set-k">current</span>
           <span className="set-v mono">{init?.work_dir || "—"}</span>
+        </div>
+        <div className="set-row">
+          <span className="set-k" />
+          <button className="btn" onClick={onAddWorkspace}>
+            Open folder…
+          </button>
+          <button className="btn" onClick={onOpenWorkspaces}>
+            Recent workspaces
+          </button>
         </div>
         {init?.request_mode ? (
           <div className="set-row">

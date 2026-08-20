@@ -20,6 +20,7 @@ import { SettingsPanel, type Prefs } from "./components/SettingsPanel";
 import { HelpOverlay } from "./components/HelpOverlay";
 import { WorkspaceMenu } from "./components/WorkspaceMenu";
 import { applyTheme, isTheme, loadTheme, nextTheme, type Theme } from "./theme";
+import { applyScale, clampScale, formatScale, loadScale, step, DEFAULT_SCALE } from "./scale";
 
 const initialStats: Stats = {
   inTok: 0,
@@ -60,14 +61,18 @@ export default function App() {
   const [effort, setEffort] = useState("");
   const [overlay, setOverlay] = useState<Overlay>("none");
   const [theme, setThemeState] = useState<Theme>(loadTheme);
+  const [scale, setScaleState] = useState<number>(loadScale);
   const [prefs, setPrefsState] = useState<Prefs>(loadPrefs);
   const [flash, setFlash] = useState("");
   const [history, setHistory] = useState<string[]>([]);
   const [pending, setPending] = useState<Attachment[]>([]);
+  const scaleRef = useRef(scale);
+  scaleRef.current = scale;
   const dragDepth = useRef(0);
   const [dragging, setDragging] = useState(false);
 
   useEffect(() => applyTheme(theme), [theme]);
+  useEffect(() => applyScale(scale), [scale]);
   useEffect(() => localStorage.setItem("forge.prefs", JSON.stringify(prefs)), [prefs]);
 
   const notify = useCallback((msg: string) => {
@@ -174,6 +179,19 @@ export default function App() {
     [notify, refreshThreads],
   );
 
+  const deleteThread = useCallback(
+    (id: string) => {
+      void forge
+        .deleteThread(id)
+        .then((next) => {
+          setThreads(next);
+          notify("thread deleted");
+        })
+        .catch((e: unknown) => notify(String(e)));
+    },
+    [notify],
+  );
+
   const switchModel = useCallback(
     (model: string) => {
       setOverlay("none");
@@ -202,6 +220,15 @@ export default function App() {
     (t: Theme) => {
       setThemeState(t);
       notify(`theme → ${t}`);
+    },
+    [notify],
+  );
+
+  const setScale = useCallback(
+    (next: number) => {
+      const value = clampScale(next);
+      setScaleState(value);
+      notify(`text size → ${formatScale(value)}`);
     },
     [notify],
   );
@@ -292,6 +319,19 @@ export default function App() {
       }
       if (!mod) return;
       const k = e.key.toLowerCase();
+      // Zoom shortcuts, as in any desktop app. "=" is the unshifted "+".
+      if (k === "=" || k === "+") {
+        e.preventDefault();
+        return setScale(step(scaleRef.current, 1));
+      }
+      if (k === "-" || k === "_") {
+        e.preventDefault();
+        return setScale(step(scaleRef.current, -1));
+      }
+      if (k === "0") {
+        e.preventDefault();
+        return setScale(DEFAULT_SCALE);
+      }
       const map: Record<string, () => void> = {
         k: () => setOverlay((o) => (o === "models" ? "none" : "models")),
         ",": () => setOverlay((o) => (o === "settings" ? "none" : "settings")),
@@ -307,7 +347,7 @@ export default function App() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [busy, cancel, newThread, overlay]);
+  }, [busy, cancel, newThread, overlay, setScale]);
 
   // Images are read here and handed to Go as base64; the runtime loads
   // attachments from disk, so the backend writes them out to a temp file.
@@ -393,6 +433,8 @@ export default function App() {
         {prefs.showSidebar ? (
           <Sidebar
             threads={visibleThreads}
+            workspaces={workspaces}
+            workDir={init?.work_dir ?? ""}
             activeID={activeID}
             busy={busy}
             scoped={prefs.scopeThreads}
@@ -400,6 +442,9 @@ export default function App() {
             onNew={newThread}
             onRestore={restoreThread}
             onToggleScope={() => setPrefsState((p) => ({ ...p, scopeThreads: !p.scopeThreads }))}
+            onAddWorkspace={addWorkspace}
+            onOpenWorkspace={(dir) => void forge.openWorkspace(dir).catch((e: unknown) => notify(String(e)))}
+            onDelete={deleteThread}
           />
         ) : null}
         <main className="center">
@@ -454,12 +499,19 @@ export default function App() {
           model={stats.model ?? ""}
           effort={effort}
           theme={theme}
+          scale={scale}
           prefs={prefs}
           onTheme={setTheme}
+          onScale={setScale}
           onModel={() => setOverlay("models")}
           onEffort={setEffortAction}
           onPrefs={setPrefsState}
           onProviders={(next) => setInit((i) => (i ? { ...i, providers: next } : i))}
+          onAddWorkspace={() => {
+            setOverlay("none");
+            addWorkspace();
+          }}
+          onOpenWorkspaces={() => setOverlay("workspaces")}
           onNotify={notify}
           onClose={() => setOverlay("none")}
         />
