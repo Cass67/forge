@@ -115,7 +115,12 @@ func (d *OpenAIDriver) wsStreamResponses(ctx context.Context, messages []llm.Mes
 		return err
 	}
 
-	const wsTimeout = 120 * time.Second
+	// A ceiling on the whole turn, not a liveness check. Two minutes killed
+	// long reasoning turns mid-answer with "context deadline exceeded" — a
+	// turn that writes a large document legitimately runs longer. Silence is
+	// already caught by the 30s read deadline applied before every read, so
+	// this only needs to bound a pathologically long turn.
+	const wsTimeout = 30 * time.Minute
 	streamCtx, cancel := context.WithTimeout(ctx, wsTimeout)
 	defer cancel()
 
