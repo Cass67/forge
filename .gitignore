@@ -8,7 +8,6 @@
 .env.*
 *.env
 *.env.*
-*env*
 
 # Common private key and secret bundle formats
 *.key
@@ -26,7 +25,6 @@ id_ed25519
 .ssh/
 .gnupg/
 # Secret-bearing files and directories: never commit these by default.
-*env*
 *.local
 *.secret
 *.secrets
