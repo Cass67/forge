@@ -138,18 +138,7 @@ func effectiveRunCommandTimeout(command string, timeoutSecs int) time.Duration {
 	if base <= 0 {
 		base = DefaultToolTimeout
 	}
-	if filesystemWideDiscoveryCommand(command) && base < 5*time.Minute {
-		return 5 * time.Minute
-	}
 	return base
-}
-
-func filesystemWideDiscoveryCommand(command string) bool {
-	normalized := strings.ToLower(strings.Join(strings.Fields(command), " "))
-	if normalized == "" {
-		return false
-	}
-	return strings.Contains(normalized, "find / ") || strings.Contains(normalized, "find / -") || strings.Contains(normalized, "find /dev") || strings.Contains(normalized, "find /system") || strings.Contains(normalized, "find /users")
 }
 
 func normalizePseudoToolCommands(command string) string {

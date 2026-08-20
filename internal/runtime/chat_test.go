@@ -1353,6 +1353,21 @@ func TestRegisterToolsAddsMCPResourceToolsWhenServersConfigured(t *testing.T) {
 	}
 }
 
+func TestMCPStartupStatusShowsFailedServers(t *testing.T) {
+	manager := mcp.NewManager()
+	cfg := &config.Config{
+		MCPServers: map[string]config.MCPServerConfig{
+			"context7": {Type: "stdio", Command: []string{"ignored"}},
+			"jira":     {Type: "stdio", Command: []string{"ignored"}},
+		},
+	}
+	manager.FreezeForTesting(cfg, mcp.Snapshot{})
+
+	if got := mcpStartupStatus(manager, cfg); got != "MCP: failed context7, jira" {
+		t.Fatalf("mcpStartupStatus() = %q", got)
+	}
+}
+
 func TestRegisterReactDelegationToolsDoesNotUseLegacyRoleModelMapping(t *testing.T) {
 	reg := tools.NewRegistry()
 	cfg := &config.Config{}

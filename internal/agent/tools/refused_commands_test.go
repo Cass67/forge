@@ -49,6 +49,15 @@ func TestRefusedCommands(t *testing.T) {
 			"sudo spctl --master-disable",
 			"sudo nvram -c",
 		},
+		"slow filesystem discovery": {
+			"find /",
+			"find /dev -type f",
+			"find /System -name '*.plist'",
+			"find /Users -name package.json",
+			"find ~ -type f",
+			"find $HOME -name '*.go'",
+			"find " + home + " -type f",
+		},
 		"protected path destruction": {
 			"rm -rf /",
 			"rm -rf ~",
@@ -89,6 +98,9 @@ func TestRefusedCommands(t *testing.T) {
 		"grep -rn 'shutdown -r now' docs/",
 		"echo sudo reboot",
 		"npm run build",
+		"find . -name '*.go'",
+		"find ./internal -type f",
+		"find /tmp -name forge-test",
 	}
 	for _, cmd := range allowed {
 		if why := blockedCommand(cmd, work, home); why != "" {

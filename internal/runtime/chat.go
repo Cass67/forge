@@ -373,6 +373,9 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 		})
 	}
 	_ = mcpManager.Refresh(context.Background(), cfg)
+	if notify != nil {
+		notify(mcpStartupStatus(mcpManager, cfg))
+	}
 	secretPolicy := tools.SecretPolicy{
 		Read:           tools.SecretPolicyMode(cfg.Security.Secrets.Read),
 		Write:          tools.SecretPolicyMode(cfg.Security.Secrets.Write),
@@ -444,6 +447,34 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 	reg.Register(tools.NewWebFetch())
 	reg.Register(tools.NewWebSearch())
 	return previewRuntime, mcpManager, execManager
+}
+
+func mcpStartupStatus(manager *mcp.Manager, cfg *config.Config) string {
+	enabled := manager.EnabledServers(cfg)
+	if len(enabled) == 0 {
+		return "MCP: no servers configured"
+	}
+
+	connected := manager.ConnectedServers()
+	connectedSet := make(map[string]bool, len(connected))
+	for _, name := range connected {
+		connectedSet[name] = true
+	}
+	failed := make([]string, 0, len(enabled)-len(connected))
+	for _, server := range enabled {
+		if !connectedSet[server.Name] {
+			failed = append(failed, server.Name)
+		}
+	}
+
+	parts := make([]string, 0, 2)
+	if len(connected) > 0 {
+		parts = append(parts, fmt.Sprintf("loaded %s (%d tools)", strings.Join(connected, ", "), len(manager.Tools())))
+	}
+	if len(failed) > 0 {
+		parts = append(parts, "failed "+strings.Join(failed, ", "))
+	}
+	return "MCP: " + strings.Join(parts, "; ")
 }
 
 func configureDurableSessionSink(cfg *config.Config, session *reactruntime.Session, workDir string) {

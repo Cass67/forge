@@ -50,11 +50,26 @@ func blockedCommand(command, workDir, home string) string {
 		if reason := blockedProgram(fields); reason != "" {
 			return reason
 		}
+		if filesystemWideDiscovery(fields, home) {
+			return "filesystem-wide discovery is too slow and may access private paths"
+		}
 		if target := blockedPathTarget(fields, workDir, home); target != "" {
 			return "it would destroy " + target + ", which is outside the workspace and not recoverable"
 		}
 	}
 	return ""
+}
+
+func filesystemWideDiscovery(fields []string, home string) bool {
+	if filepath.Base(fields[0]) != "find" || len(fields) < 2 {
+		return false
+	}
+	target := strings.TrimRight(fields[1], "/")
+	lower := strings.ToLower(target)
+	if target == "" || lower == "/dev" || lower == "/system" || lower == "/users" {
+		return true
+	}
+	return home != "" && (target == home || target == "~" || target == "$HOME" || target == "${HOME}")
 }
 
 // blockedProgram refuses whole programs whose effect is machine-wide.

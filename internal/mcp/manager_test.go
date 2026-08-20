@@ -85,6 +85,10 @@ func TestManagerHasServersAfterRefresh(t *testing.T) {
 	if !manager.HasServers() {
 		t.Fatal("HasServers() = false, want true")
 	}
+	connected := manager.ConnectedServers()
+	if len(connected) != 1 || connected[0] != "context7" {
+		t.Fatalf("ConnectedServers() = %#v", connected)
+	}
 }
 
 func TestManagerRefreshCallToolAndReadResource(t *testing.T) {

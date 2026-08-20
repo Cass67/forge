@@ -292,6 +292,18 @@ func (m *Manager) HasServers() bool {
 	return len(m.servers) > 0
 }
 
+// ConnectedServers returns server names with live MCP sessions.
+func (m *Manager) ConnectedServers() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	names := make([]string, 0, len(m.sessions))
+	for name := range m.sessions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 func (m *Manager) Tools() []Tool {
 	return m.Snapshot().Tools
 }
