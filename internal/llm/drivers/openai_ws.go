@@ -277,15 +277,24 @@ func (d *OpenAIDriver) wsReadEvents(ctx context.Context, conn *websocket.Conn, o
 		}
 	}()
 
+	// The reader goroutine must never outlive this call. gorilla/websocket
+	// permits a single concurrent reader, and this connection is pooled: if a
+	// cancelled turn left its reader blocked in ReadJSON, the next request
+	// would start a second one and the two would corrupt the connection's
+	// shared bufio.Reader (panic: slice bounds out of range). Closing the
+	// connection is what unblocks the read.
+	var readErr error
 	select {
 	case <-ctx.Done():
+		d.wsCloseConn(conn)
+		<-readCh
 		return ctx.Err()
-	case err := <-errCh:
-		if err != nil {
-			return err
-		}
+	case readErr = <-errCh:
 	}
 	<-readCh
+	if readErr != nil {
+		return readErr
+	}
 
 	if !sawCompleted && outputChars == 0 && len(completedOutput) == 0 {
 		return fmt.Errorf("ws: no content received")
@@ -304,6 +313,22 @@ func (d *OpenAIDriver) wsReadEvents(ctx context.Context, conn *websocket.Conn, o
 	}
 
 	return nil
+}
+
+// wsCloseConn closes a specific connection and drops it from the pool if it is
+// the one cached there. Used when a connection must not be reused, such as
+// after a cancelled turn leaves an unread response mid-stream.
+func (d *OpenAIDriver) wsCloseConn(conn *websocket.Conn) {
+	d.wsMu.Lock()
+	defer d.wsMu.Unlock()
+	if conn == nil {
+		return
+	}
+	_ = conn.Close()
+	if d.wsConn == conn {
+		d.wsConn = nil
+		d.wsLastRequestID = ""
+	}
 }
 
 func (d *OpenAIDriver) wsDisconnect() {
