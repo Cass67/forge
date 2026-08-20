@@ -37,7 +37,9 @@ export function Composer({
     const el = ref.current;
     if (!el) return;
     el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 220) + "px";
+    // Cap in rem so the box grows with the text size rather than clipping.
+    const cap = 13.75 * parseFloat(getComputedStyle(document.documentElement).fontSize || "16");
+    el.style.height = Math.min(el.scrollHeight, cap) + "px";
   }, [text]);
 
   useEffect(() => setIndex(0), [text]);

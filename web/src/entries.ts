@@ -26,6 +26,22 @@ export function closeStreaming(entries: Entry[]): Entry[] {
   return entries;
 }
 
+// info appends a runtime note, dropping empty ones: they rendered as bare
+// lines with nothing in them.
+function info(entries: Entry[], text?: string): Entry[] {
+  if (!text || !text.trim()) return entries;
+  return [...closeStreaming(entries), { id: nid(), t: "info", text }];
+}
+
+// endTurn closes the turn, collapsing repeats. Nothing separates a separator
+// from the one before it, so only the first after real content counts.
+function endTurn(entries: Entry[], ok: boolean): Entry[] {
+  const closed = closeStreaming(entries);
+  const last = closed[closed.length - 1];
+  if (!last || last.t === "turn") return closed;
+  return [...closed, { id: nid(), t: "turn", ok }];
+}
+
 export function applyEvent(entries: Entry[], ev: WireEvent): Entry[] {
   switch (ev.kind) {
     case "token": {
@@ -45,7 +61,7 @@ export function applyEvent(entries: Entry[], ev: WireEvent): Entry[] {
     }
     case "tool_call": {
       if (ev.agent === "runtime") {
-        return [...closeStreaming(entries), { id: nid(), t: "info", text: ev.text || "" }];
+        return info(entries, ev.text);
       }
       return [...closeStreaming(entries), { id: nid(), t: "tool", name: ev.agent || "tool", summary: ev.text || "", done: false }];
     }
@@ -62,14 +78,19 @@ export function applyEvent(entries: Entry[], ev: WireEvent): Entry[] {
     }
     case "error":
       return [...closeStreaming(entries), { id: nid(), t: "error", text: ev.error || ev.text || "error" }];
+
     case "retry":
     case "warning":
-      return [...closeStreaming(entries), { id: nid(), t: "info", text: ev.text || "" }];
+      return info(entries, ev.text);
     case "done":
+      return endTurn(entries, true);
     case "agent_done":
-      return [...closeStreaming(entries), { id: nid(), t: "turn", ok: true }];
+      // A sub-agent finishing is not a turn boundary. Treating it as one drew
+      // a separator per delegated agent, which stacked into a wall of rules
+      // whenever a prompt fanned out.
+      return closeStreaming(entries);
     case "abort":
-      return [...closeStreaming(entries), { id: nid(), t: "turn", ok: false }];
+      return endTurn(entries, false);
     default:
       return entries;
   }

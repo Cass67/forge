@@ -6,6 +6,7 @@ import { ProviderPanel } from "./ProviderPanel";
 export type Prefs = {
   showTools: boolean;
   showReasoning: boolean;
+  expandReasoning: boolean;
   showActivity: boolean;
   showSidebar: boolean;
   scopeThreads: boolean;
@@ -112,6 +113,7 @@ export function SettingsPanel({
             ["showActivity", "activity panel"],
             ["showTools", "tool cards"],
             ["showReasoning", "thinking blocks"],
+            ["expandReasoning", "expand thinking by default"],
             ["scopeThreads", "only this workspace's threads"],
           ] as [keyof Prefs, string][]
         ).map(([k, label]) => (

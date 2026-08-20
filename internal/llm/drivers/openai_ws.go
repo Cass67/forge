@@ -27,6 +27,15 @@ type wsResponseCreate struct {
 	PromptCacheKey     string                                  `json:"prompt_cache_key,omitempty"`
 	MaxOutputTokens    int                                     `json:"max_output_tokens,omitempty"`
 	Temperature        float64                                 `json:"temperature,omitempty"`
+	Reasoning          *wsReasoning                            `json:"reasoning,omitempty"`
+}
+
+// wsReasoning asks for a reasoning effort and, with Summary set, for the
+// summary events that carry the model's thinking. Without it the API sends no
+// reasoning at all on this transport.
+type wsReasoning struct {
+	Effort  string `json:"effort,omitempty"`
+	Summary string `json:"summary,omitempty"`
 }
 
 type wsServerEvent struct {
@@ -164,6 +173,13 @@ func (d *OpenAIDriver) wsSendAndRead(ctx context.Context, conn *websocket.Conn, 
 	if d.params.Temperature >= 0 && d.modelSupportsTemperature() {
 		req.Temperature = d.params.Temperature
 	}
+	// The effort was never sent on this transport, and without a summary
+	// request the model's thinking is never streamed back.
+	if effort := d.reasoningEffort(); effort != "" {
+		req.Reasoning = &wsReasoning{Effort: effort, Summary: "auto"}
+	} else if isReasoningModel(d.apiModel) {
+		req.Reasoning = &wsReasoning{Summary: "auto"}
+	}
 
 	d.wsMu.Lock()
 	_ = conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
@@ -223,6 +239,23 @@ func (d *OpenAIDriver) wsReadEvents(ctx context.Context, conn *websocket.Conn, o
 					return
 				}
 
+			// Reasoning summaries were being dropped: the event types were
+			// listed as no-ops below, so nothing downstream ever saw the
+			// model's thinking on this transport.
+			case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+				var delta struct {
+					Delta string `json:"delta"`
+				}
+				if err := json.Unmarshal(raw, &delta); err != nil || delta.Delta == "" {
+					continue
+				}
+				select {
+				case out <- llm.Token{ReasoningContent: delta.Delta}:
+				case <-ctx.Done():
+					errCh <- ctx.Err()
+					return
+				}
+
 			case "response.output_item.done":
 				var item responses.ResponseOutputItemDoneEvent
 				if err := json.Unmarshal(raw, &item); err != nil {
@@ -272,7 +305,8 @@ func (d *OpenAIDriver) wsReadEvents(ctx context.Context, conn *websocket.Conn, o
 			case "response.created", "response.in_progress", "response.output_item.added",
 				"response.content_part.added", "response.content_part.done",
 				"response.function_call_arguments.delta", "response.function_call_arguments.done",
-				"response.reasoning_summary_part.added", "response.reasoning_summary_part.done":
+				"response.reasoning_summary_part.added", "response.reasoning_summary_part.done",
+				"response.reasoning_summary_text.done", "response.reasoning_text.done":
 			}
 		}
 	}()

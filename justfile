@@ -57,6 +57,7 @@ run-gui: gui
 # Run the test suite
 test:
     go test ./...
+    cd web && bun test
 
 # Build and test
 check: build test

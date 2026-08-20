@@ -1071,6 +1071,16 @@ func RunChatLive(setup *ChatSetup) {
 	}
 	if setup.LiveRunner != nil {
 		setup.LiveRunner(eventsCh, liveCfg, inputCh, doneCh)
+		// The runner returning means this chat is finished — the window is
+		// closing, or it is switching to another workspace. Release what holds
+		// subprocesses, so a switch does not strand MCP servers and shells.
+		close(inputCh)
+		if mcpManager != nil {
+			_ = mcpManager.Close()
+		}
+		if execManager != nil {
+			execManager.Close()
+		}
 		return
 	}
 	runChatLiveUI(eventsCh, liveCfg, inputCh, doneCh)

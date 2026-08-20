@@ -89,7 +89,7 @@ export function Transcript({ entries, prefs, busy }: { entries: Entry[]; prefs: 
           case "reasoning":
             if (!prefs.showReasoning) return null;
             return (
-              <details key={e.id} className="reasoning" open={e.streaming}>
+              <details key={e.id} className="reasoning" open={e.streaming || prefs.expandReasoning}>
                 <summary>
                   <span className="think-dot" />
                   {e.streaming ? "thinking…" : "thought process"}

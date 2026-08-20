@@ -34,6 +34,7 @@ const initialStats: Stats = {
 const defaultPrefs: Prefs = {
   showTools: true,
   showReasoning: true,
+  expandReasoning: true,
   showActivity: true,
   showSidebar: true,
   scopeThreads: true,
