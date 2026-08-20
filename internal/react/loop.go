@@ -1395,7 +1395,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 			}
 			r.updatePlanWorkflow(call.Name, args, "", true)
 			r.updateSameFileSearchWorkflow(call.Name, args, true)
-			r.updateRepeatToolCallWorkflow(call.Name, args, blocked)
+			r.recordBlockedRepeat(call.Name, args)
 			continue
 		}
 
@@ -1721,6 +1721,23 @@ func repeatToolCallStalledOccurrences(state repeatToolCallState, key string) int
 		}
 	}
 	return best
+}
+
+// repeatToolCallStalledDigest returns the digest that recurred most for a key,
+// which is the result the repeats are stuck on.
+func repeatToolCallStalledDigest(state repeatToolCallState, key string) string {
+	byResult := map[string]int{}
+	best, digest := 0, ""
+	for i, k := range state.recent {
+		if k != key || i >= len(state.recentResults) {
+			continue
+		}
+		byResult[state.recentResults[i]]++
+		if n := byResult[state.recentResults[i]]; n > best {
+			best, digest = n, state.recentResults[i]
+		}
+	}
+	return digest
 }
 
 // repeatToolCallResultDigest bounds how much of a result is retained; only

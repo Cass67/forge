@@ -893,9 +893,26 @@ func (r *Runner) updateRepeatToolCallWorkflow(toolName string, args map[string]a
 		r.syncRuntimeNote()
 		return
 	}
+	r.appendRepeatToolCall(toolName, target, repeatToolCallResultDigest(result))
+}
+
+// recordBlockedRepeat records a refused call as another occurrence of the stall
+// that caused the refusal. Recording the refusal text as the result instead
+// would let the guard dilute its own evidence: refusals would fill the window,
+// the stalled count would fall back under the threshold, and the call would run
+// again -- so a blocked loop only ever paused rather than stopping.
+func (r *Runner) recordBlockedRepeat(toolName string, args map[string]any) {
+	target := repeatToolCallTarget(toolName, args)
+	if target == "" {
+		return
+	}
+	r.appendRepeatToolCall(toolName, target, repeatToolCallStalledDigest(r.repeatWorkflow, toolName+":"+target))
+}
+
+func (r *Runner) appendRepeatToolCall(toolName, target, digest string) {
 	key := toolName + ":" + target
 	recent := append(r.repeatWorkflow.recent, key)
-	results := append(r.repeatWorkflow.recentResults, repeatToolCallResultDigest(result))
+	results := append(r.repeatWorkflow.recentResults, digest)
 	if len(recent) > repeatToolCallWindow {
 		recent = recent[len(recent)-repeatToolCallWindow:]
 	}
