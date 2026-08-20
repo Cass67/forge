@@ -85,6 +85,9 @@ type ChatConfig struct {
 	// ShowReasoning displays the model's thinking as it works. Reasoning is
 	// captured either way; this only controls whether it is shown.
 	ShowReasoning *bool `toml:"show_reasoning"`
+	// ReasoningEffort pins the provider reasoning-effort level. Empty means
+	// use the lowest level the model advertises; "none" sends none at all.
+	ReasoningEffort string `toml:"reasoning_effort"`
 }
 
 // ReasoningVisible reports whether thinking should be displayed, defaulting to

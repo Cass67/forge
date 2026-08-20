@@ -83,9 +83,54 @@ func loadChatApprovalConfig(setup *ChatSetup) reactruntime.ApprovalConfig {
 // effort) onto a driver. Temperature stays at the provider default (-1). Called
 // after every MakeDriver so the effort survives model/provider switches.
 func (s *ChatSetup) applyChatParams(d llm.Driver) {
-	if c, ok := d.(llm.Configurable); ok {
-		c.SetParams(llm.Params{Temperature: -1, ReasoningEffort: s.ReasoningEffort})
+	if s == nil {
+		return
 	}
+	if c, ok := d.(llm.Configurable); ok {
+		c.SetParams(llm.Params{Temperature: -1, ReasoningEffort: s.effectiveReasoningEffort()})
+	}
+}
+
+// effectiveReasoningEffort is the level actually sent to the provider. With no
+// level chosen it falls back to the lowest the model advertises: sending none
+// meant a reasoning-capable model never reasoned, so its thinking could never
+// be displayed however the renderer was configured. "none" opts out.
+func (s *ChatSetup) effectiveReasoningEffort() string {
+	if s == nil {
+		return ""
+	}
+	chosen := strings.TrimSpace(s.ReasoningEffort)
+	if strings.EqualFold(chosen, "none") {
+		return ""
+	}
+	if s.reasoningEffortChosen || chosen != "" {
+		return chosen
+	}
+	ref := bootstrap.ParseModelRef(s.ChatModel)
+	info := modelcatalog.Lookup(ref.Provider, ref.Model)
+	if info == nil {
+		return ""
+	}
+	return lowestReasoningEffort(info.ReasoningEfforts)
+}
+
+// lowestReasoningEffort picks the cheapest advertised level, preferring the
+// conventional names before falling back to the first the provider lists.
+func lowestReasoningEffort(efforts []string) string {
+	for _, want := range []string{"minimal", "none", "low"} {
+		for _, have := range efforts {
+			if strings.EqualFold(have, want) {
+				if strings.EqualFold(have, "none") {
+					return ""
+				}
+				return have
+			}
+		}
+	}
+	if len(efforts) > 0 {
+		return efforts[0]
+	}
+	return ""
 }
 
 type ChatSetup struct {
@@ -101,6 +146,9 @@ type ChatSetup struct {
 	// ReasoningEffort is the currently selected provider reasoning-effort level,
 	// re-applied to each driver built via MakeDriver so it survives model switches.
 	ReasoningEffort string
+	// reasoningEffortChosen records that the level came from configuration or
+	// from the user, so the advertised default no longer applies.
+	reasoningEffortChosen bool
 	// DroppedModel is the saved chat model that was discarded at startup
 	// because no provider currently offers it.
 	DroppedModel string
@@ -240,6 +288,9 @@ func BuildChatSetup(cfg *config.Config, tokens any, modelOverride, workDir strin
 		Providers:    providers,
 		MakeDriver:   makeChatDriver,
 		DroppedModel: droppedModel,
+
+		ReasoningEffort:       strings.TrimSpace(cfg.Chat.ReasoningEffort),
+		reasoningEffortChosen: strings.TrimSpace(cfg.Chat.ReasoningEffort) != "",
 	}, nil
 }
 
@@ -536,6 +587,13 @@ func reloadPluginsHandler(existing **pluginruntime.Manager, cfg *config.Config, 
 }
 
 func RunChatLive(setup *ChatSetup) {
+	// The initial driver was never given generation params: they were only
+	// applied on a model switch or an /effort change, so a configured effort
+	// did nothing until one of those happened, and a model that only reasons
+	// when asked never reasoned at all.
+	if setup != nil {
+		setup.applyChatParams(setup.Driver)
+	}
 	eventsCh := make(chan llm.Event, 256)
 	renderCh := chan<- llm.Event(eventsCh)
 	if setup != nil && setup.debugRec != nil {
@@ -906,8 +964,11 @@ func RunChatLive(setup *ChatSetup) {
 				}
 			}
 			setup.ReasoningEffort = effort
+			setup.reasoningEffortChosen = true
 			if setup.Driver != nil {
-				setup.applyChatParams(setup.Driver)
+				if setup != nil {
+					setup.applyChatParams(setup.Driver)
+				}
 			}
 			return nil
 		},
@@ -1206,6 +1267,13 @@ func buildConsoleRuntime(setup *ChatSetup, approve tools.ApprovalFunc, out io.Wr
 }
 
 func RunChatConsole(setup *ChatSetup) {
+	// The initial driver was never given generation params: they were only
+	// applied on a model switch or an /effort change, so a configured effort
+	// did nothing until one of those happened, and a model that only reasons
+	// when asked never reasoned at all.
+	if setup != nil {
+		setup.applyChatParams(setup.Driver)
+	}
 	rt, cleanup := buildConsoleRuntime(setup, nil, os.Stdout, true)
 	defer cleanup()
 	renderer := rt.renderer
@@ -1356,6 +1424,13 @@ func RunChatConsole(setup *ChatSetup) {
 // assistant response is written to stdout so it can be piped. Approvals are not
 // interactive: without --yolo every approval-gated action is denied.
 func RunChatHeadless(setup *ChatSetup, prompt string) int {
+	// The initial driver was never given generation params: they were only
+	// applied on a model switch or an /effort change, so a configured effort
+	// did nothing until one of those happened, and a model that only reasons
+	// when asked never reasoned at all.
+	if setup != nil {
+		setup.applyChatParams(setup.Driver)
+	}
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		fmt.Fprintln(os.Stderr, "error: empty prompt")
