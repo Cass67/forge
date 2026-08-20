@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Go — official tarball; apt's version lags
-ARG GO_VERSION=1.26.5
+ARG GO_VERSION=1.26.7
 RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-$(dpkg --print-architecture).tar.gz" \
     | tar -C /usr/local -xz
 ENV PATH=/usr/local/go/bin:/usr/local/bin:$PATH \
