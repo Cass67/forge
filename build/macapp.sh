@@ -10,7 +10,8 @@ cd "$(dirname "$0")/.."
 
 BIN="${1:-bin/forge-gui}"
 APP="bin/Forge.app"
-VERSION="${FORGE_VERSION:-0.1.0}"
+# Single source of truth: internal/version. Duplicating it here would drift.
+VERSION="${FORGE_VERSION:-$(sed -n 's/^const Version = "\(.*\)"$/\1/p' internal/version/version.go)}"
 
 if [ ! -x "$BIN" ]; then
   echo "macapp: $BIN not built; run 'just gui' first" >&2
