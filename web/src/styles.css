@@ -313,7 +313,12 @@ body {
   -webkit-font-smoothing: antialiased;
   user-select: none;
 }
-input, textarea, .selectable, .md, .tc-out, .diffbox, .reasoning-body, .msg .body { user-select: text; }
+/* The transcript is content, not chrome, so all of it must be selectable.
+   This was an allowlist of individual classes, which silently missed every
+   entry type nobody thought to add — error lines could not be copied at all,
+   which is exactly when you most want to. .diffbox also renders in the
+   approval modal, outside the transcript. */
+input, textarea, .selectable, .transcript, .diffbox { user-select: text; }
 ::selection { background: var(--selected); }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
