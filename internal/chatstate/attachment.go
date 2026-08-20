@@ -1,7 +1,8 @@
 package chatstate
 
 import (
-	"encoding/base64"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"image"
 	"image/gif"
@@ -182,7 +183,11 @@ func ValidateImageAttachment(path string) (*ChatAttachment, error) {
 		return nil, fmt.Errorf("unsupported image format: %w", err)
 	}
 
-	id := base64.RawURLEncoding.EncodeToString([]byte(path))[:12]
+	// Hash the path: base64 of the path itself shares a prefix with every
+	// other file in the same directory, so two images dragged from one folder
+	// were handed identical ids and the second appeared to do nothing.
+	sum := sha256.Sum256([]byte(path))
+	id := hex.EncodeToString(sum[:])[:12]
 
 	return &ChatAttachment{
 		ID:       id,
