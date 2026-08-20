@@ -14,8 +14,29 @@ const (
 	// microCompactProtectedTail keeps the most recent messages out of micro
 	// compaction so the model does not lose tool results it is actively using
 	// (losing them forces re-reads, which look like tool-call loops).
-	microCompactProtectedTail = 8
+	//
+	// A step issues several tool calls, so a tail of 8 covered barely two
+	// steps: in one observed session three of seven compacted results were
+	// re-read straight afterwards, all files being actively edited. Sized to
+	// hold the last few steps instead.
+	microCompactProtectedTail = 24
 )
+
+// protectedTail bounds how much of a history the tail may shield. The tail
+// exists to protect the working set, which cannot be the whole conversation:
+// a fixed count larger than the history protected everything, so a stale
+// oversized result in a short session could never be compacted.
+func protectedTail(historyLen, want int) int {
+	if want < 1 || historyLen < 2 {
+		return 0
+	}
+	if half := historyLen / 2; want > half {
+		return half
+	}
+	return want
+}
+
+const ()
 
 func CompactSessionHistory(session *Session, keep int) bool {
 	if session == nil {
@@ -30,6 +51,7 @@ func MicroCompactLargeToolResults(session *Session, maxBytes, protectTail int) b
 	}
 	session.mu.Lock()
 	live := session.liveItemsLocked()
+	protectTail = protectedTail(len(live), protectTail)
 	protectedFrom := len(live) - protectTail
 	var replacements []protocol.CompactionReplacement
 	for i, item := range live {
