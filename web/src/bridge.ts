@@ -174,5 +174,7 @@ export const forge = {
   onApproval: (fn: (a: WireAction) => void) =>
     Events.On("forge:approval", (e: unknown) => fn(payload<WireAction>(e))),
   onTurnDone: (fn: () => void) => Events.On("forge:done", () => fn()),
+  onFilesDropped: (fn: (paths: string[]) => void) =>
+    Events.On("forge:files", (e: unknown) => fn(payload<string[]>(e) ?? [])),
   onReady: (fn: () => void) => Events.On("forge:ready", () => fn()),
 };

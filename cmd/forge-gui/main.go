@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 
 	"forge/internal/bootstrap"
 	"forge/internal/gui"
@@ -116,6 +117,11 @@ func run() error {
 	}
 
 	win := newWindow(app, setup.WorkDir)
+
+	// OS file drags arrive here rather than in the DOM.
+	win.OnWindowEvent(events.Common.WindowFilesDropped, func(e *application.WindowEvent) {
+		controller.FilesDropped(e.Context().DroppedFiles())
+	})
 
 	runner := func(events <-chan llm.Event, live tui.ChatLiveConfig, inputCh chan<- string, doneCh <-chan struct{}) tui.ChatLiveResult {
 		controller.Attach(live, inputCh)
@@ -218,9 +224,13 @@ func newWindow(app *application.App, workDir string) application.Window {
 		// The webview's stock right-click menu offers Reload and Inspect
 		// Element, which belong to a browser, not to this app.
 		DefaultContextMenuDisabled: true,
-		Width:                      1280,
-		Height:                     860,
-		MinWidth:                   900,
-		MinHeight:                  600,
+		// The webview swallows OS file drags: they never surface as DOM drop
+		// events with files attached. Wails delivers them as a window event
+		// instead, for elements marked data-file-drop-target.
+		EnableFileDrop: true,
+		Width:          1280,
+		Height:         860,
+		MinWidth:       900,
+		MinHeight:      600,
 	})
 }

@@ -85,6 +85,20 @@ export default function App() {
     setTimeout(() => setFlash(""), 2600);
   }, []);
 
+  const attachPaths = useCallback(
+    async (paths: string[]) => {
+      for (const path of paths) {
+        try {
+          const att = await forge.attachPath(path);
+          setPending((p) => (p.some((x) => x.id === att.id) ? p : [...p, att]));
+        } catch (e) {
+          notify(`${path.split("/").pop()}: ${String(e)}`);
+        }
+      }
+    },
+    [notify],
+  );
+
   const refreshThreads = useCallback(() => {
     void forge.threads().then(setThreads);
     void forge.workspaces().then(setWorkspaces);
@@ -131,6 +145,13 @@ export default function App() {
         refreshThreads();
       }
     });
+    // The webview never gives the DOM a dragged file; Wails delivers the
+    // paths here instead.
+    const offFiles = forge.onFilesDropped((paths) => {
+      setDragging(false);
+      dragDepth.current = 0;
+      void attachPaths(paths);
+    });
     const offApproval = forge.onApproval(setApproval);
     const offDone = forge.onTurnDone(() => {
       setBusy(false);
@@ -139,10 +160,11 @@ export default function App() {
     return () => {
       offReady();
       offEvent();
+      offFiles();
       offApproval();
       offDone();
     };
-  }, [loadInit, refreshThreads]);
+  }, [attachPaths, loadInit, refreshThreads]);
 
   const sendInput = useCallback(
     (text: string) => {
@@ -429,16 +451,9 @@ export default function App() {
         notify("nothing attachable in that drop");
         return;
       }
-      for (const uri of uris) {
-        try {
-          const att = await forge.attachPath(uri);
-          setPending((p) => [...p, att]);
-        } catch (e) {
-          notify(String(e));
-        }
-      }
+      await attachPaths(uris);
     },
-    [attachFiles, notify],
+    [attachFiles, attachPaths, notify],
   );
 
   const workDirLabel = init?.work_dir?.replace(/^\/Users\/[^/]+/, "~") ?? "";
@@ -446,6 +461,7 @@ export default function App() {
   return (
     <div
       className={`app ${dragging ? "dragging" : ""}`}
+      data-file-drop-target
       onDragEnter={(e) => {
         e.preventDefault();
         dragDepth.current++;

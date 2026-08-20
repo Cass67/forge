@@ -118,6 +118,19 @@ func (c *Controller) PumpEvents(events <-chan llm.Event) {
 	}
 }
 
+// EventFilesDropped carries OS file drops to the frontend.
+const EventFilesDropped = "forge:files"
+
+// FilesDropped forwards paths dropped onto the window. The webview does not
+// hand OS drags to the DOM, so this is the only route by which a dragged file
+// reaches the app.
+func (c *Controller) FilesDropped(paths []string) {
+	if len(paths) == 0 {
+		return
+	}
+	c.s.emit(EventFilesDropped, paths)
+}
+
 // ReportError surfaces a backend failure in the window, for problems that
 // happen outside any call the frontend made.
 func (c *Controller) ReportError(msg string) {
