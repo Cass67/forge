@@ -7,6 +7,16 @@ func SanitizeToolSchema(schema *llm.ToolSchema) *llm.ToolSchema {
 		return nil
 	}
 	out := *schema
+	if out.Type == "" {
+		switch {
+		case schema.Properties != nil:
+			out.Type = "object"
+		case schema.Items != nil:
+			out.Type = "array"
+		default:
+			out.Type = "string"
+		}
+	}
 	if schema.Properties != nil {
 		out.Properties = map[string]*llm.ToolSchema{}
 		for name, prop := range schema.Properties {

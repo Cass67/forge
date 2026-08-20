@@ -967,6 +967,39 @@ func TestToolDefsToResponsesStrictSchemaRequiresOptionalNullableParams(t *testin
 	}
 }
 
+func TestToolDefsToResponsesDisablesStrictForOpenObjects(t *testing.T) {
+	additional := true
+	defs := []llm.ToolDef{{
+		Name: "cx_create_object",
+		Schema: &llm.ToolSchema{
+			Type: "object",
+			Properties: map[string]*llm.ToolSchema{
+				"payload": {Type: "object", AdditionalProperties: &additional},
+			},
+		},
+	}}
+	tools := toolDefsToResponses(defs)
+	if len(tools) != 1 {
+		t.Fatalf("tools = %#v, want one", tools)
+	}
+	b, err := json.Marshal(tools[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["strict"] != false {
+		t.Fatalf("strict = %#v, want false", got["strict"])
+	}
+	params := got["parameters"].(map[string]any)
+	payload := params["properties"].(map[string]any)["payload"].(map[string]any)
+	if payload["additionalProperties"] != true {
+		t.Fatalf("payload additionalProperties = %#v, want true", payload["additionalProperties"])
+	}
+}
+
 func TestToolDefsToResponsesStrictSchemaHandlesEmptyObjectsAndNullableEnums(t *testing.T) {
 	defs := []llm.ToolDef{{
 		Name: "audit_repo",

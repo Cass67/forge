@@ -1036,23 +1036,40 @@ func toolDefsToOpenAI(defs []llm.ToolDef) []openai.ChatCompletionToolParam {
 func toolDefsToResponses(defs []llm.ToolDef) []responses.ToolUnionParam {
 	tools := make([]responses.ToolUnionParam, 0, len(defs))
 	for _, d := range defs {
-		schema := strictToolDefSchema(d)
+		schema := toolDefSchema(d)
+		strict := !schemaAllowsAdditionalProperties(schema)
+		if strict {
+			makeSchemaStrictNullable(schema)
+		}
 		tools = append(tools, responses.ToolUnionParam{
 			OfFunction: &responses.FunctionToolParam{
 				Name:        d.Name,
 				Description: param.NewOpt(d.Description),
 				Parameters:  schema,
-				Strict:      openai.Bool(true),
+				Strict:      openai.Bool(strict),
 			},
 		})
 	}
 	return tools
 }
 
-func strictToolDefSchema(def llm.ToolDef) map[string]any {
-	schema := toolDefSchema(def)
-	makeSchemaStrictNullable(schema)
-	return schema
+func schemaAllowsAdditionalProperties(schema map[string]any) bool {
+	if schema == nil {
+		return false
+	}
+	if additional, ok := schema["additionalProperties"].(bool); ok && additional {
+		return true
+	}
+	if items, ok := schema["items"].(map[string]any); ok && schemaAllowsAdditionalProperties(items) {
+		return true
+	}
+	properties, _ := schema["properties"].(map[string]any)
+	for _, raw := range properties {
+		if property, ok := raw.(map[string]any); ok && schemaAllowsAdditionalProperties(property) {
+			return true
+		}
+	}
+	return false
 }
 
 func makeSchemaStrictNullable(schema map[string]any) {
