@@ -115,18 +115,14 @@ func (d *OpenAIDriver) wsStreamResponses(ctx context.Context, messages []llm.Mes
 		return err
 	}
 
-	// A ceiling on the whole turn, not a liveness check. Two minutes killed
-	// long reasoning turns mid-answer with "context deadline exceeded" — a
-	// turn that writes a large document legitimately runs longer. Silence is
-	// already caught by the 30s read deadline applied before every read, so
-	// this only needs to bound a pathologically long turn.
-	const wsTimeout = 30 * time.Minute
-	streamCtx, cancel := context.WithTimeout(ctx, wsTimeout)
-	defer cancel()
-
-	err = d.wsSendAndRead(streamCtx, conn, messages, tools, out, true)
+	// No ceiling on the turn. A wall-clock cap kills long reasoning and long
+	// writes mid-answer with "context deadline exceeded", and picking a number
+	// only moves where that happens. Liveness is the 30s read deadline applied
+	// before every read: silence fails fast, progress runs as long as it needs.
+	// Cancellation still arrives through ctx.
+	err = d.wsSendAndRead(ctx, conn, messages, tools, out, true)
 	if err != nil && d.wsPrevNotFound(err) {
-		return d.wsSendAndRead(streamCtx, conn, messages, tools, out, false)
+		return d.wsSendAndRead(ctx, conn, messages, tools, out, false)
 	}
 	return err
 }
