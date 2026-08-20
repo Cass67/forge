@@ -124,12 +124,14 @@ func runTopLevelFlag(args []string) bool {
 
 func runMCP(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: forge mcp [list|get|add|remove|login|logout]")
+		fmt.Fprintln(os.Stderr, "usage: forge mcp [list|status|get|add|remove|login|logout]")
 		os.Exit(1)
 	}
 	switch args[0] {
 	case "list":
 		runMCPList()
+	case "status":
+		runMCPStatus()
 	case "get":
 		runMCPGet(cli.RequireArg(args[1:], "usage: forge mcp get <name>"))
 	case "add":
@@ -141,7 +143,47 @@ func runMCP(args []string) {
 	case "logout":
 		runMCPLogout(cli.RequireArg(args[1:], "usage: forge mcp logout <name>"))
 	default:
-		fmt.Fprintln(os.Stderr, "usage: forge mcp [list|get|add|remove|login|logout]")
+		fmt.Fprintln(os.Stderr, "usage: forge mcp [list|status|get|add|remove|login|logout]")
+		os.Exit(1)
+	}
+}
+
+// runMCPStatus actually connects, unlike list, which only reads config. It is
+// the fastest way to find out why a server's tools never showed up in a chat.
+func runMCPStatus() {
+	cfg, err := loadMainConfigFn()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
+		os.Exit(1)
+	}
+	manager := mcp.NewManager()
+	defer func() { _ = manager.Close() }()
+	start := time.Now()
+	_ = manager.Refresh(context.Background(), cfg)
+	statuses := manager.Status()
+	if len(statuses) == 0 {
+		fmt.Println("No MCP servers configured (or all disabled).")
+		return
+	}
+	failed := 0
+	for _, status := range statuses {
+		if !status.Connected {
+			failed++
+			fmt.Printf("%s: FAILED\n", status.Name)
+			if status.Error != "" {
+				fmt.Printf("  error: %s\n", status.Error)
+			}
+			continue
+		}
+		fmt.Printf("%s: connected (%d tools, %d resources)\n", status.Name, status.Tools, status.Resources)
+		for _, tool := range manager.Tools() {
+			if tool.ServerName == status.Name {
+				fmt.Printf("  mcp__%s__%s\n", tool.ServerName, tool.Name)
+			}
+		}
+	}
+	fmt.Printf("\nchecked %d server(s) in %s\n", len(statuses), time.Since(start).Round(time.Millisecond))
+	if failed > 0 {
 		os.Exit(1)
 	}
 }

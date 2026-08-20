@@ -118,6 +118,7 @@ type Manager struct {
 	servers   []Server
 	sessions  map[string]clientSession
 	perServer map[string]Snapshot
+	failures  map[string]string
 	snapshot  Snapshot
 	connector sessionConnector
 	frozen    bool
@@ -128,6 +129,7 @@ func NewManager() *Manager {
 	return &Manager{
 		sessions:  make(map[string]clientSession),
 		perServer: make(map[string]Snapshot),
+		failures:  make(map[string]string),
 	}
 }
 
@@ -201,6 +203,7 @@ func (m *Manager) Refresh(ctx context.Context, cfg *config.Config) error {
 
 	nextSessions := make(map[string]clientSession, len(servers))
 	perServer := make(map[string]Snapshot, len(servers))
+	failures := make(map[string]string, len(servers))
 	var errs []error
 
 	for _, server := range servers {
@@ -214,6 +217,7 @@ func (m *Manager) Refresh(ctx context.Context, cfg *config.Config) error {
 			cancel()
 			if err != nil {
 				err = describeTimeout(err, "connect", connectTimeout)
+				failures[server.Name] = err.Error()
 				errs = append(errs, fmt.Errorf("%s: connect: %w", server.Name, err))
 				continue
 			}
@@ -225,6 +229,7 @@ func (m *Manager) Refresh(ctx context.Context, cfg *config.Config) error {
 		cancel()
 		if err != nil {
 			err = describeTimeout(err, "refresh", listTimeout)
+			failures[server.Name] = err.Error()
 			_ = session.Close()
 			errs = append(errs, fmt.Errorf("%s: refresh: %w", server.Name, err))
 			continue
@@ -242,6 +247,7 @@ func (m *Manager) Refresh(ctx context.Context, cfg *config.Config) error {
 	m.servers = append([]Server(nil), servers...)
 	m.sessions = nextSessions
 	m.perServer = perServer
+	m.failures = failures
 	m.snapshot = flattenSnapshots(perServer)
 	eventHandler := m.onEvent
 	snapshot := m.snapshot
@@ -262,6 +268,7 @@ func (m *Manager) reset() {
 	m.servers = nil
 	m.sessions = make(map[string]clientSession)
 	m.perServer = make(map[string]Snapshot)
+	m.failures = make(map[string]string)
 	m.snapshot = Snapshot{}
 }
 
@@ -298,6 +305,35 @@ func (m *Manager) SetSnapshot(snapshot Snapshot) {
 		Resources:         append([]Resource(nil), snapshot.Resources...),
 		ResourceTemplates: append([]ResourceTemplate(nil), snapshot.ResourceTemplates...),
 	}
+}
+
+// ServerStatus reports what happened to one configured server, so a tool
+// returning no results can say why: not configured, connected but empty, or
+// failed with this error.
+type ServerStatus struct {
+	Name      string `json:"server"`
+	Connected bool   `json:"connected"`
+	Tools     int    `json:"tools"`
+	Resources int    `json:"resources"`
+	Error     string `json:"error,omitempty"`
+}
+
+func (m *Manager) Status() []ServerStatus {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]ServerStatus, 0, len(m.servers))
+	for _, server := range m.servers {
+		snapshot := m.perServer[server.Name]
+		_, connected := m.sessions[server.Name]
+		out = append(out, ServerStatus{
+			Name:      server.Name,
+			Connected: connected,
+			Tools:     len(snapshot.Tools),
+			Resources: len(snapshot.Resources),
+			Error:     m.failures[server.Name],
+		})
+	}
+	return out
 }
 
 func (m *Manager) HasServers() bool {

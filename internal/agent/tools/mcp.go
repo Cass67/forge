@@ -13,6 +13,7 @@ type mcpManager interface {
 	Tools() []mcp.Tool
 	Resources() []mcp.Resource
 	ResourceTemplates() []mcp.ResourceTemplate
+	Status() []mcp.ServerStatus
 	CallTool(ctx context.Context, serverName, toolName string, args map[string]any) (mcp.ToolResult, error)
 	ReadResource(ctx context.Context, serverName, uri string) (mcp.Resource, error)
 }
@@ -34,15 +35,39 @@ func NewMCPDynamicTool(def mcp.Tool, manager mcpManager) Tool {
 	}
 }
 
+// mcpListing wraps a listing with server status. A bare "null" reply told the
+// model nothing was configured when the truth might be a connected server that
+// simply exposes no resources, or one that failed to start.
+type mcpListing struct {
+	Servers []mcp.ServerStatus `json:"servers"`
+	Note    string             `json:"note,omitempty"`
+	Items   any                `json:"items"`
+}
+
+func newMCPListing(manager mcpManager, items any, count int, kind string) (string, error) {
+	listing := mcpListing{Servers: manager.Status(), Items: items}
+	switch {
+	case len(listing.Servers) == 0:
+		listing.Note = "no MCP servers configured; add one under [mcp_servers] in the forge config"
+	case count == 0:
+		listing.Note = fmt.Sprintf("no %s exposed; check the per-server status above, and note that a server can expose tools (called directly as mcp__<server>__<tool>) while exposing no %s", kind, kind)
+	}
+	return encodeToolJSON(listing)
+}
+
 func NewListMCPResources(manager mcpManager) Tool {
 	return Tool{
 		Name:        "list_mcp_resources",
-		Description: "List resources exposed by configured MCP servers.",
+		Description: "List resources exposed by configured MCP servers, with per-server connection status.",
 		AutoApprove: true,
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			_ = ctx
 			_ = args
-			return encodeToolJSON(manager.Resources())
+			resources := manager.Resources()
+			if resources == nil {
+				resources = []mcp.Resource{}
+			}
+			return newMCPListing(manager, resources, len(resources), "resources")
 		},
 	}
 }
@@ -50,12 +75,16 @@ func NewListMCPResources(manager mcpManager) Tool {
 func NewListMCPResourceTemplates(manager mcpManager) Tool {
 	return Tool{
 		Name:        "list_mcp_resource_templates",
-		Description: "List parameterized resource templates exposed by configured MCP servers.",
+		Description: "List parameterized resource templates exposed by configured MCP servers, with per-server connection status.",
 		AutoApprove: true,
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			_ = ctx
 			_ = args
-			return encodeToolJSON(manager.ResourceTemplates())
+			templates := manager.ResourceTemplates()
+			if templates == nil {
+				templates = []mcp.ResourceTemplate{}
+			}
+			return newMCPListing(manager, templates, len(templates), "resource templates")
 		},
 	}
 }

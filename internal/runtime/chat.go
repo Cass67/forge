@@ -460,11 +460,22 @@ func mcpStartupStatus(manager *mcp.Manager, cfg *config.Config) string {
 	for _, name := range connected {
 		connectedSet[name] = true
 	}
+	reasons := make(map[string]string, len(enabled))
+	for _, status := range manager.Status() {
+		reasons[status.Name] = status.Error
+	}
 	failed := make([]string, 0, len(enabled)-len(connected))
 	for _, server := range enabled {
-		if !connectedSet[server.Name] {
-			failed = append(failed, server.Name)
+		if connectedSet[server.Name] {
+			continue
 		}
+		// Without the reason the user only learns a server is missing, not
+		// that it needs a token, a longer timeout, or an executable on PATH.
+		if reason := strings.TrimSpace(reasons[server.Name]); reason != "" {
+			failed = append(failed, fmt.Sprintf("%s (%s)", server.Name, reason))
+			continue
+		}
+		failed = append(failed, server.Name)
 	}
 
 	parts := make([]string, 0, 2)
