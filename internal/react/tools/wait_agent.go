@@ -31,7 +31,10 @@ func newAgentOutputTool(name, description string, pool *react.AgentPool) agentto
 	return agenttools.Tool{
 		Name:        name,
 		Description: description,
-		Timeout:     10 * time.Minute,
+		// Waiting on a delegated agent has to outlast an ordinary tool call:
+		// the agent being waited on is itself running tools under the default
+		// timeout, so this must stay comfortably above it.
+		Timeout: 45 * time.Minute,
 		Parameters: []agenttools.ParameterDef{
 			{Name: "id", Type: "string", Description: "Child agent id from spawn_agent", Required: true},
 			{Name: "timeout_seconds", Type: "int", Description: "How long to wait before returning current status (default 30)", Required: false},
