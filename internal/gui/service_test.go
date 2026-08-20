@@ -2,9 +2,14 @@ package gui
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"testing"
+	"time"
+
+	"forge/internal/llm"
 
 	"forge/internal/chatstate"
 	"forge/internal/skills"
@@ -18,9 +23,9 @@ func TestBoundMethodSurface(t *testing.T) {
 	want := []string{
 		"Approve", "AttachImage", "AwaitProviderLogin", "Cancel", "ChooseWorkspace",
 		"Clear", "CompleteProviderLogin", "DeleteThread", "Efforts", "History", "Init", "Models",
-		"NewSession", "OpenURL", "OpenWorkspaceAt", "Providers", "Restore", "Send",
+		"NewSession", "OpenURL", "Providers", "Restore", "Send",
 		"SendWithImages", "SetEffort", "SetProviderKey", "SignOutProvider",
-		"StartProviderLogin", "SwitchModel", "Threads", "Workspaces",
+		"StartProviderLogin", "SwitchModel", "SwitchWorkspace", "Threads", "Workspaces",
 	}
 	var got []string
 	typ := reflect.TypeOf(&Service{})
@@ -96,5 +101,76 @@ func TestWorkspacesGroupsByThreadCWD(t *testing.T) {
 		if !w.Missing {
 			t.Fatalf("%s should be flagged missing", w.Path)
 		}
+	}
+}
+
+// Switching workspace has to unwind the chat runtime: the event pump must
+// return so RunChatLive can tear down and be rebuilt against the new
+// directory. Getting this wrong leaves two runtimes racing on one input
+// channel.
+func TestSwitchWorkspaceUnwindsTheEventPump(t *testing.T) {
+	dir := t.TempDir()
+	s, c := New(func(string, any) {})
+	inputCh := make(chan string, 1)
+	c.Attach(tui.ChatLiveConfig{WorkDir: t.TempDir()}, inputCh)
+
+	events := make(chan llm.Event)
+	returned := make(chan struct{})
+	go func() {
+		c.PumpEvents(events)
+		close(returned)
+	}()
+
+	if err := s.SwitchWorkspace(dir); err != nil {
+		t.Fatalf("SwitchWorkspace: %v", err)
+	}
+	select {
+	case <-returned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("PumpEvents did not return, so the runtime would never be rebuilt")
+	}
+	if got := c.PendingWorkspace(); got != dir {
+		t.Fatalf("PendingWorkspace = %q, want %q", got, dir)
+	}
+	// Taken once only: a second read must not trigger another switch.
+	if got := c.PendingWorkspace(); got != "" {
+		t.Fatalf("PendingWorkspace repeated = %q, want empty", got)
+	}
+	// Input is refused between the switch and the next Attach, so nothing
+	// writes to a channel the runtime is about to close.
+	if err := s.Send("hello"); err == nil {
+		t.Fatal("Send accepted input while detached")
+	}
+}
+
+func TestSwitchWorkspaceRejectsBadDirectories(t *testing.T) {
+	s, c := New(func(string, any) {})
+	c.Attach(tui.ChatLiveConfig{WorkDir: t.TempDir()}, make(chan string, 1))
+
+	file := filepath.Join(t.TempDir(), "a-file")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	for _, bad := range []string{"", "   ", file, filepath.Join(t.TempDir(), "missing")} {
+		if err := s.SwitchWorkspace(bad); err == nil {
+			t.Errorf("SwitchWorkspace(%q) = nil, want rejection", bad)
+		}
+	}
+}
+
+// Switching to the directory already open is a no-op, not a teardown.
+func TestSwitchWorkspaceIgnoresTheCurrentDirectory(t *testing.T) {
+	dir := t.TempDir()
+	s, c := New(func(string, any) {})
+	c.Attach(tui.ChatLiveConfig{WorkDir: dir}, make(chan string, 1))
+
+	if err := s.SwitchWorkspace(dir); err != nil {
+		t.Fatalf("SwitchWorkspace: %v", err)
+	}
+	if got := c.PendingWorkspace(); got != "" {
+		t.Fatalf("PendingWorkspace = %q, want no switch", got)
+	}
+	if err := s.Send(""); err != nil {
+		t.Fatalf("service should still be attached: %v", err)
 	}
 }

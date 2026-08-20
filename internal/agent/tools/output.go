@@ -27,9 +27,8 @@ type readOutputResult struct {
 func NewReadOutput(store sessionstore.OutputStore, policies ...SecretPolicy) Tool {
 	secretPolicy := secretPolicyFromOptions(policies)
 	return Tool{
-		Name:             "read_output",
-		Description:      "Read a slice of stored tool output by handle.",
-		PromptVisibility: PromptHidden,
+		Name:        "read_output",
+		Description: "Read a slice of stored tool output by handle.",
 		Parameters: []ParameterDef{
 			{Name: "handle", Type: "string", Description: "output handle returned with stored tool output", Required: true},
 			{Name: "offset", Type: "int", Description: "byte offset to start reading from", Required: false},

@@ -3,18 +3,32 @@ import { createRoot } from "react-dom/client";
 import { Transcript } from "../src/components/Transcript";
 import { Composer } from "../src/components/Composer";
 import { StatsBar } from "../src/components/StatsBar";
-import type { Entry } from "../src/entries";
+import { applyEvent, type Entry } from "../src/entries";
 import { applyScale, DEFAULT_SCALE } from "../src/scale";
 import "../src/styles.css";
 
 // ?scale=1.3 exercises the real scaling path for screenshots.
 applyScale(Number(new URLSearchParams(location.search).get("scale")) || DEFAULT_SCALE);
 
-const entries: Entry[] = [
-  { id: 1, t: "text", role: "user", text: "explain how compaction decides when to run" },
-  { id: 2, t: "tool", name: "read_file", summary: "internal/react/loop.go", done: true, output: "package react" },
-  { id: 3, t: "text", role: "agent", agent: "forge", text: "Compaction is decided in three places, proactively before each model call.\n\n```go\nfunc Decide(n int) bool {\n\treturn n > 40\n}\n```\n" },
+// A long fan-out transcript, rebuilt through the real reducer so the preview
+// shows exactly what the app would render.
+const events: { kind: string; agent?: string; text?: string; is_error?: boolean }[] = [
+  { kind: "token", text: "Shortlist research now: SecureCRT baseline plus Royal TS/X, Termius, Tabby." },
+  { kind: "done" },
 ];
+for (let i = 0; i < 12; i++) {
+  events.push({ kind: "tool_call", agent: "spawn_agent", text: `Researcher ${i}: gather pricing and features` });
+  events.push({ kind: "tool_call", agent: "runtime", text: "" });
+  events.push({ kind: "tool_result", agent: "spawn_agent", text: "ok" });
+  events.push({ kind: "agent_done" });
+}
+events.push({ kind: "token", text: "Choose environment option above. Recommendation: Cross-platform operations." });
+events.push({ kind: "done" });
+
+const entries: Entry[] = events.reduce(
+  (acc, e) => applyEvent(acc, e as never),
+  [] as Entry[],
+);
 
 const prefs = { showTools: true, showReasoning: true, showActivity: true, showSidebar: true, scopeThreads: true, expandReasoning: true };
 

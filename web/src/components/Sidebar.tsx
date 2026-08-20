@@ -18,11 +18,8 @@ export function Sidebar({
   workDir,
   activeID,
   busy,
-  scoped,
-  workspace,
   onNew,
   onRestore,
-  onToggleScope,
   onAddWorkspace,
   onOpenWorkspace,
   onDelete,
@@ -32,107 +29,98 @@ export function Sidebar({
   workDir: string;
   activeID: string;
   busy: boolean;
-  scoped: boolean;
-  workspace: string;
   onNew: () => void;
   onRestore: (id: string) => void;
-  onToggleScope: () => void;
   onAddWorkspace: () => void;
   onOpenWorkspace: (dir: string) => void;
   onDelete: (id: string) => void;
 }) {
-  const [showWorkspaces, setShowWorkspaces] = useState(false);
   const [confirming, setConfirming] = useState("");
-  const current = workDir.split("/").pop() || "no workspace";
-  const others = workspaces.filter((w) => !w.active);
+  const [closed, setClosed] = useState<Record<string, boolean>>({});
+  const activeWorkspace = workDir;
+
+  // Every workspace that has been opened keeps its own section, so the list
+  // grows as more are opened rather than replacing the one before.
+  const sections = workspaces.length > 0 ? workspaces : [];
 
   return (
     <aside className="sidebar">
       <div className="sidebar-head">
-        <span className="section-label">Workspace</span>
+        <span className="section-label">Workspaces</span>
         <button className="btn" onClick={onAddWorkspace} title="Open a folder to work in">
           Open…
         </button>
       </div>
-      <button
-        className={`ws-current ${showWorkspaces ? "open" : ""}`}
-        onClick={() => setShowWorkspaces((v) => !v)}
-        title={workDir}
-      >
-        <span className="ws-caret">{showWorkspaces ? "▾" : "▸"}</span>
-        <span className="ws-current-name">{current}</span>
-        <span className="ws-current-count">{others.length > 0 ? others.length : ""}</span>
-      </button>
-      {showWorkspaces ? (
-        <div className="ws-recent">
-          {others.length === 0 ? <div className="empty">no other workspaces yet</div> : null}
-          {others.map((w) => (
-            <button
-              key={w.path}
-              className={`ws-recent-row ${w.missing ? "missing" : ""}`}
-              disabled={w.missing}
-              onClick={() => onOpenWorkspace(w.path)}
-              title={w.missing ? `${w.path} (no longer exists)` : w.path}
-            >
-              <span className="ws-recent-name">{w.name}</span>
-              <span className="ws-recent-meta">{w.threads}</span>
-            </button>
-          ))}
-        </div>
-      ) : null}
-
-      <div className="sidebar-head">
-        <span className="section-label">Threads</span>
-        <button className="btn" onClick={onNew} disabled={busy} title="New thread (⌘N)">
-          + New
-        </button>
-      </div>
-      <button
-        className={`scope-toggle ${scoped ? "on" : ""}`}
-        onClick={onToggleScope}
-        title={scoped ? "Showing this workspace only" : "Showing every workspace"}
-      >
-        {scoped ? `▣ ${workspace || "this workspace"}` : "▢ all workspaces"}
-      </button>
-      <div className="thread-list">
-        {threads.length === 0 ? (
-          <div className="empty">{scoped ? "no threads in this workspace yet" : "no saved threads"}</div>
-        ) : null}
-        {threads.map((t) => {
-          const active = t.thread_id === activeID;
+      <div className="ws-sections">
+        {sections.map((ws) => {
+          const isActive = ws.path === activeWorkspace;
+          const collapsed = closed[ws.path];
+          const list = threads.filter((t) => (t.cwd ?? "") === ws.path || (isActive && !t.cwd));
           return (
-            <div key={t.thread_id} className={`thread ${active ? "active" : ""}`}>
-              <button
-                className="thread-open"
-                onClick={() => onRestore(t.thread_id)}
-                title={t.preview || t.thread_id}
-              >
-                <span className="thread-title">{t.title || "Untitled"}</span>
-                <span className="thread-meta">
-                  <span className="thread-model">{t.model}</span>
-                  <span>{fmtTime(t.updated_at)}</span>
-                </span>
-              </button>
-              {confirming === t.thread_id ? (
-                <span className="thread-confirm">
-                  <button className="thread-x danger" onClick={() => onDelete(t.thread_id)} title="Delete permanently">
-                    delete
-                  </button>
-                  <button className="thread-x" onClick={() => setConfirming("")}>
-                    keep
-                  </button>
-                </span>
-              ) : (
+            <section className={`ws-section ${isActive ? "active" : ""}`} key={ws.path}>
+              <div className="ws-section-head">
                 <button
-                  className="thread-x"
-                  title={active ? "Cannot delete the thread you are in" : "Delete thread"}
-                  disabled={active}
-                  onClick={() => setConfirming(t.thread_id)}
+                  className="ws-section-title"
+                  onClick={() => setClosed((c) => ({ ...c, [ws.path]: !c[ws.path] }))}
+                  title={ws.path}
                 >
-                  ✕
+                  <span className="ws-caret">{collapsed ? "▸" : "▾"}</span>
+                  <span className="ws-section-name">{ws.name}</span>
+                  <span className="ws-section-count">{list.length || ""}</span>
                 </button>
-              )}
-            </div>
+                {isActive ? (
+                  <button className="btn" onClick={onNew} disabled={busy} title="New thread (⌘N)">
+                    +
+                  </button>
+                ) : (
+                  <button className="btn" onClick={() => onOpenWorkspace(ws.path)} title={`Work in ${ws.path}`}>
+                    Open
+                  </button>
+                )}
+              </div>
+              {!collapsed ? (
+                <div className="thread-list">
+                  {list.length === 0 ? <div className="empty">no threads yet</div> : null}
+                  {list.map((t) => {
+                    const current = t.thread_id === activeID && isActive;
+                    return (
+                      <div key={t.thread_id} className={`thread ${current ? "active" : ""}`}>
+                        <button
+                          className="thread-open"
+                          onClick={() => (isActive ? onRestore(t.thread_id) : onOpenWorkspace(ws.path))}
+                          title={t.preview || t.thread_id}
+                        >
+                          <span className="thread-title">{t.title || "Untitled"}</span>
+                          <span className="thread-meta">
+                            <span className="thread-model">{t.model}</span>
+                            <span>{fmtTime(t.updated_at)}</span>
+                          </span>
+                        </button>
+                        {confirming === t.thread_id ? (
+                          <span className="thread-confirm">
+                            <button className="thread-x danger" onClick={() => onDelete(t.thread_id)}>
+                              delete
+                            </button>
+                            <button className="thread-x" onClick={() => setConfirming("")}>
+                              keep
+                            </button>
+                          </span>
+                        ) : (
+                          <button
+                            className="thread-x"
+                            title={current ? "Cannot delete the thread you are in" : "Delete thread"}
+                            disabled={current}
+                            onClick={() => setConfirming(t.thread_id)}
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </section>
           );
         })}
       </div>

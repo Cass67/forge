@@ -19,11 +19,10 @@ type mcpManager interface {
 
 func NewMCPDynamicTool(def mcp.Tool, manager mcpManager) Tool {
 	return Tool{
-		Name:             namespacedMCPToolName(def.ServerName, def.Name),
-		Description:      def.Description,
-		Parameters:       toolParamsFromLLM(def.Parameters),
-		PromptVisibility: PromptHidden,
-		AutoApprove:      true,
+		Name:        namespacedMCPToolName(def.ServerName, def.Name),
+		Description: def.Description,
+		Parameters:  toolParamsFromLLM(def.Parameters),
+		AutoApprove: true,
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			result, err := manager.CallTool(ctx, def.ServerName, def.Name, args)
 			if err != nil {

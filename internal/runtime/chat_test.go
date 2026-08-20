@@ -1242,8 +1242,11 @@ func TestRegisterToolsIncludesHiddenReadOutputWhenOutputStoreConfigured(t *testi
 	if !ok {
 		t.Fatal("read_output tool not registered")
 	}
-	if tool.PromptVisibility != tools.PromptHidden {
-		t.Fatalf("PromptVisibility = %v, want PromptHidden", tool.PromptVisibility)
+	// Every tool is advertised in the prompt: hiding them behind tool_help
+	// traded reliability for context, and models concluded the capability was
+	// simply absent.
+	if tool.PromptVisibility != tools.PromptCore {
+		t.Fatalf("PromptVisibility = %v, want PromptCore", tool.PromptVisibility)
 	}
 }
 

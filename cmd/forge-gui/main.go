@@ -15,7 +15,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -59,7 +58,7 @@ func run() error {
 		*yolo = true
 	}
 
-	setup, err := runtimepkg.BuildChatSetup(cfg, nil, *model, *workDir, *yolo)
+	setup, err := buildSetup(*workDir, *model, *yolo)
 	if err != nil {
 		return err
 	}
@@ -108,34 +107,73 @@ func run() error {
 			CanChooseFiles(false).
 			PromptForSingleSelection()
 	}
-	service.OpenWorkspace = openWorkspace
 
-	newWindow(app, setup.WorkDir)
+	win := newWindow(app, setup.WorkDir)
+
+	runner := func(events <-chan llm.Event, live tui.ChatLiveConfig, inputCh chan<- string, doneCh <-chan struct{}) tui.ChatLiveResult {
+		controller.Attach(live, inputCh)
+		if live.ApprovalCh != nil {
+			go controller.PumpApprovals(live.ApprovalCh)
+		}
+		go controller.PumpDone(doneCh)
+		// Returns when the stream ends or a workspace switch is requested.
+		controller.PumpEvents(events)
+		return tui.ChatLiveResult{}
+	}
 
 	// The chat runtime owns a blocking loop, so it runs off the main thread;
 	// the platform requires the window to stay on it.
+	//
+	// Switching workspace rebuilds the runtime in place rather than opening a
+	// second window: the agent's tools, sandbox rules and thread store are all
+	// bound to the directory it started in, so they cannot simply be repointed.
 	go func() {
-		setup.LiveRunner = func(events <-chan llm.Event, live tui.ChatLiveConfig, inputCh chan<- string, doneCh <-chan struct{}) tui.ChatLiveResult {
-			controller.Attach(live, inputCh)
-			if live.ApprovalCh != nil {
-				go controller.PumpApprovals(live.ApprovalCh)
+		for {
+			setup.LiveRunner = runner
+			runtimepkg.RunChatLive(setup)
+
+			next := controller.PendingWorkspace()
+			if next == "" {
+				app.Quit()
+				return
 			}
-			go controller.PumpDone(doneCh)
-			controller.PumpEvents(events)
-			return tui.ChatLiveResult{}
+			rebuilt, err := buildSetup(next, *model, *yolo)
+			if err != nil {
+				log.Printf("forge-gui: cannot open %s: %v", next, err)
+				controller.ReportError(fmt.Sprintf("cannot open %s: %v", next, err))
+				return
+			}
+			setup = rebuilt
+			win.SetTitle(windowTitle(next))
 		}
-		runtimepkg.RunChatLive(setup)
 	}()
 
 	return app.Run()
 }
 
-func newWindow(app *application.App, workDir string) {
-	title := "Forge"
-	if dir := strings.TrimSpace(workDir); dir != "" {
-		title = "Forge — " + dir
+// buildSetup constructs a chat runtime rooted at workDir. Config is reloaded
+// each time so a switch picks up anything edited since startup.
+func buildSetup(workDir, model string, yolo bool) (*runtimepkg.ChatSetup, error) {
+	cfg, err := bootstrap.LoadConfig()
+	if err != nil {
+		return nil, fmt.Errorf("loading config: %w", err)
 	}
-	app.Window.NewWithOptions(application.WebviewWindowOptions{
+	if os.Getenv("FORGE_CHAT_YOLO") == "1" || cfg.Chat.Yolo {
+		yolo = true
+	}
+	return runtimepkg.BuildChatSetup(cfg, nil, model, workDir, yolo)
+}
+
+func windowTitle(workDir string) string {
+	if dir := strings.TrimSpace(workDir); dir != "" {
+		return "Forge — " + dir
+	}
+	return "Forge"
+}
+
+func newWindow(app *application.App, workDir string) application.Window {
+	title := windowTitle(workDir)
+	return app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title: title,
 		// The webview's stock right-click menu offers Reload and Inspect
 		// Element, which belong to a browser, not to this app.
@@ -145,17 +183,4 @@ func newWindow(app *application.App, workDir string) {
 		MinWidth:                   900,
 		MinHeight:                  600,
 	})
-}
-
-// openWorkspace starts a second forge-gui rooted at dir. Each workspace gets
-// its own process because the chat runtime's tools, sandbox rules and thread
-// store are all bound to the directory it started in.
-func openWorkspace(dir string) error {
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	cmd := exec.Command(exe, "-C", dir)
-	cmd.Dir = dir
-	return cmd.Start()
 }

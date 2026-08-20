@@ -234,10 +234,28 @@ export default function App() {
     [notify],
   );
 
+  // Switching rebuilds the runtime in this window; the frontend re-initialises
+  // when the backend signals it is ready again.
+  const openWorkspace = useCallback(
+    (dir: string) => {
+      setEntries([]);
+      setActiveID("");
+      setBusy(false);
+      notify(`opening ${dir.split("/").pop()}…`);
+      void forge.switchWorkspace(dir).catch((e: unknown) => notify(String(e)));
+    },
+    [notify],
+  );
+
   const addWorkspace = useCallback(() => {
     void forge
       .chooseWorkspace()
-      .then((dir) => dir && notify(`opening ${dir}`))
+      .then((dir) => {
+        if (dir) {
+          setEntries([]);
+          setActiveID("");
+        }
+      })
       .catch((e: unknown) => notify(String(e)));
   }, [notify]);
 
@@ -248,13 +266,6 @@ export default function App() {
     }
     return "";
   }, [entries]);
-
-  // Threads are stored with the directory they ran in; scoping the list to the
-  // current workspace keeps one project's history out of another's.
-  const visibleThreads = useMemo(() => {
-    if (!prefs.scopeThreads || !init?.work_dir) return threads;
-    return threads.filter((t) => !t.cwd || t.cwd === init.work_dir);
-  }, [init?.work_dir, prefs.scopeThreads, threads]);
 
   const runCommand = useCallback(
     (raw: string) => {
@@ -433,18 +444,15 @@ export default function App() {
       <div className="cols">
         {prefs.showSidebar ? (
           <Sidebar
-            threads={visibleThreads}
+            threads={threads}
             workspaces={workspaces}
             workDir={init?.work_dir ?? ""}
             activeID={activeID}
             busy={busy}
-            scoped={prefs.scopeThreads}
-            workspace={workDirLabel}
             onNew={newThread}
             onRestore={restoreThread}
-            onToggleScope={() => setPrefsState((p) => ({ ...p, scopeThreads: !p.scopeThreads }))}
             onAddWorkspace={addWorkspace}
-            onOpenWorkspace={(dir) => void forge.openWorkspace(dir).catch((e: unknown) => notify(String(e)))}
+            onOpenWorkspace={openWorkspace}
             onDelete={deleteThread}
           />
         ) : null}
@@ -485,7 +493,7 @@ export default function App() {
           workspaces={workspaces}
           onOpen={(dir) => {
             setOverlay("none");
-            void forge.openWorkspace(dir).catch((e: unknown) => notify(String(e)));
+            openWorkspace(dir);
           }}
           onAdd={() => {
             setOverlay("none");

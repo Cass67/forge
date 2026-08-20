@@ -53,11 +53,14 @@ type Service struct {
 	connected sync.Once
 	flows     *providerauth.Flows
 
+	// switchSig carries a workspace change to the event pump, which unwinds
+	// the chat runtime so it can be rebuilt against nextDir.
+	switchSig chan struct{}
+	nextDir   string // guarded by mu
+
 	// PickDir opens the platform's folder chooser. Set by the window layer,
 	// which owns the dialog API.
 	PickDir func() (string, error)
-	// OpenWorkspace starts a window rooted at another directory.
-	OpenWorkspace func(dir string) error
 }
 
 // Controller drives the service from the Go side. It is deliberately a
@@ -67,7 +70,7 @@ type Controller struct{ s *Service }
 
 // New returns the bound service and the controller that feeds it.
 func New(emit func(name string, data any)) (*Service, *Controller) {
-	s := &Service{emit: emit, flows: providerauth.NewFlows()}
+	s := &Service{emit: emit, flows: providerauth.NewFlows(), switchSig: make(chan struct{}, 1)}
 	return s, &Controller{s: s}
 }
 
@@ -93,12 +96,37 @@ func (s *Service) snapshot() (tui.ChatLiveConfig, chan<- string, bool) {
 // ---- streaming ----------------------------------------------------------
 
 // PumpEvents forwards the runtime's event stream to the window. It returns
-// when the stream closes.
+// when the stream closes or a workspace switch is requested, which is what
+// unwinds RunChatLive so the runtime can be rebuilt elsewhere.
 func (c *Controller) PumpEvents(events <-chan llm.Event) {
-	for ev := range events {
-		c.s.emit(EventChat, toWireEvent(ev))
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				c.s.emit(EventTurnDone, nil)
+				return
+			}
+			c.s.emit(EventChat, toWireEvent(ev))
+		case <-c.s.switchSig:
+			return
+		}
 	}
-	c.s.emit(EventTurnDone, nil)
+}
+
+// ReportError surfaces a backend failure in the window, for problems that
+// happen outside any call the frontend made.
+func (c *Controller) ReportError(msg string) {
+	c.s.emit(EventChat, wireEvent{Kind: "error", Error: msg})
+}
+
+// PendingWorkspace returns the directory a switch asked for, clearing it. An
+// empty string means the chat ended for some other reason.
+func (c *Controller) PendingWorkspace() string {
+	c.s.mu.Lock()
+	defer c.s.mu.Unlock()
+	dir := c.s.nextDir
+	c.s.nextDir = ""
+	return dir
 }
 
 // PumpApprovals forwards tool approval requests to the window.
@@ -141,31 +169,42 @@ func (s *Service) Init() InitPayload {
 // Send submits a user message. A leading /skill-name is resolved to the
 // skill's body, matching what the terminal UI submits.
 func (s *Service) Send(text string) error {
-	cfg, inputCh, ready := s.snapshot()
-	if !ready {
-		return errNotReady
-	}
 	if strings.TrimSpace(text) == "" {
 		return nil
 	}
-	inputCh <- encodeInput(cfg, text, nil)
+	return s.submit(text, nil)
+}
+
+// submit hands input to the runtime while holding the read lock, so a
+// workspace switch waits for it rather than closing the channel underneath.
+func (s *Service) submit(text string, attachments []chatstate.ChatAttachment) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if !s.ready {
+		return errNotReady
+	}
+	s.inputCh <- encodeInput(s.cfg, text, attachments)
 	return nil
+}
+
+// control sends a runtime control message under the same lock as submit.
+func (s *Service) controlLocked(msg string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.ready {
+		s.inputCh <- msg
+	}
 }
 
 // SendWithImages submits a message with attached images.
 func (s *Service) SendWithImages(text string, attachments []chatstate.ChatAttachment) error {
-	cfg, inputCh, ready := s.snapshot()
-	if !ready {
-		return errNotReady
-	}
 	if strings.TrimSpace(text) == "" && len(attachments) == 0 {
 		return nil
 	}
 	if len(attachments) > chatstate.MaxAttachments {
 		return errTooManyImg
 	}
-	inputCh <- encodeInput(cfg, text, attachments)
-	return nil
+	return s.submit(text, attachments)
 }
 
 // Approve answers a pending tool approval prompt.
@@ -182,11 +221,7 @@ func (s *Service) Cancel() { s.control("__cancel_turn__") }
 // NewSession clears history and starts a fresh thread.
 func (s *Service) NewSession() { s.control("__new_session__") }
 
-func (s *Service) control(msg string) {
-	if _, inputCh, ready := s.snapshot(); ready {
-		inputCh <- msg
-	}
-}
+func (s *Service) control(msg string) { s.controlLocked(msg) }
 
 // Clear drops the in-memory conversation without starting a new thread.
 func (s *Service) Clear() {
@@ -356,8 +391,8 @@ func (s *Service) Workspaces() []Workspace {
 	return out
 }
 
-// ChooseWorkspace prompts for a folder and opens it. Returns the chosen path,
-// or "" when the user cancelled.
+// ChooseWorkspace prompts for a folder and switches to it. Returns the chosen
+// path, or "" when the user cancelled.
 func (s *Service) ChooseWorkspace() (string, error) {
 	if s.PickDir == nil {
 		return "", errNoWorkDir
@@ -366,21 +401,56 @@ func (s *Service) ChooseWorkspace() (string, error) {
 	if err != nil || strings.TrimSpace(dir) == "" {
 		return "", err
 	}
-	return dir, s.OpenWorkspaceAt(dir)
+	return dir, s.SwitchWorkspace(dir)
 }
 
-// OpenWorkspaceAt opens a window rooted at dir.
-func (s *Service) OpenWorkspaceAt(dir string) error {
-	if strings.TrimSpace(dir) == "" {
-		return errNoWorkDir
+// SwitchWorkspace rebuilds the chat runtime against another directory, in this
+// same window. The agent's tools, sandbox rules and thread store are all bound
+// to the directory the runtime started in, so the runtime is torn down and
+// started again rather than repointed.
+func (s *Service) SwitchWorkspace(dir string) error {
+	clean, err := workspaceDir(dir)
+	if err != nil {
+		return err
 	}
-	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
-		return fmt.Errorf("%w: %s", errNoWorkDir, dir)
+
+	s.mu.Lock()
+	if !s.ready {
+		s.mu.Unlock()
+		return errNotReady
 	}
-	if s.OpenWorkspace == nil {
-		return errNoWorkDir
+	if filepath.Clean(strings.TrimSpace(s.cfg.WorkDir)) == clean {
+		s.mu.Unlock()
+		return nil
 	}
-	return s.OpenWorkspace(dir)
+	// Taking the write lock waits for any in-flight submit, so nothing is
+	// still writing to the input channel when the runtime closes it.
+	s.ready = false
+	s.nextDir = clean
+	s.mu.Unlock()
+
+	select {
+	case s.switchSig <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+// workspaceDir validates a directory chosen in the UI.
+func workspaceDir(dir string) (string, error) {
+	trimmed := strings.TrimSpace(dir)
+	if trimmed == "" {
+		return "", errNoWorkDir
+	}
+	abs, err := filepath.Abs(trimmed)
+	if err != nil {
+		return "", err
+	}
+	st, err := os.Stat(abs)
+	if err != nil || !st.IsDir() {
+		return "", fmt.Errorf("%w: %s", errNoWorkDir, dir)
+	}
+	return abs, nil
 }
 
 // ---- attachments ---------------------------------------------------------

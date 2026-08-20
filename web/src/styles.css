@@ -786,3 +786,21 @@ input, textarea, .selectable, .md, .tc-out, .diffbox, .reasoning-body, .msg .bod
 .ws-recent-row.missing { opacity: 0.45; cursor: default; }
 .ws-recent-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-recent-meta { color: var(--muted); font-size: 0.625rem; }
+
+/* ---- workspace sections ---- */
+.ws-sections { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+.ws-section { border-bottom: 1px solid var(--border); }
+.ws-section-head {
+  display: flex; align-items: center; gap: 6px; padding: 4px 8px 4px 6px;
+  background: var(--panel2);
+}
+.ws-section.active .ws-section-head { background: var(--selected); }
+.ws-section-title {
+  display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0;
+  background: transparent; border: none; color: var(--text);
+  font: inherit; font-size: 0.75rem; font-weight: 600; cursor: pointer; text-align: left;
+}
+.ws-section-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-section-count { color: var(--muted); font-size: 0.625rem; font-weight: 400; }
+.ws-section .thread-list { max-height: none; }
+.ws-section-head .btn { padding: 1px 7px; height: auto; font-size: 0.6875rem; }

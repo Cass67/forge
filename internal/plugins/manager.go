@@ -175,11 +175,10 @@ func (m *Manager) RegisterTools(reg *agenttools.Registry, approve agenttools.App
 		namespacedName := NamespacedToolName(tool.PluginID, tool.Name)
 		autoApprove := m.autoApproves(tool.PluginID, tool.Name)
 		reg.Register(agenttools.Tool{
-			Name:             namespacedName,
-			Description:      pluginToolDescription(tool),
-			Parameters:       append([]agenttools.ParameterDef(nil), tool.Parameters...),
-			PromptVisibility: agenttools.PromptHidden,
-			AutoApprove:      autoApprove,
+			Name:        namespacedName,
+			Description: pluginToolDescription(tool),
+			Parameters:  append([]agenttools.ParameterDef(nil), tool.Parameters...),
+			AutoApprove: autoApprove,
 			Execute: func(ctx context.Context, args map[string]any) (string, error) {
 				if !autoApprove {
 					if approve == nil {

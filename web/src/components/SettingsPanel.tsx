@@ -114,7 +114,6 @@ export function SettingsPanel({
             ["showTools", "tool cards"],
             ["showReasoning", "thinking blocks"],
             ["expandReasoning", "expand thinking by default"],
-            ["scopeThreads", "only this workspace's threads"],
           ] as [keyof Prefs, string][]
         ).map(([k, label]) => (
           <label key={k} className="set-row toggle">

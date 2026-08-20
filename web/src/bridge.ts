@@ -147,7 +147,7 @@ export const forge = {
     call<Provider[]>("CompleteProviderLogin", id, pasted),
   openURL: (url: string) => call<void>("OpenURL", url),
   chooseWorkspace: () => call<string>("ChooseWorkspace"),
-  openWorkspace: (dir: string) => call<void>("OpenWorkspaceAt", dir),
+  switchWorkspace: (dir: string) => call<void>("SwitchWorkspace", dir),
   attachImage: (name: string, dataB64: string) => call<Attachment>("AttachImage", name, dataB64),
 
   onEvent: (fn: (ev: WireEvent) => void) =>

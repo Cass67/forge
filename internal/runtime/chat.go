@@ -423,18 +423,14 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 			reg.Register(tools.NewMCPDynamicTool(def, mcpManager))
 		}
 	}
-	gitCommit := tools.NewGitCommitWithWorkDirProvider(workDir, workDirProvider, approve)
-	gitCommit.PromptVisibility = tools.PromptHidden
-	reg.Register(gitCommit)
-	gitPush := tools.NewGitPushWithWorkDirProvider(workDir, workDirProvider, approve)
-	gitPush.PromptVisibility = tools.PromptHidden
-	reg.Register(gitPush)
-	webFetch := tools.NewWebFetch()
-	webFetch.PromptVisibility = tools.PromptHidden
-	reg.Register(webFetch)
-	webSearch := tools.NewWebSearch()
-	webSearch.PromptVisibility = tools.PromptHidden
-	reg.Register(webSearch)
+	reg.Register(tools.NewGitCommitWithWorkDirProvider(workDir, workDirProvider, approve))
+	reg.Register(tools.NewGitPushWithWorkDirProvider(workDir, workDirProvider, approve))
+	// Web access stays visible in the prompt. Hiding it behind tool_help meant
+	// models concluded they had no network at all and answered research
+	// questions from memory, flagging every fact as unverifiable, rather than
+	// looking anything up. Neither tool needs a credential.
+	reg.Register(tools.NewWebFetch())
+	reg.Register(tools.NewWebSearch())
 	return previewRuntime, mcpManager, execManager
 }
 
