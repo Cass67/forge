@@ -46,6 +46,16 @@ func NewRunCommandWithWorkDirProvider(fallbackWorkDir string, provider WorkDirPr
 			// refused ordinary commands that merely named a program, and the
 			// refusal came back as a successful result, so a retry changed
 			// nothing. Anything that does run is bounded by the tool timeout.
+			// Refused before approval so --yolo cannot wave it through: the
+			// approval hook and the force-prompt hook are the same function,
+			// so an auto-approving session had no protection at all. This is
+			// a decidable question about which path the command resolves to,
+			// not a guess about how dangerous it looks, and it is an error
+			// rather than advice so the model must change the command.
+			if target := blockedDestructiveTarget(command, currentWorkDir(provider, fallbackWorkDir), userHomeDir()); target != "" {
+				return "", fmt.Errorf("refusing to run: %q would destroy %s, which is outside the workspace and not recoverable; target a path inside the working directory instead", command, target)
+			}
+
 			background := isBackgroundCommand(command) || boolArg(args, "run_in_background")
 			if background {
 				command = stripBackgroundCommandSuffix(command)
@@ -197,6 +207,16 @@ func boolArg(args map[string]any, key string) bool {
 	default:
 		return false
 	}
+}
+
+// userHomeDir returns the home directory, or "" when it cannot be determined,
+// in which case home-directory protection is simply not applied.
+func userHomeDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return home
 }
 
 func isBackgroundCommand(cmd string) bool {
