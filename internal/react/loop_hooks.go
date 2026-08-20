@@ -880,6 +880,13 @@ func (s sameFileSearchWorkflowState) overlayContent() string {
 }
 
 func (r *Runner) updateRepeatToolCallWorkflow(toolName string, args map[string]any, result string) {
+	// Bookkeeping tools change nothing a repeat could depend on, so they are
+	// transparent to the chain: interleaving one must not launder a loop.
+	// Anything else untracked is treated as mutating and resets the chain,
+	// because after the world changes a repeated call is legitimate again.
+	if isChainNeutralToolCall(toolName) {
+		return
+	}
 	target := repeatToolCallTarget(toolName, args)
 	if target == "" {
 		r.repeatWorkflow = repeatToolCallState{}
@@ -904,6 +911,17 @@ func (r *Runner) updateRepeatToolCallWorkflow(toolName string, args map[string]a
 	state.streak = repeatToolCallStalledOccurrences(state, key)
 	r.repeatWorkflow = state
 	r.syncRuntimeNote()
+}
+
+// isChainNeutralToolCall reports tools that neither advance nor reset a repeat
+// chain, because they observe or record rather than change anything.
+func isChainNeutralToolCall(toolName string) bool {
+	switch strings.TrimSpace(toolName) {
+	case "update_plan", "tool_help", "think":
+		return true
+	default:
+		return false
+	}
 }
 
 func repeatToolCallTarget(toolName string, args map[string]any) string {

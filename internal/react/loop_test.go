@@ -3254,8 +3254,10 @@ func TestRunnerNudgesOnRepeatedSameFileCodeSearch(t *testing.T) {
 }
 
 func TestRunnerBlocksRepeatedSameFileReadsAfterThreshold(t *testing.T) {
-	steps := make([][]llm.Token, repeatToolCallThreshold+2)
-	for i := 0; i < repeatToolCallThreshold+1; i++ {
+	// Repetition is nudged first and only refused once the nudge has gone
+	// unheeded, so the block lands at the block threshold, not the nudge one.
+	steps := make([][]llm.Token, repeatToolCallBlockThreshold+2)
+	for i := 0; i < repeatToolCallBlockThreshold+1; i++ {
 		steps[i] = []llm.Token{{ToolCall: &llm.NativeToolCall{
 			ID:       fmt.Sprintf("c%d", i+1),
 			Name:     "read_file",
@@ -3282,8 +3284,8 @@ func TestRunnerBlocksRepeatedSameFileReadsAfterThreshold(t *testing.T) {
 	if err := r.Run(context.Background(), "inspect src/main.rs"); err != nil {
 		t.Fatal(err)
 	}
-	if readCalls != repeatToolCallThreshold {
-		t.Fatalf("read calls = %d, want repeated read blocked after threshold %d", readCalls, repeatToolCallThreshold)
+	if readCalls != repeatToolCallBlockThreshold {
+		t.Fatalf("read calls = %d, want repeated read blocked after threshold %d", readCalls, repeatToolCallBlockThreshold)
 	}
 	if !sessionHistoryContains(session, "blocked: identical read_file", "src/main.rs") {
 		t.Fatalf("history missing repeated read block: %#v", session.Snapshot().History)
