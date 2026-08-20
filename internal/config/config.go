@@ -82,6 +82,16 @@ type ChatConfig struct {
 	// via tool_help), "full" always sends every schema, "" auto-detects
 	// (lean for local/self-hosted providers).
 	ToolProfile string `toml:"tool_profile"`
+	// ShowReasoning displays the model's thinking as it works. Reasoning is
+	// captured either way; this only controls whether it is shown.
+	ShowReasoning *bool `toml:"show_reasoning"`
+}
+
+// ReasoningVisible reports whether thinking should be displayed, defaulting to
+// on: it is captured regardless, and hiding it by default is what made a
+// working turn look like nothing but tool cards.
+func (c ChatConfig) ReasoningVisible() bool {
+	return c.ShowReasoning == nil || *c.ShowReasoning
 }
 
 type ApprovalRuleConfig struct {

@@ -42,6 +42,10 @@ func (r *EventRenderer) AgentText(text string) {
 	r.events <- llm.Event{Kind: llm.EventToken, Agent: r.label, Text: text}
 }
 
+func (r *EventRenderer) AgentReasoning(text string) {
+	r.events <- llm.Event{Kind: llm.EventReasoning, Agent: r.label, Text: text}
+}
+
 func (r *EventRenderer) Retry(msg string) {
 	r.events <- llm.Event{Kind: llm.EventRetry, Agent: r.label, Text: msg}
 }

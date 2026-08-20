@@ -25,6 +25,13 @@ type ContextStatsTarget interface {
 	StatsWithContext(duration time.Duration, usage llm.Usage, contextUsed int)
 }
 
+// ReasoningTarget is optionally implemented by renderers that can show the
+// model's thinking while it works. Reasoning was already captured and stored
+// on the session; without this seam nothing could display it.
+type ReasoningTarget interface {
+	AgentReasoning(text string)
+}
+
 // RetryNotifier is optionally implemented by renderers that can explicitly
 // retract or reset a provisional assistant draft before the next attempt.
 type RetryNotifier interface {

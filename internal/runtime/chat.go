@@ -631,6 +631,7 @@ func RunChatLive(setup *ChatSetup) {
 		Driver:           setup.Driver,
 		Tools:            reg,
 		Renderer:         evRenderer,
+		ShowReasoning:    setup.Config.Chat.ReasoningVisible(),
 		LeanToolExposure: lean,
 		SystemPrompt: func() string {
 			snap := session.Snapshot()
@@ -1151,6 +1152,7 @@ func buildConsoleRuntime(setup *ChatSetup, approve tools.ApprovalFunc, out io.Wr
 		Driver:           setup.Driver,
 		Tools:            reg,
 		Renderer:         renderer,
+		ShowReasoning:    setup.Config.Chat.ReasoningVisible(),
 		LeanToolExposure: lean,
 		SystemPrompt: func() string {
 			snap := session.Snapshot()

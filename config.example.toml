@@ -57,6 +57,7 @@ command_output = "redact"
 approval_detail = "redact"
 
 [chat]
+# show_reasoning = true    # display the model's thinking while it works
 model = ""              # default model, e.g. "claude/claude-sonnet-4-6"
 last_model = ""         # updated automatically by the model picker
 command_timeout = 60    # seconds
