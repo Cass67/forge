@@ -174,7 +174,14 @@ export const forge = {
   onApproval: (fn: (a: WireAction) => void) =>
     Events.On("forge:approval", (e: unknown) => fn(payload<WireAction>(e))),
   onTurnDone: (fn: () => void) => Events.On("forge:done", () => fn()),
+  // Not payload(): that helper unwraps a one-element array, which for a list
+  // of filenames yields the first name and leaves the caller iterating its
+  // characters. Both wrapping shapes are handled explicitly here.
   onFilesDropped: (fn: (paths: string[]) => void) =>
-    Events.On("forge:files", (e: unknown) => fn(payload<string[]>(e) ?? [])),
+    Events.On("forge:files", (e: unknown) => {
+      const data = (e as { data?: unknown })?.data;
+      const raw = Array.isArray(data) && Array.isArray(data[0]) ? data[0] : data;
+      fn(Array.isArray(raw) ? raw.filter((v): v is string => typeof v === "string") : []);
+    }),
   onReady: (fn: () => void) => Events.On("forge:ready", () => fn()),
 };

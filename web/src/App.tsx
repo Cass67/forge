@@ -88,6 +88,7 @@ export default function App() {
   const attachPaths = useCallback(
     async (paths: string[]) => {
       for (const path of paths) {
+        if (typeof path !== "string" || !path.trim()) continue;
         try {
           const att = await forge.attachPath(path);
           setPending((p) => (p.some((x) => x.id === att.id) ? p : [...p, att]));

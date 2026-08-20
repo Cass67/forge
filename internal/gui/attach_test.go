@@ -110,3 +110,16 @@ func TestAttachPathAcceptsFileURIs(t *testing.T) {
 		t.Error("AttachPath accepted a missing file")
 	}
 }
+
+// The window hands over whole paths. A single character arriving here is the
+// signature of an event payload unwrapped wrongly upstream, so the failure
+// names what was actually tried.
+func TestAttachPathReportsWhatItTried(t *testing.T) {
+	s, c := New(func(string, any) {})
+	c.Attach(tui.ChatLiveConfig{WorkDir: t.TempDir()}, make(chan string, 1))
+	if _, err := s.AttachPath("/"); err == nil {
+		t.Fatal("AttachPath accepted a bare separator")
+	} else if !strings.Contains(err.Error(), "/") {
+		t.Fatalf("error does not name the path tried: %v", err)
+	}
+}
