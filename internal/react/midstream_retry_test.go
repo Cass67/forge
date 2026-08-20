@@ -40,38 +40,3 @@ func TestMidStreamFailureIsRetried(t *testing.T) {
 		t.Fatalf("last response = %q, want the retried answer", got)
 	}
 }
-
-// twoContextErrorsDriver overflows twice, which a long run does whenever one
-// compaction pass does not free enough room.
-type twoContextErrorsDriver struct {
-	calls int
-}
-
-func (d *twoContextErrorsDriver) Name() string { return "two-context-errors" }
-
-func (d *twoContextErrorsDriver) Stream(_ context.Context, _ []llm.Message, out chan<- llm.Token) error {
-	defer close(out)
-	d.calls++
-	if d.calls <= 2 {
-		return errors.New("context_length_exceeded")
-	}
-	out <- llm.Token{Text: "recovered"}
-	return nil
-}
-
-// A long run overflows more than once: one compaction pass often lands still
-// over the limit, because the freshest steps it must protect are themselves
-// large. Recovery has to be able to run again within the same turn.
-func TestRecoversFromRepeatedContextOverflow(t *testing.T) {
-	// Tool results large enough that shadowing the old span still leaves an
-	// oversized protected tail, so a second pass has real work to do.
-	session, _ := buildLongSingleTurnSession(t, 120, 70*1024)
-	driver := &twoContextErrorsDriver{}
-	r := NewRunner(Config{Driver: driver, Session: session})
-	if err := r.Run(context.Background(), "continue"); err != nil {
-		t.Fatalf("run failed on the second overflow: %v", err)
-	}
-	if got := r.LastResponse(); got != "recovered" {
-		t.Fatalf("last response = %q, want recovery after two overflows", got)
-	}
-}

@@ -84,6 +84,9 @@ func loadChatApprovalConfig(setup *ChatSetup) reactruntime.ApprovalConfig {
 // effort) onto a driver. Temperature stays at the provider default (-1). Called
 // after every MakeDriver so the effort survives model/provider switches.
 func (s *ChatSetup) applyChatParams(d llm.Driver) {
+	if s == nil {
+		return
+	}
 	if c, ok := d.(llm.Configurable); ok {
 		c.SetParams(llm.Params{Temperature: -1, ReasoningEffort: s.effectiveReasoningEffort()})
 	}
@@ -94,6 +97,9 @@ func (s *ChatSetup) applyChatParams(d llm.Driver) {
 // meant a reasoning-capable model never reasoned, so its thinking could never
 // be displayed however the renderer was configured. "none" opts out.
 func (s *ChatSetup) effectiveReasoningEffort() string {
+	if s == nil {
+		return ""
+	}
 	chosen := strings.TrimSpace(s.ReasoningEffort)
 	if strings.EqualFold(chosen, "none") {
 		return ""
@@ -589,7 +595,9 @@ func RunChatLive(setup *ChatSetup) {
 	// applied on a model switch or an /effort change, so a configured effort
 	// did nothing until one of those happened, and a model that only reasons
 	// when asked never reasoned at all.
-	setup.applyChatParams(setup.Driver)
+	if setup != nil {
+		setup.applyChatParams(setup.Driver)
+	}
 	eventsCh := make(chan llm.Event, 256)
 	renderCh := chan<- llm.Event(eventsCh)
 	if setup != nil && setup.debugRec != nil {
@@ -962,7 +970,9 @@ func RunChatLive(setup *ChatSetup) {
 			setup.ReasoningEffort = effort
 			setup.reasoningEffortChosen = true
 			if setup.Driver != nil {
-				setup.applyChatParams(setup.Driver)
+				if setup != nil {
+					setup.applyChatParams(setup.Driver)
+				}
 			}
 			return nil
 		},
@@ -1304,7 +1314,9 @@ func RunChatConsole(setup *ChatSetup) {
 	// applied on a model switch or an /effort change, so a configured effort
 	// did nothing until one of those happened, and a model that only reasons
 	// when asked never reasoned at all.
-	setup.applyChatParams(setup.Driver)
+	if setup != nil {
+		setup.applyChatParams(setup.Driver)
+	}
 	rt, cleanup := buildConsoleRuntime(setup, nil, os.Stdout, true)
 	defer cleanup()
 	renderer := rt.renderer
@@ -1459,7 +1471,9 @@ func RunChatHeadless(setup *ChatSetup, prompt string) int {
 	// applied on a model switch or an /effort change, so a configured effort
 	// did nothing until one of those happened, and a model that only reasons
 	// when asked never reasoned at all.
-	setup.applyChatParams(setup.Driver)
+	if setup != nil {
+		setup.applyChatParams(setup.Driver)
+	}
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		fmt.Fprintln(os.Stderr, "error: empty prompt")

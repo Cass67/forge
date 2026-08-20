@@ -377,8 +377,10 @@ func TestRunnerReactiveCompactionTerminatesWhenOverflowPersists(t *testing.T) {
 	if err := r.Run(context.Background(), "continue"); err == nil {
 		t.Fatal("expected the context error to surface once compaction stopped helping")
 	}
-	if driver.calls < 2 {
-		t.Fatalf("driver calls = %d, want at least one recovery attempt", driver.calls)
+	// A latched implementation recovers exactly once and so calls the driver
+	// exactly twice; more than that is the property being guarded.
+	if driver.calls <= 2 {
+		t.Fatalf("driver calls = %d, want recovery to be attempted more than once", driver.calls)
 	}
 	if driver.calls > maxContextCompactionsPerTurn+1 {
 		t.Fatalf("driver calls = %d, want recovery bounded by %d attempts", driver.calls, maxContextCompactionsPerTurn)

@@ -19,6 +19,21 @@ const (
 	toolCallArgHardStringLimit = 4000
 )
 
+// authoredContentTools carry content the model composed itself. Truncating
+// their arguments puts an "<omitted N chars>" marker into the model's view of
+// its own past calls, and validation rejects any new call carrying that
+// marker, so a file large enough to be truncated became one the model could no
+// longer rewrite by reusing its earlier call. Span compaction already bounds
+// what old calls cost, so truncating here buys little and traps the model.
+// artifact_write is deliberately absent: artifacts are write-once outputs
+// that are rarely reused as a template, and they carry the largest payloads,
+// so the context saving is worth more there than the risk.
+var authoredContentTools = map[string]struct{}{
+	"write_file":  {},
+	"edit_file":   {},
+	"apply_patch": {},
+}
+
 var bulkyToolArgKeys = map[string]struct{}{
 	"body":        {},
 	"content":     {},
@@ -104,6 +119,9 @@ func truncateNativeToolCalls(calls []llm.NativeToolCall) ([]llm.NativeToolCall, 
 	copy(out, calls)
 	changed := false
 	for i, call := range out {
+		if _, ok := authoredContentTools[strings.ToLower(strings.TrimSpace(call.Name))]; ok {
+			continue
+		}
 		argsJSON, truncated := truncateToolCallArgsJSON(call.ArgsJSON)
 		if !truncated {
 			continue
