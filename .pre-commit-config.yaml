@@ -5,8 +5,60 @@ repos:
     hooks:
       - id: risky-filenames
         name: risky filenames
-        entry: >-
-          bash -lc 'status=0; for f in "$@"; do case "$f" in .env|.env.*|*.env|*.local|*.secret|*.secrets|*.token|*.tokens|*.pem|*.key|*.p12|*.pfx|*.crt|*.csr|*.ovpn|*.asc|*.kdbx|*.sqlite|*.sqlite3|*.db|*.rdb|*.bak|*.backup|*.gpg|*.age|id_rsa|id_rsa.*|id_ed25519|id_ed25519.*|known_hosts|authorized_keys|auth.json|auth.json.*|credentials|credentials.*|secrets|secrets.*|.npmrc|.pypirc|.netrc|.docker/config.json|.envrc|.aws/*|.ssh/*|.gnupg/*|.config/*|Library/Application\ Support/Google/Chrome/*|Library/Application\ Support/Chromium/*|Library/Application\ Support/BraveSoftware/*|Library/Application\ Support/Firefox/*|history.jsonl|sessions/*|log/*) printf "refusing risky path=%s\n" "$f"; status=1 ;; esac; done; exit "$status"' --
+        entry: |-
+          bash -lc '
+            status=0
+            for f in "$@"; do
+              case "$f" in
+                .env.example|.env.sample|.env.template)
+                  # Placeholder templates are meant to be committed; the
+                  # *env* globs below would otherwise block them.
+                  continue
+                  ;;
+                .env|.env.*|*.env|*env*|*.local|*.secret|*.secrets|*.token|*.tokens)
+                  printf "refusing risky path=%s\n" "$f"
+                  status=1
+                  ;;
+                *.pem|*.key|*.p12|*.pfx|*.crt|*.csr|*.ovpn|*.asc|*.kdbx|*.sqlite|*.sqlite3)
+                  printf "refusing risky path=%s\n" "$f"
+                  status=1
+                  ;;
+                *.db|*.rdb|*.bak|*.backup|*.gpg|*.age|id_rsa|id_rsa.*|id_ed25519|id_ed25519.*)
+                  printf "refusing risky path=%s\n" "$f"
+                  status=1
+                  ;;
+                known_hosts|authorized_keys|auth.json|auth.json.*|credentials|credentials.*)
+                  printf "refusing risky path=%s\n" "$f"
+                  status=1
+                  ;;
+                secrets|secrets.*|.npmrc|.pypirc|.netrc|.docker/config.json|.envrc|.aws/*|.ssh/*)
+                  printf "refusing risky path=%s\n" "$f"
+                  status=1
+                  ;;
+                .gnupg/*|.config/*|Library/Keychains/*|history.jsonl|sessions/*|log/*)
+                  printf "refusing risky path=%s\n" "$f"
+                  status=1
+                  ;;
+                Library/Application\ Support/Google/Chrome/*)
+                  printf "refusing risky path=%s\n" "$f"
+                  status=1
+                  ;;
+                Library/Application\ Support/Chromium/*)
+                  printf "refusing risky path=%s\n" "$f"
+                  status=1
+                  ;;
+                Library/Application\ Support/BraveSoftware/*)
+                  printf "refusing risky path=%s\n" "$f"
+                  status=1
+                  ;;
+                Library/Application\ Support/Firefox/*)
+                  printf "refusing risky path=%s\n" "$f"
+                  status=1
+                  ;;
+              esac
+            done
+            exit "$status"
+          ' --
         language: system
       - id: merge-conflict
         name: merge conflict markers
@@ -24,6 +76,7 @@ repos:
           0; fi; exit "$status"'
         language: system
         types: [text]
+        exclude: ^web/dist/
       - id: detect-private-key
         name: private key markers
         entry: >-
@@ -44,7 +97,7 @@ repos:
     hooks:
       - id: gofmt
         name: gofmt
-        entry: bash -lc 'gofmt -w -- "$@"' --
+        entry: gofmt -w
         language: system
         files: \.go$
       - id: goimports
@@ -71,3 +124,85 @@ repos:
         files: \.go$
         pass_filenames: false
 # repo-guard:go:end
+
+# repo-guard:bash:start
+  - repo: local
+    hooks:
+      - id: shfmt
+        name: shfmt
+        entry: shfmt -w -i 2 -ci
+        language: system
+        files: \.(sh|bash)$
+      - id: shellcheck
+        name: shellcheck
+        entry: shellcheck
+        language: system
+        files: \.(sh|bash)$
+      - id: bash-syntax
+        name: bash syntax
+        entry: bash -n
+        language: system
+        files: \.(sh|bash)$
+# repo-guard:bash:end
+
+# repo-guard:javascript:start
+  - repo: local
+    hooks:
+      - id: eslint
+        name: eslint
+        entry: >-
+          bash -lc 'has_cfg=0; for c in eslint.config.js eslint.config.mjs
+          eslint.config.cjs eslint.config.ts eslint.config.mts eslint.config.cts
+          .eslintrc .eslintrc.js .eslintrc.cjs .eslintrc.json .eslintrc.yaml
+          .eslintrc.yml; do [ -e "$c" ] && has_cfg=1 && break; done; if [
+          "$has_cfg" -eq 0 ] && [ -f package.json ] && grep -q
+          "\"eslintConfig\"" package.json; then has_cfg=1; fi; if [ "$has_cfg"
+          -eq 0 ]; then exit 0; fi; if [ -x ./node_modules/.bin/eslint ]; then
+          ./node_modules/.bin/eslint "$@"; else eslint "$@"; fi' --
+        language: system
+        files: \.(js|jsx|mjs|cjs)$
+      - id: prettier
+        name: prettier
+        entry: >-
+          bash -lc 'if [ -x ./node_modules/.bin/prettier ]; then
+          ./node_modules/.bin/prettier --write "$@"; else prettier --write
+          "$@"; fi' --
+        language: system
+        files: \.(js|jsx|mjs|cjs|json|md|yaml|yml)$
+        exclude: ^\.pre-commit-config\.yaml$
+# repo-guard:javascript:end
+
+# repo-guard:typescript:start
+  - repo: local
+    hooks:
+      - id: eslint
+        name: eslint
+        entry: >-
+          bash -lc 'has_cfg=0; for c in eslint.config.js eslint.config.mjs
+          eslint.config.cjs eslint.config.ts eslint.config.mts eslint.config.cts
+          .eslintrc .eslintrc.js .eslintrc.cjs .eslintrc.json .eslintrc.yaml
+          .eslintrc.yml; do [ -e "$c" ] && has_cfg=1 && break; done; if [
+          "$has_cfg" -eq 0 ] && [ -f package.json ] && grep -q
+          "\"eslintConfig\"" package.json; then has_cfg=1; fi; if [ "$has_cfg"
+          -eq 0 ]; then exit 0; fi; if [ -x ./node_modules/.bin/eslint ]; then
+          ./node_modules/.bin/eslint "$@"; else eslint "$@"; fi' --
+        language: system
+        files: \.(ts|tsx|mts|cts)$
+      - id: prettier
+        name: prettier
+        entry: >-
+          bash -lc 'if [ -x ./node_modules/.bin/prettier ]; then
+          ./node_modules/.bin/prettier --write "$@"; else prettier --write
+          "$@"; fi' --
+        language: system
+        files: \.(ts|tsx|mts|cts|json|md|yaml|yml)$
+        exclude: ^\.pre-commit-config\.yaml$
+      - id: tsc-noemit
+        name: tsc --noEmit
+        entry: >-
+          bash -lc 'cd web && if [ -x ./node_modules/.bin/tsc ]; then
+          ./node_modules/.bin/tsc --noEmit; else tsc --noEmit; fi'
+        language: system
+        files: \.(ts|tsx|mts|cts)$
+        pass_filenames: false
+# repo-guard:typescript:end

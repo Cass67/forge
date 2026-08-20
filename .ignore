@@ -77,3 +77,4 @@ $RECYCLE.BIN/
 *.swp
 *.swo
 *~
+/.repo-guard/reports/

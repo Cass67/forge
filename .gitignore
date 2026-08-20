@@ -117,3 +117,10 @@ build/Forge.iconset/
 build/icon.icns
 build/icon.png
 bin/Forge.app/
+*env*
+config.toml
+/.repo-guard/reports/
+
+# Python bytecode and caches.
+__pycache__/
+*.py[cod]
