@@ -137,7 +137,11 @@ func TestRunCommandTimeout(t *testing.T) {
 	}
 }
 
-func TestRunCommandRejectsAdHocPreviewServerLaunches(t *testing.T) {
+// A server launched with a trailing & is backgrounded and handed back as a
+// session. It is not this tool's job to decide that a server should have been
+// started some other way: refusing it returned advice as a successful result,
+// which a retry could not act on.
+func TestRunCommandBackgroundsAdHocServerInsteadOfRefusing(t *testing.T) {
 	dir := t.TempDir()
 	tool := NewRunCommand(dir, 60, nil, func(a Action) (bool, error) { return true, nil })
 
@@ -147,8 +151,12 @@ func TestRunCommandRejectsAdHocPreviewServerLaunches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result, "preview_server_ensure") {
-		t.Fatalf("expected preview tool guidance, got: %s", result)
+	var status execSessionStatus
+	if err := json.Unmarshal([]byte(result), &status); err != nil {
+		t.Fatalf("expected a session handle, got: %s", result)
+	}
+	if status.Status != "running" {
+		t.Fatalf("status = %+v", status)
 	}
 }
 
@@ -392,16 +400,25 @@ func TestExecSessionManagerEmitsRunningOutputNotification(t *testing.T) {
 	}
 }
 
-func TestRunCommandRejectsInteractiveCommandsInFavorOfExecSession(t *testing.T) {
+// Long-running work is declared, not detected: the model sets
+// run_in_background and gets a session handle back straight away.
+func TestRunCommandBackgroundsDeclaredLongRunningWork(t *testing.T) {
 	dir := t.TempDir()
 	tool := NewRunCommand(dir, 60, nil, func(a Action) (bool, error) { return true, nil })
 
-	result, err := tool.Execute(context.Background(), map[string]any{"command": "npm run dev"})
+	result, err := tool.Execute(context.Background(), map[string]any{
+		"command":           "npm run dev",
+		"run_in_background": true,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result, "exec_session_start") {
-		t.Fatalf("expected exec_session_start guidance, got: %s", result)
+	var status execSessionStatus
+	if err := json.Unmarshal([]byte(result), &status); err != nil {
+		t.Fatalf("expected a session handle, got: %s", result)
+	}
+	if status.Status != "running" || status.Command != "npm run dev" {
+		t.Fatalf("status = %+v", status)
 	}
 }
 
