@@ -10,13 +10,21 @@ import (
 // looks like a tool-call loop and costs more context than it frees.
 const compactProtectedTailItems = 16
 
-// liveItemsLocked returns the log entries that currently reach the prompt.
+// liveItemsLocked returns the log entries that currently reach the prompt,
+// carrying the text the prompt actually shows. Reading the original text
+// instead made every compaction pass re-replace what it had already replaced,
+// so each pass reported success for work that changed nothing.
 func (s *Session) liveItemsLocked() []protocol.Item {
-	shadowed, _ := sessionstore.CompactionOverlay(s.items)
+	shadowed, replacements := sessionstore.CompactionOverlay(s.items)
 	live := make([]protocol.Item, 0, len(s.items))
 	for _, item := range s.items {
 		if shadowed[item.Ref] || item.Kind == protocol.ItemCompaction {
 			continue
+		}
+		if text, ok := replacements[item.Ref]; ok && item.ToolResult != nil {
+			clone := *item.ToolResult
+			clone.Text = text
+			item.ToolResult = &clone
 		}
 		live = append(live, item)
 	}

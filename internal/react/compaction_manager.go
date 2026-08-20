@@ -131,13 +131,14 @@ func (m *CompactionManager) DecidePromptPressure(messages []llm.Message) Compact
 // stays protected because crushing what the model is actively using forces
 // re-reads that look like tool-call loops.
 func (m *CompactionManager) microCompactableDecision(messages []llm.Message, reason string) (CompactionDecision, bool) {
-	compactableEnd := len(messages) - microCompactProtectedTail
+	tail := protectedTail(len(messages), microCompactProtectedTail)
+	compactableEnd := len(messages) - tail
 	for i, msg := range messages {
 		if i >= compactableEnd {
 			break
 		}
 		if msg.Role == llm.RoleTool && len(msg.Content) > m.cfg.PromptToolResultBytes {
-			return CompactionDecision{Mode: CompactionMicro, Reason: reason, KeepTurns: m.cfg.KeepTurns, ToolResultBytes: m.cfg.PromptToolResultBytes, ProtectTail: microCompactProtectedTail}, true
+			return CompactionDecision{Mode: CompactionMicro, Reason: reason, KeepTurns: m.cfg.KeepTurns, ToolResultBytes: m.cfg.PromptToolResultBytes, ProtectTail: tail}, true
 		}
 	}
 	return CompactionDecision{}, false
