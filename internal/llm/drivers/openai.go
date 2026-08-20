@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -1544,6 +1545,12 @@ func messageWithContentParts(m llm.Message, role responses.EasyInputMessageRole)
 			if part.Image != nil {
 				dataURL, err := imageToDataURL(part.Image.Path, part.Image.MIMEType)
 				if err != nil {
+					// Say so rather than dropping it silently: the user saw an
+					// image attached and would otherwise get an answer that
+					// quietly ignored it.
+					parts = append(parts, responses.ResponseInputContentParamOfInputText(
+						fmt.Sprintf("[attached image %s could not be read: %v]", filepath.Base(part.Image.Path), err)))
+					hasText = true
 					continue
 				}
 				parts = append(parts, responses.ResponseInputContentUnionParam{

@@ -26,7 +26,13 @@ const (
 	ToolConcurrencyParallel ToolConcurrency = "parallel"
 	ToolConcurrencySerial   ToolConcurrency = "serial"
 
-	DefaultToolTimeout = 2 * time.Minute
+	// A ceiling for a wedged tool, not a budget for a slow one. Two minutes
+	// killed work that was legitimately waiting: a command blocked on a macOS
+	// permission prompt waits on the user, and installs and builds routinely
+	// run longer. Turns are cancellable from the UI, so this only needs to
+	// stop something that will never finish. Per-tool Timeout still overrides
+	// it, as does chat.command_timeout for shell commands.
+	DefaultToolTimeout = 15 * time.Minute
 )
 
 // Tool defines a single tool the agent can call.
