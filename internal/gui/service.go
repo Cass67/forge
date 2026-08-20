@@ -38,6 +38,7 @@ var (
 	errNotReady   = errors.New("the chat runtime is still starting")
 	errNoRestore  = errors.New("restore is not available in this session")
 	errNoDelete   = errors.New("deleting threads is not available in this session")
+	errNoRename   = errors.New("renaming threads is not available in this session")
 	errNoWorkDir  = errors.New("no workspace directory")
 	errBadImage   = errors.New("unsupported image")
 	errTooManyImg = fmt.Errorf("at most %d images per message", chatstate.MaxAttachments)
@@ -327,6 +328,22 @@ func (s *Service) DeleteThread(threadID string) ([]tui.ThreadSummary, error) {
 		return s.Threads(), errNoDelete
 	}
 	if err := cfg.DeleteThread(threadID); err != nil {
+		return s.Threads(), err
+	}
+	return s.Threads(), nil
+}
+
+// RenameThread gives a stored thread a name of the user's choosing. A manual
+// title is never overwritten by the automatic first-message naming.
+func (s *Service) RenameThread(threadID, title string) ([]tui.ThreadSummary, error) {
+	cfg, _, ready := s.snapshot()
+	if !ready {
+		return []tui.ThreadSummary{}, errNotReady
+	}
+	if cfg.RenameThread == nil {
+		return s.Threads(), errNoRename
+	}
+	if err := cfg.RenameThread(threadID, title); err != nil {
 		return s.Threads(), err
 	}
 	return s.Threads(), nil

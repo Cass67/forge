@@ -1066,6 +1066,14 @@ func RunChatLive(setup *ChatSetup) {
 			store := sessionstore.NewJSONLThreadStore(filepath.Join(outputDir, "threads"))
 			return store.DeleteThread(context.Background(), threadID)
 		},
+		RenameThread: func(threadID, title string) error {
+			outputDir := strings.TrimSpace(setup.Config.Session.OutputDir)
+			if outputDir == "" {
+				return errors.New("no session output directory configured")
+			}
+			store := sessionstore.NewJSONLThreadStore(filepath.Join(outputDir, "threads"))
+			return store.SetThreadTitle(context.Background(), threadID, title)
+		},
 		ReadThreadItems: func(threadID string) []protocol.Item {
 			outputDir := strings.TrimSpace(setup.Config.Session.OutputDir)
 			if outputDir == "" {

@@ -23,6 +23,7 @@ export function Sidebar({
   onAddWorkspace,
   onOpenWorkspace,
   onDelete,
+  onRename,
   onPin,
   onForget,
 }: {
@@ -36,10 +37,12 @@ export function Sidebar({
   onAddWorkspace: () => void;
   onOpenWorkspace: (dir: string) => void;
   onDelete: (id: string) => void;
+  onRename: (id: string, title: string) => void;
   onPin: (dir: string, pinned: boolean) => void;
   onForget: (dir: string) => void;
 }) {
   const [confirming, setConfirming] = useState("");
+  const [renaming, setRenaming] = useState("");
   const [closed, setClosed] = useState<Record<string, boolean>>({});
   const activeWorkspace = workDir;
 
@@ -101,17 +104,40 @@ export function Sidebar({
                     const current = t.thread_id === activeID && isActive;
                     return (
                       <div key={t.thread_id} className={`thread ${current ? "active" : ""}`}>
-                        <button
-                          className="thread-open"
-                          onClick={() => (isActive ? onRestore(t.thread_id) : onOpenWorkspace(ws.path))}
-                          title={t.preview || t.thread_id}
-                        >
-                          <span className="thread-title">{t.title || "Untitled"}</span>
-                          <span className="thread-meta">
-                            <span className="thread-model">{t.model}</span>
-                            <span>{fmtTime(t.updated_at)}</span>
-                          </span>
-                        </button>
+                        {renaming === t.thread_id ? (
+                          <input
+                            className="thread-rename"
+                            defaultValue={t.title || ""}
+                            autoFocus
+                            onFocus={(e) => e.currentTarget.select()}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                const name = e.currentTarget.value.trim();
+                                setRenaming("");
+                                if (name && name !== t.title) onRename(t.thread_id, name);
+                              } else if (e.key === "Escape") {
+                                setRenaming("");
+                              }
+                            }}
+                            onBlur={() => setRenaming("")}
+                          />
+                        ) : (
+                          <button
+                            className="thread-open"
+                            onClick={() => (isActive ? onRestore(t.thread_id) : onOpenWorkspace(ws.path))}
+                            onContextMenu={(e) => {
+                              e.preventDefault();
+                              setRenaming(t.thread_id);
+                            }}
+                            title={t.preview || "Right-click to rename"}
+                          >
+                            <span className="thread-title">{t.title || "Untitled"}</span>
+                            <span className="thread-meta">
+                              <span className="thread-model">{t.model}</span>
+                              <span>{fmtTime(t.updated_at)}</span>
+                            </span>
+                          </button>
+                        )}
                         {confirming === t.thread_id ? (
                           <span className="thread-confirm">
                             <button className="thread-x danger" onClick={() => onDelete(t.thread_id)}>

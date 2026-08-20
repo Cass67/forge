@@ -364,3 +364,19 @@ func validThreadID(threadID string) error {
 	}
 	return nil
 }
+
+// SetThreadTitle renames a thread. The id comes from the UI, so it is
+// validated rather than joined onto the thread directory as given.
+func (s *JSONLThreadStore) SetThreadTitle(ctx context.Context, threadID, title string) error {
+	if err := validThreadID(threadID); err != nil {
+		return err
+	}
+	name := strings.TrimSpace(title)
+	if name == "" {
+		return errors.New("empty thread title")
+	}
+	if len([]rune(name)) > 120 {
+		name = strings.TrimSpace(string([]rune(name)[:120]))
+	}
+	return s.UpdateThreadMetadata(ctx, threadID, ThreadMetadataPatch{Title: name, UpdatedAt: time.Now().UTC()})
+}

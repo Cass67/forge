@@ -833,3 +833,9 @@ input, textarea, .selectable, .md, .tc-out, .diffbox, .reasoning-body, .msg .bod
 }
 .ws-pin:hover { background: var(--hover); color: var(--text); }
 .ws-pin.on { color: var(--warn); }
+
+.thread-rename {
+  flex: 1; min-width: 0; margin: 3px 4px 3px 10px;
+  background: var(--input); border: 1px solid var(--accent); border-radius: 3px;
+  color: var(--text); font: inherit; font-size: 0.75rem; padding: 3px 6px; outline: none;
+}

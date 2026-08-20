@@ -139,6 +139,8 @@ export const forge = {
   history: (threadID: string) => call<StoredItem[]>("History", threadID),
   restore: (threadID: string) => call<RestoreResult>("Restore", threadID),
   deleteThread: (threadID: string) => call<ThreadSummary[]>("DeleteThread", threadID),
+  renameThread: (threadID: string, title: string) =>
+    call<ThreadSummary[]>("RenameThread", threadID, title),
   workspaces: () => call<Workspace[]>("Workspaces"),
   providers: () => call<Provider[]>("Providers"),
   signOutProvider: (id: string) => call<Provider[]>("SignOutProvider", id),

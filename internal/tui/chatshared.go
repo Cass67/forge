@@ -88,6 +88,8 @@ type ChatLiveConfig struct {
 	ReadThreadItems func(threadID string) []protocol.Item
 	// DeleteThread permanently removes a stored thread.
 	DeleteThread func(threadID string) error
+	// RenameThread gives a stored thread a title of the user's choosing.
+	RenameThread func(threadID, title string) error
 }
 
 // ThreadSummary is the stored-thread metadata shown in the GUI thread sidebar.

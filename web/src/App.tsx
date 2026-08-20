@@ -502,6 +502,12 @@ export default function App() {
             onAddWorkspace={addWorkspace}
             onOpenWorkspace={openWorkspace}
             onDelete={deleteThread}
+            onRename={(id, title) =>
+              void forge
+                .renameThread(id, title)
+                .then(setThreads)
+                .catch((e: unknown) => notify(String(e)))
+            }
             onPin={(dir, pinned) =>
               void forge.pinWorkspace(dir, pinned).then(setWorkspaces).catch((e: unknown) => notify(String(e)))
             }

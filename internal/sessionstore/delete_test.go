@@ -59,3 +59,45 @@ func TestDeleteThreadRejectsTraversal(t *testing.T) {
 		t.Fatal("traversal deleted a file outside the thread directory")
 	}
 }
+
+func TestSetThreadTitleRenamesAndSticks(t *testing.T) {
+	root := t.TempDir()
+	store := NewJSONLThreadStore(root)
+	ctx := context.Background()
+
+	if err := store.UpdateThreadMetadata(ctx, "thread-1", ThreadMetadataPatch{
+		Title: "we have a situation where the securecrt", CWD: "/work", Model: "gpt-5",
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := store.SetThreadTitle(ctx, "thread-1", "  SecureCRT replacement review  "); err != nil {
+		t.Fatalf("SetThreadTitle: %v", err)
+	}
+
+	rec, err := store.ReadThread(ctx, "thread-1")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if rec.Metadata.Title != "SecureCRT replacement review" {
+		t.Fatalf("title = %q, want the trimmed rename", rec.Metadata.Title)
+	}
+	// A rename must not blank the rest of the record.
+	if rec.Metadata.CWD != "/work" || rec.Metadata.Model != "gpt-5" {
+		t.Fatalf("rename clobbered metadata: %+v", rec.Metadata)
+	}
+
+	if err := store.SetThreadTitle(ctx, "thread-1", "   "); err == nil {
+		t.Error("SetThreadTitle accepted an empty title")
+	}
+	if err := store.SetThreadTitle(ctx, "../escape", "x"); err == nil {
+		t.Error("SetThreadTitle accepted a traversing id")
+	}
+	long := strings.Repeat("x", 400)
+	if err := store.SetThreadTitle(ctx, "thread-1", long); err != nil {
+		t.Fatalf("long title: %v", err)
+	}
+	rec, _ = store.ReadThread(ctx, "thread-1")
+	if len([]rune(rec.Metadata.Title)) > 120 {
+		t.Fatalf("title not capped: %d runes", len([]rune(rec.Metadata.Title)))
+	}
+}
