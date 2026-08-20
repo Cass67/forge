@@ -879,7 +879,7 @@ func (s sameFileSearchWorkflowState) overlayContent() string {
 	return "Search thrash guidance: you have repeatedly searched the same file without switching to a direct read. Stop trying more patterns on " + s.path + ". Read that file now, inspect the relevant function or block directly, then continue editing."
 }
 
-func (r *Runner) updateRepeatToolCallWorkflow(toolName string, args map[string]any, _ string) {
+func (r *Runner) updateRepeatToolCallWorkflow(toolName string, args map[string]any, result string) {
 	target := repeatToolCallTarget(toolName, args)
 	if target == "" {
 		r.repeatWorkflow = repeatToolCallState{}
@@ -888,15 +888,21 @@ func (r *Runner) updateRepeatToolCallWorkflow(toolName string, args map[string]a
 	}
 	key := toolName + ":" + target
 	recent := append(r.repeatWorkflow.recent, key)
+	results := append(r.repeatWorkflow.recentResults, repeatToolCallResultDigest(result))
 	if len(recent) > repeatToolCallWindow {
 		recent = recent[len(recent)-repeatToolCallWindow:]
 	}
-	r.repeatWorkflow = repeatToolCallState{
-		lastToolName: toolName,
-		lastTarget:   target,
-		recent:       recent,
-		streak:       repeatToolCallOccurrences(recent, key),
+	if len(results) > repeatToolCallWindow {
+		results = results[len(results)-repeatToolCallWindow:]
 	}
+	state := repeatToolCallState{
+		lastToolName:  toolName,
+		lastTarget:    target,
+		recent:        recent,
+		recentResults: results,
+	}
+	state.streak = repeatToolCallStalledOccurrences(state, key)
+	r.repeatWorkflow = state
 	r.syncRuntimeNote()
 }
 

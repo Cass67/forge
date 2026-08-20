@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -126,6 +128,12 @@ type repeatToolCallState struct {
 	// the last mutating tool call, so alternating repeats (grep A / cat B /
 	// grep A ...) are caught, not just consecutive identical calls.
 	recent []string
+	// recentResults holds a digest of what each recent call returned, in the
+	// same order as recent. A repeat only counts as thrash when the result is
+	// unchanged too: re-running a build while fixing errors returns something
+	// different each time and is real progress, while a command answered with
+	// the identical text every time is going nowhere.
+	recentResults []string
 	// streak is the number of occurrences of the most recent key within the
 	// window (including the latest call).
 	streak int
@@ -1665,14 +1673,17 @@ func (r *Runner) recordCheckpointScope(ctx context.Context, turn int, toolName s
 
 func (r *Runner) blockRepeatedExplorationToolCall(toolName string, args map[string]any) (string, bool) {
 	toolName = strings.TrimSpace(toolName)
-	if !isExplorationToolCall(toolName, args) {
+	// Any run_command qualifies, not only read-only ones. A command that keeps
+	// returning the identical result is making no progress whatever it does,
+	// and requiring it to look read-only let a rejected command repeat forever.
+	if !isExplorationToolCall(toolName, args) && toolName != "run_command" {
 		return "", false
 	}
 	target := repeatToolCallTarget(toolName, args)
 	if target == "" {
 		return "", false
 	}
-	count := repeatToolCallOccurrences(r.repeatWorkflow.recent, toolName+":"+target)
+	count := repeatToolCallStalledOccurrences(r.repeatWorkflow, toolName+":"+target)
 	if count < toolThrashThreshold(r.toolThrashCircuitBreaker, repeatToolCallThreshold) {
 		return "", false
 	}
@@ -1687,6 +1698,31 @@ func repeatToolCallOccurrences(recent []string, key string) int {
 		}
 	}
 	return count
+}
+
+// repeatToolCallStalledOccurrences counts how many times the key recurred with
+// one unchanged result, which is the signal that repeating it is pointless.
+func repeatToolCallStalledOccurrences(state repeatToolCallState, key string) int {
+	byResult := map[string]int{}
+	best := 0
+	for i, k := range state.recent {
+		if k != key || i >= len(state.recentResults) {
+			continue
+		}
+		byResult[state.recentResults[i]]++
+		if n := byResult[state.recentResults[i]]; n > best {
+			best = n
+		}
+	}
+	return best
+}
+
+// repeatToolCallResultDigest bounds how much of a result is retained; only
+// equality matters, never the content.
+func repeatToolCallResultDigest(result string) string {
+	sum := fnv.New64a()
+	_, _ = sum.Write([]byte(result))
+	return strconv.FormatUint(sum.Sum64(), 16)
 }
 
 func uniqueStrings(values []string) []string {
