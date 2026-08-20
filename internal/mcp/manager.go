@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -33,6 +34,7 @@ type Tool struct {
 	Name        string
 	Description string
 	Parameters  []llm.ToolParam
+	Schema      *llm.ToolSchema
 }
 
 type Resource struct {
@@ -442,9 +444,17 @@ func transportForServer(server Server) (sdkmcp.Transport, error) {
 		if len(cfg.Command) == 0 {
 			return nil, fmt.Errorf("stdio MCP server %q requires command", server.Name)
 		}
-		cmd := exec.Command(cfg.Command[0], cfg.Command[1:]...)
+		executable, err := resolveExecutable(cfg.Command[0])
+		if err != nil {
+			return nil, fmt.Errorf("stdio MCP server %q: %w", server.Name, err)
+		}
+		cmd := exec.Command(executable, cfg.Command[1:]...)
 		if len(cfg.Env) > 0 {
-			cmd.Env = append(os.Environ(), flattenEnv(cfg.Env)...)
+			env, err := resolvedEnv(cfg.Env)
+			if err != nil {
+				return nil, fmt.Errorf("stdio MCP server %q: %w", server.Name, err)
+			}
+			cmd.Env = append(os.Environ(), flattenEnv(env)...)
 		}
 		return &sdkmcp.CommandTransport{Command: cmd}, nil
 	case "remote":
@@ -473,6 +483,56 @@ func transportForServer(server Server) (sdkmcp.Transport, error) {
 	default:
 		return nil, fmt.Errorf("unsupported MCP server type %q", cfg.Type)
 	}
+}
+
+func resolveExecutable(command string) (string, error) {
+	if strings.ContainsRune(command, filepath.Separator) {
+		if info, err := os.Stat(command); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return command, nil
+		}
+		return "", fmt.Errorf("executable %q not found", command)
+	}
+	if path, err := exec.LookPath(command); err == nil {
+		return path, nil
+	}
+	home, _ := os.UserHomeDir()
+	for _, dir := range []string{filepath.Join(home, ".local", "bin"), "/opt/homebrew/bin", "/usr/local/bin", filepath.Join(home, ".cargo", "bin")} {
+		path := filepath.Join(dir, command)
+		if info, err := os.Stat(path); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("executable %q not found in PATH or common install locations", command)
+}
+
+func resolvedEnv(values map[string]string) (map[string]string, error) {
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		name, referenced := envReference(value)
+		if !referenced {
+			out[key] = value
+			continue
+		}
+		resolved, ok := os.LookupEnv(name)
+		if !ok || resolved == "" {
+			return nil, fmt.Errorf("environment variable %s required by %s is not set", name, key)
+		}
+		out[key] = resolved
+	}
+	return out, nil
+}
+
+func envReference(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "{env:") && strings.HasSuffix(value, "}") {
+		name := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(value, "{env:"), "}"))
+		return name, name != ""
+	}
+	if strings.HasPrefix(value, "${") && strings.HasSuffix(value, "}") {
+		name := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(value, "${"), "}"))
+		return name, name != ""
+	}
+	return "", false
 }
 
 func inferServerType(cfg config.MCPServerConfig) string {
@@ -625,7 +685,49 @@ func normalizeTool(serverName string, tool *sdkmcp.Tool) Tool {
 		Name:        tool.Name,
 		Description: tool.Description,
 		Parameters:  paramsFromSchema(tool.InputSchema),
+		Schema:      toolSchema(tool.InputSchema),
 	}
+}
+
+func toolSchema(raw any) *llm.ToolSchema {
+	m, ok := raw.(map[string]any)
+	if !ok || m == nil {
+		return nil
+	}
+	schema := &llm.ToolSchema{
+		Type:        stringValue(m["type"]),
+		Description: stringValue(m["description"]),
+		Required:    stringSlice(m["required"]),
+		Enum:        stringSlice(m["enum"]),
+	}
+	if properties, ok := m["properties"].(map[string]any); ok {
+		schema.Properties = make(map[string]*llm.ToolSchema, len(properties))
+		for name, property := range properties {
+			schema.Properties[name] = toolSchema(property)
+		}
+	}
+	if items := toolSchema(m["items"]); items != nil {
+		schema.Items = items
+	}
+	if additional, ok := m["additionalProperties"].(bool); ok {
+		schema.AdditionalProperties = &additional
+	}
+	return schema
+}
+
+func stringSlice(raw any) []string {
+	var out []string
+	switch values := raw.(type) {
+	case []any:
+		for _, value := range values {
+			if s, ok := value.(string); ok {
+				out = append(out, s)
+			}
+		}
+	case []string:
+		out = append(out, values...)
+	}
+	return out
 }
 
 func normalizeResource(serverName string, resource *sdkmcp.Resource) Resource {

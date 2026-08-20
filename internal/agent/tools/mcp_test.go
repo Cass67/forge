@@ -66,10 +66,17 @@ func TestNewReadMCPResource(t *testing.T) {
 }
 
 func TestNewMCPDynamicToolUsesNamespacedName(t *testing.T) {
+	schema := &llm.ToolSchema{
+		Type: "object",
+		Properties: map[string]*llm.ToolSchema{
+			"payload": {Type: "object"},
+		},
+	}
 	tool := NewMCPDynamicTool(mcp.Tool{
 		ServerName:  "context7",
 		Name:        "resolve_library_id",
 		Description: "Resolve a library identifier.",
+		Schema:      schema,
 		Parameters: []llm.ToolParam{
 			{Name: "library_name", Type: "string", Required: true},
 		},
@@ -79,6 +86,9 @@ func TestNewMCPDynamicToolUsesNamespacedName(t *testing.T) {
 	}
 	if len(tool.Parameters) != 1 || tool.Parameters[0].Name != "library_name" {
 		t.Fatalf("tool.Parameters = %#v", tool.Parameters)
+	}
+	if tool.Schema != schema {
+		t.Fatalf("tool.Schema = %#v, want original MCP schema", tool.Schema)
 	}
 }
 

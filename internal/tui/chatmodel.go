@@ -2799,8 +2799,6 @@ func (m ChatModel) helpLines() []string {
 			"Install/update skills:",
 			"  forge skills install [--scope global|project] <source>",
 			"  forge skills install [--scope global|project] --git <repo-url> [--subdir <path>]",
-			"  forge skills install [--scope global|project] superpowers [skill-name ...]",
-			"  forge skills update superpowers [--scope global|project]",
 		})
 	default:
 		return applyKeyLabels([]string{

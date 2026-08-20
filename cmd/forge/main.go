@@ -610,7 +610,7 @@ func runMCPGet(name string) {
 
 func runMCPAdd(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: forge mcp add <name> [--url URL] [--timeout-ms N] [--disabled] [-- command args...]")
+		fmt.Fprintln(os.Stderr, "usage: forge mcp add <name> [--url URL] [--env KEY=VALUE] [--timeout-ms N] [--disabled] [-- command args...]")
 		os.Exit(1)
 	}
 	name := args[0]
@@ -619,9 +619,11 @@ func runMCPAdd(args []string) {
 	url := fs.String("url", "", "Streamable HTTP MCP endpoint")
 	disabled := fs.Bool("disabled", false, "Add the server in a disabled state")
 	timeoutMS := fs.Int("timeout-ms", 0, "Per-request timeout in milliseconds")
+	env := keyValueFlags{}
+	fs.Var(&env, "env", "Environment entry KEY=VALUE; repeatable; VALUE may be {env:VAR} or ${VAR}")
 	fs.SetOutput(io.Discard)
 	if err := fs.Parse(args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "usage: forge mcp add <name> [--url URL] [--timeout-ms N] [--disabled] [-- command args...]")
+		fmt.Fprintln(os.Stderr, "usage: forge mcp add <name> [--url URL] [--env KEY=VALUE] [--timeout-ms N] [--disabled] [-- command args...]")
 		os.Exit(1)
 	}
 	command := append([]string(nil), fs.Args()...)
@@ -649,6 +651,7 @@ func runMCPAdd(args []string) {
 	server := config.MCPServerConfig{
 		URL:       strings.TrimSpace(*url),
 		Command:   command,
+		Env:       env,
 		TimeoutMS: *timeoutMS,
 	}
 	if *disabled {
@@ -661,6 +664,23 @@ func runMCPAdd(args []string) {
 	}
 	saveMCPServer(name, server)
 	fmt.Printf("Added MCP server %s.\n", name)
+}
+
+type keyValueFlags map[string]string
+
+func (f *keyValueFlags) String() string { return "" }
+
+func (f *keyValueFlags) Set(value string) error {
+	key, val, ok := strings.Cut(value, "=")
+	key = strings.TrimSpace(key)
+	if !ok || key == "" {
+		return fmt.Errorf("expected KEY=VALUE")
+	}
+	if *f == nil {
+		*f = keyValueFlags{}
+	}
+	(*f)[key] = val
+	return nil
 }
 
 func runMCPRemove(name string) {
@@ -879,10 +899,8 @@ Usage:
   forge skills status
   forge skills search <query>
   forge skills remove <name>
-  forge skills update superpowers [--scope global|project]
   forge skills install [--scope global|project] <source>
   forge skills install [--scope global|project] --git <repo-url> [--subdir <path>]
-  forge skills install [--scope global|project] superpowers [skill-name ...]
 
 Install sources:
   <source> can be:
@@ -891,17 +909,7 @@ Install sources:
     - an HTTP(S) URL to a raw markdown skill file
 
 Git installs:
-  --git clones a repository and installs .md skills from the repo root or --subdir.
-
-Superpowers shortcut:
-  forge skills install superpowers
-    installs a curated starter set:
-      brainstorming
-      systematic-debugging
-      test-driven-development
-
-  forge skills install superpowers brainstorming systematic-debugging
-    installs only the named superpowers skills from obra/superpowers.
+  --git clones a repository and installs skills from the repo root or --subdir.
 
 Directories:
   project: ./.forge/skills/
@@ -1035,39 +1043,6 @@ func runSkills(args []string) {
 			os.Exit(1)
 		}
 		fmt.Printf("removed /%s from %s\n", name, removed)
-	case "update":
-		if len(args) < 2 || args[1] != "superpowers" {
-			fmt.Fprintln(os.Stderr, "usage: forge skills update superpowers [--scope global|project]")
-			os.Exit(1)
-		}
-		fs := flag.NewFlagSet("skills update", flag.ExitOnError)
-		scope := fs.String("scope", "global", "install scope: global or project")
-		if err := fs.Parse(args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
-		var destDir string
-		switch *scope {
-		case "global":
-			destDir, err = skills.UserDir()
-		case "project":
-			destDir = skills.ProjectDir(cwd)
-		default:
-			fmt.Fprintln(os.Stderr, "error: --scope must be global or project")
-			os.Exit(1)
-		}
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
-		installed, err := skills.UpdateSuperpowers(cwd, destDir)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
-		for _, s := range installed {
-			fmt.Printf("updated /%s -> %s\n", s.Name, s.Source)
-		}
 	case "install":
 		fs := flag.NewFlagSet("skills install", flag.ExitOnError)
 		scope := fs.String("scope", "global", "install scope: global or project")
@@ -1096,10 +1071,8 @@ func runSkills(args []string) {
 		switch {
 		case *gitRepo != "":
 			installed, err = skills.InstallFromGitRepo(*gitRepo, *subdir, destDir)
-		case len(rest) > 0 && rest[0] == "superpowers":
-			installed, err = skills.InstallSuperpowers(destDir, rest[1:])
 		default:
-			source := cli.RequireArg(rest, "usage: forge skills install [--scope global|project] <source>\n       forge skills install [--scope global|project] --git <repo-url> [--subdir <path>]\n       forge skills install [--scope global|project] superpowers [skill-name ...]")
+			source := cli.RequireArg(rest, "usage: forge skills install [--scope global|project] <source>\n       forge skills install [--scope global|project] --git <repo-url> [--subdir <path>]")
 			installed, err = skills.InstallFromSource(source, destDir)
 		}
 		if err != nil {

@@ -9,20 +9,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 )
 
-const (
-	superpowersRepo = "https://github.com/obra/superpowers.git"
-	lockFileName    = ".forge-skill-lock.json"
-)
-
-var superpowersDefaultSkills = []string{
-	"brainstorming",
-	"systematic-debugging",
-	"test-driven-development",
-}
+const lockFileName = ".forge-skill-lock.json"
 
 type Lockfile struct {
 	Version int                   `json:"version"`
@@ -135,42 +125,6 @@ func InstallFromGitRepo(repoURL, repoSubdir, destDir string) ([]Skill, error) {
 	return installed, nil
 }
 
-func InstallSuperpowers(destDir string, names []string) ([]Skill, error) {
-	tmpDir, err := os.MkdirTemp("", "forge-superpowers-*")
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-	if err := run(tmpDir, "git", "clone", "--depth=1", superpowersRepo, "repo"); err != nil {
-		return nil, err
-	}
-	base := filepath.Join(tmpDir, "repo", "skills")
-	if len(names) == 0 {
-		names = append([]string(nil), superpowersDefaultSkills...)
-	}
-	var installed []Skill
-	var records []LockRecord
-	for _, name := range names {
-		src := filepath.Join(base, filepath.FromSlash(name), "SKILL.md")
-		skill, err := copySkillFile(src, destDir)
-		if err != nil {
-			return nil, fmt.Errorf("install superpowers %q: %w", name, err)
-		}
-		installed = append(installed, skill)
-		records = append(records, LockRecord{
-			Name:     skill.Name,
-			File:     skill.Source,
-			Provider: "superpowers",
-			Source:   superpowersRepo,
-			Origin:   filepath.ToSlash(filepath.Join("skills", name, "SKILL.md")),
-		})
-	}
-	if err := mergeLockRecords(destDir, records); err != nil {
-		return nil, err
-	}
-	return installed, nil
-}
-
 func Status(workDir string) ([]StatusEntry, error) {
 	globalDir, err := UserDir()
 	if err != nil {
@@ -241,28 +195,6 @@ func RemoveByName(workDir, name string) (string, error) {
 	return "", fmt.Errorf("skill %q not found", name)
 }
 
-func UpdateSuperpowers(workDir, destDir string) ([]Skill, error) {
-	lock, err := readLockfile(destDir)
-	if err != nil {
-		return nil, err
-	}
-	nameSet := map[string]struct{}{}
-	for _, rec := range lock.Skills {
-		if rec.Provider == "superpowers" {
-			nameSet[rec.Name] = struct{}{}
-		}
-	}
-	var names []string
-	for name := range nameSet {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	if len(names) == 0 {
-		names = append([]string(nil), superpowersDefaultSkills...)
-	}
-	return InstallSuperpowers(destDir, names)
-}
-
 func installFromDir(sourceDir, destDir string) ([]Skill, error) {
 	entries, err := os.ReadDir(sourceDir)
 	if err != nil {
@@ -270,10 +202,13 @@ func installFromDir(sourceDir, destDir string) ([]Skill, error) {
 	}
 	var installed []Skill
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+		path := filepath.Join(sourceDir, e.Name())
+		if e.IsDir() {
+			path = filepath.Join(path, "SKILL.md")
+		} else if !strings.HasSuffix(e.Name(), ".md") {
 			continue
 		}
-		skill, err := copySkillFile(filepath.Join(sourceDir, e.Name()), destDir)
+		skill, err := copySkillFile(path, destDir)
 		if err != nil {
 			continue
 		}

@@ -22,6 +22,7 @@ func NewMCPDynamicTool(def mcp.Tool, manager mcpManager) Tool {
 		Name:        namespacedMCPToolName(def.ServerName, def.Name),
 		Description: def.Description,
 		Parameters:  toolParamsFromLLM(def.Parameters),
+		Schema:      def.Schema,
 		AutoApprove: true,
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
 			result, err := manager.CallTool(ctx, def.ServerName, def.Name, args)

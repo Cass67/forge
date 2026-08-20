@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
@@ -9,6 +10,54 @@ import (
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+func TestEnvReferencesResolveWithoutPersistingSecrets(t *testing.T) {
+	t.Setenv("FORGE_MCP_TEST_TOKEN", "secret-value")
+	got, err := resolvedEnv(map[string]string{
+		"TOKEN": "{env:FORGE_MCP_TEST_TOKEN}",
+		"OTHER": "${FORGE_MCP_TEST_TOKEN}",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["TOKEN"] != "secret-value" || got["OTHER"] != "secret-value" {
+		t.Fatalf("resolved env did not use referenced environment variable")
+	}
+}
+
+func TestEnvReferenceRequiresSetVariable(t *testing.T) {
+	t.Setenv("FORGE_MCP_TEST_MISSING", "")
+	_, err := resolvedEnv(map[string]string{"TOKEN": "{env:FORGE_MCP_TEST_MISSING}"})
+	if err == nil || !strings.Contains(err.Error(), "FORGE_MCP_TEST_MISSING") {
+		t.Fatalf("resolvedEnv() error = %v", err)
+	}
+}
+
+func TestNormalizeToolPreservesNestedSchema(t *testing.T) {
+	tool := normalizeTool("cx", &sdkmcp.Tool{
+		Name: "cx_create_incident",
+		InputSchema: map[string]any{
+			"type":     "object",
+			"required": []any{"payload"},
+			"properties": map[string]any{
+				"payload": map[string]any{
+					"type":                 "object",
+					"additionalProperties": true,
+				},
+				"tags": map[string]any{
+					"type":  "array",
+					"items": map[string]any{"type": "string"},
+				},
+			},
+		},
+	})
+	if tool.Schema == nil || tool.Schema.Properties["payload"] == nil || tool.Schema.Properties["tags"].Items == nil {
+		t.Fatalf("nested schema lost: %#v", tool.Schema)
+	}
+	if tool.Schema.AdditionalProperties != nil || tool.Schema.Properties["payload"].AdditionalProperties == nil || !*tool.Schema.Properties["payload"].AdditionalProperties {
+		t.Fatalf("additionalProperties lost: %#v", tool.Schema.Properties["payload"])
+	}
+}
 
 func TestManagerEnabledServersOmitsDisabledEntries(t *testing.T) {
 	manager := NewManager()
