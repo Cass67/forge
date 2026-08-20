@@ -179,6 +179,10 @@ const repeatToolCallWindow = 10
 // spiral, but linear paging of a big file stays under it.
 const rereadSameFileThreshold = 6
 const maxCompletionRetriesPerTurn = 3
+
+// maxContextCompactionsPerTurn bounds overflow recovery so a session that
+// cannot shrink fails with the provider's error instead of spinning.
+const maxContextCompactionsPerTurn = 8
 const maxCompletionGateRejectionsPerTurn = 2
 const retryNoticeText = "Revising answer..."
 
@@ -615,7 +619,7 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 	nativeCaller, isNative := r.driver.(llm.NativeToolCaller)
 
 	completionRetries := 0
-	reactiveCompacted := false
+	compactionAttempts := 0
 	for range r.maxSteps {
 		if r.applyPendingInput() {
 			r.syncRuntimeNote()
@@ -633,8 +637,12 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 		_ = r.session.SetActiveTurnPhase(turnID, TurnPhaseRunningModel)
 		calls, err := r.streamNativeTurn(ctx, turn, nativeCaller, toolDefs, requireToolCall)
 		if err != nil {
-			if !reactiveCompacted && r.reactiveCompactForContextError(ctx, err) {
-				reactiveCompacted = true
+			// Recover from overflow as many times as compaction keeps freeing
+			// room. A single attempt per turn is not enough for a long
+			// autonomous run, where one pass often lands still over the limit.
+			// Compaction reporting no change is what ends the loop, not a latch.
+			if compactionAttempts < maxContextCompactionsPerTurn && r.reactiveCompactForContextError(ctx, err) {
+				compactionAttempts++
 				completionRetries = 0
 				continue
 			}
