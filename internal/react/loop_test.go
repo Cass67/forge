@@ -2016,11 +2016,12 @@ func TestRunnerPreservesAssistantPreambleOnToolTurn(t *testing.T) {
 	if len(firstAssistant.ToolCalls) != 1 || firstAssistant.ToolCalls[0].Name != "read_file" {
 		t.Fatalf("assistant tool calls = %#v", firstAssistant.ToolCalls)
 	}
-	if len(rec.tokenTexts) != 0 {
-		t.Fatalf("renderer tokenTexts = %#v, expected empty (buffered when tools present)", rec.tokenTexts)
-	}
-	if len(rec.fullTexts) == 0 || rec.fullTexts[0] != "I'll inspect the README first." {
-		t.Fatalf("renderer fullTexts = %#v", rec.fullTexts)
+	// The preamble streams as it is written rather than arriving as a block
+	// once the step is over; withholding it made a working turn read as
+	// silence between tool cards.
+	streamed := strings.Join(rec.tokenTexts, "")
+	if !strings.Contains(streamed, "I'll inspect the README first.") {
+		t.Fatalf("preamble was not streamed: tokenTexts = %#v", rec.tokenTexts)
 	}
 }
 

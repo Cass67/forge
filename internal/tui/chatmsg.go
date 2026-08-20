@@ -17,6 +17,7 @@ const (
 	MsgWorking                   // Inline progress / working-state update
 	MsgStatus                    // Status line (e.g. "Agent complete")
 	MsgCheckpoint                // Tool progress checkpoint ("• Ran …" with output)
+	MsgReasoning                 // The model's thinking, shown apart from its answer
 )
 
 // ChatMessage is a single message in the conversation.
@@ -35,7 +36,7 @@ func (m ChatMessage) accentColor(theme chatTheme) lipgloss.Color {
 		return theme.AccentPrimary
 	case MsgForge:
 		return theme.AccentSecondary
-	case MsgStatus, MsgWorking:
+	case MsgStatus, MsgWorking, MsgReasoning:
 		return theme.TextDim
 	case MsgPlan:
 		return theme.Warning
@@ -60,6 +61,15 @@ func (m ChatMessage) Render(width int, theme chatTheme) string {
 			Foreground(theme.TextDim).
 			Width(width).
 			Render(body)
+	}
+
+	if m.Kind == MsgReasoning {
+		// Dim and italic so thinking never reads as the answer.
+		return lipgloss.NewStyle().
+			Foreground(theme.TextDim).
+			Italic(true).
+			Width(width).
+			Render(strings.TrimSpace(m.Content))
 	}
 
 	if m.Kind == MsgWorking {

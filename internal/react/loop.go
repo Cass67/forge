@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,9 +23,12 @@ import (
 )
 
 type Config struct {
-	Driver                llm.Driver
-	Tools                 *agenttools.Registry
-	Renderer              agent.RenderTarget
+	Driver   llm.Driver
+	Tools    *agenttools.Registry
+	Renderer agent.RenderTarget
+	// ShowReasoning streams the model's thinking to the renderer as it
+	// arrives, for renderers that can display it.
+	ShowReasoning         bool
 	SystemPrompt          func() string
 	Session               *Session
 	Progress              func(string)
@@ -57,6 +61,7 @@ type Runner struct {
 	driver                    llm.Driver
 	tools                     *agenttools.Registry
 	renderer                  agent.RenderTarget
+	showReasoning             bool
 	systemPrompt              func() string
 	session                   *Session
 	hooks                     *hooks.Registry
@@ -277,13 +282,14 @@ func NewRunner(cfg Config) *Runner {
 		cfg.ConfigureHooks(hookRegistry)
 	}
 	runner := &Runner{
-		driver:       cfg.Driver,
-		tools:        reg,
-		renderer:     cfg.Renderer,
-		systemPrompt: cfg.SystemPrompt,
-		session:      session,
-		hooks:        hookRegistry,
-		progress:     cfg.Progress,
+		driver:        cfg.Driver,
+		tools:         reg,
+		renderer:      cfg.Renderer,
+		showReasoning: cfg.ShowReasoning,
+		systemPrompt:  cfg.SystemPrompt,
+		session:       session,
+		hooks:         hookRegistry,
+		progress:      cfg.Progress,
 		compactionManager: NewCompactionManager(CompactionConfig{
 			KeepTurns:            40,
 			HistoryPressureTurns: 40,
@@ -829,6 +835,55 @@ func (r *Runner) reactiveCompactForContextError(ctx context.Context, err error) 
 // streamNativeTurn runs one native tool calling step.
 // Returns nil calls (+ nil error) when a final text answer was received.
 // Returns non-nil calls when the model requested tool executions.
+// secretTriggerPattern marks where a secret could still be forming. Holding
+// back a fixed window instead would stop short answers streaming at all, and
+// ordinary prose contains no trigger, so it streams the moment it arrives.
+var secretTriggerPattern = regexp.MustCompile(`(?i)(-----BEGIN |bearer\s|sk-|gh[pousr]_|AKIA|ASIA|TOKEN|API[_-]?KEY|PASSWORD|SECRET)`)
+
+// streamableLen returns how much of an in-flight response may be displayed:
+// everything, unless a secret trigger has appeared, in which case the text
+// from that trigger onwards waits until the response is complete and the
+// scanner can match it whole.
+func streamableLen(raw string) int {
+	matches := secretTriggerPattern.FindAllStringIndex(raw, -1)
+	if len(matches) == 0 {
+		return len(raw)
+	}
+	return matches[len(matches)-1][0]
+}
+
+// streamRedactedPrefix emits whatever of an accumulating response has become
+// both markup-safe and redaction-stable, and returns the new emitted length.
+// Streaming raw tokens would put a secret on screen that the stored copy
+// redacts, so display and storage are redacted by the same rule.
+//
+// Secret patterns span whitespace and a private key block is unbounded, so
+// text is held back from the point a secret could still be forming rather
+// than by a fixed window.
+func streamRedactedPrefix(emit func(string), raw string, emitted int) int {
+	cut := streamableLen(raw)
+	if cut <= 0 {
+		return emitted
+	}
+	safe := safeRawMarkupStreamingPrefixLen(raw[:cut])
+	redacted := redactRuntimeText(raw[:safe])
+	if len(redacted) <= emitted {
+		return emitted
+	}
+	emit(redacted[emitted:])
+	return len(redacted)
+}
+
+// reasoningTarget reports the renderer that can display thinking, when the
+// renderer supports it and the session has not turned it off.
+func (r *Runner) reasoningTarget() (agent.ReasoningTarget, bool) {
+	if r == nil || r.renderer == nil || !r.showReasoning {
+		return nil, false
+	}
+	target, ok := r.renderer.(agent.ReasoningTarget)
+	return target, ok
+}
+
 func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.NativeToolCaller, toolDefs []llm.ToolDef, requireToolCall bool) ([]llm.NativeToolCall, error) {
 	messages := r.session.Messages(r.currentSystemPrompt())
 	if prompt := strings.TrimSpace(r.pendingRetryPrompt); prompt != "" {
@@ -856,12 +911,19 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 	var toolCalls []llm.NativeToolCall
 	visibleEmitted := 0
 	streamVisible := r.renderer != nil
-	hasTools := len(toolDefs) > 0
 	suppressFinalStreaming := r.finalPlanGateMayBlock()
+	reasoningTarget, showReasoning := r.reasoningTarget()
+	reasoningEmitted := 0
 
 	for tok := range out {
 		if tok.ReasoningContent != "" {
 			reasoningBuf.WriteString(tok.ReasoningContent)
+			// Thinking was captured and stored but never surfaced, so a
+			// working turn showed nothing but tool cards. Stream it as it
+			// arrives, kept separate from the answer.
+			if showReasoning {
+				reasoningEmitted = streamRedactedPrefix(reasoningTarget.AgentReasoning, reasoningBuf.String(), reasoningEmitted)
+			}
 			continue
 		}
 		if tok.ToolCall != nil {
@@ -872,13 +934,11 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 			continue
 		}
 		textBuf.WriteString(tok.Text)
-		if !hasTools && !suppressFinalStreaming {
-			current := textBuf.String()
-			safeVisible := safeRawMarkupStreamingPrefixLen(current)
-			if streamVisible && r.renderer != nil && safeVisible > visibleEmitted {
-				r.renderer.AgentToken(current[visibleEmitted:safeVisible])
-				visibleEmitted = safeVisible
-			}
+		// Stream the model's prose whether or not this step ends in tool
+		// calls. Withholding it until the step finished meant every working
+		// turn arrived as a block after the fact, which read as silence.
+		if !suppressFinalStreaming && streamVisible && r.renderer != nil {
+			visibleEmitted = streamRedactedPrefix(r.renderer.AgentToken, textBuf.String(), visibleEmitted)
 		}
 	}
 	if err := <-errCh; err != nil {
@@ -900,9 +960,7 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 		if reasoning != "" {
 			r.session.SetLastAssistantReasoning(reasoning)
 		}
-		if streamVisible && r.renderer != nil && hasTools && safePreamble != "" {
-			r.renderer.AgentText(safePreamble)
-		} else if safePreamble != "" && r.renderer != nil && visibleEmitted < len(safePreamble) {
+		if safePreamble != "" && r.renderer != nil && visibleEmitted < len(safePreamble) {
 			r.renderer.AgentText(safePreamble[visibleEmitted:])
 		}
 		return toolCalls, nil
@@ -945,22 +1003,29 @@ func (r *Runner) streamPlainTurn(ctx context.Context, turn int, messages []llm.M
 	}()
 
 	var textBuf strings.Builder
+	var reasoningBuf strings.Builder
 	visibleEmitted := 0
 	streamVisible := r.renderer != nil
 	suppressFinalStreaming := r.finalPlanGateMayBlock()
+	reasoningTarget, showReasoning := r.reasoningTarget()
+	reasoningEmitted := 0
 
 	for tok := range out {
+		// Reasoning was dropped entirely on this path: not shown, not even
+		// stored, so a plain answer lost the thinking behind it.
+		if tok.ReasoningContent != "" {
+			reasoningBuf.WriteString(tok.ReasoningContent)
+			if showReasoning {
+				reasoningEmitted = streamRedactedPrefix(reasoningTarget.AgentReasoning, reasoningBuf.String(), reasoningEmitted)
+			}
+			continue
+		}
 		if tok.Text == "" {
 			continue
 		}
 		textBuf.WriteString(tok.Text)
-		current := textBuf.String()
 		if !suppressFinalStreaming && streamVisible && r.renderer != nil {
-			safeVisible := safeRawMarkupStreamingPrefixLen(current)
-			if safeVisible > visibleEmitted {
-				r.renderer.AgentToken(current[visibleEmitted:safeVisible])
-				visibleEmitted = safeVisible
-			}
+			visibleEmitted = streamRedactedPrefix(r.renderer.AgentToken, textBuf.String(), visibleEmitted)
 		}
 	}
 	if err := <-errCh; err != nil {
@@ -977,6 +1042,9 @@ func (r *Runner) streamPlainTurn(ctx context.Context, turn int, messages []llm.M
 	r.pendingRetryPrompt = ""
 	if ok, err := r.validateFinalCompletion(ctx, turn, finalText, false); !ok || err != nil {
 		return []llm.NativeToolCall{}, err
+	}
+	if reasoning := strings.TrimSpace(reasoningBuf.String()); reasoning != "" {
+		r.session.SetLastAssistantReasoning(reasoning)
 	}
 	if err := r.appendFinalAssistantMessageAndCompleteTurn(ctx, turn, finalText, nil); err != nil {
 		return nil, err

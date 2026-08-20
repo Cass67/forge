@@ -537,6 +537,21 @@ func (m *ChatModel) upsertTaskContextMessage(content string) {
 	m.AddMessage(msg)
 }
 
+// AppendReasoning streams the model's thinking into one live block, so tokens
+// accumulate in place rather than each arriving as its own line.
+func (m *ChatModel) AppendReasoning(text string) {
+	if strings.TrimSpace(text) == "" && len(m.messages) == 0 {
+		return
+	}
+	if n := len(m.messages) - 1; n >= 0 && m.messages[n].Kind == MsgReasoning {
+		m.messages[n].Content += text
+		m.viewportDirty = true
+		return
+	}
+	m.messages = append(m.messages, ChatMessage{Kind: MsgReasoning, Content: text})
+	m.viewportDirty = true
+}
+
 func (m *ChatModel) AddWorkingMessage(content string) {
 	m.recordWorkingMessage(strings.TrimSpace(content))
 }

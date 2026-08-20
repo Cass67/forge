@@ -168,7 +168,10 @@ const (
 	EventToolResult      EventKind = "tool_result"
 	EventStats           EventKind = "stats"
 	EventProgress        EventKind = "progress"
-	EventAgentTask       EventKind = "agent_task"
+	// EventReasoning carries the model's thinking as it arrives. It is shown
+	// distinctly from the answer and is never part of it.
+	EventReasoning EventKind = "reasoning"
+	EventAgentTask EventKind = "agent_task"
 )
 
 // Event carries session progress from the runner to the TUI.

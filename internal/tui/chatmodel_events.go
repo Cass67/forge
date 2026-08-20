@@ -30,6 +30,8 @@ func (m ChatModel) handleLLMEvent(ev llm.Event) (tea.Model, tea.Cmd) {
 			m.liveStatsOutputChars += len(token)
 			m.AppendToLastAgentLabeled(token, ev.Agent)
 		}
+	case llm.EventReasoning:
+		m.AppendReasoning(ev.Text)
 	case llm.EventRetry:
 		m.discardPendingAssistantMessage()
 		if msg := strings.TrimSpace(ev.Text); msg != "" {
