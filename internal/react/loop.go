@@ -149,7 +149,15 @@ const analysisExplorationBudget = 40
 const previewExplorationBudget = 6
 const implementExplorationBudget = 24
 const inspectExplorationBudget = 24
-const defaultOutputStoreThresholdBytes = 10 * 1024
+
+// defaultOutputStoreThresholdBytes is where a tool result stops being inlined
+// and is stored behind a handle instead. Every result above it costs an extra
+// read_output round trip, so 10KB was needlessly slow — most source files are
+// larger than that. It stays well under CompactionConfig.LargeToolResultBytes
+// (64KB), above which a single result triggers full summarization: inlining
+// something that immediately forces compaction would gain nothing.
+// Override with Config.OutputStoreThresholdBytes.
+const defaultOutputStoreThresholdBytes = 32 * 1024
 
 const (
 	postDelegationReadOutputAggregateLimitBytes = 40 * 1024
