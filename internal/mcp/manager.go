@@ -20,7 +20,15 @@ import (
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const defaultTimeout = 15 * time.Second
+// Startup is slow when a stdio server has to fetch its package (npx/uvx cold
+// start), and tool calls can legitimately run for minutes, so each phase gets
+// its own budget instead of one 15s deadline for everything. A server's
+// timeout_ms overrides all three.
+const (
+	defaultConnectTimeout = 90 * time.Second
+	defaultListTimeout    = 30 * time.Second
+	defaultCallTimeout    = 10 * time.Minute
+)
 
 var ErrNotFound = errors.New("mcp resource not found")
 
@@ -200,19 +208,23 @@ func (m *Manager) Refresh(ctx context.Context, cfg *config.Config) error {
 		delete(existing, server.Name)
 		if session == nil {
 			var err error
-			connectCtx, cancel := context.WithTimeout(withParent(ctx), timeoutForConfig(server.Config))
+			connectTimeout := timeoutForConfig(server.Config, defaultConnectTimeout)
+			connectCtx, cancel := context.WithTimeout(withParent(ctx), connectTimeout)
 			session, err = m.connect(connectCtx, server)
 			cancel()
 			if err != nil {
+				err = describeTimeout(err, "connect", connectTimeout)
 				errs = append(errs, fmt.Errorf("%s: connect: %w", server.Name, err))
 				continue
 			}
 		}
 
-		refreshCtx, cancel := context.WithTimeout(withParent(ctx), timeoutForConfig(server.Config))
+		listTimeout := timeoutForConfig(server.Config, defaultListTimeout)
+		refreshCtx, cancel := context.WithTimeout(withParent(ctx), listTimeout)
 		serverSnapshot, err := buildSnapshot(refreshCtx, server.Name, session)
 		cancel()
 		if err != nil {
+			err = describeTimeout(err, "refresh", listTimeout)
 			_ = session.Close()
 			errs = append(errs, fmt.Errorf("%s: refresh: %w", server.Name, err))
 			continue
@@ -323,14 +335,15 @@ func (m *Manager) CallTool(ctx context.Context, serverName, toolName string, arg
 	if err != nil {
 		return ToolResult{}, err
 	}
-	callCtx, cancel := context.WithTimeout(withParent(ctx), timeoutForConfig(serverConfig(m, serverName)))
+	callTimeout := timeoutForConfig(serverConfig(m, serverName), defaultCallTimeout)
+	callCtx, cancel := context.WithTimeout(withParent(ctx), callTimeout)
 	defer cancel()
 	res, err := session.CallTool(callCtx, &sdkmcp.CallToolParams{
 		Name:      toolName,
 		Arguments: args,
 	})
 	if err != nil {
-		return ToolResult{}, err
+		return ToolResult{}, describeTimeout(err, fmt.Sprintf("%s/%s", serverName, toolName), callTimeout)
 	}
 	return normalizeToolResult(serverName, toolName, res), nil
 }
@@ -340,11 +353,12 @@ func (m *Manager) ReadResource(ctx context.Context, serverName, uri string) (Res
 	if err != nil {
 		return Resource{}, err
 	}
-	readCtx, cancel := context.WithTimeout(withParent(ctx), timeoutForConfig(serverConfig(m, serverName)))
+	readTimeout := timeoutForConfig(serverConfig(m, serverName), defaultListTimeout)
+	readCtx, cancel := context.WithTimeout(withParent(ctx), readTimeout)
 	defer cancel()
 	res, err := session.ReadResource(readCtx, &sdkmcp.ReadResourceParams{URI: uri})
 	if err != nil {
-		return Resource{}, err
+		return Resource{}, describeTimeout(err, fmt.Sprintf("%s read %s", serverName, uri), readTimeout)
 	}
 	return normalizeReadResource(serverName, uri, res), nil
 }
@@ -384,12 +398,23 @@ func withParent(parent context.Context) context.Context {
 	return parent
 }
 
-func timeoutForConfig(cfg config.MCPServerConfig) time.Duration {
-	timeout := defaultTimeout
+func timeoutForConfig(cfg config.MCPServerConfig, fallback time.Duration) time.Duration {
 	if cfg.TimeoutMS > 0 {
-		timeout = time.Duration(cfg.TimeoutMS) * time.Millisecond
+		return time.Duration(cfg.TimeoutMS) * time.Millisecond
 	}
-	return timeout
+	return fallback
+}
+
+// describeTimeout turns the SDK's bare "context deadline exceeded" into
+// something a user can act on.
+func describeTimeout(err error, what string, timeout time.Duration) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%s timed out after %s (raise timeout_ms for this server): %w", what, timeout, err)
+	}
+	return err
 }
 
 func connectServer(ctx context.Context, server Server, notify func(Event)) (clientSession, error) {
@@ -642,7 +667,7 @@ func (m *Manager) handleEvent(event Event) {
 			})
 			return
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), timeoutForConfig(serverConfig(m, event.ServerName)))
+		ctx, cancel := context.WithTimeout(context.Background(), timeoutForConfig(serverConfig(m, event.ServerName), defaultListTimeout))
 		snapshot, err := buildSnapshot(ctx, event.ServerName, session)
 		cancel()
 		if err != nil {

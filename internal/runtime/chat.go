@@ -192,7 +192,7 @@ func ResolveResumeThreadID(cfg *config.Config, explicitID string, continueLast b
 	}
 	outputDir := ""
 	if cfg != nil {
-		outputDir = strings.TrimSpace(cfg.Session.OutputDir)
+		outputDir = cfg.ResolvedOutputDir()
 	}
 	if outputDir == "" {
 		return "", fmt.Errorf("session output dir not configured")
@@ -216,7 +216,7 @@ func adoptResumeThread(setup *ChatSetup, session *reactruntime.Session) {
 	if threadID == "" || session == nil {
 		return
 	}
-	outputDir := strings.TrimSpace(setup.Config.Session.OutputDir)
+	outputDir := setup.Config.ResolvedOutputDir()
 	if outputDir == "" {
 		fmt.Fprintln(os.Stderr, "resume: session output dir not configured; starting fresh")
 		return
@@ -478,10 +478,10 @@ func mcpStartupStatus(manager *mcp.Manager, cfg *config.Config) string {
 }
 
 func configureDurableSessionSink(cfg *config.Config, session *reactruntime.Session, workDir string) {
-	if cfg == nil || session == nil || strings.TrimSpace(cfg.Session.OutputDir) == "" {
+	if cfg == nil || session == nil {
 		return
 	}
-	store := sessionstore.NewJSONLThreadStore(filepath.Join(cfg.Session.OutputDir, "threads"))
+	store := sessionstore.NewJSONLThreadStore(filepath.Join(cfg.ResolvedOutputDir(), "threads"))
 	model := strings.TrimSpace(cfg.Chat.Model)
 	if model == "" {
 		model = strings.TrimSpace(cfg.Chat.LastModel)
@@ -526,10 +526,10 @@ func backgroundExitNote(status tools.ExecSessionStatus) string {
 }
 
 func configuredOutputStore(cfg *config.Config) sessionstore.OutputStore {
-	if cfg == nil || strings.TrimSpace(cfg.Session.OutputDir) == "" {
+	if cfg == nil {
 		return nil
 	}
-	return sessionstore.NewFileOutputStore(cfg.Session.OutputDir)
+	return sessionstore.NewFileOutputStore(cfg.ResolvedOutputDir())
 }
 
 func durableThreadID(session *reactruntime.Session) string {
@@ -1054,7 +1054,7 @@ func RunChatLive(setup *ChatSetup) {
 			return session.DurableThreadID()
 		},
 		RestoreHistory: func(threadID string) (int, error) {
-			outputDir := strings.TrimSpace(setup.Config.Session.OutputDir)
+			outputDir := setup.Config.ResolvedOutputDir()
 			if outputDir == "" {
 				return 0, fmt.Errorf("session output dir not configured")
 			}
@@ -1075,7 +1075,7 @@ func RunChatLive(setup *ChatSetup) {
 		CopilotClientID: setup.Config.CopilotClientID(),
 		ReloadPlugins:   reloadPlugins,
 		ListThreads: func() []tui.ThreadSummary {
-			outputDir := strings.TrimSpace(setup.Config.Session.OutputDir)
+			outputDir := setup.Config.ResolvedOutputDir()
 			if outputDir == "" {
 				return nil
 			}
@@ -1099,7 +1099,7 @@ func RunChatLive(setup *ChatSetup) {
 			return out
 		},
 		DeleteThread: func(threadID string) error {
-			outputDir := strings.TrimSpace(setup.Config.Session.OutputDir)
+			outputDir := setup.Config.ResolvedOutputDir()
 			if outputDir == "" {
 				return errors.New("no session output directory configured")
 			}
@@ -1140,7 +1140,7 @@ func RunChatLive(setup *ChatSetup) {
 			return out
 		},
 		RenameThread: func(threadID, title string) error {
-			outputDir := strings.TrimSpace(setup.Config.Session.OutputDir)
+			outputDir := setup.Config.ResolvedOutputDir()
 			if outputDir == "" {
 				return errors.New("no session output directory configured")
 			}
@@ -1148,7 +1148,7 @@ func RunChatLive(setup *ChatSetup) {
 			return store.SetThreadTitle(context.Background(), threadID, title)
 		},
 		ReadThreadItems: func(threadID string) []protocol.Item {
-			outputDir := strings.TrimSpace(setup.Config.Session.OutputDir)
+			outputDir := setup.Config.ResolvedOutputDir()
 			if outputDir == "" {
 				return nil
 			}

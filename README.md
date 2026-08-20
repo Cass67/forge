@@ -370,6 +370,10 @@ approval-gated actions are denied rather than prompted.
 
 ## Output
 
+Session threads and tool output blobs are stored per workspace under
+`$XDG_STATE_HOME/forge` (default `~/.local/state/forge/projects/<workspace>/`),
+never inside the repo. Set `session.output_dir` to override.
+
 Pipeline sessions write artifacts into `./output/<timestamp>/` by default, including:
 
 - generated code under `code/`

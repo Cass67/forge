@@ -17,9 +17,6 @@ func (c *Config) Validate() []ValidationIssue {
 		issues = append(issues, ValidationIssue{Field: field, Message: message})
 	}
 
-	if strings.TrimSpace(c.Session.OutputDir) == "" {
-		add("session.output_dir", "output dir must not be empty")
-	}
 	if c.Log.Level != "" {
 		switch c.Log.Level {
 		case "debug", "info", "warn", "error":

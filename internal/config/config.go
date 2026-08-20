@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -301,7 +303,6 @@ func DefaultPath() string {
 }
 
 func setDefaults(c *Config) {
-	c.Session.OutputDir = "./output"
 	c.Log.Level = "info"
 	c.Retry.MaxAttempts = 3
 	c.Retry.InitialWait = 1000
@@ -546,4 +547,61 @@ func expandTilde(s *string) {
 		home, _ := os.UserHomeDir()
 		*s = filepath.Join(home, (*s)[2:])
 	}
+}
+
+// ResolvedOutputDir is where session threads and tool output blobs live.
+//
+// An unset value — or the historical "./output" default, which littered a
+// directory into every repo forge was launched from — resolves to a
+// per-workspace directory under the user's state dir. An existing ./output in
+// the workspace still wins so older sessions stay readable.
+func (c *Config) ResolvedOutputDir() string {
+	dir := strings.TrimSpace(c.Session.OutputDir)
+	if dir != "" && !isLegacyOutputDir(dir) {
+		return dir
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
+	if legacy := filepath.Join(cwd, "output"); dirExists(legacy) {
+		return legacy
+	}
+	return filepath.Join(fsutil.ForgeStateDir(), "projects", workspaceSlug(cwd))
+}
+
+func isLegacyOutputDir(dir string) bool {
+	switch filepath.ToSlash(strings.TrimSpace(dir)) {
+	case "output", "./output":
+		return true
+	}
+	return false
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+// workspaceSlug names a state directory after a workspace path: readable base
+// name plus a hash so two projects with the same name stay separate.
+func workspaceSlug(dir string) string {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		abs = dir
+	}
+	sum := sha256.Sum256([]byte(abs))
+	base := filepath.Base(abs)
+	if base == "." || base == string(filepath.Separator) {
+		base = "workspace"
+	}
+	base = strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			return r
+		default:
+			return '-'
+		}
+	}, base)
+	return fmt.Sprintf("%s-%x", base, sum[:4])
 }

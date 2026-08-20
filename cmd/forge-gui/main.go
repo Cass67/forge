@@ -24,6 +24,7 @@ import (
 	"forge/internal/gui"
 	"forge/internal/llm"
 	runtimepkg "forge/internal/runtime"
+	"forge/internal/shellenv"
 	"forge/internal/tui"
 	"forge/internal/workspace"
 	forgeweb "forge/web"
@@ -51,6 +52,11 @@ func run() error {
 	if err := fs_.Parse(os.Args[1:]); err != nil {
 		return err
 	}
+
+	// Launched from Finder/Dock the process inherits launchd's bare
+	// environment; pull in the user's shell PATH and exported keys first so
+	// config env references and MCP stdio servers resolve.
+	shellenv.Hydrate()
 
 	cfg, err := bootstrap.LoadConfig()
 	if err != nil {
@@ -186,11 +192,10 @@ func startupWorkspace(flagDir string, registry *workspace.Registry) string {
 	return "."
 }
 
-// enterWorkspace makes the workspace the process working directory. Config
-// carries relative paths — session.output_dir defaults to "./output" — and an
-// app bundle starts at "/", where those resolve to unwritable root paths
-// ("mkdir output: read-only file system"). A terminal launch gets this for
-// free by virtue of where it was started.
+// enterWorkspace makes the workspace the process working directory. Tools and
+// any relative config paths resolve against it, and an app bundle otherwise
+// starts at "/", where those resolve to unwritable root paths. A terminal
+// launch gets this for free by virtue of where it was started.
 func enterWorkspace(dir string) {
 	if err := os.Chdir(dir); err != nil {
 		log.Printf("forge-gui: cannot enter %s: %v", dir, err)

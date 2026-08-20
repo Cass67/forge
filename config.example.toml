@@ -7,7 +7,11 @@
 live_compat_models = true
 
 [session]
-output_dir = "./output"
+# Where session threads and tool output blobs are stored. Unset (default) puts
+# them in a per-workspace directory under $XDG_STATE_HOME/forge (or
+# ~/.local/state/forge) so nothing is written into your repos. An existing
+# ./output directory in the workspace still wins, for older sessions.
+# output_dir = ""
 
 # API keys. Environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, ...)
 # override these; `forge login` tokens in auth.json are the final fallback.
