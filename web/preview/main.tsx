@@ -30,7 +30,7 @@ const entries: Entry[] = events.reduce(
   [] as Entry[],
 );
 
-const prefs = { showTools: true, showReasoning: true, showActivity: true, showSidebar: true, scopeThreads: true, expandReasoning: true };
+const prefs = { showTools: true, showReasoning: true, showActivity: true, showSidebar: true, scopeThreads: true, expandReasoning: true, expandTools: false };
 
 function Shell() {
   const [busy] = useState(false);

@@ -37,6 +37,7 @@ const defaultPrefs: Prefs = {
   showTools: true,
   showReasoning: true,
   expandReasoning: true,
+  expandTools: false,
   showActivity: true,
   showSidebar: true,
   scopeThreads: true,

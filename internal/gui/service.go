@@ -373,6 +373,19 @@ func (s *Service) Restore(threadID string) (RestoreResult, error) {
 	}, err
 }
 
+// MCPServers lists the configured MCP servers and what each contributed, so
+// the window can show which are enabled and which actually loaded tools.
+func (s *Service) MCPServers() []tui.MCPServerStatus {
+	cfg, _, ready := s.snapshot()
+	if !ready || cfg.MCPServers == nil {
+		return []tui.MCPServerStatus{}
+	}
+	if servers := cfg.MCPServers(); servers != nil {
+		return servers
+	}
+	return []tui.MCPServerStatus{}
+}
+
 // ---- workspaces ----------------------------------------------------------
 
 // Workspace is a directory that has threads stored against it.

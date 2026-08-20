@@ -6,8 +6,8 @@ type ToolEntry = Extract<Entry, { t: "tool" }>;
 
 const MAX_PREVIEW = 4000;
 
-export function ToolCard({ entry }: { entry: ToolEntry }) {
-  const [open, setOpen] = useState(false);
+export function ToolCard({ entry, defaultOpen = false }: { entry: ToolEntry; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
   const [full, setFull] = useState(false);
   const status = entry.isError ? "err" : entry.done ? "ok" : "run";
   const out = entry.output ?? "";

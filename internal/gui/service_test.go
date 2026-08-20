@@ -23,7 +23,7 @@ func TestBoundMethodSurface(t *testing.T) {
 	want := []string{
 		"Approve", "AttachImage", "AttachPath", "AwaitProviderLogin", "Cancel", "ChooseWorkspace",
 		"Clear", "CompleteProviderLogin", "DeleteThread", "Efforts", "ForgetWorkspace",
-		"History", "Init", "Models", "NewSession", "OpenURL", "PinWorkspace",
+		"History", "Init", "MCPServers", "Models", "NewSession", "OpenURL", "PinWorkspace",
 		"Providers", "RenameThread", "Restore", "Send",
 		"SendWithImages", "SetEffort", "SetProviderKey", "SignOutProvider",
 		"StartProviderLogin", "SwitchModel", "SwitchWorkspace", "Threads", "Workspaces",

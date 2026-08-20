@@ -164,6 +164,18 @@ type ChatSetup struct {
 	debugRec   *chatDebugRecorder
 }
 
+// inferMCPType names a server's transport, falling back to its shape when the
+// config does not say.
+func inferMCPType(server config.MCPServerConfig) string {
+	if t := strings.TrimSpace(server.Type); t != "" {
+		return t
+	}
+	if strings.TrimSpace(server.URL) != "" {
+		return "remote"
+	}
+	return "stdio"
+}
+
 // LiveRunner renders the live chat event stream. It has the same contract as
 // tui.RunChatLiveBubbleTea: it blocks until the surface is closed.
 type LiveRunner func(events <-chan llm.Event, cfg tui.ChatLiveConfig, inputCh chan<- string, doneCh <-chan struct{}) tui.ChatLiveResult
@@ -1065,6 +1077,36 @@ func RunChatLive(setup *ChatSetup) {
 			}
 			store := sessionstore.NewJSONLThreadStore(filepath.Join(outputDir, "threads"))
 			return store.DeleteThread(context.Background(), threadID)
+		},
+		MCPServers: func() []tui.MCPServerStatus {
+			byServer := map[string][]string{}
+			for _, tool := range mcpManager.Tools() {
+				byServer[tool.ServerName] = append(byServer[tool.ServerName], tool.Name)
+			}
+			names := make([]string, 0, len(setup.Config.MCPServers))
+			for name := range setup.Config.MCPServers {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			out := make([]tui.MCPServerStatus, 0, len(names))
+			for _, name := range names {
+				server := setup.Config.MCPServers[name]
+				target := strings.TrimSpace(server.URL)
+				if target == "" {
+					target = strings.Join(server.Command, " ")
+				}
+				tools := byServer[name]
+				sort.Strings(tools)
+				out = append(out, tui.MCPServerStatus{
+					Name:    name,
+					Type:    inferMCPType(server),
+					Target:  target,
+					Enabled: server.IsEnabled(),
+					Loaded:  len(tools) > 0,
+					Tools:   tools,
+				})
+			}
+			return out
 		},
 		RenameThread: func(threadID, title string) error {
 			outputDir := strings.TrimSpace(setup.Config.Session.OutputDir)

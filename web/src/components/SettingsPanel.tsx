@@ -2,11 +2,13 @@ import { THEMES, type Theme } from "../theme";
 import { SCALES, formatScale } from "../scale";
 import type { InitPayload, Provider } from "../bridge";
 import { ProviderPanel } from "./ProviderPanel";
+import { MCPPanel } from "./MCPPanel";
 
 export type Prefs = {
   showTools: boolean;
   showReasoning: boolean;
   expandReasoning: boolean;
+  expandTools: boolean;
   showActivity: boolean;
   showSidebar: boolean;
   scopeThreads: boolean;
@@ -114,6 +116,7 @@ export function SettingsPanel({
             ["showTools", "tool cards"],
             ["showReasoning", "thinking blocks"],
             ["expandReasoning", "expand thinking by default"],
+            ["expandTools", "expand tool and code panels by default"],
           ] as [keyof Prefs, string][]
         ).map(([k, label]) => (
           <label key={k} className="set-row toggle">
@@ -148,6 +151,9 @@ export function SettingsPanel({
             <ProviderPanel providers={init.providers} onChange={onProviders} onNotify={onNotify} />
           </>
         ) : null}
+        <div className="set-section">mcp servers</div>
+        <MCPPanel />
+
         {init && init.skills.length > 0 ? (
           <>
             <div className="set-section">skills ({init.skills.length})</div>

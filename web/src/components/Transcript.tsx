@@ -102,7 +102,7 @@ export function Transcript({ entries, prefs, busy }: { entries: Entry[]; prefs: 
             );
           case "tool":
             if (!prefs.showTools) return null;
-            return <ToolCard key={e.id} entry={e} />;
+            return <ToolCard key={e.id} entry={e} defaultOpen={prefs.expandTools} />;
           case "info":
             return (
               <div key={e.id} className="info-line">

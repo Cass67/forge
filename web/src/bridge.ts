@@ -69,6 +69,15 @@ export type Provider = {
   interactive: boolean;
 };
 
+export type MCPServer = {
+  name: string;
+  type: string;
+  target?: string;
+  enabled: boolean;
+  loaded: boolean;
+  tools: string[];
+};
+
 export type Login = {
   provider: string;
   verify_url: string;
@@ -143,6 +152,7 @@ export const forge = {
     call<ThreadSummary[]>("RenameThread", threadID, title),
   workspaces: () => call<Workspace[]>("Workspaces"),
   providers: () => call<Provider[]>("Providers"),
+  mcpServers: () => call<MCPServer[]>("MCPServers"),
   signOutProvider: (id: string) => call<Provider[]>("SignOutProvider", id),
   setProviderKey: (id: string, key: string) => call<Provider[]>("SetProviderKey", id, key),
   startProviderLogin: (id: string) => call<Login>("StartProviderLogin", id),

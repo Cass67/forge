@@ -90,6 +90,8 @@ type ChatLiveConfig struct {
 	DeleteThread func(threadID string) error
 	// RenameThread gives a stored thread a title of the user's choosing.
 	RenameThread func(threadID, title string) error
+	// MCPServers reports the configured MCP servers and what each has loaded.
+	MCPServers func() []MCPServerStatus
 }
 
 // ThreadSummary is the stored-thread metadata shown in the GUI thread sidebar.
@@ -101,6 +103,17 @@ type ThreadSummary struct {
 	CWD       string    `json:"cwd,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
 	ItemCount int       `json:"item_count"`
+}
+
+// MCPServerStatus describes one configured MCP server: what it is, whether it
+// is enabled, and which tools it actually contributed.
+type MCPServerStatus struct {
+	Name    string   `json:"name"`
+	Type    string   `json:"type"`
+	Target  string   `json:"target,omitempty"`
+	Enabled bool     `json:"enabled"`
+	Loaded  bool     `json:"loaded"`
+	Tools   []string `json:"tools"`
 }
 
 type ProviderOption struct {
