@@ -181,6 +181,12 @@ func toolThrashThreshold(configured, fallback int) int {
 
 const sameFileSearchThrashThreshold = 5
 const repeatToolCallThreshold = 3
+
+// repeatToolCallBlockThreshold is where a repeat stops being nudged and starts
+// being refused. Blocking at the first sign of repetition can cut off a model
+// that was one call from resolving, so warn first and only block once the
+// warning has demonstrably gone unheeded.
+const repeatToolCallBlockThreshold = 6
 const repeatToolCallWindow = 10
 
 // ponytail: nudge only, no hard block — 6/10 same-file reads is a verification
@@ -1684,7 +1690,7 @@ func (r *Runner) blockRepeatedExplorationToolCall(toolName string, args map[stri
 		return "", false
 	}
 	count := repeatToolCallStalledOccurrences(r.repeatWorkflow, toolName+":"+target)
-	if count < toolThrashThreshold(r.toolThrashCircuitBreaker, repeatToolCallThreshold) {
+	if count < toolThrashThreshold(r.toolThrashCircuitBreaker, repeatToolCallBlockThreshold) {
 		return "", false
 	}
 	return fmt.Sprintf("blocked: identical %s on %q already ran %d times in your recent calls and returned the same result. Do not repeat it. Use the evidence already gathered, target a different range or pattern, or synthesize the answer now.", toolName, target, count), true
