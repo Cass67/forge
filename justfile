@@ -5,7 +5,11 @@ commit := `git rev-parse --short HEAD`
 bindir := env_var_or_default("FORGE_BINDIR", home_directory() / ".local/bin")
 
 # Build and install everything — CLI, desktop app, macOS bundle
-all: install install-gui
+#
+# Both binaries are built before either is installed. Installing as we went
+# meant a GUI build failure still left a freshly installed CLI, and the two
+# drifted months apart without anyone noticing.
+all: build gui install install-gui
     @echo
     @echo "forge      -> {{bindir}}/forge"
     @echo "forge-gui  -> {{bindir}}/forge-gui"
