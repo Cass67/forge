@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"forge/internal/config"
 
@@ -353,3 +354,23 @@ func (s *wrappedSession) Close() error {
 }
 
 func boolPtr(v bool) *bool { return &v }
+
+func TestConnectServerReportsStderr(t *testing.T) {
+	server := Server{
+		Name: "cx",
+		Config: config.MCPServerConfig{
+			Type:    "stdio",
+			Command: []string{"sh", "-c", "echo 'cx: CX_TOKEN is not set' >&2; exit 1"},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err := connectServer(ctx, server, nil)
+	if err == nil {
+		t.Fatal("expected connect to fail")
+	}
+	if !strings.Contains(err.Error(), "CX_TOKEN is not set") {
+		t.Fatalf("stderr not surfaced: %v", err)
+	}
+}

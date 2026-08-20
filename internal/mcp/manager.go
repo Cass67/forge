@@ -453,6 +453,57 @@ func describeTimeout(err error, what string, timeout time.Duration) error {
 	return err
 }
 
+// A stdio server that dies during startup explains why on stderr and nowhere
+// else; Go's exec discards stderr unless asked, which left the user staring at
+// a bare `initialize: EOF`. Keep the tail so the failure can say what happened.
+const stderrTailMax = 4 << 10
+
+type stderrTail struct {
+	mu  sync.Mutex
+	buf []byte
+}
+
+func (t *stderrTail) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > stderrTailMax {
+		t.buf = t.buf[len(t.buf)-stderrTailMax:]
+	}
+	return len(p), nil
+}
+
+// lastLines returns at most max trailing non-blank lines of the captured text.
+func (t *stderrTail) lastLines(max int) string {
+	if t == nil {
+		return ""
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var kept []string
+	for _, line := range strings.Split(string(t.buf), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			kept = append(kept, line)
+		}
+	}
+	if len(kept) > max {
+		kept = kept[len(kept)-max:]
+	}
+	return strings.Join(kept, "; ")
+}
+
+// describeStderr attaches what the server printed before it gave up.
+func describeStderr(err error, tail *stderrTail) error {
+	if err == nil {
+		return nil
+	}
+	out := tail.lastLines(10)
+	if out == "" {
+		return err
+	}
+	return fmt.Errorf("%w (server stderr: %s)", err, out)
+}
+
 func connectServer(ctx context.Context, server Server, notify func(Event)) (clientSession, error) {
 	client := sdkmcp.NewClient(&sdkmcp.Implementation{
 		Name:    "forge",
@@ -491,36 +542,44 @@ func connectServer(ctx context.Context, server Server, notify func(Event)) (clie
 		},
 	})
 
-	transport, err := transportForServer(server)
+	transport, tail, err := transportForServer(server)
 	if err != nil {
 		return nil, err
 	}
-	return client.Connect(ctx, transport, nil)
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		return nil, describeStderr(err, tail)
+	}
+	return session, nil
 }
 
-func transportForServer(server Server) (sdkmcp.Transport, error) {
+// transportForServer also returns the stderr tail for stdio servers, so a
+// failed connect can report what the child process complained about.
+func transportForServer(server Server) (sdkmcp.Transport, *stderrTail, error) {
 	cfg := server.Config
 	switch inferServerType(cfg) {
 	case "stdio":
 		if len(cfg.Command) == 0 {
-			return nil, fmt.Errorf("stdio MCP server %q requires command", server.Name)
+			return nil, nil, fmt.Errorf("stdio MCP server %q requires command", server.Name)
 		}
 		executable, err := resolveExecutable(cfg.Command[0])
 		if err != nil {
-			return nil, fmt.Errorf("stdio MCP server %q: %w", server.Name, err)
+			return nil, nil, fmt.Errorf("stdio MCP server %q: %w", server.Name, err)
 		}
 		cmd := exec.Command(executable, cfg.Command[1:]...)
+		tail := &stderrTail{}
+		cmd.Stderr = tail
 		if len(cfg.Env) > 0 {
 			env, err := resolvedEnv(cfg.Env)
 			if err != nil {
-				return nil, fmt.Errorf("stdio MCP server %q: %w", server.Name, err)
+				return nil, nil, fmt.Errorf("stdio MCP server %q: %w", server.Name, err)
 			}
 			cmd.Env = append(os.Environ(), flattenEnv(env)...)
 		}
-		return &sdkmcp.CommandTransport{Command: cmd}, nil
+		return &sdkmcp.CommandTransport{Command: cmd}, tail, nil
 	case "remote":
 		if strings.TrimSpace(cfg.URL) == "" {
-			return nil, fmt.Errorf("remote MCP server %q requires url", server.Name)
+			return nil, nil, fmt.Errorf("remote MCP server %q requires url", server.Name)
 		}
 		client := http.DefaultClient
 		headers := make(map[string]string, len(cfg.Headers)+1)
@@ -540,9 +599,9 @@ func transportForServer(server Server) (sdkmcp.Transport, error) {
 			Endpoint:             cfg.URL,
 			HTTPClient:           client,
 			DisableStandaloneSSE: true,
-		}, nil
+		}, nil, nil
 	default:
-		return nil, fmt.Errorf("unsupported MCP server type %q", cfg.Type)
+		return nil, nil, fmt.Errorf("unsupported MCP server type %q", cfg.Type)
 	}
 }
 
