@@ -233,9 +233,11 @@ func TestSpawnAgentDoesNotStartChildWhenParentToolContextAlreadyCanceled(t *test
 }
 
 func TestSpawnAgentOmitsWorkDirWhenNotProvided(t *testing.T) {
-	var gotCtx context.Context
+	// The spawn runs on its own goroutine, so the context has to be handed back
+	// over a channel; reading a shared variable races with the pool.
+	gotCtx := make(chan context.Context, 1)
 	pool := react.NewAgentPool(func(ctx context.Context, role, task string) (string, error) {
-		gotCtx = ctx
+		gotCtx <- ctx
 		return "ok", nil
 	})
 	tool := NewSpawnAgent(pool)
@@ -246,8 +248,13 @@ func TestSpawnAgentOmitsWorkDirWhenNotProvided(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := react.WorkDirFromContext(gotCtx); got != "" {
-		t.Fatalf("WorkDirFromContext = %q, want empty", got)
+	select {
+	case ctxv := <-gotCtx:
+		if got := react.WorkDirFromContext(ctxv); got != "" {
+			t.Fatalf("WorkDirFromContext = %q, want empty", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("spawn function never called")
 	}
 }
 

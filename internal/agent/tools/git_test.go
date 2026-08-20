@@ -12,7 +12,9 @@ import (
 func initGitRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	runGit(t, dir, "init")
+	// Pin the initial branch: without init.defaultBranch set, git names it
+	// "master" and every test that expects "main" fails on that machine only.
+	runGit(t, dir, "init", "-b", "main")
 	runGit(t, dir, "config", "user.email", "test@test.com")
 	runGit(t, dir, "config", "user.name", "test")
 	mustWriteFile(t, filepath.Join(dir, "main.go"), "package main\n")
