@@ -25,6 +25,8 @@ import { applyScale, clampScale, formatScale, loadScale, step, DEFAULT_SCALE } f
 const initialStats: Stats = {
   inTok: 0,
   outTok: 0,
+  lastOut: 0,
+  lastMs: 0,
   contextUsed: 0,
   contextLimit: 0,
   durationMs: 0,
@@ -110,6 +112,9 @@ export default function App() {
           ...s,
           inTok: s.inTok + u.input_tokens,
           outTok: s.outTok + u.output_tokens,
+          // Kept separately so the rate describes the last turn rather than
+          // an average dragged down by time spent idle.
+          lastOut: u.output_tokens || s.lastOut,
         }));
       }
       if (ev.context_used || ev.context_limit || ev.duration_ms) {

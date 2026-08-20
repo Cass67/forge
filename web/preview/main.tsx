@@ -68,7 +68,7 @@ function Shell() {
           />
         </main>
       </div>
-      <StatsBar stats={{ inTok: 0, outTok: 0, contextUsed: 0, contextLimit: 0, durationMs: 0, model: "x" }} connected />
+      <StatsBar stats={{ inTok: 0, outTok: 0, contextUsed: 0, contextLimit: 0, durationMs: 0, model: "x", lastOut: 0, lastMs: 0 }} connected />
     </div>
   );
 }
