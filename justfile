@@ -70,9 +70,25 @@ pre-commit:
     pre-commit run --all-files
 
 # Compiles the frontend into web/dist, which the desktop binary embeds.
+#
+# web/dist is committed, so a Go build never needs a JS toolchain. Rebuild it
+# when bun is usable and fall back to the committed output otherwise, rather
+# than failing an install on a machine whose bun is missing or broken.
 [private]
 web:
-    cd web && bun install && bun run build
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if ! bun --version >/dev/null 2>&1; then
+        echo "web: no usable bun; embedding the committed web/dist" >&2
+    elif ! (cd web && bun install && bun run build); then
+        echo "web: frontend build failed; embedding the committed web/dist" >&2
+    else
+        exit 0
+    fi
+    if [ ! -f web/dist/index.html ]; then
+        echo "web: web/dist is missing and cannot be rebuilt" >&2
+        exit 1
+    fi
 
 # macOS .app bundle on its own, without installing it.
 [private]

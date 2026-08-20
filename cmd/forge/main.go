@@ -28,6 +28,7 @@ import (
 	pluginruntime "forge/internal/plugins"
 	runtimepkg "forge/internal/runtime"
 	"forge/internal/skills"
+	"forge/internal/version"
 
 	// Import plugin packages to trigger init() registration.
 	_ "forge/plugins"
@@ -50,6 +51,9 @@ var mcpServerPresets = map[string]config.MCPServerConfig{
 }
 
 func main() {
+	if handled := runTopLevelFlag(os.Args[1:]); handled {
+		return
+	}
 	args := os.Args[1:]
 	if len(args) == 0 || startsWithFlag(args[0]) {
 		runChat(args)
@@ -57,12 +61,8 @@ func main() {
 	}
 
 	commands := map[string]cli.Command{
-		"-h":        {Name: "help", Run: func(args []string) { runHelp(args) }},
-		"--help":    {Name: "help", Run: func(args []string) { runHelp(args) }},
-		"help":      {Name: "help", Run: func(args []string) { runHelp(args) }},
-		"-v":        {Name: "version", Run: func(args []string) { fmt.Println("forge v0.1.0") }},
-		"--version": {Name: "version", Run: func(args []string) { fmt.Println("forge v0.1.0") }},
-		"version":   {Name: "version", Run: func(args []string) { fmt.Println("forge v0.1.0") }},
+		"help":    {Name: "help", Run: func(args []string) { runHelp(args) }},
+		"version": {Name: "version", Run: func(args []string) { fmt.Println(version.String()) }},
 		"auth": {
 			Name: "auth",
 			Run: func(args []string) {
@@ -102,6 +102,24 @@ func main() {
 
 func startsWithFlag(arg string) bool {
 	return strings.HasPrefix(arg, "-")
+}
+
+// runTopLevelFlag handles the flag spellings of help and version. They have to
+// be caught before the dispatch below, which treats every leading dash as a
+// chat flag and would hand these to the chat flag parser instead.
+func runTopLevelFlag(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "-h", "--help":
+		runHelp(args[1:])
+		return true
+	case "-v", "--version":
+		fmt.Println(version.String())
+		return true
+	}
+	return false
 }
 
 func runMCP(args []string) {
