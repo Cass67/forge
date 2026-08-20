@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"forge/internal/llm"
+	"forge/internal/protocol"
 )
 
 const (
@@ -29,24 +29,35 @@ func MicroCompactLargeToolResults(session *Session, maxBytes, protectTail int) b
 		return false
 	}
 	session.mu.Lock()
-	defer session.mu.Unlock()
-	changed := false
-	protectedFrom := len(session.history) - protectTail
-	for i, msg := range session.history {
+	live := session.liveItemsLocked()
+	protectedFrom := len(live) - protectTail
+	var replacements []protocol.CompactionReplacement
+	for i, item := range live {
 		if protectTail > 0 && i >= protectedFrom {
 			break
 		}
-		if msg.Role != llm.RoleTool || len(msg.Content) <= maxBytes {
+		if item.Kind != protocol.ItemToolResult || item.ToolResult == nil {
 			continue
 		}
-		summary := compactToolResultSummary(msg.Content)
-		if len(summary) >= len(msg.Content) || len(summary) > maxBytes {
+		content := item.ToolResult.Text
+		if len(content) <= maxBytes {
 			continue
 		}
-		session.history[i].Content = summary
-		changed = true
+		summary := compactToolResultSummary(content)
+		if len(summary) >= len(content) || len(summary) > maxBytes {
+			continue
+		}
+		replacements = append(replacements, protocol.CompactionReplacement{Ref: item.Ref, Text: summary})
 	}
-	return changed
+	if len(replacements) == 0 {
+		session.mu.Unlock()
+		return false
+	}
+	item := session.appendCompactionLocked(nil, replacements)
+	sink := session.durableSink
+	session.mu.Unlock()
+	_ = session.persistDurableItem(item, sink)
+	return true
 }
 
 func compactToolResultSummary(content string) string {

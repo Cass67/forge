@@ -37,8 +37,23 @@ func ReplayItems(items []protocol.Item) (Replay, error) {
 	terminal := map[string]bool{}
 	activity := map[string]bool{}
 	replay := Replay{}
+	shadowed, replacements := compactionOverlay(sorted)
+	// A tool call belongs to the assistant message emitted with it. Folding it
+	// into any earlier assistant message would merge two separate steps into
+	// one, so only an immediately preceding assistant message may absorb it.
+	assistantOpen := false
 
 	for _, item := range sorted {
+		// Compaction shadows earlier items instead of deleting them, so the
+		// replayed prompt matches the compacted one the live session sent.
+		if shadowed[item.Ref] {
+			continue
+		}
+		if text, ok := replacements[item.Ref]; ok && item.ToolResult != nil {
+			clone := *item.ToolResult
+			clone.Text = text
+			item.ToolResult = &clone
+		}
 		switch item.Kind {
 		case protocol.ItemCompaction:
 			if item.Compaction != nil {
@@ -55,6 +70,8 @@ func ReplayItems(items []protocol.Item) (Replay, error) {
 		}
 		turnID := replayTurnID(item.TurnID)
 		turn := ensureReplayTurn(turnID, turns, &order)
+		wasAssistantOpen := assistantOpen
+		assistantOpen = item.Kind == protocol.ItemAssistantMessage || item.Kind == protocol.ItemToolCall
 		switch item.Kind {
 		case protocol.ItemUserMessage:
 			if item.Message != nil {
@@ -66,7 +83,12 @@ func ReplayItems(items []protocol.Item) (Replay, error) {
 				if firstInput {
 					turn.Input = item.Message.Text
 				}
-				replay.History = append(replay.History, llm.Message{Role: outRole, Content: item.Message.Text})
+				replay.History = append(replay.History, llm.Message{
+					Role:             outRole,
+					Content:          item.Message.Text,
+					ReasoningContent: item.Message.ReasoningContent,
+					ContentParts:     item.Message.ContentParts,
+				})
 				if firstInput && strings.TrimSpace(item.Message.Text) != "" {
 					replay.RecentInputs = append(replay.RecentInputs, item.Message.Text)
 				}
@@ -75,7 +97,12 @@ func ReplayItems(items []protocol.Item) (Replay, error) {
 		case protocol.ItemAssistantMessage:
 			if item.Message != nil {
 				text := strings.TrimSpace(item.Message.Text)
-				replay.History = append(replay.History, llm.Message{Role: llm.RoleAssistant, Content: item.Message.Text})
+				replay.History = append(replay.History, llm.Message{
+					Role:             llm.RoleAssistant,
+					Content:          item.Message.Text,
+					ReasoningContent: item.Message.ReasoningContent,
+					ContentParts:     item.Message.ContentParts,
+				})
 				if text != "" {
 					turn.FinalResponse = text
 				}
@@ -94,7 +121,7 @@ func ReplayItems(items []protocol.Item) (Replay, error) {
 				turn.ToolCalls = append(turn.ToolCalls, *item.ToolCall)
 				call := replayNativeToolCall(*item.ToolCall)
 				last := len(replay.History) - 1
-				if last >= 0 && replay.History[last].Role == llm.RoleAssistant {
+				if wasAssistantOpen && last >= 0 && replay.History[last].Role == llm.RoleAssistant {
 					replay.History[last].ToolCalls = append(replay.History[last].ToolCalls, call)
 				} else {
 					replay.History = append(replay.History, llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.NativeToolCall{call}})
@@ -161,6 +188,12 @@ func removeFirstPendingInput(inputs []string, consumed string) []string {
 
 func replayNativeToolCall(call protocol.ToolCallItem) llm.NativeToolCall {
 	out := llm.NativeToolCall{ID: call.ToolCallID, Name: call.ToolName}
+	// v2 records the exact bytes; only fall back to re-encoding the v1 map,
+	// which reorders keys and cannot represent non-object arguments.
+	if strings.TrimSpace(call.ArgsJSON) != "" {
+		out.ArgsJSON = call.ArgsJSON
+		return out
+	}
 	if len(call.Args) == 0 {
 		return out
 	}
@@ -169,6 +202,70 @@ func replayNativeToolCall(call protocol.ToolCallItem) llm.NativeToolCall {
 		out.ArgsJSON = string(encoded)
 	}
 	return out
+}
+
+// ResolveItems applies every compaction record and returns the items a prompt
+// should be built from. Shadowed items are dropped and replaced text is folded
+// in, so the result carries no outstanding compaction bookkeeping and can be
+// adopted into another session directly.
+func ResolveItems(items []protocol.Item) []protocol.Item {
+	sorted := append([]protocol.Item(nil), items...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
+	shadowed, replacements := compactionOverlay(sorted)
+	out := make([]protocol.Item, 0, len(sorted))
+	for _, item := range sorted {
+		if shadowed[item.Ref] {
+			continue
+		}
+		if item.Kind == protocol.ItemCompaction && item.Compaction != nil {
+			// The overlay is spent once applied; keep only the summary text.
+			clone := *item.Compaction
+			clone.ShadowedRefs = nil
+			clone.Replacements = nil
+			item.Compaction = &clone
+		}
+		if text, ok := replacements[item.Ref]; ok && item.ToolResult != nil {
+			clone := *item.ToolResult
+			clone.Text = text
+			item.ToolResult = &clone
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+// CompactionOverlay exposes the current shadow state so a session can decide
+// what is still live without rebuilding the whole projection.
+func CompactionOverlay(items []protocol.Item) (map[string]bool, map[string]string) {
+	sorted := append([]protocol.Item(nil), items...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
+	return compactionOverlay(sorted)
+}
+
+// compactionOverlay folds every compaction item into the set of sequences the
+// prompt must skip and the shrunken text replayed in place of the originals.
+func compactionOverlay(items []protocol.Item) (map[string]bool, map[string]string) {
+	shadowed := map[string]bool{}
+	replacements := map[string]string{}
+	for _, item := range items {
+		if item.Kind != protocol.ItemCompaction || item.Compaction == nil {
+			continue
+		}
+		for _, ref := range item.Compaction.ShadowedRefs {
+			if ref == "" {
+				continue
+			}
+			shadowed[ref] = true
+			delete(replacements, ref)
+		}
+		for _, replacement := range item.Compaction.Replacements {
+			if replacement.Ref == "" || shadowed[replacement.Ref] {
+				continue
+			}
+			replacements[replacement.Ref] = replacement.Text
+		}
+	}
+	return shadowed, replacements
 }
 
 func replayTurnID(turnID string) string {

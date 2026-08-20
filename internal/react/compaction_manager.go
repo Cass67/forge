@@ -116,9 +116,11 @@ func (m *CompactionManager) DecidePromptPressure(messages []llm.Message) Compact
 	if d, ok := m.microCompactableDecision(messages, "prompt budget"); ok {
 		return d
 	}
-	if !promptHasOlderTurns(messages) {
-		return CompactionDecision{Mode: CompactionNone, Reason: "prompt budget current turn only", KeepTurns: m.cfg.KeepTurns}
-	}
+	// A single long turn has no older turns to drop, but it does have older
+	// steps. Summarize compaction now shadows those, so refusing here would
+	// leave exactly the long autonomous runs that need compaction uncompacted.
+	// Apply reports honestly when nothing can be shadowed, and the failure
+	// circuit breaker stops the retry loop.
 	return CompactionDecision{Mode: CompactionSummarize, Reason: "prompt budget", KeepTurns: m.cfg.KeepTurns}
 }
 
@@ -139,20 +141,6 @@ func (m *CompactionManager) microCompactableDecision(messages []llm.Message, rea
 		}
 	}
 	return CompactionDecision{}, false
-}
-
-func promptHasOlderTurns(messages []llm.Message) bool {
-	seenUsers := 0
-	for _, msg := range messages {
-		if msg.Role != llm.RoleUser {
-			continue
-		}
-		seenUsers++
-		if seenUsers > 1 {
-			return true
-		}
-	}
-	return false
 }
 
 func estimatePromptBytes(messages []llm.Message) int {

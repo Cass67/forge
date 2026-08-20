@@ -22,12 +22,19 @@ func (p PersistencePolicy) Apply(item protocol.Item) protocol.Item {
 	}
 	if item.Message != nil {
 		item.Message.Text = redact(item.Message.Text)
+		item.Message.ReasoningContent = redact(item.Message.ReasoningContent)
+		for i := range item.Message.ContentParts {
+			item.Message.ContentParts[i].Text = redact(item.Message.ContentParts[i].Text)
+		}
 	}
 	if item.TurnContext != nil {
 		item.TurnContext.Input = redact(item.TurnContext.Input)
 	}
 	if item.Compaction != nil {
 		item.Compaction.Summary = redact(item.Compaction.Summary)
+		for i := range item.Compaction.Replacements {
+			item.Compaction.Replacements[i].Text = redact(item.Compaction.Replacements[i].Text)
+		}
 	}
 	if item.Failure != nil {
 		item.Failure.Decision.Feedback = redact(item.Failure.Decision.Feedback)
@@ -48,16 +55,33 @@ func (p PersistencePolicy) Apply(item protocol.Item) protocol.Item {
 	}
 	if item.ToolCall != nil && len(item.ToolCall.Args) > 0 {
 		redacted := map[string]any{}
+		sensitive := false
 		for k, v := range item.ToolCall.Args {
-			if strings.Contains(strings.ToLower(k), "token") || strings.Contains(strings.ToLower(k), "secret") || strings.Contains(strings.ToLower(k), "key") {
+			if isSensitiveArgKey(k) {
 				redacted[k] = "<REDACTED>"
+				sensitive = true
 				continue
 			}
 			redacted[k] = redactArgValue(v, scanner)
 		}
 		item.ToolCall.Args = redacted
+		// ArgsJSON is byte-exact and cannot express a key-name redaction while
+		// preserving key order. When a sensitive key is present the exact bytes
+		// must not reach disk at all, so drop them and let replay fall back to
+		// the redacted map.
+		if sensitive {
+			item.ToolCall.ArgsJSON = ""
+		}
+	}
+	if item.ToolCall != nil && item.ToolCall.ArgsJSON != "" {
+		item.ToolCall.ArgsJSON = redact(item.ToolCall.ArgsJSON)
 	}
 	return item
+}
+
+func isSensitiveArgKey(key string) bool {
+	lower := strings.ToLower(key)
+	return strings.Contains(lower, "token") || strings.Contains(lower, "secret") || strings.Contains(lower, "key")
 }
 
 func redactArgValue(v any, scanner *secscan.Scanner) any {
@@ -67,7 +91,7 @@ func redactArgValue(v any, scanner *secscan.Scanner) any {
 	case map[string]any:
 		out := map[string]any{}
 		for k, nested := range val {
-			if strings.Contains(strings.ToLower(k), "token") || strings.Contains(strings.ToLower(k), "secret") || strings.Contains(strings.ToLower(k), "key") {
+			if isSensitiveArgKey(k) {
 				out[k] = "<REDACTED>"
 				continue
 			}

@@ -6,7 +6,7 @@ import (
 	"forge/internal/llm"
 )
 
-const CurrentItemVersion = 1
+const CurrentItemVersion = 2
 
 type ItemKind string
 
@@ -37,11 +37,15 @@ const (
 )
 
 type Item struct {
-	Version      int               `json:"version"`
-	ID           string            `json:"id"`
-	ThreadID     string            `json:"thread_id"`
-	TurnID       string            `json:"turn_id,omitempty"`
-	Seq          int64             `json:"seq"`
+	Version  int    `json:"version"`
+	ID       string `json:"id"`
+	ThreadID string `json:"thread_id"`
+	TurnID   string `json:"turn_id,omitempty"`
+	Seq      int64  `json:"seq"`
+	// Ref is a stable, writer-assigned identity. Seq is renumbered by the store
+	// on append, so anything that needs to point at an earlier item across the
+	// persistence boundary must point at its Ref.
+	Ref          string            `json:"ref,omitempty"`
 	Kind         ItemKind          `json:"kind"`
 	At           time.Time         `json:"at"`
 	SessionMeta  *SessionMetaItem  `json:"session_meta,omitempty"`
@@ -74,12 +78,22 @@ type TurnContextItem struct {
 type MessageItem struct {
 	Role string `json:"role"`
 	Text string `json:"text,omitempty"`
+	// ReasoningContent and ContentParts keep the log lossless: without them a
+	// replayed message is not the message that was sent, and the prompt a
+	// resumed session rebuilds differs from the one it replaced.
+	ReasoningContent string                   `json:"reasoning_content,omitempty"`
+	ContentParts     []llm.MessageContentPart `json:"content_parts,omitempty"`
 }
 
 type ToolCallItem struct {
-	ToolName   string         `json:"tool_name"`
-	ToolCallID string         `json:"tool_call_id"`
-	Args       map[string]any `json:"args,omitempty"`
+	ToolName   string `json:"tool_name"`
+	ToolCallID string `json:"tool_call_id"`
+	// Args is the v1 representation, retained so existing threads still replay.
+	// Round-tripping through a map reorders keys and drops non-object args, so
+	// v2 writers set ArgsJSON and readers prefer it: the model must see the
+	// exact bytes it emitted or the cached prompt prefix is invalidated.
+	Args     map[string]any `json:"args,omitempty"`
+	ArgsJSON string         `json:"args_json,omitempty"`
 }
 
 type ToolResultItem struct {
@@ -110,6 +124,19 @@ type StatsItem struct {
 
 type CompactionItem struct {
 	Summary string `json:"summary,omitempty"`
+	// ShadowedSeqs and Replacements make compaction expressible in the log
+	// rather than only in memory. Compaction never deletes an item: it records
+	// which earlier items the prompt should skip (ShadowedSeqs) and which tool
+	// results should be replayed with shrunken text (Replacements), so a
+	// replayed session reproduces the compacted prompt exactly.
+	ShadowedRefs []string                `json:"shadowed_refs,omitempty"`
+	Replacements []CompactionReplacement `json:"replacements,omitempty"`
+}
+
+// CompactionReplacement rewrites one earlier item's text without dropping it.
+type CompactionReplacement struct {
+	Ref  string `json:"ref"`
+	Text string `json:"text"`
 }
 
 type CheckpointItem struct {

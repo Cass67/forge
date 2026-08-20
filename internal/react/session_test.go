@@ -237,11 +237,15 @@ func TestSessionDurableSinkOwnsPersistedThreadIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 5 {
-		t.Fatalf("persisted items = %#v, want user, assistant, tool call, tool result, and failure", items)
+	// Two assistant messages: the spoken preamble, then the (empty) message the
+	// tool call belongs to. The second is recorded so the log alone says which
+	// message owns the call rather than leaving it to be inferred.
+	if len(items) != 6 {
+		t.Fatalf("persisted items = %#v, want user, assistant, assistant, tool call, tool result, and failure", items)
 	}
 	assertPersistedItemOrder(t, items, []protocol.ItemKind{
 		protocol.ItemUserMessage,
+		protocol.ItemAssistantMessage,
 		protocol.ItemAssistantMessage,
 		protocol.ItemToolCall,
 		protocol.ItemToolResult,
