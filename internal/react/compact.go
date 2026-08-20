@@ -88,9 +88,12 @@ func compactToolResultSummary(content string) string {
 		fmt.Sprintf("Original size: %d bytes.", len(content)),
 	}
 	if handle := compactedToolHandleMetadata(content); handle != "" {
-		parts = append(parts, handle)
+		// The content is still retrievable, so say so: a handle on its own
+		// reads as a dead end and models abandon the task rather than fetch it.
+		parts = append(parts, handle,
+			"The full output is still stored. Read it with read_output using the handle above, paging with offset and limit.")
 	} else {
-		parts = append(parts, "Oversized tool output omitted to keep context bounded.")
+		parts = append(parts, "Oversized tool output was dropped to keep context bounded. Re-run the call if you need it again.")
 	}
 	return strings.Join(parts, "\n")
 }
