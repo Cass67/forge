@@ -351,3 +351,49 @@ func TestRunMCPLoginAndLogout(t *testing.T) {
 		t.Fatalf("BearerToken() after logout = (%t, %v)", ok, err)
 	}
 }
+
+// -h/--help/-v/--version reach the chat flag parser unless they are caught
+// first, because every leading dash is otherwise treated as a chat flag.
+func TestRunTopLevelFlag(t *testing.T) {
+	captured := func(args []string) (string, bool) {
+		t.Helper()
+		stdout := os.Stdout
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("pipe: %v", err)
+		}
+		os.Stdout = w
+		handled := runTopLevelFlag(args)
+		_ = w.Close()
+		os.Stdout = stdout
+		out, _ := io.ReadAll(r)
+		return string(out), handled
+	}
+
+	for _, arg := range []string{"-v", "--version"} {
+		out, handled := captured([]string{arg})
+		if !handled {
+			t.Fatalf("%s was not handled", arg)
+		}
+		if !strings.Contains(out, "forge v") {
+			t.Errorf("%s printed %q, want a version banner", arg, out)
+		}
+	}
+
+	for _, arg := range []string{"-h", "--help"} {
+		out, handled := captured([]string{arg})
+		if !handled {
+			t.Fatalf("%s was not handled", arg)
+		}
+		if !strings.Contains(out, "Usage:") {
+			t.Errorf("%s printed %q, want the top-level help", arg, out)
+		}
+	}
+
+	// Chat flags and subcommands must still fall through to their own paths.
+	for _, args := range [][]string{{}, {"--model", "gpt-5"}, {"-yolo"}, {"status"}} {
+		if _, handled := captured(args); handled {
+			t.Errorf("runTopLevelFlag(%v) = true, want fall-through", args)
+		}
+	}
+}
