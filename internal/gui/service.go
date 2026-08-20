@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -562,6 +563,32 @@ func (s *Service) AttachImage(name string, dataB64 string) (chatstate.ChatAttach
 		return chatstate.ChatAttachment{}, err
 	}
 	_ = cfg
+	return *att, nil
+}
+
+// AttachPath accepts a file the window received as a path rather than as
+// bytes. Dragging from Finder into a webview commonly delivers a file:// URI
+// instead of a File object, and the file is already on disk, so there is
+// nothing to copy.
+func (s *Service) AttachPath(path string) (chatstate.ChatAttachment, error) {
+	_, _, ready := s.snapshot()
+	if !ready {
+		return chatstate.ChatAttachment{}, errNotReady
+	}
+	clean := strings.TrimSpace(path)
+	if after, ok := strings.CutPrefix(clean, "file://"); ok {
+		clean = after
+		if decoded, err := url.PathUnescape(clean); err == nil {
+			clean = decoded
+		}
+	}
+	if clean == "" {
+		return chatstate.ChatAttachment{}, errBadImage
+	}
+	att, err := chatstate.ValidateImageAttachment(clean)
+	if err != nil {
+		return chatstate.ChatAttachment{}, err
+	}
 	return *att, nil
 }
 

@@ -367,22 +367,24 @@ input, textarea, .selectable, .md, .tc-out, .diffbox, .reasoning-body, .msg .bod
 
 /* ---- top bar ---- */
 .topbar {
-  display: flex; align-items: center; gap: 8px; flex: none;
+  display: flex; align-items: center; gap: 8px; flex: none; flex-wrap: wrap;
   min-height: 38px; padding: 5px 10px;
   background: var(--panel); border-bottom: 1px solid var(--border);
 }
 .brand { font-size: 0.6875rem; font-weight: 700; letter-spacing: 1px; color: var(--accent); }
 .workspace-btn {
   display: flex; flex-direction: column; align-items: flex-start; gap: 0;
-  height: var(--control-h); padding: 2px 8px; max-width: 300px;
+  /* Two lines of text: sized by content, or the path is clipped once the
+     type scale grows. */
+  min-height: var(--control-h); padding: 3px 8px; max-width: 22rem;
   background: transparent; border: 1px solid transparent; border-radius: var(--radius);
   color: var(--text); cursor: pointer; font: inherit; overflow: hidden;
 }
 .workspace-btn:hover { background: var(--hover); border-color: var(--border); }
-.ws-name { font-size: 0.75rem; font-weight: 600; line-height: 1.15; }
+.ws-name { font-size: 0.75rem; font-weight: 600; line-height: 1.3; }
 .ws-path {
-  font-size: 0.625rem; color: var(--muted); font-family: var(--mono); line-height: 1.15;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 280px;
+  font-size: 0.625rem; color: var(--muted); font-family: var(--mono); line-height: 1.3;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
 }
 .topbar-spacer { flex: 1; }
 .flash {

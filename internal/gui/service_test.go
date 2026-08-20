@@ -21,7 +21,7 @@ import (
 // accidentally exported helper fails here rather than silently in the window.
 func TestBoundMethodSurface(t *testing.T) {
 	want := []string{
-		"Approve", "AttachImage", "AwaitProviderLogin", "Cancel", "ChooseWorkspace",
+		"Approve", "AttachImage", "AttachPath", "AwaitProviderLogin", "Cancel", "ChooseWorkspace",
 		"Clear", "CompleteProviderLogin", "DeleteThread", "Efforts", "ForgetWorkspace",
 		"History", "Init", "Models", "NewSession", "OpenURL", "PinWorkspace",
 		"Providers", "Restore", "Send",

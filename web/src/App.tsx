@@ -405,6 +405,36 @@ export default function App() {
     [notify],
   );
 
+  // A webview may hand over a dragged file either as a File or as a file://
+  // URI. Finder drags commonly take the second route, which left the drop
+  // looking accepted while nothing attached.
+  const attachDrop = useCallback(
+    async (data: DataTransfer) => {
+      const files = Array.from(data.files);
+      if (files.length > 0) {
+        await attachFiles(files);
+        return;
+      }
+      const uris = (data.getData("text/uri-list") || data.getData("text/plain") || "")
+        .split(/[\r\n]+/)
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith("file://") || line.startsWith("/"));
+      if (uris.length === 0) {
+        notify("nothing attachable in that drop");
+        return;
+      }
+      for (const uri of uris) {
+        try {
+          const att = await forge.attachPath(uri);
+          setPending((p) => [...p, att]);
+        } catch (e) {
+          notify(String(e));
+        }
+      }
+    },
+    [attachFiles, notify],
+  );
+
   const workDirLabel = init?.work_dir?.replace(/^\/Users\/[^/]+/, "~") ?? "";
 
   return (
@@ -424,7 +454,7 @@ export default function App() {
         e.preventDefault();
         dragDepth.current = 0;
         setDragging(false);
-        void attachFiles(Array.from(e.dataTransfer.files));
+        void attachDrop(e.dataTransfer);
       }}
     >
       <header className="topbar">

@@ -37,9 +37,20 @@ function Shell() {
   return (
     <div className="app">
       <header className="topbar">
+        <button className="icon-btn">☰</button>
         <span className="brand">FORGE</span>
+        <button className="workspace-btn">
+          <span className="ws-name">ssh_replace_poc</span>
+          <span className="ws-path">~/Documents/OPC/git/work/ssh_replace_poc</span>
+        </button>
         <span className="topbar-spacer" />
         <button className="pill">chatgpt/gpt-5.6-sol</button>
+        <div className="seg">
+          {["none", "low", "medium", "high", "xhigh", "max"].map((e) => (
+            <button key={e} className={`seg-btn ${e === "medium" ? "on" : ""}`}>{e}</button>
+          ))}
+        </div>
+        <button className="icon-btn">⚙</button>
       </header>
       <div className="cols">
         <main className="center">
