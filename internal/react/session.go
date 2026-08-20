@@ -174,14 +174,20 @@ type SessionSnapshot struct {
 }
 
 type Session struct {
-	mu                   sync.Mutex
-	turn                 int
-	lastInput            string
-	initialInput         string
-	recentInputs         []string
-	history              []llm.Message
+	mu           sync.Mutex
+	turn         int
+	lastInput    string
+	initialInput string
+	recentInputs []string
+	// items is the only source of conversation truth. historyCache is a
+	// projection of it, rebuilt on demand; nothing may write to it directly.
+	// Keeping a second, independently mutated message list is what let the
+	// live prompt and the replayed prompt drift apart.
+	historyCache         []llm.Message
+	historyDirty         bool
 	turns                []TurnRecord
 	items                []protocol.Item
+	refSeq               int64
 	compactedTurns       int
 	compactionSummary    string
 	memorySummary        string
@@ -264,16 +270,29 @@ func (s *Session) AdoptReplayItems(items []protocol.Item) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	// Adopt the resolved log itself, so the resumed session derives its prompt
+	// the same way the live one does. Any compaction in the adopted thread is
+	// already folded in, and sequences are renumbered onto this session.
+	resolved := sessionstore.ResolveItems(items)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.history = append([]llm.Message(nil), replay.History...)
+	s.items = nil
+	s.historyCache = nil
+	s.historyDirty = true
+	s.refSeq = 0
+	for _, item := range resolved {
+		item.Seq = 0
+		item.ID = ""
+		item.Ref = ""
+		s.appendItemLocked(item)
+	}
 	s.recentInputs = append([]string(nil), replay.RecentInputs...)
 	s.compactionSummary = replay.CompactionSummary
 	if len(s.recentInputs) > 0 {
 		s.initialInput = strings.TrimSpace(s.recentInputs[0])
 		s.lastInput = strings.TrimSpace(s.recentInputs[len(s.recentInputs)-1])
 	}
-	return len(s.history), nil
+	return len(s.historyLocked()), nil
 }
 
 func (s *Session) DurableSink() DurableSink {
@@ -446,11 +465,6 @@ func (s *Session) AppendToolResultForTurn(turnID string, result protocol.ToolRes
 		s.mu.Unlock()
 		return nil
 	}
-	s.history = append(s.history, llm.Message{
-		Role:       llm.RoleTool,
-		ToolCallID: result.ToolCallID,
-		Content:    result.Text,
-	})
 	item := s.appendItemLocked(protocol.Item{
 		Kind:       protocol.ItemToolResult,
 		TurnID:     turnID,
@@ -529,11 +543,6 @@ func (s *Session) AppendFailureAndToolResultForTurn(turnID string, failure proto
 		Failure:  &failure,
 		ToolCall: &toolCall,
 	})
-	s.history = append(s.history, llm.Message{
-		Role:       llm.RoleTool,
-		ToolCallID: result.ToolCallID,
-		Content:    result.Text,
-	})
 	resultItem := s.appendItemLocked(protocol.Item{
 		Kind:       protocol.ItemToolResult,
 		TurnID:     turnID,
@@ -574,11 +583,37 @@ func (s *Session) appendItemLocked(item protocol.Item) protocol.Item {
 	if item.ID == "" {
 		item.ID = fmt.Sprintf("item-%d", len(s.items)+1)
 	}
+	if item.Ref == "" {
+		s.refSeq++
+		item.Ref = fmt.Sprintf("ref-%d", s.refSeq)
+	}
 	if item.At.IsZero() {
 		item.At = time.Now().UTC()
 	}
 	s.items = append(s.items, item)
+	s.historyDirty = true
 	return item
+}
+
+// historyLocked projects the item log into the message list sent to the model.
+func (s *Session) historyLocked() []llm.Message {
+	if !s.historyDirty && s.historyCache != nil {
+		return s.historyCache
+	}
+	replay, err := sessionstore.ReplayItems(s.items)
+	if err != nil {
+		// A projection failure must not silently serve a stale prompt.
+		s.lastDurableError = err.Error()
+		return s.historyCache
+	}
+	s.historyCache = replay.History
+	s.historyDirty = false
+	return s.historyCache
+}
+
+// invalidateHistoryLocked forces the next projection to rebuild.
+func (s *Session) invalidateHistoryLocked() {
+	s.historyDirty = true
 }
 
 func (s *Session) recordDurableAppendResult(err error) {
@@ -615,9 +650,7 @@ func (s *Session) AppendSkillContext(name, body string) {
 	if name == "" && body == "" {
 		return
 	}
-	content := fmt.Sprintf("[Skill: %s]\n\n%s", name, body)
 	s.mu.Lock()
-	s.history = append(s.history, llm.Message{Role: llm.RoleSystem, Content: content})
 	item := s.appendItemLocked(protocol.Item{
 		Kind:         protocol.ItemSkillContext,
 		SkillContext: &protocol.SkillContextItem{Name: name, Body: body},
@@ -650,15 +683,18 @@ func (s *Session) recordInputWithPartsLocked(input string, parts []llm.MessageCo
 	if len(parts) > 0 {
 		msg.ContentParts = parts
 	}
-	s.history = append(s.history, msg)
 	s.turns = append(s.turns, TurnRecord{
 		Number: turn,
 		Input:  input,
 	})
 	item := s.appendItemLocked(protocol.Item{
-		Kind:    protocol.ItemUserMessage,
-		TurnID:  fmt.Sprintf("turn-%d", turn),
-		Message: &protocol.MessageItem{Role: string(llm.RoleUser), Text: input},
+		Kind:   protocol.ItemUserMessage,
+		TurnID: fmt.Sprintf("turn-%d", turn),
+		Message: &protocol.MessageItem{
+			Role:         string(llm.RoleUser),
+			Text:         input,
+			ContentParts: parts,
+		},
 	})
 	return turn, item
 }
@@ -726,7 +762,6 @@ func (s *Session) AppendAssistantMessage(text string) error {
 	}
 	s.mu.Lock()
 	trimmed := strings.TrimSpace(text)
-	s.history = append(s.history, llm.Message{Role: llm.RoleAssistant, Content: trimmed})
 	item := s.appendItemLocked(protocol.Item{
 		Kind:    protocol.ItemAssistantMessage,
 		Message: &protocol.MessageItem{Role: string(llm.RoleAssistant), Text: trimmed},
@@ -742,7 +777,6 @@ func (s *Session) AppendUserMessage(text string) error {
 	}
 	s.mu.Lock()
 	trimmed := strings.TrimSpace(text)
-	s.history = append(s.history, llm.Message{Role: llm.RoleUser, Content: trimmed})
 	item := s.appendItemLocked(protocol.Item{
 		Kind:    protocol.ItemUserMessage,
 		Message: &protocol.MessageItem{Role: string(llm.RoleUser), Text: trimmed},
@@ -760,7 +794,6 @@ func (s *Session) appendQueuedUserInput(text string) {
 	s.mu.Lock()
 	s.lastInput = trimmed
 	s.recentInputs = append(s.recentInputs, trimmed)
-	s.history = append(s.history, llm.Message{Role: llm.RoleUser, Content: trimmed})
 	items := []protocol.Item{s.appendItemLocked(protocol.Item{
 		Kind:    protocol.ItemUserMessage,
 		Message: &protocol.MessageItem{Role: string(llm.RoleUser), Text: trimmed},
@@ -794,18 +827,13 @@ func (s *Session) AppendAssistantToolTurn(text string, calls []llm.NativeToolCal
 			last.ToolCalls = append(last.ToolCalls, TurnToolCall{Name: strings.TrimSpace(call.Name)})
 		}
 	}
-	s.history = append(s.history, llm.Message{
-		Content:   text,
-		Role:      llm.RoleAssistant,
-		ToolCalls: redactNativeToolCalls(calls),
-	})
 	items := make([]protocol.Item, 0, len(calls)+1)
-	if text != "" {
-		items = append(items, s.appendItemLocked(protocol.Item{
-			Kind:    protocol.ItemAssistantMessage,
-			Message: &protocol.MessageItem{Role: string(llm.RoleAssistant), Text: text},
-		}))
-	}
+	// Recorded even when the preamble is empty: this is the message the tool
+	// calls belong to, and where reasoning attaches.
+	items = append(items, s.appendItemLocked(protocol.Item{
+		Kind:    protocol.ItemAssistantMessage,
+		Message: &protocol.MessageItem{Role: string(llm.RoleAssistant), Text: text},
+	}))
 	for _, call := range calls {
 		items = append(items, s.appendItemLocked(nativeToolCallItem(call)))
 	}
@@ -826,6 +854,7 @@ func nativeToolCallItem(call llm.NativeToolCall) protocol.Item {
 	if redacted == "" {
 		return item
 	}
+	item.ToolCall.ArgsJSON = redacted
 	var args map[string]any
 	if err := json.Unmarshal([]byte(redacted), &args); err == nil {
 		item.ToolCall.Args = args
@@ -852,9 +881,14 @@ func (s *Session) SetLastAssistantReasoning(reasoning string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i := len(s.history) - 1; i >= 0; i-- {
-		if s.history[i].Role == llm.RoleAssistant {
-			s.history[i].ReasoningContent = redactRuntimeText(reasoning)
+	redacted := redactRuntimeText(reasoning)
+	for i := len(s.items) - 1; i >= 0; i-- {
+		item := s.items[i]
+		if item.Kind == protocol.ItemAssistantMessage && item.Message != nil {
+			clone := *item.Message
+			clone.ReasoningContent = redacted
+			s.items[i].Message = &clone
+			s.invalidateHistoryLocked()
 			return
 		}
 	}
@@ -868,11 +902,6 @@ func (s *Session) AppendNativeToolResult(toolCallID, result string) error {
 	}
 	s.mu.Lock()
 	toolName := s.toolNameForCallIDLocked(toolCallID)
-	s.history = append(s.history, llm.Message{
-		Role:       llm.RoleTool,
-		ToolCallID: toolCallID,
-		Content:    result,
-	})
 	item := s.appendItemLocked(protocol.Item{
 		Kind:       protocol.ItemToolResult,
 		ToolResult: &protocol.ToolResultItem{ToolName: toolName, ToolCallID: toolCallID, Text: result},
@@ -903,8 +932,9 @@ func (s *Session) toolNameForCallIDLocked(toolCallID string) string {
 			return item.ToolCall.ToolName
 		}
 	}
-	for i := len(s.history) - 1; i >= 0; i-- {
-		for _, call := range s.history[i].ToolCalls {
+	history := s.historyLocked()
+	for i := len(history) - 1; i >= 0; i-- {
+		for _, call := range history[i].ToolCalls {
 			if call.ID == toolCallID {
 				return call.Name
 			}
@@ -920,6 +950,7 @@ func appendDurableItem(sink DurableSink, item protocol.Item) error {
 	item.ThreadID = ""
 	item.Seq = 0
 	item.ID = ""
+	// Ref is deliberately preserved: compaction records point at it.
 	return sink.Append(context.Background(), item)
 }
 
@@ -938,7 +969,7 @@ func (s *Session) Snapshot() SessionSnapshot {
 		LastInput:            s.lastInput,
 		InitialInput:         s.initialInput,
 		RecentInputs:         append([]string(nil), s.recentInputs...),
-		History:              append([]llm.Message(nil), s.history...),
+		History:              append([]llm.Message(nil), s.historyLocked()...),
 		Turns:                append([]TurnRecord(nil), s.turns...),
 		Items:                cloneProtocolItems(s.items),
 		CompactedTurns:       s.compactedTurns,
@@ -984,7 +1015,10 @@ func (s *Session) Clear() {
 	s.lastInput = ""
 	s.initialInput = ""
 	s.recentInputs = nil
-	s.history = nil
+	s.items = nil
+	s.historyCache = nil
+	s.historyDirty = true
+	s.refSeq = 0
 	s.turns = nil
 	s.compactedTurns = 0
 	s.compactionSummary = ""
@@ -1452,7 +1486,7 @@ func (s *Session) QueuePendingInput(text string) {
 	})
 	sink := s.durableSink
 	s.mu.Unlock()
-	s.persistDurableItem(item, sink)
+	_ = s.persistDurableItem(item, sink)
 }
 
 func (s *Session) HasPendingInput() bool {
@@ -1495,7 +1529,7 @@ func (s *Session) MarkInterrupted() {
 	})
 	sink := s.durableSink
 	s.mu.Unlock()
-	s.persistDurableItem(item, sink)
+	_ = s.persistDurableItem(item, sink)
 }
 
 func (s *Session) turnHasTerminalLocked(turnID string) bool {
@@ -1531,47 +1565,60 @@ func (s *Session) compact(keep int) bool {
 		keep = 1
 	}
 	s.mu.Lock()
-	if len(s.recentInputs) <= keep && len(s.history) <= keep*10 {
+
+	// Phase 1: drop whole turns when the session has more than `keep` of them.
+	dropCount := len(s.recentInputs) - keep
+	if dropCount < 0 {
+		dropCount = 0
+	}
+	droppedTurnIDs := map[string]bool{}
+	var droppedTurns []TurnRecord
+	if dropCount > 0 {
+		droppedTurns = append([]TurnRecord(nil), s.turns[:min(dropCount, len(s.turns))]...)
+		for _, turn := range droppedTurns {
+			droppedTurnIDs[fmt.Sprintf("turn-%d", turn.Number)] = true
+		}
+	}
+
+	live := s.liveItemsLocked()
+	var shadowed []string
+	for _, item := range live {
+		if droppedTurnIDs[item.TurnID] && contributesToPrompt(item.Kind) {
+			shadowed = append(shadowed, item.Ref)
+		}
+	}
+
+	// Phase 2: a long autonomous run is a single turn, so there are no turns to
+	// drop and phase 1 frees nothing. Shadow the oldest balanced span of steps
+	// instead, which is the only thing that bounds such a session.
+	if len(shadowed) == 0 {
+		shadowed = s.shadowSpanLocked(live)
+	}
+	if len(shadowed) == 0 {
+		// Report honestly: claiming success here reset the failure circuit
+		// breaker and hid a session that could no longer be compacted.
 		s.mu.Unlock()
 		return false
 	}
-	dropCount := len(s.recentInputs) - keep
-	if dropCount <= 0 {
-		dropCount = 0
-	}
-	droppedRecentInputs := append([]string(nil), s.recentInputs[:dropCount]...)
-	droppedTurns := append([]TurnRecord(nil), s.turns[:min(dropCount, len(s.turns))]...)
-	s.recentInputs = append([]string(nil), s.recentInputs[dropCount:]...)
-	if len(s.turns) > dropCount {
-		s.turns = append([]TurnRecord(nil), s.turns[dropCount:]...)
-	} else {
-		s.turns = nil
-	}
-	if len(s.turns) == 0 {
-		s.history = nil
-	} else {
-		firstTurn := s.turns[0].Input
-		cut := 0
-		for idx, msg := range s.history {
-			if msg.Role == llm.RoleUser && strings.TrimSpace(msg.Content) == strings.TrimSpace(firstTurn) {
-				cut = idx
-				break
-			}
+
+	if dropCount > 0 {
+		droppedRecentInputs := append([]string(nil), s.recentInputs[:dropCount]...)
+		s.recentInputs = append([]string(nil), s.recentInputs[dropCount:]...)
+		if len(s.turns) > dropCount {
+			s.turns = append([]TurnRecord(nil), s.turns[dropCount:]...)
+		} else {
+			s.turns = nil
 		}
-		s.history = append([]llm.Message(nil), s.history[cut:]...)
+		s.compactedTurns += len(droppedRecentInputs)
+		if parts := summarizeCompactedTurns(droppedTurns); len(parts) > 0 {
+			s.compactionSummary = strings.TrimSpace(s.compactionSummary + " " + strings.Join(parts, " | "))
+		}
 	}
-	s.compactedTurns += len(droppedRecentInputs)
-	parts := summarizeCompactedTurns(droppedTurns)
-	if len(parts) > 0 {
-		s.compactionSummary = strings.TrimSpace(s.compactionSummary + " " + strings.Join(parts, " | "))
-	}
-	item := s.appendItemLocked(protocol.Item{
-		Kind:       protocol.ItemCompaction,
-		Compaction: &protocol.CompactionItem{Summary: s.compactionSummary},
-	})
+
+	item := s.appendCompactionLocked(shadowed, nil)
 	sink := s.durableSink
 	s.mu.Unlock()
-	s.persistDurableItem(item, sink)
+	_ = s.persistDurableItem(item, sink)
 	return true
 }
 

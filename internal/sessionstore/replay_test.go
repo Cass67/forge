@@ -211,3 +211,39 @@ func TestJSONLDurableUnterminatedToolTurnReplaysResumableAfterStoreReopen(t *tes
 		t.Fatalf("tool calls = %#v, want replayed tool call", turn.ToolCalls)
 	}
 }
+
+func TestPolicyDropsExactArgsWhenSensitiveKeyPresent(t *testing.T) {
+	item := DefaultPersistencePolicy().Apply(protocol.Item{
+		Kind: protocol.ItemToolCall,
+		ToolCall: &protocol.ToolCallItem{
+			ToolName:   "http",
+			ToolCallID: "c1",
+			Args:       map[string]any{"api_key": "sk-live-abcdef0123456789"},
+			ArgsJSON:   `{"api_key":"sk-live-abcdef0123456789"}`,
+		},
+	})
+	if strings.Contains(item.ToolCall.ArgsJSON, "sk-live-abcdef0123456789") {
+		t.Fatalf("secret survived in ArgsJSON: %q", item.ToolCall.ArgsJSON)
+	}
+	if item.ToolCall.Args["api_key"] != "<REDACTED>" {
+		t.Fatalf("map not redacted: %v", item.ToolCall.Args)
+	}
+}
+
+func TestReplayPreservesExactToolCallArgs(t *testing.T) {
+	// Key order must survive: a reordered argument object changes the prompt
+	// bytes and invalidates the provider's cached prefix.
+	exact := `{"path":"a.go","limit":10,"offset":0}`
+	replay, err := ReplayItems([]protocol.Item{
+		{Seq: 1, Ref: "r1", Kind: protocol.ItemAssistantMessage, Message: &protocol.MessageItem{Role: "assistant"}},
+		{Seq: 2, Ref: "r2", Kind: protocol.ItemToolCall, ToolCall: &protocol.ToolCallItem{
+			ToolName: "read", ToolCallID: "c1", ArgsJSON: exact,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := replay.History[0].ToolCalls[0].ArgsJSON; got != exact {
+		t.Fatalf("args round-tripped to %q, want %q", got, exact)
+	}
+}

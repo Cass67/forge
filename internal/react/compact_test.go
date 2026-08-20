@@ -361,7 +361,10 @@ func TestRunnerReactiveCompactsAndRetriesOnceOnContextError(t *testing.T) {
 	}
 }
 
-func TestRunnerReactiveCompactionOnlyRetriesOnce(t *testing.T) {
+// A session that overflows no matter how much it sheds must still terminate.
+// Recovery retries while compaction keeps making progress, then stops and
+// surfaces the provider error rather than spinning.
+func TestRunnerReactiveCompactionTerminatesWhenOverflowPersists(t *testing.T) {
 	driver := &contextErrorAlwaysDriver{}
 	session := NewSession()
 	for i := 1; i <= 45; i++ {
@@ -372,10 +375,13 @@ func TestRunnerReactiveCompactionOnlyRetriesOnce(t *testing.T) {
 	r := NewRunner(Config{Driver: driver, Session: session})
 
 	if err := r.Run(context.Background(), "continue"); err == nil {
-		t.Fatal("expected context error after one reactive retry")
+		t.Fatal("expected the context error to surface once compaction stopped helping")
 	}
-	if driver.calls != 2 {
-		t.Fatalf("driver calls = %d, want one retry", driver.calls)
+	if driver.calls < 2 {
+		t.Fatalf("driver calls = %d, want at least one recovery attempt", driver.calls)
+	}
+	if driver.calls > maxContextCompactionsPerTurn+1 {
+		t.Fatalf("driver calls = %d, want recovery bounded by %d attempts", driver.calls, maxContextCompactionsPerTurn)
 	}
 }
 
