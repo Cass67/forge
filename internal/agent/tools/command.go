@@ -52,8 +52,8 @@ func NewRunCommandWithWorkDirProvider(fallbackWorkDir string, provider WorkDirPr
 			// a decidable question about which path the command resolves to,
 			// not a guess about how dangerous it looks, and it is an error
 			// rather than advice so the model must change the command.
-			if target := blockedDestructiveTarget(command, currentWorkDir(provider, fallbackWorkDir), userHomeDir()); target != "" {
-				return "", fmt.Errorf("refusing to run: %q would destroy %s, which is outside the workspace and not recoverable; target a path inside the working directory instead", command, target)
+			if reason := blockedCommand(command, currentWorkDir(provider, fallbackWorkDir), userHomeDir()); reason != "" {
+				return "", fmt.Errorf("refusing to run %q: %s. This is refused regardless of approval settings; use a narrower command", command, reason)
 			}
 
 			background := isBackgroundCommand(command) || boolArg(args, "run_in_background")
