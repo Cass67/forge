@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import type { Entry } from "../entries";
 import { ToolCard } from "./ToolCard";
+import { ImagePreview } from "./ImagePreview";
 import type { Prefs } from "./SettingsPanel";
 
 function CopyButton({ text, label = "copy" }: { text: string; label?: string }) {
@@ -75,7 +76,14 @@ export function Transcript({ entries, prefs, busy }: { entries: Entry[]; prefs: 
           case "text":
             return e.role === "user" ? (
               <div key={e.id} className="msg user">
-                <div className="body">{e.text}</div>
+                {e.text ? <div className="body">{e.text}</div> : null}
+                {e.images && e.images.length > 0 ? (
+                  <div className="msg-images">
+                    {e.images.map((p) => (
+                      <ImagePreview key={p} path={p} />
+                    ))}
+                  </div>
+                ) : null}
               </div>
             ) : (
               <div key={e.id} className="msg agent">

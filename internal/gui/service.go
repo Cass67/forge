@@ -618,6 +618,20 @@ func (s *Service) AttachPath(path string) (chatstate.ChatAttachment, error) {
 	if !ready {
 		return chatstate.ChatAttachment{}, errNotReady
 	}
+	clean, err := resolveLocalPath(path)
+	if err != nil {
+		return chatstate.ChatAttachment{}, err
+	}
+	att, err := chatstate.ValidateImageAttachment(clean)
+	if err != nil {
+		return chatstate.ChatAttachment{}, err
+	}
+	return *att, nil
+}
+
+// resolveLocalPath turns what the window hands over into a filesystem path.
+// Drags may arrive as plain paths or as percent-encoded file:// URIs.
+func resolveLocalPath(path string) (string, error) {
 	clean := strings.TrimSpace(path)
 	if after, ok := strings.CutPrefix(clean, "file://"); ok {
 		clean = after
@@ -626,13 +640,9 @@ func (s *Service) AttachPath(path string) (chatstate.ChatAttachment, error) {
 		}
 	}
 	if clean == "" {
-		return chatstate.ChatAttachment{}, errBadImage
+		return "", errBadImage
 	}
-	att, err := chatstate.ValidateImageAttachment(clean)
-	if err != nil {
-		return chatstate.ChatAttachment{}, err
-	}
-	return *att, nil
+	return clean, nil
 }
 
 // ---- helpers -------------------------------------------------------------

@@ -169,10 +169,10 @@ export default function App() {
 
   const sendInput = useCallback(
     (text: string) => {
-      setEntries((prev) => [...prev, userEntry(text)]);
+      const images = pending;
+      setEntries((prev) => [...prev, userEntry(text, images.map((a) => a.path))]);
       setHistory((h) => [...h, text]);
       setBusy(true);
-      const images = pending;
       setPending([]);
       const p = images.length > 0 ? forge.sendWithImages(text, images) : forge.send(text);
       void p.catch((e: unknown) => {

@@ -1,7 +1,15 @@
 import type { WireEvent } from "./bridge";
 
 export type Entry =
-  | { id: number; t: "text"; role: "user" | "agent"; agent?: string; text: string; streaming?: boolean }
+  | {
+      id: number;
+      t: "text";
+      role: "user" | "agent";
+      agent?: string;
+      text: string;
+      streaming?: boolean;
+      images?: string[];
+    }
   | { id: number; t: "reasoning"; text: string; streaming?: boolean }
   | { id: number; t: "tool"; name: string; summary: string; output?: string; diff?: string; isError?: boolean; done?: boolean }
   | { id: number; t: "info"; text: string }
@@ -11,8 +19,8 @@ export type Entry =
 let nextId = 1;
 const nid = () => nextId++;
 
-export function userEntry(text: string): Entry {
-  return { id: nid(), t: "text", role: "user", text };
+export function userEntry(text: string, images?: string[]): Entry {
+  return { id: nid(), t: "text", role: "user", text, images };
 }
 
 // closeStreaming marks the trailing streaming entry (agent text or reasoning)

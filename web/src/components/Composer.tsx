@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent } 
 import { matchCommands, type Command } from "../commands";
 import { CommandPalette } from "./CommandPalette";
 import type { Attachment } from "../bridge";
+import { ImagePreview } from "./ImagePreview";
 
 export function Composer({
   yolo,
@@ -126,7 +127,8 @@ export function Composer({
       {attachments.length > 0 ? (
         <div className="attachments">
           {attachments.map((a) => (
-            <span className="chip" key={a.id} title={`${a.name} · ${a.width}×${a.height}`}>
+            <span className="chip attach" key={a.id} title={`${a.name} · ${a.width}×${a.height}`}>
+              <ImagePreview path={a.path} alt={a.name} small />
               {a.name}
               <button className="chip-x" onClick={() => onRemoveAttachment(a.id)}>
                 ✕

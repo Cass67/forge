@@ -168,6 +168,7 @@ export const forge = {
   setYolo: (on: boolean) => call<boolean>("SetYolo", on),
   attachImage: (name: string, dataB64: string) => call<Attachment>("AttachImage", name, dataB64),
   attachPath: (path: string) => call<Attachment>("AttachPath", path),
+  imagePreview: (path: string) => call<string>("ImagePreview", path),
 
   onEvent: (fn: (ev: WireEvent) => void) =>
     Events.On("forge:event", (e: unknown) => fn(payload<WireEvent>(e))),

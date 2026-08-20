@@ -1,6 +1,15 @@
 import { useState } from "react";
 import type { Entry } from "../entries";
 import { DiffView } from "./DiffView";
+import { ImagePreview } from "./ImagePreview";
+
+// A tool that names an image file is worth showing rather than describing.
+const IMAGE_RE = /(\/?[^\s"']+\.(?:png|jpe?g|gif))/i;
+
+function imagePathIn(entry: ToolEntry): string {
+  const m = IMAGE_RE.exec(entry.summary || "");
+  return m ? m[1] : "";
+}
 
 type ToolEntry = Extract<Entry, { t: "tool" }>;
 
@@ -25,6 +34,7 @@ export function ToolCard({ entry, defaultOpen = false }: { entry: ToolEntry; def
       {open && (
         <div className="tc-body">
           {!entry.done ? <div className="tc-pending">running…</div> : null}
+          {imagePathIn(entry) ? <ImagePreview path={imagePathIn(entry)} alt={entry.name} /> : null}
           {entry.diff ? <DiffView diff={entry.diff} /> : null}
           {out ? (
             <>
