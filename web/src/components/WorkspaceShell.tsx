@@ -879,9 +879,7 @@ export function WorkspaceShell({
                 }}
                 title={`${tool.title} — drag onto another panel to move or split it`}
               >
-                {/* The chat's tab is only a grip: the conversations beside it
-                  are what the strip is for. */}
-                {tool.kind === "chat" ? "⠿" : tool.title}
+                {tool.title}
               </button>
               {tool.kind === "terminal" || tool.kind === "preview" ? (
                 <button
@@ -896,7 +894,12 @@ export function WorkspaceShell({
           );
         })}
         {group.tools.some((tool) => tool.kind === "chat") ? (
-          <span className="workspace-chat-tabs">{chatTabs}</span>
+          <span
+            className="workspace-chat-tabs"
+            onClick={() => focusTool("chat")}
+          >
+            {chatTabs}
+          </span>
         ) : null}
       </div>
       <div className="workspace-group-body" ref={groupBodyRef(group.id)} />
