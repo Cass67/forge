@@ -132,6 +132,9 @@ export function Sidebar({
                   onClick={() =>
                     setClosed((c) => ({ ...c, [ws.path]: !c[ws.path] }))
                   }
+                  onDoubleClick={() =>
+                    isActive ? onNew() : onOpenWorkspace(ws.path)
+                  }
                   title={ws.path}
                 >
                   <span className="ws-caret">{collapsed ? "▸" : "▾"}</span>

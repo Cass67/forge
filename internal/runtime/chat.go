@@ -905,6 +905,10 @@ func RunChatLive(setup *ChatSetup) {
 				}
 				state.Clear()
 				reactRunner.ClearHistory()
+				// New chat must stop owning old durable thread. Otherwise sidebar
+				// shows blank chat while delete guard still protects old selection.
+				session.SetDurableThreadID("")
+				configureDurableSessionSink(setup.Config, session, setup.WorkDir)
 				evRenderer.Info("new session started")
 			case "__turn_done__":
 				evRenderer.TurnDone()
@@ -1085,7 +1089,16 @@ func RunChatLive(setup *ChatSetup) {
 			if len(items) == 0 {
 				return 0, fmt.Errorf("thread %s not found", threadID)
 			}
-			return session.AdoptReplayItems(items)
+			n, err := session.AdoptReplayItems(items)
+			if err != nil {
+				return 0, err
+			}
+			// Restore changes both model context and durable destination. Keeping
+			// old sink made UI highlight one thread while writes and delete guards
+			// still treated previous thread as active.
+			session.SetDurableThreadID(threadID)
+			session.SetDurableSink(sessionstore.NewLiveSession(threadID, store, sessionstore.DefaultPersistencePolicy()))
+			return n, nil
 		},
 		ApprovalCh:      evRenderer.ApprovalChan(),
 		ResponseCh:      evRenderer.ResponseChan(),

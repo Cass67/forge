@@ -81,6 +81,7 @@ function TerminalPane({
   const terminal = useRef<Terminal | null>(null);
   const fit = useRef<FitAddon | null>(null);
   const started = useRef(false);
+  const lastKey = useRef({ signature: "", at: 0 });
   const lastInput = useRef({ data: "", at: 0 });
 
   useEffect(() => {
@@ -100,6 +101,15 @@ function TerminalPane({
     term.loadAddon(fitAddon);
     term.open(host.current);
     fitAddon.fit();
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type !== "keydown" || event.repeat || event.isComposing) return true;
+      const signature = `${event.code}:${event.key}:${event.metaKey}:${event.ctrlKey}:${event.altKey}:${event.shiftKey}`;
+      const now = performance.now();
+      if (signature === lastKey.current.signature && now - lastKey.current.at < 40)
+        return false;
+      lastKey.current = { signature, at: now };
+      return true;
+    });
 
     const offEvent = forge.onTerminal((event) => {
       if (event.id !== id) return;
@@ -110,10 +120,10 @@ function TerminalPane({
       }
     });
     const input = term.onData((data) => {
-      // Wails/WebKit can dispatch the same xterm input callback twice in one
-      // event turn after a portal remount. Do not send that duplicate to PTY.
+      // WebKit can emit one xterm input twice even when only one keydown reaches
+      // xterm. Filter at PTY boundary, where duplicate writes cause visible echo.
       const now = performance.now();
-      if (lastInput.current.data === data && now - lastInput.current.at < 8) return;
+      if (lastInput.current.data === data && now - lastInput.current.at < 40) return;
       lastInput.current = { data, at: now };
       void forge
         .writeTerminal(id, data)
@@ -179,12 +189,14 @@ function TerminalPane({
       onPointerDown={onActivate}
       onDragOver={(event) => {
         if (!event.dataTransfer.types.includes(TERMINAL_TAB_MIME)) return;
+        event.stopPropagation();
         event.preventDefault();
         event.dataTransfer.dropEffect = "move";
       }}
       onDrop={(event) => {
         const tab = event.dataTransfer.getData(TERMINAL_TAB_MIME);
         if (!tab) return;
+        event.stopPropagation();
         event.preventDefault();
         const rect = event.currentTarget.getBoundingClientRect();
         const x = event.clientX - rect.left;
@@ -388,9 +400,11 @@ export function TerminalWorkspace({
             className={`terminal-tab ${tab.id === state.activeTab ? "active" : ""}`}
             draggable
             onDragStart={(event) => {
+              event.stopPropagation();
               event.dataTransfer.effectAllowed = "move";
               event.dataTransfer.setData(TERMINAL_TAB_MIME, tab.id);
             }}
+            onDragEnd={(event) => event.stopPropagation()}
           >
             <button
               className="terminal-tab-select"

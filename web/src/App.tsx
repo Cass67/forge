@@ -598,6 +598,11 @@ export default function App() {
     [attachFiles, attachPaths, notify],
   );
 
+  const isFileDrag = (data: DataTransfer) =>
+    data.files.length > 0 ||
+    data.types.includes("Files") ||
+    data.types.includes("text/uri-list");
+
   const workDirLabel = init?.work_dir?.replace(/^\/Users\/[^/]+/, "~") ?? "";
 
   return (
@@ -605,16 +610,21 @@ export default function App() {
       className={`app ${dragging ? "dragging" : ""}`}
       data-file-drop-target
       onDragEnter={(e) => {
+        if (!isFileDrag(e.dataTransfer)) return;
         e.preventDefault();
         dragDepth.current++;
         setDragging(true);
       }}
-      onDragOver={(e) => e.preventDefault()}
+      onDragOver={(e) => {
+        if (isFileDrag(e.dataTransfer)) e.preventDefault();
+      }}
       onDragLeave={(e) => {
+        if (!isFileDrag(e.dataTransfer)) return;
         e.preventDefault();
         if (--dragDepth.current <= 0) setDragging(false);
       }}
       onDrop={(e) => {
+        if (!isFileDrag(e.dataTransfer)) return;
         e.preventDefault();
         dragDepth.current = 0;
         setDragging(false);
@@ -783,6 +793,7 @@ export default function App() {
       {overlay === "workspaces" ? (
         <WorkspaceMenu
           workspaces={workspaces}
+          onNew={newThread}
           onOpen={(dir) => {
             setOverlay("none");
             openWorkspace(dir);

@@ -13,11 +13,13 @@ function fmtWhen(iso: string): string {
 export function WorkspaceMenu({
   workspaces,
   onOpen,
+  onNew,
   onAdd,
   onClose,
 }: {
   workspaces: Workspace[];
   onOpen: (dir: string) => void;
+  onNew: () => void;
   onAdd: () => void;
   onClose: () => void;
 }) {
@@ -39,7 +41,16 @@ export function WorkspaceMenu({
             <button
               key={w.path}
               className={`ws-row ${w.active ? "active" : ""} ${w.missing ? "missing" : ""}`}
-              onClick={() => (w.active ? onClose() : onOpen(w.path))}
+              // Keep current row mounted through second click so dblclick fires.
+              onClick={() => {
+                if (!w.active) onOpen(w.path);
+              }}
+              onDoubleClick={() => {
+                if (w.active) {
+                  onNew();
+                  onClose();
+                }
+              }}
               disabled={w.missing}
               title={w.missing ? `${w.path} (no longer exists)` : w.path}
             >
