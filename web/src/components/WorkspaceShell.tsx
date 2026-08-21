@@ -862,9 +862,11 @@ export function WorkspaceShell({
           const tabDrop = tabDropProps(side, group, index);
           return (
             <div
+              aria-selected={group.activeID === tool.id}
               className={`workspace-dock-tab ${group.activeID === tool.id ? "active" : ""} ${tabDrop.className}`}
               draggable
               key={tool.id}
+              onClick={() => focusTool(tool.id)}
               onDragEnd={() => {
                 setDragging("");
                 setDropHint("");
@@ -877,17 +879,24 @@ export function WorkspaceShell({
                 setDragging(tool.id);
               }}
               onDrop={tabDrop.onDrop}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  focusTool(tool.id);
+                }
+              }}
+              role="tab"
+              tabIndex={0}
+              title={`${tool.title} — drag onto another panel to move or split it`}
             >
-              <button
-                onClick={() => focusTool(tool.id)}
-                title={`${tool.title} — drag onto another panel to move or split it`}
-              >
-                {tool.title}
-              </button>
+              <span className="workspace-dock-tab-label">{tool.title}</span>
               {tool.kind === "terminal" || tool.kind === "preview" ? (
                 <button
                   className="workspace-tab-close"
-                  onClick={() => closePanel(tool.id)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    closePanel(tool.id);
+                  }}
                   aria-label={`Close ${tool.title}`}
                 >
                   ×
