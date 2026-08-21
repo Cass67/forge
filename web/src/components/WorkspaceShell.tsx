@@ -631,7 +631,7 @@ export function WorkspaceShell({
     };
   };
 
-  const renderTool = (tool: DockTool) => {
+  const renderTool = (tool: DockTool, layoutKey = "") => {
     if (tool.kind === "chat") return children;
     if (tool.kind === "explorer")
       return (
@@ -667,6 +667,7 @@ export function WorkspaceShell({
         <TerminalWorkspace
           workDir={workDir}
           instanceID={tool.id}
+          layoutKey={layoutKey}
           onNotify={onNotify}
         />
       );
@@ -1012,7 +1013,10 @@ export function WorkspaceShell({
                 </button>
               </div>
             )}
-            {renderTool(tool)}
+            {renderTool(
+              tool,
+              `${home.side}:${home.group.id}:${home.group.activeID}`,
+            )}
           </DockToolHost>
         );
       })}

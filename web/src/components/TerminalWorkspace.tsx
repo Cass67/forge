@@ -7,6 +7,7 @@ import { forge } from "../bridge";
 type Props = {
   workDir: string;
   instanceID?: string;
+  layoutKey?: string;
   onNotify: (message: string) => void;
 };
 
@@ -52,9 +53,11 @@ function terminalTheme(): ITheme {
 export function TerminalWorkspace({
   workDir,
   instanceID = "default",
+  layoutKey = "",
   onNotify,
 }: Props) {
   const host = useRef<HTMLDivElement>(null);
+  const resizeRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     const element = host.current;
@@ -88,6 +91,7 @@ export function TerminalWorkspace({
           .catch((error: unknown) => onNotify(String(error)));
       }
     };
+    resizeRef.current = resize;
     const offEvent = forge.onTerminal((event) => {
       if (event.id !== id) return;
       if (event.data) term.write(event.data);
@@ -147,10 +151,16 @@ export function TerminalWorkspace({
       offEvent();
       started = false;
       void forge.closeTerminal(id);
+      resizeRef.current = () => {};
       term.dispose();
       element.replaceChildren();
     };
   }, [instanceID, onNotify, workDir]);
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => resizeRef.current());
+    return () => cancelAnimationFrame(frame);
+  }, [layoutKey]);
 
   return (
     <section className="terminal-workspace">
