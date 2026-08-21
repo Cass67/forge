@@ -302,6 +302,10 @@ func (g *ApprovalGate) Approve(action tools.Action) (bool, error) {
 		g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionAllow, ApprovalDecisionSourcePolicy, approvalUpdateDetail(evaluationAction)))
 		return true, nil
 	case ApprovalOnRequest:
+		if !guardianWarn && actionTrusted(evaluationAction, g.cfg.KnownSafeCommand) {
+			g.recordApprovalUpdate(NewApprovalUpdate(ApprovalDecisionAllow, ApprovalDecisionSourceTrusted, approvalUpdateDetail(evaluationAction)))
+			return true, nil
+		}
 		if guardianWarn || actionNeedsPrompt(action) {
 			source := ApprovalDecisionSourcePolicy
 			if guardianWarn {

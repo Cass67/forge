@@ -171,6 +171,26 @@ func TestChatRuntimeCreatesDurableThreadStoreWhenOutputDirConfigured(t *testing.
 	}
 }
 
+func TestChatRuntimeDoesNotCreateThreadBeforeFirstInput(t *testing.T) {
+	cfg, err := config.Load(filepath.Join(t.TempDir(), "forge.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	outputDir := t.TempDir()
+	cfg.Session.OutputDir = outputDir
+	session := reactruntime.NewSession()
+	configureDurableSessionSink(cfg, session, t.TempDir())
+
+	store := sessionstore.NewJSONLThreadStore(filepath.Join(outputDir, "threads"))
+	threads, err := store.ListThreads(context.Background(), sessionstore.ListOptions{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(threads) != 0 {
+		t.Fatalf("startup created threads: %#v", threads)
+	}
+}
+
 func TestRegisterToolsWriteFileUsesActiveWorkspaceRoot(t *testing.T) {
 	cfg, err := config.Load(filepath.Join(t.TempDir(), "forge.toml"))
 	if err != nil {

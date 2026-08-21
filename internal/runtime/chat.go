@@ -209,6 +209,44 @@ func ResolveResumeThreadID(cfg *config.Config, explicitID string, continueLast b
 	return records[0].ThreadID, nil
 }
 
+// ResolveWorkspaceResumeThreadID returns newest non-empty thread belonging to
+// workDir. GUI uses this for cold-start continuity; CLI keeps explicit resume
+// semantics above.
+func ResolveWorkspaceResumeThreadID(cfg *config.Config, workDir string) (string, error) {
+	if cfg == nil || strings.TrimSpace(cfg.ResolvedOutputDir()) == "" {
+		return "", nil
+	}
+	want, err := filepath.Abs(strings.TrimSpace(workDir))
+	if err != nil {
+		return "", err
+	}
+	store := sessionstore.NewJSONLThreadStore(filepath.Join(cfg.ResolvedOutputDir(), "threads"))
+	records, err := store.ListThreads(context.Background(), sessionstore.ListOptions{Limit: 500})
+	if err != nil {
+		return "", err
+	}
+	for _, record := range records {
+		cwd := strings.TrimSpace(record.Metadata.CWD)
+		if cwd == "" {
+			continue
+		}
+		got, absErr := filepath.Abs(cwd)
+		if absErr != nil || got != want {
+			continue
+		}
+		items, readErr := store.ReadItems(context.Background(), record.ThreadID)
+		if readErr != nil {
+			return "", readErr
+		}
+		for _, item := range items {
+			if item.Kind == protocol.ItemUserMessage && item.Message != nil && strings.TrimSpace(item.Message.Text) != "" {
+				return record.ThreadID, nil
+			}
+		}
+	}
+	return "", nil
+}
+
 // adoptResumeThread seeds session with a stored thread's history. It is a no-op
 // when setup.ResumeThreadID is empty. Errors are reported to stderr and the
 // session starts fresh rather than aborting the launch.
@@ -495,6 +533,29 @@ func mcpStartupStatus(manager *mcp.Manager, cfg *config.Config) string {
 	return "MCP: " + strings.Join(parts, "; ")
 }
 
+type lazyDurableSessionSink struct {
+	mu          sync.Mutex
+	live        *sessionstore.LiveSession
+	metadata    sessionstore.ThreadMetadataPatch
+	sessionMeta protocol.Item
+	initialized bool
+}
+
+func (s *lazyDurableSessionSink) Append(ctx context.Context, item protocol.Item) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.initialized {
+		if err := s.live.UpdateMetadata(ctx, s.metadata); err != nil {
+			return err
+		}
+		if err := s.live.Append(ctx, s.sessionMeta); err != nil {
+			return err
+		}
+		s.initialized = true
+	}
+	return s.live.Append(ctx, item)
+}
+
 func configureDurableSessionSink(cfg *config.Config, session *reactruntime.Session, workDir string) {
 	if cfg == nil || session == nil {
 		return
@@ -510,21 +571,20 @@ func configureDurableSessionSink(cfg *config.Config, session *reactruntime.Sessi
 	}
 	session.SetDurableThreadID(threadID)
 	live := sessionstore.NewLiveSession(threadID, store, sessionstore.DefaultPersistencePolicy())
-	metadataErr := live.UpdateMetadata(context.Background(), sessionstore.ThreadMetadataPatch{
-		Title:     "Forge chat",
-		Preview:   strings.TrimSpace(session.Snapshot().InitialInput),
-		CWD:       strings.TrimSpace(workDir),
-		Model:     model,
-		UpdatedAt: time.Now().UTC(),
+	session.SetDurableSink(&lazyDurableSessionSink{
+		live: live,
+		metadata: sessionstore.ThreadMetadataPatch{
+			Title:     "Forge chat",
+			Preview:   strings.TrimSpace(session.Snapshot().InitialInput),
+			CWD:       strings.TrimSpace(workDir),
+			Model:     model,
+			UpdatedAt: time.Now().UTC(),
+		},
+		sessionMeta: protocol.Item{
+			Kind:        protocol.ItemSessionMeta,
+			SessionMeta: &protocol.SessionMetaItem{Source: "runtime", CWD: strings.TrimSpace(workDir), Model: model},
+		},
 	})
-	session.SetDurableSink(live)
-	session.AppendItem(protocol.Item{
-		Kind:        protocol.ItemSessionMeta,
-		SessionMeta: &protocol.SessionMetaItem{Source: "runtime", CWD: strings.TrimSpace(workDir), Model: model},
-	})
-	if metadataErr != nil {
-		session.RecordDurableError(metadataErr)
-	}
 }
 
 // backgroundExitNote renders a concise system note about a finished background

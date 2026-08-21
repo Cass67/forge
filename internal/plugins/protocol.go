@@ -15,7 +15,6 @@ const protocolVersion = 1
 
 const (
 	defaultStartupTimeout = 3 * time.Second
-	defaultRequestTimeout = 10 * time.Second
 )
 
 type requestEnvelope struct {
@@ -141,7 +140,7 @@ func requestTimeout(cfg config.PluginConfig) time.Duration {
 	if cfg.RequestTimeoutMS > 0 {
 		return time.Duration(cfg.RequestTimeoutMS) * time.Millisecond
 	}
-	return defaultRequestTimeout
+	return 0
 }
 
 func hookPoint(name string) (hooks.Point, bool) {

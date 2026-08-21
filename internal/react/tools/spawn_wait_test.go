@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	agenttools "forge/internal/agent/tools"
 	"forge/internal/react"
 )
 
@@ -65,10 +64,10 @@ func TestWaitAgentTimeoutDescriptionSaysCurrentStatus(t *testing.T) {
 	t.Fatal("timeout_seconds parameter not found")
 }
 
-func TestWaitAgentToolTimeoutExceedsDefaultToolTimeout(t *testing.T) {
+func TestWaitAgentToolHasNoOuterTimeout(t *testing.T) {
 	tool := NewWaitAgent(nil)
-	if tool.Timeout <= agenttools.DefaultToolTimeout {
-		t.Fatalf("wait_agent timeout = %v, want greater than default tool timeout %v", tool.Timeout, agenttools.DefaultToolTimeout)
+	if tool.Timeout != 0 {
+		t.Fatalf("wait_agent timeout = %v, want disabled", tool.Timeout)
 	}
 }
 

@@ -11,14 +11,14 @@ import (
 )
 
 func TestTimeoutForConfigUsesPhaseFallback(t *testing.T) {
-	if got := timeoutForConfig(config.MCPServerConfig{}, defaultCallTimeout); got != defaultCallTimeout {
-		t.Fatalf("fallback = %s, want %s", got, defaultCallTimeout)
+	if got := timeoutForConfig(config.MCPServerConfig{}, 0); got != 0 {
+		t.Fatalf("tool call fallback = %s, want disabled", got)
 	}
-	if got := timeoutForConfig(config.MCPServerConfig{TimeoutMS: 250}, defaultCallTimeout); got != 250*time.Millisecond {
+	if got := timeoutForConfig(config.MCPServerConfig{TimeoutMS: 250}, 0); got != 250*time.Millisecond {
 		t.Fatalf("override = %s, want 250ms", got)
 	}
-	if defaultCallTimeout <= defaultListTimeout || defaultConnectTimeout <= defaultListTimeout {
-		t.Fatal("tool calls and cold starts need more budget than list calls")
+	if defaultConnectTimeout <= defaultListTimeout {
+		t.Fatal("cold starts need more budget than list calls")
 	}
 }
 

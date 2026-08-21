@@ -58,6 +58,33 @@ func TestResolveResumeThreadID(t *testing.T) {
 	}
 }
 
+func TestResolveWorkspaceResumeThreadID(t *testing.T) {
+	dir := t.TempDir()
+	workspace := t.TempDir()
+	other := t.TempDir()
+	cfg := &config.Config{}
+	cfg.Session.OutputDir = dir
+	seedThread(t, dir, "workspace-old", "first", time.Now().Add(-time.Hour))
+	seedThread(t, dir, "other-new", "other", time.Now())
+	seedThread(t, dir, "workspace-new", "second", time.Now().Add(-time.Minute))
+
+	store := sessionstore.NewJSONLThreadStore(filepath.Join(dir, "threads"))
+	for id, cwd := range map[string]string{
+		"workspace-old": workspace,
+		"workspace-new": workspace,
+		"other-new":     other,
+	} {
+		if err := store.UpdateThreadMetadata(context.Background(), id, sessionstore.ThreadMetadataPatch{CWD: cwd}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	id, err := ResolveWorkspaceResumeThreadID(cfg, workspace)
+	if err != nil || id != "workspace-new" {
+		t.Fatalf("workspace resume = %q, %v", id, err)
+	}
+}
+
 func TestAdoptResumeThreadSeedsHistory(t *testing.T) {
 	dir := t.TempDir()
 	seedThread(t, dir, "thread-1", "read README", time.Now())

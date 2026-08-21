@@ -33,7 +33,11 @@ type ToolRunResult struct {
 type ToolOrchestrator struct{}
 
 func (ToolOrchestrator) Run(ctx context.Context, req ToolRunRequest) ToolRunResult {
-	runCtx, cancel := context.WithTimeout(ctx, req.Tool.EffectiveTimeout())
+	runCtx := ctx
+	cancel := func() {}
+	if timeout := req.Tool.EffectiveTimeout(); timeout > 0 {
+		runCtx, cancel = context.WithTimeout(ctx, timeout)
+	}
 	defer cancel()
 
 	type executeResult struct {

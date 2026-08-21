@@ -37,6 +37,13 @@ func TestRunCommandTimeoutMetadataReflectsConfiguredTimeout(t *testing.T) {
 	}
 }
 
+func TestRunCommandHasNoDefaultTimeout(t *testing.T) {
+	tool := NewRunCommand(t.TempDir(), 0, nil, func(a Action) (bool, error) { return true, nil })
+	if tool.Timeout != 0 {
+		t.Fatalf("run_command timeout metadata = %v, want disabled", tool.Timeout)
+	}
+}
+
 func TestRunCommandUsesConfiguredTimeout(t *testing.T) {
 	for _, command := range []string{
 		"cargo build --release",

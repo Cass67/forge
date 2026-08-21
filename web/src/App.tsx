@@ -103,6 +103,8 @@ export default function App() {
   const [flash, setFlash] = useState("");
   const [history, setHistory] = useState<string[]>([]);
   const [pending, setPending] = useState<Attachment[]>([]);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const switchingWorkspace = useRef(false);
   const scaleRef = useRef(scale);
   scaleRef.current = scale;
   const dragDepth = useRef(0);
@@ -214,11 +216,20 @@ export default function App() {
   const loadInit = useCallback(() => {
     void forge.init().then((payload) => {
       if (!payload.ready) return;
+      switchingWorkspace.current = false;
       setInit(payload);
       setStats((s) => ({ ...s, model: payload.model }));
       if (payload.effort) setEffort(payload.effort);
       setYoloState(payload.yolo);
-      if (payload.thread_id) setActiveID(payload.thread_id);
+      if (payload.thread_id) {
+        setActiveID(payload.thread_id);
+        void forge
+          .history(payload.thread_id)
+          .then((items) => setEntries(itemsToEntries(items)));
+      } else {
+        setActiveID("");
+        setEntries([]);
+      }
       refreshThreads();
     });
   }, [refreshThreads]);
@@ -227,6 +238,7 @@ export default function App() {
     loadInit();
     const offReady = forge.onReady(loadInit);
     const offEvent = forge.onEvent((ev) => {
+      if (switchingWorkspace.current) return;
       setEntries((prev) => applyEvent(prev, ev));
       if (ev.is_error || ev.error) turnFailed.current = true;
       if (ev.kind === "stats" && ev.usage) {
@@ -268,6 +280,9 @@ export default function App() {
       void attachPaths(paths);
     });
     const offApproval = forge.onApproval((action) => {
+      // An approval from the runtime being torn down belongs to a workspace
+      // that is no longer on screen; answering it would target the wrong one.
+      if (switchingWorkspace.current) return;
       setApproval(action);
       markRef.current("waiting");
     });
@@ -458,6 +473,9 @@ export default function App() {
       setEntries([]);
       setActiveID("");
       setBusy(false);
+      setApproval(null);
+      setPending([]);
+      switchingWorkspace.current = true;
       notify(`opening ${dir.split("/").pop()}…`);
       void forge.switchWorkspace(dir).catch((e: unknown) => notify(String(e)));
     },
@@ -829,6 +847,13 @@ export default function App() {
             />
             <Transcript entries={entries} prefs={prefs} busy={busy} />
             <Composer
+              draft={drafts[init?.work_dir ?? ""] ?? ""}
+              onDraftChange={(draft) =>
+                setDrafts((current) => ({
+                  ...current,
+                  [init?.work_dir ?? ""]: draft,
+                }))
+              }
               yolo={yolo}
               onToggleYolo={() => toggleYolo(!yolo)}
               busy={busy}

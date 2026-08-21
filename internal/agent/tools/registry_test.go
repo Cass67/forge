@@ -18,11 +18,11 @@ func TestToolZeroValueIsParallelSafe(t *testing.T) {
 	}
 }
 
-func TestToolEffectiveTimeoutDefaultsPositive(t *testing.T) {
+func TestToolEffectiveTimeoutDefaultsDisabled(t *testing.T) {
 	var tool Tool
 
-	if got := tool.EffectiveTimeout(); got <= 0 {
-		t.Fatalf("zero-value effective timeout = %v, want positive", got)
+	if got := tool.EffectiveTimeout(); got != 0 {
+		t.Fatalf("zero-value effective timeout = %v, want disabled", got)
 	}
 
 	configured := Tool{Timeout: 5 * time.Second}

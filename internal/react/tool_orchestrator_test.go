@@ -92,6 +92,24 @@ func TestToolOrchestratorRunCancelledByParent(t *testing.T) {
 	}
 }
 
+func TestToolOrchestratorHasNoDefaultDeadline(t *testing.T) {
+	orchestrator := ToolOrchestrator{}
+	tool := agenttools.Tool{
+		Name: "slow_but_valid_tool",
+		Execute: func(ctx context.Context, _ map[string]any) (string, error) {
+			if _, hasDeadline := ctx.Deadline(); hasDeadline {
+				return "", errors.New("unexpected deadline")
+			}
+			return "done", nil
+		},
+	}
+
+	result := orchestrator.Run(context.Background(), ToolRunRequest{Tool: tool, Args: map[string]any{}})
+	if result.Status != ToolRunSucceeded || result.Result != "done" {
+		t.Fatalf("Run() = (%s, %q, %v), want success", result.Status, result.Result, result.Error)
+	}
+}
+
 func TestToolOrchestratorRunCancelledByParentWhenToolIgnoresContext(t *testing.T) {
 	orchestrator := ToolOrchestrator{}
 	parent, cancel := context.WithCancel(context.Background())

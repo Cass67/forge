@@ -198,6 +198,7 @@ const defaultCopilotClientID = "Ov23liEz8seIOGdwNY9R"
 const (
 	defaultStreamIdleTimeoutMS       = 120000
 	legacyDefaultStreamIdleTimeoutMS = 30000
+	legacyDefaultCommandTimeout      = 60
 )
 
 func Load(path string) (*Config, error) {
@@ -216,6 +217,9 @@ func Load(path string) (*Config, error) {
 func normalizeLegacyDefaults(c *Config) {
 	if c.Resilience.StreamIdleTimeoutMS == legacyDefaultStreamIdleTimeoutMS {
 		c.Resilience.StreamIdleTimeoutMS = defaultStreamIdleTimeoutMS
+	}
+	if c.Chat.CommandTimeout == legacyDefaultCommandTimeout {
+		c.Chat.CommandTimeout = 0
 	}
 }
 
@@ -322,7 +326,7 @@ func setDefaults(c *Config) {
 	c.Permissions.Auto.MaxTotalDenials = 20
 	c.Permissions.Auto.FailureBehavior = "ask"
 	c.Permissions.Auto.TimeoutMS = 5000
-	c.Chat.CommandTimeout = 60
+	c.Chat.CommandTimeout = 0
 	c.Chat.IgnoreDirs = []string{".git", "node_modules", "__pycache__", ".venv", "vendor"}
 	c.LiveCompatModels = true
 	c.Approval.DefaultPolicy = "on_request"
