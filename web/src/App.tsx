@@ -756,6 +756,11 @@ export default function App() {
           </span>
           <span className="ws-path">{workDirLabel}</span>
         </button>
+        {/* The panels menu is rendered here by the workspace shell, which owns
+            the dock layout. A dropdown inside a panel's own tab strip was
+            clipped by the strip's scroll box, and there was nowhere obvious to
+            look for it. */}
+        <span className="topbar-menu-slot" id="forge-panel-menu" />
         <span className="topbar-spacer" />
         {flash ? <span className="flash">{flash}</span> : null}
         <button
@@ -851,6 +856,7 @@ export default function App() {
           active={workspaceMode}
           onDirtyChange={setWorkspaceDirty}
           onNotify={notify}
+          onShowDocks={() => setWorkspaceMode(true)}
           model={init?.model ?? ""}
           models={init?.models ?? []}
         >

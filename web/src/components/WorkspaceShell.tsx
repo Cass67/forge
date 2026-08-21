@@ -59,6 +59,9 @@ type Props = {
   children: ReactNode;
   onDirtyChange: (dirty: boolean) => void;
   onNotify: (message: string) => void;
+  // Opening a panel from the menu while the docks are hidden has to show them
+  // again, or the click looks like it did nothing.
+  onShowDocks: () => void;
   // The chat's current model and the models it can switch to: the source
   // control panel drafts commit messages with the former and multi-run
   // launches windows across the latter.
@@ -163,6 +166,7 @@ export function WorkspaceShell({
   children,
   onDirtyChange,
   onNotify,
+  onShowDocks,
   model,
   models,
 }: Props) {
@@ -185,6 +189,7 @@ export function WorkspaceShell({
   const [dropHint, setDropHint] = useState("");
   // The group whose "add panel" menu is open, if any.
   const [addMenu, setAddMenu] = useState("");
+  const [menuSlot, setMenuSlot] = useState<HTMLElement | null>(null);
   const nextTerminal = useRef(1);
   const [quickOpen, setQuickOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -441,6 +446,8 @@ export function WorkspaceShell({
   );
 
   useEffect(() => saveDockWidths(dockWidths), [dockWidths]);
+
+  useEffect(() => setMenuSlot(document.getElementById("forge-panel-menu")), []);
 
   useEffect(() => saveColumns(columns), [columns]);
 
@@ -738,6 +745,74 @@ export function WorkspaceShell({
     );
   };
 
+  // New panels land at the foot of the right-hand column: it is the widest
+  // dock by default and always on screen, and from there they can be dragged
+  // anywhere.
+  const openPanel = (open: () => void) => {
+    setAddMenu("");
+    onShowDocks();
+    open();
+  };
+
+  // The title bar's slot only exists once the header has mounted, so it is
+  // looked up after the first paint rather than during render.
+  const panelMenu = menuSlot;
+  const panelsMenu = panelMenu
+    ? createPortal(
+        <span className="topbar-menu">
+          <button
+            aria-expanded={addMenu === "panels"}
+            aria-haspopup="menu"
+            className="pill"
+            onClick={(event) => {
+              event.stopPropagation();
+              setAddMenu((current) => (current === "panels" ? "" : "panels"));
+            }}
+            title="Open a panel"
+          >
+            Panels ▾
+          </button>
+          {addMenu === "panels" ? (
+            <div className="topbar-dropdown" role="menu">
+              <button
+                onClick={() =>
+                  openPanel(() =>
+                    launchTerminal({ side: "right", where: "end" }),
+                  )
+                }
+                role="menuitem"
+              >
+                New Terminal
+              </button>
+              <button
+                onClick={() =>
+                  openPanel(() => openPreview({ side: "right", where: "end" }))
+                }
+                role="menuitem"
+              >
+                Preview
+              </button>
+              <hr />
+              {[
+                { id: "explorer", label: "Explorer" },
+                { id: "git", label: "Source Control" },
+                { id: "editor", label: "Editor" },
+              ].map((entry) => (
+                <button
+                  key={entry.id}
+                  onClick={() => openPanel(() => focusTool(entry.id))}
+                  role="menuitem"
+                >
+                  {entry.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </span>,
+        panelMenu,
+      )
+    : null;
+
   const renderGroup = (side: DockSide, group: DockGroup) => (
     <section
       className={`workspace-group ${group.tools.some((tool) => tool.kind === "chat") ? "has-chat" : ""}`}
@@ -779,40 +854,6 @@ export function WorkspaceShell({
             ) : null}
           </div>
         ))}
-        <div className="workspace-dock-add">
-          <button
-            aria-expanded={addMenu === group.id}
-            aria-haspopup="menu"
-            onClick={() =>
-              setAddMenu((current) => (current === group.id ? "" : group.id))
-            }
-            title="Add a panel here"
-          >
-            ＋ Panel
-          </button>
-          {addMenu === group.id ? (
-            <div className="workspace-add-menu" role="menu">
-              <button
-                onClick={() => {
-                  setAddMenu("");
-                  launchTerminal({ side, where: "into", groupID: group.id });
-                }}
-                role="menuitem"
-              >
-                Terminal
-              </button>
-              <button
-                onClick={() => {
-                  setAddMenu("");
-                  openPreview({ side, where: "into", groupID: group.id });
-                }}
-                role="menuitem"
-              >
-                Preview
-              </button>
-            </div>
-          ) : null}
-        </div>
       </div>
       <div className="workspace-group-body" ref={groupBodyRef(group.id)} />
       {dragging ? (
@@ -845,9 +886,20 @@ export function WorkspaceShell({
         // before the chat sizes the left dock, the one after it the right.
         const edge: EdgeSide = side === "center" ? "left" : "right";
         const tail = dropProps({ side, where: "end" });
+        // A column whose last tab was dragged away collapses rather than
+        // sitting there empty; a drag in flight opens it up as a target again.
+        const empty = columns[side].length === 0;
+        const basis =
+          side === "center"
+            ? undefined
+            : empty
+              ? dragging
+                ? "9rem"
+                : "0px"
+              : `${dockWidths[side] * 100}%`;
         return (
           <Fragment key={side}>
-            {columnIndex > 0 ? (
+            {columnIndex > 0 && !(columns[edge].length === 0 && !dragging) ? (
               <div
                 aria-label={`Resize ${edge} panel`}
                 aria-orientation="vertical"
@@ -864,11 +916,7 @@ export function WorkspaceShell({
             ) : null}
             <div
               className={`workspace-column workspace-column-${side}`}
-              style={
-                side === "center"
-                  ? undefined
-                  : { flexBasis: `${dockWidths[side] * 100}%` }
-              }
+              style={basis === undefined ? undefined : { flexBasis: basis }}
             >
               {columns[side].map((group, index) => (
                 <Fragment key={group.id}>
@@ -888,9 +936,9 @@ export function WorkspaceShell({
               ))}
               <div
                 {...tail}
-                className={`workspace-column-tail ${columns[side].length === 0 ? "empty" : ""} ${tail.className}`}
+                className={`workspace-column-tail ${empty ? "empty" : ""} ${tail.className}`}
               >
-                {columns[side].length === 0 ? "Drop a panel here" : null}
+                {empty && dragging ? "Drop a panel here" : null}
               </div>
             </div>
           </Fragment>
@@ -925,6 +973,7 @@ export function WorkspaceShell({
           </DockToolHost>
         );
       })}
+      {panelsMenu}
       {quickOpen ? (
         <div
           className="workspace-quick-open"
