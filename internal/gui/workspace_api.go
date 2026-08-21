@@ -33,17 +33,6 @@ type WorkspaceFile struct {
 	Version string `json:"version"`
 }
 
-type GitFileStatus struct {
-	Path   string `json:"path"`
-	Status string `json:"status"`
-}
-
-type GitStatusResult struct {
-	Repository bool            `json:"repository"`
-	Branch     string          `json:"branch"`
-	Files      []GitFileStatus `json:"files"`
-}
-
 type TerminalEvent struct {
 	ID     string `json:"id"`
 	Data   string `json:"data,omitempty"`
@@ -219,43 +208,6 @@ func replaceWorkspaceFile(path string, data []byte, mode os.FileMode) (err error
 func fileVersion(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
-}
-
-func (s *Service) GitStatus() (GitStatusResult, error) {
-	root, err := s.workspaceRoot()
-	if err != nil {
-		return GitStatusResult{}, err
-	}
-	cmd := exec.Command("git", "status", "--porcelain=v1", "-z", "--branch", "--untracked-files=all")
-	cmd.Dir = root
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		if strings.Contains(strings.ToLower(string(out)), "not a git repository") {
-			return GitStatusResult{Files: []GitFileStatus{}}, nil
-		}
-		return GitStatusResult{}, fmt.Errorf("git status: %s", strings.TrimSpace(string(out)))
-	}
-	parts := bytes.Split(out, []byte{0})
-	result := GitStatusResult{Repository: true, Files: []GitFileStatus{}}
-	for i := 0; i < len(parts); i++ {
-		line := string(parts[i])
-		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, "## ") {
-			result.Branch = strings.TrimPrefix(line, "## ")
-			continue
-		}
-		if len(line) < 4 {
-			continue
-		}
-		status, path := line[:2], line[3:]
-		if status[0] == 'R' || status[0] == 'C' {
-			i++
-		}
-		result.Files = append(result.Files, GitFileStatus{Path: path, Status: status})
-	}
-	return result, nil
 }
 
 func (s *Service) StartTerminal(id string, rows, cols int) error {

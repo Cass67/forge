@@ -28,9 +28,21 @@ func TestBoundMethodSurface(t *testing.T) {
 		"Providers", "RenameThread", "Restore", "Send",
 		"SendWithImages", "SetEffort", "SetProviderKey", "SignOutProvider",
 		"StartProviderLogin", "SwitchModel", "SwitchWorkspace", "Threads", "Workspaces",
-		"ListWorkspaceDir", "ReadWorkspaceFile", "WriteWorkspaceFile", "GitStatus",
+		"ListWorkspaceDir", "ReadWorkspaceFile", "WriteWorkspaceFile",
 		"StartTerminal", "WriteTerminal", "ResizeTerminal", "CloseTerminal",
 		"Yolo", "SetYolo",
+		// git panel
+		"GitStatus", "GitDiff", "GitDiffScope", "GitDefaultBranch",
+		"GitStage", "GitUnstage", "GitDiscard", "GitCommit",
+		"GitBranches", "GitCheckout", "GitCreateBranch", "GitRenameBranch", "GitDeleteBranch",
+		"GitFetch", "GitPull", "GitPush",
+		"GitStash", "GitStashList", "GitStashApply", "GitStashDrop",
+		"GitLog", "GitCommitDiff",
+		"GitResolve", "GitContinue", "GitAbort",
+		// worktree sessions and multi-run
+		"GitWorktrees", "GitAddWorktree", "GitRemoveWorktree", "GitIntegrate", "StartRuns",
+		// model-assisted review
+		"GenerateCommitMessage", "GenerateWalkthrough", "WalkthroughStale",
 	}
 	var got []string
 	typ := reflect.TypeOf(&Service{})

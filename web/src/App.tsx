@@ -10,6 +10,19 @@ import {
 import { applyEvent, userEntry, type Entry } from "./entries";
 import { itemsToEntries } from "./replay";
 import { Sidebar } from "./components/Sidebar";
+import { SessionTabs } from "./components/SessionTabs";
+import {
+  closeTab as closeSessionTab,
+  emptyTabs,
+  loadTabs,
+  nextAfterClose,
+  openTab,
+  pruneTabs,
+  saveTabs,
+  type SessionStatus,
+  type SessionTabState,
+  setStatus,
+} from "./sessionTabs";
 import { Transcript } from "./components/Transcript";
 import { ApprovalModal } from "./components/ApprovalModal";
 import { Composer } from "./components/Composer";
@@ -77,6 +90,7 @@ export default function App() {
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [activeID, setActiveID] = useState("");
+  const [tabs, setTabs] = useState<SessionTabState>(emptyTabs);
   const [busy, setBusy] = useState(false);
   const [approval, setApproval] = useState<WireAction | null>(null);
   const [stats, setStats] = useState<Stats>(initialStats);
@@ -155,6 +169,43 @@ export default function App() {
     [notify],
   );
 
+  const workDir = init?.work_dir ?? "";
+
+  // Tabs live per workspace, and are reloaded when the window switches to one.
+  useEffect(() => setTabs(loadTabs(workDir)), [workDir]);
+  useEffect(() => saveTabs(workDir, tabs), [workDir, tabs]);
+
+  // The active conversation is always on screen, so it always has a tab.
+  useEffect(() => {
+    if (activeID) setTabs((current) => openTab(current, activeID));
+  }, [activeID]);
+
+  // A thread deleted from the sidebar leaves a tab pointing at nothing.
+  useEffect(() => {
+    setTabs((current) =>
+      pruneTabs(
+        current,
+        threads.map((thread) => thread.thread_id),
+      ),
+    );
+  }, [threads]);
+
+  const markActive = useCallback(
+    (status: SessionStatus) =>
+      setTabs((current) =>
+        activeID ? setStatus(current, activeID, status) : current,
+      ),
+    [activeID],
+  );
+
+  // Held in a ref so the event subscription does not tear down and re-attach
+  // every time the focused session changes.
+  const markRef = useRef(markActive);
+  markRef.current = markActive;
+  // Whether anything in the current turn failed, which decides between the
+  // "finished" and "failed" dot when the turn ends.
+  const turnFailed = useRef(false);
+
   const refreshThreads = useCallback(() => {
     void forge.threads().then(setThreads);
     void forge.workspaces().then(setWorkspaces);
@@ -177,6 +228,7 @@ export default function App() {
     const offReady = forge.onReady(loadInit);
     const offEvent = forge.onEvent((ev) => {
       setEntries((prev) => applyEvent(prev, ev));
+      if (ev.is_error || ev.error) turnFailed.current = true;
       if (ev.kind === "stats" && ev.usage) {
         const u = ev.usage;
         setStats((s) => ({
@@ -204,6 +256,7 @@ export default function App() {
         ev.kind === "abort"
       ) {
         setBusy(false);
+        markRef.current(turnFailed.current ? "failed" : "done");
         refreshThreads();
       }
     });
@@ -214,9 +267,13 @@ export default function App() {
       dragDepth.current = 0;
       void attachPaths(paths);
     });
-    const offApproval = forge.onApproval(setApproval);
+    const offApproval = forge.onApproval((action) => {
+      setApproval(action);
+      markRef.current("waiting");
+    });
     const offDone = forge.onTurnDone(() => {
       setBusy(false);
+      markRef.current(turnFailed.current ? "failed" : "done");
       refreshThreads();
     });
     return () => {
@@ -240,6 +297,8 @@ export default function App() {
       ]);
       setHistory((h) => [...h, text]);
       setBusy(true);
+      turnFailed.current = false;
+      markRef.current("working");
       setPending([]);
       const p =
         images.length > 0
@@ -256,6 +315,7 @@ export default function App() {
   const approve = (ok: boolean) => {
     void forge.approve(ok);
     setApproval(null);
+    markRef.current("working");
   };
 
   const cancel = useCallback(() => void forge.cancel(), []);
@@ -746,8 +806,27 @@ export default function App() {
           active={workspaceMode}
           onDirtyChange={setWorkspaceDirty}
           onNotify={notify}
+          model={init?.model ?? ""}
+          models={init?.models ?? []}
         >
           <main className="center">
+            <SessionTabs
+              tabs={tabs}
+              threads={threads}
+              activeID={activeID}
+              onSelect={(id) => {
+                if (id !== activeID) restoreThread(id);
+              }}
+              onClose={(id) => {
+                const next = nextAfterClose(tabs, id);
+                setTabs((current) => closeSessionTab(current, id));
+                if (id === activeID) {
+                  if (next) restoreThread(next);
+                  else newThread();
+                }
+              }}
+              onNew={newThread}
+            />
             <Transcript entries={entries} prefs={prefs} busy={busy} />
             <Composer
               yolo={yolo}

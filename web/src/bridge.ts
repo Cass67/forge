@@ -141,10 +141,108 @@ export type WorkspaceEntry = {
   size?: number;
 };
 export type WorkspaceFile = { path: string; content: string; version: string };
+export type GitFileStatus = {
+  path: string;
+  status: string;
+  orig?: string;
+  index: string;
+  work: string;
+  staged: boolean;
+  unstaged: boolean;
+  untracked: boolean;
+  conflict: boolean;
+  adds: number;
+  dels: number;
+};
 export type GitStatusResult = {
   repository: boolean;
   branch?: string;
-  files: { path: string; status: string }[];
+  upstream?: string;
+  ahead: number;
+  behind: number;
+  detached: boolean;
+  files: GitFileStatus[];
+  root?: string;
+  // Names an interrupted operation ("rebase", "merge", …) so the panel can
+  // offer continue/abort instead of a bare list of conflicts.
+  state?: string;
+};
+export type GitBranch = {
+  name: string;
+  current: boolean;
+  remote: boolean;
+  upstream?: string;
+  ahead: number;
+  behind: number;
+  subject?: string;
+  when?: string;
+};
+export type GitCommit = {
+  sha: string;
+  short: string;
+  author: string;
+  when: string;
+  subject: string;
+  body?: string;
+  refs?: string;
+};
+export type GitStash = { index: number; ref: string; subject: string };
+export type GitWorktree = {
+  path: string;
+  name: string;
+  branch?: string;
+  head?: string;
+  detached: boolean;
+  bare: boolean;
+  locked: boolean;
+  prunable: boolean;
+  missing: boolean;
+  current: boolean;
+  main: boolean;
+  ahead: number;
+  behind: number;
+  dirty: boolean;
+};
+export type IntegrateResult = {
+  merged: boolean;
+  into: string;
+  from: string;
+  conflicts: string[];
+  message: string;
+};
+export type WalkStop = {
+  title: string;
+  tag?: "key" | "context" | "";
+  files: string[];
+  explanation: string;
+};
+export type Walkthrough = {
+  scope: string;
+  base?: string;
+  summary: string;
+  stops: WalkStop[];
+  uncovered: string[];
+  fingerprint: string;
+  truncated: boolean;
+  model?: string;
+  generated_at: string;
+};
+export type DiffScope = "worktree" | "staged" | "all" | "branch";
+export type RunSpec = {
+  group: string;
+  prompt: string;
+  models: string[];
+  isolate: boolean;
+  base?: string;
+  yolo?: boolean;
+};
+export type RunLaunch = {
+  model: string;
+  dir: string;
+  branch?: string;
+  started: boolean;
+  error?: string;
+  worktree: boolean;
 };
 export type TerminalEvent = { id: string; data?: string; closed?: boolean };
 
@@ -204,6 +302,59 @@ export const forge = {
   writeWorkspaceFile: (path: string, content: string, version: string) =>
     call<WorkspaceFile>("WriteWorkspaceFile", path, content, version),
   gitStatus: () => call<GitStatusResult>("GitStatus"),
+  gitDiff: (path: string, staged: boolean) =>
+    call<string>("GitDiff", path, staged),
+  gitDiffScope: (scope: DiffScope, base: string) =>
+    call<string>("GitDiffScope", scope, base),
+  gitDefaultBranch: () => call<string>("GitDefaultBranch"),
+  gitStage: (paths: string[]) => call<GitStatusResult>("GitStage", paths),
+  gitUnstage: (paths: string[]) => call<GitStatusResult>("GitUnstage", paths),
+  gitDiscard: (paths: string[]) => call<GitStatusResult>("GitDiscard", paths),
+  gitCommit: (message: string, amend: boolean) =>
+    call<GitStatusResult>("GitCommit", message, amend),
+  gitBranches: (includeRemote: boolean) =>
+    call<GitBranch[]>("GitBranches", includeRemote),
+  gitCheckout: (name: string) => call<GitStatusResult>("GitCheckout", name),
+  gitCreateBranch: (name: string, base: string, checkout: boolean) =>
+    call<GitStatusResult>("GitCreateBranch", name, base, checkout),
+  gitRenameBranch: (from: string, to: string) =>
+    call<GitStatusResult>("GitRenameBranch", from, to),
+  gitDeleteBranch: (name: string, force: boolean) =>
+    call<GitStatusResult>("GitDeleteBranch", name, force),
+  gitFetch: () => call<GitStatusResult>("GitFetch"),
+  gitPull: (rebase: boolean) => call<GitStatusResult>("GitPull", rebase),
+  gitPush: (force: boolean) => call<GitStatusResult>("GitPush", force),
+  gitStash: (message: string, includeUntracked: boolean) =>
+    call<GitStatusResult>("GitStash", message, includeUntracked),
+  gitStashList: () => call<GitStash[]>("GitStashList"),
+  gitStashApply: (index: number, drop: boolean) =>
+    call<GitStatusResult>("GitStashApply", index, drop),
+  gitStashDrop: (index: number) => call<GitStash[]>("GitStashDrop", index),
+  gitLog: (limit: number, skip: number, ref: string) =>
+    call<GitCommit[]>("GitLog", limit, skip, ref),
+  gitCommitDiff: (sha: string) => call<string>("GitCommitDiff", sha),
+  gitResolve: (path: string, side: "ours" | "theirs" | "") =>
+    call<GitStatusResult>("GitResolve", path, side),
+  gitContinue: (state: string) => call<GitStatusResult>("GitContinue", state),
+  gitAbort: (state: string) => call<GitStatusResult>("GitAbort", state),
+  gitWorktrees: () => call<GitWorktree[]>("GitWorktrees"),
+  gitAddWorktree: (
+    branch: string,
+    path: string,
+    base: string,
+    newBranch: boolean,
+  ) => call<GitWorktree>("GitAddWorktree", branch, path, base, newBranch),
+  gitRemoveWorktree: (path: string, force: boolean, deleteBranch: boolean) =>
+    call<GitWorktree[]>("GitRemoveWorktree", path, force, deleteBranch),
+  gitIntegrate: (from: string, into: string, squash: boolean) =>
+    call<IntegrateResult>("GitIntegrate", from, into, squash),
+  generateCommitMessage: (model: string) =>
+    call<string>("GenerateCommitMessage", model),
+  generateWalkthrough: (scope: DiffScope, base: string, model: string) =>
+    call<Walkthrough>("GenerateWalkthrough", scope, base, model),
+  walkthroughStale: (scope: DiffScope, base: string, fingerprint: string) =>
+    call<boolean>("WalkthroughStale", scope, base, fingerprint),
+  startRuns: (spec: RunSpec) => call<RunLaunch[]>("StartRuns", spec),
   startTerminal: (id: string, rows: number, cols: number) =>
     call<void>("StartTerminal", id, rows, cols),
   writeTerminal: (id: string, data: string) =>

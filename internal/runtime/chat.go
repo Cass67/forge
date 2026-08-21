@@ -981,6 +981,25 @@ func RunChatLive(setup *ChatSetup) {
 			cfg, authTokens := refreshChatSetupState(setup)
 			return bootstrap.ModelDisplayLabel(cfg, authTokens, model)
 		},
+		// Complete builds its own driver rather than borrowing the chat
+		// driver: several of these are stateful, and a side call must not
+		// disturb the conversation the user is having.
+		Complete: func(ctx context.Context, model, system, user string) (string, error) {
+			cfg, authTokens := refreshChatSetupState(setup)
+			if strings.TrimSpace(model) == "" {
+				model = setup.ChatModel
+			}
+			driver := bootstrap.DriverForModel(cfg, authTokens, model)
+			if driver == nil {
+				return "", fmt.Errorf("no provider available for %s", model)
+			}
+			messages := make([]llm.Message, 0, 2)
+			if strings.TrimSpace(system) != "" {
+				messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: system})
+			}
+			messages = append(messages, llm.Message{Role: llm.RoleUser, Content: user})
+			return llm.Complete(ctx, driver, messages)
+		},
 		Yolo: func() bool { return yoloOn.Load() },
 		SetYolo: func(on bool) {
 			yoloOn.Store(on)

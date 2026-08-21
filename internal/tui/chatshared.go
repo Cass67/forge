@@ -92,6 +92,11 @@ type ChatLiveConfig struct {
 	RenameThread func(threadID, title string) error
 	// MCPServers reports the configured MCP servers and what each has loaded.
 	MCPServers func() []MCPServerStatus
+	// Complete runs a single off-transcript model call and returns its text.
+	// It is what the GUI's commit-message and walkthrough generators use: the
+	// answer belongs in a panel, not in the conversation. An empty model means
+	// the one the chat is currently using.
+	Complete func(ctx context.Context, model, system, user string) (string, error)
 }
 
 // ThreadSummary is the stored-thread metadata shown in the GUI thread sidebar.

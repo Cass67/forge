@@ -28,7 +28,11 @@ import {
   isDirty,
   type OpenFile,
 } from "../workspaceFiles";
+import type { GitTab } from "../gitTabs";
 import { CodeEditor } from "./CodeEditor";
+import { GitTabView } from "./DiffView";
+import { GitPanel } from "./GitPanel";
+import { MultiRunDialog } from "./MultiRunDialog";
 import { TerminalWorkspace } from "./TerminalWorkspace";
 
 type Props = {
@@ -37,6 +41,11 @@ type Props = {
   children: ReactNode;
   onDirtyChange: (dirty: boolean) => void;
   onNotify: (message: string) => void;
+  // The chat's current model and the models it can switch to: the source
+  // control panel drafts commit messages with the former and multi-run
+  // launches windows across the latter.
+  model: string;
+  models: string[];
 };
 type TreeNode = WorkspaceEntry & {
   loaded?: boolean;
@@ -133,11 +142,19 @@ export function WorkspaceShell({
   children,
   onDirtyChange,
   onNotify,
+  model,
+  models,
 }: Props) {
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [files, setFiles] = useState<OpenFile[]>([]);
   const [activePath, setActivePath] = useState("");
   const [git, setGit] = useState<GitStatusResult | null>(null);
+  const [gitTabs, setGitTabs] = useState<GitTab[]>([]);
+  // A non-empty id means the editor area is showing a diff rather than a file.
+  const [activeGitTab, setActiveGitTab] = useState("");
+  // Bumped on every index or working-tree change so open diffs re-read.
+  const [gitRevision, setGitRevision] = useState(0);
+  const [multiRun, setMultiRun] = useState(false);
   const [tools, setTools] = useState<DockTool[]>([
     { id: "explorer", kind: "explorer", title: "Explorer", side: "left" },
     { id: "editor", kind: "editor", title: "Editor", side: "right" },
@@ -181,12 +198,35 @@ export function WorkspaceShell({
     return () => window.removeEventListener("beforeunload", warn);
   }, [hasDirtyFiles]);
 
+  const applyGit = useCallback((status: GitStatusResult) => {
+    setGit(status);
+    setGitRevision((n) => n + 1);
+  }, []);
+
   const refreshGit = useCallback(() => {
     void forge
       .gitStatus()
-      .then(setGit)
+      .then(applyGit)
       .catch((error: unknown) => onNotify(String(error)));
-  }, [onNotify]);
+  }, [applyGit, onNotify]);
+
+  const openGitTab = useCallback((tab: GitTab) => {
+    setGitTabs((current) =>
+      current.some((open) => open.id === tab.id) ? current : [...current, tab],
+    );
+    setActiveGitTab(tab.id);
+  }, []);
+
+  const closeGitTab = (id: string) => {
+    const index = gitTabs.findIndex((tab) => tab.id === id);
+    const remaining = gitTabs.filter((tab) => tab.id !== id);
+    setGitTabs(remaining);
+    if (activeGitTab === id) {
+      setActiveGitTab(
+        remaining[Math.min(index, remaining.length - 1)]?.id ?? "",
+      );
+    }
+  };
 
   const indexWorkspace = useCallback(async (generation: number) => {
     const paths: string[] = [];
@@ -209,6 +249,8 @@ export function WorkspaceShell({
     openRequest.current++;
     setFiles([]);
     setActivePath("");
+    setGitTabs([]);
+    setActiveGitTab("");
     setWorkspacePaths([]);
     void forge
       .listWorkspaceDir("")
@@ -245,6 +287,7 @@ export function WorkspaceShell({
 
   const openFile = useCallback(
     (path: string) => {
+      setActiveGitTab("");
       if (files.some((candidate) => candidate.path === path)) {
         openRequest.current++;
         setActivePath(path);
@@ -436,37 +479,16 @@ export function WorkspaceShell({
       );
     if (tool.kind === "git")
       return (
-        <>
-          <div className="workspace-branch">
-            <span>{git?.branch || "Source Control"}</span>
-            <button onClick={refreshGit} title="Refresh Git status">
-              ↻
-            </button>
-          </div>
-          {!git?.repository ? (
-            <div className="workspace-muted">Not a Git repository</div>
-          ) : (
-            <>
-              {git.files.length === 0 ? (
-                <div className="workspace-muted">No changes</div>
-              ) : (
-                <ul>
-                  {git.files.map((entry) => (
-                    <li key={`${entry.status}-${entry.path}`}>
-                      <button
-                        onClick={() => openFile(entry.path)}
-                        title={entry.path}
-                      >
-                        <span>{entry.path}</span>
-                        <b>{entry.status}</b>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </>
-          )}
-        </>
+        <GitPanel
+          status={git}
+          onStatus={applyGit}
+          onRefresh={refreshGit}
+          onOpenTab={openGitTab}
+          onOpenFile={openFile}
+          onNotify={onNotify}
+          onMultiRun={() => setMultiRun(true)}
+          model={model}
+        />
       );
     if (tool.kind === "terminal")
       return (
@@ -476,17 +498,23 @@ export function WorkspaceShell({
           onNotify={onNotify}
         />
       );
+    const diffTab = gitTabs.find((tab) => tab.id === activeGitTab) ?? null;
     return (
       <section className="workspace-editor">
-        {files.length > 0 ? (
+        {files.length > 0 || gitTabs.length > 0 ? (
           <div className="workspace-tabs">
             {files.map((open) => (
               <div
-                className={`workspace-tab ${open.path === activePath ? "active" : ""}`}
+                className={`workspace-tab ${!diffTab && open.path === activePath ? "active" : ""}`}
                 key={open.path}
                 title={open.path}
               >
-                <button onClick={() => setActivePath(open.path)}>
+                <button
+                  onClick={() => {
+                    setActiveGitTab("");
+                    setActivePath(open.path);
+                  }}
+                >
                   {open.path.split("/").pop()}
                   {isDirty(open) ? " ●" : ""}
                 </button>
@@ -499,11 +527,29 @@ export function WorkspaceShell({
                 </button>
               </div>
             ))}
+            {gitTabs.map((tab) => (
+              <div
+                className={`workspace-tab diff ${tab.id === activeGitTab ? "active" : ""}`}
+                key={tab.id}
+                title={tab.id}
+              >
+                <button onClick={() => setActiveGitTab(tab.id)}>
+                  <span aria-hidden="true">±</span> {tab.title}
+                </button>
+                <button
+                  className="workspace-tab-close"
+                  onClick={() => closeGitTab(tab.id)}
+                  aria-label={`Close ${tab.title}`}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
           </div>
         ) : null}
         <div className="workspace-toolbar">
           <span className="workspace-file-name">
-            {file ? file.path : "No file open"}
+            {diffTab ? diffTab.title : file ? file.path : "No file open"}
           </span>
           <button
             className="workspace-quick-open-button"
@@ -523,7 +569,28 @@ export function WorkspaceShell({
             Save
           </button>
         </div>
-        {file ? (
+        {diffTab ? (
+          <GitTabView
+            key={diffTab.id}
+            tab={diffTab}
+            model={model}
+            revision={gitRevision}
+            onOpenFile={openFile}
+            onNotify={onNotify}
+            onStage={(path) => {
+              void forge
+                .gitStage([path])
+                .then(applyGit)
+                .catch((error: unknown) => onNotify(String(error)));
+            }}
+            onUnstage={(path) => {
+              void forge
+                .gitUnstage([path])
+                .then(applyGit)
+                .catch((error: unknown) => onNotify(String(error)));
+            }}
+          />
+        ) : file ? (
           <CodeEditor
             key={file.path}
             path={file.path}
@@ -688,6 +755,15 @@ export function WorkspaceShell({
             ) : null}
           </div>
         </div>
+      ) : null}
+      {multiRun ? (
+        <MultiRunDialog
+          models={models}
+          currentModel={model}
+          isRepo={git?.repository ?? false}
+          onClose={() => setMultiRun(false)}
+          onNotify={onNotify}
+        />
       ) : null}
     </div>
   );

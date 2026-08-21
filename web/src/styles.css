@@ -1098,3 +1098,203 @@ input, textarea, .selectable, .transcript, .diffbox { user-select: text; }
 }
 .bulk-count { flex: 1; min-width: 0; font-size: 0.6875rem; color: var(--muted); }
 .bulk-bar .btn { padding: 1px 8px; height: auto; font-size: 0.6875rem; }
+
+/* ---- diff viewer ---- */
+.diffwrap:focus-visible { outline: 1px solid var(--accent); }
+.diffbar {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 4px 9px; background: var(--panel2); border-bottom: 1px solid var(--border);
+  font-family: var(--mono); font-size: 0.6875rem;
+}
+.diffbar .diffstat { padding: 0; background: none; border: 0; }
+.diffbar-actions { display: flex; align-items: center; gap: 4px; }
+.diff-cursor { color: var(--muted); min-width: 3em; text-align: center; }
+.d-files { color: var(--muted); }
+.empty-diff { padding: 14px; color: var(--muted); font-size: 0.8125rem; }
+.diffscroll { overflow: auto; }
+.difffile + .difffile { margin-top: 10px; }
+.difffile-head {
+  display: flex; align-items: center; gap: 6px; padding: 4px 8px;
+  background: var(--panel2); border-bottom: 1px solid var(--border);
+  font-size: 0.75rem; position: sticky; top: 0; z-index: 2;
+}
+.difffile-toggle, .difffile-name {
+  background: none; border: 0; color: var(--text); cursor: pointer; padding: 0;
+  font-family: var(--mono); font-size: 0.75rem;
+}
+.difffile-name { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.difffile-name:disabled { cursor: default; }
+.difffile-stat { display: flex; gap: 6px; font-family: var(--mono); font-size: 0.6875rem; }
+.dtag {
+  font-size: 0.625rem; text-transform: uppercase; letter-spacing: 0.04em;
+  padding: 1px 5px; border-radius: 2px; background: var(--input); color: var(--muted);
+}
+.dtag.warn { color: var(--warn); }
+.dtag.key { background: var(--selected); color: var(--accent); }
+.dtag.context { color: var(--muted); }
+/* A diff opened as its own tab fills the pane; one inside the transcript stays
+   capped by the .diffbox rule above. */
+.workspace-editor .diffwrap { display: flex; flex-direction: column; flex: 1; min-height: 0; border: 0; border-radius: 0; }
+.workspace-editor .diffscroll { flex: 1; min-height: 0; }
+.workspace-editor .diffbox { max-height: none; overflow: visible; }
+.diffhunk .dl.hunk { position: sticky; top: 0; z-index: 1; }
+.difffile .dl.hunk { top: 26px; }
+.dl.fold {
+  display: block; width: 100%; text-align: left; padding-left: 56px;
+  background: var(--panel2); color: var(--muted); border: 0; cursor: pointer;
+  font-family: var(--mono); font-size: 0.6875rem; line-height: 1.9;
+}
+.dl.fold:hover { color: var(--accent); }
+.dword { background: rgba(117,190,255,0.28); color: inherit; border-radius: 2px; }
+.dl.add .dword { background: rgba(63,185,80,0.34); }
+.dl.del .dword { background: rgba(248,81,73,0.34); }
+.diffbox.split .dsplit { display: grid; grid-template-columns: 1fr 1fr; }
+.diffbox.split .dsplit > .dl { overflow: hidden; }
+.diffbox.split .dsplit > .dl + .dl { border-left: 1px solid var(--border); }
+.dl.pad { background: repeating-linear-gradient(45deg, transparent, transparent 6px, var(--panel2) 6px, var(--panel2) 7px); }
+.diffbox.binary { padding: 10px; color: var(--muted); font-size: 0.75rem; }
+
+/* ---- source control panel ---- */
+.git-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; font-size: 0.75rem; }
+.git-head { display: flex; align-items: center; gap: 4px; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+.git-branch {
+  flex: 1; display: flex; align-items: center; gap: 5px; background: none; border: 0;
+  color: var(--text); cursor: pointer; text-align: left; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; font-size: 0.75rem;
+}
+.git-ab { color: var(--accent); font-family: var(--mono); font-size: 0.6875rem; }
+.git-head-actions { display: flex; gap: 2px; }
+.git-head-actions button, .git-row-actions button {
+  background: none; border: 0; color: var(--muted); cursor: pointer; padding: 1px 4px; border-radius: 2px;
+}
+.git-head-actions button:hover, .git-row-actions button:hover { background: var(--hover); color: var(--text); }
+.git-banner {
+  display: flex; align-items: center; gap: 6px; padding: 5px 8px;
+  background: var(--del-bg); color: var(--warn); border-bottom: 1px solid var(--border);
+}
+.git-sections { display: flex; border-bottom: 1px solid var(--border); }
+.git-sections button {
+  flex: 1; background: none; border: 0; border-bottom: 2px solid transparent;
+  color: var(--muted); cursor: pointer; padding: 5px 2px; font-size: 0.6875rem;
+}
+.git-sections button.active { color: var(--text); border-bottom-color: var(--accent); }
+.git-body { flex: 1; min-height: 0; overflow: auto; padding: 6px; display: flex; flex-direction: column; gap: 8px; }
+.git-commitbox { display: flex; flex-direction: column; gap: 5px; }
+.git-commitbox textarea {
+  width: 100%; resize: vertical; background: var(--input); color: var(--text);
+  border: 1px solid var(--border); border-radius: 3px; padding: 5px 6px;
+  font-family: inherit; font-size: 0.75rem;
+}
+.git-commit-actions, .git-review { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.git-amend { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 0.6875rem; }
+.git-group header { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.git-group-toggle {
+  background: none; border: 0; color: var(--muted); cursor: pointer; padding: 2px 0;
+  font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.05em;
+}
+.git-list { list-style: none; margin: 0; padding: 0; }
+.git-row { display: flex; align-items: center; gap: 2px; border-radius: 2px; }
+.git-row:hover { background: var(--hover); }
+.git-row.active { background: var(--selected); }
+.git-row.conflict .git-name { color: var(--warn); }
+.git-row-open {
+  flex: 1; display: flex; align-items: center; gap: 5px; min-width: 0;
+  background: none; border: 0; color: var(--text); cursor: pointer;
+  padding: 3px 4px; text-align: left; font-size: 0.75rem;
+}
+.git-row-open:disabled { cursor: default; opacity: 0.7; }
+.git-code { flex: none; width: 1.1em; text-align: center; font-family: var(--mono); color: var(--muted); }
+.git-code.s-A, .git-code.s-U { color: var(--ok); }
+.git-code.s-D { color: var(--err); }
+.git-code.s-M { color: var(--warn); }
+.git-code.s-\! { color: var(--err); }
+.git-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-dir { flex: 1; color: var(--muted); font-size: 0.6875rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-stat { display: flex; gap: 4px; font-family: var(--mono); font-size: 0.625rem; }
+.git-row-actions { display: none; gap: 1px; }
+.git-row:hover .git-row-actions { display: flex; }
+.git-newbranch { display: flex; align-items: center; gap: 5px; }
+.git-newbranch input {
+  flex: 1; min-width: 0; background: var(--input); color: var(--text);
+  border: 1px solid var(--border); border-radius: 3px; padding: 4px 6px; font-size: 0.75rem;
+}
+.git-commit button {
+  display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left;
+  background: none; border: 0; color: var(--text); cursor: pointer; padding: 4px; border-radius: 2px;
+}
+.git-commit button:hover { background: var(--hover); }
+.git-commit-subject { font-size: 0.75rem; }
+.git-commit-meta { color: var(--muted); font-size: 0.6875rem; }
+.git-refs { color: var(--accent); font-size: 0.625rem; }
+
+/* ---- walkthrough ---- */
+.walk { display: flex; flex: 1; min-height: 0; }
+.walk-side {
+  width: 17rem; flex: none; display: flex; flex-direction: column; gap: 8px;
+  padding: 8px; overflow: auto; border-right: 1px solid var(--border);
+}
+.walk-head { display: flex; gap: 5px; }
+.walk-head select { flex: 1; background: var(--input); color: var(--text); border: 1px solid var(--border); border-radius: 3px; }
+.walk-stale { color: var(--warn); font-size: 0.6875rem; background: var(--del-bg); padding: 4px 6px; border-radius: 3px; }
+.walk-summary { font-size: 0.75rem; line-height: 1.5; }
+.walk-stops { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.walk-stops button {
+  display: flex; align-items: center; gap: 6px; width: 100%; text-align: left;
+  background: none; border: 0; color: var(--text); cursor: pointer;
+  padding: 4px 5px; border-radius: 2px; font-size: 0.75rem;
+}
+.walk-stops button:hover { background: var(--hover); }
+.walk-stops button.active { background: var(--selected); }
+.walk-index { flex: none; width: 1.4em; color: var(--muted); font-family: var(--mono); font-size: 0.6875rem; }
+.walk-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.walk-uncovered { font-size: 0.6875rem; color: var(--muted); }
+.walk-uncovered ul { list-style: none; margin: 4px 0 0; padding: 0; }
+.walk-uncovered button { background: none; border: 0; color: var(--warn); cursor: pointer; padding: 1px 0; font-size: 0.6875rem; }
+.walk-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.walk-explain { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.walk-explain h3 { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; font-size: 0.875rem; }
+.walk-explain p { margin: 0 0 8px; font-size: 0.8125rem; line-height: 1.55; }
+.walk-files { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.walk-nav { display: flex; gap: 5px; }
+
+/* ---- session tabs ---- */
+.session-tabs { display: flex; align-items: stretch; gap: 1px; border-bottom: 1px solid var(--border); background: var(--panel); overflow-x: auto; }
+.session-tab { display: flex; align-items: center; border-right: 1px solid var(--border); }
+.session-tab > button:first-child {
+  display: flex; align-items: center; gap: 6px; background: none; border: 0;
+  border-bottom: 2px solid transparent; color: var(--muted); cursor: pointer;
+  padding: 5px 8px; max-width: 14rem; font-size: 0.75rem;
+}
+.session-tab.active > button:first-child { color: var(--text); border-bottom-color: var(--accent); background: var(--bg); }
+.session-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.session-dot.working { background: var(--accent); animation: session-pulse 1.4s ease-in-out infinite; }
+.session-dot.waiting { background: var(--warn); }
+.session-dot.failed { background: var(--err); }
+.session-dot.done { background: var(--ok); }
+@keyframes session-pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .session-dot.working { animation: none; } }
+.session-add { background: none; border: 0; color: var(--muted); cursor: pointer; padding: 0 9px; font-size: 0.875rem; }
+.session-add:hover { color: var(--text); }
+.workspace-tab.diff > button:first-child { color: var(--accent); }
+
+/* ---- multi-run ---- */
+.modal.multirun { width: min(34rem, 92vw); display: flex; flex-direction: column; gap: 10px; padding: 12px; }
+.multirun-field { display: flex; flex-direction: column; gap: 4px; font-size: 0.75rem; }
+.multirun-field > span { color: var(--muted); }
+.multirun-field input, .multirun-field textarea {
+  background: var(--input); color: var(--text); border: 1px solid var(--border);
+  border-radius: 3px; padding: 5px 6px; font-family: inherit; font-size: 0.8125rem;
+}
+.multirun-models { display: flex; flex-wrap: wrap; gap: 4px; }
+.multirun-models button {
+  background: var(--input); border: 1px solid var(--border); border-radius: 3px;
+  color: var(--muted); cursor: pointer; padding: 3px 7px; font-size: 0.6875rem;
+}
+.multirun-models button.active { border-color: var(--accent); color: var(--text); background: var(--selected); }
+.modal-actions { display: flex; justify-content: flex-end; }
+.multirun-result ul { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.multirun-result li { display: flex; align-items: center; gap: 7px; font-size: 0.75rem; }
+.multirun-result li.failed { color: var(--err); }
+.btn.small { font-size: 0.6875rem; padding: 3px 7px; }
+.btn.small.on, .btn.primary { border-color: var(--accent); }

@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -49,6 +50,7 @@ func run() error {
 	workDir := fs_.String("C", "", "workspace directory (default: cwd)")
 	resume := fs_.String("resume", "", "resume a stored thread by id")
 	continueLast := fs_.Bool("continue", false, "resume the most recent thread")
+	prompt := fs_.String("prompt", "", "send this message once the runtime is ready (used by multi-run)")
 	if err := fs_.Parse(os.Args[1:]); err != nil {
 		return err
 	}
@@ -129,8 +131,16 @@ func run() error {
 		controller.FilesDropped(e.Context().DroppedFiles())
 	})
 
+	// A -prompt is delivered once, to the first runtime this process starts:
+	// switching workspace later must not replay it.
+	var sendPrompt sync.Once
 	runner := func(events <-chan llm.Event, live tui.ChatLiveConfig, inputCh chan<- string, doneCh <-chan struct{}) tui.ChatLiveResult {
 		controller.Attach(live, inputCh)
+		if strings.TrimSpace(*prompt) != "" {
+			sendPrompt.Do(func() {
+				go func() { inputCh <- *prompt }()
+			})
+		}
 		if live.ApprovalCh != nil {
 			go controller.PumpApprovals(live.ApprovalCh)
 		}
