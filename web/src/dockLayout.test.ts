@@ -103,6 +103,32 @@ test("emptying a group removes it and hands the tab to a neighbour", () => {
   ]);
 });
 
+test("moving the last tab out of a split leaves no dead column space", () => {
+  const start = defaultColumns();
+  const split = addTool(start, terminal, {
+    side: "center",
+    where: "after",
+    groupID: start.center[0].id,
+  });
+  const moved = moveTool(split, terminal.id, {
+    side: "left",
+    where: "into",
+    groupID: split.left[0].id,
+  });
+  expect(moved.center).toHaveLength(1);
+  expect(moved.center.reduce((sum, group) => sum + group.size, 0)).toBeCloseTo(
+    1,
+  );
+
+  const damaged = JSON.stringify({
+    ...moved,
+    center: moved.center.map((group) => ({ ...group, size: 0.25 })),
+  });
+  expect(
+    parseColumns(damaged).center.reduce((sum, group) => sum + group.size, 0),
+  ).toBeCloseTo(1);
+});
+
 test("dropping a tab where it already is changes nothing", () => {
   const columns = defaultColumns();
   expect(

@@ -115,12 +115,20 @@ function withoutTool(group: DockGroup, toolID: string): DockGroup {
   return { ...group, tools, activeID };
 }
 
+function normalizeGroups(groups: DockGroup[]): DockGroup[] {
+  const total = groups.reduce((sum, group) => sum + group.size, 0);
+  if (total <= 0 || groups.length === 0) return groups;
+  return groups.map((group) => ({ ...group, size: group.size / total }));
+}
+
 export function removeTool(columns: DockColumns, toolID: string): DockColumns {
   const next = {} as DockColumns;
   for (const side of SIDES) {
-    next[side] = columns[side]
-      .map((group) => withoutTool(group, toolID))
-      .filter((group) => group.tools.length > 0);
+    next[side] = normalizeGroups(
+      columns[side]
+        .map((group) => withoutTool(group, toolID))
+        .filter((group) => group.tools.length > 0),
+    );
   }
   return next;
 }
@@ -295,7 +303,8 @@ export function parseColumns(raw: string | null): DockColumns {
   const columns = {} as DockColumns;
   for (const side of SIDES) {
     const groups = Array.isArray(stored[side]) ? stored[side]! : [];
-    columns[side] = groups
+    columns[side] = normalizeGroups(
+      groups
       .map((group) => {
         const tools = (Array.isArray(group?.tools) ? group.tools : [])
           .map(reviveTool)
@@ -317,7 +326,8 @@ export function parseColumns(raw: string | null): DockColumns {
           size,
         };
       })
-      .filter((group) => group.tools.length > 0);
+      .filter((group) => group.tools.length > 0),
+    );
   }
 
   let repaired = columns;
