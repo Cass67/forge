@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   closeTab,
   emptyTabs,
+  NEW_SESSION_ID,
   nextAfterClose,
   openTab,
   pruneTabs,
@@ -40,4 +41,13 @@ test("pruning removes tabs whose threads are gone", () => {
 test("pruning nothing returns the same object so React can skip the render", () => {
   const tabs = openTab(emptyTabs, "a");
   expect(pruneTabs(tabs, ["a", "b"])).toBe(tabs);
+});
+
+test("an unsaved session keeps its place once the runtime names it", () => {
+  // The tab for a brand-new conversation is the empty id; adopting the real
+  // one must not leave a stale empty entry behind.
+  let tabs = openTab(emptyTabs, "a");
+  expect(tabs.open.includes(NEW_SESSION_ID)).toBe(false);
+  tabs = openTab(tabs, "b");
+  expect(tabs.open).toEqual(["a", "b"]);
 });

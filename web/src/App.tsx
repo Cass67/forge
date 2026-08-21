@@ -202,6 +202,12 @@ export default function App() {
 
   // Held in a ref so the event subscription does not tear down and re-attach
   // every time the focused session changes.
+  // Set when a new session was asked for in a workspace that is not open yet:
+  // the switch tears the runtime down, so the request is replayed once the
+  // rebuilt one reports ready.
+  const pendingNewSession = useRef(false);
+  const newThreadRef = useRef<() => void>(() => {});
+
   const markRef = useRef(markActive);
   markRef.current = markActive;
   // Whether anything in the current turn failed, which decides between the
@@ -231,6 +237,10 @@ export default function App() {
         setEntries([]);
       }
       refreshThreads();
+      if (pendingNewSession.current) {
+        pendingNewSession.current = false;
+        newThreadRef.current();
+      }
     });
   }, [refreshThreads]);
 
@@ -341,6 +351,7 @@ export default function App() {
       refreshThreads();
     });
   }, [refreshThreads]);
+  newThreadRef.current = newThread;
 
   const restoreThread = useCallback(
     (id: string) => {
@@ -480,6 +491,21 @@ export default function App() {
       void forge.switchWorkspace(dir).catch((e: unknown) => notify(String(e)));
     },
     [notify, workspaceDirty],
+  );
+
+  // Double-clicking a workspace starts a fresh session in it. When it is not
+  // the workspace already open, the switch has to land first — openWorkspace
+  // tears the runtime down — so the request is deferred to loadInit.
+  const newSessionIn = useCallback(
+    (dir: string) => {
+      if (!dir || dir === (init?.work_dir ?? "")) {
+        newThread();
+        return;
+      }
+      pendingNewSession.current = true;
+      openWorkspace(dir);
+    },
+    [init?.work_dir, newThread, openWorkspace],
   );
 
   const addWorkspace = useCallback(() => {
@@ -784,6 +810,7 @@ export default function App() {
               onNew={newThread}
               onRestore={restoreThread}
               onAddWorkspace={addWorkspace}
+              onNewIn={newSessionIn}
               onOpenWorkspace={openWorkspace}
               onDelete={deleteThread}
               onRename={(id, title) =>
@@ -897,7 +924,7 @@ export default function App() {
       {overlay === "workspaces" ? (
         <WorkspaceMenu
           workspaces={workspaces}
-          onNew={newThread}
+          onNewIn={newSessionIn}
           onOpen={(dir) => {
             setOverlay("none");
             openWorkspace(dir);

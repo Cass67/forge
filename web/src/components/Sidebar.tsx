@@ -22,6 +22,7 @@ export function Sidebar({
   onRestore,
   onAddWorkspace,
   onOpenWorkspace,
+  onNewIn,
   onDelete,
   onRename,
   onPin,
@@ -37,6 +38,7 @@ export function Sidebar({
   onRestore: (id: string) => void;
   onAddWorkspace: () => void;
   onOpenWorkspace: (dir: string) => void;
+  onNewIn: (dir: string) => void;
   onDelete: (id: string) => void;
   onRename: (id: string, title: string) => void;
   onPin: (dir: string, pinned: boolean) => void;
@@ -132,9 +134,7 @@ export function Sidebar({
                   onClick={() =>
                     setClosed((c) => ({ ...c, [ws.path]: !c[ws.path] }))
                   }
-                  onDoubleClick={() =>
-                    isActive ? onNew() : onOpenWorkspace(ws.path)
-                  }
+                  onDoubleClick={() => onNewIn(ws.path)}
                   title={ws.path}
                 >
                   <span className="ws-caret">{collapsed ? "▸" : "▾"}</span>

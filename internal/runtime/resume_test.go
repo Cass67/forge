@@ -64,17 +64,25 @@ func TestResolveWorkspaceResumeThreadID(t *testing.T) {
 	other := t.TempDir()
 	cfg := &config.Config{}
 	cfg.Session.OutputDir = dir
-	seedThread(t, dir, "workspace-old", "first", time.Now().Add(-time.Hour))
-	seedThread(t, dir, "other-new", "other", time.Now())
-	seedThread(t, dir, "workspace-new", "second", time.Now().Add(-time.Minute))
 
+	// Each thread's UpdatedAt has to survive the CWD patch: the store stamps
+	// a zero UpdatedAt with time.Now(), so patching without one would reorder
+	// these by whatever order the patches happened to run in.
+	threads := []struct {
+		id, cwd, text string
+		updated       time.Time
+	}{
+		{"workspace-old", workspace, "first", time.Now().Add(-time.Hour)},
+		{"other-new", other, "other", time.Now()},
+		{"workspace-new", workspace, "second", time.Now().Add(-time.Minute)},
+	}
 	store := sessionstore.NewJSONLThreadStore(filepath.Join(dir, "threads"))
-	for id, cwd := range map[string]string{
-		"workspace-old": workspace,
-		"workspace-new": workspace,
-		"other-new":     other,
-	} {
-		if err := store.UpdateThreadMetadata(context.Background(), id, sessionstore.ThreadMetadataPatch{CWD: cwd}); err != nil {
+	for _, thread := range threads {
+		seedThread(t, dir, thread.id, thread.text, thread.updated)
+		if err := store.UpdateThreadMetadata(context.Background(), thread.id, sessionstore.ThreadMetadataPatch{
+			CWD:       thread.cwd,
+			UpdatedAt: thread.updated,
+		}); err != nil {
 			t.Fatal(err)
 		}
 	}

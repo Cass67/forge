@@ -158,7 +158,10 @@ export function WorkspaceShell({
   const [tools, setTools] = useState<DockTool[]>([
     { id: "explorer", kind: "explorer", title: "Explorer", side: "left" },
     { id: "editor", kind: "editor", title: "Editor", side: "right" },
-    { id: "git", kind: "git", title: "Source Control", side: "right" },
+    // Source control shares the left dock with the explorer on purpose: it
+    // opens diffs into the editor, so parking it in the editor's own dock
+    // would hide the pane it is driving.
+    { id: "git", kind: "git", title: "Source Control", side: "left" },
   ]);
   const [activeTool, setActiveTool] = useState<Record<DockSide, string>>({
     left: "explorer",
@@ -210,12 +213,27 @@ export function WorkspaceShell({
       .catch((error: unknown) => onNotify(String(error)));
   }, [applyGit, onNotify]);
 
-  const openGitTab = useCallback((tab: GitTab) => {
-    setGitTabs((current) =>
-      current.some((open) => open.id === tab.id) ? current : [...current, tab],
-    );
-    setActiveGitTab(tab.id);
-  }, []);
+  const openGitTab = useCallback(
+    (tab: GitTab) => {
+      setGitTabs((current) =>
+        current.some((open) => open.id === tab.id)
+          ? current
+          : [...current, tab],
+      );
+      setActiveGitTab(tab.id);
+      // Only one tool per dock is visible, so opening a diff has to bring the
+      // editor's dock to the front or the click looks like it did nothing.
+      const editor = tools.find((tool) => tool.kind === "editor");
+      if (editor) {
+        setActiveTool((current) =>
+          current[editor.side] === editor.id
+            ? current
+            : { ...current, [editor.side]: editor.id },
+        );
+      }
+    },
+    [tools],
+  );
 
   const closeGitTab = (id: string) => {
     const index = gitTabs.findIndex((tab) => tab.id === id);
@@ -288,6 +306,14 @@ export function WorkspaceShell({
   const openFile = useCallback(
     (path: string) => {
       setActiveGitTab("");
+      const editor = tools.find((tool) => tool.kind === "editor");
+      if (editor) {
+        setActiveTool((current) =>
+          current[editor.side] === editor.id
+            ? current
+            : { ...current, [editor.side]: editor.id },
+        );
+      }
       if (files.some((candidate) => candidate.path === path)) {
         openRequest.current++;
         setActivePath(path);
@@ -310,7 +336,7 @@ export function WorkspaceShell({
         })
         .catch((error: unknown) => onNotify(String(error)));
     },
-    [files, onNotify],
+    [files, onNotify, tools],
   );
 
   const closeFile = (path: string) => {

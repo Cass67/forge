@@ -1,5 +1,9 @@
 import type { ThreadSummary } from "../bridge";
-import type { SessionStatus, SessionTabState } from "../sessionTabs";
+import {
+  NEW_SESSION_ID,
+  type SessionStatus,
+  type SessionTabState,
+} from "../sessionTabs";
 
 type Props = {
   tabs: SessionTabState;
@@ -30,11 +34,12 @@ export function SessionTabs({
   onNew,
 }: Props) {
   const byID = new Map(threads.map((thread) => [thread.thread_id, thread]));
-  // A brand-new conversation has no stored thread yet; it still deserves a tab.
-  const ids =
-    tabs.open.includes(activeID) || !activeID
-      ? tabs.open
-      : [...tabs.open, activeID];
+  // A brand-new conversation has no stored thread id yet. It still gets a tab,
+  // appended last and always the active one, so starting a session looks like
+  // something happened; it joins tabs.open once the runtime names it.
+  const ids = tabs.open.includes(activeID)
+    ? tabs.open
+    : [...tabs.open, activeID];
   if (ids.length === 0) return null;
 
   return (
@@ -42,6 +47,7 @@ export function SessionTabs({
       {ids.map((id) => {
         const thread = byID.get(id);
         const status = tabs.status[id] ?? "idle";
+        const unsaved = id === NEW_SESSION_ID;
         const title = thread?.title || "new session";
         return (
           <div
@@ -57,13 +63,15 @@ export function SessionTabs({
               <span className={`session-dot ${status}`} aria-hidden="true" />
               <span className="session-title">{title}</span>
             </button>
-            <button
-              className="workspace-tab-close"
-              onClick={() => onClose(id)}
-              aria-label={`Close ${title}`}
-            >
-              ×
-            </button>
+            {unsaved ? null : (
+              <button
+                className="workspace-tab-close"
+                onClick={() => onClose(id)}
+                aria-label={`Close ${title}`}
+              >
+                ×
+              </button>
+            )}
           </div>
         );
       })}

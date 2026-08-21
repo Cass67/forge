@@ -13,13 +13,15 @@ function fmtWhen(iso: string): string {
 export function WorkspaceMenu({
   workspaces,
   onOpen,
-  onNew,
+  onNewIn,
   onAdd,
   onClose,
 }: {
   workspaces: Workspace[];
   onOpen: (dir: string) => void;
-  onNew: () => void;
+  // Double-click starts a fresh session in that workspace, switching to it
+  // first when it is not the one already open.
+  onNewIn: (dir: string) => void;
   onAdd: () => void;
   onClose: () => void;
 }) {
@@ -36,7 +38,9 @@ export function WorkspaceMenu({
           </button>
         </div>
         <div className="ws-list">
-          {workspaces.length === 0 ? <div className="empty">no workspaces yet</div> : null}
+          {workspaces.length === 0 ? (
+            <div className="empty">no workspaces yet</div>
+          ) : null}
           {workspaces.map((w) => (
             <button
               key={w.path}
@@ -46,21 +50,24 @@ export function WorkspaceMenu({
                 if (!w.active) onOpen(w.path);
               }}
               onDoubleClick={() => {
-                if (w.active) {
-                  onNew();
-                  onClose();
-                }
+                onNewIn(w.path);
+                onClose();
               }}
               disabled={w.missing}
               title={w.missing ? `${w.path} (no longer exists)` : w.path}
             >
               <span className="ws-row-name">{w.name}</span>
-              <span className="ws-row-path">{w.path.replace(/^\/Users\/[^/]+/, "~")}</span>
+              <span className="ws-row-path">
+                {w.path.replace(/^\/Users\/[^/]+/, "~")}
+              </span>
               <span className="ws-row-meta">
-                {w.threads} {w.threads === 1 ? "thread" : "threads"} · {fmtWhen(w.last_use)}
+                {w.threads} {w.threads === 1 ? "thread" : "threads"} ·{" "}
+                {fmtWhen(w.last_use)}
               </span>
               {w.active ? <span className="ws-row-tag">current</span> : null}
-              {w.missing ? <span className="ws-row-tag warn">missing</span> : null}
+              {w.missing ? (
+                <span className="ws-row-tag warn">missing</span>
+              ) : null}
             </button>
           ))}
         </div>

@@ -14,6 +14,10 @@ export type SessionTabState = {
 
 export const SESSION_TABS_KEY = "forge.sessionTabs";
 
+// A conversation that has not been written to the thread store yet has no id.
+// It still needs a tab, so it gets this one until the runtime hands one over.
+export const NEW_SESSION_ID = "";
+
 export const emptyTabs: SessionTabState = { open: [], status: {} };
 
 // Tabs are per workspace: a thread id from another directory has nothing to
