@@ -3,6 +3,7 @@ import { Terminal, type ITheme } from "xterm";
 import "xterm/css/xterm.css";
 import { useEffect, useRef } from "react";
 import { forge } from "../bridge";
+import { TerminalInputGuard } from "../terminalInput";
 
 type Props = {
   workDir: string;
@@ -66,6 +67,7 @@ export function TerminalWorkspace({
     let disposed = false;
     let started = false;
     let pendingInput = "";
+    const inputGuard = new TerminalInputGuard();
     const term = new Terminal({
       allowProposedApi: false,
       convertEol: false,
@@ -78,6 +80,14 @@ export function TerminalWorkspace({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(element);
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type !== "keydown" || event.isComposing) return true;
+      const signature = `${event.code}:${event.key}:${event.metaKey}:${event.ctrlKey}:${event.altKey}:${event.shiftKey}`;
+      const turn = inputGuard.startKey(signature, event.timeStamp);
+      if (turn === 0) return false;
+      setTimeout(() => inputGuard.endKey(turn), 0);
+      return true;
+    });
 
     const resize = () => {
       if (element.clientWidth < 2 || element.clientHeight < 2) return;
@@ -102,6 +112,7 @@ export function TerminalWorkspace({
         .catch((error: unknown) => onNotify(String(error)));
     };
     const input = term.onData((data) => {
+      if (!inputGuard.acceptData()) return;
       if (!started) {
         pendingInput += data;
         return;
