@@ -64,6 +64,8 @@ export function TerminalWorkspace({
     let disposed = false;
     let started = false;
     let pendingInput = "";
+    let receivedOutput = false;
+    let promptTimer: ReturnType<typeof setTimeout> | undefined;
     let lastKey = { signature: "", at: 0 };
     let lastInput = { data: "", at: 0 };
     const term = new Terminal({
@@ -99,7 +101,10 @@ export function TerminalWorkspace({
     };
     const offEvent = forge.onTerminal((event) => {
       if (event.id !== id) return;
-      if (event.data) term.write(event.data);
+      if (event.data) {
+        receivedOutput = true;
+        term.write(event.data);
+      }
       if (event.closed) {
         started = false;
         term.writeln("\r\n[process exited]");
@@ -148,6 +153,9 @@ export function TerminalWorkspace({
           write(pendingInput);
           pendingInput = "";
         }
+        promptTimer = setTimeout(() => {
+          if (started && !receivedOutput) write("\r");
+        }, 250);
       })
       .catch((error: unknown) => {
         if (!disposed) onNotify(String(error));
@@ -155,6 +163,7 @@ export function TerminalWorkspace({
 
     return () => {
       disposed = true;
+      if (promptTimer !== undefined) clearTimeout(promptTimer);
       observer.disconnect();
       themeObserver.disconnect();
       input.dispose();
