@@ -14,6 +14,19 @@ func workspaceTestService(t *testing.T) (*Service, string) {
 	return &Service{cfg: tui.ChatLiveConfig{WorkDir: root}, ready: true}, root
 }
 
+func TestTerminalEnvironmentSetsXtermCapabilities(t *testing.T) {
+	got := terminalEnvironment([]string{"PATH=/bin", "TERM=dumb", "COLORTERM=old"})
+	want := []string{"PATH=/bin", "TERM=xterm-256color", "COLORTERM=truecolor"}
+	if len(got) != len(want) {
+		t.Fatalf("terminal environment = %q, want %q", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("terminal environment = %q, want %q", got, want)
+		}
+	}
+}
+
 func TestWorkspacePathRejectsEscapeAndExternalSymlink(t *testing.T) {
 	root := t.TempDir()
 	if _, err := workspacePath(root, "../outside"); err == nil {

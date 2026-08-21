@@ -44,6 +44,17 @@ type terminalSession struct {
 	ptmx *os.File
 }
 
+func terminalEnvironment(env []string) []string {
+	result := make([]string, 0, len(env)+2)
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "TERM=") || strings.HasPrefix(entry, "COLORTERM=") {
+			continue
+		}
+		result = append(result, entry)
+	}
+	return append(result, "TERM=xterm-256color", "COLORTERM=truecolor")
+}
+
 func (s *Service) workspaceRoot() (string, error) {
 	cfg, _, ready := s.snapshot()
 	if !ready {
@@ -231,6 +242,7 @@ func (s *Service) StartTerminal(id string, rows, cols int) error {
 	}
 	cmd := exec.Command(shell, "-l")
 	cmd.Dir = root
+	cmd.Env = terminalEnvironment(os.Environ())
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
 	if err != nil {
 		return err
