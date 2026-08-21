@@ -333,7 +333,7 @@ body {
    which is exactly when you most want to. .diffbox also renders in the
    approval modal, outside the transcript. */
 input,
-textarea,
+textarea:not(.xterm-helper-textarea),
 .selectable,
 .transcript,
 .diffbox {
