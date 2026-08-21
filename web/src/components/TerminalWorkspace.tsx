@@ -80,6 +80,23 @@ export function TerminalWorkspace({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(element);
+    const helper = element.querySelector<HTMLTextAreaElement>(
+      ".xterm-helper-textarea",
+    );
+    const blockReplayedText = (event: Event) => {
+      // WKWebView can send delayed insertText with the helper's retained full
+      // value after xterm already handled keydown. That replays whole commands.
+      if (
+        !(event instanceof InputEvent) ||
+        event.inputType !== "insertText" ||
+        event.isComposing
+      )
+        return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (helper) helper.value = "";
+    };
+    helper?.addEventListener("input", blockReplayedText, true);
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown" || event.isComposing) return true;
       const signature = `${event.code}:${event.key}:${event.metaKey}:${event.ctrlKey}:${event.altKey}:${event.shiftKey}`;
@@ -156,6 +173,7 @@ export function TerminalWorkspace({
       themeObserver.disconnect();
       input.dispose();
       offEvent();
+      helper?.removeEventListener("input", blockReplayedText, true);
       started = false;
       void forge.closeTerminal(id);
       term.dispose();
