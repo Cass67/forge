@@ -5553,3 +5553,33 @@ func TestChatModelValidationEventDoesNotUpdateLastToolResult(t *testing.T) {
 		t.Fatalf("lastToolResult should not be overwritten by __validation event, got %q", m.lastToolResult)
 	}
 }
+
+func TestSlashReviewSendsThePromptButShowsTheCommand(t *testing.T) {
+	inputCh := make(chan string, 1)
+	m := NewChatModel(ChatLiveConfig{Model: "test-model", WorkDir: "/tmp"})
+	m.inputCh = inputCh
+
+	updated, cmd, ok := m.trySubmitText("/review develop", nil)
+	if !ok || cmd == nil {
+		t.Fatalf("/review not submitted (ok=%v cmd=%v)", ok, cmd)
+	}
+	cmd()
+
+	last := updated.messages[len(updated.messages)-1]
+	if last.Content != "/review develop" {
+		t.Fatalf("transcript shows %q, want the typed command", last.Content)
+	}
+
+	var sent string
+	select {
+	case sent = <-inputCh:
+	default:
+		t.Fatal("nothing was sent to the runtime")
+	}
+	if !strings.Contains(sent, "review_diff") || !strings.Contains(sent, "report_findings") {
+		t.Fatalf("review prompt not sent: %q", sent)
+	}
+	if !strings.Contains(sent, "develop") {
+		t.Fatalf("base not carried into the prompt: %q", sent)
+	}
+}

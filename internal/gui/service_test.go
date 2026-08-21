@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -203,5 +204,29 @@ func TestSwitchWorkspaceIgnoresTheCurrentDirectory(t *testing.T) {
 	}
 	if err := s.Send(""); err != nil {
 		t.Fatalf("service should still be attached: %v", err)
+	}
+}
+
+func TestEncodeInputExpandsReview(t *testing.T) {
+	cfg := tui.ChatLiveConfig{}
+	var ui chatstate.ChatUserInput
+	if err := unmarshal(encodeInput(cfg, "/review develop", nil), &ui); err != nil {
+		t.Fatalf("/review did not encode as ChatUserInput: %v", err)
+	}
+	if !strings.Contains(ui.Text, "review_diff") || !strings.Contains(ui.Text, "develop") {
+		t.Fatalf("review prompt missing: %q", ui.Text)
+	}
+	if ui.SkillName != "" {
+		t.Fatalf("built-in /review should not activate a skill, got %q", ui.SkillName)
+	}
+
+	// A user-installed skill named "review" still wins, so nothing they added
+	// is shadowed by the built-in.
+	withSkill := tui.ChatLiveConfig{Skills: []skills.Skill{{Name: "review", Body: "my own review process"}}}
+	if err := unmarshal(encodeInput(withSkill, "/review", nil), &ui); err != nil {
+		t.Fatalf("skill input did not encode: %v", err)
+	}
+	if ui.SkillName != "review" || ui.SkillBody != "my own review process" {
+		t.Fatalf("installed skill was shadowed: %+v", ui)
 	}
 }

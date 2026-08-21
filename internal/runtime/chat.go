@@ -425,6 +425,11 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 	reg.Register(tools.NewGitLogWithWorkDirProvider(workDir, workDirProvider))
 	reg.Register(tools.NewGitBranchStateWithWorkDirProvider(workDir, workDirProvider))
 	reg.Register(tools.NewGitMergeStatusWithWorkDirProvider(workDir, workDirProvider))
+	reg.Register(tools.NewGitShowWithWorkDirProvider(workDir, workDirProvider))
+	reg.Register(tools.NewGitBlameWithWorkDirProvider(workDir, workDirProvider))
+	reg.Register(tools.NewGHPullRequestWithWorkDirProvider(workDir, workDirProvider))
+	reg.Register(tools.NewReviewDiffWithWorkDirProvider(workDir, workDirProvider))
+	reg.Register(tools.NewReportFindings())
 	reg.Register(tools.NewViewImage(workDir))
 	reg.Register(tools.NewToolHelp(reg))
 	reg.Register(reacttools.NewUpdatePlan(session))
@@ -441,6 +446,7 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 	}
 	reg.Register(tools.NewGitCommitWithWorkDirProvider(workDir, workDirProvider, approve))
 	reg.Register(tools.NewGitPushWithWorkDirProvider(workDir, workDirProvider, approve))
+	reg.Register(tools.NewGitWorktreeWithWorkDirProvider(workDir, workDirProvider, approve))
 	// Web access stays visible in the prompt. Hiding it behind tool_help meant
 	// models concluded they had no network at all and answered research
 	// questions from memory, flagging every fact as unverifiable, rather than
@@ -1880,6 +1886,11 @@ func newChildAgentRegistry(childWorkDir string, allowedTools []string, parentReg
 	childReg.Register(tools.NewGitLog(childWorkDir))
 	childReg.Register(tools.NewGitBranchState(childWorkDir))
 	childReg.Register(tools.NewGitMergeStatus(childWorkDir))
+	childReg.Register(tools.NewGitShow(childWorkDir))
+	childReg.Register(tools.NewGitBlame(childWorkDir))
+	childReg.Register(tools.NewGHPullRequest(childWorkDir))
+	childReg.Register(tools.NewReviewDiff(childWorkDir))
+	childReg.Register(tools.NewReportFindings())
 	childReg.Register(tools.NewToolHelp(childReg))
 	childReg.Register(tools.NewThink())
 

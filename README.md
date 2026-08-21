@@ -22,6 +22,7 @@ Forge is not a hosted SaaS or remote coding sandbox. It is a native local tool t
 ## Highlights
 
 - local coding agent with file, search, git, command, and web tools
+- `/review`: reviews the branch from its merge-base and reports ranked findings
 - provider-aware model routing across ChatGPT, Claude.ai, OpenAI, Anthropic, Copilot, and OpenAI-compatible backends
 - host-owned React runtime with task/mode state, typed hook overlays, bounded memory summaries, and runtime completion gates
 - live chat TUI with model picker, provider picker, approvals, nudges, recent activity, quiet progress updates, and runtime stats
@@ -123,14 +124,14 @@ tool_profile = "lean"
 
 Permissions can be scoped by source. Precedence is fixed from broadest to narrowest: managed, user, project, local, session, then CLI. A narrower scope wins over a broader scope; within the same scope, `deny` wins over `ask`, and `ask` wins over `allow`.
 
-| Scope | Intended owner | Typical use |
-| --- | --- | --- |
-| `managed` | organization or managed install | mandatory baseline policy |
-| `user` | user-level config | personal defaults across repos |
-| `project` | checked-in project config | repo-specific safety policy |
-| `local` | local project override | machine-specific exceptions |
-| `session` | current chat/session | temporary turn-level policy |
-| `cli` | command-line override | most specific explicit override |
+| Scope     | Intended owner                  | Typical use                     |
+| --------- | ------------------------------- | ------------------------------- |
+| `managed` | organization or managed install | mandatory baseline policy       |
+| `user`    | user-level config               | personal defaults across repos  |
+| `project` | checked-in project config       | repo-specific safety policy     |
+| `local`   | local project override          | machine-specific exceptions     |
+| `session` | current chat/session            | temporary turn-level policy     |
+| `cli`     | command-line override           | most specific explicit override |
 
 Rules support tool-wide matching, command patterns for `run_command`, and path globs for file/artifact tools. Invalid behaviors and unsupported tool names are ignored during config loading rather than treated as implicit allows. For example:
 
@@ -337,6 +338,7 @@ Advanced: `--yolo` skips approval prompts; use only in an isolated disposable en
 Useful chat slash commands:
 
 ```text
+/review [base]     # review the current branch against its base branch
 /<skill> [args]    # activate a skill; args replace $ARGUMENTS in its body
 /sandbox on [image] # session mode: route all run_command and terminal
                     # (exec_session) execution through a persistent Docker

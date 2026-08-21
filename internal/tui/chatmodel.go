@@ -1961,6 +1961,9 @@ func (m ChatModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m ChatModel) trySubmitText(input string, attachments []chatstate.ChatAttachment) (ChatModel, tea.Cmd, bool) {
 	input = strings.TrimSpace(input)
+	// Set when a command expands into a longer prompt than the user typed, so
+	// the transcript still shows what they typed.
+	displayOverride := ""
 	if input == "" && len(attachments) == 0 {
 		return m, nil, false
 	}
@@ -2015,6 +2018,12 @@ func (m ChatModel) trySubmitText(input string, attachments []chatstate.ChatAttac
 			return m, nil, false
 		}
 		cmd := strings.TrimPrefix(input, "/")
+		if cmd == "review" || strings.HasPrefix(cmd, "review ") {
+			base := strings.TrimSpace(strings.TrimPrefix(cmd, "review"))
+			displayOverride = input
+			input = tools.ReviewPromptFor(base)
+			goto submitChatInput
+		}
 		if m.isBuiltinCommand(input) {
 			updated, submitCmd := m.handleSlashCommand(input)
 			return updated.(ChatModel), submitCmd, true
@@ -2061,12 +2070,15 @@ submitChatInput:
 	if m.busy {
 		stamp := time.Now().Format("15:04:05")
 		displayText := input
+		if displayOverride != "" {
+			displayText = displayOverride
+		}
 		if len(attachments) > 0 {
 			names := make([]string, len(attachments))
 			for i, att := range attachments {
 				names[i] = att.Name
 			}
-			displayText = fmt.Sprintf("[%s] %s", strings.Join(names, ", "), input)
+			displayText = fmt.Sprintf("[%s] %s", strings.Join(names, ", "), displayText)
 		}
 		m.AddMessage(ChatMessage{
 			Kind:    MsgUser,
@@ -2103,12 +2115,15 @@ submitChatInput:
 
 	stamp := time.Now().Format("15:04:05")
 	displayText := input
+	if displayOverride != "" {
+		displayText = displayOverride
+	}
 	if len(attachments) > 0 {
 		names := make([]string, len(attachments))
 		for i, att := range attachments {
 			names[i] = att.Name
 		}
-		displayText = fmt.Sprintf("[%s] %s", strings.Join(names, ", "), input)
+		displayText = fmt.Sprintf("[%s] %s", strings.Join(names, ", "), displayText)
 	}
 	m.AddMessage(ChatMessage{
 		Kind:    MsgUser,
@@ -2430,6 +2445,7 @@ var builtinCommands = []string{
 	"/models", "/model", "/provider", "/effort",
 	"/skills", "/sessions", "/save", "/restore", "/remember",
 	"/find", "/files", "/copy agent", "/copy tools", "/copy code", "/copy result",
+	"/review",
 	"/make", "/exit", "/quit",
 	"/reload",
 }
@@ -2743,6 +2759,10 @@ func (m ChatModel) helpLines() []string {
 			"  /model             list available models",
 			"  /model <name>      switch to a model",
 			"  /provider          open provider picker",
+			"",
+			"Code review:",
+			"  /review            review this branch against its base branch",
+			"  /review <base>     review against a specific base ref",
 			"",
 			"Session state:",
 			"  /new               start a clean session",

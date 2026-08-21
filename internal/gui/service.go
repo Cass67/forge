@@ -675,6 +675,12 @@ func encodeInput(cfg tui.ChatLiveConfig, text string, attachments []chatstate.Ch
 	ui := chatstate.ChatUserInput{IsInput: true, Text: trimmed, Attachments: attachments}
 	if strings.HasPrefix(trimmed, "/") {
 		name, rest, _ := strings.Cut(strings.TrimPrefix(trimmed, "/"), " ")
+		// /review expands here rather than in the frontend, so the window and
+		// the TUI send the same review instructions.
+		if name == "review" && !hasSkill(cfg, name) {
+			ui.Text = tools.ReviewPromptFor(strings.TrimSpace(rest))
+			return marshalInput(ui, text)
+		}
 		for _, sk := range cfg.Skills {
 			if sk.Name == name {
 				ui.SkillName = sk.Name
@@ -688,6 +694,15 @@ func encodeInput(cfg tui.ChatLiveConfig, text string, attachments []chatstate.Ch
 		return text
 	}
 	return marshalInput(ui, text)
+}
+
+func hasSkill(cfg tui.ChatLiveConfig, name string) bool {
+	for _, sk := range cfg.Skills {
+		if sk.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // marshalInput serialises structured input; on the (impossible) marshal error
