@@ -926,14 +926,23 @@ input, textarea, .selectable, .transcript, .diffbox { user-select: text; }
 /* ---- workspace ---- */
 .workspace-shell {
   display: grid;
-  grid-template-columns: minmax(11rem, 18rem) minmax(20rem, 1fr) minmax(12rem, 18rem);
+  /* Dock widths are fractions set on the element itself, so a dragged divider
+     survives a window resize and every UI scale. */
+  grid-template-columns: var(--dock-left, 17%) 4px minmax(0, 1fr) 4px var(--dock-right, 32%);
   grid-template-rows: 2rem minmax(0, 1fr);
-  grid-template-areas: "left-tabs chat right-tabs" "left-tool chat right-tool";
+  grid-template-areas:
+    "left-tabs left-divider chat right-divider right-tabs"
+    "left-tool left-divider chat right-divider right-tool";
   min-height: 0; flex: 1; background: var(--bg);
 }
-.workspace-shell.docks-closed { grid-template-columns: 0 minmax(20rem, 1fr) 0; }
+.workspace-shell.docks-closed { grid-template-columns: 0 0 minmax(20rem, 1fr) 0 0; }
 .workspace-shell.docks-closed > .workspace-dock,
+.workspace-shell.docks-closed > .workspace-divider,
 .workspace-shell.docks-closed > .workspace-dock-body { visibility: hidden; }
+.workspace-divider { background: var(--border); cursor: col-resize; touch-action: none; }
+.workspace-divider-left { grid-area: left-divider; }
+.workspace-divider-right { grid-area: right-divider; }
+.workspace-divider:hover, .workspace-divider:focus-visible { background: var(--accent); outline: none; }
 .workspace-chat { display: flex; min-width: 0; min-height: 0; grid-area: chat; }
 .workspace-chat > .center { flex: 1; }
 .workspace-dock { min-width: 0; overflow: hidden; background: var(--panel); }
@@ -957,17 +966,20 @@ input, textarea, .selectable, .transcript, .diffbox { user-select: text; }
 .workspace-explorer { border-right: 1px solid var(--border); }
 .workspace-git { border-left: 1px solid var(--border); }
 .workspace-panel-title {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; flex: none; align-items: center; justify-content: space-between;
   min-height: 2rem; padding: 0 0.65rem; color: var(--muted);
   font-size: 0.6875rem; font-weight: 700; letter-spacing: 0.04em;
 }
+/* The list is the only part of a dock tool that scrolls; the headings above it
+   keep their height instead of being squeezed by a long tree. */
+.workspace-tool > .workspace-tree, .workspace-tool > ul { min-height: 0; flex: 1; overflow: auto; }
 .workspace-panel-title button, .workspace-toolbar button {
   border: 1px solid transparent; border-radius: 3px; background: transparent;
   color: var(--text); cursor: pointer;
 }
 .workspace-panel-title button:hover, .workspace-toolbar button:hover:not(:disabled) { background: var(--hover); }
 .workspace-toolbar button:disabled { color: var(--muted); cursor: default; }
-.workspace-root, .workspace-branch, .workspace-muted { padding: 0.4rem 0.65rem; font-size: 0.75rem; }
+.workspace-root, .workspace-branch, .workspace-muted { flex: none; padding: 0.4rem 0.65rem; font-size: 0.75rem; }
 .workspace-root { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-muted { color: var(--muted); }
 .workspace-tree, .workspace-tree ul, .workspace-git ul { margin: 0; padding: 0; list-style: none; }
@@ -982,7 +994,9 @@ input, textarea, .selectable, .transcript, .diffbox { user-select: text; }
 .workspace-tree button { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-git li button span { overflow: hidden; flex: 1; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-git li button b { color: var(--muted); font-family: var(--mono); font-size: 0.6875rem; }
-.workspace-editor { position: relative; display: flex; min-width: 0; min-height: 0; flex-direction: column; }
+/* flex: 1 — without it the editor sizes to its tabs and toolbar, and the file
+   itself gets whatever single line of height is left over. */
+.workspace-editor { position: relative; display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; }
 .workspace-tabs {
   display: flex; min-height: 2rem; overflow-x: auto; border-bottom: 1px solid var(--border); background: var(--panel);
 }
@@ -1061,8 +1075,8 @@ input, textarea, .selectable, .transcript, .diffbox { user-select: text; }
 .terminal-split.vertical > .terminal-divider { height: 4px; cursor: row-resize; }
 .terminal-divider:hover { background: var(--accent); }
 @media (max-width: 850px) {
-  .workspace-shell { grid-template-columns: minmax(9rem, 14rem) minmax(18rem, 1fr) 0; }
-  .workspace-dock-right, .workspace-dock-body-right { visibility: hidden; }
+  .workspace-shell { grid-template-columns: var(--dock-left, 17%) 4px minmax(0, 1fr) 0 0; }
+  .workspace-dock-right, .workspace-dock-body-right, .workspace-divider-right { visibility: hidden; }
 }
 
 /* ---- bulk selection in the sidebar ---- */

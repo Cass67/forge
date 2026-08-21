@@ -15,6 +15,14 @@ import {
   type WorkspaceFile,
 } from "../bridge";
 import {
+  clampDock,
+  DEFAULT_DOCK_WIDTHS,
+  dockFraction,
+  type DockWidths,
+  loadDockWidths,
+  saveDockWidths,
+} from "../dockLayout";
+import {
   acceptSavedFile,
   filterPaths,
   isDirty,
@@ -152,6 +160,8 @@ export function WorkspaceShell({
       );
     return { left: assign("left"), right: assign("right") };
   }, []);
+  const shellRef = useRef<HTMLDivElement>(null);
+  const [dockWidths, setDockWidths] = useState<DockWidths>(loadDockWidths);
   const workspaceGeneration = useRef(0);
   const openRequest = useRef(0);
   const file = files.find((candidate) => candidate.path === activePath) ?? null;
@@ -333,6 +343,37 @@ export function WorkspaceShell({
     [workspacePaths, query],
   );
 
+  useEffect(() => saveDockWidths(dockWidths), [dockWidths]);
+
+  const resizeDock = useCallback((side: DockSide, fraction: number) => {
+    setDockWidths((current) => clampDock(current, side, fraction));
+  }, []);
+
+  const startDockDrag = (side: DockSide) => (event: React.PointerEvent) => {
+    event.preventDefault();
+    const move = (pointer: PointerEvent) => {
+      const rect = shellRef.current?.getBoundingClientRect();
+      if (rect) resizeDock(side, dockFraction(side, pointer.clientX, rect));
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+  };
+
+  // Arrow keys move a focused divider, so the docks are resizable without a
+  // pointer; double-click restores the default width.
+  const dockKeyDown = (side: DockSide) => (event: React.KeyboardEvent) => {
+    const step =
+      event.key === "ArrowLeft" ? -0.02 : event.key === "ArrowRight" ? 0.02 : 0;
+    if (!step) return;
+    event.preventDefault();
+    const direction = side === "left" ? step : -step;
+    resizeDock(side, dockWidths[side] + direction);
+  };
+
   const moveTool = (id: string, side: DockSide) => {
     setTools((current) => {
       const moving = current.find((tool) => tool.id === id);
@@ -501,6 +542,13 @@ export function WorkspaceShell({
   return (
     <div
       className={`workspace-shell ${active ? "docks-open" : "docks-closed"}`}
+      ref={shellRef}
+      style={
+        {
+          "--dock-left": `${dockWidths.left * 100}%`,
+          "--dock-right": `${dockWidths.right * 100}%`,
+        } as React.CSSProperties
+      }
     >
       {(["left", "right"] as const).map((side) => (
         <aside className={`workspace-dock workspace-dock-${side}`} key={side}>
@@ -540,6 +588,20 @@ export function WorkspaceShell({
             </button>
           </div>
         </aside>
+      ))}
+      {(["left", "right"] as const).map((side) => (
+        <div
+          aria-label={`Resize ${side} panel`}
+          aria-orientation="vertical"
+          aria-valuenow={Math.round(dockWidths[side] * 100)}
+          className={`workspace-divider workspace-divider-${side}`}
+          key={`${side}-divider`}
+          onDoubleClick={() => resizeDock(side, DEFAULT_DOCK_WIDTHS[side])}
+          onKeyDown={dockKeyDown(side)}
+          onPointerDown={startDockDrag(side)}
+          role="separator"
+          tabIndex={0}
+        />
       ))}
       <div className="workspace-chat">{children}</div>
       {(["left", "right"] as const).map((side) => (
