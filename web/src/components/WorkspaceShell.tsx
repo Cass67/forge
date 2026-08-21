@@ -421,7 +421,6 @@ export function WorkspaceShell({
     if (tool.kind === "explorer")
       return (
         <>
-          <div className="workspace-panel-title">EXPLORER</div>
           <div className="workspace-root" title={workDir}>
             {workDir.split("/").pop() || workDir}
           </div>
@@ -436,8 +435,8 @@ export function WorkspaceShell({
     if (tool.kind === "git")
       return (
         <>
-          <div className="workspace-panel-title">
-            SOURCE CONTROL{" "}
+          <div className="workspace-branch">
+            <span>{git?.branch || "Source Control"}</span>
             <button onClick={refreshGit} title="Refresh Git status">
               ↻
             </button>
@@ -446,9 +445,6 @@ export function WorkspaceShell({
             <div className="workspace-muted">Not a Git repository</div>
           ) : (
             <>
-              <div className="workspace-branch">
-                {git.branch || "Git repository"}
-              </div>
               {git.files.length === 0 ? (
                 <div className="workspace-muted">No changes</div>
               ) : (
@@ -480,27 +476,33 @@ export function WorkspaceShell({
       );
     return (
       <section className="workspace-editor">
-        <div className="workspace-tabs">
-          {files.map((open) => (
-            <div
-              className={`workspace-tab ${open.path === activePath ? "active" : ""}`}
-              key={open.path}
-              title={open.path}
-            >
-              <button onClick={() => setActivePath(open.path)}>
-                {open.path.split("/").pop()}
-                {isDirty(open) ? " ●" : ""}
-              </button>
-              <button
-                className="workspace-tab-close"
-                onClick={() => closeFile(open.path)}
-                aria-label={`Close ${open.path}`}
+        {files.length > 0 ? (
+          <div className="workspace-tabs">
+            {files.map((open) => (
+              <div
+                className={`workspace-tab ${open.path === activePath ? "active" : ""}`}
+                key={open.path}
+                title={open.path}
               >
-                ×
-              </button>
-            </div>
-          ))}
-          <span className="workspace-tab-spacer" />
+                <button onClick={() => setActivePath(open.path)}>
+                  {open.path.split("/").pop()}
+                  {isDirty(open) ? " ●" : ""}
+                </button>
+                <button
+                  className="workspace-tab-close"
+                  onClick={() => closeFile(open.path)}
+                  aria-label={`Close ${open.path}`}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        <div className="workspace-toolbar">
+          <span className="workspace-file-name">
+            {file ? file.path : "No file open"}
+          </span>
           <button
             className="workspace-quick-open-button"
             onClick={() => {
@@ -508,14 +510,10 @@ export function WorkspaceShell({
               setQuickOpen(true);
             }}
             title="Quick open (Ctrl/Command+P)"
+            aria-label="Quick open file"
           >
             ⌕
           </button>
-        </div>
-        <div className="workspace-toolbar">
-          <span className="workspace-file-name">
-            {file ? file.path : "No file open"}
-          </span>
           <button disabled={!dirty} onClick={revert}>
             Revert
           </button>

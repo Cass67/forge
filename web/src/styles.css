@@ -965,22 +965,21 @@ input, textarea, .selectable, .transcript, .diffbox { user-select: text; }
 .workspace-explorer, .workspace-git { min-width: 0; overflow: auto; background: var(--panel); }
 .workspace-explorer { border-right: 1px solid var(--border); }
 .workspace-git { border-left: 1px solid var(--border); }
-.workspace-panel-title {
-  display: flex; flex: none; align-items: center; justify-content: space-between;
-  min-height: 2rem; padding: 0 0.65rem; color: var(--muted);
-  font-size: 0.6875rem; font-weight: 700; letter-spacing: 0.04em;
-}
 /* The list is the only part of a dock tool that scrolls; the headings above it
    keep their height instead of being squeezed by a long tree. */
 .workspace-tool > .workspace-tree, .workspace-tool > ul { min-height: 0; flex: 1; overflow: auto; }
-.workspace-panel-title button, .workspace-toolbar button {
+.workspace-branch button, .workspace-toolbar button {
   border: 1px solid transparent; border-radius: 3px; background: transparent;
   color: var(--text); cursor: pointer;
 }
-.workspace-panel-title button:hover, .workspace-toolbar button:hover:not(:disabled) { background: var(--hover); }
+.workspace-branch button:hover, .workspace-toolbar button:hover:not(:disabled) { background: var(--hover); }
 .workspace-toolbar button:disabled { color: var(--muted); cursor: default; }
 .workspace-root, .workspace-branch, .workspace-muted { flex: none; padding: 0.4rem 0.65rem; font-size: 0.75rem; }
+.workspace-root, .workspace-branch {
+  display: flex; min-height: 2.25rem; align-items: center; border-bottom: 1px solid var(--border);
+}
 .workspace-root { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-branch { justify-content: space-between; }
 .workspace-muted { color: var(--muted); }
 .workspace-tree, .workspace-tree ul, .workspace-git ul { margin: 0; padding: 0; list-style: none; }
 .workspace-tree ul { padding-left: 0.8rem; }
@@ -1008,8 +1007,7 @@ input, textarea, .selectable, .transcript, .diffbox { user-select: text; }
 }
 .workspace-tab.active button { color: var(--text); }
 .workspace-tab-close { padding: 0 0.35rem !important; font-size: 0.875rem !important; }
-.workspace-tab-spacer { flex: 1; }
-.workspace-quick-open-button { flex: none; font-size: 1rem; }
+.workspace-quick-open-button { flex: none; padding: 0 0.25rem !important; font-size: 1rem !important; }
 .workspace-toolbar {
   display: flex; align-items: center; gap: 0.35rem; min-height: 2.25rem;
   padding: 0 0.55rem; border-bottom: 1px solid var(--border); background: var(--panel);
