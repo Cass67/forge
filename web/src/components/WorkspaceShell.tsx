@@ -582,7 +582,8 @@ export function WorkspaceShell({
     const hintFor = (at: number) => `${group.id}:tab:${at}`;
     return {
       onDragOver: (event: React.DragEvent) => {
-        if (!event.dataTransfer.types.includes(DOCK_TOOL_MIME)) return;
+        if (!dragging && !event.dataTransfer.types.includes(DOCK_TOOL_MIME))
+          return;
         event.preventDefault();
         event.dataTransfer.dropEffect = "move" as const;
         const box = event.currentTarget.getBoundingClientRect();
@@ -590,7 +591,7 @@ export function WorkspaceShell({
         setDropHint(hintFor(after ? index + 1 : index));
       },
       onDrop: (event: React.DragEvent) => {
-        const id = event.dataTransfer.getData(DOCK_TOOL_MIME);
+        const id = event.dataTransfer.getData(DOCK_TOOL_MIME) || dragging;
         if (!id) return;
         event.preventDefault();
         event.stopPropagation();
@@ -614,7 +615,8 @@ export function WorkspaceShell({
         : `${target.groupID}:${target.where}`;
     return {
       onDragOver: (event: React.DragEvent) => {
-        if (!event.dataTransfer.types.includes(DOCK_TOOL_MIME)) return;
+        if (!dragging && !event.dataTransfer.types.includes(DOCK_TOOL_MIME))
+          return;
         event.preventDefault();
         event.dataTransfer.dropEffect = "move" as const;
         setDropHint(hint);
@@ -622,7 +624,7 @@ export function WorkspaceShell({
       onDragLeave: () =>
         setDropHint((current) => (current === hint ? "" : current)),
       onDrop: (event: React.DragEvent) => {
-        const id = event.dataTransfer.getData(DOCK_TOOL_MIME);
+        const id = event.dataTransfer.getData(DOCK_TOOL_MIME) || dragging;
         if (!id) return;
         event.preventDefault();
         dropTool(id, target);
@@ -871,6 +873,7 @@ export function WorkspaceShell({
               onDragStart={(event) => {
                 event.dataTransfer.effectAllowed = "move";
                 event.dataTransfer.setData(DOCK_TOOL_MIME, tool.id);
+                event.dataTransfer.setData("text/plain", tool.id);
                 setDragging(tool.id);
               }}
               onDrop={tabDrop.onDrop}
