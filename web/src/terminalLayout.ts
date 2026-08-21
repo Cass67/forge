@@ -59,6 +59,31 @@ export function splitTerminal(
   };
 }
 
+export function splitTerminalWithLayout(
+  layout: TerminalLayout,
+  pane: string,
+  direction: TerminalSplit["direction"],
+  next: TerminalLayout,
+  before = false,
+): TerminalLayout {
+  if (layout.kind === "terminal") {
+    if (layout.id !== pane) return layout;
+    return {
+      kind: "split",
+      id: terminalID(),
+      direction,
+      ratio: 0.5,
+      first: before ? next : layout,
+      second: before ? layout : next,
+    };
+  }
+  return {
+    ...layout,
+    first: splitTerminalWithLayout(layout.first, pane, direction, next, before),
+    second: splitTerminalWithLayout(layout.second, pane, direction, next, before),
+  };
+}
+
 export function closeTerminalPane(
   layout: TerminalLayout,
   pane: string,

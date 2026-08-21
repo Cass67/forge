@@ -3,6 +3,7 @@ import {
   closeTerminalPane,
   resizeTerminalSplit,
   splitTerminal,
+  splitTerminalWithLayout,
   terminalIDs,
   type TerminalLayout,
 } from "./terminalLayout";
@@ -28,4 +29,12 @@ test("terminal split ratios stay usable", () => {
   expect(resizeTerminalSplit(split, split.id, 0.99)).toMatchObject({
     ratio: 0.85,
   });
+});
+
+test("a terminal tab layout can be dropped beside any pane", () => {
+  const target = splitTerminal(leaf("one"), "one", "horizontal", "two");
+  const source = splitTerminal(leaf("three"), "three", "vertical", "four");
+  const merged = splitTerminalWithLayout(target, "two", "vertical", source, true);
+
+  expect(terminalIDs(merged)).toEqual(["one", "three", "four", "two"]);
 });

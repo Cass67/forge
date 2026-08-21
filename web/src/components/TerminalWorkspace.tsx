@@ -1,5 +1,5 @@
 import { FitAddon } from "@xterm/addon-fit";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { forge } from "../bridge";
@@ -9,6 +9,7 @@ import {
   newTerminalTab,
   resizeTerminalSplit,
   splitTerminal,
+  splitTerminalWithLayout,
   terminalID,
   terminalIDs,
   type TerminalLayout,
@@ -17,11 +18,49 @@ import {
   type TerminalWorkspaceState,
 } from "../terminalLayout";
 
+const TERMINAL_TAB_MIME = "application/x-forge-terminal-tab";
+
 type Props = {
   workDir: string;
   instanceID?: string;
   onNotify: (message: string) => void;
 };
+
+function terminalFontSize(): number {
+  return Number.parseFloat(getComputedStyle(document.documentElement).fontSize) * 0.8125;
+}
+
+function terminalTheme(): ITheme {
+  const styles = getComputedStyle(document.documentElement);
+  const color = (token: string) => styles.getPropertyValue(token).trim();
+  const background = color("--bg");
+  const foreground = color("--text");
+  const accent = color("--accent");
+  const muted = color("--muted");
+  return {
+    background,
+    foreground,
+    cursor: accent,
+    cursorAccent: background,
+    selectionBackground: color("--selected"),
+    black: color("--panel"),
+    red: color("--err"),
+    green: color("--ok"),
+    yellow: color("--warn"),
+    blue: accent,
+    magenta: accent,
+    cyan: accent,
+    white: foreground,
+    brightBlack: muted,
+    brightRed: color("--err"),
+    brightGreen: color("--ok"),
+    brightYellow: color("--warn"),
+    brightBlue: accent,
+    brightMagenta: accent,
+    brightCyan: accent,
+    brightWhite: foreground,
+  };
+}
 
 function TerminalPane({
   id,
@@ -29,17 +68,20 @@ function TerminalPane({
   visible,
   onActivate,
   onNotify,
+  onDropTab,
 }: {
   id: string;
   active: boolean;
   visible: boolean;
   onActivate: () => void;
   onNotify: (message: string) => void;
+  onDropTab: (tab: string, pane: string, direction: TerminalSplit["direction"], before: boolean) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | null>(null);
   const fit = useRef<FitAddon | null>(null);
   const started = useRef(false);
+  const lastInput = useRef({ data: "", at: 0 });
 
   useEffect(() => {
     if (!host.current) return;
@@ -48,13 +90,9 @@ function TerminalPane({
       convertEol: false,
       cursorBlink: true,
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-      fontSize: 12,
+      fontSize: terminalFontSize(),
       scrollback: 5000,
-      theme: {
-        background: "#101010",
-        foreground: "#d8d8d8",
-        cursor: "#d8d8d8",
-      },
+      theme: terminalTheme(),
     });
     const fitAddon = new FitAddon();
     terminal.current = term;
@@ -72,6 +110,11 @@ function TerminalPane({
       }
     });
     const input = term.onData((data) => {
+      // Wails/WebKit can dispatch the same xterm input callback twice in one
+      // event turn after a portal remount. Do not send that duplicate to PTY.
+      const now = performance.now();
+      if (lastInput.current.data === data && now - lastInput.current.at < 8) return;
+      lastInput.current = { data, at: now };
       void forge
         .writeTerminal(id, data)
         .catch((error: unknown) => onNotify(String(error)));
@@ -92,6 +135,15 @@ function TerminalPane({
     };
     const observer = new ResizeObserver(resize);
     observer.observe(host.current);
+    const themeObserver = new MutationObserver(() => {
+      term.options.theme = terminalTheme();
+      term.options.fontSize = terminalFontSize();
+      resize();
+    });
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme", "style"],
+    });
     void forge
       .startTerminal(id, term.rows, term.cols)
       .then(() => {
@@ -102,6 +154,7 @@ function TerminalPane({
 
     return () => {
       observer.disconnect();
+      themeObserver.disconnect();
       input.dispose();
       offEvent();
       started.current = false;
@@ -124,6 +177,24 @@ function TerminalPane({
     <div
       className={`terminal-pane ${active ? "active" : ""}`}
       onPointerDown={onActivate}
+      onDragOver={(event) => {
+        if (!event.dataTransfer.types.includes(TERMINAL_TAB_MIME)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+      }}
+      onDrop={(event) => {
+        const tab = event.dataTransfer.getData(TERMINAL_TAB_MIME);
+        if (!tab) return;
+        event.preventDefault();
+        const rect = event.currentTarget.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        const horizontalEdge = Math.min(x, rect.width - x) / rect.width;
+        const verticalEdge = Math.min(y, rect.height - y) / rect.height;
+        const direction = horizontalEdge < verticalEdge ? "horizontal" : "vertical";
+        const before = direction === "horizontal" ? x < rect.width / 2 : y < rect.height / 2;
+        onDropTab(tab, id, direction, before);
+      }}
     >
       <div ref={host} className="terminal-host" />
     </div>
@@ -137,6 +208,7 @@ function SplitView({
   onActivate,
   onRatio,
   onNotify,
+  onDropTab,
 }: {
   layout: TerminalLayout;
   activePane: string;
@@ -144,6 +216,7 @@ function SplitView({
   onActivate: (pane: string) => void;
   onRatio: (split: string, ratio: number) => void;
   onNotify: (message: string) => void;
+  onDropTab: (tab: string, pane: string, direction: TerminalSplit["direction"], before: boolean) => void;
 }) {
   const splitHost = useRef<HTMLDivElement>(null);
   if (layout.kind === "terminal") {
@@ -154,6 +227,7 @@ function SplitView({
         visible={visible}
         onActivate={() => onActivate(layout.id)}
         onNotify={onNotify}
+        onDropTab={onDropTab}
       />
     );
   }
@@ -188,6 +262,7 @@ function SplitView({
           onActivate={onActivate}
           onRatio={onRatio}
           onNotify={onNotify}
+          onDropTab={onDropTab}
         />
       </div>
       <div
@@ -204,6 +279,7 @@ function SplitView({
           onActivate={onActivate}
           onRatio={onRatio}
           onNotify={onNotify}
+          onDropTab={onDropTab}
         />
       </div>
     </div>
@@ -278,6 +354,30 @@ export function TerminalWorkspace({
       activePane: terminalIDs(layout)[0],
     }));
   };
+  const dropTab = (
+    sourceID: string,
+    targetPane: string,
+    direction: TerminalSplit["direction"],
+    before: boolean,
+  ) => {
+    setState((current) => {
+      const source = current.tabs.find((tab) => tab.id === sourceID);
+      const target = current.tabs.find((tab) => terminalIDs(tab.layout).includes(targetPane));
+      if (!source || !target || source.id === target.id) return current;
+      const tabs = current.tabs
+        .filter((tab) => tab.id !== source.id)
+        .map((tab) =>
+          tab.id === target.id
+            ? {
+                ...tab,
+                activePane: source.activePane,
+                layout: splitTerminalWithLayout(tab.layout, targetPane, direction, source.layout, before),
+              }
+            : tab,
+        );
+      return { tabs, activeTab: target.id };
+    });
+  };
 
   return (
     <section className="terminal-workspace">
@@ -286,6 +386,11 @@ export function TerminalWorkspace({
           <div
             key={tab.id}
             className={`terminal-tab ${tab.id === state.activeTab ? "active" : ""}`}
+            draggable
+            onDragStart={(event) => {
+              event.dataTransfer.effectAllowed = "move";
+              event.dataTransfer.setData(TERMINAL_TAB_MIME, tab.id);
+            }}
           >
             <button
               className="terminal-tab-select"
@@ -344,6 +449,7 @@ export function TerminalWorkspace({
                 }))
               }
               onNotify={onNotify}
+              onDropTab={dropTab}
             />
           </div>
         ))}

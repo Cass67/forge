@@ -952,11 +952,14 @@ input, textarea, .selectable, .transcript, .diffbox { user-select: text; }
 .workspace-dock { min-width: 0; overflow: hidden; background: var(--panel); }
 .workspace-dock-left { grid-area: left-tabs; border-right: 1px solid var(--border); }
 .workspace-dock-right { grid-area: right-tabs; border-left: 1px solid var(--border); }
+.workspace-dock.drag-over { background: var(--selected); box-shadow: inset 0 0 0 1px var(--accent); }
 .workspace-dock-tabs { display: flex; height: 100%; overflow-x: auto; }
 .workspace-dock-tabs button {
   flex: none; padding: 0 0.5rem; border: 0; border-right: 1px solid var(--border);
   background: transparent; color: var(--muted); font: 0.6875rem var(--mono); cursor: pointer;
 }
+.workspace-dock-tabs button[draggable="true"] { cursor: grab; }
+.workspace-dock-tabs button[draggable="true"]:active { cursor: grabbing; }
 .workspace-dock-tabs button.active { background: var(--hover); color: var(--text); box-shadow: inset 0 -1px var(--accent); }
 .workspace-dock-body { min-width: 0; min-height: 0; overflow: hidden; background: var(--panel); }
 .workspace-dock-body-left { grid-area: left-tool; border-right: 1px solid var(--border); }
@@ -1045,7 +1048,7 @@ input, textarea, .selectable, .transcript, .diffbox { user-select: text; }
 .workspace-quick-open-panel li button:hover, .workspace-quick-open-panel li button.selected { background: var(--selected); }
 .terminal-workspace {
   display: flex; width: 100%; min-width: 0; min-height: 0; height: 100%; flex: 1; flex-direction: column;
-  background: #101010; color: #d8d8d8;
+  background: var(--bg); color: var(--text);
 }
 .terminal-tabs {
   display: flex; align-items: stretch; min-height: 2rem; overflow-x: auto;

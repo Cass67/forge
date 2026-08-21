@@ -35,6 +35,7 @@ export function CodeEditor({ path, value, onChange, onSave, onNotify }: Props) {
         doc: value,
         extensions: [
           basicSetup,
+          EditorView.lineWrapping,
           syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
           language.of([]),
           keymap.of([

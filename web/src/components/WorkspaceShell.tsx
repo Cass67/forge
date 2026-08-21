@@ -46,6 +46,7 @@ type TreeNode = WorkspaceEntry & {
 type DockSide = "left" | "right";
 type ToolKind = "explorer" | "editor" | "git" | "terminal";
 type DockTool = { id: string; kind: ToolKind; title: string; side: DockSide };
+const DOCK_TOOL_MIME = "application/x-forge-dock-tool";
 
 function DockToolHost({
   target,
@@ -146,6 +147,7 @@ export function WorkspaceShell({
     left: "explorer",
     right: "editor",
   });
+  const [dropSide, setDropSide] = useState<DockSide | null>(null);
   const nextTerminal = useRef(1);
   const [quickOpen, setQuickOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -549,14 +551,34 @@ export function WorkspaceShell({
       }
     >
       {(["left", "right"] as const).map((side) => (
-        <aside className={`workspace-dock workspace-dock-${side}`} key={side}>
+        <aside
+          className={`workspace-dock workspace-dock-${side} ${dropSide === side ? "drag-over" : ""}`}
+          key={side}
+          onDragOver={(event) => {
+            if (!event.dataTransfer.types.includes(DOCK_TOOL_MIME)) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+            setDropSide(side);
+          }}
+          onDrop={(event) => {
+            event.preventDefault();
+            moveTool(event.dataTransfer.getData(DOCK_TOOL_MIME), side);
+            setDropSide(null);
+          }}
+        >
           <div className="workspace-dock-tabs">
             {tools
               .filter((tool) => tool.side === side)
               .map((tool) => (
                 <button
                   className={activeTool[side] === tool.id ? "active" : ""}
+                  draggable
                   key={tool.id}
+                  onDragEnd={() => setDropSide(null)}
+                  onDragStart={(event) => {
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData(DOCK_TOOL_MIME, tool.id);
+                  }}
                   onClick={() =>
                     setActiveTool((current) => ({
                       ...current,
