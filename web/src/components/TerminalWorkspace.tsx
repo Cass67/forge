@@ -57,7 +57,9 @@ export function TerminalWorkspace({
   const host = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!host.current) return;
+    const element = host.current;
+    if (!element) return;
+    element.replaceChildren();
     const id = `${instanceID}:pty:${crypto.randomUUID()}`;
     let disposed = false;
     let started = false;
@@ -75,7 +77,7 @@ export function TerminalWorkspace({
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    term.open(host.current);
+    term.open(element);
     term.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown" || event.isComposing) return true;
       const signature = `${event.code}:${event.key}:${event.metaKey}:${event.ctrlKey}:${event.altKey}:${event.shiftKey}`;
@@ -87,12 +89,7 @@ export function TerminalWorkspace({
     });
 
     const resize = () => {
-      if (
-        !host.current ||
-        host.current.clientWidth < 2 ||
-        host.current.clientHeight < 2
-      )
-        return;
+      if (element.clientWidth < 2 || element.clientHeight < 2) return;
       fit.fit();
       if (started) {
         void forge
@@ -126,7 +123,7 @@ export function TerminalWorkspace({
       write(data);
     });
     const observer = new ResizeObserver(resize);
-    observer.observe(host.current);
+    observer.observe(element);
     const themeObserver = new MutationObserver(() => {
       term.options.theme = terminalTheme();
       term.options.fontSize = terminalFontSize();
@@ -165,6 +162,7 @@ export function TerminalWorkspace({
       started = false;
       void forge.closeTerminal(id);
       term.dispose();
+      element.replaceChildren();
     };
   }, [instanceID, onNotify]);
 
