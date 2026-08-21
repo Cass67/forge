@@ -31,7 +31,10 @@ export type DockColumns = Record<DockSide, DockGroup[]>;
 // Where a dragged tab lands: onto a group's tabs ("into"), above or below a
 // group (splitting its column), or at the foot of a column.
 export type DropTarget =
-  | { side: DockSide; where: "into" | "before" | "after"; groupID: string }
+  // `index` is where in the strip the tab lands; without it the tab is
+  // appended, which is what a drop on the strip's empty room means.
+  | { side: DockSide; where: "into"; groupID: string; index?: number }
+  | { side: DockSide; where: "before" | "after"; groupID: string }
   | { side: DockSide; where: "end" };
 
 export const DEFAULT_DOCK_WIDTHS: DockWidths = { left: 0.17, right: 0.32 };
@@ -147,11 +150,19 @@ export function addTool(
     const index = groups.findIndex((group) => group.id === target.groupID);
     if (index < 0)
       return addTool(columns, tool, { side: target.side, where: "end" });
-    const grown = groups.map((group, at) =>
-      at === index
-        ? { ...group, tools: [...group.tools, tool], activeID: tool.id }
-        : group,
-    );
+    const grown = groups.map((group, at) => {
+      if (at !== index) return group;
+      const at2 = Math.min(
+        Math.max(target.index ?? group.tools.length, 0),
+        group.tools.length,
+      );
+      const tools = [
+        ...group.tools.slice(0, at2),
+        tool,
+        ...group.tools.slice(at2),
+      ];
+      return { ...group, tools, activeID: tool.id };
+    });
     return { ...columns, [target.side]: grown };
   }
   if (target.where === "end") {
@@ -188,7 +199,11 @@ export function moveTool(
   // Dropping a tab back where it already lives, or splitting a group off from
   // itself, would only shuffle ids around.
   if (target.where !== "end" && target.groupID === found.group.id) {
-    if (target.where === "into") return setActiveTool(columns, toolID);
+    // A tab dropped back on its own strip is a reorder.
+    if (target.where === "into") {
+      if (target.index === undefined) return setActiveTool(columns, toolID);
+      return reorderTool(columns, found, target.index);
+    }
     if (found.group.tools.length === 1) return columns;
   }
   const pruned = removeTool(columns, toolID);
@@ -200,6 +215,29 @@ export function moveTool(
       ? target
       : { side: target.side, where: "end" };
   return setActiveTool(addTool(pruned, found.tool, landing), toolID);
+}
+
+// reorderTool moves a tab within its own strip. The insertion point is read
+// before the tab is lifted out, so dropping it to the right of where it
+// started means what it looks like it means.
+function reorderTool(
+  columns: DockColumns,
+  found: { side: DockSide; group: DockGroup; tool: DockTool },
+  index: number,
+): DockColumns {
+  const from = found.group.tools.findIndex((tool) => tool.id === found.tool.id);
+  const to = index > from ? index - 1 : index;
+  if (to === from || from < 0) return setActiveTool(columns, found.tool.id);
+  const tools = found.group.tools.filter((tool) => tool.id !== found.tool.id);
+  tools.splice(Math.min(Math.max(to, 0), tools.length), 0, found.tool);
+  return {
+    ...columns,
+    [found.side]: columns[found.side].map((group) =>
+      group.id === found.group.id
+        ? { ...group, tools, activeID: found.tool.id }
+        : group,
+    ),
+  };
 }
 
 // resizeGroups splits the space two neighbours share, `fraction` being how much

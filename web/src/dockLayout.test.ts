@@ -115,10 +115,11 @@ test("dropping a tab where it already is changes nothing", () => {
 });
 
 test("a divider drag splits the space of the two groups it sits between", () => {
-  const columns = addTool(defaultColumns(), terminal, {
+  const start = defaultColumns();
+  const columns = addTool(start, terminal, {
     side: "center",
     where: "after",
-    groupID: defaultColumns().center[0].id,
+    groupID: start.center[0].id,
   });
   const sized = resizeGroups(columns, "center", 1, 0.75);
   const total = sized.center[0].size + sized.center[1].size;
@@ -130,10 +131,11 @@ test("a divider drag splits the space of the two groups it sits between", () => 
 });
 
 test("a stored layout comes back, junk and gaps and all", () => {
+  const start = defaultColumns();
   const columns = moveTool(
-    addTool(defaultColumns(), terminal, { side: "center", where: "end" }),
+    addTool(start, terminal, { side: "center", where: "end" }),
     "git",
-    { side: "right", where: "into", groupID: defaultColumns().right[0].id },
+    { side: "right", where: "into", groupID: start.right[0].id },
   );
   const restored = parseColumns(JSON.stringify(columns));
   expect(findTool(restored, "terminal-1")?.side).toBe("center");
@@ -166,4 +168,76 @@ test("the drop zone follows the pointer down a group", () => {
   expect(dropZone(5, rect)).toBe("before");
   expect(dropZone(50, rect)).toBe("into");
   expect(dropZone(95, rect)).toBe("after");
+});
+
+test("a tab dragged along its own strip reorders it", () => {
+  const start = defaultColumns();
+  const left = start.left[0].id;
+  const columns = addTool(
+    addTool(start, terminal, { side: "left", where: "into", groupID: left }),
+    { id: "terminal-2", kind: "terminal", title: "Terminal 2" },
+    { side: "left", where: "into", groupID: left },
+  );
+  const group = columns.left[0];
+  expect(group.tools.map((tool) => tool.id)).toEqual([
+    "explorer",
+    "git",
+    "terminal-1",
+    "terminal-2",
+  ]);
+
+  // Dragged to the front.
+  const front = moveTool(columns, "terminal-2", {
+    side: "left",
+    where: "into",
+    groupID: group.id,
+    index: 0,
+  });
+  expect(front.left[0].tools.map((tool) => tool.id)).toEqual([
+    "terminal-2",
+    "explorer",
+    "git",
+    "terminal-1",
+  ]);
+  expect(front.left[0].activeID).toBe("terminal-2");
+
+  // Dragged rightwards: the insertion point is read before the tab is lifted,
+  // so dropping after "terminal-1" lands after it, not before.
+  const back = moveTool(columns, "explorer", {
+    side: "left",
+    where: "into",
+    groupID: group.id,
+    index: 3,
+  });
+  expect(back.left[0].tools.map((tool) => tool.id)).toEqual([
+    "git",
+    "terminal-1",
+    "explorer",
+    "terminal-2",
+  ]);
+
+  // Dropped where it already is, nothing moves.
+  expect(
+    moveTool(columns, "git", {
+      side: "left",
+      where: "into",
+      groupID: group.id,
+      index: 1,
+    }).left[0].tools.map((tool) => tool.id),
+  ).toEqual(["explorer", "git", "terminal-1", "terminal-2"]);
+});
+
+test("a tab dropped on another strip lands where it was dropped", () => {
+  const columns = defaultColumns();
+  const moved = moveTool(columns, "editor", {
+    side: "left",
+    where: "into",
+    groupID: columns.left[0].id,
+    index: 0,
+  });
+  expect(moved.left[0].tools.map((tool) => tool.id)).toEqual([
+    "editor",
+    "explorer",
+    "git",
+  ]);
 });

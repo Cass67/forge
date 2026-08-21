@@ -578,6 +578,35 @@ export function WorkspaceShell({
       });
     };
 
+  const tabDropProps = (side: DockSide, group: DockGroup, index: number) => {
+    const hintFor = (at: number) => `${group.id}:tab:${at}`;
+    return {
+      onDragOver: (event: React.DragEvent) => {
+        if (!event.dataTransfer.types.includes(DOCK_TOOL_MIME)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move" as const;
+        const box = event.currentTarget.getBoundingClientRect();
+        const after = event.clientX > box.left + box.width / 2;
+        setDropHint(hintFor(after ? index + 1 : index));
+      },
+      onDrop: (event: React.DragEvent) => {
+        const id = event.dataTransfer.getData(DOCK_TOOL_MIME);
+        if (!id) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const box = event.currentTarget.getBoundingClientRect();
+        const at = event.clientX > box.left + box.width / 2 ? index + 1 : index;
+        dropTool(id, { side, where: "into", groupID: group.id, index: at });
+      },
+      className: [
+        dropHint === hintFor(index) ? "drop-before" : "",
+        dropHint === hintFor(index + 1) ? "drop-after" : "",
+      ]
+        .filter(Boolean)
+        .join(" "),
+    };
+  };
+
   const dropProps = (target: DropTarget) => {
     const hint =
       target.where === "end"
@@ -826,40 +855,45 @@ export function WorkspaceShell({
         {...dropProps({ side, where: "into", groupID: group.id })}
         className={`workspace-dock-tabs ${dropProps({ side, where: "into", groupID: group.id }).className}`}
       >
-        {group.tools.map((tool) => (
-          <div
-            className={`workspace-dock-tab ${group.activeID === tool.id ? "active" : ""}`}
-            key={tool.id}
-          >
-            <button
-              draggable
-              onClick={() => focusTool(tool.id)}
-              onDragEnd={() => {
-                setDragging("");
-                setDropHint("");
-              }}
-              onDragStart={(event) => {
-                event.dataTransfer.effectAllowed = "move";
-                event.dataTransfer.setData(DOCK_TOOL_MIME, tool.id);
-                setDragging(tool.id);
-              }}
-              title={`${tool.title} — drag onto another panel to move or split it`}
+        {group.tools.map((tool, index) => {
+          const tabDrop = tabDropProps(side, group, index);
+          return (
+            <div
+              className={`workspace-dock-tab ${group.activeID === tool.id ? "active" : ""} ${tabDrop.className}`}
+              key={tool.id}
+              onDragOver={tabDrop.onDragOver}
+              onDrop={tabDrop.onDrop}
             >
-              {/* The chat's tab is only a grip: the conversations beside it
-                  are what the strip is for. */}
-              {tool.kind === "chat" ? "⠿" : tool.title}
-            </button>
-            {tool.kind === "terminal" || tool.kind === "preview" ? (
               <button
-                className="workspace-tab-close"
-                onClick={() => closePanel(tool.id)}
-                aria-label={`Close ${tool.title}`}
+                draggable
+                onClick={() => focusTool(tool.id)}
+                onDragEnd={() => {
+                  setDragging("");
+                  setDropHint("");
+                }}
+                onDragStart={(event) => {
+                  event.dataTransfer.effectAllowed = "move";
+                  event.dataTransfer.setData(DOCK_TOOL_MIME, tool.id);
+                  setDragging(tool.id);
+                }}
+                title={`${tool.title} — drag onto another panel to move or split it`}
               >
-                ×
+                {/* The chat's tab is only a grip: the conversations beside it
+                  are what the strip is for. */}
+                {tool.kind === "chat" ? "⠿" : tool.title}
               </button>
-            ) : null}
-          </div>
-        ))}
+              {tool.kind === "terminal" || tool.kind === "preview" ? (
+                <button
+                  className="workspace-tab-close"
+                  onClick={() => closePanel(tool.id)}
+                  aria-label={`Close ${tool.title}`}
+                >
+                  ×
+                </button>
+              ) : null}
+            </div>
+          );
+        })}
         {group.tools.some((tool) => tool.kind === "chat") ? (
           <span className="workspace-chat-tabs">{chatTabs}</span>
         ) : null}
