@@ -50,7 +50,7 @@ function terminalTheme(): ITheme {
 }
 
 export function TerminalWorkspace({
-  workDir: _workDir,
+  workDir,
   instanceID = "default",
   onNotify,
 }: Props) {
@@ -58,7 +58,9 @@ export function TerminalWorkspace({
 
   useEffect(() => {
     const element = host.current;
-    if (!element) return;
+    // Restored dock tools render before backend Init supplies workspace. Wait
+    // for readiness; changing workDir then starts a fresh workspace-bound PTY.
+    if (!element || !workDir) return;
     element.replaceChildren();
     const id = `${instanceID}:pty:${crypto.randomUUID()}`;
     let disposed = false;
@@ -164,7 +166,7 @@ export function TerminalWorkspace({
       term.dispose();
       element.replaceChildren();
     };
-  }, [instanceID, onNotify]);
+  }, [instanceID, onNotify, workDir]);
 
   return (
     <section className="terminal-workspace">
