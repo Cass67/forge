@@ -1,6 +1,6 @@
-import { FitAddon } from "@xterm/addon-fit";
-import { Terminal, type ITheme } from "@xterm/xterm";
-import "@xterm/xterm/css/xterm.css";
+import { FitAddon } from "xterm-addon-fit";
+import { Terminal, type ITheme } from "xterm";
+import "xterm/css/xterm.css";
 import { useEffect, useRef } from "react";
 import { forge } from "../bridge";
 
@@ -66,8 +66,6 @@ export function TerminalWorkspace({
     let disposed = false;
     let started = false;
     let pendingInput = "";
-    let lastKey = { signature: "", at: 0 };
-    let lastInput = { data: "", at: 0 };
     const term = new Terminal({
       allowProposedApi: false,
       convertEol: false,
@@ -80,15 +78,6 @@ export function TerminalWorkspace({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(element);
-    term.attachCustomKeyEventHandler((event) => {
-      if (event.type !== "keydown" || event.isComposing) return true;
-      const signature = `${event.code}:${event.key}:${event.metaKey}:${event.ctrlKey}:${event.altKey}:${event.shiftKey}`;
-      const now = performance.now();
-      if (signature === lastKey.signature && now - lastKey.at < 40)
-        return false;
-      lastKey = { signature, at: now };
-      return true;
-    });
 
     const resize = () => {
       if (element.clientWidth < 2 || element.clientHeight < 2) return;
@@ -113,11 +102,6 @@ export function TerminalWorkspace({
         .catch((error: unknown) => onNotify(String(error)));
     };
     const input = term.onData((data) => {
-      // WebKit can emit one xterm input twice even when only one keydown reaches
-      // xterm. Filter again at PTY boundary, where duplicates become visible.
-      const now = performance.now();
-      if (lastInput.data === data && now - lastInput.at < 40) return;
-      lastInput = { data, at: now };
       if (!started) {
         pendingInput += data;
         return;
