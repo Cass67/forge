@@ -22,6 +22,12 @@ import { WorkspaceMenu } from "./components/WorkspaceMenu";
 import { WorkspaceShell } from "./components/WorkspaceShell";
 import { applyTheme, isTheme, loadTheme, nextTheme, type Theme } from "./theme";
 import {
+  clampSidebarWidth,
+  DEFAULT_SIDEBAR_WIDTH,
+  parseSidebarWidth,
+  SIDEBAR_STORAGE_KEY,
+} from "./sidebarLayout";
+import {
   applyScale,
   clampScale,
   formatScale,
@@ -89,6 +95,12 @@ export default function App() {
   const [dragging, setDragging] = useState(false);
   const [workspaceMode, setWorkspaceMode] = useState(false);
   const [workspaceDirty, setWorkspaceDirty] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(() =>
+    parseSidebarWidth(
+      localStorage.getItem(SIDEBAR_STORAGE_KEY),
+      window.innerWidth,
+    ),
+  );
 
   useEffect(() => applyTheme(theme), [theme]);
   useEffect(() => applyScale(scale), [scale]);
@@ -96,6 +108,32 @@ export default function App() {
     () => localStorage.setItem("forge.prefs", JSON.stringify(prefs)),
     [prefs],
   );
+  useEffect(
+    () => localStorage.setItem(SIDEBAR_STORAGE_KEY, String(sidebarWidth)),
+    [sidebarWidth],
+  );
+
+  const startSidebarDrag = (event: React.PointerEvent) => {
+    event.preventDefault();
+    const move = (pointer: PointerEvent) =>
+      setSidebarWidth(clampSidebarWidth(pointer.clientX, window.innerWidth));
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+  };
+
+  const resizeSidebarWithKeys = (event: React.KeyboardEvent) => {
+    const delta =
+      event.key === "ArrowLeft" ? -20 : event.key === "ArrowRight" ? 20 : 0;
+    if (!delta) return;
+    event.preventDefault();
+    setSidebarWidth((width) =>
+      clampSidebarWidth(width + delta, window.innerWidth),
+    );
+  };
 
   const notify = useCallback((msg: string) => {
     setFlash(msg);
@@ -641,39 +679,57 @@ export default function App() {
         </button>
       </header>
 
-      <div className="cols">
+      <div
+        className="cols"
+        style={
+          { "--sidebar-width": `${sidebarWidth}px` } as React.CSSProperties
+        }
+      >
         {prefs.showSidebar ? (
-          <Sidebar
-            threads={threads}
-            workspaces={workspaces}
-            workDir={init?.work_dir ?? ""}
-            activeID={activeID}
-            busy={busy}
-            onNew={newThread}
-            onRestore={restoreThread}
-            onAddWorkspace={addWorkspace}
-            onOpenWorkspace={openWorkspace}
-            onDelete={deleteThread}
-            onRename={(id, title) =>
-              void forge
-                .renameThread(id, title)
-                .then(setThreads)
-                .catch((e: unknown) => notify(String(e)))
-            }
-            onPin={(dir, pinned) =>
-              void forge
-                .pinWorkspace(dir, pinned)
-                .then(setWorkspaces)
-                .catch((e: unknown) => notify(String(e)))
-            }
-            onForget={(dir) =>
-              void forge
-                .forgetWorkspace(dir)
-                .then(setWorkspaces)
-                .catch((e: unknown) => notify(String(e)))
-            }
-            onBulkDelete={bulkDelete}
-          />
+          <>
+            <Sidebar
+              threads={threads}
+              workspaces={workspaces}
+              workDir={init?.work_dir ?? ""}
+              activeID={activeID}
+              busy={busy}
+              onNew={newThread}
+              onRestore={restoreThread}
+              onAddWorkspace={addWorkspace}
+              onOpenWorkspace={openWorkspace}
+              onDelete={deleteThread}
+              onRename={(id, title) =>
+                void forge
+                  .renameThread(id, title)
+                  .then(setThreads)
+                  .catch((e: unknown) => notify(String(e)))
+              }
+              onPin={(dir, pinned) =>
+                void forge
+                  .pinWorkspace(dir, pinned)
+                  .then(setWorkspaces)
+                  .catch((e: unknown) => notify(String(e)))
+              }
+              onForget={(dir) =>
+                void forge
+                  .forgetWorkspace(dir)
+                  .then(setWorkspaces)
+                  .catch((e: unknown) => notify(String(e)))
+              }
+              onBulkDelete={bulkDelete}
+            />
+            <div
+              aria-label="Resize workspace panel"
+              aria-orientation="vertical"
+              aria-valuenow={Math.round(sidebarWidth)}
+              className="sidebar-divider"
+              onDoubleClick={() => setSidebarWidth(DEFAULT_SIDEBAR_WIDTH)}
+              onKeyDown={resizeSidebarWithKeys}
+              onPointerDown={startSidebarDrag}
+              role="separator"
+              tabIndex={0}
+            />
+          </>
         ) : null}
         <WorkspaceShell
           workDir={init?.work_dir ?? ""}

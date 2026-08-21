@@ -401,9 +401,13 @@ input, textarea, .selectable, .transcript, .diffbox { user-select: text; }
 .cols { display: flex; flex: 1; min-height: 0; }
 
 .sidebar {
-  width: 250px; flex: none; background: var(--panel);
+  width: var(--sidebar-width, 280px); flex: none; overflow: hidden; background: var(--panel);
   border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0;
 }
+.sidebar-divider {
+  width: 4px; flex: none; background: var(--border); cursor: col-resize; touch-action: none;
+}
+.sidebar-divider:hover, .sidebar-divider:focus-visible { background: var(--accent); outline: none; }
 .sidebar-head {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding: 6px 8px 6px 10px; border-bottom: 1px solid var(--border);
