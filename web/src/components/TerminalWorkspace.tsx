@@ -56,6 +56,7 @@ export function TerminalWorkspace({
 }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const started = useRef(false);
+  const lastKey = useRef({ signature: "", at: 0 });
   const lastInput = useRef({ data: "", at: 0 });
   const id = `${instanceID}:pty`;
 
@@ -73,6 +74,18 @@ export function TerminalWorkspace({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host.current);
+    term.attachCustomKeyEventHandler((event) => {
+      if (event.type !== "keydown" || event.isComposing) return true;
+      const signature = `${event.code}:${event.key}:${event.metaKey}:${event.ctrlKey}:${event.altKey}:${event.shiftKey}`;
+      const now = performance.now();
+      if (
+        signature === lastKey.current.signature &&
+        now - lastKey.current.at < 40
+      )
+        return false;
+      lastKey.current = { signature, at: now };
+      return true;
+    });
 
     const resize = () => {
       if (
@@ -97,8 +110,10 @@ export function TerminalWorkspace({
       }
     });
     const input = term.onData((data) => {
+      // WebKit can emit one xterm input twice even when only one keydown reaches
+      // xterm. Filter again at PTY boundary, where duplicates become visible.
       const now = performance.now();
-      if (lastInput.current.data === data && now - lastInput.current.at < 8)
+      if (lastInput.current.data === data && now - lastInput.current.at < 40)
         return;
       lastInput.current = { data, at: now };
       void forge
@@ -123,7 +138,6 @@ export function TerminalWorkspace({
       .then(() => {
         started.current = true;
         resize();
-        term.focus();
       })
       .catch((error: unknown) => onNotify(String(error)));
 
