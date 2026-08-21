@@ -1,6 +1,8 @@
 // Package gui exposes the chat runtime to the forge-gui window as a Wails
 // service. The frontend calls these methods by name and receives streamed
-// output as application events; there is no HTTP server and no open port.
+// output as application events; nothing listens on a network port except the
+// preview proxy in preview_proxy.go, which binds loopback only and runs solely
+// while a preview pane is open.
 package gui
 
 import (
@@ -69,6 +71,11 @@ type Service struct {
 	Registry *workspace.Registry
 
 	terminals map[string]*terminalSession
+
+	// The preview proxy is kept behind its own mutex so starting or
+	// re-targeting a preview cannot block a chat turn.
+	previewMu sync.Mutex
+	preview   *previewProxy
 }
 
 // Controller drives the service from the Go side. It is deliberately a
@@ -549,6 +556,7 @@ func (s *Service) SwitchWorkspace(dir string) error {
 	s.nextDir = clean
 	s.mu.Unlock()
 	s.closeTerminals()
+	s.StopPreview()
 
 	select {
 	case s.switchSig <- struct{}{}:

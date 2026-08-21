@@ -244,6 +244,7 @@ export type RunLaunch = {
   error?: string;
   worktree: boolean;
 };
+export type PreviewInfo = { url: string; target: string };
 export type TerminalEvent = { id: string; data?: string; closed?: boolean };
 
 // Wails delivers a payload as event.data, sometimes wrapped in an array.
@@ -295,6 +296,8 @@ export const forge = {
     call<Attachment>("AttachImage", name, dataB64),
   attachPath: (path: string) => call<Attachment>("AttachPath", path),
   imagePreview: (path: string) => call<string>("ImagePreview", path),
+  startPreview: (target: string) => call<PreviewInfo>("StartPreview", target),
+  stopPreview: () => call<void>("StopPreview"),
   listWorkspaceDir: (path: string) =>
     call<WorkspaceEntry[]>("ListWorkspaceDir", path),
   readWorkspaceFile: (path: string) =>

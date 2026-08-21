@@ -928,43 +928,104 @@ input, textarea, .selectable, .transcript, .diffbox { user-select: text; }
 .chip.attach { align-items: center; gap: 6px; padding-left: 4px; }
 
 /* ---- workspace ---- */
-.workspace-shell {
-  display: grid;
-  /* Dock widths are fractions set on the element itself, so a dragged divider
-     survives a window resize and every UI scale. */
-  grid-template-columns: var(--dock-left, 17%) 4px minmax(0, 1fr) 4px var(--dock-right, 32%);
-  grid-template-rows: 2rem minmax(0, 1fr);
-  grid-template-areas:
-    "left-tabs left-divider chat right-divider right-tabs"
-    "left-tool left-divider chat right-divider right-tool";
-  min-height: 0; flex: 1; background: var(--bg);
-}
-.workspace-shell.docks-closed { grid-template-columns: 0 0 minmax(20rem, 1fr) 0 0; }
-.workspace-shell.docks-closed > .workspace-dock,
+.workspace-shell { display: flex; min-height: 0; flex: 1; background: var(--bg); }
+/* Dock widths are fractions set on the element itself, so a dragged divider
+   survives a window resize and every UI scale. Each column is a stack of
+   panel groups, which is what lets a tab split a column instead of replacing
+   what is already there. */
+.workspace-column { display: flex; min-width: 0; min-height: 0; flex-direction: column; background: var(--panel); }
+.workspace-column-center { flex: 1 1 0; min-width: 12rem; }
+.workspace-column-left, .workspace-column-right { flex: 0 0 auto; }
+.workspace-shell.docks-closed > .workspace-column-left,
+.workspace-shell.docks-closed > .workspace-column-right,
 .workspace-shell.docks-closed > .workspace-divider,
-.workspace-shell.docks-closed > .workspace-dock-body { visibility: hidden; }
-.workspace-divider { background: var(--border); cursor: col-resize; touch-action: none; }
-.workspace-divider-left { grid-area: left-divider; }
-.workspace-divider-right { grid-area: right-divider; }
+.workspace-shell.docks-closed .workspace-group:not(.has-chat),
+.workspace-shell.docks-closed .workspace-group-divider,
+.workspace-shell.docks-closed .workspace-dock-tabs,
+.workspace-shell.docks-closed .workspace-tool-actions { display: none; }
+.workspace-divider { flex: none; width: 4px; background: var(--border); cursor: col-resize; touch-action: none; }
 .workspace-divider:hover, .workspace-divider:focus-visible { background: var(--accent); outline: none; }
-.workspace-chat { display: flex; min-width: 0; min-height: 0; grid-area: chat; }
-.workspace-chat > .center { flex: 1; }
-.workspace-dock { min-width: 0; overflow: hidden; background: var(--panel); }
-.workspace-dock-left { grid-area: left-tabs; border-right: 1px solid var(--border); }
-.workspace-dock-right { grid-area: right-tabs; border-left: 1px solid var(--border); }
-.workspace-dock.drag-over { background: var(--selected); box-shadow: inset 0 0 0 1px var(--accent); }
-.workspace-dock-tabs { display: flex; height: 100%; overflow-x: auto; }
+.workspace-group { position: relative; display: flex; min-width: 0; min-height: 0; flex-basis: 0; flex-direction: column; overflow: hidden; }
+.workspace-group-body { position: relative; display: flex; min-width: 0; min-height: 0; flex: 1; overflow: hidden; }
+.workspace-group-divider { flex: none; height: 4px; background: var(--border); cursor: row-resize; touch-action: none; }
+.workspace-group-divider:hover, .workspace-group-divider:focus-visible { background: var(--accent); outline: none; }
+.workspace-column-left > .workspace-group { border-right: 1px solid var(--border); }
+.workspace-column-right > .workspace-group { border-left: 1px solid var(--border); }
+.workspace-dock-tabs { display: flex; height: 2rem; flex: none; overflow-x: auto; border-bottom: 1px solid var(--border); background: var(--panel); }
 .workspace-dock-tabs button {
-  flex: none; padding: 0 0.5rem; border: 0; border-right: 1px solid var(--border);
-  background: transparent; color: var(--muted); font: 0.6875rem var(--mono); cursor: pointer;
+  flex: none; padding: 0 0.65rem; border: 0; background: transparent;
+  color: var(--muted); cursor: pointer; font-size: 0.75rem; white-space: nowrap;
 }
-.workspace-dock-tabs button[draggable="true"] { cursor: grab; }
-.workspace-dock-tabs button[draggable="true"]:active { cursor: grabbing; }
-.workspace-dock-tabs button.active { background: var(--hover); color: var(--text); box-shadow: inset 0 -1px var(--accent); }
-.workspace-dock-body { min-width: 0; min-height: 0; overflow: hidden; background: var(--panel); }
-.workspace-dock-body-left { grid-area: left-tool; border-right: 1px solid var(--border); }
-.workspace-dock-body-right { grid-area: right-tool; border-left: 1px solid var(--border); }
+.workspace-dock-tab { display: flex; flex: none; align-items: center; border-right: 1px solid var(--border); }
+.workspace-dock-tab button[draggable="true"] { cursor: grab; }
+.workspace-dock-tab button[draggable="true"]:active { cursor: grabbing; }
+.workspace-dock-tab.active { background: var(--hover); box-shadow: inset 0 -1px var(--accent); }
+.workspace-dock-tab.active button { color: var(--text); }
+.workspace-dock-add { position: relative; display: flex; flex: none; align-items: center; }
+.workspace-dock-add > button { font-size: 0.6875rem !important; opacity: 0.8; }
+.workspace-dock-add > button:hover { color: var(--text); opacity: 1; }
+.workspace-add-menu {
+  position: absolute; z-index: 5; top: 100%; left: 0; display: flex; min-width: 7rem;
+  flex-direction: column; border: 1px solid var(--border); border-radius: 4px; background: var(--panel);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.25);
+}
+.workspace-add-menu button { padding: 0.35rem 0.65rem !important; text-align: left; }
+.workspace-add-menu button:hover { background: var(--hover); color: var(--text); }
+
+/* ---- preview pane ---- */
+.preview-panel { position: relative; display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; }
+.preview-bar { display: flex; flex: none; align-items: center; gap: 4px; padding: 0.3rem 0.4rem; border-bottom: 1px solid var(--border); }
+.preview-bar input {
+  min-width: 0; flex: 1; padding: 0.25rem 0.4rem; border: 1px solid var(--border);
+  border-radius: 4px; background: var(--bg); color: var(--text); font-family: var(--mono); font-size: 0.6875rem;
+}
+.preview-bar button {
+  flex: none; padding: 0.25rem 0.45rem; border: 1px solid var(--border); border-radius: 4px;
+  background: transparent; color: var(--muted); cursor: pointer; font-size: 0.6875rem;
+}
+.preview-bar button:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.preview-bar button:disabled { opacity: 0.5; cursor: default; }
+.preview-bar button.active { border-color: var(--accent); background: var(--selected); color: var(--text); }
+.preview-bar button.preview-errors { border-color: var(--err); color: var(--err); }
+.preview-frame { min-height: 0; flex: 1; border: 0; background: #fff; }
+.preview-logs {
+  max-height: 9rem; flex: none; margin: 0; padding: 0.25rem 0.5rem; overflow-y: auto;
+  border-top: 1px solid var(--border); background: var(--panel); list-style: none;
+  font-family: var(--mono); font-size: 0.6875rem;
+}
+.preview-logs li { padding: 0.1rem 0; color: var(--muted); word-break: break-word; }
+.preview-logs li.error { color: var(--err); }
+.preview-logs b { text-transform: uppercase; font-size: 0.625rem; }
+.preview-pick {
+  flex: none; display: flex; flex-direction: column; gap: 6px; padding: 0.5rem;
+  border-top: 1px solid var(--border); background: var(--panel);
+}
+.preview-pick-head { display: flex; align-items: center; gap: 6px; }
+.preview-pick-head code { overflow: hidden; flex: 1; color: var(--accent); font-size: 0.6875rem; text-overflow: ellipsis; white-space: nowrap; }
+.preview-pick-head button { border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+.preview-pick img { max-height: 8rem; border: 1px solid var(--border); border-radius: 4px; object-fit: contain; object-position: top left; }
+.preview-pick textarea {
+  min-height: 3rem; padding: 0.35rem; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--bg); color: var(--text); font-family: inherit; font-size: 0.75rem; resize: vertical;
+}
+.preview-pick > button:last-child {
+  align-self: flex-end; padding: 0.3rem 0.7rem; border: 1px solid var(--accent); border-radius: 4px;
+  background: var(--accent); color: var(--bg); cursor: pointer; font-size: 0.75rem;
+}
+.preview-pick > button:last-child:disabled { opacity: 0.6; cursor: default; }
+/* Drop feedback: a tab strip takes the panel as another tab, the top and
+   bottom fifths of a panel split its column. */
+.workspace-dock-tabs.over, .workspace-column-tail.over { background: var(--selected); box-shadow: inset 0 0 0 1px var(--accent); }
+.workspace-dropzones { position: absolute; z-index: 3; display: flex; flex-direction: column; inset: 2rem 0 0 0; }
+.workspace-dropzone { flex: 1; }
+.workspace-dropzone-before, .workspace-dropzone-after { flex: 0 0 20%; }
+.workspace-dropzone.over { background: var(--selected); box-shadow: inset 0 0 0 1px var(--accent); opacity: 0.65; }
+.workspace-column-tail { flex: 0 0 0; }
+.workspace-column-tail.over { flex: 0 0 2rem; }
+.workspace-column-tail.empty { display: grid; flex: 1; place-items: center; color: var(--muted); font-size: 0.75rem; }
 .workspace-tool { position: relative; display: none; width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: hidden; background: var(--panel); }
+.workspace-tool-chat { background: var(--bg); }
+.workspace-tool-chat > .center { min-width: 0; flex: 1; }
 .workspace-tool.active { display: flex; flex-direction: column; }
 .workspace-tool-actions { position: absolute; z-index: 2; top: 0.15rem; right: 0.25rem; }
 .workspace-tool-actions button { border: 0; background: transparent; color: var(--muted); cursor: pointer; }
@@ -1080,8 +1141,7 @@ input, textarea, .selectable, .transcript, .diffbox { user-select: text; }
 .terminal-split.vertical > .terminal-divider { height: 4px; cursor: row-resize; }
 .terminal-divider:hover { background: var(--accent); }
 @media (max-width: 850px) {
-  .workspace-shell { grid-template-columns: var(--dock-left, 17%) 4px minmax(0, 1fr) 0 0; }
-  .workspace-dock-right, .workspace-dock-body-right, .workspace-divider-right { visibility: hidden; }
+  .workspace-column-right, .workspace-divider-right { display: none; }
 }
 
 /* ---- bulk selection in the sidebar ---- */

@@ -1,4 +1,5 @@
 import {
+  Fragment,
   type ReactNode,
   useCallback,
   useEffect,
@@ -15,12 +16,28 @@ import {
   type WorkspaceFile,
 } from "../bridge";
 import {
+  addTool,
+  allTools,
   clampDock,
   DEFAULT_DOCK_WIDTHS,
+  type DockColumns,
+  type DockGroup,
+  type DockSide,
+  type DockTool,
   dockFraction,
   type DockWidths,
+  type DropTarget,
+  dropZone,
+  findTool,
+  loadColumns,
   loadDockWidths,
+  moveTool,
+  removeTool,
+  resizeGroups,
+  saveColumns,
   saveDockWidths,
+  setActiveTool,
+  SIDES,
 } from "../dockLayout";
 import {
   acceptSavedFile,
@@ -33,6 +50,7 @@ import { CodeEditor } from "./CodeEditor";
 import { GitTabView } from "./DiffView";
 import { GitPanel } from "./GitPanel";
 import { MultiRunDialog } from "./MultiRunDialog";
+import { PreviewPanel } from "./PreviewPanel";
 import { TerminalWorkspace } from "./TerminalWorkspace";
 
 type Props = {
@@ -52,28 +70,31 @@ type TreeNode = WorkspaceEntry & {
   expanded?: boolean;
   children?: TreeNode[];
 };
-type DockSide = "left" | "right";
-type ToolKind = "explorer" | "editor" | "git" | "terminal";
-type DockTool = { id: string; kind: ToolKind; title: string; side: DockSide };
 const DOCK_TOOL_MIME = "application/x-forge-dock-tool";
+// The two columns whose width the user can drag; the chat column takes what is
+// left over.
+type EdgeSide = "left" | "right";
 
+// Every tool lives in a host element that is moved between group bodies rather
+// than re-rendered into them: a terminal keeps its scrollback and the chat
+// keeps its scroll position when its tab is dragged to another panel.
 function DockToolHost({
   target,
   active,
-  side,
+  kind,
   children,
 }: {
   target: HTMLDivElement | null;
   active: boolean;
-  side: DockSide;
+  kind: string;
   children: ReactNode;
 }) {
   const [host] = useState(() => document.createElement("div"));
 
   useLayoutEffect(() => {
-    host.className = `workspace-tool workspace-tool-${side} ${active ? "active" : ""}`;
+    host.className = `workspace-tool workspace-tool-${kind} ${active ? "active" : ""}`;
     target?.appendChild(host);
-  }, [active, host, side, target]);
+  }, [active, host, kind, target]);
 
   useEffect(() => () => host.remove(), [host]);
   return createPortal(children, host);
@@ -155,33 +176,39 @@ export function WorkspaceShell({
   // Bumped on every index or working-tree change so open diffs re-read.
   const [gitRevision, setGitRevision] = useState(0);
   const [multiRun, setMultiRun] = useState(false);
-  const [tools, setTools] = useState<DockTool[]>([
-    { id: "explorer", kind: "explorer", title: "Explorer", side: "left" },
-    { id: "editor", kind: "editor", title: "Editor", side: "right" },
-    // Source control shares the left dock with the explorer on purpose: it
-    // opens diffs into the editor, so parking it in the editor's own dock
-    // would hide the pane it is driving.
-    { id: "git", kind: "git", title: "Source Control", side: "left" },
-  ]);
-  const [activeTool, setActiveTool] = useState<Record<DockSide, string>>({
-    left: "explorer",
-    right: "editor",
-  });
-  const [dropSide, setDropSide] = useState<DockSide | null>(null);
+  // The panel layout: three columns of stacked groups, restored from the last
+  // session so a dragged panel is still where the user left it.
+  const [columns, setColumns] = useState<DockColumns>(loadColumns);
+  // The tool being dragged, and the zone the pointer is over, as
+  // `${groupID}:${where}` — only used to light up drop targets.
+  const [dragging, setDragging] = useState("");
+  const [dropHint, setDropHint] = useState("");
+  // The group whose "add panel" menu is open, if any.
+  const [addMenu, setAddMenu] = useState("");
   const nextTerminal = useRef(1);
   const [quickOpen, setQuickOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [workspacePaths, setWorkspacePaths] = useState<string[]>([]);
-  const [dockBodies, setDockBodies] = useState<
-    Record<DockSide, HTMLDivElement | null>
-  >({ left: null, right: null });
-  const dockBodyRefs = useMemo(() => {
-    const assign = (side: DockSide) => (element: HTMLDivElement | null) =>
-      setDockBodies((current) =>
-        current[side] === element ? current : { ...current, [side]: element },
+  // One body element per group, tracked in state because the portalled tools
+  // can only mount once the element exists. The setters are cached so a group
+  // keeps the same ref callback across renders and React does not detach the
+  // element it already gave us.
+  const [groupBodies, setGroupBodies] = useState<
+    Record<string, HTMLDivElement | null>
+  >({});
+  const groupBodyRefs = useRef(
+    new Map<string, (element: HTMLDivElement | null) => void>(),
+  );
+  const groupBodyRef = (id: string) => {
+    const cached = groupBodyRefs.current.get(id);
+    if (cached) return cached;
+    const assign = (element: HTMLDivElement | null) =>
+      setGroupBodies((current) =>
+        current[id] === element ? current : { ...current, [id]: element },
       );
-    return { left: assign("left"), right: assign("right") };
-  }, []);
+    groupBodyRefs.current.set(id, assign);
+    return assign;
+  };
   const shellRef = useRef<HTMLDivElement>(null);
   const [dockWidths, setDockWidths] = useState<DockWidths>(loadDockWidths);
   const workspaceGeneration = useRef(0);
@@ -206,6 +233,10 @@ export function WorkspaceShell({
     setGitRevision((n) => n + 1);
   }, []);
 
+  const focusTool = useCallback((id: string) => {
+    setColumns((current) => setActiveTool(current, id));
+  }, []);
+
   const refreshGit = useCallback(() => {
     void forge
       .gitStatus()
@@ -221,18 +252,11 @@ export function WorkspaceShell({
           : [...current, tab],
       );
       setActiveGitTab(tab.id);
-      // Only one tool per dock is visible, so opening a diff has to bring the
-      // editor's dock to the front or the click looks like it did nothing.
-      const editor = tools.find((tool) => tool.kind === "editor");
-      if (editor) {
-        setActiveTool((current) =>
-          current[editor.side] === editor.id
-            ? current
-            : { ...current, [editor.side]: editor.id },
-        );
-      }
+      // Only one tool per group is visible, so opening a diff has to bring the
+      // editor's tab to the front or the click looks like it did nothing.
+      focusTool("editor");
     },
-    [tools],
+    [focusTool],
   );
 
   const closeGitTab = (id: string) => {
@@ -306,14 +330,7 @@ export function WorkspaceShell({
   const openFile = useCallback(
     (path: string) => {
       setActiveGitTab("");
-      const editor = tools.find((tool) => tool.kind === "editor");
-      if (editor) {
-        setActiveTool((current) =>
-          current[editor.side] === editor.id
-            ? current
-            : { ...current, [editor.side]: editor.id },
-        );
-      }
+      focusTool("editor");
       if (files.some((candidate) => candidate.path === path)) {
         openRequest.current++;
         setActivePath(path);
@@ -336,7 +353,7 @@ export function WorkspaceShell({
         })
         .catch((error: unknown) => onNotify(String(error)));
     },
-    [files, onNotify, tools],
+    [files, focusTool, onNotify],
   );
 
   const closeFile = (path: string) => {
@@ -409,6 +426,15 @@ export function WorkspaceShell({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [active]);
 
+  // Any click outside the open "add panel" menu dismisses it; the effect is
+  // attached after the opening click has finished dispatching.
+  useEffect(() => {
+    if (!addMenu) return;
+    const close = () => setAddMenu("");
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [addMenu]);
+
   const matches = useMemo(
     () => filterPaths(workspacePaths, query),
     [workspacePaths, query],
@@ -416,11 +442,13 @@ export function WorkspaceShell({
 
   useEffect(() => saveDockWidths(dockWidths), [dockWidths]);
 
-  const resizeDock = useCallback((side: DockSide, fraction: number) => {
+  useEffect(() => saveColumns(columns), [columns]);
+
+  const resizeDock = useCallback((side: EdgeSide, fraction: number) => {
     setDockWidths((current) => clampDock(current, side, fraction));
   }, []);
 
-  const startDockDrag = (side: DockSide) => (event: React.PointerEvent) => {
+  const startDockDrag = (side: EdgeSide) => (event: React.PointerEvent) => {
     event.preventDefault();
     const move = (pointer: PointerEvent) => {
       const rect = shellRef.current?.getBoundingClientRect();
@@ -436,7 +464,7 @@ export function WorkspaceShell({
 
   // Arrow keys move a focused divider, so the docks are resizable without a
   // pointer; double-click restores the default width.
-  const dockKeyDown = (side: DockSide) => (event: React.KeyboardEvent) => {
+  const dockKeyDown = (side: EdgeSide) => (event: React.KeyboardEvent) => {
     const step =
       event.key === "ArrowLeft" ? -0.02 : event.key === "ArrowRight" ? 0.02 : 0;
     if (!step) return;
@@ -445,50 +473,126 @@ export function WorkspaceShell({
     resizeDock(side, dockWidths[side] + direction);
   };
 
-  const moveTool = (id: string, side: DockSide) => {
-    setTools((current) => {
-      const moving = current.find((tool) => tool.id === id);
-      if (!moving || moving.side === side) return current;
-      const next = current.map((tool) =>
-        tool.id === id ? { ...tool, side } : tool,
-      );
-      setActiveTool((activeTools) => ({
-        ...activeTools,
-        [moving.side]:
-          activeTools[moving.side] === id
-            ? (next.find((tool) => tool.side === moving.side)?.id ?? "")
-            : activeTools[moving.side],
-        [side]: id,
-      }));
-      return next;
+  const dropTool = (id: string, target: DropTarget) => {
+    setColumns((current) => moveTool(current, id, target));
+    setDragging("");
+    setDropHint("");
+  };
+
+  // The keyboard route to the same thing dragging does: send a panel round the
+  // columns, left to chat to right.
+  const cycleTool = (tool: DockTool, side: DockSide) => {
+    const next = SIDES[(SIDES.indexOf(side) + 1) % SIDES.length];
+    dropTool(tool.id, { side: next, where: "end" });
+  };
+
+  const launchTerminal = (target: DropTarget) => {
+    const number = nextTerminal.current++;
+    const tool: DockTool = {
+      id: `terminal-${number}`,
+      kind: "terminal",
+      title: `Terminal ${number}`,
+    };
+    setColumns((current) =>
+      setActiveTool(addTool(current, tool, target), tool.id),
+    );
+  };
+
+  // The preview is a single pane — a second one would just be the same app
+  // twice — so asking for it again brings the existing one forward.
+  const openPreview = (target: DropTarget) => {
+    setColumns((current) =>
+      findTool(current, "preview")
+        ? setActiveTool(current, "preview")
+        : setActiveTool(
+            addTool(
+              current,
+              { id: "preview", kind: "preview", title: "Preview" },
+              target,
+            ),
+            "preview",
+          ),
+    );
+  };
+
+  const closePanel = (id: string) => {
+    setColumns((current) => {
+      const kind = findTool(current, id)?.tool.kind;
+      return kind === "terminal" || kind === "preview"
+        ? removeTool(current, id)
+        : current;
     });
   };
 
-  const launchTerminal = (side: DockSide) => {
-    const number = nextTerminal.current++;
-    const id = `terminal-${number}`;
-    setTools((current) => [
-      ...current,
-      { id, kind: "terminal", title: `Terminal ${number}`, side },
-    ]);
-    setActiveTool((current) => ({ ...current, [side]: id }));
-  };
+  // A group divider splits the space its two neighbours share; both are
+  // measured when the drag starts so the pointer keeps tracking the divider
+  // even as the groups resize under it.
+  const startGroupDrag =
+    (side: DockSide, index: number) => (event: React.PointerEvent) => {
+      event.preventDefault();
+      const divider = event.currentTarget as HTMLElement;
+      const above = divider.previousElementSibling?.getBoundingClientRect();
+      const below = divider.nextElementSibling?.getBoundingClientRect();
+      if (!above || !below) return;
+      const top = above.top;
+      const height = below.bottom - above.top;
+      const move = (pointer: PointerEvent) => {
+        setColumns((current) =>
+          resizeGroups(current, side, index, (pointer.clientY - top) / height),
+        );
+      };
+      const stop = () => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", stop);
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", stop);
+    };
 
-  const closeTerminal = (id: string) => {
-    const closing = tools.find((tool) => tool.id === id);
-    if (!closing || closing.kind !== "terminal") return;
-    const remaining = tools.filter((tool) => tool.id !== id);
-    setTools(remaining);
-    if (activeTool[closing.side] === id) {
-      setActiveTool((current) => ({
-        ...current,
-        [closing.side]:
-          remaining.find((tool) => tool.side === closing.side)?.id ?? "",
-      }));
-    }
+  const groupKeyDown =
+    (side: DockSide, index: number) => (event: React.KeyboardEvent) => {
+      const step =
+        event.key === "ArrowUp" ? -0.05 : event.key === "ArrowDown" ? 0.05 : 0;
+      if (!step) return;
+      event.preventDefault();
+      setColumns((current) => {
+        const groups = current[side];
+        const pair = groups[index - 1].size + groups[index].size;
+        return resizeGroups(
+          current,
+          side,
+          index,
+          groups[index - 1].size / pair + step,
+        );
+      });
+    };
+
+  const dropProps = (target: DropTarget) => {
+    const hint =
+      target.where === "end"
+        ? `${target.side}:end`
+        : `${target.groupID}:${target.where}`;
+    return {
+      onDragOver: (event: React.DragEvent) => {
+        if (!event.dataTransfer.types.includes(DOCK_TOOL_MIME)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move" as const;
+        setDropHint(hint);
+      },
+      onDragLeave: () =>
+        setDropHint((current) => (current === hint ? "" : current)),
+      onDrop: (event: React.DragEvent) => {
+        const id = event.dataTransfer.getData(DOCK_TOOL_MIME);
+        if (!id) return;
+        event.preventDefault();
+        dropTool(id, target);
+      },
+      className: dropHint === hint ? "over" : "",
+    };
   };
 
   const renderTool = (tool: DockTool) => {
+    if (tool.kind === "chat") return children;
     if (tool.kind === "explorer")
       return (
         <>
@@ -516,6 +620,8 @@ export function WorkspaceShell({
           model={model}
         />
       );
+    if (tool.kind === "preview")
+      return <PreviewPanel workDir={workDir} onNotify={onNotify} />;
     if (tool.kind === "terminal")
       return (
         <TerminalWorkspace
@@ -632,6 +738,97 @@ export function WorkspaceShell({
     );
   };
 
+  const renderGroup = (side: DockSide, group: DockGroup) => (
+    <section
+      className={`workspace-group ${group.tools.some((tool) => tool.kind === "chat") ? "has-chat" : ""}`}
+      style={{ flexGrow: group.size }}
+    >
+      <div
+        {...dropProps({ side, where: "into", groupID: group.id })}
+        className={`workspace-dock-tabs ${dropProps({ side, where: "into", groupID: group.id }).className}`}
+      >
+        {group.tools.map((tool) => (
+          <div
+            className={`workspace-dock-tab ${group.activeID === tool.id ? "active" : ""}`}
+            key={tool.id}
+          >
+            <button
+              draggable
+              onClick={() => focusTool(tool.id)}
+              onDragEnd={() => {
+                setDragging("");
+                setDropHint("");
+              }}
+              onDragStart={(event) => {
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData(DOCK_TOOL_MIME, tool.id);
+                setDragging(tool.id);
+              }}
+              title={`${tool.title} — drag onto another panel to move or split it`}
+            >
+              {tool.title}
+            </button>
+            {tool.kind === "terminal" || tool.kind === "preview" ? (
+              <button
+                className="workspace-tab-close"
+                onClick={() => closePanel(tool.id)}
+                aria-label={`Close ${tool.title}`}
+              >
+                ×
+              </button>
+            ) : null}
+          </div>
+        ))}
+        <div className="workspace-dock-add">
+          <button
+            aria-expanded={addMenu === group.id}
+            aria-haspopup="menu"
+            onClick={() =>
+              setAddMenu((current) => (current === group.id ? "" : group.id))
+            }
+            title="Add a panel here"
+          >
+            ＋ Panel
+          </button>
+          {addMenu === group.id ? (
+            <div className="workspace-add-menu" role="menu">
+              <button
+                onClick={() => {
+                  setAddMenu("");
+                  launchTerminal({ side, where: "into", groupID: group.id });
+                }}
+                role="menuitem"
+              >
+                Terminal
+              </button>
+              <button
+                onClick={() => {
+                  setAddMenu("");
+                  openPreview({ side, where: "into", groupID: group.id });
+                }}
+                role="menuitem"
+              >
+                Preview
+              </button>
+            </div>
+          ) : null}
+        </div>
+      </div>
+      <div className="workspace-group-body" ref={groupBodyRef(group.id)} />
+      {dragging ? (
+        <div className="workspace-dropzones">
+          {(["before", "into", "after"] as const).map((where) => (
+            <div
+              key={where}
+              {...dropProps({ side, where, groupID: group.id })}
+              className={`workspace-dropzone workspace-dropzone-${where} ${dropProps({ side, where, groupID: group.id }).className}`}
+            />
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+
   return (
     <div
       className={`workspace-shell ${active ? "docks-open" : "docks-closed"}`}
@@ -643,107 +840,91 @@ export function WorkspaceShell({
         } as React.CSSProperties
       }
     >
-      {(["left", "right"] as const).map((side) => (
-        <aside
-          className={`workspace-dock workspace-dock-${side} ${dropSide === side ? "drag-over" : ""}`}
-          key={side}
-          onDragOver={(event) => {
-            if (!event.dataTransfer.types.includes(DOCK_TOOL_MIME)) return;
-            event.preventDefault();
-            event.dataTransfer.dropEffect = "move";
-            setDropSide(side);
-          }}
-          onDrop={(event) => {
-            event.preventDefault();
-            moveTool(event.dataTransfer.getData(DOCK_TOOL_MIME), side);
-            setDropSide(null);
-          }}
-        >
-          <div className="workspace-dock-tabs">
-            {tools
-              .filter((tool) => tool.side === side)
-              .map((tool) => (
-                <button
-                  className={activeTool[side] === tool.id ? "active" : ""}
-                  draggable
-                  key={tool.id}
-                  onDragEnd={() => setDropSide(null)}
-                  onDragStart={(event) => {
-                    event.dataTransfer.effectAllowed = "move";
-                    event.dataTransfer.setData(DOCK_TOOL_MIME, tool.id);
-                  }}
-                  onClick={() =>
-                    setActiveTool((current) => ({
-                      ...current,
-                      [side]: tool.id,
-                    }))
-                  }
-                >
-                  {tool.title}
-                  {tool.kind === "terminal" ? (
-                    <span
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        closeTerminal(tool.id);
-                      }}
-                    >
-                      {" "}
-                      ×
-                    </span>
-                  ) : null}
-                </button>
-              ))}
-            <button
-              onClick={() => launchTerminal(side)}
-              title={`New terminal in ${side} dock`}
-            >
-              ＋
-            </button>
-          </div>
-        </aside>
-      ))}
-      {(["left", "right"] as const).map((side) => (
-        <div
-          aria-label={`Resize ${side} panel`}
-          aria-orientation="vertical"
-          aria-valuenow={Math.round(dockWidths[side] * 100)}
-          className={`workspace-divider workspace-divider-${side}`}
-          key={`${side}-divider`}
-          onDoubleClick={() => resizeDock(side, DEFAULT_DOCK_WIDTHS[side])}
-          onKeyDown={dockKeyDown(side)}
-          onPointerDown={startDockDrag(side)}
-          role="separator"
-          tabIndex={0}
-        />
-      ))}
-      <div className="workspace-chat">{children}</div>
-      {(["left", "right"] as const).map((side) => (
-        <div
-          className={`workspace-dock-body workspace-dock-body-${side}`}
-          key={`${side}-body`}
-          ref={dockBodyRefs[side]}
-        />
-      ))}
-      {tools.map((tool) => (
-        <DockToolHost
-          active={activeTool[tool.side] === tool.id}
-          key={tool.id}
-          side={tool.side}
-          target={dockBodies[tool.side]}
-        >
-          <div className="workspace-tool-actions">
-            <button
-              onClick={() =>
-                moveTool(tool.id, tool.side === "left" ? "right" : "left")
+      {SIDES.map((side, columnIndex) => {
+        // The divider before a column resizes the dock on its left: the one
+        // before the chat sizes the left dock, the one after it the right.
+        const edge: EdgeSide = side === "center" ? "left" : "right";
+        const tail = dropProps({ side, where: "end" });
+        return (
+          <Fragment key={side}>
+            {columnIndex > 0 ? (
+              <div
+                aria-label={`Resize ${edge} panel`}
+                aria-orientation="vertical"
+                aria-valuenow={Math.round(dockWidths[edge] * 100)}
+                className={`workspace-divider workspace-divider-${edge}`}
+                onDoubleClick={() =>
+                  resizeDock(edge, DEFAULT_DOCK_WIDTHS[edge])
+                }
+                onKeyDown={dockKeyDown(edge)}
+                onPointerDown={startDockDrag(edge)}
+                role="separator"
+                tabIndex={0}
+              />
+            ) : null}
+            <div
+              className={`workspace-column workspace-column-${side}`}
+              style={
+                side === "center"
+                  ? undefined
+                  : { flexBasis: `${dockWidths[side] * 100}%` }
               }
-              title={`Move to ${tool.side === "left" ? "right" : "left"} dock`}
             >
-              {tool.side === "left" ? "→" : "←"}
-            </button>
-          </div>
-          {renderTool(tool)}
-        </DockToolHost>
-      ))}
+              {columns[side].map((group, index) => (
+                <Fragment key={group.id}>
+                  {index > 0 ? (
+                    <div
+                      aria-label={`Resize ${side} panels`}
+                      aria-orientation="horizontal"
+                      className="workspace-group-divider"
+                      onKeyDown={groupKeyDown(side, index)}
+                      onPointerDown={startGroupDrag(side, index)}
+                      role="separator"
+                      tabIndex={0}
+                    />
+                  ) : null}
+                  {renderGroup(side, group)}
+                </Fragment>
+              ))}
+              <div
+                {...tail}
+                className={`workspace-column-tail ${columns[side].length === 0 ? "empty" : ""} ${tail.className}`}
+              >
+                {columns[side].length === 0 ? "Drop a panel here" : null}
+              </div>
+            </div>
+          </Fragment>
+        );
+      })}
+      {allTools(columns).map((tool) => {
+        const home = findTool(columns, tool.id);
+        if (!home) return null;
+        return (
+          <DockToolHost
+            active={
+              // With the docks closed only the chat is on screen, whichever tab
+              // its group last had selected.
+              active ? home.group.activeID === tool.id : tool.kind === "chat"
+            }
+            key={tool.id}
+            kind={tool.kind}
+            target={groupBodies[home.group.id] ?? null}
+          >
+            {tool.kind === "chat" ? null : (
+              <div className="workspace-tool-actions">
+                <button
+                  onClick={() => cycleTool(tool, home.side)}
+                  title="Move this panel to the next column"
+                  aria-label={`Move ${tool.title} to the next column`}
+                >
+                  ⇄
+                </button>
+              </div>
+            )}
+            {renderTool(tool)}
+          </DockToolHost>
+        );
+      })}
       {quickOpen ? (
         <div
           className="workspace-quick-open"

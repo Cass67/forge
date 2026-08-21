@@ -43,6 +43,8 @@ func TestBoundMethodSurface(t *testing.T) {
 		"GitWorktrees", "GitAddWorktree", "GitRemoveWorktree", "GitIntegrate", "StartRuns",
 		// model-assisted review
 		"GenerateCommitMessage", "GenerateWalkthrough", "WalkthroughStale",
+		// preview pane
+		"StartPreview", "StopPreview",
 	}
 	var got []string
 	typ := reflect.TypeOf(&Service{})
