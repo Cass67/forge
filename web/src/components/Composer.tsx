@@ -5,6 +5,8 @@ import type { Attachment } from "../bridge";
 import { ImagePreview } from "./ImagePreview";
 
 export function Composer({
+  draft,
+  onDraftChange,
   yolo,
   onToggleYolo,
   busy,
@@ -17,6 +19,8 @@ export function Composer({
   onCancel,
   onCommand,
 }: {
+  draft: string;
+  onDraftChange: (text: string) => void;
   yolo: boolean;
   onToggleYolo: () => void;
   busy: boolean;
@@ -29,11 +33,12 @@ export function Composer({
   onCancel: () => void;
   onCommand: (raw: string) => void;
 }) {
-  const [text, setText] = useState("");
   const [index, setIndex] = useState(0);
   const [histPos, setHistPos] = useState(-1);
   const ref = useRef<HTMLTextAreaElement>(null);
 
+  const text = draft;
+  const setText = onDraftChange;
   const items = matchCommands(text, skills);
   const paletteOpen = items.length > 0;
 

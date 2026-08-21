@@ -47,8 +47,8 @@ func (c *Config) Validate() []ValidationIssue {
 	validateSecretPolicy("security.secrets.write", c.Security.Secrets.Write)
 	validateSecretPolicy("security.secrets.command_output", c.Security.Secrets.CommandOutput)
 	validateSecretPolicy("security.secrets.approval_detail", c.Security.Secrets.ApprovalDetail)
-	if c.Chat.CommandTimeout < 1 {
-		add("chat.command_timeout", "must be at least 1")
+	if c.Chat.CommandTimeout < 0 {
+		add("chat.command_timeout", "must be >= 0")
 	}
 	if c.Approval.DefaultPolicy != "" {
 		switch strings.ToLower(strings.TrimSpace(c.Approval.DefaultPolicy)) {

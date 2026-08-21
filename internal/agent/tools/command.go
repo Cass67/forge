@@ -31,7 +31,8 @@ func NewRunCommandWithWorkDirProvider(fallbackWorkDir string, provider WorkDirPr
 		Description: "Execute a shell command. Set run_in_background for anything " +
 			"that does not exit on its own -- dev servers, watchers, REPLs, TUIs: " +
 			"the call returns a session handle immediately and you read its output " +
-			"with read_output. Foreground commands must finish within the timeout.",
+			"with read_output. Foreground commands run until completion or cancellation " +
+			"unless chat.command_timeout is configured.",
 		Parameters: []ParameterDef{
 			{Name: "command", Type: "string", Description: "command to run", Required: true},
 			{Name: "run_in_background", Type: "boolean", Description: "run without waiting for the command to exit"},
@@ -45,7 +46,7 @@ func NewRunCommandWithWorkDirProvider(fallbackWorkDir string, provider WorkDirPr
 			// to declare, not this tool's to infer. Guessing it from the text
 			// refused ordinary commands that merely named a program, and the
 			// refusal came back as a successful result, so a retry changed
-			// nothing. Anything that does run is bounded by the tool timeout.
+			// nothing. Explicit configuration may still bound execution time.
 			// Refused before approval so --yolo cannot wave it through: the
 			// approval hook and the force-prompt hook are the same function,
 			// so an auto-approving session had no protection at all. This is
@@ -99,7 +100,11 @@ func NewRunCommandWithWorkDirProvider(fallbackWorkDir string, provider WorkDirPr
 			}
 
 			timeout := effectiveRunCommandTimeout(command, timeoutSecs)
-			cmdCtx, cancel := context.WithTimeout(ctx, timeout)
+			cmdCtx := ctx
+			cancel := func() {}
+			if timeout > 0 {
+				cmdCtx, cancel = context.WithTimeout(ctx, timeout)
+			}
 			defer cancel()
 
 			cmd := exec.CommandContext(cmdCtx, "sh", "-c", command)
@@ -120,7 +125,7 @@ func NewRunCommandWithWorkDirProvider(fallbackWorkDir string, provider WorkDirPr
 
 			exitCode := 0
 			if err != nil {
-				if cmdCtx.Err() == context.DeadlineExceeded {
+				if timeout > 0 && cmdCtx.Err() == context.DeadlineExceeded {
 					return result + fmt.Sprintf("\ntimeout after %ds", int(timeout.Seconds())), nil
 				}
 				if exitErr, ok := err.(*exec.ExitError); ok {
@@ -134,11 +139,7 @@ func NewRunCommandWithWorkDirProvider(fallbackWorkDir string, provider WorkDirPr
 }
 
 func effectiveRunCommandTimeout(command string, timeoutSecs int) time.Duration {
-	base := time.Duration(timeoutSecs) * time.Second
-	if base <= 0 {
-		base = DefaultToolTimeout
-	}
-	return base
+	return time.Duration(timeoutSecs) * time.Second
 }
 
 func normalizePseudoToolCommands(command string) string {

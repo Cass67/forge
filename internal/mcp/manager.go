@@ -20,14 +20,12 @@ import (
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Startup is slow when a stdio server has to fetch its package (npx/uvx cold
-// start), and tool calls can legitimately run for minutes, so each phase gets
-// its own budget instead of one 15s deadline for everything. A server's
-// timeout_ms overrides all three.
+// Startup and discovery stay bounded because they run automatically. Tool
+// calls run until completion or user cancellation unless timeout_ms explicitly
+// opts that server into a deadline.
 const (
 	defaultConnectTimeout = 90 * time.Second
 	defaultListTimeout    = 30 * time.Second
-	defaultCallTimeout    = 10 * time.Minute
 )
 
 var ErrNotFound = errors.New("mcp resource not found")
@@ -371,8 +369,12 @@ func (m *Manager) CallTool(ctx context.Context, serverName, toolName string, arg
 	if err != nil {
 		return ToolResult{}, err
 	}
-	callTimeout := timeoutForConfig(serverConfig(m, serverName), defaultCallTimeout)
-	callCtx, cancel := context.WithTimeout(withParent(ctx), callTimeout)
+	callTimeout := timeoutForConfig(serverConfig(m, serverName), 0)
+	callCtx := withParent(ctx)
+	cancel := func() {}
+	if callTimeout > 0 {
+		callCtx, cancel = context.WithTimeout(callCtx, callTimeout)
+	}
 	defer cancel()
 	res, err := session.CallTool(callCtx, &sdkmcp.CallToolParams{
 		Name:      toolName,

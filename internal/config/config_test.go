@@ -37,6 +37,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Resilience.StreamIdleTimeoutMS != 120000 {
 		t.Fatalf("default stream idle timeout = %d, want %d", cfg.Resilience.StreamIdleTimeoutMS, 120000)
 	}
+	if cfg.Chat.CommandTimeout != 0 {
+		t.Fatalf("default command timeout = %d, want disabled", cfg.Chat.CommandTimeout)
+	}
 }
 
 func TestLoadMigratesLegacyDefaultStreamIdleTimeout(t *testing.T) {
@@ -47,6 +50,17 @@ func TestLoadMigratesLegacyDefaultStreamIdleTimeout(t *testing.T) {
 	}
 	if cfg.Resilience.StreamIdleTimeoutMS != 120000 {
 		t.Fatalf("stream idle timeout = %d, want migrated default %d", cfg.Resilience.StreamIdleTimeoutMS, 120000)
+	}
+}
+
+func TestLoadMigratesLegacyDefaultCommandTimeout(t *testing.T) {
+	path := writeTemp(t, "[chat]\ncommand_timeout = 60\n")
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Chat.CommandTimeout != 0 {
+		t.Fatalf("command timeout = %d, want migrated disabled value", cfg.Chat.CommandTimeout)
 	}
 }
 
@@ -155,8 +169,8 @@ func TestChatConfigDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Chat.CommandTimeout != 60 {
-		t.Errorf("CommandTimeout = %d, want 60", cfg.Chat.CommandTimeout)
+	if cfg.Chat.CommandTimeout != 0 {
+		t.Errorf("CommandTimeout = %d, want disabled", cfg.Chat.CommandTimeout)
 	}
 	if cfg.Chat.Yolo {
 		t.Error("Yolo should default to false")

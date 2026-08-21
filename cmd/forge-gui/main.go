@@ -84,6 +84,10 @@ func run() error {
 			return err
 		}
 		setup.ResumeThreadID = threadID
+	} else if threadID, err := runtimepkg.ResolveWorkspaceResumeThreadID(setup.Config, startDir); err != nil {
+		return err
+	} else {
+		setup.ResumeThreadID = threadID
 	}
 
 	assets, err := fs.Sub(forgeweb.Dist, "dist")
@@ -163,6 +167,11 @@ func run() error {
 				log.Printf("forge-gui: cannot open %s: %v", next, err)
 				controller.ReportError(fmt.Sprintf("cannot open %s: %v", next, err))
 				return
+			}
+			if threadID, resumeErr := runtimepkg.ResolveWorkspaceResumeThreadID(rebuilt.Config, next); resumeErr != nil {
+				log.Printf("forge-gui: cannot resume %s: %v", next, resumeErr)
+			} else {
+				rebuilt.ResumeThreadID = threadID
 			}
 			setup = rebuilt
 			win.SetTitle(windowTitle(next))

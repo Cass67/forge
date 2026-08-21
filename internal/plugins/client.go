@@ -190,5 +190,8 @@ func withParent(parent context.Context) context.Context {
 }
 
 func withRequestTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return withParent(parent), func() {}
+	}
 	return context.WithTimeout(withParent(parent), timeout)
 }

@@ -264,6 +264,26 @@ func TestApprovalGateUnlessTrustedSkipsPromptForKnownSafe(t *testing.T) {
 	}
 }
 
+func TestApprovalGateOnRequestSkipsPromptForKnownSafe(t *testing.T) {
+	promptCalls := 0
+	gate := NewApprovalGate("", ApprovalConfig{
+		DefaultPolicy:    ApprovalOnRequest,
+		SandboxPolicy:    SandboxWorkspaceWrite,
+		KnownSafeCommand: []string{"go test"},
+	}, func(action tools.Action) (bool, error) {
+		promptCalls++
+		return true, nil
+	}, nil)
+
+	approved, err := gate.Approve(tools.Action{Tool: "run_command", Summary: "go test ./..."})
+	if err != nil || !approved {
+		t.Fatalf("Approve() = (%v, %v), want (true, nil)", approved, err)
+	}
+	if promptCalls != 0 {
+		t.Fatalf("prompt calls = %d, want 0", promptCalls)
+	}
+}
+
 func TestApprovalGateUnlessTrustedPromptsWhenGuardianWarnsTrustedCommand(t *testing.T) {
 	promptCalls := 0
 	gate := NewApprovalGate("", ApprovalConfig{
