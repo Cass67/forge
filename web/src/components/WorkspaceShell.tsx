@@ -103,7 +103,7 @@ function DockToolHost({
   }, [active, host, kind, target]);
 
   useEffect(() => () => host.remove(), [host]);
-  return createPortal(children, host);
+  return target ? createPortal(children, host) : null;
 }
 
 function patchTree(
