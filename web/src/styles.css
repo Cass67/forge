@@ -2316,10 +2316,12 @@ textarea:not(.xterm-helper-textarea),
   align-items: center;
   border-right: 1px solid var(--border);
 }
-.workspace-dock-tab button[draggable="true"] {
+.workspace-dock-tab[draggable="true"],
+.workspace-dock-tab[draggable="true"] > button:first-child {
   cursor: grab;
 }
-.workspace-dock-tab button[draggable="true"]:active {
+.workspace-dock-tab[draggable="true"]:active,
+.workspace-dock-tab[draggable="true"]:active > button:first-child {
   cursor: grabbing;
 }
 .workspace-dock-tab.active {

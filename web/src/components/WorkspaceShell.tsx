@@ -861,22 +861,22 @@ export function WorkspaceShell({
           return (
             <div
               className={`workspace-dock-tab ${group.activeID === tool.id ? "active" : ""} ${tabDrop.className}`}
+              draggable
               key={tool.id}
+              onDragEnd={() => {
+                setDragging("");
+                setDropHint("");
+              }}
               onDragOver={tabDrop.onDragOver}
+              onDragStart={(event) => {
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData(DOCK_TOOL_MIME, tool.id);
+                setDragging(tool.id);
+              }}
               onDrop={tabDrop.onDrop}
             >
               <button
-                draggable
                 onClick={() => focusTool(tool.id)}
-                onDragEnd={() => {
-                  setDragging("");
-                  setDropHint("");
-                }}
-                onDragStart={(event) => {
-                  event.dataTransfer.effectAllowed = "move";
-                  event.dataTransfer.setData(DOCK_TOOL_MIME, tool.id);
-                  setDragging(tool.id);
-                }}
                 title={`${tool.title} — drag onto another panel to move or split it`}
               >
                 {tool.title}
