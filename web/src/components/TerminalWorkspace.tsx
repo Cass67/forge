@@ -55,13 +55,15 @@ export function TerminalWorkspace({
   onNotify,
 }: Props) {
   const host = useRef<HTMLDivElement>(null);
-  const started = useRef(false);
-  const lastKey = useRef({ signature: "", at: 0 });
-  const lastInput = useRef({ data: "", at: 0 });
-  const id = `${instanceID}:pty`;
 
   useEffect(() => {
     if (!host.current) return;
+    const id = `${instanceID}:pty:${crypto.randomUUID()}`;
+    let disposed = false;
+    let started = false;
+    let pendingInput = "";
+    let lastKey = { signature: "", at: 0 };
+    let lastInput = { data: "", at: 0 };
     const term = new Terminal({
       allowProposedApi: false,
       convertEol: false,
@@ -78,12 +80,9 @@ export function TerminalWorkspace({
       if (event.type !== "keydown" || event.isComposing) return true;
       const signature = `${event.code}:${event.key}:${event.metaKey}:${event.ctrlKey}:${event.altKey}:${event.shiftKey}`;
       const now = performance.now();
-      if (
-        signature === lastKey.current.signature &&
-        now - lastKey.current.at < 40
-      )
+      if (signature === lastKey.signature && now - lastKey.at < 40)
         return false;
-      lastKey.current = { signature, at: now };
+      lastKey = { signature, at: now };
       return true;
     });
 
@@ -95,7 +94,7 @@ export function TerminalWorkspace({
       )
         return;
       fit.fit();
-      if (started.current) {
+      if (started) {
         void forge
           .resizeTerminal(id, term.rows, term.cols)
           .catch((error: unknown) => onNotify(String(error)));
@@ -105,20 +104,26 @@ export function TerminalWorkspace({
       if (event.id !== id) return;
       if (event.data) term.write(event.data);
       if (event.closed) {
-        started.current = false;
+        started = false;
         term.writeln("\r\n[process exited]");
       }
     });
+    const write = (data: string) => {
+      void forge
+        .writeTerminal(id, data)
+        .catch((error: unknown) => onNotify(String(error)));
+    };
     const input = term.onData((data) => {
       // WebKit can emit one xterm input twice even when only one keydown reaches
       // xterm. Filter again at PTY boundary, where duplicates become visible.
       const now = performance.now();
-      if (lastInput.current.data === data && now - lastInput.current.at < 40)
+      if (lastInput.data === data && now - lastInput.at < 40) return;
+      lastInput = { data, at: now };
+      if (!started) {
+        pendingInput += data;
         return;
-      lastInput.current = { data, at: now };
-      void forge
-        .writeTerminal(id, data)
-        .catch((error: unknown) => onNotify(String(error)));
+      }
+      write(data);
     });
     const observer = new ResizeObserver(resize);
     observer.observe(host.current);
@@ -136,21 +141,32 @@ export function TerminalWorkspace({
     void forge
       .startTerminal(id, term.rows, term.cols)
       .then(() => {
-        started.current = true;
+        if (disposed) {
+          void forge.closeTerminal(id);
+          return;
+        }
+        started = true;
         resize();
+        if (pendingInput) {
+          write(pendingInput);
+          pendingInput = "";
+        }
       })
-      .catch((error: unknown) => onNotify(String(error)));
+      .catch((error: unknown) => {
+        if (!disposed) onNotify(String(error));
+      });
 
     return () => {
+      disposed = true;
       observer.disconnect();
       themeObserver.disconnect();
       input.dispose();
       offEvent();
-      started.current = false;
+      started = false;
       void forge.closeTerminal(id);
       term.dispose();
     };
-  }, [id, onNotify]);
+  }, [instanceID, onNotify]);
 
   return (
     <section className="terminal-workspace">
