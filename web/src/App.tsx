@@ -857,10 +857,7 @@ export default function App() {
           onDirtyChange={setWorkspaceDirty}
           onNotify={notify}
           onShowDocks={() => setWorkspaceMode(true)}
-          model={init?.model ?? ""}
-          models={init?.models ?? []}
-        >
-          <main className="center">
+          chatTabs={
             <SessionTabs
               tabs={tabs}
               threads={threads}
@@ -878,6 +875,11 @@ export default function App() {
               }}
               onNew={newThread}
             />
+          }
+          model={init?.model ?? ""}
+          models={init?.models ?? []}
+        >
+          <main className="center">
             <Transcript entries={entries} prefs={prefs} busy={busy} />
             <Composer
               draft={drafts[init?.work_dir ?? ""] ?? ""}

@@ -2238,7 +2238,10 @@ textarea,
 .workspace-shell.docks-closed > .workspace-divider,
 .workspace-shell.docks-closed .workspace-group:not(.has-chat),
 .workspace-shell.docks-closed .workspace-group-divider,
-.workspace-shell.docks-closed .workspace-dock-tabs,
+.workspace-shell.docks-closed
+  .workspace-group:not(.has-chat)
+  .workspace-dock-tabs,
+.workspace-shell.docks-closed .has-chat .workspace-dock-tab,
 .workspace-shell.docks-closed .workspace-tool-actions {
   display: none;
 }
@@ -3615,6 +3618,17 @@ textarea,
   border-bottom: 1px solid var(--border);
   background: var(--panel);
   overflow-x: auto;
+}
+/* Inside the chat panel's tab strip there is no second bar to draw: the
+   conversations continue the same row of tabs. */
+.workspace-chat-tabs {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+}
+.workspace-chat-tabs .session-tabs {
+  flex: 1;
+  border-bottom: 0;
 }
 .session-tab {
   display: flex;

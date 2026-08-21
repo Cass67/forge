@@ -195,7 +195,17 @@ export function Sidebar({
                 )}
               </div>
               {!collapsed ? (
-                <div className="thread-list">
+                <div
+                  className="thread-list"
+                  // Double-clicking the empty room under a workspace starts a
+                  // conversation in it, the same as double-clicking its name.
+                  onDoubleClick={(event) => {
+                    if ((event.target as HTMLElement).closest(".thread"))
+                      return;
+                    onNewIn(ws.path);
+                  }}
+                  title="Double-click for a new chat here"
+                >
                   {list.length === 0 ? (
                     <div className="empty">no threads yet</div>
                   ) : null}
