@@ -3,7 +3,15 @@ package llm
 import (
 	"context"
 	"time"
+
+	resilienceerrors "forge/internal/resilience/errors"
 )
+
+// ErrTruncatedStream marks a streamed response that ended before the provider
+// sent a terminal finish_reason. The response is incomplete through no fault of
+// the model, so callers must retry the turn rather than interpret the missing
+// content as the model's answer.
+var ErrTruncatedStream = resilienceerrors.ErrTruncatedStream
 
 type Role string
 

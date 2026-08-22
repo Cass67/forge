@@ -156,14 +156,39 @@ const previewExplorationBudget = 6
 const implementExplorationBudget = 24
 const inspectExplorationBudget = 24
 
-// defaultOutputStoreThresholdBytes is where a tool result stops being inlined
-// and is stored behind a handle instead. Every result above it costs an extra
-// read_output round trip, so 10KB was needlessly slow — most source files are
-// larger than that. It stays well under CompactionConfig.LargeToolResultBytes
-// (64KB), above which a single result triggers full summarization: inlining
-// something that immediately forces compaction would gain nothing.
-// Override with Config.OutputStoreThresholdBytes.
+// defaultOutputStoreThresholdBytes is the floor for where a tool result stops
+// being inlined and is stored behind a handle instead. Every result above the
+// threshold costs an extra read_output round trip, so 10KB was needlessly slow
+// — most source files are larger than that.
+//
+// It is only a floor: the real limit scales with the model's context window
+// (see inlineToolResultLimit). A fixed byte count made a 68KB source file
+// unreadable in one go even on a 262K-token model, where it is ~6% of the
+// window; the agent then paged the same file back in dozens of read calls,
+// each one a full round trip. Override with Config.OutputStoreThresholdBytes.
 const defaultOutputStoreThresholdBytes = 32 * 1024
+
+// inlineToolResultWindowDivisor sets how much of the context window one tool
+// result may occupy when inlined: an eighth.
+//
+// The target it is sized against: a 2000-line source file must arrive in one
+// read on a 200K-token model. Such a file is ~70KB of source, and read_file
+// prefixes every line with its number, so the result reaching the model is
+// ~85KB — an eighth of a 200K window is ~100KB, which clears it. A tenth does
+// not, and the difference is not academic: at a tenth the agent re-read one
+// 1842-line file 43 times in a single task, because each whole-file read came
+// back as a stub telling it to page.
+const inlineToolResultWindowDivisor = 8
+
+// maxInlineToolResultBytes caps the scaled limit. read_file refuses anything
+// over 200KB, so inlining past this only invites a single result to dominate
+// the prompt on million-token models.
+const maxInlineToolResultBytes = 192 * 1024
+
+// bytesPerToken is the rough chars-per-token ratio used to turn a context
+// window into a byte budget. Deliberately conservative for code, which
+// tokenizes worse than prose.
+const bytesPerToken = 4
 
 const (
 	postDelegationReadOutputAggregateLimitBytes = 40 * 1024
@@ -176,6 +201,39 @@ func outputStoreThresholdBytes(configured int) int {
 		return configured
 	}
 	return defaultOutputStoreThresholdBytes
+}
+
+// inlineToolResultLimit reports the largest tool result that may be inlined
+// for the active model. An explicit configured value always wins; otherwise
+// the limit follows the context window, never below the default floor.
+func inlineToolResultLimit(configured int, contextWindowTokens func() int) int {
+	if configured > 0 {
+		return configured
+	}
+	limit := defaultOutputStoreThresholdBytes
+	if contextWindowTokens != nil {
+		if tokens := contextWindowTokens(); tokens > 0 {
+			scaled := tokens / inlineToolResultWindowDivisor * bytesPerToken
+			if scaled > limit {
+				limit = scaled
+			}
+		}
+	}
+	if limit > maxInlineToolResultBytes {
+		limit = maxInlineToolResultBytes
+	}
+	return limit
+}
+
+// largeToolResultBytes keeps the compaction trigger above the inline limit.
+// If a result may be inlined but immediately counts as "large", the next
+// decision micro-compacts it away and the inlining gained nothing.
+func largeToolResultBytes(configured int, contextWindowTokens func() int) int {
+	limit := 2 * inlineToolResultLimit(configured, contextWindowTokens)
+	if limit < defaultLargeToolResultBytes {
+		limit = defaultLargeToolResultBytes
+	}
+	return limit
 }
 
 const overviewExplorationBudget = 12
@@ -208,10 +266,17 @@ const repeatToolCallThreshold = 3
 const repeatToolCallBlockThreshold = 6
 const repeatToolCallWindow = 10
 
-// ponytail: nudge only, no hard block — 6/10 same-file reads is a verification
+// nudge only, no hard block — 6/10 same-file reads is a verification
 // spiral, but linear paging of a big file stays under it.
 const rereadSameFileThreshold = 6
 const maxCompletionRetriesPerTurn = 3
+
+// maxTransientStreamRetriesPerTurn bounds recovery from transport faults —
+// truncated streams, dropped connections, gateway blips. It is deliberately
+// separate from the completion budget: a flaky link would otherwise spend the
+// allowance meant for re-prompting a model that answered badly, and a turn
+// could die having never once reached the model.
+const maxTransientStreamRetriesPerTurn = 6
 
 // maxContextCompactionsPerTurn bounds overflow recovery so a session that
 // cannot shrink fails with the provider's error instead of spinning.
@@ -309,6 +374,9 @@ func NewRunner(cfg Config) *Runner {
 			HistoryPressureTurns: 40,
 			MaxFailures:          cfg.CompactionMaxFailures,
 			PromptBudgetFn:       promptBudgetFromWindow(cfg.ContextWindowTokens),
+			LargeToolResultBytesFn: func() int {
+				return largeToolResultBytes(cfg.OutputStoreThresholdBytes, cfg.ContextWindowTokens)
+			},
 		}),
 		compactionMaxFailures:     cfg.CompactionMaxFailures,
 		turnComplete:              cfg.TurnComplete,
@@ -316,7 +384,7 @@ func NewRunner(cfg Config) *Runner {
 		maxSteps:                  maxLoopSteps(cfg.MaxSteps),
 		toolThrashCircuitBreaker:  cfg.ToolThrashCircuitBreaker,
 		outputStore:               cfg.OutputStore,
-		outputStoreThresholdBytes: outputStoreThresholdBytes(cfg.OutputStoreThresholdBytes),
+		outputStoreThresholdBytes: cfg.OutputStoreThresholdBytes,
 		checkpointManager:         workspace.NewCheckpointManager(""),
 		checkpointedTurns:         make(map[string]bool),
 		checkpointIDsByTurn:       make(map[string]string),
@@ -655,6 +723,7 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 	nativeCaller, isNative := r.driver.(llm.NativeToolCaller)
 
 	completionRetries := 0
+	transientRetries := 0
 	compactionAttempts := 0
 	for range r.maxSteps {
 		if r.applyPendingInput() {
@@ -683,8 +752,8 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 				continue
 			}
 			if shouldRetryTransientStreamError(ctx, err) {
-				if completionRetries < maxCompletionRetriesPerTurn {
-					completionRetries++
+				if transientRetries < maxTransientStreamRetriesPerTurn {
+					transientRetries++
 					r.pendingRetryPrompt = ""
 					r.emitRetryNotice(transientStreamRetryNotice(err))
 					continue
@@ -795,22 +864,33 @@ func shouldRetryTransientStreamError(ctx context.Context, err error) bool {
 	if err == nil {
 		return false
 	}
-	if retryDriverExhaustedTransientError(err) {
-		return false
-	}
 	if ctx != nil && ctx.Err() != nil {
 		return false
 	}
-	classified := resilienceerrors.ClassifyError(err)
-	if !classified.Retryable {
-		return false
-	}
-	switch classified.Class {
-	case resilienceerrors.ErrorClassRetryable, resilienceerrors.ErrorClassServer, resilienceerrors.ErrorClassCapacity:
+	// A stream cut off in transit is worth a fresh turn even after the driver
+	// used up its own attempts: nothing was generated to waste, the provider
+	// fault is usually a short burst, and the alternative is losing a run that
+	// may be many minutes and many tool calls deep. The per-turn transient
+	// budget still bounds it.
+	if errors.Is(err, llm.ErrTruncatedStream) {
 		return true
-	default:
+	}
+	if retryDriverExhaustedTransientError(err) {
 		return false
 	}
+	// A completion the runtime rejected (empty answer, failed gate) is the
+	// completion budget's business: it needs a re-prompt, not a bare retry,
+	// and counting it here would spend the transport allowance on it.
+	var completion *RetryableCompletionError
+	if errors.As(err, &completion) {
+		return false
+	}
+	classified := resilienceerrors.ClassifyError(err)
+	// Retryable is the decision; the class only says why. Gating on a class
+	// allowlist meant anything landing in ErrorClassUnknown — which the
+	// classifier marks retryable by default, and where truncated streams and
+	// other transport faults land — was treated as fatal.
+	return classified.Retryable
 }
 
 func retryDriverExhaustedTransientError(err error) bool {
@@ -1966,7 +2046,8 @@ func (r *Runner) toolResultItem(ctx context.Context, turn int, toolName, toolCal
 	if strings.TrimSpace(toolName) == "read_output" {
 		return item, nil
 	}
-	if r == nil || r.outputStore == nil || len(result) <= r.outputStoreThresholdBytes {
+	if r == nil || r.outputStore == nil ||
+		len(result) <= inlineToolResultLimit(r.outputStoreThresholdBytes, r.contextWindowTokens) {
 		return item, nil
 	}
 	handle, err := r.outputStore.Put(ctx, "session", []byte(result))

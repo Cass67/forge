@@ -1,10 +1,17 @@
 package errors
 
 import (
+	stderrors "errors"
 	"fmt"
 	"regexp"
 	"strings"
 )
+
+// ErrTruncatedStream marks a streamed response that ended before the provider
+// sent a terminal finish_reason: the transport cut the response short, so the
+// turn must be retried rather than read as the model's answer. It lives here
+// so both the drivers that raise it and the classifier can share one identity.
+var ErrTruncatedStream = stderrors.New("stream ended without finish_reason")
 
 // ErrorClass categorises API errors for routing decisions.
 type ErrorClass int
@@ -65,6 +72,20 @@ func ClassifyError(err error) ForgeError {
 	}
 	msg := err.Error()
 	lower := strings.ToLower(msg)
+
+	// Truncated streams — always retry. Matched by identity so a provider
+	// echoing this wording in a message cannot be mistaken for one.
+	if stderrors.Is(err, ErrTruncatedStream) {
+		return ForgeError{
+			Class:       ErrorClassRetryable,
+			Type:        "truncated_stream",
+			Message:     msg,
+			UserMessage: "Response was cut off mid-stream. Retrying…",
+			Retryable:   true,
+			Recovery:    "",
+			Raw:         err,
+		}
+	}
 
 	// Auth errors — never retry
 	for _, pattern := range authPatterns {

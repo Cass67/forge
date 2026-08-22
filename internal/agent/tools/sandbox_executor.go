@@ -27,7 +27,7 @@ var (
 // SetSandboxExecutor installs the executor run_command delegates foreground
 // commands to. Pass nil to restore host execution. Background (&) commands
 // stay on the host; PTY sessions route via SetSandboxArgv.
-// ponytail: no background routing, add when needed.
+// no background routing, add when needed.
 func SetSandboxExecutor(ex SandboxExecutor) {
 	sandboxMu.Lock()
 	sandboxFn = ex

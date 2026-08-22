@@ -724,3 +724,28 @@ func BuildCompatProviders(cfg *config.Config, tokens *auth.Tokens) []CompatProvi
 
 	return providers
 }
+
+// DriverUnavailableReason explains why DriverForModel returned nil for a model.
+// "No API key found" was reported for every failure, including a model the
+// provider simply does not serve, which sent people hunting for credentials
+// they already had.
+func DriverUnavailableReason(cfg *config.Config, tokens *auth.Tokens, model string) string {
+	name := strings.TrimSpace(model)
+	if name == "" {
+		return "no model selected"
+	}
+	ref := ParseModelRef(name)
+	if ref.Provider == "" {
+		return fmt.Sprintf("no API key found for model %q", name)
+	}
+	for _, p := range BuildCompatProviders(cfg, tokens) {
+		if p.Name != ref.Provider {
+			continue
+		}
+		if p.KeyFn() == "" {
+			return fmt.Sprintf("no API key configured for provider %q (set it under [keys] in config.toml)", ref.Provider)
+		}
+		return fmt.Sprintf("provider %q is authenticated but cannot serve model %q", ref.Provider, ref.Model)
+	}
+	return fmt.Sprintf("no API key found for model %q", name)
+}

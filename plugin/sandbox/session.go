@@ -328,7 +328,7 @@ func reapOrphans(ctx context.Context) {
 
 // pidAlive reports whether a process exists. signal 0 does no work but still
 // checks the target: nil means alive, ESRCH means gone.
-// ponytail: ignores PID reuse — a reused PID just delays reaping one container.
+// ignores PID reuse — a reused PID just delays reaping one container.
 func pidAlive(pid int) bool {
 	if pid <= 0 {
 		return false

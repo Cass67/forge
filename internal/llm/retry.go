@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -222,7 +223,14 @@ func (d *RetryDriver) Stream(ctx context.Context, messages []Message, out chan<-
 				} else {
 					resetStreamIdleTimer(idleTimer, d.streamIdleTimeout)
 				}
-				emittedAny = true
+				// Only output the caller can act on makes an attempt
+				// unrepeatable. Reasoning tokens are discardable narration:
+				// latching on them meant a stream that died mid-thinking —
+				// the common shape of a truncated response from a reasoning
+				// model — was never retried.
+				if tok.Text != "" || tok.ToolCall != nil {
+					emittedAny = true
+				}
 				select {
 				case out <- tok:
 				case <-ctx.Done():
@@ -362,7 +370,14 @@ func (d *RetryDriver) StreamWithToolsOptions(ctx context.Context, messages []Mes
 				} else {
 					resetStreamIdleTimer(idleTimer, d.streamIdleTimeout)
 				}
-				emittedAny = true
+				// Only output the caller can act on makes an attempt
+				// unrepeatable. Reasoning tokens are discardable narration:
+				// latching on them meant a stream that died mid-thinking —
+				// the common shape of a truncated response from a reasoning
+				// model — was never retried.
+				if tok.Text != "" || tok.ToolCall != nil {
+					emittedAny = true
+				}
 				select {
 				case out <- tok:
 				case <-ctx.Done():
@@ -461,13 +476,23 @@ func (d *RetryDriver) backoff(attempt int, lastErr error) time.Duration {
 	return time.Duration(jitter)
 }
 
+// rateLimitStatusPattern matches 429 only where it reads as an HTTP status:
+// at a word boundary, optionally preceded by "status"/"code"/"http" or
+// followed by a status phrase — not as a digit run inside a longer number.
+var rateLimitStatusPattern = regexp.MustCompile(`(^|[^0-9])429([^0-9]|$)`)
+
 func isRateLimited(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "429") ||
-		strings.Contains(msg, "too many requests") ||
+	// "429" as a bare substring matches request IDs, token counts and byte
+	// offsets, and a false positive costs every later call a real cooldown.
+	// Require it to read as a status code.
+	if rateLimitStatusPattern.MatchString(msg) {
+		return true
+	}
+	return strings.Contains(msg, "too many requests") ||
 		strings.Contains(msg, "rate limit exceeded") ||
 		strings.Contains(msg, "rate limited")
 }

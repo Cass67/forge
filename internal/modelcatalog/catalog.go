@@ -147,6 +147,55 @@ func openCodeGoOpenAICompatibleReasoningModel() OpenCodeGoModelCapability {
 	}
 }
 
+// openCodeGoUnlistedModel is the capability assumed for an opencode-go model
+// absent from the catalog: reachable over openai-compatible chat, with every
+// other behaviour left at the provider-neutral default.
+func openCodeGoUnlistedModel() OpenCodeGoModelCapability {
+	return OpenCodeGoModelCapability{
+		WireAPI:                         "chat",
+		SDK:                             "@ai-sdk/openai-compatible",
+		SupportsRequiredChatToolChoice:  true,
+		SupportedByOpenAICompatibleChat: true,
+	}
+}
+
+// ProviderMinContextWindow returns the smallest context window the catalog
+// lists for a provider, or 0 when it lists none. It exists for models the
+// catalog has never heard of: a gateway's unlisted preview models are served
+// alongside its published ones, so the smallest published window is a safe
+// stand-in — conservative by construction, since it cannot overstate what the
+// provider supports.
+func ProviderMinContextWindow(provider string) int {
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return 0
+	}
+	mdevID, ok := forgeToModelsDev[provider]
+	if !ok {
+		mdevID = provider
+	}
+	mu.RLock()
+	live := catalog[mdevID]
+	mu.RUnlock()
+
+	smallest := 0
+	consider := func(data providerData) {
+		for _, entry := range data.Models {
+			if entry.Limit.Context <= 0 {
+				continue
+			}
+			if smallest == 0 || entry.Limit.Context < smallest {
+				smallest = entry.Limit.Context
+			}
+		}
+	}
+	consider(live)
+	if bundledCatalog != nil {
+		consider(bundledCatalog[mdevID])
+	}
+	return smallest
+}
+
 func OpenCodeGoSupportedChatModels() []string {
 	out := make([]string, 0, len(openCodeGoModelOrder))
 	seen := make(map[string]bool, len(openCodeGoModelOrder))
@@ -178,13 +227,21 @@ func OpenCodeGoModelCapabilityFor(model string) (OpenCodeGoModelCapability, bool
 	if ok {
 		return cap, true
 	}
-	// Unknown model present in the models.dev opencode-go catalog: assume the
-	// provider's default openai-compatible chat wire (only anthropic/alibaba-wire
-	// models need explicit entries above).
+	// Models listed by models.dev but without an entry above ride the
+	// provider's default openai-compatible chat wire, and are treated as
+	// reasoning models: the ones this provider adds generally are.
 	if Lookup("opencode-go", model) != nil {
 		return openCodeGoOpenAICompatibleReasoningModel(), true
 	}
-	return OpenCodeGoModelCapability{}, false
+	// Model the catalog has never heard of. The catalog lags the provider —
+	// preview and unlisted models are served over the same wire well before
+	// they are published — and refusing them made those models unusable,
+	// reported as a missing API key. Assume plain chat and keep every other
+	// default untouched, so an unlisted model behaves like an ordinary one
+	// rather than inheriting the reasoning-model workarounds. An id the
+	// provider does not serve now fails at the request, with the provider's
+	// own error, which is the clearer signal.
+	return openCodeGoUnlistedModel(), true
 }
 
 func OpenCodeGoModelSupportedByOpenAICompatibleChat(model string) bool {

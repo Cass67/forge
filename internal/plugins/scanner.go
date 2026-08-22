@@ -159,7 +159,7 @@ func MergeDiscovered(cfg *config.Config, discovered []DiscoveredPlugin) (added, 
 
 	// Remove config entries for plugins no longer on disk
 	// (only auto-discovered ones; user-configured ones stay)
-	// # ponytail: no concept of "auto-discovered" marker on config entries yet.
+	// no concept of "auto-discovered" marker on config entries yet.
 	// Currently we only add, never remove. Add removal when auto-discovered
 	// entries are tagged with a source="auto" flag.
 

@@ -97,6 +97,18 @@ func TestBuildPromptTrimsInput(t *testing.T) {
 	}
 }
 
+// findSystemMessage returns the system message containing want. Transient
+// overlays live after the history now, so tests locate them by content rather
+// than by a fixed index.
+func findSystemMessage(msgs []llm.Message, want string) (llm.Message, bool) {
+	for _, m := range msgs {
+		if m.Role == llm.RoleSystem && strings.Contains(m.Content, want) {
+			return m, true
+		}
+	}
+	return llm.Message{}, false
+}
+
 func TestSessionMessagesIncludeCompactionSummaryContext(t *testing.T) {
 	session := NewSession()
 	first := session.RecordInput("prompt 1")
@@ -118,17 +130,18 @@ func TestSessionMessagesIncludeCompactionSummaryContext(t *testing.T) {
 	if messages[0].Role != llm.RoleSystem || messages[0].Content != "system prompt" {
 		t.Fatalf("system message = %#v", messages[0])
 	}
-	if messages[1].Role != llm.RoleSystem {
-		t.Fatalf("summary message role = %q, want system", messages[1].Role)
+	summary, ok := findSystemMessage(messages, "Earlier conversation summary")
+	if !ok {
+		t.Fatalf("no compaction summary in %#v", messages)
 	}
-	if !strings.Contains(messages[1].Content, "Earlier conversation summary") {
-		t.Fatalf("summary message = %q", messages[1].Content)
+	if !strings.Contains(summary.Content, "user: prompt 1") {
+		t.Fatalf("summary message missing compacted turn detail: %q", summary.Content)
 	}
-	if !strings.Contains(messages[1].Content, "user: prompt 1") {
-		t.Fatalf("summary message missing compacted turn detail: %q", messages[1].Content)
+	if !strings.Contains(summary.Content, "outcome: answer 1") {
+		t.Fatalf("summary message missing semantic outcome detail: %q", summary.Content)
 	}
-	if !strings.Contains(messages[1].Content, "outcome: answer 1") {
-		t.Fatalf("summary message missing semantic outcome detail: %q", messages[1].Content)
+	if messages[len(messages)-1].Role != llm.RoleSystem {
+		t.Fatalf("transient overlays must trail the history, got %#v", messages[len(messages)-1])
 	}
 	foundAnchor := false
 	for _, msg := range messages {
@@ -287,11 +300,17 @@ func TestBuildMessages_IncludesRuntimeNoteAsSystemMessage(t *testing.T) {
 	if len(msgs) < 3 {
 		t.Fatalf("messages = %#v", msgs)
 	}
-	if msgs[1].Role != llm.RoleSystem {
-		t.Fatalf("runtime note role = %q, want system", msgs[1].Role)
+	note, ok := findSystemMessage(msgs, "Git merge workflow active")
+	if !ok {
+		t.Fatalf("runtime note missing from %#v", msgs)
 	}
-	if !strings.Contains(msgs[1].Content, "Git merge workflow active") {
-		t.Fatalf("runtime note = %q", msgs[1].Content)
+	if note.Role != llm.RoleSystem {
+		t.Fatalf("runtime note role = %q, want system", note.Role)
+	}
+	// A runtime note is rewritten as the session runs, so it must not sit in
+	// the cached prefix: it belongs after the history.
+	if msgs[len(msgs)-1].Content != note.Content {
+		t.Fatalf("runtime note must trail the history, got %#v", msgs)
 	}
 }
 
@@ -517,12 +536,24 @@ func TestBuildMessages_PlacesDynamicSystemOverlaysAfterBaseSystemPrompt(t *testi
 	if len(msgs) < 5 {
 		t.Fatalf("messages = %#v", msgs)
 	}
-	for i, want := range []string{"base system", "Current mode: plan", "runtime note", "Task objective", "Current plan:"} {
+	// Standing session configuration stays in the cached prefix, in order.
+	for i, want := range []string{"base system", "Current mode: plan", "Task objective", "Current plan:"} {
 		if msgs[i].Role != llm.RoleSystem {
 			t.Fatalf("message %d role = %q, want system", i, msgs[i].Role)
 		}
 		if !strings.Contains(msgs[i].Content, want) {
 			t.Fatalf("message %d = %q, want substring %q", i, msgs[i].Content, want)
+		}
+	}
+	// The transient runtime note does not, or every rewrite of it would
+	// invalidate the whole prompt cache.
+	last := msgs[len(msgs)-1]
+	if last.Role != llm.RoleSystem || !strings.Contains(last.Content, "runtime note") {
+		t.Fatalf("runtime note must trail the history, got %#v", msgs)
+	}
+	for i, m := range msgs {
+		if i < 4 && strings.Contains(m.Content, "runtime note") {
+			t.Fatalf("runtime note leaked into the cached prefix at %d", i)
 		}
 	}
 }

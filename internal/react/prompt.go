@@ -21,16 +21,27 @@ func BuildMessages(systemPrompt string, snapshot SessionSnapshot) []llm.Message 
 	var messages []llm.Message
 
 	systemPrompt = strings.TrimSpace(systemPrompt)
+	// The system message is the cached prefix: providers key their prompt
+	// cache on the longest byte-identical run at the front of the request, so
+	// anything that changes between turns re-processes everything after it.
+	// Overlays split accordingly. Standing session configuration — mode, task,
+	// plan — is stable enough to sit in the prefix. Transient observations,
+	// which a long task rewrites constantly (loop-detection notices, guidance
+	// nudges, the recall anchor appearing), ride at the tail after the history
+	// where they only invalidate themselves. Measured over one long task,
+	// those transient overlays caused 6 of 8 prefix changes and cost ~18
+	// points of cache hit rate.
 	systemOverlays := make([]promptcomposer.Overlay, 0, 4)
+	tailOverlays := make([]promptcomposer.Overlay, 0, 4)
 	if summary := compactionContext(snapshot); summary != "" {
-		systemOverlays = append(systemOverlays, promptcomposer.Overlay{
+		tailOverlays = append(tailOverlays, promptcomposer.Overlay{
 			Key:      "compaction",
 			Priority: promptcomposer.PriorityHigh,
 			Content:  summary,
 		})
 	}
 	if anchor := initialRequestAnchorContext(snapshot); anchor != "" {
-		systemOverlays = append(systemOverlays, promptcomposer.Overlay{
+		tailOverlays = append(tailOverlays, promptcomposer.Overlay{
 			Key:      "initial_request",
 			Priority: promptcomposer.PriorityHigh,
 			Content:  anchor,
@@ -38,14 +49,14 @@ func BuildMessages(systemPrompt string, snapshot SessionSnapshot) []llm.Message 
 	}
 	if shouldIncludeMemorySummary(snapshot) {
 		summary := strings.TrimSpace(snapshot.MemorySummary)
-		systemOverlays = append(systemOverlays, promptcomposer.Overlay{
+		tailOverlays = append(tailOverlays, promptcomposer.Overlay{
 			Key:      "memory_summary",
 			Priority: promptcomposer.PriorityNormal,
 			Content:  "Memory summary:\n" + summary,
 		})
 	}
 	hookOutput := promptHookOutput(snapshot)
-	systemOverlays = append(systemOverlays, hooks.ToPromptOverlays(hookOutput.Overlays)...)
+	tailOverlays = append(tailOverlays, hooks.ToPromptOverlays(hookOutput.Overlays)...)
 	if mode := snapshot.Mode; mode != "" && mode != ModeChat {
 		systemOverlays = append(systemOverlays, promptcomposer.Overlay{
 			Key:      "mode",
@@ -56,7 +67,7 @@ func BuildMessages(systemPrompt string, snapshot SessionSnapshot) []llm.Message 
 	if snapshot.HookOutputSet {
 		if hookOutput.Note != nil {
 			if note := strings.TrimSpace(snapshot.RuntimeNote); note != "" {
-				systemOverlays = append(systemOverlays, promptcomposer.Overlay{
+				tailOverlays = append(tailOverlays, promptcomposer.Overlay{
 					Key:      "runtime_note",
 					Priority: promptcomposer.PriorityHigh,
 					Content:  note,
@@ -65,7 +76,7 @@ func BuildMessages(systemPrompt string, snapshot SessionSnapshot) []llm.Message 
 		}
 	} else {
 		if note := strings.TrimSpace(snapshot.RuntimeNote); note != "" {
-			systemOverlays = append(systemOverlays, promptcomposer.Overlay{
+			tailOverlays = append(tailOverlays, promptcomposer.Overlay{
 				Key:      "runtime_note",
 				Priority: promptcomposer.PriorityHigh,
 				Content:  note,
@@ -73,7 +84,7 @@ func BuildMessages(systemPrompt string, snapshot SessionSnapshot) []llm.Message 
 		}
 	}
 	if snapshot.Interrupted {
-		systemOverlays = append(systemOverlays, promptcomposer.Overlay{
+		tailOverlays = append(tailOverlays, promptcomposer.Overlay{
 			Key:      "interrupted",
 			Priority: promptcomposer.PriorityHigh,
 			Content:  "The previous turn was interrupted by the user. Any commands or tools from that turn may have partially executed; verify current state before continuing and do not assume unfinished work completed cleanly.",
@@ -123,7 +134,29 @@ func BuildMessages(systemPrompt string, snapshot SessionSnapshot) []llm.Message 
 		messages = append(messages, llm.Message{Role: msg.Role, Content: content, ContentParts: msg.ContentParts, ReasoningContent: msg.ReasoningContent})
 	}
 
+	messages = append(messages, composedOverlayMessages(tailOverlays)...)
+
 	return dropOrphanedToolCalls(truncateToolResults(truncateAssistantToolCalls(messages), toolResultMaxLines))
+}
+
+// composedOverlayMessages renders overlays as system messages. Drivers that
+// require system messages up front demote later ones to a marked user note,
+// which is the established handling for the mid-history context forge already
+// injects.
+func composedOverlayMessages(overlays []promptcomposer.Overlay) []llm.Message {
+	if len(overlays) == 0 {
+		return nil
+	}
+	var out []llm.Message
+	composed := promptcomposer.Compose(promptcomposer.StaticInput{}, overlays)
+	for _, part := range strings.Split(composed, "\n\n") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		out = append(out, llm.Message{Role: llm.RoleSystem, Content: part})
+	}
+	return out
 }
 
 // dropOrphanedToolCalls removes tool-call/tool-result pairs that are no longer

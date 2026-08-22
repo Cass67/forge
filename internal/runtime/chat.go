@@ -334,7 +334,7 @@ func BuildChatSetup(cfg *config.Config, tokens any, modelOverride, workDir strin
 	if strings.TrimSpace(chatModel) != "" {
 		driver = makeChatDriver(chatModel)
 		if driver == nil {
-			return nil, fmt.Errorf("no API key found for model %q", chatModel)
+			return nil, errors.New(bootstrap.DriverUnavailableReason(cfg, authTokens, chatModel))
 		}
 		persistChatLastModel(cfg, chatModel)
 	}
@@ -1109,10 +1109,10 @@ func RunChatLive(setup *ChatSetup) {
 			return append([]tui.ProviderOption(nil), setup.Providers...)
 		},
 		SwitchModel: func(name string) (string, error) {
-			refreshChatSetupState(setup)
+			cfg, authTokens := refreshChatSetupState(setup)
 			d := setup.MakeDriver(name)
 			if d == nil {
-				return "", fmt.Errorf("no API key found for model %q", name)
+				return "", errors.New(bootstrap.DriverUnavailableReason(cfg, authTokens, name))
 			}
 			setup.ChatModel = name
 			setup.Driver = d
@@ -1343,6 +1343,31 @@ func lookupContextWindow(model string) int {
 	if info := modelcatalog.Lookup(ref.Provider, ref.Model); info != nil {
 		return info.ContextWindow
 	}
+	// Unlisted model: the catalog trails the providers, and custom providers
+	// serve models it never carries. An unknown window makes the runtime pick
+	// its most conservative limits — small inline tool results, small prompt
+	// budget — so fall back to what the provider says, then to the smallest
+	// window the catalog lists for that provider's other models.
+	if window := customProviderContextWindow(ref.Provider); window > 0 {
+		return window
+	}
+	return modelcatalog.ProviderMinContextWindow(ref.Provider)
+}
+
+func customProviderContextWindow(provider string) int {
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return 0
+	}
+	defs, err := bootstrap.LoadCustomCompatProviders(fsutil.ForgeConfigDir())
+	if err != nil {
+		return 0
+	}
+	for _, def := range defs {
+		if def.ID == provider {
+			return def.ContextWindow
+		}
+	}
 	return 0
 }
 
@@ -1384,7 +1409,7 @@ func isLocalBaseURL(raw string) bool {
 	if ip := net.ParseIP(host); ip != nil {
 		return ip.IsLoopback() || ip.IsPrivate()
 	}
-	// ponytail: plain-http named hosts are treated as LAN; hosted APIs are https
+	// plain-http named hosts are treated as LAN; hosted APIs are https
 	return u.Scheme == "http"
 }
 
@@ -1760,12 +1785,16 @@ func RunChatHeadless(setup *ChatSetup, prompt string) int {
 		cancel()
 	}()
 
-	if err := runChatTurn(ctx, rt.runner, chatstate.ChatUserInput{IsInput: true, Text: prompt}); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return 1
-	}
+	turnErr := runChatTurn(ctx, rt.runner, chatstate.ChatUserInput{IsInput: true, Text: prompt})
+	// Print whatever the run produced even when it ended badly. A failure
+	// several minutes and many tool calls in still holds the work done so far,
+	// and exiting silently made that unrecoverable for anything piping forge.
 	if resp := strings.TrimSpace(rt.runner.LastResponse()); resp != "" {
 		_, _ = fmt.Fprintln(os.Stdout, resp)
+	}
+	if turnErr != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", turnErr)
+		return 1
 	}
 	return 0
 }
@@ -2253,7 +2282,8 @@ func handleChatSlashCommand(input string, renderer *agent.Renderer, loadedSkills
 		}
 		d := setup.MakeDriver(picked)
 		if d == nil {
-			renderer.Error(fmt.Sprintf("no API key found for model %q", picked))
+			cfg, authTokens := refreshChatSetupState(setup)
+			renderer.Error(bootstrap.DriverUnavailableReason(cfg, authTokens, picked))
 			return true
 		}
 		setup.ChatModel = picked
@@ -2274,7 +2304,8 @@ func handleChatSlashCommand(input string, renderer *agent.Renderer, loadedSkills
 		}
 		d := setup.MakeDriver(newModel)
 		if d == nil {
-			renderer.Error(fmt.Sprintf("no API key found for model %q", newModel))
+			cfg, authTokens := refreshChatSetupState(setup)
+			renderer.Error(bootstrap.DriverUnavailableReason(cfg, authTokens, newModel))
 			return true
 		}
 		setup.ChatModel = newModel

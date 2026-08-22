@@ -18,17 +18,23 @@ type CustomProviderDef struct {
 	DefaultModel string
 	Models       []string
 	ImageModels  []string
+	// ContextWindow is the models' context window in tokens. Custom providers
+	// serve models the models.dev catalog has never heard of, and without this
+	// the runtime treats their window as unknown and falls back to its most
+	// conservative limits.
+	ContextWindow int
 }
 
 type tomlProviderBlock struct {
-	Name         string            `toml:"name"`
-	BaseURL      string            `toml:"base_url"`
-	WireAPI      string            `toml:"wire_api"`
-	ModelInfoURL string            `toml:"model_info_url"`
-	HTTPHeaders  map[string]string `toml:"http_headers"`
-	DefaultModel string            `toml:"default_model"`
-	Models       []string          `toml:"models"`
-	ImageModels  []string          `toml:"image_models"`
+	Name          string            `toml:"name"`
+	BaseURL       string            `toml:"base_url"`
+	WireAPI       string            `toml:"wire_api"`
+	ModelInfoURL  string            `toml:"model_info_url"`
+	HTTPHeaders   map[string]string `toml:"http_headers"`
+	DefaultModel  string            `toml:"default_model"`
+	Models        []string          `toml:"models"`
+	ImageModels   []string          `toml:"image_models"`
+	ContextWindow int               `toml:"context_window"`
 }
 
 type tomlProviderFile struct {
@@ -84,15 +90,16 @@ func parseProviderFile(path string) ([]CustomProviderDef, error) {
 	var defs []CustomProviderDef
 	for id, block := range file.ModelProviders {
 		defs = append(defs, CustomProviderDef{
-			ID:           id,
-			Name:         block.Name,
-			BaseURL:      normalizeBaseURL(block.BaseURL),
-			WireAPI:      block.WireAPI,
-			ModelInfoURL: normalizeBaseURL(block.ModelInfoURL),
-			HTTPHeaders:  block.HTTPHeaders,
-			DefaultModel: block.DefaultModel,
-			Models:       block.Models,
-			ImageModels:  block.ImageModels,
+			ID:            id,
+			Name:          block.Name,
+			BaseURL:       normalizeBaseURL(block.BaseURL),
+			WireAPI:       block.WireAPI,
+			ModelInfoURL:  normalizeBaseURL(block.ModelInfoURL),
+			HTTPHeaders:   block.HTTPHeaders,
+			DefaultModel:  block.DefaultModel,
+			Models:        block.Models,
+			ImageModels:   block.ImageModels,
+			ContextWindow: block.ContextWindow,
 		})
 	}
 	return defs, nil

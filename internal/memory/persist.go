@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 )
 
-// ponytail: one JSON file per workdir; move into sessionstore if memory ever becomes per-thread
+// one JSON file per workdir; move into sessionstore if memory ever becomes per-thread
 func stateFile(workDir string) (string, error) {
 	configDir, err := os.UserConfigDir()
 	if err != nil {

@@ -217,9 +217,16 @@ func (d *OpenAIDriver) streamChatCompletions(ctx context.Context, messages []llm
 
 	var outputChars int
 	var reasoningChars int
+	var sawFinishReason bool
+	var finishReason string
+	ctx, terminator := withStreamTerminator(ctx)
 	stream := d.client.Chat.Completions.NewStreaming(ctx, params)
 	for stream.Next() {
 		chunk := stream.Current()
+		if reason := chunkFinishReason(chunk); reason != "" {
+			sawFinishReason = true
+			finishReason = reason
+		}
 		if chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0 {
 			usage := llm.Usage{
 				InputTokens:       int(chunk.Usage.PromptTokens),
@@ -256,11 +263,38 @@ func (d *OpenAIDriver) streamChatCompletions(ctx context.Context, messages []llm
 		}
 	}
 	if err := stream.Err(); err != nil {
-		if d.shouldFallbackToNonStreaming(err) {
+		// Falling back re-runs the whole completion, so it may only happen
+		// while nothing has reached the caller yet: replaying on top of
+		// already-streamed prose concatenates two answers into one message.
+		if outputChars == 0 && reasoningChars == 0 && d.shouldFallbackToNonStreaming(err) {
 			return d.chatCompletionsFallback(ctx, messages, out)
+		}
+		// An event stream that failed without ever terminating was cut off in
+		// transit; the decoder reports that as a parse failure, which reads
+		// like a malformed response rather than a severed connection. An
+		// HTTP-level failure never opened a stream, so it is unaffected.
+		if terminator.SawSSE() && !sawFinishReason && !terminator.SawDone() {
+			return fmt.Errorf("%s: %w (%v)", "chat.completions", llm.ErrTruncatedStream, normalizeStreamError(err))
 		}
 		return d.wrapStreamError("chat.completions", err)
 	}
+	// A response is complete when it carries a finish_reason or ends with the
+	// SSE terminator; gateways exist that send only the latter, so either one
+	// counts. An event stream with neither was cut off, and that outranks the
+	// empty-stream fallback below: replaying the turn is the fix, not asking
+	// the same severed endpoint again without streaming.
+	if terminator.SawSSE() && !sawFinishReason && !terminator.SawDone() {
+		return errTruncatedStream("chat.completions")
+	}
+	// An abnormal finish_reason is the provider stating the request failed.
+	// Report that rather than retrying it non-streaming: the retry layer
+	// re-runs the whole request anyway, and reporting keeps the provider's own
+	// reason in the error instead of losing it behind a second failure.
+	if outputChars == 0 && !finishReasonEndsNormally(finishReason) {
+		return errEmptyCompletion("chat.completions", finishReason)
+	}
+	// Providers that strand streaming requests — answering with no stream at
+	// all — get one non-streaming retry, which recovers the answer.
 	if outputChars == 0 && d.shouldFallbackAfterEmptyStream() {
 		return d.chatCompletionsFallback(ctx, messages, out)
 	}
@@ -395,6 +429,13 @@ func (d *OpenAIDriver) streamResponsesWithTools(ctx context.Context, messages []
 		if err == nil {
 			d.mu.Lock()
 			d.lastMessages = append([]llm.Message(nil), messages...)
+			// The websocket turn advanced the conversation but produced no
+			// HTTP response id. Leaving the old one in place would let a later
+			// HTTP request — after the sticky fallback below — pair a stale
+			// parent with these newer messages and send only the delta against
+			// the wrong conversation. Dropping it costs one full-history
+			// request and keeps the two transports consistent.
+			d.prevResponseID = ""
 			d.mu.Unlock()
 			return nil
 		}
@@ -617,6 +658,17 @@ func isAppendOnlyMessageHistory(prev, current []llm.Message) bool {
 		if p.ToolCallID != c.ToolCallID {
 			return false
 		}
+		// ContentParts and ReasoningContent are sent to the provider like any
+		// other field, so a history rewritten only in those dimensions is not
+		// append-only. Ignoring them let a swapped image or trimmed reasoning
+		// pass as unchanged, and the delta was then sent against a server-side
+		// conversation that no longer matched.
+		if p.ReasoningContent != c.ReasoningContent {
+			return false
+		}
+		if !sameMessageContentParts(p.ContentParts, c.ContentParts) {
+			return false
+		}
 		if len(p.ToolCalls) != len(c.ToolCalls) {
 			return false
 		}
@@ -624,6 +676,26 @@ func isAppendOnlyMessageHistory(prev, current []llm.Message) bool {
 			if p.ToolCalls[j] != c.ToolCalls[j] {
 				return false
 			}
+		}
+	}
+	return true
+}
+
+func sameMessageContentParts(prev, current []llm.MessageContentPart) bool {
+	if len(prev) != len(current) {
+		return false
+	}
+	for i := range prev {
+		p, c := prev[i], current[i]
+		if p.Type != c.Type || p.Text != c.Text {
+			return false
+		}
+		switch {
+		case p.Image == nil && c.Image == nil:
+		case p.Image == nil || c.Image == nil:
+			return false
+		case *p.Image != *c.Image:
+			return false
 		}
 	}
 	return true
@@ -1396,9 +1468,17 @@ func (d *OpenAIDriver) streamChatCompletionsWithTools(ctx context.Context, messa
 	accs := map[int]*accumulator{}
 
 	var outputChars int
+	var reasoningChars int
+	var sawFinishReason bool
+	var finishReason string
+	ctx, terminator := withStreamTerminator(ctx)
 	stream := d.client.Chat.Completions.NewStreaming(ctx, params)
 	for stream.Next() {
 		chunk := stream.Current()
+		if reason := chunkFinishReason(chunk); reason != "" {
+			sawFinishReason = true
+			finishReason = reason
+		}
 		if chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0 {
 			usage := llm.Usage{
 				InputTokens:       int(chunk.Usage.PromptTokens),
@@ -1411,6 +1491,7 @@ func (d *OpenAIDriver) streamChatCompletionsWithTools(ctx context.Context, messa
 		}
 		for _, choice := range chunk.Choices {
 			if rc := extractReasoningContent(chunk.RawJSON()); rc != "" {
+				reasoningChars += len(rc)
 				select {
 				case out <- llm.Token{ReasoningContent: rc}:
 				case <-ctx.Done():
@@ -1444,10 +1525,29 @@ func (d *OpenAIDriver) streamChatCompletionsWithTools(ctx context.Context, messa
 		}
 	}
 	if err := stream.Err(); err != nil {
-		if d.shouldFallbackToNonStreaming(err) {
+		// Same rule as the plain path: a fallback replays the completion, so
+		// it is only safe while the caller has seen nothing.
+		if outputChars == 0 && reasoningChars == 0 && d.shouldFallbackToNonStreaming(err) {
 			return d.chatCompletionsFallback(ctx, messages, out)
 		}
+		// An event stream that failed without ever terminating was cut off in
+		// transit; the decoder reports that as a parse failure, which reads
+		// like a malformed response rather than a severed connection. An
+		// HTTP-level failure never opened a stream, so it is unaffected.
+		if terminator.SawSSE() && !sawFinishReason && !terminator.SawDone() {
+			return fmt.Errorf("%s: %w (%v)", "chat.completions.tools", llm.ErrTruncatedStream, normalizeStreamError(err))
+		}
 		return d.wrapStreamError("chat.completions.tools", err)
+	}
+	// A stream that stops before any finish_reason was cut off in transit. The
+	// accumulators can hold a half-written tool call (a truncated name, partial
+	// arguments), so nothing here is safe to emit: report it as the transport
+	// failure it is and let the retry layer run the turn again.
+	if terminator.SawSSE() && !sawFinishReason && !terminator.SawDone() {
+		return errTruncatedStream("chat.completions.tools")
+	}
+	if outputChars == 0 && len(accs) == 0 && !finishReasonEndsNormally(finishReason) {
+		return errEmptyCompletion("chat.completions.tools", finishReason)
 	}
 
 	for i := 0; i < len(accs); i++ {
@@ -1610,6 +1710,11 @@ func imageToDataURL(path, mimeType string) (string, error) {
 }
 
 func emitResponsesFunctionCalls(ctx context.Context, out chan<- llm.Token, items []responses.ResponseOutputItemUnion) error {
+	// The same call arrives twice whenever a provider sends both
+	// response.output_item.done and a full output array on response.completed
+	// (OpenAI does): both are collected into one slice. Emitting each entry
+	// ran every tool a second time, so identical calls are collapsed here.
+	seen := make(map[string]struct{}, len(items))
 	for i, item := range items {
 		call, ok := item.AsAny().(responses.ResponseFunctionToolCall)
 		if !ok {
@@ -1626,6 +1731,13 @@ func emitResponsesFunctionCalls(ctx context.Context, out chan<- llm.Token, items
 		if id == "" {
 			id = fmt.Sprintf("call_%d", i)
 		}
+		// Key on the payload too: a synthesised positional id is not stable
+		// enough on its own to prove two entries are the same call.
+		key := id + "\x00" + name + "\x00" + call.Arguments
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
 		argsJSON := repairToolCallArgsJSON(call.Arguments)
 		if argsJSON == "" {
 			argsJSON = "{}"
@@ -1674,6 +1786,47 @@ func debugRequestSizing(registryName, apiModel string, messages []llm.Message) {
 	}
 	fmt.Fprintf(os.Stderr, "[forge] request sizing registry_model=%s api_model=%s messages=%d total_bytes=%d breakdown=%s\n",
 		registryName, apiModel, len(messages), totalBytes, strings.Join(parts, ", "))
+}
+
+// chunkFinishReason returns the terminal finish_reason a chunk carries, if
+// any. A stream that never produces one ended early: gateways drop connections
+// mid-response, sometimes mid-JSON-line, and the SSE decoder discards the
+// partial line without surfacing an error.
+func chunkFinishReason(chunk openai.ChatCompletionChunk) string {
+	for _, choice := range chunk.Choices {
+		if reason := strings.TrimSpace(choice.FinishReason); reason != "" {
+			return reason
+		}
+	}
+	return ""
+}
+
+// finishReasonEndsNormally reports whether a finish_reason describes a
+// completed answer. Anything else — a gateway reporting network_error, a
+// content filter, a hard token limit — describes a response that failed, and
+// an empty one must be reported as that failure rather than as the model
+// having chosen to say nothing.
+func finishReasonEndsNormally(reason string) bool {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "", "stop", "tool_calls", "function_call":
+		return true
+	default:
+		return false
+	}
+}
+
+// errEmptyCompletion reports a response that carried no content and ended for
+// a reason that is not a normal stop. The provider's own reason is named so
+// the failure is diagnosable instead of surfacing as an empty model answer.
+func errEmptyCompletion(api, reason string) error {
+	return fmt.Errorf("%s: provider returned no content (finish_reason %q)", api, reason)
+}
+
+// errTruncatedStream reports a stream that ended without a finish_reason,
+// wrapping llm.ErrTruncatedStream so the retry layer can recognise it by
+// identity instead of by matching on the message text.
+func errTruncatedStream(api string) error {
+	return fmt.Errorf("%s: %w", api, llm.ErrTruncatedStream)
 }
 
 func (d *OpenAIDriver) wrapStreamError(api string, err error) error {

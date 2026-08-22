@@ -65,7 +65,7 @@ func ChatGPTModels() []string {
 	catalog := modelcatalog.ProviderModels("chatgpt")
 	sort.Strings(catalog)
 	for _, m := range catalog {
-		// ponytail: ChatGPT/Codex backend only serves the gpt-5 family
+		// ChatGPT/Codex backend only serves the gpt-5 family
 		if !strings.HasPrefix(m, "gpt-5") {
 			continue
 		}

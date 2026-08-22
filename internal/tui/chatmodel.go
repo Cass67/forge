@@ -1497,7 +1497,7 @@ func (m ChatModel) handleModelsMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 func (m ChatModel) handleProvidersMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.providerAuthWaiting || m.providerPromptingKey {
-		// ponytail: mouse tracking swallows OSC 8 clicks, so any click during
+		// mouse tracking swallows OSC 8 clicks, so any click during
 		// auth opens the URL instead of selecting/closing underneath it
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft && strings.TrimSpace(m.providerAuthURL) != "" {
 			return m, openProviderAuthURL(m.providerAuthURL)

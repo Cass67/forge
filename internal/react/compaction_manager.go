@@ -40,7 +40,11 @@ type CompactionConfig struct {
 	KeepTurns            int
 	HistoryPressureTurns int
 	LargeToolResultBytes int
-	PromptBudgetBytes    int
+	// LargeToolResultBytesFn, when set and returning > 0, overrides
+	// LargeToolResultBytes. Resolved per decision so the trigger tracks the
+	// active model's context window, like PromptBudgetFn.
+	LargeToolResultBytesFn func() int
+	PromptBudgetBytes      int
 	// PromptBudgetFn, when set and returning > 0, overrides PromptBudgetBytes.
 	// Resolved per decision so a mid-session model switch picks up the new window.
 	PromptBudgetFn        func() int
@@ -61,7 +65,7 @@ func NewCompactionManager(cfg CompactionConfig) *CompactionManager {
 		cfg.HistoryPressureTurns = cfg.KeepTurns
 	}
 	if cfg.LargeToolResultBytes < 1 {
-		cfg.LargeToolResultBytes = 64 * 1024
+		cfg.LargeToolResultBytes = defaultLargeToolResultBytes
 	}
 	if cfg.PromptBudgetBytes < 1 {
 		cfg.PromptBudgetBytes = 256 * 1024
@@ -77,7 +81,7 @@ func (m *CompactionManager) Decide(snapshot SessionSnapshot) CompactionDecision 
 		return CompactionDecision{Mode: CompactionNone, Reason: "compaction circuit open"}
 	}
 	for _, msg := range snapshot.History {
-		if msg.Role == llm.RoleTool && len(msg.Content) > m.cfg.LargeToolResultBytes {
+		if msg.Role == llm.RoleTool && len(msg.Content) > m.largeToolResultBytes() {
 			return CompactionDecision{Mode: CompactionMicro, Reason: "large tool result", KeepTurns: m.cfg.KeepTurns}
 		}
 	}
@@ -85,6 +89,19 @@ func (m *CompactionManager) Decide(snapshot SessionSnapshot) CompactionDecision 
 		return CompactionDecision{Mode: CompactionSummarize, Reason: "history pressure", KeepTurns: m.cfg.KeepTurns}
 	}
 	return CompactionDecision{Mode: CompactionNone, Reason: "below threshold", KeepTurns: m.cfg.KeepTurns}
+}
+
+// defaultLargeToolResultBytes is the floor for the single-result compaction
+// trigger; the effective value scales with the context window.
+const defaultLargeToolResultBytes = 64 * 1024
+
+func (m *CompactionManager) largeToolResultBytes() int {
+	if m.cfg.LargeToolResultBytesFn != nil {
+		if b := m.cfg.LargeToolResultBytesFn(); b > 0 {
+			return b
+		}
+	}
+	return m.cfg.LargeToolResultBytes
 }
 
 func (m *CompactionManager) promptBudgetBytes() int {
@@ -203,7 +220,7 @@ func (m *CompactionManager) Apply(session *Session, decision CompactionDecision)
 	case CompactionMicro:
 		maxBytes := decision.ToolResultBytes
 		if maxBytes < 1 {
-			maxBytes = m.cfg.LargeToolResultBytes
+			maxBytes = m.largeToolResultBytes()
 		}
 		changed := MicroCompactLargeToolResults(session, maxBytes, decision.ProtectTail)
 		if changed {
