@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"forge/internal/auth"
@@ -219,44 +220,81 @@ func ModelDisplayLabel(cfg *config.Config, tokens *auth.Tokens, model string) st
 }
 
 func AvailableModels(cfg *config.Config, tokens *auth.Tokens) []string {
-	var out []string
+	// Each provider group is an independent network round trip on a cold model
+	// cache, and they used to run one after another before the chat UI painted.
+	// Results keep their slot so the model order stays stable.
+	compatProviders := BuildCompatProviders(cfg, tokens)
+	// Slots: 0-3 subscription/key providers, 4..n compat providers, last Copilot.
+	segments := make([][]string, 5+len(compatProviders))
+	copilotSlot := len(segments) - 1
+	var wg sync.WaitGroup
+	run := func(slot int, fn func() []string) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			segments[slot] = fn()
+		}()
+	}
+
 	if claudeAuthAvailable() {
-		claudeModels := discoverClaudeModels()
-		out = append(out, claudeModels...)
-		out = append(out, qualifyModels("claude", claudeModels)...)
+		run(0, func() []string {
+			claudeModels := discoverClaudeModels()
+			return concatModels(claudeModels, qualifyModels("claude", claudeModels))
+		})
 	}
 	if cfg.AnthropicKey() != "" {
-		anthropicModels := discoverAnthropicModels(cfg.AnthropicKey())
-		out = append(out, anthropicModels...)
-		out = append(out, qualifyModels("anthropic", anthropicModels)...)
+		run(1, func() []string {
+			anthropicModels := discoverAnthropicModels(cfg.AnthropicKey())
+			return concatModels(anthropicModels, qualifyModels("anthropic", anthropicModels))
+		})
 	}
 	if chatGPTAuthAvailable() {
-		out = append(out, ChatGPTModels()...)
-		out = append(out, qualifyModels("chatgpt", ChatGPTModels())...)
+		run(2, func() []string {
+			return concatModels(ChatGPTModels(), qualifyModels("chatgpt", ChatGPTModels()))
+		})
 	}
 	if cfg.OpenAIKey() != "" {
-		openAIModels := discoverOpenAIModels(cfg.OpenAIKey())
-		out = append(out, openAIModels...)
-		out = append(out, qualifyModels("openai", openAIModels)...)
-	}
-	for _, p := range BuildCompatProviders(cfg, tokens) {
-		if p.KeyFn() != "" {
-			if customModels := modelcatalog.CustomProviderModels(p.Name); len(customModels) > 0 {
-				customModels = filterCompatProviderModels(p.Name, customModels)
-				out = append(out, qualifyCompatibleModelList(p.Name, customModels)...)
-				continue
-			}
-			if useLiveCompatModelDiscovery(cfg) {
-				out = append(out, discoverCompatModels(p.BaseURL, p.KeyFn(), p.Name, p.Models, p.IsModel)...)
-			} else {
-				out = append(out, qualifyCompatibleModelList(p.Name, p.Models)...)
-			}
-		}
+		run(3, func() []string {
+			openAIModels := discoverOpenAIModels(cfg.OpenAIKey())
+			return concatModels(openAIModels, qualifyModels("openai", openAIModels))
+		})
 	}
 	if tokens.CopilotToken != "" {
-		out = append(out, CopilotModels(tokens.CopilotToken)...)
+		run(copilotSlot, func() []string { return CopilotModels(tokens.CopilotToken) })
+	}
+	for i, p := range compatProviders {
+		if p.KeyFn() == "" {
+			continue
+		}
+		run(4+i, func() []string {
+			if customModels := modelcatalog.CustomProviderModels(p.Name); len(customModels) > 0 {
+				return qualifyCompatibleModelList(p.Name, filterCompatProviderModels(p.Name, customModels))
+			}
+			if useLiveCompatModelDiscovery(cfg) {
+				return discoverCompatModels(p.BaseURL, p.KeyFn(), p.Name, p.Models, p.IsModel)
+			}
+			return qualifyCompatibleModelList(p.Name, p.Models)
+		})
+	}
+	wg.Wait()
+
+	var out []string
+	for _, segment := range segments {
+		out = append(out, segment...)
 	}
 	return sortModelsByHealth(uniqueStrings(out))
+}
+
+func concatModels(lists ...[]string) []string {
+	total := 0
+	for _, list := range lists {
+		total += len(list)
+	}
+	out := make([]string, 0, total)
+	for _, list := range lists {
+		out = append(out, list...)
+	}
+	return out
 }
 
 func filterCompatProviderModels(provider string, models []string) []string {

@@ -1348,6 +1348,34 @@ func TestRegisterToolsAddsCodexStyleEditingAndPlanningTools(t *testing.T) {
 	}
 }
 
+func TestRegisterToolsDoesNotBlockOnMCPConnect(t *testing.T) {
+	oldFactory := newChatMCPManager
+	defer func() { newChatMCPManager = oldFactory }()
+	newChatMCPManager = func() *mcp.Manager { return mcp.NewManager() }
+
+	cfg := &config.Config{
+		MCPServers: map[string]config.MCPServerConfig{
+			"slow": {Type: "stdio", Command: []string{"sleep", "30"}},
+		},
+	}
+	reg := tools.NewRegistry()
+	start := time.Now()
+	_, mcpManager, execManager := registerTools(reg, t.TempDir(), cfg, reactruntime.NewSession(), agent.YoloApproval(), nil, nil)
+	elapsed := time.Since(start)
+	if execManager != nil {
+		defer execManager.Close()
+	}
+	if mcpManager != nil {
+		defer func() { _ = mcpManager.Close() }()
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("registerTools blocked on MCP connect for %v", elapsed)
+	}
+	if _, ok := reg.Get("list_mcp_resources"); !ok {
+		t.Fatal("list_mcp_resources not registered while the server connects")
+	}
+}
+
 func TestRegisterToolsAddsMCPResourceToolsWhenServersConfigured(t *testing.T) {
 	oldFactory := newChatMCPManager
 	defer func() { newChatMCPManager = oldFactory }()

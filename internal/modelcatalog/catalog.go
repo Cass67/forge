@@ -606,9 +606,10 @@ func customProviderCachePath(providerID string) string {
 	return filepath.Join(fsutil.ForgeConfigDir(), "providers", providerID+"-models.json")
 }
 
-// refreshedThisRun ensures each provider is fetched live once per process,
-// so a fresh start always shows the source's current model list; the on-disk
-// cache is only a fallback when the fetch fails.
+// refreshedThisRun ensures each provider is fetched live at most once per
+// process. The fetch used to run before the cache was consulted, which put a
+// network round trip per provider on the startup path; now a cache that is
+// still fresh answers immediately and the refresh happens behind it.
 var refreshedThisRun sync.Map
 
 func loadCustomProviderData(providerID string) (customProviderCache, bool) {
@@ -616,19 +617,34 @@ func loadCustomProviderData(providerID string) (customProviderCache, bool) {
 	if providerID == "" {
 		return customProviderCache{}, false
 	}
-	if _, done := refreshedThisRun.Load(providerID); !done {
-		if refreshed, ok := refreshCustomProviderCache(providerID); ok {
+	_, refreshed := refreshedThisRun.Load(providerID)
+	// A legacy cache carries models but no routes, so it cannot answer routing
+	// questions: that one still has to be refreshed before it is used.
+	if data, ok := loadCustomProviderCache(providerID); ok && len(data.Routes) > 0 {
+		if !refreshed {
+			refreshCustomProviderCacheAsync(providerID)
+		}
+		return data, true
+	}
+	if !refreshed {
+		if data, ok := refreshCustomProviderCache(providerID); ok {
 			refreshedThisRun.Store(providerID, true)
-			return refreshed, true
+			return data, true
 		}
 	}
 	if data, ok := loadCustomProviderCache(providerID); ok {
 		return data, true
 	}
-	if data, ok := refreshCustomProviderCache(providerID); ok {
-		return data, true
-	}
 	return customProviderCache{}, false
+}
+
+// refreshCustomProviderCacheAsync updates the on-disk cache in the background,
+// so the next launch sees the source's current model list.
+func refreshCustomProviderCacheAsync(providerID string) {
+	if _, loaded := refreshedThisRun.LoadOrStore(providerID, true); loaded {
+		return
+	}
+	go func() { _, _ = refreshCustomProviderCache(providerID) }()
 }
 
 func loadCustomProviderCache(providerID string) (customProviderCache, bool) {

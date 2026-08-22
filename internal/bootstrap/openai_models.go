@@ -103,14 +103,37 @@ func DiscoverOpenAICompatibleModels(baseURL, apiKey, provider string, curated []
 		return qualifyCompatibleModelList(provider, curated)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	fetch := func() []string {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		live, err := fetchCompatibleModels(ctx, http.DefaultClient, baseURL, apiKey, provider, accept)
+		if err != nil {
+			return nil
+		}
+		return live
+	}
 
-	live, err := fetchCompatibleModels(ctx, http.DefaultClient, baseURL, apiKey, provider, accept)
-	if err != nil || len(live) == 0 {
-		return qualifyCompatibleModelList(provider, curated)
+	if cached, ok := loadLiveModelCache(provider); ok {
+		refreshLiveModelsAsync(provider, fetch)
+		return cached
+	}
+
+	// Nothing cached yet. A curated list is good enough to open the session
+	// with, so the fetch runs in the background and the next launch has the
+	// provider's own list. Without a curated list there is nothing to show,
+	// so that one still waits.
+	if fallback := qualifyCompatibleModelList(provider, curated); len(fallback) > 0 {
+		refreshLiveModelsAsync(provider, fetch)
+		return fallback
+	}
+
+	live := fetch()
+	if len(live) == 0 {
+		return nil
 	}
 	// Live fetch succeeded: use the provider's own model list exclusively.
+	writeLiveModelCache(provider, live)
+	refreshedLiveModels.Store(provider, true)
 	return live
 }
 

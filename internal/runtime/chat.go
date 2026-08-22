@@ -394,27 +394,42 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 		}
 	})
 	mcpManager := newChatMCPManager()
-	if notify != nil {
-		mcpManager.SetEventHandler(func(ev mcp.Event) {
-			switch ev.Kind {
-			case mcp.EventToolsChanged, mcp.EventResourcesChanged:
-				for _, def := range ev.Snapshot.Tools {
-					reg.Register(tools.NewMCPDynamicTool(def, mcpManager))
-				}
+	registerMCPTools := func(defs []mcp.Tool) {
+		for _, def := range defs {
+			reg.Register(tools.NewMCPDynamicTool(def, mcpManager))
+		}
+	}
+	mcpManager.SetEventHandler(func(ev mcp.Event) {
+		switch ev.Kind {
+		case mcp.EventToolsChanged, mcp.EventResourcesChanged:
+			registerMCPTools(ev.Snapshot.Tools)
+			if notify != nil {
 				notify(fmt.Sprintf("%s (%s)", strings.TrimSpace(ev.Message), ev.ServerName))
-			case mcp.EventResourceUpdated:
-				notify(fmt.Sprintf("MCP resource updated on %s: %s", ev.ServerName, ev.URI))
-			case mcp.EventLogMessage, mcp.EventProgress:
-				notify(fmt.Sprintf("%s (%s)", strings.TrimSpace(ev.Message), ev.ServerName))
-			case mcp.EventRefreshed:
-			default:
 			}
-		})
-	}
-	_ = mcpManager.Refresh(context.Background(), cfg)
-	if notify != nil {
-		notify(mcpStartupStatus(mcpManager, cfg))
-	}
+		case mcp.EventRefreshed:
+			registerMCPTools(ev.Snapshot.Tools)
+		case mcp.EventResourceUpdated:
+			if notify != nil {
+				notify(fmt.Sprintf("MCP resource updated on %s: %s", ev.ServerName, ev.URI))
+			}
+		case mcp.EventLogMessage, mcp.EventProgress:
+			if notify != nil {
+				notify(fmt.Sprintf("%s (%s)", strings.TrimSpace(ev.Message), ev.ServerName))
+			}
+		default:
+		}
+	})
+	// Connecting to MCP servers is a network round trip per server, and it used
+	// to run before the chat UI painted: a single remote server cost more than a
+	// second of blank terminal. Tools register themselves as servers land.
+	registerMCPTools(mcpManager.Tools())
+	go func() {
+		_ = mcpManager.Refresh(context.Background(), cfg)
+		registerMCPTools(mcpManager.Tools())
+		if notify != nil {
+			notify(mcpStartupStatus(mcpManager, cfg))
+		}
+	}()
 	secretPolicy := tools.SecretPolicy{
 		Read:           tools.SecretPolicyMode(cfg.Security.Secrets.Read),
 		Write:          tools.SecretPolicyMode(cfg.Security.Secrets.Write),
@@ -474,13 +489,12 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 	reg.Register(reacttools.NewEnterPlanMode(session))
 	reg.Register(reacttools.NewExitPlanMode(session))
 	reg.Register(reacttools.NewAskUserQuestion())
-	if mcpManager.HasServers() {
+	// Keyed off configuration rather than live sessions: the connect now happens
+	// in the background, so no server has reported in yet.
+	if len(mcpManager.EnabledServers(cfg)) > 0 {
 		reg.Register(tools.NewListMCPResources(mcpManager))
 		reg.Register(tools.NewListMCPResourceTemplates(mcpManager))
 		reg.Register(tools.NewReadMCPResource(mcpManager))
-		for _, def := range mcpManager.Tools() {
-			reg.Register(tools.NewMCPDynamicTool(def, mcpManager))
-		}
 	}
 	reg.Register(tools.NewGitCommitWithWorkDirProvider(workDir, workDirProvider, approve))
 	reg.Register(tools.NewGitPushWithWorkDirProvider(workDir, workDirProvider, approve))
