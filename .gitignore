@@ -118,6 +118,9 @@ build/icon.icns
 build/icon.png
 bin/Forge.app/
 *env*
+# ...but internal/shellenv is source, and *env* swallowed the whole package.
+!internal/shellenv/
+!internal/shellenv/**
 config.toml
 /.repo-guard/reports/
 

@@ -15,8 +15,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -188,7 +190,24 @@ func run() error {
 		}
 	}()
 
+	// Wails builds a signal handler and never starts it, and once AppKit owns
+	// the process SIGINT stops reaching Go's default handler: Ctrl-C in the
+	// launching terminal did nothing. Notify puts Go back in charge of the
+	// signal; a second one exits the hard way if the first cannot finish.
+	quitOnInterrupt(app)
+
 	return app.Run()
+}
+
+func quitOnInterrupt(app *application.App) {
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		go app.Quit()
+		<-sigCh
+		os.Exit(1)
+	}()
 }
 
 // startupWorkspace picks the directory to open on launch. An app bundle

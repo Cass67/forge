@@ -10,9 +10,10 @@ repos:
             status=0
             for f in "$@"; do
               case "$f" in
-                .env.example|.env.sample|.env.template)
-                  # Placeholder templates are meant to be committed; the
-                  # *env* globs below would otherwise block them.
+                .env.example|.env.sample|.env.template|internal/shellenv/*)
+                  # Placeholder templates are meant to be committed, and
+                  # internal/shellenv is source; the *env* globs below would
+                  # otherwise block them.
                   continue
                   ;;
                 .env|.env.*|*.env|*env*|*.local|*.secret|*.secrets|*.token|*.tokens)

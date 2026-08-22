@@ -74,6 +74,7 @@ func loginShellEnv(ctx context.Context) (map[string]string, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, shell, "-l", "-i", "-c", "command env -0")
+	detachFromTerminal(cmd)
 	cmd.Stderr = nil
 	// A profile that reads stdin would otherwise hang until the timeout.
 	cmd.Stdin = strings.NewReader("")
@@ -81,6 +82,7 @@ func loginShellEnv(ctx context.Context) (map[string]string, error) {
 	if err != nil && len(out) == 0 {
 		// Some shells reject -i without a tty; retry as login only.
 		cmd = exec.CommandContext(ctx, shell, "-l", "-c", "command env -0")
+		detachFromTerminal(cmd)
 		cmd.Stdin = strings.NewReader("")
 		out, err = cmd.Output()
 		if err != nil && len(out) == 0 {
