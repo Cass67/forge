@@ -801,6 +801,11 @@ func RunChatLive(setup *ChatSetup) {
 	if execManager != nil {
 		defer execManager.Close()
 	}
+	lsp.Shared().SetServers(lsp.ServersFromConfig(setup.Config.LSP))
+	// Language servers are pooled process-wide, so nothing else releases them
+	// when a chat ends. Left running they strand a warm gopls or rust-analyzer
+	// per workspace; the pool respawns on the next call.
+	defer lsp.Shared().Close(context.Background())
 	pluginManager := startChatPluginManager(setup.Config, setup.WorkDir, evRenderer.Info)
 	if pluginManager != nil {
 		defer func() { _ = pluginManager.Close() }()
@@ -1297,6 +1302,7 @@ func RunChatLive(setup *ChatSetup) {
 		if execManager != nil {
 			execManager.Close()
 		}
+		lsp.Shared().Close(context.Background())
 		return
 	}
 	runChatLiveUI(eventsCh, liveCfg, inputCh, doneCh)
@@ -1505,6 +1511,7 @@ func buildConsoleRuntime(setup *ChatSetup, approve tools.ApprovalFunc, out io.Wr
 	if pluginManager != nil {
 		pluginManager.RegisterTools(reg, approve)
 	}
+	lsp.Shared().SetServers(lsp.ServersFromConfig(setup.Config.LSP))
 	cleanup := func() {
 		if previewRuntime != nil {
 			_ = previewRuntime.Close()
@@ -1518,6 +1525,7 @@ func buildConsoleRuntime(setup *ChatSetup, approve tools.ApprovalFunc, out io.Wr
 		if pluginManager != nil {
 			_ = pluginManager.Close()
 		}
+		lsp.Shared().Close(context.Background())
 	}
 	baseReg := reg.Filter(nil)
 	loadedSkills := skills.Load(setup.WorkDir)

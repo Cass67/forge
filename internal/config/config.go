@@ -170,6 +170,21 @@ type PluginConfig struct {
 	Settings map[string]any `toml:"settings,omitempty"`
 }
 
+type LSPServerConfig struct {
+	// Command is the server binary followed by its args, as in mcp_servers.
+	Command    []string `toml:"command"`
+	LanguageID string   `toml:"language_id"`
+	Extensions []string `toml:"extensions"`
+	Enabled    *bool    `toml:"enabled"`
+}
+
+type LSPConfig struct {
+	// Servers is keyed by language name. Entries merge over the built-in
+	// table: a known key overrides only the fields it sets, a new key adds a
+	// language, and enabled = false drops one.
+	Servers map[string]LSPServerConfig `toml:"servers"`
+}
+
 type AgentOverride struct {
 	Model     string   `toml:"model"`
 	Fallbacks []string `toml:"fallbacks,omitempty"`
@@ -186,6 +201,7 @@ type Config struct {
 	Chat             ChatConfig                 `toml:"chat"`
 	Approval         ApprovalConfig             `toml:"approval"`
 	Permissions      PermissionsConfig          `toml:"permissions"`
+	LSP              LSPConfig                  `toml:"lsp"`
 	MCPServers       map[string]MCPServerConfig `toml:"mcp_servers"`
 	Plugins          []PluginConfig             `toml:"plugins"`
 	LiveCompatModels bool                       `toml:"live_compat_models"`

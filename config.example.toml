@@ -94,6 +94,20 @@ known_safe_prefixes = [
 #command = "rm -rf *"
 #decision = "forbidden"
 
+# Language servers backing the lsp_* tools and the post-edit diagnostics.
+# Built in: go, typescript, javascript, rust, python, yaml. Entries below merge
+# over those: a known key overrides only the fields it sets, a new key adds a
+# language (command and extensions both required), enabled = false drops one.
+#[lsp.servers.go]
+#command = ["gopls", "-rpc.trace"]
+#
+#[lsp.servers.zig]
+#command = ["zls"]
+#extensions = [".zig"]
+#
+#[lsp.servers.yaml]
+#enabled = false
+
 # Permission rules, layered by scope (managed > user > project > local >
 # session > cli). behavior: allow | ask | deny.
 # tool: apply_patch, artifact_read, artifact_write, code_search, edit_file,
@@ -171,3 +185,4 @@ timeout_ms = 5000
 #default_model = "my-model"
 #models = ["my-model", "other-model"]
 #http_headers = { X-Custom = "value" }
+

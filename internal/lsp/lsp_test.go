@@ -116,6 +116,7 @@ func TestServiceReusesPooledSession(t *testing.T) {
 		Command:    exe,
 		Args:       []string{"-test.run=TestServiceReusesPooledSession", "--", "--forge-fake-lsp"},
 		LanguageID: "go",
+		Extensions: []string{".go"},
 	}
 	svc.lookPath = func(name string) (string, error) { return name, nil }
 	defer svc.Close(context.Background())
@@ -174,6 +175,7 @@ func TestServiceReplacesDeadSession(t *testing.T) {
 		Command:    exe,
 		Args:       []string{"-test.run=TestServiceReplacesDeadSession", "--", "--forge-fake-lsp"},
 		LanguageID: "go",
+		Extensions: []string{".go"},
 	}
 	svc.lookPath = func(name string) (string, error) { return name, nil }
 	defer svc.Close(context.Background())
@@ -228,6 +230,7 @@ func TestServiceDiagnosticsReturnsErrorsOnly(t *testing.T) {
 		Command:    exe,
 		Args:       []string{"-test.run=TestServiceDiagnosticsReturnsErrorsOnly", "--", "--forge-fake-lsp"},
 		LanguageID: "go",
+		Extensions: []string{".go"},
 	}
 	svc.lookPath = func(name string) (string, error) { return name, nil }
 	defer svc.Close(context.Background())
@@ -271,6 +274,7 @@ func TestServiceDiagnosticsQuietWhenClean(t *testing.T) {
 		Command:    exe,
 		Args:       []string{"-test.run=TestServiceDiagnosticsQuietWhenClean", "--", "--forge-fake-lsp"},
 		LanguageID: "go",
+		Extensions: []string{".go"},
 	}
 	svc.lookPath = func(name string) (string, error) { return name, nil }
 	defer svc.Close(context.Background())
@@ -465,6 +469,7 @@ func TestServiceUsesServerConfig(t *testing.T) {
 				Command:    exe,
 				Args:       []string{"-test.run=TestClientSessionRoundTrip", "--", "--forge-fake-lsp"},
 				LanguageID: "go",
+				Extensions: []string{".go"},
 			},
 		},
 		lookPath: func(file string) (string, error) { return file, nil },
@@ -482,5 +487,64 @@ func TestServiceUsesServerConfig(t *testing.T) {
 	}
 	if !strings.Contains(out, "fake hover") {
 		t.Fatalf("hover output = %q", out)
+	}
+}
+
+// Chat teardown closes the process-wide service, so a later chat in the same
+// process must get a live server back rather than a corpse from the old pool.
+func TestServiceReusableAfterClose(t *testing.T) {
+	if len(os.Args) > 1 && os.Args[len(os.Args)-1] == "--forge-fake-lsp" {
+		runFakeLSPServer()
+		return
+	}
+
+	dir := t.TempDir()
+	source := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(source, []byte("package main\n\nfunc greet() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewService()
+	svc.servers["go"] = ServerConfig{
+		Command:    exe,
+		Args:       []string{"-test.run=TestServiceReusableAfterClose", "--", "--forge-fake-lsp"},
+		LanguageID: "go",
+		Extensions: []string{".go"},
+	}
+	svc.lookPath = func(name string) (string, error) { return name, nil }
+	defer svc.Close(context.Background())
+
+	if _, err := svc.Hover(context.Background(), dir, source, 3, 6); err != nil {
+		t.Fatalf("hover before close: %v", err)
+	}
+	var firstPID int
+	for _, sess := range svc.sessions {
+		firstPID = sess.cmd.Process.Pid
+	}
+
+	svc.Close(context.Background())
+	if len(svc.sessions) != 0 {
+		t.Fatalf("pooled sessions after close = %d, want 0", len(svc.sessions))
+	}
+
+	out, err := svc.Hover(context.Background(), dir, source, 3, 6)
+	if err != nil {
+		t.Fatalf("hover after close: %v", err)
+	}
+	if !strings.Contains(out, "fake hover") {
+		t.Fatalf("hover after close = %q", out)
+	}
+	if len(svc.sessions) != 1 {
+		t.Fatalf("pooled sessions after respawn = %d, want 1", len(svc.sessions))
+	}
+	for _, sess := range svc.sessions {
+		if sess.cmd.Process.Pid == firstPID {
+			t.Fatalf("reused the closed server pid %d", firstPID)
+		}
 	}
 }

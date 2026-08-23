@@ -193,6 +193,25 @@ func (c *Config) Validate() []ValidationIssue {
 		}
 	}
 
+	for name, server := range c.LSP.Servers {
+		serverField := fmt.Sprintf("lsp.servers.%s", name)
+		if strings.TrimSpace(name) == "" {
+			add("lsp.servers", "language name must not be blank")
+			continue
+		}
+		if server.Enabled != nil && !*server.Enabled {
+			continue
+		}
+		if len(server.Command) > 0 && strings.TrimSpace(server.Command[0]) == "" {
+			add(serverField+".command", "first element must be the server binary")
+		}
+		for i, ext := range server.Extensions {
+			if strings.TrimSpace(ext) == "" {
+				add(fmt.Sprintf("%s.extensions[%d]", serverField, i), "must not be blank")
+			}
+		}
+	}
+
 	return issues
 }
 

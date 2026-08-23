@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,9 @@ type ServerConfig struct {
 	Command    string
 	Args       []string
 	LanguageID string
+	// Extensions are the file suffixes this server claims, lowercase and
+	// dotted. A server with none is unreachable: paths route by extension.
+	Extensions []string
 }
 
 type Service struct {
@@ -52,32 +56,60 @@ func NewService() *Service {
 
 func defaultServers() map[string]ServerConfig {
 	return map[string]ServerConfig{
-		"go":         {Command: "gopls", LanguageID: "go"},
-		"typescript": {Command: "typescript-language-server", Args: []string{"--stdio"}, LanguageID: "typescript"},
-		"javascript": {Command: "typescript-language-server", Args: []string{"--stdio"}, LanguageID: "javascript"},
-		"rust":       {Command: "rust-analyzer", LanguageID: "rust"},
-		"python":     {Command: "pyright-langserver", Args: []string{"--stdio"}, LanguageID: "python"},
-		"yaml":       {Command: "yaml-language-server", Args: []string{"--stdio"}, LanguageID: "yaml"},
+		"go":         {Command: "gopls", LanguageID: "go", Extensions: []string{".go"}},
+		"typescript": {Command: "typescript-language-server", Args: []string{"--stdio"}, LanguageID: "typescript", Extensions: []string{".ts", ".tsx"}},
+		"javascript": {Command: "typescript-language-server", Args: []string{"--stdio"}, LanguageID: "javascript", Extensions: []string{".js", ".jsx", ".mjs", ".cjs"}},
+		"rust":       {Command: "rust-analyzer", LanguageID: "rust", Extensions: []string{".rs"}},
+		"python":     {Command: "pyright-langserver", Args: []string{"--stdio"}, LanguageID: "python", Extensions: []string{".py"}},
+		"yaml":       {Command: "yaml-language-server", Args: []string{"--stdio"}, LanguageID: "yaml", Extensions: []string{".yaml", ".yml"}},
 	}
 }
 
 func DetectServerConfig(path string) (ServerConfig, bool) {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".go":
-		return defaultServers()["go"], true
-	case ".ts", ".tsx":
-		return defaultServers()["typescript"], true
-	case ".js", ".jsx", ".mjs", ".cjs":
-		return defaultServers()["javascript"], true
-	case ".rs":
-		return defaultServers()["rust"], true
-	case ".py":
-		return defaultServers()["python"], true
-	case ".yaml", ".yml":
-		return defaultServers()["yaml"], true
-	default:
+	return matchServer(defaultServers(), path)
+}
+
+// matchServer routes a path to the server claiming its extension. Keys are
+// walked in order so two servers claiming one extension resolve the same way
+// on every call rather than by map iteration order.
+func matchServer(servers map[string]ServerConfig, path string) (ServerConfig, bool) {
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext == "" {
 		return ServerConfig{}, false
 	}
+	keys := make([]string, 0, len(servers))
+	for key := range servers {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		for _, candidate := range servers[key].Extensions {
+			if strings.ToLower(candidate) == ext {
+				return servers[key], true
+			}
+		}
+	}
+	return ServerConfig{}, false
+}
+
+// SetServers replaces the server table. Pooled sessions started from the old
+// table are closed, so the next call spawns under the new commands instead of
+// silently reusing a server the user just reconfigured away.
+func (s *Service) SetServers(servers map[string]ServerConfig) {
+	if s == nil {
+		return
+	}
+	replacement := make(map[string]ServerConfig, len(servers))
+	for key, cfg := range servers {
+		if cfg.LanguageID == "" {
+			cfg.LanguageID = key
+		}
+		replacement[key] = cfg
+	}
+	s.mu.Lock()
+	s.servers = replacement
+	s.mu.Unlock()
+	s.Close(context.Background())
 }
 
 type position struct {
@@ -483,13 +515,12 @@ func hoverText(hover hoverResponse) string {
 }
 
 func (s *Service) configForPath(path string) (ServerConfig, error) {
-	cfg, ok := DetectServerConfig(path)
+	s.mu.Lock()
+	servers := s.servers
+	s.mu.Unlock()
+	cfg, ok := matchServer(servers, path)
 	if !ok {
 		return ServerConfig{}, fmt.Errorf("no LSP server configured for %s", path)
-	}
-	override, ok := s.servers[cfg.LanguageID]
-	if ok {
-		cfg = override
 	}
 	if s.lookPath == nil {
 		s.lookPath = exec.LookPath

@@ -200,6 +200,21 @@ So the practical deployment story is:
 - compile once per target
 - distribute one artifact per target OS/arch pair
 
+## Android
+
+There is no native Android build. `cmd/forge` does compile for `GOOS=android`, but an Android app sandbox has no `git`, `sh`, `rg`, or `node`, and only files under `jniLibs` are exec-permitted, so the tools that shell out have nothing to call.
+
+The working route is a Linux VM on the device (Samsung Linux Terminal, Termux, or similar), which is an ordinary arm64 Debian userland:
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" \
+  -o ./bin/forge-linux-arm64 ./cmd/forge
+```
+
+Copy it over, `chmod +x`, and `apt install git ripgrep` inside the VM. The result is static, so no libc match is needed.
+
+`cmd/forge-gui` needs WebKitGTK and a display; build it inside the VM rather than cross-compiling, since Wails requires CGO.
+
 ## Troubleshooting
 
 ### `go build` fails on version mismatch
