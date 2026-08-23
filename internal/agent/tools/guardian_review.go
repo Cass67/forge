@@ -154,7 +154,7 @@ func ReviewApprovalAction(transcript string, action Action) GuardianReview {
 	}
 
 	switch action.Tool {
-	case "write_file", "edit_file", "apply_patch", "artifact_write":
+	case "write_file", "edit_file", "apply_patch", "ast_edit", "artifact_write":
 		if strings.TrimSpace(action.Detail) == "" {
 			return GuardianReview{
 				Decision: GuardianWarn,

@@ -64,13 +64,18 @@ type Walkthrough struct {
 	GeneratedAt string     `json:"generated_at"`
 }
 
-func (s *Service) complete(ctx context.Context, model, system, user string) (string, error) {
+// complete runs a side model call. An empty model falls through to the model
+// configured for role in [models], and then to whatever Complete defaults to.
+func (s *Service) complete(ctx context.Context, role, model, system, user string) (string, error) {
 	cfg, _, ready := s.snapshot()
 	if !ready {
 		return "", errNotReady
 	}
 	if cfg.Complete == nil {
 		return "", errors.New("this session cannot make side model calls")
+	}
+	if strings.TrimSpace(model) == "" && cfg.RoleModel != nil {
+		model = cfg.RoleModel(role)
 	}
 	return cfg.Complete(ctx, model, system, user)
 }
@@ -102,7 +107,7 @@ func (s *Service) GenerateCommitMessage(model string) (string, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	out, err := s.complete(ctx, model, commitSystemPrompt, prompt+body)
+	out, err := s.complete(ctx, "commit", model, commitSystemPrompt, prompt+body)
 	if err != nil {
 		return "", err
 	}
@@ -148,7 +153,7 @@ func (s *Service) GenerateWalkthrough(scope, base, model string) (Walkthrough, e
 	body, truncated := truncateDiff(diff)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	raw, err := s.complete(ctx, model, walkthroughSystemPrompt, "Diff:\n\n"+body)
+	raw, err := s.complete(ctx, "slow", model, walkthroughSystemPrompt, "Diff:\n\n"+body)
 	if err != nil {
 		return Walkthrough{}, err
 	}

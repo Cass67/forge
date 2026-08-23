@@ -10,6 +10,10 @@ It does not cover packaging or distribution systems such as Homebrew, Scoop, `.d
 - `just` installed and available on your `PATH`
 - a working C toolchain is not required for the current default build
 
+Optional at runtime, not at build time: `ast-grep` on `PATH` (`brew install ast-grep`
+or `npm i -g @ast-grep/cli`) enables the `ast_grep` and `ast_edit` tools. Without it
+they stay unregistered and nothing else changes.
+
 For local development and commit hooks, see [LOCAL_TOOLING.md](./LOCAL_TOOLING.md).
 
 ## Primary Local Workflow

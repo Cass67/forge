@@ -63,9 +63,12 @@ type ChatLiveConfig struct {
 	CopilotClientID       string
 	FetchLiveCopilotQuota func(context.Context) (*copilot.UserQuota, error)
 	FetchCodexUsage       func(context.Context) (*codexusage.Snapshot, error)
-	ModelInfo             func(model string) *modelcatalog.ModelInfo
-	DescribeModel         func(model string) string
-	RequestMode           func() string
+	// RoleModel resolves a [models] routing role to a model name, empty when
+	// the role is unconfigured and the caller should keep its own default.
+	RoleModel     func(role string) string
+	ModelInfo     func(model string) *modelcatalog.ModelInfo
+	DescribeModel func(model string) string
+	RequestMode   func() string
 	// Yolo reports whether tool approvals are being skipped, and SetYolo
 	// changes it mid-session.
 	Yolo    func() bool

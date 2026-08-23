@@ -186,3 +186,14 @@ timeout_ms = 5000
 #models = ["my-model", "other-model"]
 #http_headers = { X-Custom = "value" }
 
+# Route work to a model by role. Unset roles fall back to the chat model, so
+# an empty [models] table changes nothing.
+#   default — the main conversation turn
+#   smol    — cheap subagent fan-out (explorer, synthesizer)
+#   slow    — the subagents worth paying for (oracle, code-reviewer) and the
+#             changes walkthrough
+#   commit  — generated commit messages
+# [models]
+# smol = "groq/llama-3.3-70b-versatile"
+# slow = "anthropic/claude-opus-5"
+# commit = "anthropic/claude-haiku-4-5"

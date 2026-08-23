@@ -20,8 +20,8 @@ func TestReadFileBasic(t *testing.T) {
 	if !strings.Contains(result, "package main") {
 		t.Error("result missing file content")
 	}
-	if !strings.Contains(result, "1 |") {
-		t.Error("result missing line numbers")
+	if !strings.Contains(result, "   1 "+lineAnchor("package main")+" | package main") {
+		t.Errorf("result missing hashline prefix: %q", result)
 	}
 }
 

@@ -191,20 +191,23 @@ type AgentOverride struct {
 }
 
 type Config struct {
-	Session          Session                    `toml:"session"`
-	Keys             Keys                       `toml:"keys"`
-	Copilot          Copilot                    `toml:"copilot"`
-	Log              Log                        `toml:"log"`
-	Retry            Retry                      `toml:"retry"`
-	Resilience       Resilience                 `toml:"resilience"`
-	Security         SecurityConfig             `toml:"security"`
-	Chat             ChatConfig                 `toml:"chat"`
-	Approval         ApprovalConfig             `toml:"approval"`
-	Permissions      PermissionsConfig          `toml:"permissions"`
-	LSP              LSPConfig                  `toml:"lsp"`
-	MCPServers       map[string]MCPServerConfig `toml:"mcp_servers"`
-	Plugins          []PluginConfig             `toml:"plugins"`
-	LiveCompatModels bool                       `toml:"live_compat_models"`
+	Session     Session                    `toml:"session"`
+	Keys        Keys                       `toml:"keys"`
+	Copilot     Copilot                    `toml:"copilot"`
+	Log         Log                        `toml:"log"`
+	Retry       Retry                      `toml:"retry"`
+	Resilience  Resilience                 `toml:"resilience"`
+	Security    SecurityConfig             `toml:"security"`
+	Chat        ChatConfig                 `toml:"chat"`
+	Approval    ApprovalConfig             `toml:"approval"`
+	Permissions PermissionsConfig          `toml:"permissions"`
+	LSP         LSPConfig                  `toml:"lsp"`
+	MCPServers  map[string]MCPServerConfig `toml:"mcp_servers"`
+	Plugins     []PluginConfig             `toml:"plugins"`
+	// Models routes work to a model by role, so cheap models can take the
+	// bulk jobs while the expensive one stays on the main turn.
+	Models           map[string]string `toml:"models"`
+	LiveCompatModels bool              `toml:"live_compat_models"`
 }
 
 // defaultCopilotClientID is the bundled GitHub OAuth App client ID used for
@@ -548,6 +551,27 @@ func (c *Config) ChatModel() string {
 	}
 	if c.Chat.Model != "" {
 		return c.Chat.Model
+	}
+	return ""
+}
+
+// ModelRoles are the routing intents RoleModel understands. Anything else in
+// [models] is a typo, and Validate says so.
+var ModelRoles = []string{"default", "smol", "slow", "commit"}
+
+// RoleModel returns the model configured for a routing role. The "default"
+// role falls back to the chat model; every other role falls back to empty so
+// the caller can keep using whatever it would have used anyway.
+func (c *Config) RoleModel(role string) string {
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role == "" {
+		role = "default"
+	}
+	if m := strings.TrimSpace(c.Models[role]); m != "" {
+		return m
+	}
+	if role == "default" {
+		return c.ChatModel()
 	}
 	return ""
 }

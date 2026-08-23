@@ -54,7 +54,7 @@ func AgentLine(text string) Line {
 
 func ToolStyle(name string) Style {
 	switch name {
-	case "edit_file":
+	case "edit_file", "ast_edit":
 		return StyleToolPurple
 	case "write_file":
 		return StyleToolOrange
@@ -66,7 +66,7 @@ func ToolStyle(name string) Style {
 }
 
 func isExpandedTool(name string) bool {
-	return name == "edit_file" || name == "write_file"
+	return name == "edit_file" || name == "write_file" || name == "ast_edit"
 }
 
 func Diff(raw string) []Line {

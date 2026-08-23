@@ -81,11 +81,15 @@ type AgentDefinition struct {
 	Name         string
 	Description  string
 	SystemPrompt string
-	Model        string
-	Fallbacks    []string
-	ModelFamily  string
-	Tools        []string
-	ReadOnly     bool
+	// Role names the [models] routing intent this agent runs under when
+	// Model is unset — "smol" for cheap fan-out, "slow" for the ones worth
+	// paying for. Empty means the parent's model.
+	Role        string
+	Model       string
+	Fallbacks   []string
+	ModelFamily string
+	Tools       []string
+	ReadOnly    bool
 }
 
 type AgentPool struct {
@@ -499,6 +503,7 @@ func DefaultAgentDefinitions() []AgentDefinition {
 	return []AgentDefinition{
 		{
 			Name:        "repo-auditor",
+			Role:        "default",
 			Description: "Audit repository architecture, workflows, UX, tests, and gaps against comparable tools.",
 			Tools:       readOnlyTools,
 			ReadOnly:    true,
@@ -512,6 +517,7 @@ func DefaultAgentDefinitions() []AgentDefinition {
 		},
 		{
 			Name:        "code-reviewer",
+			Role:        "slow",
 			Description: "Review implementation quality, regressions, risks, and missing tests.",
 			Tools:       readOnlyTools,
 			ReadOnly:    true,
@@ -525,6 +531,7 @@ func DefaultAgentDefinitions() []AgentDefinition {
 		},
 		{
 			Name:        "explorer",
+			Role:        "smol",
 			Description: "Gather codebase evidence quickly across files, symbols, and conventions.",
 			Tools:       readOnlyTools,
 			ReadOnly:    true,
@@ -537,6 +544,7 @@ func DefaultAgentDefinitions() []AgentDefinition {
 		},
 		{
 			Name:        "oracle",
+			Role:        "slow",
 			Description: "Analyze hard architecture, debugging, or design questions with extra rigor.",
 			Tools:       readOnlyTools,
 			ReadOnly:    true,
@@ -549,6 +557,7 @@ func DefaultAgentDefinitions() []AgentDefinition {
 		},
 		{
 			Name:        "synthesizer",
+			Role:        "smol",
 			Description: "Combine multiple evidence streams into a clear final answer or plan.",
 			Tools:       []string{"think"},
 			ReadOnly:    true,
@@ -566,7 +575,7 @@ func DefaultAgentDefinitions() []AgentDefinition {
 
 func defaultReadOnlyAgentTools() []string {
 	return []string{
-		"read_file", "list_dir", "search", "code_search", "glob", "view_image",
+		"read_file", "list_dir", "search", "code_search", "ast_grep", "glob", "view_image",
 		"lsp_definition", "lsp_references", "lsp_hover", "lsp_document_symbols",
 		"git_status", "git_diff", "git_log", "git_branch_state", "git_merge_status",
 		"tool_help", "think",

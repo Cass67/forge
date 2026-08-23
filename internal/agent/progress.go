@@ -24,6 +24,10 @@ func progressLine(role, toolName, summary string) string {
 		return fmt.Sprintf("Finding files that match %q", summary)
 	case "edit_file":
 		return fmt.Sprintf("Updating %s", filepath.Base(summary))
+	case "ast_grep":
+		return "Searching for a code shape"
+	case "ast_edit":
+		return "Rewriting every match of a code shape"
 	case "write_file":
 		return fmt.Sprintf("Writing %s", filepath.Base(summary))
 	case "artifact_write":

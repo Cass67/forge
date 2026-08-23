@@ -111,7 +111,7 @@ func ruleMatches(rule Rule, action Action) bool {
 
 func isPathTool(tool string) bool {
 	switch strings.TrimSpace(tool) {
-	case "read_file", "write_file", "edit_file", "apply_patch", "artifact_write", "artifact_read":
+	case "read_file", "write_file", "edit_file", "apply_patch", "ast_edit", "artifact_write", "artifact_read":
 		return true
 	default:
 		return false
@@ -225,9 +225,9 @@ func globPatternRegex(pattern string) (*regexp.Regexp, error) {
 
 func supportedTool(tool string) bool {
 	switch strings.TrimSpace(tool) {
-	case "apply_patch", "artifact_read", "artifact_write", "code_search", "edit_file", "exec_session_start",
-		"glob", "lsp_definition", "lsp_document_symbols", "lsp_hover", "lsp_references", "read_file",
-		"run_command", "search", "view_image", "web_fetch", "write_file":
+	case "apply_patch", "artifact_read", "artifact_write", "ast_edit", "ast_grep", "code_search", "edit_file",
+		"exec_session_start", "glob", "lsp_definition", "lsp_document_symbols", "lsp_hover", "lsp_references",
+		"read_file", "run_command", "search", "view_image", "web_fetch", "write_file":
 		return true
 	default:
 		return strings.HasPrefix(tool, "mcp__") || strings.Contains(tool, "__")

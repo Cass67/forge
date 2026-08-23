@@ -47,6 +47,18 @@ func (c *Config) Validate() []ValidationIssue {
 	validateSecretPolicy("security.secrets.write", c.Security.Secrets.Write)
 	validateSecretPolicy("security.secrets.command_output", c.Security.Secrets.CommandOutput)
 	validateSecretPolicy("security.secrets.approval_detail", c.Security.Secrets.ApprovalDetail)
+	for role := range c.Models {
+		known := false
+		for _, valid := range ModelRoles {
+			if strings.ToLower(strings.TrimSpace(role)) == valid {
+				known = true
+				break
+			}
+		}
+		if !known {
+			add("models."+role, fmt.Sprintf("unknown model role; expected one of %s", strings.Join(ModelRoles, ", ")))
+		}
+	}
 	if c.Chat.CommandTimeout < 0 {
 		add("chat.command_timeout", "must be >= 0")
 	}
@@ -217,9 +229,9 @@ func (c *Config) Validate() []ValidationIssue {
 
 func validPermissionTool(tool string) bool {
 	switch strings.TrimSpace(tool) {
-	case "apply_patch", "artifact_read", "artifact_write", "code_search", "edit_file", "exec_session_start",
-		"glob", "lsp_definition", "lsp_document_symbols", "lsp_hover", "lsp_references", "read_file",
-		"run_command", "search", "view_image", "web_fetch", "write_file":
+	case "apply_patch", "artifact_read", "artifact_write", "ast_edit", "ast_grep", "code_search", "edit_file",
+		"exec_session_start", "glob", "lsp_definition", "lsp_document_symbols", "lsp_hover", "lsp_references",
+		"read_file", "run_command", "search", "view_image", "web_fetch", "write_file":
 		return true
 	default:
 		return strings.HasPrefix(tool, "mcp__") || strings.Contains(tool, "__")

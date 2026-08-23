@@ -92,6 +92,7 @@ func coreGuidelinesSection() string {
 		"- Prefer specialized tools over run_command when they fit the job.",
 		"- Prefer LSP tools for symbol navigation and semantic lookups when available; use code_search or search when language servers are unavailable.",
 		"- Use edit_file for small surgical edits, apply_patch for multi-hunk diffs, and write_file only for new files or complete rewrites.",
+		"- edit_file addresses a block by the anchors read_file prints (start_anchor/end_anchor) — quote anchors, not the old text. A rejected anchor means the file moved on: read it again.",
 		"- Prefer rg or rg --files for repo search. Do not use Python for large file reads or writes when a native tool fits.",
 		"- Use git log or git blame when history would clarify why code exists or changed.",
 		"- After making changes, run relevant tests or build commands to verify.",

@@ -459,6 +459,10 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 	reg.Register(tools.NewListDir(workDir, cfg.Chat.IgnoreDirs))
 	reg.Register(tools.NewSearch(workDir))
 	reg.Register(tools.NewCodeSearch(workDir))
+	if tools.AstGrepAvailable() {
+		reg.Register(tools.NewAstGrep(workDir, secretPolicy))
+		reg.Register(tools.NewAstEdit(workDir, approve, secretPolicy))
+	}
 	reg.Register(tools.NewLSPDefinition(workDir))
 	reg.Register(tools.NewLSPReferences(workDir))
 	reg.Register(tools.NewLSPHover(workDir))
@@ -1051,6 +1055,13 @@ func RunChatLive(setup *ChatSetup) {
 				return nil, err
 			}
 			return snapshot, nil
+		},
+		RoleModel: func(role string) string {
+			cfg, _ := refreshChatSetupState(setup)
+			if cfg == nil {
+				return ""
+			}
+			return cfg.RoleModel(role)
 		},
 		ModelInfo: func(model string) *modelcatalog.ModelInfo {
 			ref := bootstrap.ParseModelRef(model)
@@ -1829,8 +1840,13 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 					return p
 				}
 			}
-			if agent.Model != "" {
+			switch {
+			case agent.Model != "":
 				model = agent.Model
+			case agent.Role != "" && setup.Config != nil:
+				if roleModel := setup.Config.RoleModel(agent.Role); roleModel != "" {
+					model = roleModel
+				}
 			}
 		}
 		if driver == nil || model != setup.ChatModel {
@@ -1953,7 +1969,7 @@ func stripMutationTools(names []string) []string {
 	out := make([]string, 0, len(names))
 	for _, name := range names {
 		switch strings.TrimSpace(name) {
-		case "write_file", "edit_file", "apply_patch", "artifact_write", "run_command", "exec_session_start", "exec_session_write", "command_write_stdin", "git_commit", "git_push":
+		case "write_file", "edit_file", "apply_patch", "ast_edit", "artifact_write", "run_command", "exec_session_start", "exec_session_write", "command_write_stdin", "git_commit", "git_push":
 			continue
 		default:
 			out = append(out, name)
@@ -1971,7 +1987,7 @@ func childRegistryForRole(base *tools.Registry) *tools.Registry {
 
 func childReadOnlyToolNames() []string {
 	return []string{
-		"read_file", "read_output", "artifact_read", "list_dir", "search", "code_search", "glob", "view_image",
+		"read_file", "read_output", "artifact_read", "list_dir", "search", "code_search", "ast_grep", "glob", "view_image",
 		"lsp_definition", "lsp_references", "lsp_hover", "lsp_document_symbols",
 		"git_status", "git_diff", "git_log", "git_branch_state", "git_merge_status",
 		"tool_help", "think",
@@ -2018,6 +2034,9 @@ func newChildAgentRegistry(childWorkDir string, allowedTools []string, parentReg
 	childReg.Register(tools.NewListDir(childWorkDir, cfg.Chat.IgnoreDirs))
 	childReg.Register(tools.NewSearch(childWorkDir))
 	childReg.Register(tools.NewCodeSearch(childWorkDir))
+	if tools.AstGrepAvailable() {
+		childReg.Register(tools.NewAstGrep(childWorkDir, secretPolicy))
+	}
 	childReg.Register(tools.NewGlob(childWorkDir, cfg.Chat.IgnoreDirs))
 	childReg.Register(tools.NewViewImage(childWorkDir))
 	childReg.Register(tools.NewLSPDefinition(childWorkDir))

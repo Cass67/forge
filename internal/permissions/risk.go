@@ -141,7 +141,7 @@ func actionPath(action Action) string {
 
 func mutatingTool(tool string) bool {
 	switch strings.TrimSpace(tool) {
-	case "write_file", "edit_file", "apply_patch", "artifact_write", "run_command", "exec_session_start":
+	case "write_file", "edit_file", "apply_patch", "ast_edit", "artifact_write", "run_command", "exec_session_start":
 		return true
 	default:
 		return false

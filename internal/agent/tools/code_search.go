@@ -3,9 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -47,18 +45,9 @@ func NewCodeSearch(workDir string) Tool {
 			}
 			argv = append(argv, query, resolved)
 
-			rg := "rg"
-			if path, err := exec.LookPath(rg); err == nil {
-				rg = path
-			} else {
-				home, _ := os.UserHomeDir()
-				for _, dir := range []string{"/opt/homebrew/bin", "/usr/local/bin", filepath.Join(home, ".local", "bin"), filepath.Join(home, ".cargo", "bin")} {
-					candidate := filepath.Join(dir, rg)
-					if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
-						rg = candidate
-						break
-					}
-				}
+			rg := findBinary("rg")
+			if rg == "" {
+				rg = "rg"
 			}
 			cmd := exec.CommandContext(ctx, rg, argv...)
 			out, err := cmd.CombinedOutput()

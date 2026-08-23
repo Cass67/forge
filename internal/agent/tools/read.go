@@ -12,11 +12,12 @@ func NewReadFile(workDir string, policies ...SecretPolicy) Tool {
 	secretPolicy := secretPolicyFromOptions(policies)
 	return Tool{
 		Name:        "read_file",
-		Description: "Read a file's contents. Returns content with line numbers.",
+		Description: "Read a file. Text comes back as \"<line> <anchor> | <text>\", where the 4-character anchor addresses that line in edit_file. Notebooks, zip/tar archives, SQLite databases, and PDFs are rendered rather than refused: read one without a member to see its cells, entry list, or schema, then pass member to open one entry or table.",
 		Parameters: []ParameterDef{
 			{Name: "path", Type: "string", Description: "file path relative to working directory", Required: true},
 			{Name: "start_line", Type: "int", Description: "first line to read (1-indexed)", Required: false},
 			{Name: "end_line", Type: "int", Description: "last line to read", Required: false},
+			{Name: "member", Type: "string", Description: "entry inside an archive, or table inside a SQLite database", Required: false},
 		},
 		AutoApprove: true,
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
@@ -27,6 +28,14 @@ func NewReadFile(workDir string, policies ...SecretPolicy) Tool {
 			}
 			if guard.blocked(resolved) {
 				return fmt.Sprintf("error: %q is excluded by the secret-file policy (.ignore)", path), nil
+			}
+
+			if out, handled, err := readFormat(ctx, resolved, strings.TrimSpace(stringArg(args, "member"))); handled {
+				if err != nil {
+					return fmt.Sprintf("error: %v", err), nil
+				}
+				rendered, _ := secretPolicy.ApplyRead(out)
+				return rendered, nil
 			}
 
 			data, err := os.ReadFile(resolved)
@@ -72,11 +81,7 @@ func NewReadFile(workDir string, policies ...SecretPolicy) Tool {
 			if annotated := annotateGitPathState(workDir, path); annotated != path {
 				sb.WriteString("File status: " + annotated + "\n")
 			}
-			for i := start; i <= end; i++ {
-				if i <= len(lines) {
-					sb.WriteString(fmt.Sprintf("%4d | %s\n", i, lines[i-1]))
-				}
-			}
+			sb.WriteString(renderHashlines(lines, start, end))
 			return sb.String(), nil
 		},
 	}
