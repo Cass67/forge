@@ -1,7 +1,7 @@
 package version
 
 // Version is the release version.
-const Version = "0.5.0"
+const Version = "0.5.1"
 
 // Commit is the short git SHA, injected at build time via
 // -ldflags "-X forge/internal/version.Commit=...". It stays "unknown" for

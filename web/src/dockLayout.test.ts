@@ -45,6 +45,7 @@ import {
   parseColumns,
   removeTool,
   resizeGroups,
+  SIDES,
   type DockColumns,
 } from "./dockLayout";
 
@@ -266,4 +267,47 @@ test("a tab dropped on another strip lands where it was dropped", () => {
     "explorer",
     "git",
   ]);
+});
+
+test("a terminal tab reaches every column and every drop mode", () => {
+  const start = addTool(defaultColumns(), terminal, {
+    side: "left",
+    where: "end",
+  });
+  const where = (columns: DockColumns) => findTool(columns, terminal.id)?.side;
+
+  // Into another column's group, stacking as a tab.
+  const stacked = moveTool(start, terminal.id, {
+    side: "right",
+    where: "into",
+    groupID: start.right[0].id,
+  });
+  expect(where(stacked)).toBe("right");
+  expect(findTool(stacked, terminal.id)?.group.tools.length).toBeGreaterThan(1);
+
+  // Above and below a group, splitting that column.
+  for (const side of SIDES) {
+    for (const edge of ["before", "after"] as const) {
+      const split = moveTool(stacked, terminal.id, {
+        side,
+        where: edge,
+        groupID: stacked[side][0].id,
+      });
+      expect(where(split)).toBe(side);
+    }
+    // And at the foot of the column.
+    const tail = moveTool(stacked, terminal.id, { side, where: "end" });
+    expect(where(tail)).toBe(side);
+  }
+
+  // Sharing the chat's own group is allowed too.
+  const chat = findTool(start, "chat");
+  const withChat = moveTool(start, terminal.id, {
+    side: "center",
+    where: "into",
+    groupID: chat!.group.id,
+  });
+  const landed = findTool(withChat, terminal.id);
+  expect(landed?.group.tools.map((tool) => tool.kind)).toContain("chat");
+  expect(landed?.group.activeID).toBe(terminal.id);
 });
