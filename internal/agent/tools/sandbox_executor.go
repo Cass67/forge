@@ -25,9 +25,8 @@ var (
 )
 
 // SetSandboxExecutor installs the executor run_command delegates foreground
-// commands to. Pass nil to restore host execution. Background (&) commands
-// stay on the host; PTY sessions route via SetSandboxArgv.
-// no background routing, add when needed.
+// commands to. Pass nil to restore host execution. Background commands and
+// PTY sessions route via SetSandboxArgv.
 func SetSandboxExecutor(ex SandboxExecutor) {
 	sandboxMu.Lock()
 	sandboxFn = ex
@@ -65,11 +64,14 @@ func WithSandboxExecutor(t Tool, approve ApprovalFunc, provider WorkDirProvider,
 	inner := t.Execute
 	secretPolicy := policy.WithDefaults()
 	t.Execute = func(ctx context.Context, args map[string]any) (string, error) {
+		command, _ := args["command"].(string)
+		if isBackgroundCommand(command) || boolArg(args, "run_in_background") {
+			return inner(ctx, args)
+		}
 		ex := CurrentSandboxExecutor()
 		if ex == nil {
 			return inner(ctx, args)
 		}
-		command, _ := args["command"].(string)
 		approved, err := approve(Action{
 			Context: ctx,
 			Tool:    t.Name,
