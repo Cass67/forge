@@ -34,8 +34,12 @@ type CheckResult struct {
 type StartupComplete struct{}
 
 type ChatLiveConfig struct {
-	Model            string
-	WorkDir          string
+	Model   string
+	WorkDir string
+	// StartupNotice is a one-off message about how startup resolved — today,
+	// that a saved model was dropped because nothing serves it any more. The
+	// TUI prints it as an event; a surface with no event log shows it itself.
+	StartupNotice    string
 	DebugLogPath     string
 	SurfaceKind      ChatSurfaceKind
 	DebugEnabled     bool

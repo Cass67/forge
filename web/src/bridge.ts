@@ -106,6 +106,7 @@ export type InitPayload = {
   thread_id?: string;
   request_mode?: string;
   yolo: boolean;
+  notice?: string;
 };
 
 export type Workspace = {

@@ -811,8 +811,11 @@ func TestCustomCompatProviderSupportedProviderBackendsShowsCustomProvider(t *tes
 			if b.Label != "Omni Cloud AI" {
 				t.Fatalf("oca label = %q, want %q", b.Label, "Omni Cloud AI")
 			}
-			if b.Status != "configure API key" {
-				t.Fatalf("oca status = %q, want 'configure API key'", b.Status)
+			// Declaring the provider is what makes it usable: forge cannot
+			// know whether the endpoint behind it wants credentials, and a
+			// local server usually does not.
+			if b.Status != "ready" {
+				t.Fatalf("oca status = %q, want 'ready'", b.Status)
 			}
 		}
 	}
@@ -875,7 +878,10 @@ func TestSupportedProviderBackendsIncludesZAICodingPlan(t *testing.T) {
 	}
 }
 
-func TestCustomCompatProviderAvailableModelsExposesModelsOnlyWhenKeyExists(t *testing.T) {
+// A custom provider's models are offered whether or not a key is on file. They
+// used to be gated on one, which made a keyless local server contribute
+// nothing and silently dropped a saved model from it at startup.
+func TestCustomCompatProviderAvailableModelsNeedNoKey(t *testing.T) {
 	dir := t.TempDir()
 	writeCustomProviderTOML(t, dir)
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -883,13 +889,10 @@ func TestCustomCompatProviderAvailableModelsExposesModelsOnlyWhenKeyExists(t *te
 
 	cfg := testConfig()
 
-	// Without key, no models should appear
 	tokensNoKey := &auth.Tokens{}
 	models := AvailableModels(cfg, tokensNoKey)
-	for _, m := range models {
-		if strings.HasPrefix(m, "oca/") {
-			t.Fatalf("unexpected oca model without key: %s", m)
-		}
+	if !containsTestString(models, "oca/gpt-5.4") {
+		t.Fatalf("expected oca/gpt-5.4 without a key, got %v", models)
 	}
 
 	// With key via tokens, models should appear
@@ -1016,5 +1019,72 @@ func TestCustomCompatProviderIsProviderNameRecognizesCustomProviders(t *testing.
 	}
 	if ref.Model != "some-model" {
 		t.Fatalf("ParseModelRef(testcustom/some-model).Model = %q, want %q", ref.Model, "some-model")
+	}
+}
+
+// A custom provider is usually a local server that wants no credentials at
+// all. Gating it on an API key made it contribute no models, which silently
+// dropped the saved chat model at startup and left the window with no model.
+func TestCustomProviderNeedsNoAPIKey(t *testing.T) {
+	keyless := CompatProvider{
+		Name:    "localllm",
+		BaseURL: "http://127.0.0.1:3001/v1",
+		KeyFn:   func() string { return "" },
+		IsModel: func(string) bool { return false },
+		Models:  []string{"qwen"},
+		Custom:  true,
+	}
+	if !keyless.Configured() {
+		t.Fatal("a declared custom provider should be usable without a key")
+	}
+
+	builtin := CompatProvider{
+		Name:    "groq",
+		KeyFn:   func() string { return "" },
+		IsModel: func(string) bool { return false },
+	}
+	if builtin.Configured() {
+		t.Fatal("a built-in provider still needs a key")
+	}
+}
+
+// The custom providers BuildCompatProviders loads off disk have to carry the
+// Custom flag, or the gate above never sees it.
+func TestBuiltCustomProvidersAreMarkedCustom(t *testing.T) {
+	xdg := t.TempDir()
+	providersDir := filepath.Join(xdg, "forge", "providers")
+	if err := os.MkdirAll(providersDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := `
+[model_providers.localllm]
+name = "Local LLM"
+base_url = "http://127.0.0.1:3001/v1"
+wire_api = "chat"
+models = ["qwen"]
+`
+	if err := os.WriteFile(filepath.Join(providersDir, "localllm.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+
+	var found *CompatProvider
+	providers := BuildCompatProviders(testConfig(), &auth.Tokens{})
+	for i := range providers {
+		if providers[i].Name == "localllm" {
+			found = &providers[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("custom provider was not built")
+	}
+	if !found.Configured() {
+		t.Fatal("custom provider built from disk is not usable without a key")
+	}
+	// And it resolves by name, which is what keeps a saved "localllm/..."
+	// model from being dropped at startup.
+	resolved, _ := ResolveCompatProvider(providers, "localllm/qwen")
+	if resolved == nil || resolved.Name != "localllm" {
+		t.Fatalf("keyless custom provider did not resolve: %+v", resolved)
 	}
 }

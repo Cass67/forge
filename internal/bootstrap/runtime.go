@@ -40,6 +40,17 @@ type CompatProvider struct {
 	WireAPI      string
 	ModelInfoURL string
 	HTTPHeaders  map[string]string
+	// Custom marks a provider the user declared themselves, in config.toml or
+	// providers/*.toml. A local server on a LAN address usually wants no
+	// credentials at all, so the declaration — not a key — is what says the
+	// provider is meant to be used.
+	Custom bool
+}
+
+// Configured reports whether this provider should be offered. A built-in needs
+// a key; a custom one has already been asked for by hand.
+func (p CompatProvider) Configured() bool {
+	return p.Custom || strings.TrimSpace(p.KeyFn()) != ""
 }
 
 type ProviderBackend struct {
@@ -263,7 +274,7 @@ func AvailableModels(cfg *config.Config, tokens *auth.Tokens) []string {
 		run(copilotSlot, func() []string { return CopilotModels(tokens.CopilotToken) })
 	}
 	for i, p := range compatProviders {
-		if p.KeyFn() == "" {
+		if !p.Configured() {
 			continue
 		}
 		run(4+i, func() []string {
@@ -374,7 +385,7 @@ func SupportedProviderBackends(cfg *config.Config, tokens *auth.Tokens) []Provid
 		backends = append(backends, ProviderBackend{
 			ID:           provider.Name,
 			Label:        label,
-			Status:       providerBackendStatus(provider.KeyFn() != "", "configure API key"),
+			Status:       providerBackendStatus(provider.Configured(), "configure API key"),
 			DefaultModel: defaultModel,
 		})
 	}
@@ -715,6 +726,7 @@ func BuildCompatProviders(cfg *config.Config, tokens *auth.Tokens) []CompatProvi
 				return os.Getenv(strings.ToUpper(defID) + "_API_KEY")
 			},
 			IsModel:      func(string) bool { return false },
+			Custom:       true,
 			Models:       def.Models,
 			WireAPI:      def.WireAPI,
 			ModelInfoURL: def.ModelInfoURL,
@@ -742,7 +754,7 @@ func DriverUnavailableReason(cfg *config.Config, tokens *auth.Tokens, model stri
 		if p.Name != ref.Provider {
 			continue
 		}
-		if p.KeyFn() == "" {
+		if !p.Configured() {
 			return fmt.Sprintf("no API key configured for provider %q (set it under [keys] in config.toml)", ref.Provider)
 		}
 		return fmt.Sprintf("provider %q is authenticated but cannot serve model %q", ref.Provider, ref.Model)

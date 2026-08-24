@@ -355,6 +355,17 @@ func BuildChatSetup(cfg *config.Config, tokens any, modelOverride, workDir strin
 	}, nil
 }
 
+// startupNotice explains a startup decision the user did not make and would
+// otherwise have to infer from an empty model pill.
+func (s *ChatSetup) startupNotice() string {
+	if s.DroppedModel == "" {
+		return ""
+	}
+	return fmt.Sprintf(
+		"saved model %q is no longer available — no model selected; pick one with the model switcher",
+		s.DroppedModel)
+}
+
 func persistChatLastModel(cfg *config.Config, model string) {
 	if cfg == nil || strings.TrimSpace(model) == "" {
 		return
@@ -752,10 +763,8 @@ func RunChatLive(setup *ChatSetup) {
 		}()
 	}
 	evRenderer := agent.NewEventRenderer(renderCh)
-	if setup.DroppedModel != "" {
-		evRenderer.Info(fmt.Sprintf(
-			"saved model %q is no longer available — no model selected; pick one with the model switcher",
-			setup.DroppedModel))
+	if notice := setup.startupNotice(); notice != "" {
+		evRenderer.Info(notice)
 	}
 	session := reactruntime.NewSession()
 	session.SetActiveWorkspaceRoot(setup.WorkDir)
@@ -1023,6 +1032,7 @@ func RunChatLive(setup *ChatSetup) {
 	liveCfg := tui.ChatLiveConfig{
 		Model:           setup.ChatModel,
 		WorkDir:         setup.WorkDir,
+		StartupNotice:   setup.startupNotice(),
 		DebugLogPath:    setup.DebugLog,
 		SurfaceKind:     surfaceKind,
 		DebugEnabled:    debugEnabled,

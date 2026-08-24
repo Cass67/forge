@@ -195,6 +195,7 @@ func (s *Service) Init() InitPayload {
 		ThreadID:    call(cfg.CurrentThreadID),
 		RequestMode: call(cfg.RequestMode),
 		Yolo:        cfg.Yolo != nil && cfg.Yolo(),
+		Notice:      cfg.StartupNotice,
 	}
 }
 

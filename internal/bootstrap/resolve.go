@@ -24,7 +24,7 @@ func ResolveCompatProvider(cfgProvider []CompatProvider, model string) (*CompatP
 	if ref.Provider != "" {
 		for i := range cfgProvider {
 			p := &cfgProvider[i]
-			if p.Name == ref.Provider && p.KeyFn() != "" {
+			if p.Name == ref.Provider && p.Configured() {
 				return p, true
 			}
 		}
@@ -34,7 +34,7 @@ func ResolveCompatProvider(cfgProvider []CompatProvider, model string) (*CompatP
 	matches := make([]*CompatProvider, 0)
 	for i := range cfgProvider {
 		p := &cfgProvider[i]
-		if p.KeyFn() != "" && p.IsModel(model) {
+		if p.Configured() && p.IsModel(model) {
 			matches = append(matches, p)
 		}
 	}

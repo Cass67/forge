@@ -3685,3 +3685,31 @@ textarea:not(.xterm-helper-textarea),
 .btn.primary {
   border-color: var(--accent);
 }
+
+/* Startup notice: a decision made before the user could see it, so it stays
+   put rather than flashing past. */
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--selected);
+  color: var(--text);
+  font-size: 0.6875rem;
+}
+.notice span {
+  flex: 1;
+  min-width: 0;
+}
+.notice button {
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.notice-act {
+  color: var(--accent);
+  text-decoration: underline;
+}

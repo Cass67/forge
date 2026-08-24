@@ -23,6 +23,9 @@ type InitPayload struct {
 	ThreadID    string            `json:"thread_id,omitempty"`
 	RequestMode string            `json:"request_mode,omitempty"`
 	Yolo        bool              `json:"yolo"`
+	// Notice explains a startup decision, such as a saved model dropped
+	// because nothing serves it any more.
+	Notice string `json:"notice,omitempty"`
 }
 
 type ProviderPayload struct {

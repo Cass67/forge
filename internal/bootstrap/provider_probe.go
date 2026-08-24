@@ -27,7 +27,7 @@ func ProbeProviderModels(cfg *config.Config, tokens *auth.Tokens, currentModel s
 	providers := BuildCompatProviders(cfg, tokens)
 	for i := range providers {
 		p := &providers[i]
-		if p.Name == ref.Provider && strings.TrimSpace(p.KeyFn()) != "" {
+		if p.Name == ref.Provider && p.Configured() {
 			provider = p
 			break
 		}

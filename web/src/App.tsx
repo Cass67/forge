@@ -94,6 +94,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [approval, setApproval] = useState<WireAction | null>(null);
   const [stats, setStats] = useState<Stats>(initialStats);
+  const [noticeSeen, setNoticeSeen] = useState(false);
   const [effort, setEffort] = useState("");
   const [yolo, setYoloState] = useState(false);
   const [overlay, setOverlay] = useState<Overlay>("none");
@@ -224,6 +225,7 @@ export default function App() {
       if (!payload.ready) return;
       switchingWorkspace.current = false;
       setInit(payload);
+      setNoticeSeen(false);
       setStats((s) => ({ ...s, model: payload.model }));
       if (payload.effort) setEffort(payload.effort);
       setYoloState(payload.yolo);
@@ -418,6 +420,7 @@ export default function App() {
         .switchModel(model)
         .then((applied) => {
           setStats((s) => ({ ...s, model: applied }));
+          setNoticeSeen(true);
           notify(`model → ${applied}`);
           return forge.efforts(applied);
         })
@@ -797,6 +800,26 @@ export default function App() {
           ⚙
         </button>
       </header>
+
+      {/* Startup decided something the user did not ask for — most often that
+          the saved model was dropped because no provider serves it any more.
+          A 2.6s flash was long enough to miss, which left an empty model pill
+          with nothing to explain it. */}
+      {init?.notice && !noticeSeen ? (
+        <div className="notice">
+          <span>{init.notice}</span>
+          <button className="notice-act" onClick={() => setOverlay("models")}>
+            Pick a model
+          </button>
+          <button
+            className="notice-x"
+            onClick={() => setNoticeSeen(true)}
+            aria-label="Dismiss"
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
 
       <div
         className="cols"
