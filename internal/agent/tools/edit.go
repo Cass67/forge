@@ -16,14 +16,11 @@ func NewEditFileWithWorkDirProvider(fallbackWorkDir string, provider WorkDirProv
 	secretPolicy := secretPolicyFromOptions(policies)
 	return Tool{
 		Name:        "edit_file",
-		Description: "Replace a block of a file. Preferred form: pass the anchors read_file printed beside the first and last line to replace (start_anchor/end_anchor) — no need to echo the old text back. Fallback form: pass old_text to search for.",
+		Description: "Make a search-and-replace edit within a file.",
 		Parameters: []ParameterDef{
 			{Name: "path", Type: "string", Description: "file path", Required: true},
-			{Name: "new_text", Type: "string", Description: "replacement text; empty deletes the block", Required: true},
-			{Name: "start_anchor", Type: "string", Description: "anchor of the first line to replace, from read_file", Required: false},
-			{Name: "end_anchor", Type: "string", Description: "anchor of the last line to replace; omit to replace just the start line", Required: false},
-			{Name: "start_line", Type: "int", Description: "line number of start_anchor, only needed when the anchor is ambiguous", Required: false},
-			{Name: "old_text", Type: "string", Description: "exact text to find (must be unique in file); alternative to anchors", Required: false},
+			{Name: "old_text", Type: "string", Description: "exact text to find (must be unique in file)", Required: true},
+			{Name: "new_text", Type: "string", Description: "replacement text", Required: true},
 		},
 		AutoApprove:      false,
 		Concurrency:      ToolConcurrencySerial,
@@ -55,25 +52,6 @@ func NewEditFileWithWorkDirProvider(fallbackWorkDir string, provider WorkDirProv
 			}
 
 			content := string(data)
-
-			if startAnchor, _ := args["start_anchor"].(string); strings.TrimSpace(startAnchor) != "" {
-				endAnchor, _ := args["end_anchor"].(string)
-				hintLine := 0
-				if v, ok := args["start_line"].(float64); ok && v > 0 {
-					hintLine = int(v)
-				}
-				lines := strings.Split(content, "\n")
-				span, err := resolveAnchorSpan(lines, startAnchor, endAnchor, hintLine)
-				if err != nil {
-					return fmt.Sprintf("edit_file failed: %v", err), nil
-				}
-				newContent := strings.Join(replaceSpan(lines, span, newText), "\n")
-				return applyEdit(ctx, approve, resolved, path, content, newContent, &lastDiff)
-			}
-
-			if oldText == "" {
-				return "edit_file failed: pass start_anchor (preferred) or old_text", nil
-			}
 
 			count := strings.Count(content, oldText)
 			if count == 0 {

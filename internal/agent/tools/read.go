@@ -12,7 +12,7 @@ func NewReadFile(workDir string, policies ...SecretPolicy) Tool {
 	secretPolicy := secretPolicyFromOptions(policies)
 	return Tool{
 		Name:        "read_file",
-		Description: "Read a file. Text comes back as \"<line> <anchor> | <text>\", where the 4-character anchor addresses that line in edit_file. Notebooks, zip/tar archives, SQLite databases, and PDFs are rendered rather than refused: read one without a member to see its cells, entry list, or schema, then pass member to open one entry or table.",
+		Description: "Read a file's contents. Returns content with line numbers. Notebooks, zip/tar archives, SQLite databases, and PDFs are rendered rather than refused: read one without a member to see its cells, entry list, or schema, then pass member to open one entry or table.",
 		Parameters: []ParameterDef{
 			{Name: "path", Type: "string", Description: "file path relative to working directory", Required: true},
 			{Name: "start_line", Type: "int", Description: "first line to read (1-indexed)", Required: false},
@@ -81,7 +81,11 @@ func NewReadFile(workDir string, policies ...SecretPolicy) Tool {
 			if annotated := annotateGitPathState(workDir, path); annotated != path {
 				sb.WriteString("File status: " + annotated + "\n")
 			}
-			sb.WriteString(renderHashlines(lines, start, end))
+			for i := start; i <= end; i++ {
+				if i <= len(lines) {
+					fmt.Fprintf(&sb, "%4d | %s\n", i, lines[i-1])
+				}
+			}
 			return sb.String(), nil
 		},
 	}
