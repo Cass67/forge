@@ -19,6 +19,7 @@ import {
   addTool,
   allTools,
   clampDock,
+  columnLayout,
   DEFAULT_DOCK_WIDTHS,
   type DockColumns,
   type DockGroup,
@@ -37,6 +38,7 @@ import {
   saveColumns,
   saveDockWidths,
   setActiveTool,
+  showsDivider,
   SIDES,
 } from "../dockLayout";
 import {
@@ -945,20 +947,17 @@ export function WorkspaceShell({
         // before the chat sizes the left dock, the one after it the right.
         const edge: EdgeSide = side === "center" ? "left" : "right";
         const tail = dropProps({ side, where: "end" });
-        // A column whose last tab was dragged away collapses rather than
-        // sitting there empty; a drag in flight opens it up as a target again.
         const empty = columns[side].length === 0;
-        const basis =
-          side === "center"
-            ? undefined
-            : empty
-              ? dragging
-                ? "9rem"
-                : "0px"
-              : `${dockWidths[side] * 100}%`;
+        const { collapsed, basis, grow } = columnLayout(
+          columns,
+          side,
+          dockWidths,
+          Boolean(dragging),
+        );
+        const showDivider = showsDivider(columns, side, Boolean(dragging));
         return (
           <Fragment key={side}>
-            {columnIndex > 0 && !(columns[edge].length === 0 && !dragging) ? (
+            {showDivider ? (
               <div
                 aria-label={`Resize ${edge} panel`}
                 aria-orientation="vertical"
@@ -974,8 +973,11 @@ export function WorkspaceShell({
               />
             ) : null}
             <div
-              className={`workspace-column workspace-column-${side}`}
-              style={basis === undefined ? undefined : { flexBasis: basis }}
+              className={`workspace-column workspace-column-${side} ${collapsed ? "collapsed" : ""}`}
+              style={{
+                ...(basis === undefined ? {} : { flexBasis: basis }),
+                ...(grow === undefined ? {} : { flexGrow: grow }),
+              }}
             >
               {columns[side].map((group, index) => (
                 <Fragment key={group.id}>

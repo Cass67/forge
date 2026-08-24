@@ -305,28 +305,28 @@ export function parseColumns(raw: string | null): DockColumns {
     const groups = Array.isArray(stored[side]) ? stored[side]! : [];
     columns[side] = normalizeGroups(
       groups
-      .map((group) => {
-        const tools = (Array.isArray(group?.tools) ? group.tools : [])
-          .map(reviveTool)
-          .filter((tool): tool is DockTool => tool !== null)
-          .filter((tool) => {
-            if (seen.has(tool.id)) return false;
-            seen.add(tool.id);
-            return true;
-          });
-        const size =
-          typeof group?.size === "number" && group.size > 0 ? group.size : 1;
-        const activeID = tools.some((tool) => tool.id === group?.activeID)
-          ? group!.activeID
-          : (tools[0]?.id ?? "");
-        return {
-          id: typeof group?.id === "string" ? group.id : newGroupID(),
-          tools,
-          activeID,
-          size,
-        };
-      })
-      .filter((group) => group.tools.length > 0),
+        .map((group) => {
+          const tools = (Array.isArray(group?.tools) ? group.tools : [])
+            .map(reviveTool)
+            .filter((tool): tool is DockTool => tool !== null)
+            .filter((tool) => {
+              if (seen.has(tool.id)) return false;
+              seen.add(tool.id);
+              return true;
+            });
+          const size =
+            typeof group?.size === "number" && group.size > 0 ? group.size : 1;
+          const activeID = tools.some((tool) => tool.id === group?.activeID)
+            ? group!.activeID
+            : (tools[0]?.id ?? "");
+          return {
+            id: typeof group?.id === "string" ? group.id : newGroupID(),
+            tools,
+            activeID,
+            size,
+          };
+        })
+        .filter((group) => group.tools.length > 0),
     );
   }
 
@@ -420,4 +420,50 @@ export function dropZone(
   if (offset < 0.2) return "before";
   if (offset > 0.8) return "after";
   return "into";
+}
+
+// How much room a column gets. A column with no groups takes none at all — the
+// centre included, which it used not to be: it is the column that grows to
+// fill the shell, so an empty one left a dead stripe down the middle of the
+// window that nothing could be put into. A drag in flight reopens every empty
+// column, or a panel dragged out of the centre could never be dragged back.
+export type ColumnLayout = {
+  collapsed: boolean;
+  // Undefined means "no explicit basis": the centre sizes itself from what the
+  // docks leave behind.
+  basis?: string;
+  grow?: number;
+};
+
+export function columnLayout(
+  columns: DockColumns,
+  side: DockSide,
+  widths: DockWidths,
+  dragging: boolean,
+): ColumnLayout {
+  const empty = columns[side].length === 0;
+  if (empty) {
+    return { collapsed: true, basis: dragging ? "9rem" : "0px" };
+  }
+  const centerEmpty = columns.center.length === 0;
+  return {
+    collapsed: false,
+    basis: side === "center" ? undefined : `${widths[side] * 100}%`,
+    // With the centre gone the docks share the room it was holding, keeping
+    // the proportion they already had.
+    grow: centerEmpty && side !== "center" ? widths[side] : undefined,
+  };
+}
+
+// A divider sits between two columns that are both on screen. With the centre
+// collapsed the docks become neighbours and take the single divider between
+// them, rather than two stacked against a column of no width.
+export function showsDivider(
+  columns: DockColumns,
+  side: DockSide,
+  dragging: boolean,
+): boolean {
+  const visible = (at: DockSide) => columns[at].length > 0 || dragging;
+  if (!visible(side)) return false;
+  return SIDES.slice(0, SIDES.indexOf(side)).some(visible);
 }

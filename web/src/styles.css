@@ -3737,3 +3737,11 @@ textarea:not(.xterm-helper-textarea),
   color: var(--text);
   background: var(--selected);
 }
+
+/* An empty column takes no room at all. The centre needs this said explicitly
+   because it is the one column that grows to fill the shell. */
+.workspace-column.collapsed {
+  flex: 0 0 0;
+  min-width: 0;
+  overflow: hidden;
+}

@@ -38,6 +38,7 @@ test("stored widths are kept, and junk falls back to the defaults", () => {
 import {
   addTool,
   allTools,
+  columnLayout,
   defaultColumns,
   dropZone,
   findTool,
@@ -45,6 +46,7 @@ import {
   parseColumns,
   removeTool,
   resizeGroups,
+  showsDivider,
   SIDES,
   type DockColumns,
 } from "./dockLayout";
@@ -310,4 +312,61 @@ test("a terminal tab reaches every column and every drop mode", () => {
   const landed = findTool(withChat, terminal.id);
   expect(landed?.group.tools.map((tool) => tool.kind)).toContain("chat");
   expect(landed?.group.activeID).toBe(terminal.id);
+});
+
+test("an empty column takes no room, the centre included", () => {
+  const widths = { left: 0.2, right: 0.3 };
+  // Chat dragged into the left dock leaves the centre with nothing in it. It
+  // used to keep filling the shell, which left a dead stripe down the middle.
+  const columns = moveTool(defaultColumns(), "chat", {
+    side: "left",
+    where: "end",
+  });
+  expect(columns.center.length).toBe(0);
+
+  const centre = columnLayout(columns, "center", widths, false);
+  expect(centre.collapsed).toBe(true);
+  expect(centre.basis).toBe("0px");
+
+  // The docks take the room it was holding, keeping their proportions.
+  const left = columnLayout(columns, "left", widths, false);
+  expect(left.collapsed).toBe(false);
+  expect(left.grow).toBe(0.2);
+});
+
+test("a drag reopens every empty column, so a panel can come back", () => {
+  const columns = moveTool(defaultColumns(), "chat", {
+    side: "left",
+    where: "end",
+  });
+  const centre = columnLayout(
+    columns,
+    "center",
+    { left: 0.2, right: 0.3 },
+    true,
+  );
+  expect(centre.basis).toBe("9rem");
+});
+
+test("a full centre keeps its own sizing and gives the docks no extra growth", () => {
+  const widths = { left: 0.2, right: 0.3 };
+  const columns = defaultColumns();
+  expect(columns.center.length).toBeGreaterThan(0);
+
+  expect(columnLayout(columns, "center", widths, false).basis).toBeUndefined();
+  expect(columnLayout(columns, "left", widths, false).grow).toBeUndefined();
+  expect(columnLayout(columns, "right", widths, false).basis).toBe("30%");
+});
+
+test("dividers sit between columns that are both on screen", () => {
+  const full = defaultColumns();
+  expect(showsDivider(full, "left", false)).toBe(false); // nothing before it
+  expect(showsDivider(full, "center", false)).toBe(true);
+  expect(showsDivider(full, "right", false)).toBe(true);
+
+  // With the centre collapsed the docks are neighbours and share one divider,
+  // rather than stacking two against a column of no width.
+  const noCentre = moveTool(full, "chat", { side: "left", where: "end" });
+  expect(showsDivider(noCentre, "center", false)).toBe(false);
+  expect(showsDivider(noCentre, "right", false)).toBe(true);
 });
