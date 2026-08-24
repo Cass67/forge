@@ -897,79 +897,87 @@ export function WorkspaceShell({
       )
     : null;
 
-  const renderGroup = (side: DockSide, group: DockGroup) => (
-    <section
-      className={`workspace-group ${group.tools.some((tool) => tool.kind === "chat") ? "has-chat" : ""}`}
-      style={{ flexGrow: group.size }}
-    >
-      <div
-        {...dropProps({ side, where: "into", groupID: group.id })}
-        className={`workspace-dock-tabs ${dropProps({ side, where: "into", groupID: group.id }).className}`}
+  const renderGroup = (side: DockSide, group: DockGroup) => {
+    // A tab strip is how you pick between tools and where you drop one to
+    // stack it. A group holding nothing but the chat has neither job to do, so
+    // it goes without: the chat is the window, not a tab in it.
+    const soloChat = group.tools.length === 1 && group.tools[0].kind === "chat";
+    return (
+      <section
+        className={`workspace-group ${group.tools.some((tool) => tool.kind === "chat") ? "has-chat" : ""} ${soloChat ? "chat-only" : ""}`}
+        style={{ flexGrow: group.size }}
       >
-        {group.tools.map((tool, index) => {
-          const tabDrop = tabDropProps(side, group, index);
-          return (
-            <div
-              aria-selected={group.activeID === tool.id}
-              className={`workspace-dock-tab ${group.activeID === tool.id ? "active" : ""} ${tabDrop.className}`}
-              draggable
-              key={tool.id}
-              onClick={() => focusTool(tool.id)}
-              onDragEnd={() => {
-                setDragging("");
-                setDropHint("");
-              }}
-              onDragOver={tabDrop.onDragOver}
-              onDragStart={(event) => {
-                event.dataTransfer.effectAllowed = "move";
-                event.dataTransfer.setData(DOCK_TOOL_MIME, tool.id);
-                event.dataTransfer.setData("text/plain", tool.id);
-                setDragging(tool.id);
-              }}
-              onDrop={tabDrop.onDrop}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  focusTool(tool.id);
-                }
-              }}
-              role="tab"
-              tabIndex={0}
-              title={`${tool.title} — drag onto another panel to move or split it`}
-            >
-              <span className="workspace-dock-tab-label">{tool.title}</span>
-              {tool.kind === "terminal" ||
-              tool.kind === "preview" ||
-              tool.kind === "activity" ? (
-                <button
-                  className="workspace-tab-close"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    closePanel(tool.id);
+        {soloChat ? null : (
+          <div
+            {...dropProps({ side, where: "into", groupID: group.id })}
+            className={`workspace-dock-tabs ${dropProps({ side, where: "into", groupID: group.id }).className}`}
+          >
+            {group.tools.map((tool, index) => {
+              const tabDrop = tabDropProps(side, group, index);
+              return (
+                <div
+                  aria-selected={group.activeID === tool.id}
+                  className={`workspace-dock-tab ${group.activeID === tool.id ? "active" : ""} ${tabDrop.className}`}
+                  draggable
+                  key={tool.id}
+                  onClick={() => focusTool(tool.id)}
+                  onDragEnd={() => {
+                    setDragging("");
+                    setDropHint("");
                   }}
-                  aria-label={`Close ${tool.title}`}
+                  onDragOver={tabDrop.onDragOver}
+                  onDragStart={(event) => {
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData(DOCK_TOOL_MIME, tool.id);
+                    event.dataTransfer.setData("text/plain", tool.id);
+                    setDragging(tool.id);
+                  }}
+                  onDrop={tabDrop.onDrop}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      focusTool(tool.id);
+                    }
+                  }}
+                  role="tab"
+                  tabIndex={0}
+                  title={`${tool.title} — drag onto another panel to move or split it`}
                 >
-                  ×
-                </button>
-              ) : null}
-            </div>
-          );
-        })}
-      </div>
-      <div className="workspace-group-body" ref={groupBodyRef(group.id)} />
-      {dragging ? (
-        <div className="workspace-dropzones">
-          {(["before", "into", "after"] as const).map((where) => (
-            <div
-              key={where}
-              {...dropProps({ side, where, groupID: group.id })}
-              className={`workspace-dropzone workspace-dropzone-${where} ${dropProps({ side, where, groupID: group.id }).className}`}
-            />
-          ))}
-        </div>
-      ) : null}
-    </section>
-  );
+                  <span className="workspace-dock-tab-label">{tool.title}</span>
+                  {tool.kind === "terminal" ||
+                  tool.kind === "preview" ||
+                  tool.kind === "activity" ? (
+                    <button
+                      className="workspace-tab-close"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        closePanel(tool.id);
+                      }}
+                      aria-label={`Close ${tool.title}`}
+                    >
+                      ×
+                    </button>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        )}
+        <div className="workspace-group-body" ref={groupBodyRef(group.id)} />
+        {dragging ? (
+          <div className="workspace-dropzones">
+            {(["before", "into", "after"] as const).map((where) => (
+              <div
+                key={where}
+                {...dropProps({ side, where, groupID: group.id })}
+                className={`workspace-dropzone workspace-dropzone-${where} ${dropProps({ side, where, groupID: group.id }).className}`}
+              />
+            ))}
+          </div>
+        ) : null}
+      </section>
+    );
+  };
 
   return (
     <div
