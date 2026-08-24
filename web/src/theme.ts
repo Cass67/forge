@@ -40,6 +40,7 @@ const KEY = "forge.theme";
 // Every token vividness may replace, so a level change can put them all back
 // before recomputing from the theme underneath.
 const VIVID_TOKENS = [
+  "bg",
   "text",
   "muted",
   "panel",

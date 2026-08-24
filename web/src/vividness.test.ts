@@ -65,6 +65,7 @@ test("overrides cover ink, surfaces and signals, and nothing else", () => {
   const out = overrides((token) => palette[token] ?? "", 10);
   expect(Object.keys(out).sort()).toEqual(
     [
+      "--bg",
       "--accent",
       "--border",
       "--err",
@@ -78,8 +79,10 @@ test("overrides cover ink, surfaces and signals, and nothing else", () => {
       "--warn",
     ].sort(),
   );
-  // The background itself is never touched: a dark theme has to stay dark.
-  expect(out["--bg"]).toBeUndefined();
+  // The background deepens rather than lifts, so a dark theme gets darker
+  // behind brighter ink instead of drifting towards grey.
+  expect(toHSL(out["--bg"])!.l).toBeLessThan(toHSL(palette.bg)!.l);
+  expect(toHSL(out["--text"])!.l).toBeGreaterThan(toHSL(palette.text)!.l);
 });
 
 test("isDark reads the background, not the name", () => {

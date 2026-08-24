@@ -31,6 +31,10 @@ const KEY = "forge.vividness";
 const INK = ["text", "muted"] as const;
 const SURFACE = ["panel", "panel2", "input", "border", "hover"] as const;
 const SIGNAL = ["accent", "ok", "err", "warn"] as const;
+// The page behind everything. It moves opposite to the ink: deeper on a dark
+// theme, paler on a light one, which is what buys the contrast at the top of
+// the slider.
+const GROUND = ["bg"] as const;
 
 export function loadVividness(): Vividness {
   return clampVividness(Number(localStorage.getItem(KEY) ?? "0"));
@@ -93,7 +97,7 @@ export function isDark(background: string): boolean {
 
 export function adjust(
   colour: string,
-  role: "ink" | "surface" | "signal",
+  role: "ink" | "surface" | "signal" | "ground",
   level: Vividness,
   dark: boolean,
 ): string {
@@ -104,19 +108,30 @@ export function adjust(
   const step = clampVividness(level) / 5;
   const away = dark ? 1 : -1;
   if (role === "ink") {
-    // Ink moves away from the background it sits on.
-    return toHex({ ...hsl, l: clamp(hsl.l + away * 0.05 * step) });
+    // Ink moves away from the background it sits on, and keeps a little of
+    // its own colour rather than bleaching towards white as it climbs.
+    return toHex({
+      ...hsl,
+      s: clamp(hsl.s + 0.05 * step),
+      l: clamp(hsl.l + away * 0.09 * step),
+    });
   }
   if (role === "surface") {
-    // Surfaces separate from each other so panels stop merging into one
-    // field of grey; on a dark theme that means lifting them slightly.
-    return toHex({ ...hsl, l: clamp(hsl.l + away * 0.022 * step) });
+    // Surfaces only need to separate from each other. Lifting them hard is
+    // what turns a dark theme into grey mush, so they move least.
+    return toHex({ ...hsl, l: clamp(hsl.l + away * 0.02 * step) });
+  }
+  if (role === "ground") {
+    // The background goes the other way: deepening it is what gives the ink
+    // and the accents somewhere to stand out against, and it is why the top
+    // of the slider reads as brighter rather than washed out.
+    return toHex({ ...hsl, l: clamp(hsl.l - away * 0.025 * step) });
   }
   // Signals get their saturation back, which is most of what "muddy" means.
   return toHex({
     ...hsl,
-    s: clamp(hsl.s + 0.12 * step),
-    l: clamp(hsl.l + away * 0.03 * step),
+    s: clamp(hsl.s + 0.2 * step),
+    l: clamp(hsl.l + away * 0.05 * step),
   });
 }
 
@@ -132,7 +147,7 @@ export function overrides(
   const out: Record<string, string> = {};
   const apply = (
     tokens: readonly string[],
-    role: "ink" | "surface" | "signal",
+    role: "ink" | "surface" | "signal" | "ground",
   ) => {
     for (const token of tokens) {
       const current = read(token);
@@ -143,5 +158,6 @@ export function overrides(
   apply(INK, "ink");
   apply(SURFACE, "surface");
   apply(SIGNAL, "signal");
+  apply(GROUND, "ground");
   return out;
 }
