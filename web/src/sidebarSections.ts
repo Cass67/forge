@@ -34,9 +34,10 @@ export function labelFor(paths: string[]): Record<string, string> {
       if (!clash) break;
       depth++;
     }
-    const tail = own.slice(-depth);
-    // A leading ellipsis says the name is a tail, not the whole path.
-    out[path] = (own.length > tail.length ? "…/" : "/") + tail.join("/");
+    // The name is the folder, plain: "forge", not "…/forge". A path only
+    // shows through when two workspaces share a folder name, and then only as
+    // far back as it takes to tell them apart. The full path is in the title.
+    out[path] = own.slice(-depth).join("/") || path;
   }
   return out;
 }

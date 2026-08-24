@@ -19,10 +19,22 @@ const ws = (path: string, extra: Partial<Workspace> = {}): Workspace => ({
   ...extra,
 });
 
-test("a unique last segment is name enough", () => {
+test("a unique folder name is name enough, with no path decoration", () => {
   const labels = labelFor(["/Users/cass/git/forge", "/Users/cass/git/pool"]);
-  expect(labels["/Users/cass/git/forge"]).toBe("…/forge");
-  expect(labels["/Users/cass/git/pool"]).toBe("…/pool");
+  expect(labels["/Users/cass/git/forge"]).toBe("forge");
+  expect(labels["/Users/cass/git/pool"]).toBe("pool");
+});
+
+test("a shared folder name grows only until the two differ", () => {
+  const labels = labelFor([
+    "/Users/cass/git/forge/web",
+    "/Users/cass/work/api/web",
+    "/Users/cass/git/solo",
+  ]);
+  expect(labels["/Users/cass/git/forge/web"]).toBe("forge/web");
+  expect(labels["/Users/cass/work/api/web"]).toBe("api/web");
+  // An unambiguous one is left alone rather than padded to match.
+  expect(labels["/Users/cass/git/solo"]).toBe("solo");
 });
 
 const thread = (thread_id: string) => ({ thread_id });
@@ -56,9 +68,9 @@ test("colliding names grow until they are told apart", () => {
   for (const path of paths) expect(labels[path]).toContain("work");
 });
 
-test("a path that is only its own root keeps its whole tail", () => {
+test("a folder directly under the root is still just its name", () => {
   const labels = labelFor(["/tmp"]);
-  expect(labels["/tmp"]).toBe("/tmp");
+  expect(labels["/tmp"]).toBe("tmp");
 });
 
 test("the long tail collapses, and the active section always survives it", () => {
