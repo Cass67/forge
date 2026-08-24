@@ -10,7 +10,7 @@ import (
 func serviceWithThreads(ids []string, active string, refuse map[string]bool) *Service {
 	live := append([]string(nil), ids...)
 	s, c := New(func(string, any) {})
-	c.Attach(tui.ChatLiveConfig{
+	c.Attach("s1", tui.ChatLiveConfig{
 		CurrentThreadID: func() string { return active },
 		ListThreads: func() []tui.ThreadSummary {
 			// Only ever hands back 2 at a time, the way the real store caps
@@ -36,7 +36,7 @@ func serviceWithThreads(ids []string, active string, refuse map[string]bool) *Se
 			}
 			return errors.New("not found")
 		},
-	}, make(chan string, 1))
+	}, make(chan string, 1), nil)
 	return s
 }
 

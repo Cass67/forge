@@ -26,6 +26,8 @@ func TestBoundMethodSurface(t *testing.T) {
 		"Clear", "ClearThreads", "CompleteProviderLogin", "DeleteThread", "Efforts", "ForgetWorkspace",
 		"History", "ImagePreview", "Init", "MCPServers", "Models", "NewSession", "OpenURL", "PinWorkspace",
 		"Providers", "RenameThread", "Restore", "Send",
+		// live sessions
+		"Sessions", "ActivateSession", "OpenThread", "CloseSession",
 		"SendWithImages", "SetEffort", "SetProviderKey", "SignOutProvider",
 		"StartProviderLogin", "SwitchModel", "SwitchWorkspace", "Threads", "Workspaces",
 		"ListWorkspaceDir", "ReadWorkspaceFile", "WriteWorkspaceFile",
@@ -93,7 +95,7 @@ func TestEncodeInput(t *testing.T) {
 
 func TestWorkspacesGroupsByThreadCWD(t *testing.T) {
 	s, c := New(func(string, any) {})
-	c.Attach(tui.ChatLiveConfig{
+	c.Attach("s1", tui.ChatLiveConfig{
 		WorkDir: "/work/active",
 		ListThreads: func() []tui.ThreadSummary {
 			return []tui.ThreadSummary{
@@ -103,14 +105,19 @@ func TestWorkspacesGroupsByThreadCWD(t *testing.T) {
 				{ThreadID: "4", CWD: ""},
 			}
 		},
-	}, make(chan string, 1))
+	}, make(chan string, 1), nil)
 
 	got := s.Workspaces()
 	if len(got) != 2 {
 		t.Fatalf("want 2 workspaces, got %d: %+v", len(got), got)
 	}
-	if !got[0].Active || got[0].Path != "/work/active" {
-		t.Fatalf("active workspace should sort first, got %+v", got[0])
+	// Order is by name and does not depend on which workspace is active: the
+	// sidebar must not reshuffle under the pointer when one is activated.
+	if got[0].Path != "/work/active" || got[1].Path != "/work/other" {
+		t.Fatalf("workspaces out of name order: %+v", got)
+	}
+	if !got[0].Active || got[1].Active {
+		t.Fatalf("wrong workspace marked active: %+v", got)
 	}
 	if got[1].Threads != 2 {
 		t.Fatalf("other workspace thread count = %d, want 2", got[1].Threads)
@@ -123,10 +130,10 @@ func TestWorkspacesGroupsByThreadCWD(t *testing.T) {
 	}
 }
 
-// Runtimes are independent: switching workspaces activates another directory's
-// runtime without tearing the old one down, so both keep accepting input and
-// their events stay tagged with their own workspace.
-func TestSwitchWorkspaceKeepsBothRuntimesAlive(t *testing.T) {
+// Sessions are independent: switching workspaces starts or activates another
+// session without tearing the old one down, so both keep accepting input and
+// their events stay tagged with their own session and workspace.
+func TestSwitchWorkspaceKeepsBothSessionsAlive(t *testing.T) {
 	dirA := t.TempDir()
 	dirB := t.TempDir()
 	var mu sync.Mutex
@@ -139,12 +146,15 @@ func TestSwitchWorkspaceKeepsBothRuntimesAlive(t *testing.T) {
 
 	inputA := make(chan string, 1)
 	inputB := make(chan string, 1)
-	c.Attach(tui.ChatLiveConfig{WorkDir: dirA}, inputA)
+	c.Attach("a", tui.ChatLiveConfig{WorkDir: dirA}, inputA, nil)
+	s.StartRuntime = func(dir, sessionID, _ string) {
+		c.Attach(sessionID, tui.ChatLiveConfig{WorkDir: dir}, inputB, nil)
+	}
 
 	eventsA := make(chan llm.Event)
 	done := make(chan struct{})
 	go func() {
-		c.PumpEvents(dirA, eventsA)
+		c.PumpEvents("a", dirA, eventsA)
 		close(done)
 	}()
 
@@ -154,14 +164,13 @@ func TestSwitchWorkspaceKeepsBothRuntimesAlive(t *testing.T) {
 	if got := s.currentDir(); filepath.Clean(got) != filepath.Clean(dirB) {
 		t.Fatalf("ActiveDir = %q, want %q", got, dirB)
 	}
-	c.Attach(tui.ChatLiveConfig{WorkDir: dirB}, inputB)
 
-	// Both runtimes still accept input.
+	// Both sessions still accept input.
 	inputA <- "to a"
 	inputB <- "to b"
 
-	// The first runtime's pump is long-lived: it must not have returned on
-	// the switch, and its events carry its own workspace tag.
+	// The first session's pump is long-lived: it must not have returned on
+	// the switch, and its events carry its own tags.
 	select {
 	case <-done:
 		t.Fatal("PumpEvents returned on a workspace switch")
@@ -175,7 +184,7 @@ func TestSwitchWorkspaceKeepsBothRuntimesAlive(t *testing.T) {
 	defer mu.Unlock()
 	found := false
 	for _, e := range emitted {
-		if we, ok := e.(wireEvent); ok && we.Workspace == dirA && we.Text == "hi" {
+		if we, ok := e.(wireEvent); ok && we.Workspace == dirA && we.Session == "a" && we.Text == "hi" {
 			found = true
 		}
 	}
@@ -184,11 +193,152 @@ func TestSwitchWorkspaceKeepsBothRuntimesAlive(t *testing.T) {
 	}
 }
 
+// Two conversations in the same workspace run at once: opening a second one
+// leaves the first streaming, and each addresses its own runtime.
+func TestTwoSessionsInOneWorkspaceRunConcurrently(t *testing.T) {
+	dir := t.TempDir()
+	s, c := New(func(string, any) {})
+
+	firstIn := make(chan string, 1)
+	secondIn := make(chan string, 1)
+	c.Attach("boot", tui.ChatLiveConfig{
+		WorkDir:         dir,
+		CurrentThreadID: func() string { return "thread-1" },
+	}, firstIn, nil)
+
+	var startedFor string
+	s.StartRuntime = func(d, sessionID, resume string) {
+		startedFor = resume
+		c.Attach(sessionID, tui.ChatLiveConfig{
+			WorkDir:         d,
+			CurrentThreadID: func() string { return resume },
+		}, secondIn, nil)
+	}
+
+	// Opening a stored thread that is not live starts a session for it and
+	// puts it on screen.
+	id, err := s.OpenThread("thread-2")
+	if err != nil {
+		t.Fatalf("OpenThread: %v", err)
+	}
+	if startedFor != "thread-2" {
+		t.Fatalf("started session resumed %q, want thread-2", startedFor)
+	}
+	if err := s.Send("second"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	select {
+	case got := <-secondIn:
+		if !strings.Contains(got, "second") {
+			t.Fatalf("second session got %q", got)
+		}
+	default:
+		t.Fatal("input did not reach the newly opened session")
+	}
+	if len(firstIn) != 0 {
+		t.Fatal("input leaked into the session that is no longer on screen")
+	}
+
+	// The first session is still live, and going back to it does not start
+	// another runtime for the same thread.
+	sessions := s.Sessions()
+	if len(sessions) != 2 {
+		t.Fatalf("want 2 live sessions, got %+v", sessions)
+	}
+	startedFor = ""
+	back, err := s.OpenThread("thread-1")
+	if err != nil {
+		t.Fatalf("OpenThread(first): %v", err)
+	}
+	if back != "boot" || startedFor != "" {
+		t.Fatalf("reopening a live thread forked it: session %q, started %q", back, startedFor)
+	}
+	if err := s.Send("first"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if len(firstIn) != 1 {
+		t.Fatal("input did not reach the reactivated session")
+	}
+	_ = id
+}
+
+// The sidebar lists other workspaces' threads too. Opening one resumes it
+// under the directory it was recorded in, not the one on screen, or its tools
+// would be pointed at the wrong tree.
+func TestOpenThreadResumesItInItsOwnWorkspace(t *testing.T) {
+	here := t.TempDir()
+	elsewhere := t.TempDir()
+	s, c := New(func(string, any) {})
+	c.Attach("boot", tui.ChatLiveConfig{
+		WorkDir: here,
+		ListThreads: func() []tui.ThreadSummary {
+			return []tui.ThreadSummary{{ThreadID: "away", CWD: elsewhere}}
+		},
+	}, make(chan string, 1), nil)
+
+	var startedIn string
+	s.StartRuntime = func(dir, sessionID, _ string) {
+		startedIn = dir
+		c.Attach(sessionID, tui.ChatLiveConfig{WorkDir: dir}, make(chan string, 1), nil)
+	}
+	if _, err := s.OpenThread("away"); err != nil {
+		t.Fatalf("OpenThread: %v", err)
+	}
+	if filepath.Clean(startedIn) != filepath.Clean(elsewhere) {
+		t.Fatalf("started in %q, want %q", startedIn, elsewhere)
+	}
+}
+
+// Closing the last session must not leave the window addressing nothing: its
+// workspace gets a fresh conversation instead.
+func TestForgettingTheLastSessionReopensItsWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	s, c := New(func(string, any) {})
+	c.Attach("only", tui.ChatLiveConfig{WorkDir: dir}, make(chan string, 1), nil)
+	var restarted string
+	s.StartRuntime = func(d, sessionID, _ string) {
+		restarted = d
+		c.Attach(sessionID, tui.ChatLiveConfig{WorkDir: d}, make(chan string, 1), nil)
+	}
+	c.Forget("only")
+	if filepath.Clean(restarted) != filepath.Clean(dir) {
+		t.Fatalf("workspace not reopened, restarted %q", restarted)
+	}
+	if got := s.Sessions(); len(got) != 1 || !got[0].Active {
+		t.Fatalf("after the last session ended, sessions = %+v", got)
+	}
+}
+
+// Closing a session stops its loop and hands the window to another session in
+// the same workspace rather than leaving it addressing nothing.
+func TestCloseSessionFallsBackToAnotherSession(t *testing.T) {
+	dir := t.TempDir()
+	s, c := New(func(string, any) {})
+	stopped := make(chan struct{})
+	c.Attach("s1", tui.ChatLiveConfig{WorkDir: dir}, make(chan string, 1), nil)
+	c.Attach("s2", tui.ChatLiveConfig{WorkDir: dir}, make(chan string, 1), func() { close(stopped) })
+	if err := s.ActivateSession("s2"); err != nil {
+		t.Fatalf("ActivateSession: %v", err)
+	}
+	if err := s.CloseSession("s2"); err != nil {
+		t.Fatalf("CloseSession: %v", err)
+	}
+	<-stopped
+	// The window layer reports the ended stream.
+	c.Forget("s2")
+	if got := s.Sessions(); len(got) != 1 || !got[0].Active || got[0].ID != "s1" {
+		t.Fatalf("after closing, sessions = %+v", got)
+	}
+}
+
 func TestSwitchWorkspaceKeepsTerminalsAlive(t *testing.T) {
 	dirA := t.TempDir()
 	dirB := t.TempDir()
 	s, c := New(func(string, any) {})
-	c.Attach(tui.ChatLiveConfig{WorkDir: dirA}, make(chan string, 1))
+	c.Attach("boot", tui.ChatLiveConfig{WorkDir: dirA}, make(chan string, 1), nil)
+	s.StartRuntime = func(dir, sessionID, _ string) {
+		c.Attach(sessionID, tui.ChatLiveConfig{WorkDir: dir}, make(chan string, 1), nil)
+	}
 
 	reader, writer, err := os.Pipe()
 	if err != nil {
@@ -230,7 +380,7 @@ func TestSwitchWorkspaceKeepsTerminalsAlive(t *testing.T) {
 
 func TestSwitchWorkspaceRejectsBadDirectories(t *testing.T) {
 	s, c := New(func(string, any) {})
-	c.Attach(tui.ChatLiveConfig{WorkDir: t.TempDir()}, make(chan string, 1))
+	c.Attach("s5", tui.ChatLiveConfig{WorkDir: t.TempDir()}, make(chan string, 1), nil)
 
 	file := filepath.Join(t.TempDir(), "a-file")
 	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
@@ -247,7 +397,7 @@ func TestSwitchWorkspaceRejectsBadDirectories(t *testing.T) {
 func TestSwitchWorkspaceIgnoresTheCurrentDirectory(t *testing.T) {
 	dir := t.TempDir()
 	s, c := New(func(string, any) {})
-	c.Attach(tui.ChatLiveConfig{WorkDir: dir}, make(chan string, 1))
+	c.Attach("s6", tui.ChatLiveConfig{WorkDir: dir}, make(chan string, 1), nil)
 
 	if err := s.SwitchWorkspace(dir); err != nil {
 		t.Fatalf("SwitchWorkspace: %v", err)

@@ -30,7 +30,7 @@ func samplePNG(t *testing.T) string {
 // attachments from disk, so the bytes have to be written out and validated.
 func TestAttachImageAcceptsADroppedDataURL(t *testing.T) {
 	s, c := New(func(string, any) {})
-	c.Attach(tui.ChatLiveConfig{WorkDir: t.TempDir()}, make(chan string, 4))
+	c.Attach("s1", tui.ChatLiveConfig{WorkDir: t.TempDir()}, make(chan string, 4), nil)
 
 	raw := samplePNG(t)
 	for _, payload := range []string{raw, "data:image/png;base64," + raw} {
@@ -49,7 +49,7 @@ func TestAttachImageAcceptsADroppedDataURL(t *testing.T) {
 
 func TestAttachImageRejectsRubbish(t *testing.T) {
 	s, c := New(func(string, any) {})
-	c.Attach(tui.ChatLiveConfig{WorkDir: t.TempDir()}, make(chan string, 1))
+	c.Attach("s2", tui.ChatLiveConfig{WorkDir: t.TempDir()}, make(chan string, 1), nil)
 	if _, err := s.AttachImage("x.png", "not base64!!"); err == nil {
 		t.Error("AttachImage accepted undecodable data")
 	}
@@ -62,7 +62,7 @@ func TestAttachImageRejectsRubbish(t *testing.T) {
 func TestSendWithImagesCarriesAnImageOnlyMessage(t *testing.T) {
 	s, c := New(func(string, any) {})
 	inputCh := make(chan string, 1)
-	c.Attach(tui.ChatLiveConfig{WorkDir: t.TempDir()}, inputCh)
+	c.Attach("s3", tui.ChatLiveConfig{WorkDir: t.TempDir()}, inputCh, nil)
 
 	att, err := s.AttachImage("shot.png", samplePNG(t))
 	if err != nil {
@@ -85,7 +85,7 @@ func TestSendWithImagesCarriesAnImageOnlyMessage(t *testing.T) {
 // spaces. Those must attach without a byte round-trip.
 func TestAttachPathAcceptsFileURIs(t *testing.T) {
 	s, c := New(func(string, any) {})
-	c.Attach(tui.ChatLiveConfig{WorkDir: t.TempDir()}, make(chan string, 1))
+	c.Attach("s4", tui.ChatLiveConfig{WorkDir: t.TempDir()}, make(chan string, 1), nil)
 
 	raw, err := base64.StdEncoding.DecodeString(samplePNG(t))
 	if err != nil {
@@ -116,7 +116,7 @@ func TestAttachPathAcceptsFileURIs(t *testing.T) {
 // names what was actually tried.
 func TestAttachPathReportsWhatItTried(t *testing.T) {
 	s, c := New(func(string, any) {})
-	c.Attach(tui.ChatLiveConfig{WorkDir: t.TempDir()}, make(chan string, 1))
+	c.Attach("s5", tui.ChatLiveConfig{WorkDir: t.TempDir()}, make(chan string, 1), nil)
 	if _, err := s.AttachPath("/"); err == nil {
 		t.Fatal("AttachPath accepted a bare separator")
 	} else if !strings.Contains(err.Error(), "/") {

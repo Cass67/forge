@@ -7,6 +7,7 @@ import {
   saveThreadOrder,
   splitSections,
 } from "../sidebarSections";
+import type { SessionStatus } from "../sessionTabs";
 
 function fmtTime(iso: string): string {
   if (!iso) return "";
@@ -39,6 +40,7 @@ export function Sidebar({
   onClearThreads,
   openThreadIDs = [],
   onCloseThread,
+  threadStatus = {},
 }: {
   threads: ThreadSummary[];
   workspaces: Workspace[];
@@ -63,6 +65,8 @@ export function Sidebar({
   // deleting anything.
   openThreadIDs?: string[];
   onCloseThread: (id: string) => void;
+  // Latest known status per session, for the running/waiting/stopped dot.
+  threadStatus?: Record<string, SessionStatus>;
 }) {
   const [confirming, setConfirming] = useState("");
   const [orders, setOrders] = useState<Record<string, string[]>>(() =>
@@ -296,6 +300,13 @@ export function Sidebar({
                             }
                           />
                         ) : null}
+                        {/* A fixed leading gutter: the dots line up down the
+                            edge of the list instead of drifting with the
+                            length of each title. */}
+                        <span
+                          className={`thread-status ${threadStatus[t.thread_id] ?? "none"}`}
+                          title={threadStatus[t.thread_id] ?? ""}
+                        />
                         {renaming === t.thread_id ? (
                           <input
                             className="thread-rename"

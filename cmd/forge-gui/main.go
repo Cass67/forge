@@ -141,20 +141,22 @@ func run() error {
 	// A -prompt is delivered once, to the first runtime this process starts:
 	// switching workspace later must not replay it.
 	var sendPrompt sync.Once
+	// started keys the runtimes this process launched by session id, so a
+	// repeated activation of the same session never starts a second loop.
 	started := make(map[string]bool)
 	var startMu sync.Mutex
 
-	// startRuntime builds and runs one chat runtime for dir in its own
-	// goroutine and registers it with the service. Runtimes are independent:
-	// switching workspaces starts a directory lazily and never stops the
-	// others. The initial dir is started at boot; later ones on activation.
-	startRuntime := func(dir string) {
+	// startRuntime builds and runs one chat session for dir in its own
+	// goroutine and registers it with the service under sessionID. Sessions are
+	// independent: several can be live in the same directory at once, and
+	// starting or stopping one never touches another.
+	startRuntime := func(dir, sessionID, resumeThreadID string) {
 		startMu.Lock()
-		if started[dir] {
+		if started[sessionID] {
 			startMu.Unlock()
 			return
 		}
-		started[dir] = true
+		started[sessionID] = true
 		startMu.Unlock()
 		controller.Starting(dir)
 
@@ -164,14 +166,16 @@ func run() error {
 				log.Printf("forge-gui: cannot open %s: %v", dir, err)
 				controller.ReportError(fmt.Sprintf("cannot open %s: %v", dir, err))
 				startMu.Lock()
-				delete(started, dir)
+				delete(started, sessionID)
 				startMu.Unlock()
+				controller.Forget(sessionID)
 				return
 			}
-			if threadID, resumeErr := runtimepkg.ResolveWorkspaceResumeThreadID(setup.Config, dir); resumeErr != nil {
-				log.Printf("forge-gui: cannot resume %s: %v", dir, resumeErr)
-			} else {
-				setup.ResumeThreadID = threadID
+			// A session opened on a specific thread resumes it; one opened as a
+			// new conversation starts empty, whatever the workspace was last
+			// left in.
+			if strings.TrimSpace(resumeThreadID) != "" {
+				setup.ResumeThreadID = resumeThreadID
 			}
 
 			setup.LiveRunner = func(events <-chan llm.Event, live tui.ChatLiveConfig, inputCh chan<- string, doneCh <-chan struct{}) tui.ChatLiveResult {
@@ -179,28 +183,44 @@ func run() error {
 				// so the frontend's per-workspace matching never sees a
 				// symlinked or uncleaned variant of the path.
 				dir := filepath.Clean(strings.TrimSpace(live.WorkDir))
-				controller.Attach(live, inputCh)
+				stop := make(chan struct{})
+				var stopOnce sync.Once
+				controller.Attach(sessionID, live, inputCh, func() {
+					stopOnce.Do(func() { close(stop) })
+				})
 				if strings.TrimSpace(*prompt) != "" {
 					sendPrompt.Do(func() {
 						go func() { inputCh <- *prompt }()
 					})
 				}
 				if live.ApprovalCh != nil {
-					go controller.PumpApprovals(dir, live.ApprovalCh)
+					go controller.PumpApprovals(sessionID, dir, live.ApprovalCh)
 				}
-				go controller.PumpDone(dir, doneCh)
-				// Returns when the stream closes; the runtime stays registered
-				// until then so its workspace keeps receiving events.
-				controller.PumpEvents(dir, events)
+				go controller.PumpDone(sessionID, dir, doneCh)
+				streamed := make(chan struct{})
+				go func() {
+					controller.PumpEvents(sessionID, dir, events)
+					close(streamed)
+				}()
+				// Returning ends the session and releases its MCP servers and
+				// shells, so it waits for either the stream to end or the
+				// window to close this session explicitly.
+				select {
+				case <-streamed:
+				case <-stop:
+				}
 				return tui.ChatLiveResult{}
 			}
 			runtimepkg.RunChatLive(setup)
-			controller.Forget(dir)
+			startMu.Lock()
+			delete(started, sessionID)
+			startMu.Unlock()
+			controller.Forget(sessionID)
 		}()
 	}
 
-	service.StartRuntime = func(dir string) {
-		startRuntime(dir)
+	service.StartRuntime = func(dir, sessionID, resumeThreadID string) {
+		startRuntime(dir, sessionID, resumeThreadID)
 		if wd, err := os.Getwd(); err != nil || wd != dir {
 			enterWorkspace(dir)
 		}
@@ -210,7 +230,12 @@ func run() error {
 
 	// The chat runtimes own blocking loops, so they run off the main thread;
 	// the platform requires the window to stay on it.
-	startRuntime(startDir)
+	// The first session resumes whatever thread the workspace was last left in.
+	startThread, err := runtimepkg.ResolveWorkspaceResumeThreadID(setup.Config, startDir)
+	if err != nil {
+		log.Printf("forge-gui: cannot resume %s: %v", startDir, err)
+	}
+	startRuntime(startDir, "s0", startThread)
 
 	// Wails builds a signal handler and never starts it, and once AppKit owns
 	// the process SIGINT stops reaching Go's default handler: Ctrl-C in the

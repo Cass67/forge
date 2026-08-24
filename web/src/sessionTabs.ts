@@ -1,9 +1,10 @@
-// Open-session tabs.
+// Open-session bookkeeping for the sidebar.
 //
-// Forge binds one chat runtime to one window, so only the session in the
-// foreground can actually be running; the rest are stored threads kept one
-// click away. The status a tab shows is therefore last-known rather than live
-// for anything but the active tab.
+// Every open session has its own live chat runtime, so any number of them can
+// be running at once. The backend is the authority on which are live and what
+// they are doing; what is kept here is this window's memory of sessions it has
+// seen, so a thread that finished while it was on screen still shows how it
+// ended after the runtime is gone.
 
 export type SessionStatus = "idle" | "working" | "waiting" | "failed" | "done";
 

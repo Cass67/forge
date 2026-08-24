@@ -32,6 +32,9 @@ export type WireEvent = {
   sub_agent?: string;
   error?: string;
   workspace?: string;
+  // The live session that produced this event. Several sessions stream at
+  // once, so everything the window renders is routed by this.
+  session?: string;
 };
 
 export type ClearResult = {
@@ -56,6 +59,7 @@ export type WireAction = {
   detail?: string;
   path?: string;
   workspace?: string;
+  session?: string;
 };
 
 export type StoredItem = {
@@ -112,6 +116,7 @@ export type InitPayload = {
   efforts?: string[];
   skills: { name: string; description?: string }[];
   thread_id?: string;
+  session?: string;
   request_mode?: string;
   yolo: boolean;
   notice?: string;
@@ -137,8 +142,17 @@ export type Attachment = {
   height: number;
 };
 
+export type SessionInfo = {
+  id: string;
+  workspace: string;
+  thread_id?: string;
+  active: boolean;
+  ready: boolean;
+};
+
 export type RestoreResult = {
   thread_id: string;
+  session?: string;
   restored: number;
   items: StoredItem[];
 };
@@ -261,7 +275,7 @@ export type TerminalEvent = {
   closed?: boolean;
 };
 
-export type DonePayload = { workspace?: string };
+export type DonePayload = { workspace?: string; session?: string };
 
 // Wails delivers a payload as event.data, sometimes wrapped in an array.
 function payload<T>(event: unknown): T {
@@ -276,7 +290,12 @@ export const forge = {
     call<void>("SendWithImages", text, attachments),
   approve: (ok: boolean) => call<void>("Approve", ok),
   cancel: () => call<void>("Cancel"),
-  newSession: () => call<void>("NewSession"),
+  // An empty dir means the workspace already on screen.
+  newSession: (dir = "") => call<void>("NewSession", dir),
+  sessions: () => call<SessionInfo[]>("Sessions"),
+  activateSession: (id: string) => call<void>("ActivateSession", id),
+  openThread: (threadID: string) => call<string>("OpenThread", threadID),
+  closeSession: (id: string) => call<void>("CloseSession", id),
   clear: () => call<void>("Clear"),
   switchModel: (model: string) => call<string>("SwitchModel", model),
   models: () => call<string[]>("Models"),
@@ -389,6 +408,13 @@ export const forge = {
     Events.On("forge:approval", (e: unknown) => fn(payload<WireAction>(e))),
   onTurnDone: (fn: (done: DonePayload) => void) =>
     Events.On("forge:done", (e: unknown) => fn(payload<DonePayload>(e))),
+  onSessions: (fn: (list: SessionInfo[]) => void) =>
+    Events.On("forge:sessions", (e: unknown) => {
+      const data = (e as { data?: unknown })?.data;
+      const raw =
+        Array.isArray(data) && Array.isArray(data[0]) ? data[0] : data;
+      fn((Array.isArray(raw) ? raw : []) as SessionInfo[]);
+    }),
   // Not payload(): that helper unwraps a one-element array, which for a list
   // of filenames yields the first name and leaves the caller iterating its
   // characters. Both wrapping shapes are handled explicitly here.

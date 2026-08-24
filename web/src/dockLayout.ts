@@ -18,7 +18,8 @@ export type ToolKind =
   | "git"
   | "terminal"
   | "chat"
-  | "preview";
+  | "preview"
+  | "activity";
 export type DockTool = { id: string; kind: ToolKind; title: string };
 export type DockGroup = {
   id: string;
@@ -63,6 +64,17 @@ const SINGLETONS: { tool: DockTool; home: DockSide }[] = [
   { tool: { id: "chat", kind: "chat", title: "Chat" }, home: "center" },
   { tool: { id: "editor", kind: "editor", title: "Editor" }, home: "right" },
 ];
+
+// The progress panel — context, plan and tool activity. It is a dockable panel
+// like any other rather than a fixed strip beside the chat, so it can be moved,
+// stacked or closed. It is not part of the default layout and not a singleton:
+// the shell docks it to match the "activity panel" setting, which is what
+// closing it turns off.
+export const ACTIVITY_TOOL: DockTool = {
+  id: "activity",
+  kind: "activity",
+  title: "Progress",
+};
 
 let groupCounter = 0;
 
@@ -281,6 +293,7 @@ function reviveTool(raw: unknown): DockTool | null {
     "terminal",
     "chat",
     "preview",
+    "activity",
   ];
   if (!kinds.includes(tool.kind as ToolKind)) return null;
   return { id: tool.id, kind: tool.kind as ToolKind, title: tool.title };

@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   forge,
   type InitPayload,
+  type SessionInfo,
   type ThreadSummary,
   type WireAction,
+  type WireEvent,
   type Workspace,
   type Attachment,
 } from "./bridge";
@@ -110,14 +112,23 @@ export default function App() {
   // runtime keeps working while its workspace is in the background, so this
   // drives the liveness dots instead of the focused pane's busy flag.
   const [busyDirs, setBusyDirs] = useState<Record<string, boolean>>({});
-  // Session state stashed per workspace so switching away and back restores
-  // the transcript instead of replaying it from storage.
-  const wsCache = useRef(
+  // Sub-agent roles that have produced output in the turn on screen. Cleared
+  // when the turn ends, which is the only signal the event stream gives that
+  // delegation is over.
+  const [subAgents, setSubAgents] = useState<string[]>([]);
+  // Which live sessions have a turn in flight. A background session keeps
+  // working, so this is what the sidebar dots read.
+  const [busySessions, setBusySessions] = useState<Record<string, boolean>>({});
+  // Every live session, from the backend. Several can share a workspace.
+  const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  // Transcripts stashed per session, so going to another conversation and back
+  // restores what it streamed instead of replaying it from storage.
+  const sessionCache = useRef(
     new Map<string, { entries: Entry[]; activeID: string }>(),
   );
-  const prevDirRef = useRef("");
-  // Approvals that arrived while their workspace was in the background; they
-  // are shown when that workspace becomes active again.
+  const prevSessionRef = useRef("");
+  // Approvals that arrived while their session was in the background; they are
+  // shown when that session comes back on screen.
   const pendingApprovals = useRef<Record<string, WireAction>>({});
   const switchingWorkspace = useRef(false);
   const scaleRef = useRef(scale);
@@ -220,11 +231,22 @@ export default function App() {
 
   // Held in a ref so the event subscription does not tear down and re-attach
   // every time the focused session changes.
-  // Set when a new session was asked for in a workspace that is not open yet:
-  // the switch tears the runtime down, so the request is replayed once the
-  // rebuilt one reports ready.
-  const pendingNewSession = useRef(false);
-  const newThreadRef = useRef<() => void>(() => {});
+
+  // The session on screen. Held in a ref as well so the event subscription can
+  // route by it without tearing down and re-attaching on every switch.
+  const sessionID = init?.session ?? "";
+  const sessionRef = useRef(sessionID);
+  sessionRef.current = sessionID;
+
+  // A background session's output is folded into its cached transcript, so
+  // coming back to it shows everything it streamed while it was away.
+  const cacheBackground = useCallback((id: string, ev: WireEvent) => {
+    const cached = sessionCache.current.get(id);
+    sessionCache.current.set(id, {
+      entries: applyEvent(cached?.entries ?? [], ev),
+      activeID: cached?.activeID ?? "",
+    });
+  }, []);
 
   const markRef = useRef(markActive);
   markRef.current = markActive;
@@ -244,29 +266,33 @@ export default function App() {
   const loadInit = useCallback(() => {
     void forge.init().then((payload) => {
       if (!payload.ready) return;
-      const dir = payload.work_dir;
+      const session = payload.session ?? "";
       switchingWorkspace.current = false;
       setInit(payload);
       setNoticeSeen(false);
       setStats((s) => ({ ...s, model: payload.model }));
       if (payload.effort) setEffort(payload.effort);
       setYoloState(payload.yolo);
-      // Stash the outgoing workspace's session so returning to it restores
-      // the live transcript instead of replaying it from storage.
-      if (prevDirRef.current && prevDirRef.current !== dir) {
-        wsCache.current.set(prevDirRef.current, {
+      // Stash the outgoing session's transcript so coming back to it shows
+      // what it streamed rather than a replay from storage.
+      if (prevSessionRef.current && prevSessionRef.current !== session) {
+        sessionCache.current.set(prevSessionRef.current, {
           entries: entriesRef.current,
           activeID: activeIDRef.current,
         });
       }
-      const switched = prevDirRef.current !== dir;
-      prevDirRef.current = dir;
+      const switched = prevSessionRef.current !== session;
+      prevSessionRef.current = session;
       if (switched) {
-        // The focused pane's busy flag belongs to the previous workspace's
-        // runtime; carrying it over would lock the composer and disable "+".
+        // Typing goes to the conversation that just came on screen, launch
+        // included: the composer used to sit unfocused until it was clicked.
+        setComposerFocus((n) => n + 1);
+        // busy and any delegation belong to the session that was on screen;
+        // its own dot keeps tracking it, but nothing here must stay locked.
         setBusy(false);
+        setSubAgents([]);
       }
-      const saved = wsCache.current.get(dir);
+      const saved = sessionCache.current.get(session);
       const savedMatches =
         saved && (!payload.thread_id || saved.activeID === payload.thread_id);
       if (savedMatches) {
@@ -278,15 +304,20 @@ export default function App() {
           .history(payload.thread_id)
           .then((items) => setEntries(itemsToEntries(items)));
       } else {
-        // A workspace opened for the first time starts with a fresh
-        // conversation rather than an empty pane waiting for input.
-        newThreadRef.current();
+        // A session with nothing in it yet starts on an empty transcript. The
+        // backend already made it, so nothing is asked for here.
+        setActiveID("");
+        setEntries([]);
       }
+      // An approval that arrived while this session was in the background is
+      // still waiting on an answer.
+      const queued = pendingApprovals.current[session];
+      if (queued) {
+        delete pendingApprovals.current[session];
+        setApproval(queued);
+      }
+      void forge.sessions().then(setSessions);
       refreshThreads();
-      if (pendingNewSession.current) {
-        pendingNewSession.current = false;
-        newThreadRef.current();
-      }
     });
   }, [refreshThreads]);
 
@@ -294,22 +325,27 @@ export default function App() {
     loadInit();
     const offReady = forge.onReady(loadInit);
     const offEvent = forge.onEvent((ev) => {
+      const from = ev.session ?? "";
       const dir = ev.workspace ?? "";
-      // Background runtimes keep streaming: track their liveness without
-      // touching the focused transcript.
-      if (dir && init && dir !== init.work_dir) {
-        if (
-          ev.kind === "done" ||
-          ev.kind === "agent_done" ||
-          ev.kind === "abort"
-        ) {
-          setBusyDirs((m) => ({ ...m, [dir]: false }));
-        } else {
-          setBusyDirs((m) => ({ ...m, [dir]: true }));
-        }
+      const finished =
+        ev.kind === "done" || ev.kind === "agent_done" || ev.kind === "abort";
+      if (from) {
+        setBusySessions((m) => ({ ...m, [from]: !finished }));
+      }
+      if (dir) setBusyDirs((m) => ({ ...m, [dir]: !finished }));
+      // Background sessions keep streaming into their own caches: their
+      // output must never land in the transcript on screen.
+      if (from && from !== sessionRef.current) {
+        cacheBackground(from, ev);
         return;
       }
       if (switchingWorkspace.current) return;
+      if (ev.sub_agent) {
+        const role = ev.sub_agent;
+        setSubAgents((roles) =>
+          roles.includes(role) ? roles : [...roles, role],
+        );
+      }
       setEntries((prev) => applyEvent(prev, ev));
       if (ev.is_error || ev.error) turnFailed.current = true;
       if (ev.kind === "stats" && ev.usage) {
@@ -333,16 +369,14 @@ export default function App() {
           lastMs: ev.duration_ms || s.lastMs,
         }));
       }
-      if (
-        ev.kind === "done" ||
-        ev.kind === "agent_done" ||
-        ev.kind === "abort"
-      ) {
+      if (finished) {
         setBusy(false);
+        setSubAgents([]);
         markRef.current(turnFailed.current ? "failed" : "done");
         refreshThreads();
       }
     });
+    const offSessions = forge.onSessions(setSessions);
     // The webview never gives the DOM a dragged file; Wails delivers the
     // paths here instead.
     const offFiles = forge.onFilesDropped((paths) => {
@@ -351,12 +385,14 @@ export default function App() {
       void attachPaths(paths);
     });
     const offApproval = forge.onApproval((action) => {
-      // An approval from a background runtime stays queued for its own
-      // workspace: answering it here would hit the active runtime instead.
-      if (action.workspace && init && action.workspace !== init.work_dir) {
-        const ws = action.workspace;
-        pendingApprovals.current[ws] = action;
-        setBusyDirs((m) => ({ ...m, [ws]: true }));
+      // An approval from a background session stays queued against that
+      // session: answering it here would hit whichever one is on screen.
+      const from = action.session ?? "";
+      if (from && from !== sessionRef.current) {
+        pendingApprovals.current[from] = action;
+        setBusySessions((m) => ({ ...m, [from]: true }));
+        if (action.workspace)
+          setBusyDirs((m) => ({ ...m, [action.workspace as string]: true }));
         return;
       }
       if (switchingWorkspace.current) return;
@@ -364,10 +400,12 @@ export default function App() {
       markRef.current("waiting");
     });
     const offDone = forge.onTurnDone((done) => {
+      const from = done.session ?? "";
       const tag = done.workspace ?? "";
+      if (from) setBusySessions((m) => ({ ...m, [from]: false }));
       if (tag) setBusyDirs((m) => ({ ...m, [tag]: false }));
-      // A background workspace finishing its turn only clears its own dot.
-      if (!tag || !init || tag === init.work_dir) {
+      // A background session finishing its turn only clears its own dot.
+      if (!from || from === sessionRef.current) {
         setBusy(false);
         markRef.current(turnFailed.current ? "failed" : "done");
         refreshThreads();
@@ -376,6 +414,7 @@ export default function App() {
     return () => {
       offReady();
       offEvent();
+      offSessions();
       offFiles();
       offApproval();
       offDone();
@@ -433,34 +472,75 @@ export default function App() {
       .then(refreshThreads)
       .catch((e: unknown) => notify(String(e)));
   }, [notify, refreshThreads]);
-  newThreadRef.current = newThread;
 
+  // Opening a thread activates its live session if it has one, and otherwise
+  // starts a session to resume it. Either way the session that was on screen
+  // keeps running: navigating never interrupts a turn.
   const restoreThread = useCallback(
     (id: string) => {
       void forge
         .restore(id)
         .then((r) => {
+          // Paint straight away; the session's own events take over once it
+          // attaches and the window re-inits against it.
           setEntries(itemsToEntries(r.items));
           setActiveID(r.thread_id);
           refreshThreads();
+          void forge.sessions().then(setSessions);
         })
         .catch((e: unknown) => notify(String(e)));
     },
     [notify, refreshThreads],
   );
 
-  // Closing a chat forgets the tab, not the thread. Shared by the tab strip
-  // and the sidebar's ✕ so both behave the same.
+  // Sidebar dots. A thread with a live session shows what that session is
+  // really doing; the rest fall back to the last state this window saw.
+  const threadStatus = useMemo(() => {
+    const merged: Record<string, SessionStatus> = { ...tabs.status };
+    for (const session of sessions) {
+      if (!session.thread_id) continue;
+      merged[session.thread_id] = busySessions[session.id]
+        ? "working"
+        : (merged[session.thread_id] ?? "idle");
+    }
+    return merged;
+  }, [busySessions, sessions, tabs.status]);
+
+  // A thread is open if it has a live session, whatever this window remembers.
+  const openThreadIDs = useMemo(() => {
+    const ids = new Set(tabs.open);
+    for (const session of sessions) {
+      if (session.thread_id) ids.add(session.thread_id);
+    }
+    return [...ids];
+  }, [sessions, tabs.open]);
+
+  // Which live session, if any, is running a given thread.
+  const sessionForThread = useCallback(
+    (threadID: string) =>
+      sessions.find((session) => session.thread_id === threadID)?.id ?? "",
+    [sessions],
+  );
+
+  // Closing a chat ends its session and forgets the tab; the thread itself
+  // stays on disk. Shared by the sidebar's ✕ and the tab strip.
   const closeChat = useCallback(
     (id: string) => {
       const next = nextAfterClose(tabs, id);
+      const live = sessionForThread(id);
       setTabs((current) => closeSessionTab(current, id));
+      if (live) {
+        void forge.closeSession(live).catch((e: unknown) => notify(String(e)));
+        // The backend hands the window to another session in this workspace
+        // and re-inits; nothing more to do when the closed one was on screen.
+        return;
+      }
       if (id === activeID) {
         if (next) restoreThread(next);
         else newThread();
       }
     },
-    [activeID, newThread, restoreThread, tabs],
+    [activeID, newThread, notify, restoreThread, sessionForThread, tabs],
   );
 
   const deleteThread = useCallback(
@@ -603,19 +683,19 @@ export default function App() {
     [notify, workspaceDirty],
   );
 
-  // Double-clicking a workspace starts a fresh session in it. When it is not
-  // the workspace already open, the switch has to land first — openWorkspace
-  // tears the runtime down — so the request is deferred to loadInit.
+  // Double-clicking a workspace starts a fresh session in it. Sessions are
+  // independent, so the one on screen keeps running whichever workspace the
+  // new one lands in.
   const newSessionIn = useCallback(
     (dir: string) => {
-      if (!dir || dir === (init?.work_dir ?? "")) {
-        newThread();
-        return;
-      }
-      pendingNewSession.current = true;
-      openWorkspace(dir);
+      setEntries([]);
+      setActiveID("");
+      void forge
+        .newSession(dir)
+        .then(refreshThreads)
+        .catch((e: unknown) => notify(String(e)));
     },
-    [init?.work_dir, newThread, openWorkspace],
+    [notify, refreshThreads],
   );
 
   const addWorkspace = useCallback(() => {
@@ -969,8 +1049,9 @@ export default function App() {
               }
               onBulkDelete={bulkDelete}
               onClearThreads={clearThreads}
-              openThreadIDs={tabs.open}
+              openThreadIDs={openThreadIDs}
               onCloseThread={closeChat}
+              threadStatus={threadStatus}
             />
             <div
               aria-label="Resize workspace panel"
@@ -991,6 +1072,17 @@ export default function App() {
           onDirtyChange={setWorkspaceDirty}
           onNotify={notify}
           onShowDocks={() => setWorkspaceMode(true)}
+          showActivity={prefs.showActivity}
+          onActivityClosed={() =>
+            setPrefsState((p) => ({ ...p, showActivity: false }))
+          }
+          activity={
+            <ActivityPanel
+              entries={entries}
+              stats={stats}
+              subAgents={subAgents}
+            />
+          }
           model={init?.model ?? ""}
           models={init?.models ?? []}
         >
@@ -1017,9 +1109,6 @@ export default function App() {
               focusToken={composerFocus}
             />
           </main>
-          {prefs.showActivity ? (
-            <ActivityPanel entries={entries} stats={stats} />
-          ) : null}
         </WorkspaceShell>
       </div>
 

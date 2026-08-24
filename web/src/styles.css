@@ -706,6 +706,33 @@ textarea:not(.xterm-helper-textarea),
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Per-session running/stopped/waiting dot on sidebar rows. */
+.thread-status {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin: 0 5px 0 4px;
+  border-radius: 50%;
+  align-self: center;
+}
+/* A thread with no status still reserves the gutter, so titles stay aligned
+   whether or not their session is live. */
+.thread-status.none {
+  background: transparent;
+}
+.thread-status.working {
+  background: var(--ok, #4caf50);
+  animation: ws-live-pulse 1.2s ease-in-out infinite;
+}
+.thread-status.waiting {
+  background: var(--warn, #f0a020);
+}
+.thread-status.failed {
+  background: var(--danger, #e5484d);
+}
+.thread-status.done {
+  background: var(--muted);
+}
 
 .center {
   flex: 1;
@@ -1379,10 +1406,11 @@ textarea:not(.xterm-helper-textarea),
 
 /* ---- activity panel ---- */
 .activity {
-  width: 240px;
-  flex: none;
+  /* Docked like any other panel now, so it takes the width the dock gives it
+     instead of carrying its own. */
+  width: 100%;
+  height: 100%;
   background: var(--panel);
-  border-left: 1px solid var(--border);
   padding: 10px;
   display: flex;
   flex-direction: column;
@@ -3766,4 +3794,54 @@ textarea:not(.xterm-helper-textarea),
   flex: 0 0 0;
   min-width: 0;
   overflow: hidden;
+}
+
+/* ---- plan panel ---- */
+.plan-count {
+  color: var(--ok);
+  font-family: var(--mono);
+}
+.plan-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* A long plan scrolls on its own rather than pushing the activity feed
+     off the bottom of the panel. */
+  max-height: 33%;
+  overflow-y: auto;
+}
+.plan-step {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font-size: 0.6875rem;
+  padding: 1px 0;
+}
+.plan-ic {
+  width: 9px;
+  flex: none;
+  text-align: center;
+  color: var(--muted);
+}
+.plan-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plan-step.completed .plan-ic {
+  color: var(--ok);
+}
+.plan-step.completed .plan-title {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+.plan-step.in_progress .plan-ic {
+  color: var(--warn);
+}
+.plan-step.blocked .plan-ic,
+.plan-step.failed .plan-ic {
+  color: var(--err);
 }

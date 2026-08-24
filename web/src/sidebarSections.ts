@@ -50,17 +50,22 @@ export function splitSections(
 ): { shown: Workspace[]; hidden: number } {
   if (expanded) return { shown: workspaces, hidden: 0 };
 
-  const shown: Workspace[] = [];
-  const rest: Workspace[] = [];
+  // Being active or pinned decides whether a section is on screen, never where
+  // it sits: the list keeps the order it arrived in, so selecting a workspace
+  // does not bounce it to the top under the pointer.
+  const keep = new Set<string>();
   for (const ws of workspaces) {
-    if (ws.active || ws.pinned) shown.push(ws);
-    else rest.push(ws);
+    if (ws.active || ws.pinned) keep.add(ws.path);
   }
-  const room = Math.max(0, SECTION_LIMIT - shown.length);
-  return {
-    shown: [...shown, ...rest.slice(0, room)],
-    hidden: Math.max(0, rest.length - room),
-  };
+  let room = Math.max(0, SECTION_LIMIT - keep.size);
+  for (const ws of workspaces) {
+    if (room === 0) break;
+    if (keep.has(ws.path)) continue;
+    keep.add(ws.path);
+    room--;
+  }
+  const shown = workspaces.filter((ws) => keep.has(ws.path));
+  return { shown, hidden: workspaces.length - shown.length };
 }
 
 // Manual chat ordering, per workspace. Threads the user dragged stay where

@@ -291,10 +291,9 @@ func (s *Service) terminalKey(dir, id string) string {
 }
 
 // activeTerminalKey resolves a frontend terminal id against the active
-// workspace.
+// workspace. Callers hold s.mu: re-entering it here would deadlock, because a
+// blocked writer parks between the outer read lock and this one.
 func (s *Service) activeTerminalKey(id string) string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	if s.activeDir == "" {
 		return ""
 	}

@@ -742,6 +742,25 @@ func reloadPluginsHandler(existing **pluginruntime.Manager, cfg *config.Config, 
 	return "reload: " + strings.Join(parts, ", ")
 }
 
+// liveLSPHolders counts the chats currently relying on the process-wide
+// language-server pool. The GUI runs several at once, so the pool outlives any
+// one of them.
+var liveLSPHolders atomic.Int64
+
+// holdSharedLSP claims the shared pool and returns the release, which closes
+// the pool only when the last holder lets go.
+func holdSharedLSP() func() {
+	liveLSPHolders.Add(1)
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			if liveLSPHolders.Add(-1) == 0 {
+				lsp.Shared().Close(context.Background())
+			}
+		})
+	}
+}
+
 func RunChatLive(setup *ChatSetup) {
 	// The initial driver was never given generation params: they were only
 	// applied on a model switch or an /effort change, so a configured effort
@@ -817,8 +836,11 @@ func RunChatLive(setup *ChatSetup) {
 	lsp.Shared().SetServers(lsp.ServersFromConfig(setup.Config.LSP))
 	// Language servers are pooled process-wide, so nothing else releases them
 	// when a chat ends. Left running they strand a warm gopls or rust-analyzer
-	// per workspace; the pool respawns on the next call.
-	defer lsp.Shared().Close(context.Background())
+	// per workspace; the pool respawns on the next call. With several chats
+	// live at once only the last one out may close it, or ending one session
+	// would strip the language servers from the ones still running.
+	releaseLSP := holdSharedLSP()
+	defer releaseLSP()
 	pluginManager := startChatPluginManager(setup.Config, setup.WorkDir, evRenderer.Info)
 	if pluginManager != nil {
 		defer func() { _ = pluginManager.Close() }()
@@ -1324,7 +1346,6 @@ func RunChatLive(setup *ChatSetup) {
 		if execManager != nil {
 			execManager.Close()
 		}
-		lsp.Shared().Close(context.Background())
 		return
 	}
 	runChatLiveUI(eventsCh, liveCfg, inputCh, doneCh)

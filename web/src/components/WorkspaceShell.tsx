@@ -16,6 +16,7 @@ import {
   type WorkspaceFile,
 } from "../bridge";
 import {
+  ACTIVITY_TOOL,
   addTool,
   allTools,
   clampDock,
@@ -59,6 +60,14 @@ type Props = {
   workDir: string;
   active: boolean;
   children: ReactNode;
+  // The progress panel's contents. It lives in the dock like any other panel,
+  // so the shell places it and the chat owns neither its position nor its size.
+  activity: ReactNode;
+  // Whether the progress panel should be docked. The settings toggle and the
+  // panel's own ✕ are the same switch seen from two places, so closing it
+  // reports back rather than leaving the setting claiming it is open.
+  showActivity: boolean;
+  onActivityClosed: () => void;
   onDirtyChange: (dirty: boolean) => void;
   onNotify: (message: string) => void;
   // Opening a panel from the menu while the docks are hidden has to show them
@@ -166,6 +175,9 @@ export function WorkspaceShell({
   workDir,
   active,
   children,
+  activity,
+  showActivity,
+  onActivityClosed,
   onDirtyChange,
   onNotify,
   onShowDocks,
@@ -524,10 +536,39 @@ export function WorkspaceShell({
     );
   };
 
+  // The progress panel is a single pane like the preview: asking for it again
+  // brings the existing one forward instead of stacking a copy.
+  const openActivity = (target: DropTarget) => {
+    setColumns((current) =>
+      findTool(current, ACTIVITY_TOOL.id)
+        ? setActiveTool(current, ACTIVITY_TOOL.id)
+        : setActiveTool(
+            addTool(current, ACTIVITY_TOOL, target),
+            ACTIVITY_TOOL.id,
+          ),
+    );
+  };
+
+  // The setting and the dock are kept in step: turning it on docks the panel,
+  // turning it off removes it.
+  useEffect(() => {
+    setColumns((current) => {
+      const docked = Boolean(findTool(current, ACTIVITY_TOOL.id));
+      if (showActivity === docked) return current;
+      return showActivity
+        ? setActiveTool(
+            addTool(current, ACTIVITY_TOOL, { side: "right", where: "end" }),
+            ACTIVITY_TOOL.id,
+          )
+        : removeTool(current, ACTIVITY_TOOL.id);
+    });
+  }, [showActivity]);
+
   const closePanel = (id: string) => {
+    if (id === ACTIVITY_TOOL.id) onActivityClosed();
     setColumns((current) => {
       const kind = findTool(current, id)?.tool.kind;
-      return kind === "terminal" || kind === "preview"
+      return kind === "terminal" || kind === "preview" || kind === "activity"
         ? removeTool(current, id)
         : current;
     });
@@ -633,6 +674,7 @@ export function WorkspaceShell({
 
   const renderTool = (tool: DockTool, layoutKey = "") => {
     if (tool.kind === "chat") return children;
+    if (tool.kind === "activity") return activity;
     if (tool.kind === "explorer")
       return (
         <>
@@ -826,6 +868,14 @@ export function WorkspaceShell({
               >
                 Preview
               </button>
+              <button
+                onClick={() =>
+                  openPanel(() => openActivity({ side: "right", where: "end" }))
+                }
+                role="menuitem"
+              >
+                Progress
+              </button>
               <hr />
               {[
                 { id: "explorer", label: "Explorer" },
@@ -888,7 +938,9 @@ export function WorkspaceShell({
               title={`${tool.title} — drag onto another panel to move or split it`}
             >
               <span className="workspace-dock-tab-label">{tool.title}</span>
-              {tool.kind === "terminal" || tool.kind === "preview" ? (
+              {tool.kind === "terminal" ||
+              tool.kind === "preview" ||
+              tool.kind === "activity" ? (
                 <button
                   className="workspace-tab-close"
                   onClick={(event) => {

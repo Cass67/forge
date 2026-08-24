@@ -83,3 +83,27 @@ test("pinned sections are kept on screen and do not eat the cap's room", () => {
   expect(shown.filter((w) => w.pinned).length).toBe(2);
   expect(shown.length).toBe(SECTION_LIMIT);
 });
+
+test("selecting a workspace does not move it up the list", () => {
+  const ws = (path: string, active = false): Workspace => ({
+    path,
+    name: path,
+    threads: 1,
+    last_use: "2026-08-24T00:00:00Z",
+    active,
+    missing: false,
+    pinned: false,
+  });
+  const order = ["alpha", "beta", "gamma"];
+  const before = splitSections(
+    order.map((p) => ws(p)),
+    false,
+  );
+  const after = splitSections(
+    order.map((p) => ws(p, p === "gamma")),
+    false,
+  );
+  expect(after.shown.map((w) => w.path)).toEqual(
+    before.shown.map((w) => w.path),
+  );
+});

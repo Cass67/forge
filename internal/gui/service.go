@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"forge/internal/agent/tools"
@@ -47,6 +48,9 @@ var (
 	errNoDelete   = errors.New("deleting threads is not available in this session")
 	errNoRename   = errors.New("renaming threads is not available in this session")
 	errNoWorkDir  = errors.New("no workspace directory")
+	errNoSession  = errors.New("no such session")
+	errNoThread   = errors.New("no thread id")
+	errNoStop     = errors.New("this session cannot be closed")
 	errBadImage   = errors.New("unsupported image")
 	errTooManyImg = fmt.Errorf("at most %d images per message", chatstate.MaxAttachments)
 )
@@ -59,17 +63,31 @@ type Service struct {
 	// expensive (tools, sandbox rules and thread stores are bound to their
 	// directory) and independent, so switching workspaces activates another
 	// entry rather than tearing anything down.
-	runtimes  map[string]*guiRuntime
-	activeDir string
+	// runtimes holds one entry per live chat session, keyed by the session id
+	// the window layer minted for it. Several sessions can share a workspace
+	// directory; each keeps its own conversation, and all of them keep
+	// streaming whether or not they are the one on screen.
+	runtimes map[string]*guiRuntime
+	// activeSession is the session the frontend is addressing; activeDir is
+	// its directory, kept alongside because terminals, git and the file tree
+	// are scoped to the workspace rather than to the conversation.
+	activeSession string
+	activeDir     string
+	// pendingFocus is the session id of a runtime that was started to be
+	// looked at: it takes the window as soon as it attaches. A runtime started
+	// for any other reason attaches in the background.
+	pendingFocus string
 
 	emit      func(name string, data any)
 	connected sync.Once
 	flows     *providerauth.Flows
 
-	// StartRuntime asks the window layer to start a chat runtime for a
-	// directory that has none yet. Set by main.go; starting is lazy, on first
-	// activation.
-	StartRuntime func(dir string)
+	// StartRuntime asks the window layer to start a chat runtime under a
+	// session id, optionally resuming a stored thread. Set by main.go;
+	// starting is lazy, on first activation.
+	StartRuntime func(dir, sessionID, resumeThreadID string)
+	// nextSession numbers minted session ids.
+	nextSession atomic.Uint64
 
 	// PickDir opens the platform's folder chooser. Set by the window layer,
 	// which owns the dialog API.
@@ -85,12 +103,27 @@ type Service struct {
 	preview   *previewProxy
 }
 
-// guiRuntime is one chat runtime bound to a workspace directory. Runtimes are
-// independent and long-lived; switching workspaces never tears one down.
+// guiRuntime is one live chat session. Sessions are independent and
+// long-lived: activating another one never tears this one down, so a turn
+// started here keeps running while the user reads somewhere else.
 type guiRuntime struct {
+	id      string
+	dir     string
 	cfg     tui.ChatLiveConfig
 	inputCh chan<- string
 	ready   bool
+	// stop ends the session's chat loop and releases its MCP servers and
+	// shells. Nil for a runtime attached by a test.
+	stop func()
+}
+
+// threadID reports which stored thread this session is writing to, which is
+// empty until its first message is persisted.
+func (r *guiRuntime) threadID() string {
+	if r == nil || r.cfg.CurrentThreadID == nil {
+		return ""
+	}
+	return r.cfg.CurrentThreadID()
 }
 
 // Controller drives the service from the Go side. It is deliberately a
@@ -112,21 +145,26 @@ func cleanDir(dir string) string {
 	return filepath.Clean(strings.TrimSpace(dir))
 }
 
-// Attach wires a running chat loop into the service under its workspace
-// directory and tells the frontend it can ask for its init payload. If no
-// runtime is active yet this one becomes active.
-func (c *Controller) Attach(cfg tui.ChatLiveConfig, inputCh chan<- string) {
+// Attach wires a running chat loop into the service under its session id and
+// tells the frontend it can ask for its init payload. A session that was
+// started to be looked at becomes the active one; one started in the
+// background does not steal the window.
+func (c *Controller) Attach(sessionID string, cfg tui.ChatLiveConfig, inputCh chan<- string, stop func()) {
 	s := c.s
 	dir := cleanDir(cfg.WorkDir)
 	s.mu.Lock()
-	rt := &guiRuntime{cfg: cfg, inputCh: inputCh, ready: true}
-	s.runtimes[dir] = rt
-	if s.activeDir == "" {
-		s.activeDir = dir
+	rt := &guiRuntime{id: sessionID, dir: dir, cfg: cfg, inputCh: inputCh, ready: true, stop: stop}
+	s.runtimes[sessionID] = rt
+	if s.activeSession == "" || s.pendingFocus == sessionID {
+		s.activeSession, s.activeDir = sessionID, dir
+	}
+	if s.pendingFocus == sessionID {
+		s.pendingFocus = ""
 	}
 	s.mu.Unlock()
-	log.Printf("gui: chat runtime ready (model %s, workspace %s)", cfg.Model, cfg.WorkDir)
+	log.Printf("gui: session %s ready (model %s, workspace %s)", sessionID, cfg.Model, cfg.WorkDir)
 	s.emit(EventReady, nil)
+	s.emit(EventSessions, s.Sessions())
 }
 
 // Starting announces that a workspace runtime is spinning up asynchronously,
@@ -136,26 +174,46 @@ func (c *Controller) Starting(dir string) {
 	c.s.emit(EventStarting, dir)
 }
 
-// Forget unregisters a runtime whose stream has ended.
-func (c *Controller) Forget(dir string) {
+// Forget unregisters a session whose stream has ended. If it was the one on
+// screen, another session in the same workspace takes over so the window is
+// never left addressing nothing.
+func (c *Controller) Forget(sessionID string) {
 	s := c.s
 	s.mu.Lock()
-	delete(s.runtimes, cleanDir(dir))
-	if s.activeDir == cleanDir(dir) {
-		s.activeDir = ""
+	gone := s.runtimes[sessionID]
+	delete(s.runtimes, sessionID)
+	if s.activeSession == sessionID {
+		s.activeSession = ""
+		if gone != nil {
+			for id, rt := range s.runtimes {
+				if rt.dir == gone.dir {
+					s.activeSession, s.activeDir = id, rt.dir
+					break
+				}
+			}
+		}
 	}
+	orphaned := s.activeSession == "" && gone != nil
 	s.mu.Unlock()
+	// Closing the last session would leave the window addressing nothing, with
+	// no way back: give its workspace a fresh conversation instead.
+	if orphaned && s.StartRuntime != nil {
+		if _, err := s.start(gone.dir, "", true); err != nil {
+			log.Printf("gui: could not reopen %s: %v", gone.dir, err)
+		}
+	}
+	s.emit(EventSessions, s.Sessions())
 }
 
 // Shutdown tears down every runtime's terminals. The runtimes themselves are
 // stopped by process exit.
 func (c *Controller) Shutdown() { c.s.closeTerminals() }
 
-// active returns the runtime the frontend is talking to.
+// active returns the session the frontend is talking to.
 func (s *Service) active() (*guiRuntime, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	rt, ok := s.runtimes[s.activeDir]
+	rt, ok := s.runtimes[s.activeSession]
 	return rt, ok && rt.ready
 }
 
@@ -178,16 +236,17 @@ func (s *Service) currentDir() string {
 
 // ---- streaming ----------------------------------------------------------
 
-// PumpEvents forwards one runtime's event stream to the window, tagging every
-// event with its workspace directory so the frontend can route output from
-// several live runtimes. It returns only when the stream closes.
-func (c *Controller) PumpEvents(dir string, events <-chan llm.Event) {
+// PumpEvents forwards one session's event stream to the window, tagging every
+// event with its session id and workspace so the frontend can route output
+// from several live sessions at once. It returns only when the stream closes.
+func (c *Controller) PumpEvents(sessionID, dir string, events <-chan llm.Event) {
 	for ev := range events {
 		w := toWireEvent(ev)
 		w.Workspace = dir
+		w.Session = sessionID
 		c.s.emit(EventChat, w)
 	}
-	c.s.emit(EventTurnDone, DonePayload{Workspace: dir})
+	c.s.emit(EventTurnDone, DonePayload{Workspace: dir, Session: sessionID})
 }
 
 // EventFilesDropped carries OS file drops to the frontend.
@@ -211,19 +270,19 @@ func (c *Controller) ReportError(msg string) {
 
 // PumpApprovals forwards tool approval requests to the window, tagged with the
 // workspace they came from.
-func (c *Controller) PumpApprovals(dir string, ch <-chan tools.Action) {
+func (c *Controller) PumpApprovals(sessionID, dir string, ch <-chan tools.Action) {
 	for a := range ch {
 		c.s.emit(EventApproval, wireAction{
 			Tool: a.Tool, Summary: a.Summary, Detail: a.Detail, Path: a.Path,
-			Workspace: dir,
+			Workspace: dir, Session: sessionID,
 		})
 	}
 }
 
 // PumpDone signals the end of each turn for one runtime.
-func (c *Controller) PumpDone(dir string, doneCh <-chan struct{}) {
+func (c *Controller) PumpDone(sessionID, dir string, doneCh <-chan struct{}) {
 	for range doneCh {
-		c.s.emit(EventTurnDone, DonePayload{Workspace: dir})
+		c.s.emit(EventTurnDone, DonePayload{Workspace: dir, Session: sessionID})
 	}
 }
 
@@ -236,8 +295,12 @@ func (s *Service) Init() InitPayload {
 	if !ready {
 		return InitPayload{Ready: false}
 	}
+	s.mu.RLock()
+	sessionID := s.activeSession
+	s.mu.RUnlock()
 	return InitPayload{
 		Ready:       true,
+		Session:     sessionID,
 		Model:       cfg.Model,
 		WorkDir:     cfg.WorkDir,
 		Models:      cfg.AvailableModels,
@@ -321,7 +384,19 @@ func (s *Service) SetYolo(on bool) (bool, error) {
 func (s *Service) Cancel() { s.control("__cancel_turn__") }
 
 // NewSession clears history and starts a fresh thread.
-func (s *Service) NewSession() { s.control("__new_session__") }
+// NewSession opens another conversation and puts it on screen. An empty dir
+// means the active workspace. The session it replaces on screen keeps running,
+// so starting a new chat never interrupts one that is mid-turn.
+func (s *Service) NewSession(dir string) error {
+	if strings.TrimSpace(dir) == "" {
+		dir = s.currentDir()
+	}
+	if dir == "" {
+		return errNoWorkDir
+	}
+	_, err := s.start(dir, "", true)
+	return err
+}
 
 func (s *Service) control(msg string) { s.controlLocked(msg) }
 
@@ -479,25 +554,31 @@ func (s *Service) RenameThread(threadID, title string) ([]tui.ThreadSummary, err
 // RestoreResult reports what a restore loaded.
 type RestoreResult struct {
 	ThreadID string          `json:"thread_id"`
+	Session  string          `json:"session,omitempty"`
 	Restored int             `json:"restored"`
 	Items    []protocol.Item `json:"items"`
 }
 
-// Restore makes a stored thread the active conversation.
+// Restore puts a stored thread on screen as its own live session, and returns
+// its items so the window can paint the transcript without waiting for the
+// session to attach. A thread already live is activated rather than resumed
+// twice.
 func (s *Service) Restore(threadID string) (RestoreResult, error) {
 	cfg, _, ready := s.snapshot()
 	if !ready {
 		return RestoreResult{}, errNotReady
 	}
-	if cfg.RestoreHistory == nil {
-		return RestoreResult{}, errNoRestore
+	sessionID, err := s.OpenThread(threadID)
+	if err != nil {
+		return RestoreResult{}, err
 	}
-	n, err := cfg.RestoreHistory(threadID)
+	items := readItems(cfg.ReadThreadItems, threadID)
 	return RestoreResult{
 		ThreadID: threadID,
-		Restored: n,
-		Items:    readItems(cfg.ReadThreadItems, threadID),
-	}, err
+		Session:  sessionID,
+		Restored: len(items),
+		Items:    items,
+	}, nil
 }
 
 // MCPServers lists the configured MCP servers and what each contributed, so
@@ -511,6 +592,160 @@ func (s *Service) MCPServers() []tui.MCPServerStatus {
 		return servers
 	}
 	return []tui.MCPServerStatus{}
+}
+
+// ---- live sessions -------------------------------------------------------
+
+// EventSessions announces that the set of live sessions changed, so the
+// sidebar can redraw which threads are open and which are still running.
+const EventSessions = "forge:sessions"
+
+// SessionInfo describes one live session for the sidebar.
+type SessionInfo struct {
+	ID        string `json:"id"`
+	Workspace string `json:"workspace"`
+	// ThreadID is empty for a session whose first message has not been
+	// persisted yet.
+	ThreadID string `json:"thread_id,omitempty"`
+	Active   bool   `json:"active"`
+	Ready    bool   `json:"ready"`
+}
+
+// Sessions lists the live sessions, newest ids last. Every one of them is a
+// running chat loop, whether or not it is the one on screen.
+func (s *Service) Sessions() []SessionInfo {
+	s.mu.RLock()
+	out := make([]SessionInfo, 0, len(s.runtimes))
+	for id, rt := range s.runtimes {
+		out = append(out, SessionInfo{
+			ID: id, Workspace: rt.dir, ThreadID: rt.threadID(),
+			Active: id == s.activeSession, Ready: rt.ready,
+		})
+	}
+	s.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// mintSession returns the next session id. Ids are opaque and per process:
+// a thread id cannot serve, because a conversation has none until its first
+// message is written.
+func (s *Service) mintSession() string {
+	return fmt.Sprintf("s%d", s.nextSession.Add(1))
+}
+
+// activate makes a live session the one the window addresses. Nothing is torn
+// down: the session that was on screen keeps running.
+func (s *Service) activate(sessionID string) bool {
+	s.mu.Lock()
+	rt, ok := s.runtimes[sessionID]
+	if ok {
+		s.activeSession, s.activeDir = sessionID, rt.dir
+	}
+	s.mu.Unlock()
+	if ok {
+		s.emit(EventReady, nil)
+		s.emit(EventSessions, s.Sessions())
+	}
+	return ok
+}
+
+// ActivateSession puts an already-live session on screen.
+func (s *Service) ActivateSession(sessionID string) error {
+	if !s.activate(sessionID) {
+		return errNoSession
+	}
+	return nil
+}
+
+// start asks the window layer for a new runtime and, when focus is wanted,
+// arranges for it to take the window the moment it attaches.
+func (s *Service) start(dir, resumeThreadID string, focus bool) (string, error) {
+	if s.StartRuntime == nil {
+		return "", errNotReady
+	}
+	id := s.mintSession()
+	if focus {
+		s.mu.Lock()
+		s.pendingFocus = id
+		s.mu.Unlock()
+	}
+	s.StartRuntime(cleanDir(dir), id, resumeThreadID)
+	return id, nil
+}
+
+// OpenThread puts a stored thread on screen. If it is already live somewhere
+// that session is activated — reopening a thread must never fork it into two
+// conversations writing to the same file — otherwise a session is started to
+// resume it, alongside whatever else is running.
+func (s *Service) OpenThread(threadID string) (string, error) {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return "", errNoThread
+	}
+	s.mu.RLock()
+	dir := s.activeDir
+	var live string
+	for id, rt := range s.runtimes {
+		if rt.threadID() == threadID {
+			live = id
+			break
+		}
+	}
+	s.mu.RUnlock()
+	if live != "" {
+		s.activate(live)
+		return live, nil
+	}
+	// A thread belongs to the directory it was recorded in, which is not
+	// always the one on screen: the sidebar lists other workspaces' threads
+	// too, and resuming one under the wrong root would point its tools at the
+	// wrong tree.
+	if home := s.threadWorkDir(threadID); home != "" {
+		dir = home
+	}
+	if dir == "" {
+		return "", errNoWorkDir
+	}
+	return s.start(dir, threadID, true)
+}
+
+// threadWorkDir reports the directory a stored thread was recorded in, empty
+// if it is unknown or no longer a directory.
+func (s *Service) threadWorkDir(threadID string) string {
+	cfg, _, ready := s.snapshot()
+	if !ready || cfg.ListThreads == nil {
+		return ""
+	}
+	for _, t := range cfg.ListThreads() {
+		if t.ThreadID != threadID {
+			continue
+		}
+		clean, err := workspaceDir(t.CWD)
+		if err != nil {
+			return ""
+		}
+		return clean
+	}
+	return ""
+}
+
+// CloseSession ends a live session and releases its MCP servers and shells.
+// The thread it was writing to stays on disk: closing is not deleting.
+func (s *Service) CloseSession(sessionID string) error {
+	s.mu.RLock()
+	rt, ok := s.runtimes[sessionID]
+	s.mu.RUnlock()
+	if !ok {
+		return errNoSession
+	}
+	if rt.stop == nil {
+		return errNoStop
+	}
+	// Forget, and with it the choice of a successor session, happens when the
+	// stream actually ends.
+	rt.stop()
+	return nil
 }
 
 // ---- workspaces ----------------------------------------------------------
@@ -579,14 +814,18 @@ func (s *Service) Workspaces() []Workspace {
 		}
 		out = append(out, *w)
 	}
+	// The order is deliberately stable: neither activating a workspace nor
+	// using it moves it, so the list under the pointer stays where it was.
+	// Pinning is the only thing that promotes an entry, because that is the
+	// user asking for it.
 	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Active != out[j].Active {
-			return out[i].Active
-		}
 		if out[i].Pinned != out[j].Pinned {
 			return out[i].Pinned
 		}
-		return out[i].LastUse.After(out[j].LastUse)
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].Path < out[j].Path
 	})
 	return out
 }
@@ -644,20 +883,34 @@ func (s *Service) SwitchWorkspace(dir string) error {
 		return err
 	}
 
-	s.mu.Lock()
-	if s.activeDir == clean {
-		s.mu.Unlock()
+	s.mu.RLock()
+	if s.activeDir == clean && s.activeSession != "" {
+		s.mu.RUnlock()
 		return nil
 	}
-	s.activeDir = clean
-	_, running := s.runtimes[clean]
-	s.mu.Unlock()
+	// Prefer a session already live in that directory: switching back to a
+	// workspace should land on the conversation it was left in, still running.
+	var live string
+	for id, rt := range s.runtimes {
+		if rt.dir == clean {
+			live = id
+			break
+		}
+	}
+	s.mu.RUnlock()
 	s.StopPreview()
 
-	if !running && s.StartRuntime != nil {
-		s.StartRuntime(clean)
+	if live != "" {
+		s.activate(live)
+		return nil
 	}
-	// The frontend re-initialises against the newly active runtime.
+	s.mu.Lock()
+	s.activeDir = clean
+	s.mu.Unlock()
+	if _, err := s.start(clean, "", true); err != nil {
+		return err
+	}
+	// The frontend re-initialises once the new session attaches.
 	s.emit(EventReady, nil)
 	return nil
 }

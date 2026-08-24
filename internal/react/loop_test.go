@@ -793,7 +793,7 @@ func TestRunnerPlanStateBlocksFinalSuccessWhenStepInProgress(t *testing.T) {
 	if strings.Contains(r.LastResponse(), "implemented the requested change") {
 		t.Fatalf("final response = %q, should not claim completion while plan is in progress", r.LastResponse())
 	}
-	if !sessionHistoryContains(session, "plan state inconsistent", "Implement the requested change") {
+	if !sessionHistoryContains(session, "unresolved plan work", "Implement the requested change") {
 		t.Fatalf("history missing concrete plan feedback: %#v", session.Snapshot().History)
 	}
 	if driver.callCount != 3 {
@@ -813,7 +813,7 @@ func TestRunnerPlanStateBlocksFinalSuccessWhenStepBlocked(t *testing.T) {
 	if turns := session.Snapshot().Turns; len(turns) == 0 || strings.TrimSpace(turns[len(turns)-1].FinalResponse) == "" {
 		t.Fatalf("turns = %#v, want persisted final response after gate cap", turns)
 	}
-	if !sessionHistoryContains(session, "plan state inconsistent", "Choose deployment target", "need user decision") {
+	if !sessionHistoryContains(session, "unresolved plan work", "Choose deployment target", "need user decision") {
 		t.Fatalf("history missing concrete blocked-plan feedback: %#v", session.Snapshot().History)
 	}
 }
@@ -865,7 +865,7 @@ func TestRunnerPlanStateBlocksPendingAndUnknownStatuses(t *testing.T) {
 			if err := r.Run(context.Background(), "continue"); err != nil {
 				t.Fatalf("err = %v, want final answer accepted after bounded gate nudges", err)
 			}
-			if !sessionHistoryContains(session, "plan state inconsistent", "Implement the requested change") {
+			if !sessionHistoryContains(session, "unresolved plan work", "Implement the requested change") {
 				t.Fatalf("history missing plan feedback: %#v", session.Snapshot().History)
 			}
 		})

@@ -21,6 +21,7 @@ type InitPayload struct {
 	Efforts     []string          `json:"efforts"`
 	Skills      []SkillPayload    `json:"skills"`
 	ThreadID    string            `json:"thread_id,omitempty"`
+	Session     string            `json:"session,omitempty"`
 	RequestMode string            `json:"request_mode,omitempty"`
 	Yolo        bool              `json:"yolo"`
 	// Notice explains a startup decision, such as a saved model dropped
@@ -52,11 +53,13 @@ type wireAction struct {
 	Detail    string `json:"detail,omitempty"`
 	Path      string `json:"path,omitempty"`
 	Workspace string `json:"workspace,omitempty"`
+	Session   string `json:"session,omitempty"`
 }
 
-// DonePayload marks the end of a turn for one workspace's runtime.
+// DonePayload marks the end of a turn for one live session.
 type DonePayload struct {
 	Workspace string `json:"workspace"`
+	Session   string `json:"session,omitempty"`
 }
 
 // wireEvent is a JSON-safe projection of llm.Event: errors render to strings
@@ -64,6 +67,7 @@ type DonePayload struct {
 type wireEvent struct {
 	Kind             string     `json:"kind"`
 	Workspace        string     `json:"workspace,omitempty"`
+	Session          string     `json:"session,omitempty"`
 	Agent            string     `json:"agent,omitempty"`
 	Text             string     `json:"text,omitempty"`
 	PassName         string     `json:"pass_name,omitempty"`

@@ -88,7 +88,7 @@ func (r *Runner) blockFinalCompletionGatesOnce(turn int, finalText string) (bool
 	if err := r.session.AppendUserMessage(feedback); err != nil {
 		return false, err
 	}
-	return true, NewRetryableCompletionError("react runtime: plan state inconsistent", feedback)
+	return true, NewRetryableCompletionError("react runtime: unresolved plan step", feedback)
 }
 
 func planStateHasUnresolvedStep(plan *PlanState) bool {
@@ -112,9 +112,13 @@ func planStateInconsistencyFeedback(step PlanStep) string {
 	if name == "" {
 		name = "<unnamed step>"
 	}
-	feedback := "Runtime feedback: plan state inconsistent: step " + strconv.Quote(name) + " is " + status
+	// Naming the actual problem matters: an earlier wording called this an
+	// inconsistent plan, which models read as a false alarm — the plan is
+	// well-formed, it just still has work in it — and then argued with the
+	// gate instead of acting on it.
+	feedback := "Runtime feedback: you are finishing with unresolved plan work: step " + strconv.Quote(name) + " is " + status
 	if blocker := strings.TrimSpace(step.Blocker); blocker != "" {
 		feedback += " (blocker: " + blocker + ")"
 	}
-	return feedback + ". Update the plan state or report the blocker/failure instead of claiming successful completion."
+	return feedback + ". Mark it completed with update_plan if it is done, or report the blocker/failure, instead of claiming successful completion."
 }

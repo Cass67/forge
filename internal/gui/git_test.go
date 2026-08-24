@@ -13,8 +13,8 @@ import (
 // tests that exercise workspace-path logic without a chat runtime.
 func serviceAt(root string) *Service {
 	svc, _ := New(func(string, any) {})
-	svc.runtimes[root] = &guiRuntime{cfg: tui.ChatLiveConfig{WorkDir: root}, ready: true}
-	svc.activeDir = root
+	svc.runtimes["s1"] = &guiRuntime{id: "s1", dir: root, cfg: tui.ChatLiveConfig{WorkDir: root}, ready: true}
+	svc.activeSession, svc.activeDir = "s1", root
 	return svc
 }
 
