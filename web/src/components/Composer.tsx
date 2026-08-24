@@ -17,6 +17,7 @@ export function Composer({
   onToggleYolo,
   busy,
   skills,
+  commands,
   history,
   attachments,
   onRemoveAttachment,
@@ -32,6 +33,7 @@ export function Composer({
   onToggleYolo: () => void;
   busy: boolean;
   skills: { name: string; description?: string }[];
+  commands: { name: string; description?: string }[];
   history: string[];
   attachments: Attachment[];
   onRemoveAttachment: (id: string) => void;
@@ -49,7 +51,7 @@ export function Composer({
 
   const text = draft;
   const setText = onDraftChange;
-  const items = matchCommands(text, skills);
+  const items = matchCommands(text, skills, commands);
   const paletteOpen = items.length > 0;
 
   // Grow with the content up to a cap, like a chat app rather than a form.

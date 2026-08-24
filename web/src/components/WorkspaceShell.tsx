@@ -877,11 +877,33 @@ export function WorkspaceShell({
   const terminalButton = terminalSlot
     ? createPortal(
         <button
-          className="pill"
+          aria-label="New Terminal"
+          className="icon-btn"
           onClick={() => openPanel(launchTerminal)}
           title="New Terminal"
         >
-          Terminal
+          <svg
+            aria-hidden="true"
+            fill="none"
+            height="16"
+            viewBox="0 0 16 16"
+            width="16"
+          >
+            <rect
+              height="12"
+              rx="1.5"
+              stroke="currentColor"
+              width="14"
+              x="1"
+              y="2"
+            />
+            <path
+              d="m4 5 2.5 2.5L4 10m4 0h3.5"
+              stroke="currentColor"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
         </button>,
         terminalSlot,
       )

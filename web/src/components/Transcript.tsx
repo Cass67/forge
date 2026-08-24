@@ -133,6 +133,16 @@ export function Transcript({
             return (
               <ToolCard key={e.id} entry={e} defaultOpen={prefs.expandTools} />
             );
+          case "command":
+            return (
+              <div key={e.id} className="command-output">
+                <div className="command-output-head">
+                  <span>output</span>
+                  <CopyButton text={e.text} />
+                </div>
+                <pre>{e.text}</pre>
+              </div>
+            );
           case "info":
             return (
               <div key={e.id} className="info-line">

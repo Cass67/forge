@@ -894,6 +894,38 @@ textarea:not(.xterm-helper-textarea),
   font-size: 0.8125rem;
 }
 
+.command-output {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--input);
+}
+.command-output-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 26px;
+  padding: 3px 9px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.command-output pre {
+  max-height: 25rem;
+  margin: 0;
+  padding: 9px;
+  overflow: auto;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .working {
   display: flex;
   gap: 4px;
@@ -1895,6 +1927,57 @@ textarea:not(.xterm-helper-textarea),
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.skill-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.skill-install {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.skill-scope {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  overflow: hidden;
+  flex: none;
+}
+.skill-scope .scope {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 0.68rem;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.skill-scope .scope.on {
+  background: var(--accent);
+  color: var(--bg);
+}
+.skill-source {
+  flex: 1;
+  min-width: 0;
+}
+.skill-hint {
+  color: var(--muted);
+  font-size: 0.66rem;
+}
+.skill:last-child .skill-remove {
+  margin-left: auto;
+}
+.skill-remove {
+  background: transparent;
+  border: none;
+  color: var(--danger, var(--muted));
+  font-size: 0.68rem;
+  cursor: pointer;
+  margin-left: 4px;
+}
+.skill-remove:hover {
+  color: var(--danger);
 }
 
 /* ---- providers ---- */
@@ -4046,7 +4129,10 @@ textarea:not(.xterm-helper-textarea),
   min-height: 0;
   overflow: hidden;
 }
-.terminal-branch > * {
+.terminal-branch > *,
+.terminal-pane-slot,
+.terminal-pane-mount {
+  display: flex;
   flex: 1;
   min-width: 0;
   min-height: 0;

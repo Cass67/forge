@@ -1038,6 +1038,24 @@ func RunChatLive(setup *ChatSetup) {
 				evRenderer.TurnDone()
 				running = false
 			default:
+				// Plugin slash commands (e.g. /sandbox) run server-side, mirroring
+				// the TUI console path. Route them here rather than sending an
+				// unknown /command to the model as an ordinary prompt.
+				if strings.HasPrefix(rawInput, "/") {
+					handled, result, perr := runPluginCommand(ctx, rawInput)
+					if handled {
+						if perr != nil {
+							evRenderer.Error(fmt.Sprintf("plugin command failed: %v", perr))
+						} else if result != "" {
+							evRenderer.Info(result)
+						}
+						// A plugin command is a completed unit of work, like a
+						// turn: end it so listeners that unset a busy state on
+						// turn-done (the GUI spinner) do not spin forever.
+						evRenderer.TurnDone()
+						continue
+					}
+				}
 				if running {
 					if setup != nil && setup.debugRec != nil {
 						setup.debugRec.logInput("queued", rawInput)
@@ -1804,28 +1822,12 @@ func RunChatConsole(setup *ChatSetup) {
 				continue
 			}
 			// Check plugin commands first
-			pluginHandled := false
-			if pluginCommands := plugin.Global().GetAllCommands(); len(pluginCommands) > 0 {
-				for _, cmd := range pluginCommands {
-					cmdName := strings.TrimPrefix(cmd.Name, "/")
-					prefix := "/" + cmdName
-					if input == prefix || strings.HasPrefix(input, prefix+" ") {
-						args := ""
-						if len(input) > len(prefix) {
-							args = strings.TrimSpace(input[len(prefix):])
-						}
-						result, err := cmd.Handler(ctx, args)
-						if err != nil {
-							renderer.Error(fmt.Sprintf("plugin command failed: %v", err))
-						} else if result != "" {
-							renderer.Info(result)
-						}
-						pluginHandled = true
-						break
-					}
+			if handled, result, err := runPluginCommand(ctx, input); handled {
+				if err != nil {
+					renderer.Error(fmt.Sprintf("plugin command failed: %v", err))
+				} else if result != "" {
+					renderer.Info(result)
 				}
-			}
-			if pluginHandled {
 				continue
 			}
 			handled := handleChatSlashCommand(input, renderer, loadedSkills, state, reactRunner, setup)
@@ -2369,6 +2371,27 @@ type chatSessionControl interface {
 	CompactionStatus() string
 	Checkpoints() []reactruntime.CheckpointRef
 	RestoreCheckpoint(context.Context, string) error
+}
+
+// runPluginCommand serves a registered plugin slash command (e.g. /sandbox).
+// It reports whether input matched a command, plus the command's output/error
+// so the caller can surface them through its own renderer. Shared by the TUI
+// console loop and the GUI live loop so both route plugin commands identically.
+func runPluginCommand(ctx context.Context, input string) (handled bool, result string, err error) {
+	for _, cmd := range plugin.Global().GetAllCommands() {
+		cmdName := strings.TrimPrefix(cmd.Name, "/")
+		prefix := "/" + cmdName
+		if input != prefix && !strings.HasPrefix(input, prefix+" ") {
+			continue
+		}
+		args := ""
+		if len(input) > len(prefix) {
+			args = strings.TrimSpace(input[len(prefix):])
+		}
+		result, err := cmd.Handler(ctx, args)
+		return true, result, err
+	}
+	return false, "", nil
 }
 
 func handleChatSlashCommand(input string, renderer *agent.Renderer, loadedSkills []skills.Skill, state *chatstate.State, session chatSessionControl, setup *ChatSetup) bool {

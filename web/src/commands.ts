@@ -17,6 +17,11 @@ export const COMMANDS: Command[] = [
   { name: "/sessions", desc: "toggle the thread sidebar" },
   { name: "/skills", desc: "list available skills" },
   {
+    name: "/remember",
+    arg: "[text]",
+    desc: "pin a fact to the session's memory",
+  },
+  {
     name: "/review",
     arg: "[base]",
     desc: "review this branch against its base",
@@ -37,18 +42,28 @@ export const COMMANDS: Command[] = [
 ];
 
 // matchCommands filters the palette for what the user has typed so far. A bare
-// "/" lists everything; skills are appended so /skill-name completes too.
+// "/" lists everything; skills and plugin commands are appended so
+// /skill-name and /plugin-command complete too.
 export function matchCommands(
   input: string,
   skills: { name: string; description?: string }[],
+  commands: { name: string; description?: string }[] = [],
 ): Command[] {
   if (!input.startsWith("/")) return [];
+  // The palette picks command names; once an argument follows the name the
+  // choice is made, and Enter must submit the line as typed rather than
+  // replace it with the bare command (which would drop the argument).
+  if (input.includes(" ")) return [];
   const q = input.slice(1).toLowerCase().split(" ")[0];
   const all: Command[] = [
     ...COMMANDS,
     ...skills.map((s) => ({
       name: "/" + s.name,
       desc: s.description || "skill",
+    })),
+    ...commands.map((c) => ({
+      name: c.name.startsWith("/") ? c.name : "/" + c.name,
+      desc: c.description || "plugin command",
     })),
   ];
   if (!q) return all;

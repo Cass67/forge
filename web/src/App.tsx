@@ -881,6 +881,11 @@ export default function App() {
           if (!lastAgentText) return notify("nothing to copy");
           void navigator.clipboard.writeText(lastAgentText);
           return notify("copied last response");
+        case "/remember":
+          return void forge
+            .remember(arg)
+            .then(notify)
+            .catch((e: unknown) => notify(String(e)));
         default:
           return sendInput(raw);
       }
@@ -1202,6 +1207,7 @@ export default function App() {
               onToggleYolo={() => toggleYolo(!yolo)}
               busy={busy}
               skills={init?.skills ?? []}
+              commands={init?.commands ?? []}
               history={history}
               attachments={pending}
               onRemoveAttachment={(id) =>
@@ -1270,6 +1276,7 @@ export default function App() {
           onProviders={(next) =>
             setInit((i) => (i ? { ...i, providers: next } : i))
           }
+          onSkills={(next) => setInit((i) => (i ? { ...i, skills: next } : i))}
           onAddWorkspace={() => {
             setOverlay("none");
             addWorkspace();

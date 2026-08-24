@@ -1,7 +1,14 @@
 import { FitAddon } from "xterm-addon-fit";
 import { Terminal, type ITheme } from "xterm";
 import "xterm/css/xterm.css";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { createPortal } from "react-dom";
 import { forge } from "../bridge";
 import {
   closePane,
@@ -208,6 +215,27 @@ function TerminalPane({
   );
 }
 
+// Split-tree changes insert and remove wrapper elements around panes. Keeping
+// each pane in a detached, stable root lets that root move to its new slot
+// without unmounting TerminalPane, closing its PTY, or losing xterm scrollback.
+function TerminalPaneHost({
+  target,
+  ...pane
+}: React.ComponentProps<typeof TerminalPane> & {
+  target: HTMLDivElement | null;
+}) {
+  const [root] = useState(() => document.createElement("div"));
+
+  useLayoutEffect(() => {
+    root.className = "terminal-pane-mount";
+    target?.appendChild(root);
+  }, [root, target]);
+
+  useEffect(() => () => root.remove(), [root]);
+
+  return createPortal(<TerminalPane {...pane} />, root);
+}
+
 // TerminalWorkspace is the panel: the shells inside it, the splits between
 // them, and the two buttons that make more.
 export function TerminalWorkspace({
@@ -223,6 +251,22 @@ export function TerminalWorkspace({
   const [activePane, setActivePane] = useState(() => paneIDs(tree)[0]);
   const nextPane = useRef(1);
   const frameRef = useRef<HTMLDivElement>(null);
+  const [paneTargets, setPaneTargets] = useState<
+    Record<string, HTMLDivElement | null>
+  >({});
+  const paneTargetRefs = useRef(
+    new Map<string, (element: HTMLDivElement | null) => void>(),
+  );
+  const paneTargetRef = (id: string) => {
+    const cached = paneTargetRefs.current.get(id);
+    if (cached) return cached;
+    const assign = (element: HTMLDivElement | null) =>
+      setPaneTargets((current) =>
+        current[id] === element ? current : { ...current, [id]: element },
+      );
+    paneTargetRefs.current.set(id, assign);
+    return assign;
+  };
 
   useEffect(() => saveSplits(storageID, tree), [storageID, tree]);
 
@@ -272,16 +316,10 @@ export function TerminalWorkspace({
   const render = (node: TerminalNode): ReactNode => {
     if (isPane(node)) {
       return (
-        <TerminalPane
-          active={paneIDs(tree).length > 1 && node.id === activePane}
-          closable={paneIDs(tree).length > 1}
-          instanceID={node.id}
+        <div
+          className="terminal-pane-slot"
           key={node.id}
-          layoutKey={`${layoutKey}:${JSON.stringify(tree)}`}
-          onClose={() => close(node.id)}
-          onFocus={() => setActivePane(node.id)}
-          onNotify={onNotify}
-          workDir={workDir}
+          ref={paneTargetRef(node.id)}
         />
       );
     }
@@ -327,6 +365,20 @@ export function TerminalWorkspace({
         </button>
       </div>
       <div className="terminal-tree">{render(tree)}</div>
+      {paneIDs(tree).map((id) => (
+        <TerminalPaneHost
+          active={paneIDs(tree).length > 1 && id === activePane}
+          closable={paneIDs(tree).length > 1}
+          instanceID={id}
+          key={id}
+          layoutKey={`${layoutKey}:${JSON.stringify(tree)}`}
+          onClose={() => close(id)}
+          onFocus={() => setActivePane(id)}
+          onNotify={onNotify}
+          target={paneTargets[id] ?? null}
+          workDir={workDir}
+        />
+      ))}
     </section>
   );
 }

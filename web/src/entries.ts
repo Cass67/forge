@@ -11,7 +11,17 @@ export type Entry =
       images?: string[];
     }
   | { id: number; t: "reasoning"; text: string; streaming?: boolean }
-  | { id: number; t: "tool"; name: string; summary: string; output?: string; diff?: string; isError?: boolean; done?: boolean }
+  | {
+      id: number;
+      t: "tool";
+      name: string;
+      summary: string;
+      output?: string;
+      diff?: string;
+      isError?: boolean;
+      done?: boolean;
+    }
+  | { id: number; t: "command"; text: string }
   | { id: number; t: "info"; text: string }
   | { id: number; t: "error"; text: string }
   | { id: number; t: "turn"; ok: boolean };
@@ -28,7 +38,11 @@ export function userEntry(text: string, images?: string[]): Entry {
 // stops and the block is finalized.
 export function closeStreaming(entries: Entry[]): Entry[] {
   const last = entries[entries.length - 1];
-  if (last && ((last.t === "text" && last.streaming) || (last.t === "reasoning" && last.streaming))) {
+  if (
+    last &&
+    ((last.t === "text" && last.streaming) ||
+      (last.t === "reasoning" && last.streaming))
+  ) {
     return [...entries.slice(0, -1), { ...last, streaming: false }];
   }
   return entries;
@@ -55,37 +69,84 @@ export function applyEvent(entries: Entry[], ev: WireEvent): Entry[] {
     case "token": {
       const agent = ev.agent || "forge";
       const last = entries[entries.length - 1];
-      if (last && last.t === "text" && last.role === "agent" && last.streaming && last.agent === agent) {
-        return [...entries.slice(0, -1), { ...last, text: last.text + (ev.text || "") }];
+      if (
+        last &&
+        last.t === "text" &&
+        last.role === "agent" &&
+        last.streaming &&
+        last.agent === agent
+      ) {
+        return [
+          ...entries.slice(0, -1),
+          { ...last, text: last.text + (ev.text || "") },
+        ];
       }
-      return [...closeStreaming(entries), { id: nid(), t: "text", role: "agent", agent, text: ev.text || "", streaming: true }];
+      return [
+        ...closeStreaming(entries),
+        {
+          id: nid(),
+          t: "text",
+          role: "agent",
+          agent,
+          text: ev.text || "",
+          streaming: true,
+        },
+      ];
     }
     case "reasoning": {
       const last = entries[entries.length - 1];
       if (last && last.t === "reasoning" && last.streaming) {
-        return [...entries.slice(0, -1), { ...last, text: last.text + (ev.text || "") }];
+        return [
+          ...entries.slice(0, -1),
+          { ...last, text: last.text + (ev.text || "") },
+        ];
       }
-      return [...closeStreaming(entries), { id: nid(), t: "reasoning", text: ev.text || "", streaming: true }];
+      return [
+        ...closeStreaming(entries),
+        { id: nid(), t: "reasoning", text: ev.text || "", streaming: true },
+      ];
     }
     case "tool_call": {
       if (ev.agent === "runtime") {
-        return info(entries, ev.text);
+        if (!ev.text || !ev.text.trim()) return entries;
+        return [
+          ...closeStreaming(entries),
+          { id: nid(), t: "command", text: ev.text },
+        ];
       }
-      return [...closeStreaming(entries), { id: nid(), t: "tool", name: ev.agent || "tool", summary: ev.text || "", done: false }];
+      return [
+        ...closeStreaming(entries),
+        {
+          id: nid(),
+          t: "tool",
+          name: ev.agent || "tool",
+          summary: ev.text || "",
+          done: false,
+        },
+      ];
     }
     case "tool_result": {
       const out = entries.slice();
       for (let i = out.length - 1; i >= 0; i--) {
         const e = out[i];
         if (e.t === "tool" && e.name === ev.agent && !e.done) {
-          out[i] = { ...e, done: true, output: ev.text || "", diff: ev.content || undefined, isError: ev.is_error };
+          out[i] = {
+            ...e,
+            done: true,
+            output: ev.text || "",
+            diff: ev.content || undefined,
+            isError: ev.is_error,
+          };
           return out;
         }
       }
       return out;
     }
     case "error":
-      return [...closeStreaming(entries), { id: nid(), t: "error", text: ev.error || ev.text || "error" }];
+      return [
+        ...closeStreaming(entries),
+        { id: nid(), t: "error", text: ev.error || ev.text || "error" },
+      ];
 
     case "retry":
     case "warning":

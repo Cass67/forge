@@ -333,6 +333,7 @@ func (s *Service) Init() InitPayload {
 		Effort:      call(cfg.CurrentEffort),
 		Efforts:     efforts(cfg, cfg.Model),
 		Skills:      skillPayloads(cfg.Skills),
+		Commands:    commandPayloads(),
 		ThreadID:    call(cfg.CurrentThreadID),
 		RequestMode: call(cfg.RequestMode),
 		Yolo:        cfg.Yolo != nil && cfg.Yolo(),

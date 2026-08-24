@@ -32,6 +32,10 @@ import (
 	"forge/internal/tui"
 	"forge/internal/workspace"
 	forgeweb "forge/web"
+	// Register native plugins (tools, slash commands, skills) in the GUI
+	// binary, matching the CLI. Without this the sandbox plugin's /sandbox
+	// command (and its tool/skill) never exist server-side.
+	_ "forge/plugins"
 )
 
 // The window and about-box icon. macOS takes its Dock icon from the .app

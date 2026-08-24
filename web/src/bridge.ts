@@ -115,6 +115,7 @@ export type InitPayload = {
   effort?: string;
   efforts?: string[];
   skills: { name: string; description?: string }[];
+  commands: { name: string; description?: string }[];
   thread_id?: string;
   session?: string;
   request_mode?: string;
@@ -337,6 +338,15 @@ export const forge = {
   setExplorerRoot: (dir: string) => call<void>("SetExplorerRoot", dir),
   yolo: () => call<boolean>("Yolo"),
   setYolo: (on: boolean) => call<boolean>("SetYolo", on),
+  installSkill: (source: string, scope: string) =>
+    call<{ name: string; description?: string }[]>(
+      "InstallSkill",
+      source,
+      scope,
+    ),
+  removeSkill: (name: string) =>
+    call<{ name: string; description?: string }[]>("RemoveSkill", name),
+  remember: (text: string) => call<string>("Remember", text),
   attachImage: (name: string, dataB64: string) =>
     call<Attachment>("AttachImage", name, dataB64),
   attachPath: (path: string) => call<Attachment>("AttachPath", path),

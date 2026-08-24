@@ -2,8 +2,10 @@ import { expect, test } from "bun:test";
 import { applyEvent, type Entry } from "./entries";
 import type { WireEvent } from "./bridge";
 
-const ev = (e: Partial<WireEvent> & { kind: string }): WireEvent => e as WireEvent;
-const run = (events: WireEvent[]): Entry[] => events.reduce(applyEvent, [] as Entry[]);
+const ev = (e: Partial<WireEvent> & { kind: string }): WireEvent =>
+  e as WireEvent;
+const run = (events: WireEvent[]): Entry[] =>
+  events.reduce(applyEvent, [] as Entry[]);
 
 test("a fan-out of sub-agents does not stack turn separators", () => {
   const entries = run([
@@ -30,7 +32,7 @@ test("a separator needs content before it", () => {
   expect(run([ev({ kind: "done" })])).toHaveLength(0);
 });
 
-test("empty runtime notes are dropped rather than drawn as blank lines", () => {
+test("runtime command output gets a command block and empty output is dropped", () => {
   const entries = run([
     ev({ kind: "tool_call", agent: "runtime", text: "" }),
     ev({ kind: "tool_call", agent: "runtime", text: "   " }),
@@ -38,7 +40,7 @@ test("empty runtime notes are dropped rather than drawn as blank lines", () => {
     ev({ kind: "tool_call", agent: "runtime", text: "reloaded plugins" }),
   ]);
   expect(entries).toHaveLength(1);
-  expect(entries[0]).toMatchObject({ t: "info", text: "reloaded plugins" });
+  expect(entries[0]).toMatchObject({ t: "command", text: "reloaded plugins" });
 });
 
 test("reasoning deltas accumulate into one streaming block", () => {
@@ -47,5 +49,9 @@ test("reasoning deltas accumulate into one streaming block", () => {
     ev({ kind: "reasoning", text: "ing..." }),
   ]);
   expect(entries).toHaveLength(1);
-  expect(entries[0]).toMatchObject({ t: "reasoning", text: "thinking...", streaming: true });
+  expect(entries[0]).toMatchObject({
+    t: "reasoning",
+    text: "thinking...",
+    streaming: true,
+  });
 });

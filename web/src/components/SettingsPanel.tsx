@@ -2,9 +2,10 @@ import { useState } from "react";
 import { THEMES, type Theme } from "../theme";
 import { SCALES, formatScale } from "../scale";
 import { MAX_VIVIDNESS, vividnessLabel } from "../vividness";
-import type { InitPayload, Provider } from "../bridge";
+import { forge, type InitPayload, type Provider } from "../bridge";
 import { ProviderPanel } from "./ProviderPanel";
 import { MCPPanel } from "./MCPPanel";
+import { SkillsPanel } from "./SkillsPanel";
 
 export type Prefs = {
   showTools: boolean;
@@ -52,6 +53,7 @@ export function SettingsPanel({
   onEffort,
   onPrefs,
   onProviders,
+  onSkills,
   onAddWorkspace,
   onOpenWorkspaces,
   onNotify,
@@ -71,6 +73,9 @@ export function SettingsPanel({
   onEffort: (e: string) => void;
   onPrefs: (p: Prefs) => void;
   onProviders: (next: Provider[]) => void;
+  // Skills changed (installed/removed) — the refreshed list comes back so the
+  // settings pane and the composer palette stay in sync.
+  onSkills: (next: { name: string; description?: string }[]) => void;
   onAddWorkspace: () => void;
   onOpenWorkspaces: () => void;
   onNotify: (msg: string) => void;
@@ -92,9 +97,7 @@ export function SettingsPanel({
       ? [{ id: "providers" as const, label: "providers", count: providerCount }]
       : []),
     { id: "mcp", label: "mcp servers" },
-    ...(skillCount > 0
-      ? [{ id: "skills" as const, label: "skills", count: skillCount }]
-      : []),
+    { id: "skills", label: "skills", count: skillCount },
   ];
   const current = sections.some((s) => s.id === section) ? section : "model";
 
@@ -265,14 +268,11 @@ export function SettingsPanel({
             {current === "mcp" ? <MCPPanel /> : null}
 
             {current === "skills" && init ? (
-              <div className="skill-list">
-                {init.skills.map((s) => (
-                  <div className="skill" key={s.name}>
-                    <span className="skill-name">/{s.name}</span>
-                    <span className="skill-desc">{s.description}</span>
-                  </div>
-                ))}
-              </div>
+              <SkillsPanel
+                skills={init.skills}
+                onSkills={onSkills}
+                onNotify={onNotify}
+              />
             ) : null}
           </div>
         </div>

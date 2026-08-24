@@ -3,6 +3,7 @@ package gui
 import (
 	"forge/internal/auth"
 	"forge/internal/llm"
+	"forge/internal/plugin"
 	"forge/internal/providerauth"
 	"forge/internal/skills"
 	"forge/internal/tui"
@@ -20,6 +21,7 @@ type InitPayload struct {
 	Effort      string            `json:"effort,omitempty"`
 	Efforts     []string          `json:"efforts"`
 	Skills      []SkillPayload    `json:"skills"`
+	Commands    []CommandPayload  `json:"commands"`
 	ThreadID    string            `json:"thread_id,omitempty"`
 	Session     string            `json:"session,omitempty"`
 	RequestMode string            `json:"request_mode,omitempty"`
@@ -42,6 +44,11 @@ type ProviderPayload struct {
 }
 
 type SkillPayload struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+type CommandPayload struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 }
@@ -129,6 +136,17 @@ func skillPayloads(in []skills.Skill) []SkillPayload {
 	out := make([]SkillPayload, 0, len(in))
 	for _, sk := range in {
 		out = append(out, SkillPayload{Name: sk.Name, Description: sk.Description})
+	}
+	return out
+}
+
+// commandPayloads reports the plugin-registered slash commands so the frontend
+// palette lists them alongside builtins and skills.
+func commandPayloads() []CommandPayload {
+	cmds := plugin.Global().GetAllCommands()
+	out := make([]CommandPayload, 0, len(cmds))
+	for _, c := range cmds {
+		out = append(out, CommandPayload{Name: c.Name, Description: c.Description})
 	}
 	return out
 }

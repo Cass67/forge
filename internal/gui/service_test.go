@@ -51,6 +51,8 @@ func TestBoundMethodSurface(t *testing.T) {
 		"GenerateCommitMessage", "GenerateWalkthrough", "WalkthroughStale",
 		// preview pane
 		"StartPreview", "StopPreview",
+		// skills management
+		"InstallSkill", "RemoveSkill", "Remember",
 	}
 	var got []string
 	typ := reflect.TypeOf(&Service{})
