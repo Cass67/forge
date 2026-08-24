@@ -34,6 +34,7 @@ import { SettingsPanel, type Prefs } from "./components/SettingsPanel";
 import { HelpOverlay } from "./components/HelpOverlay";
 import { WorkspaceMenu } from "./components/WorkspaceMenu";
 import { WorkspaceShell } from "./components/WorkspaceShell";
+import { deriveAttention, type Attention } from "./attention";
 import {
   applyTheme,
   applyVividness,
@@ -118,7 +119,10 @@ export default function App() {
   // How far the theme is lifted out of its designed palette. Applied on top of
   // whichever theme is set, so it survives switching between them.
   const [vividness, setVividnessState] = useState(loadVividness);
-  const [approval, setApproval] = useState<WireAction | null>(null);
+  const [approvalQueues, setApprovalQueues] = useState<
+    Record<string, WireAction[]>
+  >({});
+  const [submittingApproval, setSubmittingApproval] = useState(false);
   const [stats, setStats] = useState<Stats>(initialStats);
   const [noticeSeen, setNoticeSeen] = useState(false);
   const [effort, setEffort] = useState("");
@@ -138,12 +142,16 @@ export default function App() {
   // Sub-agent roles that have produced output in the turn on screen. Cleared
   // when the turn ends, which is the only signal the event stream gives that
   // delegation is over.
-  const [subAgents, setSubAgents] = useState<string[]>([]);
+  const [agentsBySession, setAgentsBySession] = useState<
+    Record<string, string[]>
+  >({});
   // Which live sessions have a turn in flight. A background session keeps
   // working, so this is what the sidebar dots read.
   const [busySessions, setBusySessions] = useState<Record<string, boolean>>({});
   // Every live session, from the backend. Several can share a workspace.
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
   // The workspace the panels are browsing, empty when they follow the chat.
   const [browseDir, setBrowseDir] = useState("");
   // Transcripts stashed per session, so going to another conversation and back
@@ -152,9 +160,8 @@ export default function App() {
     new Map<string, { entries: Entry[]; activeID: string }>(),
   );
   const prevSessionRef = useRef("");
-  // Approvals that arrived while their session was in the background; they are
-  // shown when that session comes back on screen.
-  const pendingApprovals = useRef<Record<string, WireAction>>({});
+  const [completedAt, setCompletedAt] = useState<Record<string, number>>({});
+  const [visitedAt, setVisitedAt] = useState<Record<string, number>>({});
   const switchingWorkspace = useRef(false);
   const scaleRef = useRef(scale);
   scaleRef.current = scale;
@@ -264,6 +271,9 @@ export default function App() {
   const sessionID = init?.session ?? "";
   const sessionRef = useRef(sessionID);
   sessionRef.current = sessionID;
+  const subAgents = agentsBySession[sessionID] ?? [];
+  const approvalQueue = approvalQueues[sessionID] ?? [];
+  const approval = approvalQueue[0] ?? null;
 
   // A background session's output is folded into its cached transcript, so
   // coming back to it shows everything it streamed while it was away.
@@ -317,7 +327,6 @@ export default function App() {
         // busy and any delegation belong to the session that was on screen;
         // its own dot keeps tracking it, but nothing here must stay locked.
         setBusy(false);
-        setSubAgents([]);
         // The backend hands the panels back to the chat on a deliberate
         // switch, so the window must not keep claiming it is browsing.
         setBrowseDir("");
@@ -339,13 +348,6 @@ export default function App() {
         setActiveID("");
         setEntries([]);
       }
-      // An approval that arrived while this session was in the background is
-      // still waiting on an answer.
-      const queued = pendingApprovals.current[session];
-      if (queued) {
-        delete pendingApprovals.current[session];
-        setApproval(queued);
-      }
       void forge.sessions().then(setSessions);
       refreshThreads();
     });
@@ -364,6 +366,17 @@ export default function App() {
       // are only replaced when the answer actually changes.
       if (from) setBusySessions((m) => flag(m, from, !finished));
       if (dir) setBusyDirs((m) => flag(m, dir, !finished));
+      if (from && ev.sub_agent) {
+        const role = ev.sub_agent;
+        setAgentsBySession((current) => {
+          const roles = current[from] ?? [];
+          return roles.includes(role)
+            ? current
+            : { ...current, [from]: [...roles, role] };
+        });
+      }
+      if (from && finished)
+        setAgentsBySession((current) => ({ ...current, [from]: [] }));
       // Background sessions keep streaming into their own caches: their
       // output must never land in the transcript on screen.
       if (from && from !== sessionRef.current) {
@@ -371,12 +384,6 @@ export default function App() {
         return;
       }
       if (switchingWorkspace.current) return;
-      if (ev.sub_agent) {
-        const role = ev.sub_agent;
-        setSubAgents((roles) =>
-          roles.includes(role) ? roles : [...roles, role],
-        );
-      }
       setEntries((prev) => applyEvent(prev, ev));
       if (ev.is_error || ev.error) turnFailed.current = true;
       if (ev.kind === "stats" && ev.usage) {
@@ -402,7 +409,6 @@ export default function App() {
       }
       if (finished) {
         setBusy(false);
-        setSubAgents([]);
         // The backend hands the panels back to the chat on a deliberate
         // switch, so the window must not keep claiming it is browsing.
         setBrowseDir("");
@@ -419,18 +425,17 @@ export default function App() {
       void attachPaths(paths);
     });
     const offApproval = forge.onApproval((action) => {
-      // An approval from a background session stays queued against that
-      // session: answering it here would hit whichever one is on screen.
       const from = action.session ?? "";
-      if (from && from !== sessionRef.current) {
-        pendingApprovals.current[from] = action;
-        setBusySessions((m) => flag(m, from, true));
-        if (action.workspace)
-          setBusyDirs((m) => flag(m, action.workspace as string, true));
-        return;
-      }
+      if (!from) return;
+      setApprovalQueues((current) => ({
+        ...current,
+        [from]: [...(current[from] ?? []), action],
+      }));
+      setBusySessions((m) => flag(m, from, true));
+      if (action.workspace)
+        setBusyDirs((m) => flag(m, action.workspace as string, true));
+      if (from !== sessionRef.current) return;
       if (switchingWorkspace.current) return;
-      setApproval(action);
       markRef.current("waiting");
     });
     const offDone = forge.onTurnDone((done) => {
@@ -438,6 +443,15 @@ export default function App() {
       const tag = done.workspace ?? "";
       if (from) setBusySessions((m) => flag(m, from, false));
       if (tag) setBusyDirs((m) => flag(m, tag, false));
+      const threadID = sessionsRef.current.find(
+        (session) => session.id === from,
+      )?.thread_id;
+      if (threadID) {
+        const now = Date.now();
+        setCompletedAt((current) => ({ ...current, [threadID]: now }));
+        if (from === sessionRef.current)
+          setVisitedAt((current) => ({ ...current, [threadID]: now }));
+      }
       // A background session finishing its turn only clears its own dot.
       if (!from || from === sessionRef.current) {
         setBusy(false);
@@ -490,9 +504,21 @@ export default function App() {
   );
 
   const approve = (ok: boolean) => {
-    void forge.approve(ok);
-    setApproval(null);
-    markRef.current("working");
+    if (!approval || submittingApproval) return;
+    setSubmittingApproval(true);
+    void forge
+      .approve(approval.id, ok)
+      .then(() => {
+        setApprovalQueues((current) => ({
+          ...current,
+          [sessionID]: (current[sessionID] ?? []).filter(
+            (candidate) => candidate.id !== approval.id,
+          ),
+        }));
+        markRef.current("working");
+      })
+      .catch((e: unknown) => notify(String(e)))
+      .finally(() => setSubmittingApproval(false));
   };
 
   const cancel = useCallback(() => void forge.cancel(), []);
@@ -519,12 +545,34 @@ export default function App() {
           // attaches and the window re-inits against it.
           setEntries(itemsToEntries(r.items));
           setActiveID(r.thread_id);
+          setVisitedAt((current) => ({
+            ...current,
+            [r.thread_id]: Date.now(),
+          }));
           refreshThreads();
           void forge.sessions().then(setSessions);
         })
         .catch((e: unknown) => notify(String(e)));
     },
     [notify, refreshThreads],
+  );
+
+  const openExactThread = useCallback(
+    (id: string) => {
+      const thread = threads.find((candidate) => candidate.thread_id === id);
+      if (!thread || thread.cwd === workDir) {
+        restoreThread(id);
+        return;
+      }
+      void forge
+        .openThread(id)
+        .then(() => {
+          setVisitedAt((current) => ({ ...current, [id]: Date.now() }));
+          refreshThreads();
+        })
+        .catch((e: unknown) => notify(String(e)));
+    },
+    [notify, refreshThreads, restoreThread, threads, workDir],
   );
 
   // Sidebar dots. A thread with a live session shows what that session is
@@ -539,6 +587,24 @@ export default function App() {
     }
     return merged;
   }, [busySessions, sessions, tabs.status]);
+
+  const threadAttention = useMemo(() => {
+    const result: Record<string, Attention> = {};
+    for (const thread of threads) {
+      const session = sessions.find(
+        (candidate) => candidate.thread_id === thread.thread_id,
+      );
+      result[thread.thread_id] = deriveAttention({
+        pendingApprovals: session
+          ? (approvalQueues[session.id]?.length ?? 0)
+          : 0,
+        status: threadStatus[thread.thread_id] ?? "idle",
+        completedAt: completedAt[thread.thread_id] ?? 0,
+        visitedAt: visitedAt[thread.thread_id] ?? 0,
+      });
+    }
+    return result;
+  }, [approvalQueues, completedAt, sessions, threadStatus, threads, visitedAt]);
 
   // A thread is open if it has a live session, whatever this window remembers.
   const openThreadIDs = useMemo(() => {
@@ -1133,6 +1199,7 @@ export default function App() {
               busyWorkspaces={busyDirs}
               onNew={newThread}
               onRestore={restoreThread}
+              onOpenThread={openExactThread}
               onAddWorkspace={addWorkspace}
               onNewIn={newSessionIn}
               onOpenWorkspace={openWorkspace}
@@ -1157,6 +1224,7 @@ export default function App() {
               openThreadIDs={openThreadIDs}
               onCloseThread={closeChat}
               threadStatus={threadStatus}
+              threadAttention={threadAttention}
             />
             <div
               aria-label="Resize workspace panel"
@@ -1230,6 +1298,8 @@ export default function App() {
       {approval ? (
         <ApprovalModal
           action={approval}
+          pendingCount={approvalQueue.length}
+          submitting={submittingApproval}
           onApprove={() => approve(true)}
           onDeny={() => approve(false)}
         />

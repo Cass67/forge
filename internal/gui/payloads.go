@@ -55,6 +55,7 @@ type CommandPayload struct {
 
 // wireAction is a pending tool approval request.
 type wireAction struct {
+	ID        string `json:"id"`
 	Tool      string `json:"tool"`
 	Summary   string `json:"summary"`
 	Detail    string `json:"detail,omitempty"`

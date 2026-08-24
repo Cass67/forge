@@ -54,6 +54,7 @@ export type ThreadSummary = {
 };
 
 export type WireAction = {
+  id: string;
   tool: string;
   summary: string;
   detail?: string;
@@ -289,7 +290,7 @@ export const forge = {
   send: (text: string) => call<void>("Send", text),
   sendWithImages: (text: string, attachments: Attachment[]) =>
     call<void>("SendWithImages", text, attachments),
-  approve: (ok: boolean) => call<void>("Approve", ok),
+  approve: (id: string, ok: boolean) => call<void>("Approve", id, ok),
   cancel: () => call<void>("Cancel"),
   // An empty dir means the workspace already on screen.
   newSession: (dir = "") => call<void>("NewSession", dir),

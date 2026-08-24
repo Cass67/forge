@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ThreadSummary, Workspace } from "../bridge";
+import type { Attention } from "../attention";
 import {
   labelFor,
   loadThreadOrders,
@@ -30,6 +31,7 @@ export function Sidebar({
   busyWorkspaces = {},
   onNew,
   onRestore,
+  onOpenThread,
   onAddWorkspace,
   onOpenWorkspace,
   onNewIn,
@@ -44,6 +46,7 @@ export function Sidebar({
   openThreadIDs = [],
   onCloseThread,
   threadStatus = {},
+  threadAttention = {},
 }: {
   threads: ThreadSummary[];
   workspaces: Workspace[];
@@ -55,6 +58,7 @@ export function Sidebar({
   busyWorkspaces?: Record<string, boolean>;
   onNew: () => void;
   onRestore: (id: string) => void;
+  onOpenThread: (id: string) => void;
   onAddWorkspace: () => void;
   onOpenWorkspace: (dir: string) => void;
   onNewIn: (dir: string) => void;
@@ -75,6 +79,7 @@ export function Sidebar({
   onCloseThread: (id: string) => void;
   // Latest known status per session, for the running/waiting/stopped dot.
   threadStatus?: Record<string, SessionStatus>;
+  threadAttention?: Record<string, Attention>;
 }) {
   const [confirming, setConfirming] = useState("");
   const [orders, setOrders] = useState<Record<string, string[]>>(() =>
@@ -84,6 +89,7 @@ export function Sidebar({
   const [renaming, setRenaming] = useState("");
   const [closed, setClosed] = useState<Record<string, boolean>>({});
   const [query, setQuery] = useState("");
+  const [searchIndex, setSearchIndex] = useState(0);
   const [selecting, setSelecting] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [picked, setPicked] = useState<Set<string>>(new Set());
@@ -163,6 +169,11 @@ export function Sidebar({
   const matchedThreads = new Map(
     matches.map((m) => [m.workspace.path, m.threads]),
   );
+  const searchResults = matches.flatMap((match) => match.threads);
+  useEffect(() => setSearchIndex(0), [query]);
+  const selectedSearchID = searching
+    ? searchResults[Math.min(searchIndex, searchResults.length - 1)]?.thread_id
+    : undefined;
 
   return (
     <aside className="sidebar">
@@ -189,8 +200,24 @@ export function Sidebar({
           className="ws-search-input"
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing) return;
             if (event.key === "Escape") setQuery("");
+            else if (event.key === "ArrowDown" && searchResults.length) {
+              event.preventDefault();
+              setSearchIndex((current) =>
+                Math.min(current + 1, searchResults.length - 1),
+              );
+            } else if (event.key === "ArrowUp" && searchResults.length) {
+              event.preventDefault();
+              setSearchIndex((current) => Math.max(current - 1, 0));
+            } else if (event.key === "Enter" && selectedSearchID) {
+              event.preventDefault();
+              onOpenThread(selectedSearchID);
+            }
           }}
+          aria-activedescendant={
+            selectedSearchID ? `thread-search-${selectedSearchID}` : undefined
+          }
           placeholder="Search folders and chats"
           value={query}
         />
@@ -355,12 +382,18 @@ export function Sidebar({
                   ) : null}
                   {list.map((t) => {
                     const current = t.thread_id === activeID && isActive;
+                    const attention = threadAttention[t.thread_id];
                     return (
                       <div
+                        id={`thread-search-${t.thread_id}`}
                         key={t.thread_id}
                         className={`thread ${current ? "active" : ""} ${
                           picked.has(`t:${t.thread_id}`) ? "picked" : ""
-                        } ${dragID === t.thread_id ? "dragging" : ""}`}
+                        } ${dragID === t.thread_id ? "dragging" : ""} ${
+                          selectedSearchID === t.thread_id
+                            ? "search-selected"
+                            : ""
+                        }`}
                         draggable={!selecting && renaming !== t.thread_id}
                         onDragStart={() => setDragID(t.thread_id)}
                         onDragEnd={() => setDragID("")}
@@ -416,8 +449,7 @@ export function Sidebar({
                                 if (!current) toggle(`t:${t.thread_id}`);
                                 return;
                               }
-                              if (isActive) onRestore(t.thread_id);
-                              else onOpenWorkspace(ws.path);
+                              onOpenThread(t.thread_id);
                             }}
                             onContextMenu={(e) => {
                               e.preventDefault();
@@ -431,6 +463,17 @@ export function Sidebar({
                             <span className="thread-meta">
                               <span className="thread-model">{t.model}</span>
                               <span>{fmtTime(t.updated_at)}</span>
+                              {attention && attention.kind !== "idle" ? (
+                                <span
+                                  className={`thread-attention ${attention.kind}`}
+                                  title={attention.label}
+                                >
+                                  {attention.label}
+                                  {attention.pending > 0
+                                    ? ` (${attention.pending})`
+                                    : ""}
+                                </span>
+                              ) : null}
                             </span>
                           </button>
                         )}

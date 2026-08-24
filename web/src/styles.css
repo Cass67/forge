@@ -2275,6 +2275,41 @@ textarea:not(.xterm-helper-textarea),
   outline: none;
 }
 
+.thread.search-selected {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.thread-attention.approval,
+.thread-attention.failed {
+  color: var(--danger);
+}
+.thread-attention.input,
+.thread-attention.plan-ready {
+  color: var(--warn);
+}
+.thread-attention.unseen-done {
+  color: var(--accent);
+}
+
+.timeline-control {
+  position: sticky;
+  z-index: 2;
+  display: block;
+  margin: 8px auto;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+.timeline-control.load-earlier {
+  top: 8px;
+}
+.timeline-control.jump-latest {
+  bottom: 8px;
+}
+
 /* ---- mcp servers ---- */
 .mcp {
   border-bottom: 1px solid var(--border);

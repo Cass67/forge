@@ -99,6 +99,55 @@ func TestEncodeInput(t *testing.T) {
 	}
 }
 
+func TestApprovalsRouteByIDAndRemainFIFO(t *testing.T) {
+	s, c := New(func(string, any) {})
+	responsesA := make(chan bool, 2)
+	responsesB := make(chan bool, 1)
+	c.Attach("a", tui.ChatLiveConfig{WorkDir: "/a", ResponseCh: responsesA}, make(chan string, 1), nil)
+	c.Attach("b", tui.ChatLiveConfig{WorkDir: "/b", ResponseCh: responsesB}, make(chan string, 1), nil)
+
+	a1, ok := s.queueApproval("a")
+	if !ok {
+		t.Fatal("queue first approval for a")
+	}
+	a2, _ := s.queueApproval("a")
+	b1, _ := s.queueApproval("b")
+	if a1 == a2 || a1 == b1 || a2 == b1 {
+		t.Fatalf("approval ids are not unique: %q %q %q", a1, a2, b1)
+	}
+
+	if err := s.Approve(a2, true); !errors.Is(err, errApprovalOrder) {
+		t.Fatalf("out-of-order approval error = %v", err)
+	}
+	if err := s.Approve(b1, false); err != nil {
+		t.Fatalf("approve b: %v", err)
+	}
+	if got := <-responsesB; got {
+		t.Fatal("b received approve instead of deny")
+	}
+	if err := s.Approve(a1, true); err != nil {
+		t.Fatalf("approve a1: %v", err)
+	}
+	if err := s.Approve(a2, false); err != nil {
+		t.Fatalf("approve a2: %v", err)
+	}
+	if first, second := <-responsesA, <-responsesA; !first || second {
+		t.Fatalf("a responses = %v, %v; want true, false", first, second)
+	}
+	if err := s.Approve(a1, true); !errors.Is(err, errNoApproval) {
+		t.Fatalf("duplicate approval error = %v", err)
+	}
+
+	stale, ok := s.queueApproval("b")
+	if !ok {
+		t.Fatal("queue approval before forgetting b")
+	}
+	c.Forget("b")
+	if err := s.Approve(stale, true); !errors.Is(err, errNoApproval) {
+		t.Fatalf("forgotten session approval error = %v", err)
+	}
+}
+
 func TestWorkspacesGroupsByThreadCWD(t *testing.T) {
 	s, c := New(func(string, any) {})
 	c.Attach("s1", tui.ChatLiveConfig{

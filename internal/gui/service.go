@@ -54,9 +54,11 @@ var (
 	errWorkspaceHasThreads = errors.New("workspace still has stored chats")
 	// Browsing is read-only on purpose. Anything that would change a file or a
 	// repository says so rather than acting on the workspace being looked at.
-	errBrowsing   = errors.New("browsing, so this is read-only — open the workspace to change it")
-	errBadImage   = errors.New("unsupported image")
-	errTooManyImg = fmt.Errorf("at most %d images per message", chatstate.MaxAttachments)
+	errBrowsing      = errors.New("browsing, so this is read-only — open the workspace to change it")
+	errBadImage      = errors.New("unsupported image")
+	errTooManyImg    = fmt.Errorf("at most %d images per message", chatstate.MaxAttachments)
+	errNoApproval    = errors.New("no such pending approval")
+	errApprovalOrder = errors.New("approval must be answered in arrival order")
 )
 
 // Service is the surface bound into the window: every exported method here is
@@ -98,6 +100,11 @@ type Service struct {
 	StartRuntime func(dir, sessionID, resumeThreadID string)
 	// nextSession numbers minted session ids.
 	nextSession atomic.Uint64
+	// Approval ids route replies back to the session that raised them. Queues
+	// are per-session so background conversations cannot steal each other's
+	// answers.
+	nextApproval     atomic.Uint64
+	pendingApprovals map[string][]pendingApproval
 
 	// PickDir opens the platform's folder chooser. Set by the window layer,
 	// which owns the dialog API.
@@ -127,6 +134,11 @@ type guiRuntime struct {
 	stop func()
 }
 
+type pendingApproval struct {
+	id       string
+	response chan<- bool
+}
+
 // threadID reports which stored thread this session is writing to, which is
 // empty until its first message is persisted.
 func (r *guiRuntime) threadID() string {
@@ -145,9 +157,10 @@ type Controller struct{ s *Service }
 func New(emit func(name string, data any)) (*Service, *Controller) {
 	s := &Service{
 		emit: emit, flows: providerauth.NewFlows(),
-		runtimes:  make(map[string]*guiRuntime),
-		terminals: make(map[string]*terminalSession),
-		closing:   make(map[string]bool),
+		runtimes:         make(map[string]*guiRuntime),
+		terminals:        make(map[string]*terminalSession),
+		closing:          make(map[string]bool),
+		pendingApprovals: make(map[string][]pendingApproval),
 	}
 	return s, &Controller{s: s}
 }
@@ -193,6 +206,7 @@ func (c *Controller) Forget(sessionID string) {
 	s.mu.Lock()
 	gone := s.runtimes[sessionID]
 	delete(s.runtimes, sessionID)
+	delete(s.pendingApprovals, sessionID)
 	if s.activeSession == sessionID {
 		s.activeSession = ""
 		if gone != nil {
@@ -297,11 +311,31 @@ func (c *Controller) ReportError(msg string) {
 // workspace they came from.
 func (c *Controller) PumpApprovals(sessionID, dir string, ch <-chan tools.Action) {
 	for a := range ch {
+		id, ok := c.s.queueApproval(sessionID)
+		if !ok {
+			log.Printf("gui: dropping approval for unknown session %s", sessionID)
+			continue
+		}
 		c.s.emit(EventApproval, wireAction{
+			ID:   id,
 			Tool: a.Tool, Summary: a.Summary, Detail: a.Detail, Path: a.Path,
 			Workspace: dir, Session: sessionID,
 		})
 	}
+}
+
+func (s *Service) queueApproval(sessionID string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rt := s.runtimes[sessionID]
+	if rt == nil || !rt.ready || rt.cfg.ResponseCh == nil {
+		return "", false
+	}
+	id := fmt.Sprintf("approval-%016x", s.nextApproval.Add(1))
+	s.pendingApprovals[sessionID] = append(s.pendingApprovals[sessionID], pendingApproval{
+		id: id, response: rt.cfg.ResponseCh,
+	})
+	return id, true
 }
 
 // PumpDone signals the end of each turn for one runtime.
@@ -379,12 +413,43 @@ func (s *Service) SendWithImages(text string, attachments []chatstate.ChatAttach
 	return s.submit(text, attachments)
 }
 
-// Approve answers a pending tool approval prompt.
-func (s *Service) Approve(ok bool) {
-	cfg, _, ready := s.snapshot()
-	if ready && cfg.ResponseCh != nil {
-		cfg.ResponseCh <- ok
+// Approve answers a pending tool approval prompt by opaque id. The id pins the
+// reply to its originating session; only the head of that session's queue may
+// be answered.
+func (s *Service) Approve(id string, ok bool) error {
+	s.mu.Lock()
+	var foundSession string
+	var request pendingApproval
+	for sessionID, queue := range s.pendingApprovals {
+		for i, candidate := range queue {
+			if candidate.id != id {
+				continue
+			}
+			if i != 0 {
+				s.mu.Unlock()
+				return errApprovalOrder
+			}
+			foundSession, request = sessionID, candidate
+			break
+		}
+		if foundSession != "" {
+			break
+		}
 	}
+	if foundSession == "" {
+		s.mu.Unlock()
+		return errNoApproval
+	}
+	queue := s.pendingApprovals[foundSession][1:]
+	if len(queue) == 0 {
+		delete(s.pendingApprovals, foundSession)
+	} else {
+		s.pendingApprovals[foundSession] = queue
+	}
+	s.mu.Unlock()
+
+	request.response <- ok
+	return nil
 }
 
 // Yolo reports whether tool approvals are being skipped.

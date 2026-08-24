@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -6,6 +6,9 @@ import type { Entry } from "../entries";
 import { ToolCard } from "./ToolCard";
 import { ImagePreview } from "./ImagePreview";
 import type { Prefs } from "./SettingsPanel";
+import { deriveTimelineRows } from "../timeline";
+
+const TIMELINE_PAGE = 100;
 
 function CopyButton({
   text,
@@ -55,6 +58,12 @@ export function Transcript({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  const [historyReading, setHistoryReading] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(TIMELINE_PAGE);
+  const timeline = useMemo(
+    () => deriveTimelineRows(entries, visibleCount),
+    [entries, visibleCount],
+  );
 
   // Follow the tail only while the user is already at the bottom, so scrolling
   // back to read something isn't yanked away by streaming tokens.
@@ -63,6 +72,7 @@ export function Transcript({
     if (!el) return;
     const onScroll = () => {
       stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+      setHistoryReading(!stick.current);
     };
     el.addEventListener("scroll", onScroll);
     return () => el.removeEventListener("scroll", onScroll);
@@ -88,7 +98,15 @@ export function Transcript({
 
   return (
     <div className="transcript" ref={ref}>
-      {entries.map((e) => {
+      {timeline.hasEarlier ? (
+        <button
+          className="timeline-control load-earlier"
+          onClick={() => setVisibleCount((count) => count + TIMELINE_PAGE)}
+        >
+          Load earlier
+        </button>
+      ) : null}
+      {timeline.rows.map(({ entry: e }) => {
         switch (e.t) {
           case "text":
             return e.role === "user" ? (
@@ -169,6 +187,19 @@ export function Transcript({
           <span className="dot" />
           <span className="dot" />
         </div>
+      ) : null}
+      {historyReading ? (
+        <button
+          className="timeline-control jump-latest"
+          onClick={() => {
+            const el = ref.current;
+            if (el) el.scrollTop = el.scrollHeight;
+            stick.current = true;
+            setHistoryReading(false);
+          }}
+        >
+          Jump to latest
+        </button>
       ) : null}
     </div>
   );
