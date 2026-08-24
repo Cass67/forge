@@ -3985,3 +3985,14 @@ textarea:not(.xterm-helper-textarea),
 .browse-banner .btn + .btn {
   margin-left: 0;
 }
+
+/* ---- brightness slider ---- */
+.vivid-slider {
+  flex: 1;
+  max-width: 220px;
+  accent-color: var(--accent);
+}
+.muted-note {
+  color: var(--muted);
+  font-size: 0.72rem;
+}

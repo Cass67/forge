@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { THEMES, type Theme } from "../theme";
 import { SCALES, formatScale } from "../scale";
+import { MAX_VIVIDNESS, vividnessLabel } from "../vividness";
 import type { InitPayload, Provider } from "../bridge";
 import { ProviderPanel } from "./ProviderPanel";
 import { MCPPanel } from "./MCPPanel";
@@ -42,9 +43,11 @@ export function SettingsPanel({
   effort,
   theme,
   scale,
+  vividness,
   prefs,
   onTheme,
   onScale,
+  onVividness,
   onModel,
   onEffort,
   onPrefs,
@@ -59,9 +62,11 @@ export function SettingsPanel({
   effort: string;
   theme: Theme;
   scale: number;
+  vividness: number;
   prefs: Prefs;
   onTheme: (t: Theme) => void;
   onScale: (s: number) => void;
+  onVividness: (level: number) => void;
   onModel: () => void;
   onEffort: (e: string) => void;
   onPrefs: (p: Prefs) => void;
@@ -169,6 +174,23 @@ export function SettingsPanel({
                       </button>
                     ))}
                   </div>
+                </div>
+                <div className="set-row">
+                  <span className="set-k">brightness</span>
+                  <input
+                    aria-label="Theme brightness"
+                    className="vivid-slider"
+                    max={MAX_VIVIDNESS}
+                    min={0}
+                    onChange={(e) => onVividness(Number(e.target.value))}
+                    step={1}
+                    title="Lift the theme's text, surfaces and accents without changing its colours"
+                    type="range"
+                    value={vividness}
+                  />
+                  <span className="set-v muted-note">
+                    {vividnessLabel(vividness)}
+                  </span>
                 </div>
                 <div className="set-row">
                   <span className="set-k">theme</span>

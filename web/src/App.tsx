@@ -34,7 +34,15 @@ import { SettingsPanel, type Prefs } from "./components/SettingsPanel";
 import { HelpOverlay } from "./components/HelpOverlay";
 import { WorkspaceMenu } from "./components/WorkspaceMenu";
 import { WorkspaceShell } from "./components/WorkspaceShell";
-import { applyTheme, isTheme, loadTheme, nextTheme, type Theme } from "./theme";
+import {
+  applyTheme,
+  applyVividness,
+  isTheme,
+  loadTheme,
+  nextTheme,
+  type Theme,
+} from "./theme";
+import { clampVividness, loadVividness } from "./vividness";
 import {
   clampSidebarWidth,
   DEFAULT_SIDEBAR_WIDTH,
@@ -107,6 +115,9 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   // Bumped on every new-session request so the composer takes focus.
   const [composerFocus, setComposerFocus] = useState(0);
+  // How far the theme is lifted out of its designed palette. Applied on top of
+  // whichever theme is set, so it survives switching between them.
+  const [vividness, setVividnessState] = useState(loadVividness);
   const [approval, setApproval] = useState<WireAction | null>(null);
   const [stats, setStats] = useState<Stats>(initialStats);
   const [noticeSeen, setNoticeSeen] = useState(false);
@@ -810,6 +821,12 @@ export default function App() {
     return "";
   }, [entries]);
 
+  const setVividness = useCallback((level: number) => {
+    const next = clampVividness(level);
+    setVividnessState(next);
+    applyVividness(next);
+  }, []);
+
   const runCommand = useCallback(
     (raw: string) => {
       const [cmd, ...rest] = raw.trim().split(" ");
@@ -1240,9 +1257,11 @@ export default function App() {
           effort={effort}
           theme={theme}
           scale={scale}
+          vividness={vividness}
           prefs={prefs}
           onTheme={setTheme}
           onScale={setScale}
+          onVividness={setVividness}
           onModel={() => setOverlay("models")}
           onEffort={setEffortAction}
           onPrefs={setPrefsState}
