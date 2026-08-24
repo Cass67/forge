@@ -33,6 +33,12 @@ export type WireEvent = {
   error?: string;
 };
 
+export type ClearResult = {
+  removed: number;
+  failed: number;
+  threads: ThreadSummary[];
+};
+
 export type ThreadSummary = {
   thread_id: string;
   title: string;
@@ -272,6 +278,7 @@ export const forge = {
   restore: (threadID: string) => call<RestoreResult>("Restore", threadID),
   deleteThread: (threadID: string) =>
     call<ThreadSummary[]>("DeleteThread", threadID),
+  clearThreads: () => call<ClearResult>("ClearThreads"),
   renameThread: (threadID: string, title: string) =>
     call<ThreadSummary[]>("RenameThread", threadID, title),
   workspaces: () => call<Workspace[]>("Workspaces"),

@@ -382,6 +382,23 @@ export default function App() {
     [notify],
   );
 
+  // "Remove all" is one call, not one per thread: the sidebar can only tick
+  // threads whose workspace still has a section, so anything started in a
+  // worktree or a scratch dir was unreachable from the list.
+  const clearThreads = useCallback(() => {
+    void forge
+      .clearThreads()
+      .then((res) => {
+        setThreads(res.threads);
+        notify(
+          res.failed
+            ? `removed ${res.removed}, ${res.failed} could not be removed`
+            : `removed ${res.removed} thread${res.removed === 1 ? "" : "s"}`,
+        );
+      })
+      .catch((e: unknown) => notify(String(e)));
+  }, [notify]);
+
   // Bulk removal runs one call at a time: the thread store and the workspace
   // registry both rewrite a whole file per call, so parallel writes would race.
   const bulkDelete = useCallback(
@@ -860,6 +877,7 @@ export default function App() {
                   .catch((e: unknown) => notify(String(e)))
               }
               onBulkDelete={bulkDelete}
+              onClearThreads={clearThreads}
             />
             <div
               aria-label="Resize workspace panel"

@@ -360,6 +360,56 @@ func (s *Service) DeleteThread(threadID string) ([]tui.ThreadSummary, error) {
 	return s.Threads(), nil
 }
 
+// ClearResult reports what a bulk clear removed.
+type ClearResult struct {
+	Removed int                 `json:"removed"`
+	Failed  int                 `json:"failed"`
+	Threads []tui.ThreadSummary `json:"threads"`
+}
+
+// ClearThreads deletes every stored thread except the active one. The sidebar
+// groups threads under the workspace they were started in, so a thread whose
+// directory is no longer a registered workspace — a worktree, a scratch dir, a
+// bench run — had no row to tick and survived every "select all". This works
+// off the stored list instead of the rendered one.
+func (s *Service) ClearThreads() (ClearResult, error) {
+	cfg, _, ready := s.snapshot()
+	if !ready {
+		return ClearResult{}, errNotReady
+	}
+	if cfg.DeleteThread == nil || cfg.ListThreads == nil {
+		return ClearResult{Threads: s.Threads()}, errNoDelete
+	}
+	active := call(cfg.CurrentThreadID)
+
+	var result ClearResult
+	// A thread that refuses to go is remembered rather than retried, so it is
+	// counted once no matter how many passes run.
+	stuck := map[string]bool{}
+	// ListThreads is capped per call, so keep going while a pass still
+	// removes something rather than assuming one pass sees every thread.
+	for {
+		progress := 0
+		for _, t := range cfg.ListThreads() {
+			if t.ThreadID == "" || t.ThreadID == active || stuck[t.ThreadID] {
+				continue
+			}
+			if err := cfg.DeleteThread(t.ThreadID); err != nil {
+				stuck[t.ThreadID] = true
+				continue
+			}
+			result.Removed++
+			progress++
+		}
+		if progress == 0 {
+			break
+		}
+	}
+	result.Failed = len(stuck)
+	result.Threads = s.Threads()
+	return result, nil
+}
+
 // RenameThread gives a stored thread a name of the user's choosing. A manual
 // title is never overwritten by the automatic first-message naming.
 func (s *Service) RenameThread(threadID, title string) ([]tui.ThreadSummary, error) {

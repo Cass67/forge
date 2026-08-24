@@ -28,6 +28,7 @@ export function Sidebar({
   onPin,
   onForget,
   onBulkDelete,
+  onClearThreads,
 }: {
   threads: ThreadSummary[];
   workspaces: Workspace[];
@@ -44,6 +45,7 @@ export function Sidebar({
   onPin: (dir: string, pinned: boolean) => void;
   onForget: (dir: string) => void;
   onBulkDelete: (threadIDs: string[], dirs: string[]) => void;
+  onClearThreads: () => void;
 }) {
   const [confirming, setConfirming] = useState("");
   const [renaming, setRenaming] = useState("");
@@ -320,9 +322,14 @@ export function Sidebar({
         <BulkBar
           threadCount={pickedThreads.length}
           dirCount={pickedDirs.length}
+          totalThreads={threads.length}
           onCancel={leaveSelect}
           onDelete={() => {
             onBulkDelete(pickedThreads, pickedDirs);
+            leaveSelect();
+          }}
+          onClearThreads={() => {
+            onClearThreads();
             leaveSelect();
           }}
         />
@@ -334,20 +341,43 @@ export function Sidebar({
 function BulkBar({
   threadCount,
   dirCount,
+  totalThreads,
   onCancel,
   onDelete,
+  onClearThreads,
 }: {
   threadCount: number;
   dirCount: number;
+  totalThreads: number;
   onCancel: () => void;
   onDelete: () => void;
+  onClearThreads: () => void;
 }) {
   const [confirm, setConfirm] = useState(false);
+  // Separate confirmation: this one ignores the selection and the sections
+  // entirely, so agreeing to it is a different decision.
+  const [confirmAll, setConfirmAll] = useState(false);
   const total = threadCount + dirCount;
   const parts = [
     threadCount ? `${threadCount} thread${threadCount === 1 ? "" : "s"}` : "",
     dirCount ? `${dirCount} workspace${dirCount === 1 ? "" : "s"}` : "",
   ].filter(Boolean);
+
+  if (confirmAll) {
+    return (
+      <div className="bulk-bar">
+        <span className="bulk-count">
+          Delete every stored thread except the one you are in?
+        </span>
+        <button className="btn danger" onClick={onClearThreads}>
+          Delete all
+        </button>
+        <button className="btn" onClick={() => setConfirmAll(false)}>
+          Keep
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="bulk-bar">
@@ -371,6 +401,13 @@ function BulkBar({
             onClick={() => setConfirm(true)}
           >
             Remove
+          </button>
+          <button
+            className="btn danger"
+            onClick={() => setConfirmAll(true)}
+            title="Delete every stored thread, including ones with no section in this list"
+          >
+            All{totalThreads ? ` (${totalThreads})` : ""}
           </button>
           <button className="btn" onClick={onCancel}>
             Cancel
