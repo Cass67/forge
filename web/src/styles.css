@@ -3948,3 +3948,40 @@ textarea:not(.xterm-helper-textarea),
   text-decoration-color: var(--accent);
   text-underline-offset: 3px;
 }
+
+/* ---- browsing banner ---- */
+.workspace-frame {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.workspace-frame > .workspace-shell {
+  flex: 1;
+  min-height: 0;
+}
+.browse-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  padding: 5px 10px;
+  font-size: 0.72rem;
+  color: var(--text);
+  background: var(--panel2);
+  border-bottom: 2px solid var(--warn);
+}
+.browse-what b,
+.browse-where b {
+  font-family: var(--mono);
+}
+.browse-where {
+  color: var(--muted);
+}
+.browse-banner .btn {
+  margin-left: auto;
+}
+.browse-banner .btn + .btn {
+  margin-left: 0;
+}

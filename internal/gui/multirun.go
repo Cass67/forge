@@ -51,6 +51,9 @@ func slug(s string) string {
 
 // StartRuns launches one window per model and returns what happened to each.
 func (s *Service) StartRuns(spec RunSpec) ([]RunLaunch, error) {
+	if _, err := s.mutableRoot(); err != nil {
+		return nil, err
+	}
 	root, err := s.workspaceRoot()
 	if err != nil {
 		return nil, err

@@ -1134,6 +1134,10 @@ export default function App() {
         ) : null}
         <WorkspaceShell
           workDir={browseDir || (init?.work_dir ?? "")}
+          browsing={browseDir}
+          chatDir={init?.work_dir ?? ""}
+          onWorkHere={(dir) => openWorkspace(dir)}
+          onStopBrowsing={() => browseWorkspace(init?.work_dir ?? "")}
           active={workspaceMode}
           onDirtyChange={setWorkspaceDirty}
           onNotify={notify}

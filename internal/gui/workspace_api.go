@@ -81,6 +81,21 @@ func (s *Service) chatRoot() (string, error) {
 	return filepath.EvalSymlinks(cfg.WorkDir)
 }
 
+// mutableRoot is workspaceRoot for anything that changes a repository or a
+// file. Browsing points the panels at a workspace with no chat running in it,
+// and changing files there is how you end up committing to the wrong
+// repository: the answer is to open it, which moves the chat with you.
+// Every mutating bound method starts here.
+func (s *Service) mutableRoot() (string, error) {
+	s.mu.RLock()
+	browsing := s.browseDir
+	s.mu.RUnlock()
+	if browsing != "" {
+		return "", fmt.Errorf("%w: %s", errBrowsing, filepath.Base(browsing))
+	}
+	return s.chatRoot()
+}
+
 // SetExplorerRoot points the panels at a directory without starting anything
 // there. An empty dir hands them back to the workspace the chat is in.
 func (s *Service) SetExplorerRoot(dir string) error {
@@ -208,6 +223,9 @@ func (s *Service) ReadWorkspaceFile(relative string) (WorkspaceFile, error) {
 }
 
 func (s *Service) WriteWorkspaceFile(relative, content, expectedVersion string) (WorkspaceFile, error) {
+	if _, err := s.mutableRoot(); err != nil {
+		return WorkspaceFile{}, err
+	}
 	if len(content) > maxWorkspaceFileBytes {
 		return WorkspaceFile{}, fmt.Errorf("file exceeds %d MiB editor limit", maxWorkspaceFileBytes>>20)
 	}

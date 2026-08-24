@@ -63,6 +63,13 @@ type Props = {
   // The progress panel's contents. It lives in the dock like any other panel,
   // so the shell places it and the chat owns neither its position nor its size.
   activity: ReactNode;
+  // Set when the panels are pointed at a workspace the chat is not in. That
+  // is read-only: the service refuses every mutation, so the panels say so
+  // rather than offering buttons that fail.
+  browsing: string;
+  chatDir: string;
+  onWorkHere: (dir: string) => void;
+  onStopBrowsing: () => void;
   // Whether the progress panel should be docked. The settings toggle and the
   // panel's own ✕ are the same switch seen from two places, so closing it
   // reports back rather than leaving the setting claiming it is open.
@@ -176,6 +183,10 @@ export function WorkspaceShell({
   active,
   children,
   activity,
+  browsing,
+  chatDir,
+  onWorkHere,
+  onStopBrowsing,
   showActivity,
   onActivityClosed,
   onDirtyChange,
@@ -897,6 +908,25 @@ export function WorkspaceShell({
       )
     : null;
 
+  // One unmissable line, rather than a subtle cue: which repository the panels
+  // are showing, which one the agent is in, and both ways out.
+  const browseBanner = browsing ? (
+    <div className="browse-banner">
+      <span className="browse-what">
+        Browsing <b>{browsing.split("/").pop()}</b> — read-only
+      </span>
+      <span className="browse-where">
+        the agent is in <b>{chatDir.split("/").pop()}</b>
+      </span>
+      <button className="btn" onClick={() => onWorkHere(browsing)}>
+        Work here
+      </button>
+      <button className="btn" onClick={onStopBrowsing}>
+        Back to {chatDir.split("/").pop()}
+      </button>
+    </div>
+  ) : null;
+
   const renderGroup = (side: DockSide, group: DockGroup) => {
     // A tab strip is how you pick between tools and where you drop one to
     // stack it. A group holding nothing but the chat has neither job to do, so
@@ -980,159 +1010,162 @@ export function WorkspaceShell({
   };
 
   return (
-    <div
-      className={`workspace-shell ${active ? "docks-open" : "docks-closed"}`}
-      ref={shellRef}
-      style={
-        {
-          "--dock-left": `${dockWidths.left * 100}%`,
-          "--dock-right": `${dockWidths.right * 100}%`,
-        } as React.CSSProperties
-      }
-    >
-      {SIDES.map((side, columnIndex) => {
-        // The divider before a column resizes the dock on its left: the one
-        // before the chat sizes the left dock, the one after it the right.
-        const edge: EdgeSide = side === "center" ? "left" : "right";
-        const tail = dropProps({ side, where: "end" });
-        const empty = columns[side].length === 0;
-        const { collapsed, basis, grow } = columnLayout(
-          columns,
-          side,
-          dockWidths,
-          Boolean(dragging),
-        );
-        const showDivider = showsDivider(columns, side, Boolean(dragging));
-        return (
-          <Fragment key={side}>
-            {showDivider ? (
+    <div className="workspace-frame">
+      {browseBanner}
+      <div
+        className={`workspace-shell ${active ? "docks-open" : "docks-closed"} ${browsing ? "browsing" : ""}`}
+        ref={shellRef}
+        style={
+          {
+            "--dock-left": `${dockWidths.left * 100}%`,
+            "--dock-right": `${dockWidths.right * 100}%`,
+          } as React.CSSProperties
+        }
+      >
+        {SIDES.map((side, columnIndex) => {
+          // The divider before a column resizes the dock on its left: the one
+          // before the chat sizes the left dock, the one after it the right.
+          const edge: EdgeSide = side === "center" ? "left" : "right";
+          const tail = dropProps({ side, where: "end" });
+          const empty = columns[side].length === 0;
+          const { collapsed, basis, grow } = columnLayout(
+            columns,
+            side,
+            dockWidths,
+            Boolean(dragging),
+          );
+          const showDivider = showsDivider(columns, side, Boolean(dragging));
+          return (
+            <Fragment key={side}>
+              {showDivider ? (
+                <div
+                  aria-label={`Resize ${edge} panel`}
+                  aria-orientation="vertical"
+                  aria-valuenow={Math.round(dockWidths[edge] * 100)}
+                  className={`workspace-divider workspace-divider-${edge}`}
+                  onDoubleClick={() =>
+                    resizeDock(edge, DEFAULT_DOCK_WIDTHS[edge])
+                  }
+                  onKeyDown={dockKeyDown(edge)}
+                  onPointerDown={startDockDrag(edge)}
+                  role="separator"
+                  tabIndex={0}
+                />
+              ) : null}
               <div
-                aria-label={`Resize ${edge} panel`}
-                aria-orientation="vertical"
-                aria-valuenow={Math.round(dockWidths[edge] * 100)}
-                className={`workspace-divider workspace-divider-${edge}`}
-                onDoubleClick={() =>
-                  resizeDock(edge, DEFAULT_DOCK_WIDTHS[edge])
-                }
-                onKeyDown={dockKeyDown(edge)}
-                onPointerDown={startDockDrag(edge)}
-                role="separator"
-                tabIndex={0}
-              />
-            ) : null}
-            <div
-              className={`workspace-column workspace-column-${side} ${collapsed ? "collapsed" : ""}`}
-              style={{
-                ...(basis === undefined ? {} : { flexBasis: basis }),
-                ...(grow === undefined ? {} : { flexGrow: grow }),
-              }}
-            >
-              {columns[side].map((group, index) => (
-                <Fragment key={group.id}>
-                  {index > 0 ? (
-                    <div
-                      aria-label={`Resize ${side} panels`}
-                      aria-orientation="horizontal"
-                      className="workspace-group-divider"
-                      onKeyDown={groupKeyDown(side, index)}
-                      onPointerDown={startGroupDrag(side, index)}
-                      role="separator"
-                      tabIndex={0}
-                    />
-                  ) : null}
-                  {renderGroup(side, group)}
-                </Fragment>
-              ))}
-              <div
-                {...tail}
-                className={`workspace-column-tail ${empty ? "empty" : ""} ${tail.className}`}
+                className={`workspace-column workspace-column-${side} ${collapsed ? "collapsed" : ""}`}
+                style={{
+                  ...(basis === undefined ? {} : { flexBasis: basis }),
+                  ...(grow === undefined ? {} : { flexGrow: grow }),
+                }}
               >
-                {empty && dragging ? "Drop a panel here" : null}
-              </div>
-            </div>
-          </Fragment>
-        );
-      })}
-      {allTools(columns).map((tool) => {
-        const home = findTool(columns, tool.id);
-        if (!home) return null;
-        return (
-          <DockToolHost
-            active={
-              // With the docks closed only the chat is on screen, whichever tab
-              // its group last had selected.
-              active ? home.group.activeID === tool.id : tool.kind === "chat"
-            }
-            key={tool.id}
-            kind={tool.kind}
-            target={groupBodies[home.group.id] ?? null}
-          >
-            {tool.kind === "chat" ? null : (
-              <div className="workspace-tool-actions">
-                <button
-                  onClick={() => cycleTool(tool, home.side)}
-                  title="Move this panel to the next column"
-                  aria-label={`Move ${tool.title} to the next column`}
+                {columns[side].map((group, index) => (
+                  <Fragment key={group.id}>
+                    {index > 0 ? (
+                      <div
+                        aria-label={`Resize ${side} panels`}
+                        aria-orientation="horizontal"
+                        className="workspace-group-divider"
+                        onKeyDown={groupKeyDown(side, index)}
+                        onPointerDown={startGroupDrag(side, index)}
+                        role="separator"
+                        tabIndex={0}
+                      />
+                    ) : null}
+                    {renderGroup(side, group)}
+                  </Fragment>
+                ))}
+                <div
+                  {...tail}
+                  className={`workspace-column-tail ${empty ? "empty" : ""} ${tail.className}`}
                 >
-                  ⇄
-                </button>
+                  {empty && dragging ? "Drop a panel here" : null}
+                </div>
               </div>
-            )}
-            {renderTool(
-              tool,
-              `${home.side}:${home.group.id}:${home.group.activeID}`,
-            )}
-          </DockToolHost>
-        );
-      })}
-      {panelsMenu}
-      {quickOpen ? (
-        <div
-          className="workspace-quick-open"
-          role="dialog"
-          aria-label="Quick open file"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setQuickOpen(false);
-          }}
-        >
-          <div className="workspace-quick-open-panel">
-            <input
-              autoFocus
-              aria-label="File name"
-              placeholder="Search files by name"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && matches[0]) openFile(matches[0]);
-              }}
-            />
-            <ul>
-              {matches.map((path, index) => (
-                <li key={path}>
+            </Fragment>
+          );
+        })}
+        {allTools(columns).map((tool) => {
+          const home = findTool(columns, tool.id);
+          if (!home) return null;
+          return (
+            <DockToolHost
+              active={
+                // With the docks closed only the chat is on screen, whichever tab
+                // its group last had selected.
+                active ? home.group.activeID === tool.id : tool.kind === "chat"
+              }
+              key={tool.id}
+              kind={tool.kind}
+              target={groupBodies[home.group.id] ?? null}
+            >
+              {tool.kind === "chat" ? null : (
+                <div className="workspace-tool-actions">
                   <button
-                    className={index === 0 ? "selected" : ""}
-                    onClick={() => openFile(path)}
+                    onClick={() => cycleTool(tool, home.side)}
+                    title="Move this panel to the next column"
+                    aria-label={`Move ${tool.title} to the next column`}
                   >
-                    {path}
+                    ⇄
                   </button>
-                </li>
-              ))}
-            </ul>
-            {matches.length === 0 ? (
-              <div className="workspace-muted">No matching files</div>
-            ) : null}
+                </div>
+              )}
+              {renderTool(
+                tool,
+                `${home.side}:${home.group.id}:${home.group.activeID}`,
+              )}
+            </DockToolHost>
+          );
+        })}
+        {panelsMenu}
+        {quickOpen ? (
+          <div
+            className="workspace-quick-open"
+            role="dialog"
+            aria-label="Quick open file"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) setQuickOpen(false);
+            }}
+          >
+            <div className="workspace-quick-open-panel">
+              <input
+                autoFocus
+                aria-label="File name"
+                placeholder="Search files by name"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && matches[0]) openFile(matches[0]);
+                }}
+              />
+              <ul>
+                {matches.map((path, index) => (
+                  <li key={path}>
+                    <button
+                      className={index === 0 ? "selected" : ""}
+                      onClick={() => openFile(path)}
+                    >
+                      {path}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              {matches.length === 0 ? (
+                <div className="workspace-muted">No matching files</div>
+              ) : null}
+            </div>
           </div>
-        </div>
-      ) : null}
-      {multiRun ? (
-        <MultiRunDialog
-          models={models}
-          currentModel={model}
-          isRepo={git?.repository ?? false}
-          onClose={() => setMultiRun(false)}
-          onNotify={onNotify}
-        />
-      ) : null}
+        ) : null}
+        {multiRun ? (
+          <MultiRunDialog
+            models={models}
+            currentModel={model}
+            isRepo={git?.repository ?? false}
+            onClose={() => setMultiRun(false)}
+            onNotify={onNotify}
+          />
+        ) : null}
+      </div>
     </div>
   );
 }

@@ -606,3 +606,64 @@ func TestEncodeInputExpandsReview(t *testing.T) {
 		t.Fatalf("installed skill was shadowed: %+v", ui)
 	}
 }
+
+// Browsing is read-only, and that is enforced where it cannot be forgotten:
+// in the service, not in the buttons. Every bound method that would change a
+// file or a repository refuses while the panels are pointed somewhere the
+// chat is not, so no click can commit to the wrong repository.
+func TestBrowsingRefusesEveryMutation(t *testing.T) {
+	chatDir := t.TempDir()
+	browseDir := t.TempDir()
+	s, c := New(func(string, any) {})
+	c.Attach("chat", tui.ChatLiveConfig{WorkDir: chatDir}, make(chan string, 1), nil)
+	if err := s.SetExplorerRoot(browseDir); err != nil {
+		t.Fatalf("SetExplorerRoot: %v", err)
+	}
+
+	mutations := map[string]func() error{
+		"WriteWorkspaceFile": func() error {
+			_, err := s.WriteWorkspaceFile("a.txt", "x", "")
+			return err
+		},
+		"GitStage":     func() error { _, err := s.GitStage([]string{"a"}); return err },
+		"GitUnstage":   func() error { _, err := s.GitUnstage([]string{"a"}); return err },
+		"GitDiscard":   func() error { _, err := s.GitDiscard([]string{"a"}); return err },
+		"GitCommit":    func() error { _, err := s.GitCommit("m", false); return err },
+		"GitCheckout":  func() error { _, err := s.GitCheckout("main"); return err },
+		"GitCreate":    func() error { _, err := s.GitCreateBranch("b", "main", true); return err },
+		"GitRename":    func() error { _, err := s.GitRenameBranch("a", "b"); return err },
+		"GitDelete":    func() error { _, err := s.GitDeleteBranch("b", false); return err },
+		"GitFetch":     func() error { _, err := s.GitFetch(); return err },
+		"GitPull":      func() error { _, err := s.GitPull(false); return err },
+		"GitPush":      func() error { _, err := s.GitPush(false); return err },
+		"GitStash":     func() error { _, err := s.GitStash("m", false); return err },
+		"GitStashPop":  func() error { _, err := s.GitStashApply(0, true); return err },
+		"GitStashDrop": func() error { _, err := s.GitStashDrop(0); return err },
+		"GitResolve":   func() error { _, err := s.GitResolve("a", "ours"); return err },
+		"GitContinue":  func() error { _, err := s.GitContinue("merge"); return err },
+		"GitAbort":     func() error { _, err := s.GitAbort("merge"); return err },
+		"AddWorktree":  func() error { _, err := s.GitAddWorktree("b", "/tmp/x", "main", true); return err },
+		"RemoveTree":   func() error { _, err := s.GitRemoveWorktree("/tmp/x", false, false); return err },
+		"Integrate":    func() error { _, err := s.GitIntegrate("a", "b", false); return err },
+		"StartRuns":    func() error { _, err := s.StartRuns(RunSpec{}); return err },
+	}
+	for name, call := range mutations {
+		if err := call(); !errors.Is(err, errBrowsing) {
+			t.Errorf("%s while browsing: err = %v, want errBrowsing", name, err)
+		}
+	}
+
+	// Reading is exactly what browsing is for, so it keeps working.
+	if _, err := s.ListWorkspaceDir(""); err != nil {
+		t.Fatalf("listing a browsed workspace: %v", err)
+	}
+
+	// Back on the chat's own workspace, mutations are allowed through again:
+	// the guard is about where the panels point, not a permanent lock.
+	if err := s.SetExplorerRoot(""); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if _, err := s.WriteWorkspaceFile("a.txt", "x", ""); errors.Is(err, errBrowsing) {
+		t.Fatal("still refusing writes after the browse was cleared")
+	}
+}

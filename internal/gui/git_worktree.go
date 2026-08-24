@@ -134,6 +134,9 @@ func atoi(s string) int {
 // repository as "<repo>-<branch>", which keeps it out of the tree git is
 // tracking. When newBranch is set, branch is created from base.
 func (s *Service) GitAddWorktree(branch, path, base string, newBranch bool) (GitWorktree, error) {
+	if _, err := s.mutableRoot(); err != nil {
+		return GitWorktree{}, err
+	}
 	root, err := s.workspaceRoot()
 	if err != nil {
 		return GitWorktree{}, err
@@ -199,6 +202,9 @@ func sameDir(a, b string) bool {
 // GitRemoveWorktree detaches a worktree. The branch survives unless
 // deleteBranch is set: nothing is deleted the caller did not ask for.
 func (s *Service) GitRemoveWorktree(path string, force, deleteBranch bool) ([]GitWorktree, error) {
+	if _, err := s.mutableRoot(); err != nil {
+		return nil, err
+	}
 	root, err := s.workspaceRoot()
 	if err != nil {
 		return nil, err
@@ -246,6 +252,9 @@ func (s *Service) GitRemoveWorktree(path string, force, deleteBranch bool) ([]Gi
 // the workspace is sitting on something else. A conflicted merge is left in
 // place so it can be resolved in the diff panel or handed to the agent.
 func (s *Service) GitIntegrate(from, into string, squash bool) (IntegrateResult, error) {
+	if _, err := s.mutableRoot(); err != nil {
+		return IntegrateResult{}, err
+	}
 	root, err := s.workspaceRoot()
 	if err != nil {
 		return IntegrateResult{}, err

@@ -51,8 +51,11 @@ var (
 	errNoThread      = errors.New("no thread id")
 	errNoStop        = errors.New("this session cannot be closed")
 	errLastWorkspace = errors.New("the last workspace cannot be closed")
-	errBadImage      = errors.New("unsupported image")
-	errTooManyImg    = fmt.Errorf("at most %d images per message", chatstate.MaxAttachments)
+	// Browsing is read-only on purpose. Anything that would change a file or a
+	// repository says so rather than acting on the workspace being looked at.
+	errBrowsing   = errors.New("browsing, so this is read-only — open the workspace to change it")
+	errBadImage   = errors.New("unsupported image")
+	errTooManyImg = fmt.Errorf("at most %d images per message", chatstate.MaxAttachments)
 )
 
 // Service is the surface bound into the window: every exported method here is

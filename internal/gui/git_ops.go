@@ -171,6 +171,9 @@ func (s *Service) GitDefaultBranch() (string, error) {
 // ---- staging -------------------------------------------------------------
 
 func (s *Service) GitStage(paths []string) (GitStatusResult, error) {
+	if _, err := s.mutableRoot(); err != nil {
+		return GitStatusResult{}, err
+	}
 	root, rel, err := s.relPaths(paths)
 	if err != nil {
 		return GitStatusResult{}, err
@@ -182,6 +185,9 @@ func (s *Service) GitStage(paths []string) (GitStatusResult, error) {
 }
 
 func (s *Service) GitUnstage(paths []string) (GitStatusResult, error) {
+	if _, err := s.mutableRoot(); err != nil {
+		return GitStatusResult{}, err
+	}
 	root, rel, err := s.relPaths(paths)
 	if err != nil {
 		return GitStatusResult{}, err
@@ -201,6 +207,9 @@ func (s *Service) GitUnstage(paths []string) (GitStatusResult, error) {
 // GitDiscard throws away working-tree changes. Untracked files are deleted,
 // which is why this is the one git call the GUI confirms before sending.
 func (s *Service) GitDiscard(paths []string) (GitStatusResult, error) {
+	if _, err := s.mutableRoot(); err != nil {
+		return GitStatusResult{}, err
+	}
 	root, rel, err := s.relPaths(paths)
 	if err != nil {
 		return GitStatusResult{}, err
@@ -246,6 +255,9 @@ func hasHEAD(root string) bool {
 // GitCommit commits the index. With amend it rewrites the previous commit;
 // an empty message then keeps the existing one.
 func (s *Service) GitCommit(message string, amend bool) (GitStatusResult, error) {
+	if _, err := s.mutableRoot(); err != nil {
+		return GitStatusResult{}, err
+	}
 	root, err := s.workspaceRoot()
 	if err != nil {
 		return GitStatusResult{}, err
@@ -347,6 +359,9 @@ func parseTrack(s string) (int, int) {
 }
 
 func (s *Service) GitCheckout(name string) (GitStatusResult, error) {
+	if _, err := s.mutableRoot(); err != nil {
+		return GitStatusResult{}, err
+	}
 	if strings.TrimSpace(name) == "" {
 		return GitStatusResult{}, errors.New("branch name is empty")
 	}
@@ -357,6 +372,9 @@ func (s *Service) GitCheckout(name string) (GitStatusResult, error) {
 }
 
 func (s *Service) GitCreateBranch(name, base string, checkout bool) (GitStatusResult, error) {
+	if _, err := s.mutableRoot(); err != nil {
+		return GitStatusResult{}, err
+	}
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return GitStatusResult{}, errors.New("branch name is empty")
@@ -375,6 +393,9 @@ func (s *Service) GitCreateBranch(name, base string, checkout bool) (GitStatusRe
 }
 
 func (s *Service) GitRenameBranch(from, to string) (GitStatusResult, error) {
+	if _, err := s.mutableRoot(); err != nil {
+		return GitStatusResult{}, err
+	}
 	if strings.TrimSpace(to) == "" {
 		return GitStatusResult{}, errors.New("branch name is empty")
 	}
@@ -385,6 +406,9 @@ func (s *Service) GitRenameBranch(from, to string) (GitStatusResult, error) {
 }
 
 func (s *Service) GitDeleteBranch(name string, force bool) (GitStatusResult, error) {
+	if _, err := s.mutableRoot(); err != nil {
+		return GitStatusResult{}, err
+	}
 	flag := "-d"
 	if force {
 		flag = "-D"
@@ -398,6 +422,9 @@ func (s *Service) GitDeleteBranch(name string, force bool) (GitStatusResult, err
 // ---- remote --------------------------------------------------------------
 
 func (s *Service) GitFetch() (GitStatusResult, error) {
+	if _, err := s.mutableRoot(); err != nil {
+		return GitStatusResult{}, err
+	}
 	if _, err := s.git("fetch", "--prune"); err != nil {
 		return GitStatusResult{}, err
 	}
@@ -405,6 +432,9 @@ func (s *Service) GitFetch() (GitStatusResult, error) {
 }
 
 func (s *Service) GitPull(rebase bool) (GitStatusResult, error) {
+	if _, err := s.mutableRoot(); err != nil {
+		return GitStatusResult{}, err
+	}
 	args := []string{"pull"}
 	if rebase {
 		args = append(args, "--rebase")
@@ -418,6 +448,9 @@ func (s *Service) GitPull(rebase bool) (GitStatusResult, error) {
 // GitPush publishes the current branch, setting an upstream the first time so
 // a freshly created branch does not need a separate command.
 func (s *Service) GitPush(force bool) (GitStatusResult, error) {
+	if _, err := s.mutableRoot(); err != nil {
+		return GitStatusResult{}, err
+	}
 	root, err := s.workspaceRoot()
 	if err != nil {
 		return GitStatusResult{}, err
@@ -442,6 +475,9 @@ func (s *Service) GitPush(force bool) (GitStatusResult, error) {
 // ---- stash ---------------------------------------------------------------
 
 func (s *Service) GitStash(message string, includeUntracked bool) (GitStatusResult, error) {
+	if _, err := s.mutableRoot(); err != nil {
+		return GitStatusResult{}, err
+	}
 	args := []string{"stash", "push"}
 	if includeUntracked {
 		args = append(args, "--include-untracked")
@@ -480,6 +516,9 @@ func (s *Service) GitStashList() ([]GitStash, error) {
 
 // GitStashApply restores a stash. drop removes it from the list (pop).
 func (s *Service) GitStashApply(index int, drop bool) (GitStatusResult, error) {
+	if _, err := s.mutableRoot(); err != nil {
+		return GitStatusResult{}, err
+	}
 	verb := "apply"
 	if drop {
 		verb = "pop"
@@ -491,6 +530,9 @@ func (s *Service) GitStashApply(index int, drop bool) (GitStatusResult, error) {
 }
 
 func (s *Service) GitStashDrop(index int) ([]GitStash, error) {
+	if _, err := s.mutableRoot(); err != nil {
+		return nil, err
+	}
 	if _, err := s.git("stash", "drop", fmt.Sprintf("stash@{%d}", index)); err != nil {
 		return nil, err
 	}
@@ -552,6 +594,9 @@ func (s *Service) GitCommitDiff(sha string) (string, error) {
 // GitResolve marks a conflicted path resolved, optionally taking one side
 // wholesale first. side is "ours", "theirs", or "" to keep the merged file.
 func (s *Service) GitResolve(path, side string) (GitStatusResult, error) {
+	if _, err := s.mutableRoot(); err != nil {
+		return GitStatusResult{}, err
+	}
 	root, rel, err := s.relPaths([]string{path})
 	if err != nil {
 		return GitStatusResult{}, err
@@ -574,6 +619,9 @@ func (s *Service) GitResolve(path, side string) (GitStatusResult, error) {
 // GitContinue finishes the interrupted operation named by GitStatus.State;
 // GitAbort backs it out.
 func (s *Service) GitContinue(state string) (GitStatusResult, error) {
+	if _, err := s.mutableRoot(); err != nil {
+		return GitStatusResult{}, err
+	}
 	verb, ok := stateVerb(state)
 	if !ok {
 		return GitStatusResult{}, fmt.Errorf("nothing to continue")
@@ -585,6 +633,9 @@ func (s *Service) GitContinue(state string) (GitStatusResult, error) {
 }
 
 func (s *Service) GitAbort(state string) (GitStatusResult, error) {
+	if _, err := s.mutableRoot(); err != nil {
+		return GitStatusResult{}, err
+	}
 	verb, ok := stateVerb(state)
 	if !ok {
 		return GitStatusResult{}, fmt.Errorf("nothing to abort")
