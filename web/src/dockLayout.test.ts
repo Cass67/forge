@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import {
+  allTools,
+  nextTerminalNumber,
   clampDock,
   DEFAULT_DOCK_WIDTHS,
   dockFraction,
@@ -369,4 +371,28 @@ test("dividers sit between columns that are both on screen", () => {
   const noCentre = moveTool(full, "chat", { side: "left", where: "end" });
   expect(showsDivider(noCentre, "center", false)).toBe(false);
   expect(showsDivider(noCentre, "right", false)).toBe(true);
+});
+
+test("a new terminal never takes the id of one already in the layout", () => {
+  // A layout restored from storage still holds Terminal 1; the counter used to
+  // start from one again and hand out its id a second time.
+  const restored = addTool(defaultColumns(), terminal, {
+    side: "right",
+    where: "end",
+  });
+  expect(nextTerminalNumber(restored)).toBe(2);
+
+  const second: DockTool = {
+    id: `terminal-${nextTerminalNumber(restored)}`,
+    kind: "terminal",
+    title: "Terminal 2",
+  };
+  const both = addTool(restored, second, { side: "right", where: "end" });
+  const ids = allTools(both)
+    .filter((tool) => tool.kind === "terminal")
+    .map((tool) => tool.id);
+  expect(new Set(ids).size).toBe(ids.length);
+  expect(nextTerminalNumber(both)).toBe(3);
+  // A layout with no terminals starts at one.
+  expect(nextTerminalNumber(defaultColumns())).toBe(1);
 });

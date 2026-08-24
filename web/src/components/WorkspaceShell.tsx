@@ -34,6 +34,7 @@ import {
   loadColumns,
   loadDockWidths,
   moveTool,
+  nextTerminalNumber,
   removeTool,
   resizeGroups,
   saveColumns,
@@ -215,7 +216,9 @@ export function WorkspaceShell({
   // The group whose "add panel" menu is open, if any.
   const [addMenu, setAddMenu] = useState("");
   const [menuSlot, setMenuSlot] = useState<HTMLElement | null>(null);
-  const nextTerminal = useRef(1);
+  // Seeded from the restored layout, not from one: a saved Terminal 1 must not
+  // be handed the same id twice.
+  const nextTerminal = useRef(0);
   const [quickOpen, setQuickOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [workspacePaths, setWorkspacePaths] = useState<string[]>([]);
@@ -519,15 +522,22 @@ export function WorkspaceShell({
   };
 
   const launchTerminal = (target: DropTarget) => {
-    const number = nextTerminal.current++;
-    const tool: DockTool = {
-      id: `terminal-${number}`,
-      kind: "terminal",
-      title: `Terminal ${number}`,
-    };
-    setColumns((current) =>
-      setActiveTool(addTool(current, tool, target), tool.id),
-    );
+    setColumns((current) => {
+      // Taken from the layout being added to rather than from a counter, so a
+      // terminal restored from storage or opened in another window cannot be
+      // shadowed by a new one with its id.
+      const number = Math.max(
+        nextTerminal.current,
+        nextTerminalNumber(current),
+      );
+      nextTerminal.current = number + 1;
+      const tool: DockTool = {
+        id: `terminal-${number}`,
+        kind: "terminal",
+        title: `Terminal ${number}`,
+      };
+      return setActiveTool(addTool(current, tool, target), tool.id);
+    });
   };
 
   // The preview is a single pane — a second one would just be the same app

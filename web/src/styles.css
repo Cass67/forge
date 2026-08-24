@@ -3996,3 +3996,105 @@ textarea:not(.xterm-helper-textarea),
   color: var(--muted);
   font-size: 0.72rem;
 }
+
+/* ---- terminal splits ---- */
+.terminal-actions {
+  display: flex;
+  gap: 4px;
+  flex: none;
+  padding: 3px 6px 0;
+}
+.terminal-split-btn {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.66rem;
+  padding: 1px 7px;
+}
+.terminal-split-btn:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.terminal-tree {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+}
+.terminal-tree > * {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.terminal-split {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.terminal-split.row {
+  flex-direction: row;
+}
+.terminal-split.col {
+  flex-direction: column;
+}
+.terminal-branch {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.terminal-branch > * {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.terminal-divider {
+  flex: none;
+  background: var(--border);
+}
+.terminal-divider.row {
+  width: 3px;
+  cursor: col-resize;
+}
+.terminal-divider.col {
+  height: 3px;
+  cursor: row-resize;
+}
+.terminal-divider:hover {
+  background: var(--accent);
+}
+/* A pane only shows which one is focused when there is a choice to make. */
+.terminal-pane {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid transparent;
+}
+.terminal-pane.active {
+  border-color: var(--accent);
+}
+.terminal-pane > .terminal-host {
+  flex: 1;
+}
+.terminal-pane-close {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  font-size: 0.8rem;
+  line-height: 1;
+}
+.terminal-pane:hover .terminal-pane-close {
+  opacity: 1;
+}
+.terminal-pane-close:hover {
+  color: var(--err);
+}

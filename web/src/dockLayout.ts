@@ -111,6 +111,21 @@ export function findTool(
   return null;
 }
 
+// nextTerminalNumber is the first terminal number not already in the layout.
+// The counter used to start at one on every launch while the layout came back
+// from storage with Terminal 1 still in it, so the next terminal collided with
+// it: same id, same key, and a pane that never received any output because the
+// backend already had a shell under that id.
+export function nextTerminalNumber(columns: DockColumns): number {
+  let highest = 0;
+  for (const tool of allTools(columns)) {
+    if (tool.kind !== "terminal") continue;
+    const number = Number(tool.id.replace(/^terminal-/, ""));
+    if (Number.isFinite(number) && number > highest) highest = number;
+  }
+  return highest + 1;
+}
+
 export function allTools(columns: DockColumns): DockTool[] {
   return SIDES.flatMap((side) => columns[side].flatMap((group) => group.tools));
 }
