@@ -37,6 +37,8 @@ export function Sidebar({
   onRename,
   onPin,
   onForget,
+  onBrowse,
+  browsing = "",
   onBulkDelete,
   onClearThreads,
   openThreadIDs = [],
@@ -60,6 +62,11 @@ export function Sidebar({
   onRename: (id: string, title: string) => void;
   onPin: (dir: string, pinned: boolean) => void;
   onForget: (dir: string) => void;
+  // Point the file tree, editor and source control at a workspace without
+  // starting a chat in it.
+  onBrowse: (dir: string) => void;
+  // The workspace those panels are currently showing.
+  browsing?: string;
   onBulkDelete: (threadIDs: string[], dirs: string[]) => void;
   onClearThreads: () => void;
   // Threads currently open as tabs; their ✕ closes the tab instead of
@@ -222,12 +229,20 @@ export function Sidebar({
                   />
                 ) : null}
                 <button
-                  className="ws-section-title"
+                  aria-label={collapsed ? "Expand" : "Collapse"}
+                  className="ws-chevron"
                   onClick={() =>
                     setClosed((c) => ({ ...c, [ws.path]: !c[ws.path] }))
                   }
+                  title={collapsed ? "Show chats" : "Hide chats"}
+                >
+                  {collapsed ? "›" : "⌄"}
+                </button>
+                <button
+                  className={`ws-section-title ${ws.path === browsing ? "browsing" : ""}`}
+                  onClick={() => onBrowse(ws.path)}
                   onDoubleClick={() => onNewIn(ws.path)}
-                  title={ws.path}
+                  title={`${ws.path} — click to browse its files, double-click for a new chat`}
                 >
                   <span className="ws-caret">{collapsed ? "▸" : "▾"}</span>
                   <span className="ws-section-name">

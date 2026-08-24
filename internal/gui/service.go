@@ -77,6 +77,9 @@ type Service struct {
 	// looked at: it takes the window as soon as it attaches. A runtime started
 	// for any other reason attaches in the background.
 	pendingFocus string
+	// browseDir points the file tree, editor and source control at a workspace
+	// without a chat running in it. Empty means they follow the chat.
+	browseDir string
 	// Directories being torn down by CloseWorkspace, so a session ending there
 	// is not mistaken for one that died and reopened.
 	closing map[string]bool
@@ -659,6 +662,9 @@ func (s *Service) activate(sessionID string) bool {
 	rt, ok := s.runtimes[sessionID]
 	if ok {
 		s.activeSession, s.activeDir = sessionID, rt.dir
+		// Moving the chat is a decision about where to work, so the panels
+		// stop looking wherever they were pointed and follow it again.
+		s.browseDir = ""
 	}
 	s.mu.Unlock()
 	if ok {
@@ -924,6 +930,7 @@ func (s *Service) SwitchWorkspace(dir string) error {
 	}
 	s.mu.Lock()
 	s.activeDir = clean
+	s.browseDir = ""
 	s.mu.Unlock()
 	if _, err := s.start(clean, "", true); err != nil {
 		return err

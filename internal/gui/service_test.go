@@ -31,6 +31,7 @@ func TestBoundMethodSurface(t *testing.T) {
 		// live sessions
 		"Sessions", "ActivateSession", "OpenThread", "CloseSession",
 		"CloseWorkspace", "AddWorkspaceTree",
+		"SetExplorerRoot", "ExplorerRoot",
 		"SendWithImages", "SetEffort", "SetProviderKey", "SignOutProvider",
 		"StartProviderLogin", "SwitchModel", "SwitchWorkspace", "Threads", "Workspaces",
 		"ListWorkspaceDir", "ReadWorkspaceFile", "WriteWorkspaceFile",
@@ -349,6 +350,60 @@ func TestAddWorkspaceTreeFallsBackToTheFolderItself(t *testing.T) {
 	if len(list) != 1 || filepath.Clean(list[0].Path) != filepath.Clean(root) {
 		t.Fatalf("registry = %+v, want just the folder", list)
 	}
+}
+
+// A workspace can be looked at without starting anything in it: the panels
+// follow the browse while the chat stays where it is.
+func TestSetExplorerRootMovesThePanelsNotTheChat(t *testing.T) {
+	chatDir := t.TempDir()
+	browseDir := t.TempDir()
+	s, c := New(func(string, any) {})
+	started := 0
+	s.StartRuntime = func(string, string, string) { started++ }
+	c.Attach("chat", tui.ChatLiveConfig{WorkDir: chatDir}, make(chan string, 1), nil)
+
+	if err := s.SetExplorerRoot(browseDir); err != nil {
+		t.Fatalf("SetExplorerRoot: %v", err)
+	}
+	if got := s.ExplorerRoot(); filepath.Clean(got) != mustEval(t, browseDir) {
+		t.Fatalf("panels are on %q, want %q", got, browseDir)
+	}
+	// Browsing must not start a chat, and must not move the one running.
+	if started != 0 {
+		t.Fatalf("browsing started %d runtimes", started)
+	}
+	if filepath.Clean(s.currentDir()) != filepath.Clean(chatDir) {
+		t.Fatalf("the chat moved to %q", s.currentDir())
+	}
+
+	// Clearing hands the panels back to the chat's workspace.
+	if err := s.SetExplorerRoot(""); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if got := s.ExplorerRoot(); got != mustEval(t, chatDir) {
+		t.Fatalf("panels did not follow the chat back: %q", got)
+	}
+
+	// Deliberately moving the chat also drops a stale browse.
+	if err := s.SetExplorerRoot(browseDir); err != nil {
+		t.Fatalf("SetExplorerRoot: %v", err)
+	}
+	c.Attach("second", tui.ChatLiveConfig{WorkDir: chatDir}, make(chan string, 1), nil)
+	if err := s.ActivateSession("second"); err != nil {
+		t.Fatalf("ActivateSession: %v", err)
+	}
+	if got := s.ExplorerRoot(); got != mustEval(t, chatDir) {
+		t.Fatalf("browse survived a chat switch: %q", got)
+	}
+}
+
+func mustEval(t *testing.T, dir string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	return resolved
 }
 
 // Closing a workspace ends every conversation live in it and hands the window

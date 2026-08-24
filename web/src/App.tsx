@@ -133,6 +133,8 @@ export default function App() {
   const [busySessions, setBusySessions] = useState<Record<string, boolean>>({});
   // Every live session, from the backend. Several can share a workspace.
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  // The workspace the panels are browsing, empty when they follow the chat.
+  const [browseDir, setBrowseDir] = useState("");
   // Transcripts stashed per session, so going to another conversation and back
   // restores what it streamed instead of replaying it from storage.
   const sessionCache = useRef(
@@ -305,6 +307,9 @@ export default function App() {
         // its own dot keeps tracking it, but nothing here must stay locked.
         setBusy(false);
         setSubAgents([]);
+        // The backend hands the panels back to the chat on a deliberate
+        // switch, so the window must not keep claiming it is browsing.
+        setBrowseDir("");
       }
       const saved = sessionCache.current.get(session);
       const savedMatches =
@@ -387,6 +392,9 @@ export default function App() {
       if (finished) {
         setBusy(false);
         setSubAgents([]);
+        // The backend hands the panels back to the chat on a deliberate
+        // switch, so the window must not keep claiming it is browsing.
+        setBrowseDir("");
         markRef.current(turnFailed.current ? "failed" : "done");
         refreshThreads();
       }
@@ -529,6 +537,19 @@ export default function App() {
     }
     return [...ids];
   }, [sessions, tabs.open]);
+
+  // Looking at a workspace's files without starting a chat in it. The panels
+  // follow; the conversation on screen stays where it is.
+  const browseWorkspace = useCallback(
+    (dir: string) => {
+      const target = dir === (init?.work_dir ?? "") ? "" : dir;
+      void forge
+        .setExplorerRoot(target)
+        .then(() => setBrowseDir(target))
+        .catch((e: unknown) => notify(String(e)));
+    },
+    [init?.work_dir, notify],
+  );
 
   // Closing a workspace ends every conversation open in it. Confirmed when one
   // of them is mid-turn, since that work is lost.
@@ -1090,6 +1111,8 @@ export default function App() {
                   .catch((e: unknown) => notify(String(e)))
               }
               onForget={closeWorkspace}
+              onBrowse={browseWorkspace}
+              browsing={browseDir || (init?.work_dir ?? "")}
               onBulkDelete={bulkDelete}
               onClearThreads={clearThreads}
               openThreadIDs={openThreadIDs}
@@ -1110,7 +1133,7 @@ export default function App() {
           </>
         ) : null}
         <WorkspaceShell
-          workDir={init?.work_dir ?? ""}
+          workDir={browseDir || (init?.work_dir ?? "")}
           active={workspaceMode}
           onDirtyChange={setWorkspaceDirty}
           onNotify={notify}

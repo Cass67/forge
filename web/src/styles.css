@@ -3929,3 +3929,22 @@ textarea:not(.xterm-helper-textarea),
   outline: none;
   border-color: var(--accent);
 }
+
+/* ---- browsing a workspace without starting a chat in it ---- */
+.ws-chevron {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 0.7rem;
+  line-height: 1;
+}
+.ws-chevron:hover {
+  color: var(--text);
+}
+.ws-section-title.browsing .ws-section-name {
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-underline-offset: 3px;
+}

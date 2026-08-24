@@ -56,12 +56,58 @@ func terminalEnvironment(env []string) []string {
 	return append(result, "TERM=xterm-256color", "COLORTERM=truecolor")
 }
 
+// workspaceRoot is the directory the panels are looking at: the file tree, the
+// editor, source control and worktrees. Normally that is the workspace the
+// chat is in, but a workspace can be browsed without starting a chat in it, in
+// which case the panels follow the browse and the chat stays where it is.
 func (s *Service) workspaceRoot() (string, error) {
+	s.mu.RLock()
+	browsing := s.browseDir
+	s.mu.RUnlock()
+	if browsing != "" {
+		return filepath.EvalSymlinks(browsing)
+	}
+	return s.chatRoot()
+}
+
+// chatRoot is the workspace the conversation on screen is running in,
+// whatever the panels are pointed at. Terminals use it: a shell is keyed to
+// the workspace that owns it, not to whatever is being browsed.
+func (s *Service) chatRoot() (string, error) {
 	cfg, _, ready := s.snapshot()
 	if !ready {
 		return "", errNotReady
 	}
 	return filepath.EvalSymlinks(cfg.WorkDir)
+}
+
+// SetExplorerRoot points the panels at a directory without starting anything
+// there. An empty dir hands them back to the workspace the chat is in.
+func (s *Service) SetExplorerRoot(dir string) error {
+	trimmed := strings.TrimSpace(dir)
+	if trimmed == "" {
+		s.mu.Lock()
+		s.browseDir = ""
+		s.mu.Unlock()
+		return nil
+	}
+	clean, err := workspaceDir(trimmed)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.browseDir = clean
+	s.mu.Unlock()
+	return nil
+}
+
+// ExplorerRoot reports the directory the panels are on.
+func (s *Service) ExplorerRoot() string {
+	root, err := s.workspaceRoot()
+	if err != nil {
+		return ""
+	}
+	return root
 }
 
 func workspacePath(root, relative string) (string, error) {
@@ -227,7 +273,9 @@ func (s *Service) StartTerminal(id string, rows, cols int) error {
 	if id == "" {
 		return errors.New("terminal id is required")
 	}
-	root, err := s.workspaceRoot()
+	// Shells belong to the workspace the chat is in, not to whatever is being
+	// browsed: they are keyed by it, and they outlive a look at another repo.
+	root, err := s.chatRoot()
 	if err != nil {
 		return err
 	}
