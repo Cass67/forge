@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { ThreadSummary, Workspace } from "../bridge";
+import { labelFor, splitSections } from "../sidebarSections";
 
 function fmtTime(iso: string): string {
   if (!iso) return "";
@@ -51,6 +52,7 @@ export function Sidebar({
   const [renaming, setRenaming] = useState("");
   const [closed, setClosed] = useState<Record<string, boolean>>({});
   const [selecting, setSelecting] = useState(false);
+  const [showAll, setShowAll] = useState(false);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const activeWorkspace = workDir;
 
@@ -81,9 +83,12 @@ export function Sidebar({
     .filter((key) => key.startsWith("w:"))
     .map((key) => key.slice(2));
 
-  // Every workspace that has been opened keeps its own section, so the list
-  // grows as more are opened rather than replacing the one before.
-  const sections = workspaces.length > 0 ? workspaces : [];
+  // A section exists per directory any stored thread ran in, which on a
+  // machine that has done benchmark runs means a hundred of them, most holding
+  // one thread and most called "work". Names are grown until they differ, and
+  // everything past the first few sits behind one toggle.
+  const labels = labelFor(workspaces.map((ws) => ws.path));
+  const { shown: sections, hidden } = splitSections(workspaces, showAll);
 
   return (
     <aside className="sidebar">
@@ -140,7 +145,17 @@ export function Sidebar({
                   title={ws.path}
                 >
                   <span className="ws-caret">{collapsed ? "▸" : "▾"}</span>
-                  <span className="ws-section-name">{ws.name}</span>
+                  <span className="ws-section-name">
+                    {labels[ws.path] ?? ws.name}
+                  </span>
+                  {ws.missing ? (
+                    <span
+                      className="ws-gone"
+                      title="Directory no longer exists"
+                    >
+                      gone
+                    </span>
+                  ) : null}
                   <span className="ws-section-count">{list.length || ""}</span>
                 </button>
                 <button
@@ -317,6 +332,15 @@ export function Sidebar({
             </section>
           );
         })}
+        {hidden > 0 || showAll ? (
+          <button
+            className="ws-more"
+            onClick={() => setShowAll((on) => !on)}
+            title="Sections are one per directory a thread has run in"
+          >
+            {showAll ? "Show fewer" : `Show all (${hidden} more)`}
+          </button>
+        ) : null}
       </div>
       {selecting ? (
         <BulkBar
