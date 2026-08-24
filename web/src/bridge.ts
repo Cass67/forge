@@ -326,6 +326,9 @@ export const forge = {
   pinWorkspace: (dir: string, pinned: boolean) =>
     call<Workspace[]>("PinWorkspace", dir, pinned),
   forgetWorkspace: (dir: string) => call<Workspace[]>("ForgetWorkspace", dir),
+  // Ends every conversation live in a workspace and drops it from the list.
+  // The threads stay on disk.
+  closeWorkspace: (dir: string) => call<Workspace[]>("CloseWorkspace", dir),
   yolo: () => call<boolean>("Yolo"),
   setYolo: (on: boolean) => call<boolean>("SetYolo", on),
   attachImage: (name: string, dataB64: string) =>

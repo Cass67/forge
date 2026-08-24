@@ -515,6 +515,30 @@ export default function App() {
     return [...ids];
   }, [sessions, tabs.open]);
 
+  // Closing a workspace ends every conversation open in it. Confirmed when one
+  // of them is mid-turn, since that work is lost.
+  const closeWorkspace = useCallback(
+    (dir: string) => {
+      const live = sessions.filter((session) => session.workspace === dir);
+      const working = live.some((session) => busySessions[session.id]);
+      if (
+        working &&
+        !window.confirm(
+          `An agent is still working in ${dir.split("/").pop()}. Close it anyway?`,
+        )
+      )
+        return;
+      void forge
+        .closeWorkspace(dir)
+        .then((next) => {
+          setWorkspaces(next);
+          refreshThreads();
+        })
+        .catch((e: unknown) => notify(String(e)));
+    },
+    [busySessions, notify, refreshThreads, sessions],
+  );
+
   // Which live session, if any, is running a given thread.
   const sessionForThread = useCallback(
     (threadID: string) =>
@@ -1041,12 +1065,7 @@ export default function App() {
                   .then(setWorkspaces)
                   .catch((e: unknown) => notify(String(e)))
               }
-              onForget={(dir) =>
-                void forge
-                  .forgetWorkspace(dir)
-                  .then(setWorkspaces)
-                  .catch((e: unknown) => notify(String(e)))
-              }
+              onForget={closeWorkspace}
               onBulkDelete={bulkDelete}
               onClearThreads={clearThreads}
               openThreadIDs={openThreadIDs}

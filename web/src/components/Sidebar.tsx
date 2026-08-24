@@ -237,23 +237,24 @@ export function Sidebar({
                     +
                   </button>
                 ) : (
-                  <>
-                    <button
-                      className="btn"
-                      onClick={() => onOpenWorkspace(ws.path)}
-                      title={`Work in ${ws.path}`}
-                    >
-                      Open
-                    </button>
-                    <button
-                      className="ws-pin"
-                      onClick={() => onForget(ws.path)}
-                      title="Remove from the list"
-                    >
-                      ✕
-                    </button>
-                  </>
+                  <button
+                    className="btn"
+                    onClick={() => onOpenWorkspace(ws.path)}
+                    title={`Work in ${ws.path}`}
+                  >
+                    Open
+                  </button>
                 )}
+                {/* Closing is offered for the workspace you are in as well:
+                    it ends the conversations open here and moves the window
+                    on, and the threads stay on disk either way. */}
+                <button
+                  className="ws-pin"
+                  onClick={() => onForget(ws.path)}
+                  title="Close this workspace and the chats open in it"
+                >
+                  ✕
+                </button>
               </div>
               {!collapsed ? (
                 <div

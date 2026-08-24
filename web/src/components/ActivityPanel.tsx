@@ -22,7 +22,6 @@ export function ActivityPanel({
   // Sub-agent roles that have produced output this turn.
   subAgents?: string[];
 }) {
-  const tools = entries.filter((e) => e.t === "tool");
   const pct =
     stats.contextLimit > 0
       ? Math.min(100, (stats.contextUsed / stats.contextLimit) * 100)
@@ -79,23 +78,6 @@ export function ActivityPanel({
           ))}
         </>
       ) : null}
-
-      <div className="col-head act-head">activity</div>
-      <div className="activity-list">
-        {tools.length === 0 ? (
-          <div className="thread-empty">no tool activity yet</div>
-        ) : null}
-        {tools.map((t) => {
-          if (t.t !== "tool") return null;
-          const status = t.isError ? "err" : t.done ? "ok" : "run";
-          return (
-            <div key={t.id} className={`act ${status}`}>
-              <span className="act-dot" />
-              <span className="act-name">{t.name}</span>
-            </div>
-          );
-        })}
-      </div>
     </aside>
   );
 }

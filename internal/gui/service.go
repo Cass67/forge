@@ -43,16 +43,16 @@ const (
 )
 
 var (
-	errNotReady   = errors.New("the chat runtime is still starting")
-	errNoRestore  = errors.New("restore is not available in this session")
-	errNoDelete   = errors.New("deleting threads is not available in this session")
-	errNoRename   = errors.New("renaming threads is not available in this session")
-	errNoWorkDir  = errors.New("no workspace directory")
-	errNoSession  = errors.New("no such session")
-	errNoThread   = errors.New("no thread id")
-	errNoStop     = errors.New("this session cannot be closed")
-	errBadImage   = errors.New("unsupported image")
-	errTooManyImg = fmt.Errorf("at most %d images per message", chatstate.MaxAttachments)
+	errNotReady      = errors.New("the chat runtime is still starting")
+	errNoDelete      = errors.New("deleting threads is not available in this session")
+	errNoRename      = errors.New("renaming threads is not available in this session")
+	errNoWorkDir     = errors.New("no workspace directory")
+	errNoSession     = errors.New("no such session")
+	errNoThread      = errors.New("no thread id")
+	errNoStop        = errors.New("this session cannot be closed")
+	errLastWorkspace = errors.New("the last workspace cannot be closed")
+	errBadImage      = errors.New("unsupported image")
+	errTooManyImg    = fmt.Errorf("at most %d images per message", chatstate.MaxAttachments)
 )
 
 // Service is the surface bound into the window: every exported method here is
@@ -77,6 +77,9 @@ type Service struct {
 	// looked at: it takes the window as soon as it attaches. A runtime started
 	// for any other reason attaches in the background.
 	pendingFocus string
+	// Directories being torn down by CloseWorkspace, so a session ending there
+	// is not mistaken for one that died and reopened.
+	closing map[string]bool
 
 	emit      func(name string, data any)
 	connected sync.Once
@@ -137,6 +140,7 @@ func New(emit func(name string, data any)) (*Service, *Controller) {
 		emit: emit, flows: providerauth.NewFlows(),
 		runtimes:  make(map[string]*guiRuntime),
 		terminals: make(map[string]*terminalSession),
+		closing:   make(map[string]bool),
 	}
 	return s, &Controller{s: s}
 }
@@ -193,7 +197,10 @@ func (c *Controller) Forget(sessionID string) {
 			}
 		}
 	}
-	orphaned := s.activeSession == "" && gone != nil
+	orphaned := s.activeSession == "" && gone != nil && !s.closing[gone.dir]
+	if gone != nil && s.closing[gone.dir] && !s.hasRuntimeInLocked(gone.dir) {
+		delete(s.closing, gone.dir)
+	}
 	s.mu.Unlock()
 	// Closing the last session would leave the window addressing nothing, with
 	// no way back: give its workspace a fresh conversation instead.
@@ -208,6 +215,17 @@ func (c *Controller) Forget(sessionID string) {
 // Shutdown tears down every runtime's terminals. The runtimes themselves are
 // stopped by process exit.
 func (c *Controller) Shutdown() { c.s.closeTerminals() }
+
+// hasRuntimeInLocked reports whether any session is still live in a directory.
+// Callers hold s.mu.
+func (s *Service) hasRuntimeInLocked(dir string) bool {
+	for _, rt := range s.runtimes {
+		if rt.dir == dir {
+			return true
+		}
+	}
+	return false
+}
 
 // active returns the session the frontend is talking to.
 func (s *Service) active() (*guiRuntime, bool) {
@@ -913,6 +931,84 @@ func (s *Service) SwitchWorkspace(dir string) error {
 	// The frontend re-initialises once the new session attaches.
 	s.emit(EventReady, nil)
 	return nil
+}
+
+// CloseWorkspace ends every conversation live in a directory and drops it from
+// the list. The threads themselves stay on disk: closing a workspace is not
+// deleting its history, the same way closing a chat is not deleting its thread.
+// The workspace on screen can be closed too, in which case the window moves to
+// whatever is left.
+func (s *Service) CloseWorkspace(dir string) ([]Workspace, error) {
+	clean, err := workspaceDir(dir)
+	if err != nil {
+		// A directory that no longer exists still has to be removable from the
+		// list, so a bad path is only fatal when nothing here knows it either.
+		clean = cleanDir(dir)
+		if clean == "" {
+			return s.Workspaces(), errNoWorkDir
+		}
+	}
+
+	s.mu.Lock()
+	victims := make([]*guiRuntime, 0, len(s.runtimes))
+	elsewhere := ""
+	for id, rt := range s.runtimes {
+		if rt.dir == clean {
+			victims = append(victims, rt)
+			continue
+		}
+		if elsewhere == "" {
+			elsewhere = id
+		}
+	}
+	closingActive := s.activeDir == clean
+	if closingActive && elsewhere == "" {
+		// Nothing else is live. Somewhere to go is needed before the window is
+		// left addressing a workspace that is being torn down.
+		fallback := s.otherRememberedLocked(clean)
+		s.mu.Unlock()
+		if fallback == "" {
+			return s.Workspaces(), errLastWorkspace
+		}
+		if err := s.SwitchWorkspace(fallback); err != nil {
+			return s.Workspaces(), err
+		}
+		s.mu.Lock()
+	}
+	// Marked before the runtimes are stopped: Forget reopens a workspace whose
+	// last session ends, which is right for a session that died and wrong for
+	// one being deliberately closed.
+	s.closing[clean] = true
+	s.mu.Unlock()
+
+	for _, rt := range victims {
+		if rt.stop != nil {
+			rt.stop()
+		}
+	}
+	if elsewhere != "" && closingActive {
+		s.activate(elsewhere)
+	}
+	if s.Registry != nil {
+		if err := s.Registry.Forget(clean); err != nil {
+			return s.Workspaces(), err
+		}
+	}
+	return s.Workspaces(), nil
+}
+
+// otherRememberedLocked names a remembered workspace that is not the one being
+// closed, preferring the most recent.
+func (s *Service) otherRememberedLocked(skip string) string {
+	if s.Registry == nil {
+		return ""
+	}
+	for _, entry := range s.Registry.List() {
+		if cleanDir(entry.Path) != skip {
+			return entry.Path
+		}
+	}
+	return ""
 }
 
 // workspaceDir validates a directory chosen in the UI.

@@ -2,6 +2,7 @@ package gui
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -28,6 +29,7 @@ func TestBoundMethodSurface(t *testing.T) {
 		"Providers", "RenameThread", "Restore", "Send",
 		// live sessions
 		"Sessions", "ActivateSession", "OpenThread", "CloseSession",
+		"CloseWorkspace",
 		"SendWithImages", "SetEffort", "SetProviderKey", "SignOutProvider",
 		"StartProviderLogin", "SwitchModel", "SwitchWorkspace", "Threads", "Workspaces",
 		"ListWorkspaceDir", "ReadWorkspaceFile", "WriteWorkspaceFile",
@@ -286,6 +288,62 @@ func TestOpenThreadResumesItInItsOwnWorkspace(t *testing.T) {
 	}
 	if filepath.Clean(startedIn) != filepath.Clean(elsewhere) {
 		t.Fatalf("started in %q, want %q", startedIn, elsewhere)
+	}
+}
+
+// Closing a workspace ends every conversation live in it and hands the window
+// to what is left, without deleting any threads.
+func TestCloseWorkspaceStopsItsSessionsAndMovesOn(t *testing.T) {
+	here := t.TempDir()
+	other := t.TempDir()
+	s, c := New(func(string, any) {})
+
+	stopped := make(chan string, 2)
+	c.Attach("here-1", tui.ChatLiveConfig{WorkDir: here}, make(chan string, 1), func() {
+		stopped <- "here-1"
+	})
+	c.Attach("here-2", tui.ChatLiveConfig{WorkDir: here}, make(chan string, 1), func() {
+		stopped <- "here-2"
+	})
+	c.Attach("elsewhere", tui.ChatLiveConfig{WorkDir: other}, make(chan string, 1), nil)
+	if err := s.ActivateSession("here-1"); err != nil {
+		t.Fatalf("ActivateSession: %v", err)
+	}
+
+	if _, err := s.CloseWorkspace(here); err != nil {
+		t.Fatalf("CloseWorkspace: %v", err)
+	}
+	// Both of its conversations are told to stop, not just the one on screen.
+	got := map[string]bool{<-stopped: true, <-stopped: true}
+	if !got["here-1"] || !got["here-2"] {
+		t.Fatalf("not every session was closed: %v", got)
+	}
+	// The window moves to the workspace that is still live.
+	if dir := s.currentDir(); filepath.Clean(dir) != filepath.Clean(other) {
+		t.Fatalf("active dir = %q, want %q", dir, other)
+	}
+
+	// The runtimes report their streams ending, as the window layer would.
+	c.Forget("here-1")
+	c.Forget("here-2")
+	if s.currentDir() != filepath.Clean(other) {
+		t.Fatalf("a closed workspace was reopened: %q", s.currentDir())
+	}
+}
+
+// The last workspace has nowhere to hand the window on to, so closing it is
+// refused rather than leaving a window addressing nothing.
+func TestCloseWorkspaceRefusesTheLastOne(t *testing.T) {
+	only := t.TempDir()
+	s, c := New(func(string, any) {})
+	c.Attach("only", tui.ChatLiveConfig{WorkDir: only}, make(chan string, 1), func() {
+		t.Error("the last workspace's session was stopped")
+	})
+	if _, err := s.CloseWorkspace(only); !errors.Is(err, errLastWorkspace) {
+		t.Fatalf("CloseWorkspace error = %v, want errLastWorkspace", err)
+	}
+	if s.currentDir() != filepath.Clean(only) {
+		t.Fatalf("the refused close still moved the window: %q", s.currentDir())
 	}
 }
 
