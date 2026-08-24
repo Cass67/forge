@@ -43,8 +43,13 @@ export const DEFAULT_DOCK_WIDTHS: DockWidths = { left: 0.17, right: 0.32 };
 // A dock narrower than this cannot show a file tree or a line of code, and the
 // chat column needs enough room to stay readable next to them.
 const MIN_DOCK = 0.08;
-const MAX_DOCK = 0.6;
-const MIN_CHAT = 0.2;
+// A dock can take most of the shell. The old ceiling of 0.6, with a fifth
+// reserved for the chat on top, meant a terminal could not be dragged much
+// past a third of the window — a limit with nothing behind it but caution.
+// The chat keeps a floor so it cannot be dragged shut by accident, and the
+// column has a hard 6rem minimum in CSS underneath that.
+const MAX_DOCK = 0.85;
+const MIN_CHAT = 0.1;
 // A group shorter than this has no room for its own tab strip plus content.
 const MIN_GROUP = 0.12;
 
