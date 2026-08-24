@@ -18,6 +18,12 @@ export const THEMES = [
   "catppuccin-latte",
   "github-dark",
   "github-light",
+  // Brighter darks: the ported set leans muted, and secondary text in
+  // particular sat at the edge of legibility.
+  "night-owl",
+  "synthwave",
+  "ayu-mirage",
+  "cobalt",
 ] as const;
 
 export type Theme = (typeof THEMES)[number];
