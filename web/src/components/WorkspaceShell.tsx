@@ -220,6 +220,7 @@ export function WorkspaceShell({
   // The group whose "add panel" menu is open, if any.
   const [addMenu, setAddMenu] = useState("");
   const [menuSlot, setMenuSlot] = useState<HTMLElement | null>(null);
+  const [terminalSlot, setTerminalSlot] = useState<HTMLElement | null>(null);
   // Seeded from the restored layout, not from one: a saved Terminal 1 must not
   // be handed the same id twice.
   const nextTerminal = useRef(0);
@@ -479,7 +480,10 @@ export function WorkspaceShell({
 
   useEffect(() => saveDockWidths(dockWidths), [dockWidths]);
 
-  useEffect(() => setMenuSlot(document.getElementById("forge-panel-menu")), []);
+  useEffect(() => {
+    setMenuSlot(document.getElementById("forge-panel-menu"));
+    setTerminalSlot(document.getElementById("forge-terminal-button"));
+  }, []);
 
   useEffect(
     () => saveColumns(columns, layoutStorageKey),
@@ -528,7 +532,14 @@ export function WorkspaceShell({
     dropTool(tool.id, { side: next, where: "end" });
   };
 
-  const launchTerminal = (target: DropTarget) => {
+  const rightTabTarget = (current: DockColumns): DropTarget => {
+    const group = current.right[0];
+    return group
+      ? { side: "right", where: "into", groupID: group.id }
+      : { side: "right", where: "end" };
+  };
+
+  const launchTerminal = () => {
     setColumns((current) => {
       // Taken from the layout being added to rather than from a counter, so a
       // terminal restored from storage or opened in another window cannot be
@@ -543,13 +554,16 @@ export function WorkspaceShell({
         kind: "terminal",
         title: `Terminal ${number}`,
       };
-      return setActiveTool(addTool(current, tool, target), tool.id);
+      return setActiveTool(
+        addTool(current, tool, rightTabTarget(current)),
+        tool.id,
+      );
     });
   };
 
   // The preview is a single pane — a second one would just be the same app
   // twice — so asking for it again brings the existing one forward.
-  const openPreview = (target: DropTarget) => {
+  const openPreview = () => {
     setColumns((current) =>
       findTool(current, "preview")
         ? setActiveTool(current, "preview")
@@ -557,7 +571,7 @@ export function WorkspaceShell({
             addTool(
               current,
               { id: "preview", kind: "preview", title: "Preview" },
-              target,
+              rightTabTarget(current),
             ),
             "preview",
           ),
@@ -566,12 +580,12 @@ export function WorkspaceShell({
 
   // The progress panel is a single pane like the preview: asking for it again
   // brings the existing one forward instead of stacking a copy.
-  const openActivity = (target: DropTarget) => {
+  const openActivity = () => {
     setColumns((current) =>
       findTool(current, ACTIVITY_TOOL.id)
         ? setActiveTool(current, ACTIVITY_TOOL.id)
         : setActiveTool(
-            addTool(current, ACTIVITY_TOOL, target),
+            addTool(current, ACTIVITY_TOOL, rightTabTarget(current)),
             ACTIVITY_TOOL.id,
           ),
     );
@@ -585,7 +599,7 @@ export function WorkspaceShell({
       if (showActivity === docked) return current;
       return showActivity
         ? setActiveTool(
-            addTool(current, ACTIVITY_TOOL, { side: "right", where: "end" }),
+            addTool(current, ACTIVITY_TOOL, rightTabTarget(current)),
             ACTIVITY_TOOL.id,
           )
         : removeTool(current, ACTIVITY_TOOL.id);
@@ -860,6 +874,18 @@ export function WorkspaceShell({
 
   // The title bar's slot only exists once the header has mounted, so it is
   // looked up after the first paint rather than during render.
+  const terminalButton = terminalSlot
+    ? createPortal(
+        <button
+          className="pill"
+          onClick={() => openPanel(launchTerminal)}
+          title="New Terminal"
+        >
+          Terminal
+        </button>,
+        terminalSlot,
+      )
+    : null;
   const panelMenu = menuSlot;
   const panelsMenu = panelMenu
     ? createPortal(
@@ -878,30 +904,13 @@ export function WorkspaceShell({
           </button>
           {addMenu === "panels" ? (
             <div className="topbar-dropdown" role="menu">
-              <button
-                onClick={() =>
-                  openPanel(() =>
-                    launchTerminal({ side: "right", where: "end" }),
-                  )
-                }
-                role="menuitem"
-              >
+              <button onClick={() => openPanel(launchTerminal)} role="menuitem">
                 New Terminal
               </button>
-              <button
-                onClick={() =>
-                  openPanel(() => openPreview({ side: "right", where: "end" }))
-                }
-                role="menuitem"
-              >
+              <button onClick={() => openPanel(openPreview)} role="menuitem">
                 Preview
               </button>
-              <button
-                onClick={() =>
-                  openPanel(() => openActivity({ side: "right", where: "end" }))
-                }
-                role="menuitem"
-              >
+              <button onClick={() => openPanel(openActivity)} role="menuitem">
                 Progress
               </button>
               <hr />
@@ -1135,6 +1144,7 @@ export function WorkspaceShell({
           );
         })}
         {panelsMenu}
+        {terminalButton}
         {quickOpen ? (
           <div
             className="workspace-quick-open"

@@ -1055,6 +1055,7 @@ export default function App() {
         <span className="topbar-menu-slot" id="forge-panel-menu" />
         <span className="topbar-spacer" />
         {flash ? <span className="flash">{flash}</span> : null}
+        <span className="topbar-menu-slot" id="forge-terminal-button" />
         <button
           className="pill"
           onClick={() => setOverlay("models")}

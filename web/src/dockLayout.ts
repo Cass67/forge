@@ -56,8 +56,10 @@ const MIN_GROUP = 0.12;
 export const DOCK_STORAGE_KEY = "forge.dockWidths";
 export const LAYOUT_STORAGE_KEY = "forge.dockLayout";
 
-// Panel presence and placement belong to one workspace. In particular, a
-// terminal opened in one directory must not appear when another is selected.
+// Panel presence belongs to one workspace. In particular, a terminal opened
+// in one directory must not appear when another is selected. Placement is
+// normalized on load so chat opens first and every dock shares one row on its
+// right.
 export function workspaceLayoutKey(workDir: string): string {
   return `${LAYOUT_STORAGE_KEY}:${workDir}`;
 }
@@ -69,9 +71,9 @@ export const SIDES: DockSide[] = ["left", "center", "right"];
 const SINGLETONS: { tool: DockTool; home: DockSide }[] = [
   {
     tool: { id: "explorer", kind: "explorer", title: "Explorer" },
-    home: "left",
+    home: "right",
   },
-  { tool: { id: "git", kind: "git", title: "Source Control" }, home: "left" },
+  { tool: { id: "git", kind: "git", title: "Source Control" }, home: "right" },
   { tool: { id: "chat", kind: "chat", title: "Chat" }, home: "center" },
   { tool: { id: "editor", kind: "editor", title: "Editor" }, home: "right" },
 ];
@@ -103,9 +105,67 @@ function singleton(id: string): DockTool {
 
 export function defaultColumns(): DockColumns {
   return {
-    left: [makeGroup([singleton("explorer"), singleton("git")])],
+    left: [],
     center: [makeGroup([singleton("chat")])],
-    right: [makeGroup([singleton("editor")])],
+    right: [
+      makeGroup([singleton("explorer"), singleton("editor"), singleton("git")]),
+    ],
+  };
+}
+
+// Opening a workspace always puts chat first and every dock in one tab row to
+// its right. Built-in tabs keep a predictable order; extra panels follow them.
+export function placeDocksRight(columns: DockColumns): DockColumns {
+  let chatGroup: DockGroup | null = null;
+  let dockGroupID = "";
+  let activeDockID = "";
+  const dockTools: DockTool[] = [];
+
+  for (const side of SIDES) {
+    for (const group of columns[side]) {
+      const chat = group.tools.find((tool) => tool.kind === "chat");
+      const tools = group.tools.filter((tool) => tool.kind !== "chat");
+      if (chat && !chatGroup) {
+        chatGroup =
+          tools.length === 0
+            ? { ...group, tools: [chat], activeID: chat.id, size: 1 }
+            : makeGroup([chat]);
+      }
+      if (tools.length === 0) continue;
+      dockGroupID ||= group.id;
+      if (!activeDockID && tools.some((tool) => tool.id === group.activeID))
+        activeDockID = group.activeID;
+      dockTools.push(...tools);
+    }
+  }
+
+  const builtInOrder = new Map([
+    ["explorer", 0],
+    ["editor", 1],
+    ["git", 2],
+  ]);
+  dockTools.sort(
+    (a, b) =>
+      (builtInOrder.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+      (builtInOrder.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+  );
+
+  return {
+    left: [],
+    center: [chatGroup ?? makeGroup([singleton("chat")])],
+    right:
+      dockTools.length === 0
+        ? []
+        : [
+            {
+              id: dockGroupID || newGroupID(),
+              tools: dockTools,
+              activeID: dockTools.some((tool) => tool.id === activeDockID)
+                ? activeDockID
+                : dockTools[0].id,
+              size: 1,
+            },
+          ],
   };
 }
 
@@ -385,7 +445,7 @@ export function parseColumns(raw: string | null): DockColumns {
 }
 
 export function loadColumns(key = LAYOUT_STORAGE_KEY): DockColumns {
-  return parseColumns(localStorage.getItem(key));
+  return placeDocksRight(parseColumns(localStorage.getItem(key)));
 }
 
 export function saveColumns(

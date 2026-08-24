@@ -254,9 +254,15 @@ export function Sidebar({
                 </button>
                 <button
                   className={`ws-section-title ${ws.path === browsing ? "browsing" : ""}`}
-                  onClick={() => onBrowse(ws.path)}
+                  onClick={() =>
+                    isActive ? onBrowse(ws.path) : onOpenWorkspace(ws.path)
+                  }
                   onDoubleClick={() => onNewIn(ws.path)}
-                  title={`${ws.path} — click to browse its files, double-click for a new chat`}
+                  title={
+                    isActive
+                      ? `${ws.path} — click to return to the chat, double-click for a new chat`
+                      : `${ws.path} — click to work here, double-click for a new chat`
+                  }
                 >
                   <span className="ws-caret">{collapsed ? "▸" : "▾"}</span>
                   <span className="ws-section-name">

@@ -56,6 +56,7 @@ import {
   findTool,
   moveTool,
   parseColumns,
+  placeDocksRight,
   removeTool,
   resizeGroups,
   showsDivider,
@@ -69,6 +70,54 @@ const terminal = {
   kind: "terminal" as const,
   title: "Terminal 1",
 };
+
+// Most movement tests need a populated target in every column. Product
+// defaults intentionally leave the left side empty.
+function spreadColumns(): DockColumns {
+  const withExplorer = moveTool(defaultColumns(), "explorer", {
+    side: "left",
+    where: "end",
+  });
+  const explorerGroup = withExplorer.left[0];
+  if (!explorerGroup) throw new Error("explorer did not move to the left");
+  return moveTool(withExplorer, "git", {
+    side: "left",
+    where: "into",
+    groupID: explorerGroup.id,
+  });
+}
+
+test("workspaces open with chat first and every dock on the right", () => {
+  const defaults = defaultColumns();
+  expect(defaults.left).toHaveLength(0);
+  expect(
+    defaults.center.flatMap((group) => group.tools).map((tool) => tool.id),
+  ).toEqual(["chat"]);
+  expect(defaults.right).toHaveLength(1);
+  expect(
+    defaults.right.flatMap((group) => group.tools).map((tool) => tool.id),
+  ).toEqual(["explorer", "editor", "git"]);
+
+  const legacy = spreadColumns();
+  const terminalInChat = moveTool(
+    addTool(legacy, terminal, {
+      side: "center",
+      where: "into",
+      groupID: legacy.center[0].id,
+    }),
+    "editor",
+    { side: "left", where: "end" },
+  );
+  const opened = placeDocksRight(terminalInChat);
+  expect(opened.left).toHaveLength(0);
+  expect(
+    opened.center.flatMap((group) => group.tools).map((tool) => tool.id),
+  ).toEqual(["chat"]);
+  expect(opened.right).toHaveLength(1);
+  expect(
+    opened.right.flatMap((group) => group.tools).map((tool) => tool.id),
+  ).toEqual(["explorer", "editor", "git", "terminal-1"]);
+});
 
 test("a tab dropped below a group splits that column", () => {
   const columns = defaultColumns();
@@ -94,7 +143,7 @@ test("a tab dropped on a tab strip stacks and is selected", () => {
     where: "into",
     groupID: columns.center[0].id,
   });
-  expect(moved.left).toHaveLength(1);
+  expect(moved.left).toHaveLength(0);
   expect(moved.center[0].tools.map((tool) => tool.id)).toEqual([
     "chat",
     "terminal-1",
@@ -103,7 +152,7 @@ test("a tab dropped on a tab strip stacks and is selected", () => {
 });
 
 test("emptying a group removes it and hands the tab to a neighbour", () => {
-  const columns = defaultColumns();
+  const columns = spreadColumns();
   const moved = moveTool(columns, "editor", {
     side: "left",
     where: "into",
@@ -120,7 +169,7 @@ test("emptying a group removes it and hands the tab to a neighbour", () => {
 });
 
 test("moving the last tab out of a split leaves no dead column space", () => {
-  const start = defaultColumns();
+  const start = spreadColumns();
   const split = addTool(start, terminal, {
     side: "center",
     where: "after",
@@ -173,7 +222,7 @@ test("a divider drag splits the space of the two groups it sits between", () => 
 });
 
 test("a stored layout comes back, junk and gaps and all", () => {
-  const start = defaultColumns();
+  const start = spreadColumns();
   const columns = moveTool(
     addTool(start, terminal, { side: "center", where: "end" }),
     "git",
@@ -213,7 +262,7 @@ test("the drop zone follows the pointer down a group", () => {
 });
 
 test("a tab dragged along its own strip reorders it", () => {
-  const start = defaultColumns();
+  const start = spreadColumns();
   const left = start.left[0].id;
   const columns = addTool(
     addTool(start, terminal, { side: "left", where: "into", groupID: left }),
@@ -270,7 +319,7 @@ test("a tab dragged along its own strip reorders it", () => {
 });
 
 test("a tab dropped on another strip lands where it was dropped", () => {
-  const columns = defaultColumns();
+  const columns = spreadColumns();
   const moved = moveTool(columns, "editor", {
     side: "left",
     where: "into",
@@ -285,7 +334,7 @@ test("a tab dropped on another strip lands where it was dropped", () => {
 });
 
 test("a terminal tab reaches every column and every drop mode", () => {
-  const start = addTool(defaultColumns(), terminal, {
+  const start = addTool(spreadColumns(), terminal, {
     side: "left",
     where: "end",
   });
@@ -372,7 +421,7 @@ test("a full centre keeps its own sizing and gives the docks no extra growth", (
 });
 
 test("dividers sit between columns that are both on screen", () => {
-  const full = defaultColumns();
+  const full = spreadColumns();
   expect(showsDivider(full, "left", false)).toBe(false); // nothing before it
   expect(showsDivider(full, "center", false)).toBe(true);
   expect(showsDivider(full, "right", false)).toBe(true);
