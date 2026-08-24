@@ -387,7 +387,7 @@ func refreshChatSetupState(setup *ChatSetup) (*config.Config, *auth.Tokens) {
 	return cfg, tokens
 }
 
-func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, session *reactruntime.Session, approve tools.ApprovalFunc, notify func(string), emitCommandStatus func(tools.ExecSessionStatus), forcePrompt ...tools.ApprovalFunc) (*tools.PreviewRuntime, *mcp.Manager, *tools.ExecSessionManager) {
+func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, session *reactruntime.Session, approve tools.ApprovalFunc, notify func(string), emitCommandStatus func(tools.ExecSessionStatus), forcePrompt ...tools.ApprovalFunc) (*tools.PreviewRuntime, *mcp.Manager, *tools.ExecSessionManager, func()) {
 	configureDurableSessionSink(cfg, session, workDir)
 	fp := approve
 	if len(forcePrompt) > 0 {
@@ -404,13 +404,10 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 			notify(fmt.Sprintf("command session %d changed state", status.SessionID))
 		}
 	})
-	mcpManager := newChatMCPManager()
-	registerMCPTools := func(defs []mcp.Tool) {
-		for _, def := range defs {
-			reg.Register(tools.NewMCPDynamicTool(def, mcpManager))
-		}
-	}
-	mcpManager.SetEventHandler(func(ev mcp.Event) {
+	// The MCP manager belongs to the directory, not to this chat: see
+	// shared_mcp.go. Several live chats in one workspace share its servers.
+	var registerMCPTools func(defs []mcp.Tool)
+	mcpManager, firstInWorkspace, releaseMCP := acquireMCP(workDir, func(ev mcp.Event) {
 		switch ev.Kind {
 		case mcp.EventToolsChanged, mcp.EventResourcesChanged:
 			registerMCPTools(ev.Snapshot.Tools)
@@ -430,17 +427,26 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 		default:
 		}
 	})
-	// Connecting to MCP servers is a network round trip per server, and it used
-	// to run before the chat UI painted: a single remote server cost more than a
-	// second of blank terminal. Tools register themselves as servers land.
-	registerMCPTools(mcpManager.Tools())
-	go func() {
-		_ = mcpManager.Refresh(context.Background(), cfg)
-		registerMCPTools(mcpManager.Tools())
-		if notify != nil {
-			notify(mcpStartupStatus(mcpManager, cfg))
+	registerMCPTools = func(defs []mcp.Tool) {
+		for _, def := range defs {
+			reg.Register(tools.NewMCPDynamicTool(def, mcpManager))
 		}
-	}()
+	}
+	// Whatever is already connected is registered straight away, which is what
+	// a chat opened alongside an existing one sees. Only the first chat in a
+	// workspace pays for the connect, which is a network round trip per server
+	// and so runs in the background.
+	registerMCPTools(mcpManager.Tools())
+	if firstInWorkspace {
+		connectMCP(mcpManager, cfg, func() {
+			registerMCPTools(mcpManager.Tools())
+			if notify != nil {
+				notify(mcpStartupStatus(mcpManager, cfg))
+			}
+		})
+	} else if notify != nil {
+		notify(mcpStartupStatus(mcpManager, cfg))
+	}
 	secretPolicy := tools.SecretPolicy{
 		Read:           tools.SecretPolicyMode(cfg.Security.Secrets.Read),
 		Write:          tools.SecretPolicyMode(cfg.Security.Secrets.Write),
@@ -520,7 +526,7 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 	// looking anything up. Neither tool needs a credential.
 	reg.Register(tools.NewWebFetch())
 	reg.Register(tools.NewWebSearch())
-	return previewRuntime, mcpManager, execManager
+	return previewRuntime, mcpManager, execManager, releaseMCP
 }
 
 func mcpStartupStatus(manager *mcp.Manager, cfg *config.Config) string {
@@ -816,7 +822,7 @@ func RunChatLive(setup *ChatSetup) {
 	approve = gate.Approve
 
 	reg := tools.NewRegistry()
-	previewRuntime, mcpManager, execManager := registerTools(reg, setup.WorkDir, setup.Config, session, approve, evRenderer.Info, func(status tools.ExecSessionStatus) {
+	previewRuntime, mcpManager, execManager, releaseMCP := registerTools(reg, setup.WorkDir, setup.Config, session, approve, evRenderer.Info, func(status tools.ExecSessionStatus) {
 		payload, err := json.Marshal(status)
 		if err != nil {
 			evRenderer.Info(fmt.Sprintf("command session %d changed state", status.SessionID))
@@ -827,9 +833,9 @@ func RunChatLive(setup *ChatSetup) {
 	if previewRuntime != nil {
 		defer previewRuntime.Close()
 	}
-	if mcpManager != nil {
-		defer func() { _ = mcpManager.Close() }()
-	}
+	// The MCP servers belong to the workspace and outlive this chat if another
+	// one is still using them, so releasing is not closing.
+	defer releaseMCP()
 	if execManager != nil {
 		defer execManager.Close()
 	}
@@ -1340,9 +1346,6 @@ func RunChatLive(setup *ChatSetup) {
 		// closing, or it is switching to another workspace. Release what holds
 		// subprocesses, so a switch does not strand MCP servers and shells.
 		close(inputCh)
-		if mcpManager != nil {
-			_ = mcpManager.Close()
-		}
 		if execManager != nil {
 			execManager.Close()
 		}
@@ -1574,7 +1577,7 @@ func buildConsoleRuntime(setup *ChatSetup, approve tools.ApprovalFunc, out io.Wr
 	// completions back to the runner (created further below).
 	var reactRunner *reactruntime.Runner
 	execWake := make(chan struct{}, 1)
-	previewRuntime, mcpManager, execManager := registerTools(reg, setup.WorkDir, setup.Config, session, approve, renderer.Info, func(status tools.ExecSessionStatus) {
+	previewRuntime, _, execManager, releaseMCP := registerTools(reg, setup.WorkDir, setup.Config, session, approve, renderer.Info, func(status tools.ExecSessionStatus) {
 		payload, err := json.Marshal(status)
 		if err != nil {
 			renderer.Info(fmt.Sprintf("command session %d changed state", status.SessionID))
@@ -1598,9 +1601,7 @@ func buildConsoleRuntime(setup *ChatSetup, approve tools.ApprovalFunc, out io.Wr
 		if previewRuntime != nil {
 			_ = previewRuntime.Close()
 		}
-		if mcpManager != nil {
-			_ = mcpManager.Close()
-		}
+		releaseMCP()
 		if execManager != nil {
 			execManager.Close()
 		}

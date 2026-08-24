@@ -1213,7 +1213,7 @@ func TestRunChatTurnCompletesComplexVisiblePreviewTurn(t *testing.T) {
 	approve := agent.YoloApproval()
 
 	reg := tools.NewRegistry()
-	previewRuntime, _, _ := registerTools(reg, workDir, cfg, reactruntime.NewSession(), approve, nil, nil)
+	previewRuntime, _, _, _ := registerTools(reg, workDir, cfg, reactruntime.NewSession(), approve, nil, nil)
 	if previewRuntime != nil {
 		defer previewRuntime.Close()
 	}
@@ -1248,7 +1248,7 @@ func TestRunChatTurnCompletesComplexVisiblePreviewTurn(t *testing.T) {
 func TestRegisterToolsIncludesPreviewLifecycleTools(t *testing.T) {
 	reg := tools.NewRegistry()
 	cfg := &config.Config{}
-	_, _, _ = registerTools(reg, t.TempDir(), cfg, reactruntime.NewSession(), agent.YoloApproval(), nil, nil)
+	_, _, _, _ = registerTools(reg, t.TempDir(), cfg, reactruntime.NewSession(), agent.YoloApproval(), nil, nil)
 
 	for _, name := range []string{"artifact_write", "artifact_read", "preview_server_ensure", "preview_server_status"} {
 		if _, ok := reg.Get(name); !ok {
@@ -1261,7 +1261,7 @@ func TestRegisterToolsIncludesHiddenReadOutputWhenOutputStoreConfigured(t *testi
 	reg := tools.NewRegistry()
 	cfg := &config.Config{}
 	cfg.Session.OutputDir = t.TempDir()
-	_, _, _ = registerTools(reg, t.TempDir(), cfg, reactruntime.NewSession(), agent.YoloApproval(), nil, nil)
+	_, _, _, _ = registerTools(reg, t.TempDir(), cfg, reactruntime.NewSession(), agent.YoloApproval(), nil, nil)
 
 	tool, ok := reg.Get("read_output")
 	if !ok {
@@ -1278,7 +1278,7 @@ func TestRegisterToolsIncludesHiddenReadOutputWhenOutputStoreConfigured(t *testi
 func TestRegisterToolsIncludesExecSessionLifecycleTools(t *testing.T) {
 	reg := tools.NewRegistry()
 	cfg := &config.Config{}
-	_, _, _ = registerTools(reg, t.TempDir(), cfg, reactruntime.NewSession(), agent.YoloApproval(), nil, nil)
+	_, _, _, _ = registerTools(reg, t.TempDir(), cfg, reactruntime.NewSession(), agent.YoloApproval(), nil, nil)
 
 	for _, name := range []string{"exec_session_start", "exec_session_status", "exec_session_write", "exec_session_resize", "exec_session_stop"} {
 		if _, ok := reg.Get(name); !ok {
@@ -1292,7 +1292,7 @@ func TestRegisterReactDelegationToolsAddsSpawnWaitAndOutputAlias(t *testing.T) {
 	cfg := &config.Config{}
 	workDir := t.TempDir()
 	approve := agent.YoloApproval()
-	_, _, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), approve, nil, nil)
+	_, _, _, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), approve, nil, nil)
 	baseReg := reg.Filter(nil)
 
 	setup := &ChatSetup{
@@ -1318,7 +1318,7 @@ func TestRegisterToolsAddsGitMergeStatus(t *testing.T) {
 	cfg := &config.Config{}
 	workDir := t.TempDir()
 
-	_, _, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), agent.YoloApproval(), nil, nil)
+	_, _, _, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), agent.YoloApproval(), nil, nil)
 	if _, ok := reg.Get("git_merge_status"); !ok {
 		t.Fatal("git_merge_status tool not registered")
 	}
@@ -1329,7 +1329,7 @@ func TestRegisterToolsAddsGitBranchState(t *testing.T) {
 	cfg := &config.Config{}
 	workDir := t.TempDir()
 
-	_, _, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), agent.YoloApproval(), nil, nil)
+	_, _, _, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), agent.YoloApproval(), nil, nil)
 	if _, ok := reg.Get("git_branch_state"); !ok {
 		t.Fatal("git_branch_state tool not registered")
 	}
@@ -1340,7 +1340,7 @@ func TestRegisterToolsAddsCodexStyleEditingAndPlanningTools(t *testing.T) {
 	cfg := &config.Config{}
 	workDir := t.TempDir()
 
-	_, _, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), agent.YoloApproval(), nil, nil)
+	_, _, _, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), agent.YoloApproval(), nil, nil)
 	for _, name := range []string{"apply_patch", "update_plan", "enter_plan_mode", "exit_plan_mode", "ask_user_question", "tool_help", "view_image", "code_search", "lsp_definition", "lsp_references", "lsp_hover", "lsp_document_symbols"} {
 		if _, ok := reg.Get(name); !ok {
 			t.Fatalf("%s tool not registered", name)
@@ -1360,7 +1360,7 @@ func TestRegisterToolsDoesNotBlockOnMCPConnect(t *testing.T) {
 	}
 	reg := tools.NewRegistry()
 	start := time.Now()
-	_, mcpManager, execManager := registerTools(reg, t.TempDir(), cfg, reactruntime.NewSession(), agent.YoloApproval(), nil, nil)
+	_, mcpManager, execManager, _ := registerTools(reg, t.TempDir(), cfg, reactruntime.NewSession(), agent.YoloApproval(), nil, nil)
 	elapsed := time.Since(start)
 	if execManager != nil {
 		defer execManager.Close()
@@ -1398,7 +1398,7 @@ func TestRegisterToolsAddsMCPResourceToolsWhenServersConfigured(t *testing.T) {
 	reg := tools.NewRegistry()
 	workDir := t.TempDir()
 
-	_, _, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), agent.YoloApproval(), nil, nil)
+	_, _, _, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), agent.YoloApproval(), nil, nil)
 	for _, name := range []string{"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "mcp__context7__resolve_library_id"} {
 		if _, ok := reg.Get(name); !ok {
 			t.Fatalf("%s tool not registered", name)
@@ -1426,7 +1426,7 @@ func TestRegisterReactDelegationToolsDoesNotUseLegacyRoleModelMapping(t *testing
 	cfg := &config.Config{}
 	workDir := t.TempDir()
 	approve := agent.YoloApproval()
-	_, _, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), approve, nil, nil)
+	_, _, _, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), approve, nil, nil)
 	baseReg := reg.Filter(nil)
 
 	var makeDriverCalls []string
@@ -1485,7 +1485,7 @@ func TestRegisterReactDelegationToolsStreamsSubAgentEvents(t *testing.T) {
 	cfg := &config.Config{}
 	workDir := t.TempDir()
 	approve := agent.YoloApproval()
-	_, _, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), approve, nil, nil)
+	_, _, _, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), approve, nil, nil)
 	baseReg := reg.Filter(nil)
 	events := make(chan llm.Event, 16)
 	renderer := agent.NewEventRenderer(events)
@@ -1544,7 +1544,7 @@ func TestRegisterReactDelegationToolsRestrictsCodeReviewerToReadOnlyTools(t *tes
 	cfg := &config.Config{}
 	workDir := t.TempDir()
 	approve := agent.YoloApproval()
-	_, _, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), approve, nil, nil)
+	_, _, _, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), approve, nil, nil)
 	baseReg := reg.Filter(nil)
 	driver := &captureToolDefsDriver{response: "review findings"}
 	setup := &ChatSetup{
@@ -1593,7 +1593,7 @@ func TestRegisterReactDelegationToolsGivesSanitizedAuditReadOnlyTools(t *testing
 	cfg := &config.Config{}
 	workDir := t.TempDir()
 	approve := agent.YoloApproval()
-	_, _, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), approve, nil, nil)
+	_, _, _, _ = registerTools(reg, workDir, cfg, reactruntime.NewSession(), approve, nil, nil)
 	baseReg := reg.Filter(nil)
 	driver := &captureToolDefsDriver{response: "audit findings"}
 	setup := &ChatSetup{
@@ -1931,7 +1931,7 @@ func TestNewChildAgentRegistryCreatesToolsWithCorrectWorkDir(t *testing.T) {
 	}
 
 	parentReg := tools.NewRegistry()
-	_, _, _ = registerTools(parentReg, parentDir, cfg, reactruntime.NewSession(), approve, nil, nil)
+	_, _, _, _ = registerTools(parentReg, parentDir, cfg, reactruntime.NewSession(), approve, nil, nil)
 	baseReg := parentReg.Filter(nil)
 
 	setup := &ChatSetup{Config: cfg, WorkDir: parentDir}
@@ -1977,7 +1977,7 @@ func TestChildRegistryToolsUseAllowedToolsFilter(t *testing.T) {
 	approve := agent.YoloApproval()
 
 	parentReg := tools.NewRegistry()
-	_, _, _ = registerTools(parentReg, parentDir, cfg, reactruntime.NewSession(), approve, nil, nil)
+	_, _, _, _ = registerTools(parentReg, parentDir, cfg, reactruntime.NewSession(), approve, nil, nil)
 	baseReg := parentReg.Filter(nil)
 
 	setup := &ChatSetup{Config: cfg, WorkDir: parentDir}
