@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
 import {
-  allTools,
   nextTerminalNumber,
   clampDock,
   DEFAULT_DOCK_WIDTHS,
   dockFraction,
   parseDockWidths,
+  workspaceLayoutKey,
 } from "./dockLayout";
 
 test("a dock cannot be dragged shut or over the chat column", () => {
@@ -41,6 +41,12 @@ test("stored widths are kept, and junk falls back to the defaults", () => {
   expect(clamped.left + clamped.right).toBeLessThanOrEqual(0.9);
 });
 
+test("dock layouts use separate storage for each workspace", () => {
+  expect(workspaceLayoutKey("/git/grafana")).not.toBe(
+    workspaceLayoutKey("/git/onms"),
+  );
+});
+
 import {
   addTool,
   allTools,
@@ -55,6 +61,7 @@ import {
   showsDivider,
   SIDES,
   type DockColumns,
+  type DockTool,
 } from "./dockLayout";
 
 const terminal = {

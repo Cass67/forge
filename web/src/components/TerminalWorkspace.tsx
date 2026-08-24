@@ -216,14 +216,15 @@ export function TerminalWorkspace({
   layoutKey = "",
   onNotify,
 }: Props) {
+  const storageID = `${workDir}:${instanceID}`;
   const [tree, setTree] = useState<TerminalNode>(() =>
-    loadSplits(instanceID, `${instanceID}:1`),
+    loadSplits(storageID, `${instanceID}:1`),
   );
   const [activePane, setActivePane] = useState(() => paneIDs(tree)[0]);
   const nextPane = useRef(1);
   const frameRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => saveSplits(instanceID, tree), [instanceID, tree]);
+  useEffect(() => saveSplits(storageID, tree), [storageID, tree]);
 
   // A pane that has gone leaves the focus on something that still exists.
   useEffect(() => {

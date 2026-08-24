@@ -42,6 +42,7 @@ import {
   setActiveTool,
   showsDivider,
   SIDES,
+  workspaceLayoutKey,
 } from "../dockLayout";
 import {
   acceptSavedFile,
@@ -206,9 +207,12 @@ export function WorkspaceShell({
   // Bumped on every index or working-tree change so open diffs re-read.
   const [gitRevision, setGitRevision] = useState(0);
   const [multiRun, setMultiRun] = useState(false);
-  // The panel layout: three columns of stacked groups, restored from the last
-  // session so a dragged panel is still where the user left it.
-  const [columns, setColumns] = useState<DockColumns>(loadColumns);
+  // Panel layout is workspace-scoped. Terminal panels from another directory
+  // must neither render here nor be overwritten when this workspace changes.
+  const layoutStorageKey = workspaceLayoutKey(workDir);
+  const [columns, setColumns] = useState<DockColumns>(() =>
+    loadColumns(layoutStorageKey),
+  );
   // The tool being dragged, and the zone the pointer is over, as
   // `${groupID}:${where}` — only used to light up drop targets.
   const [dragging, setDragging] = useState("");
@@ -477,7 +481,10 @@ export function WorkspaceShell({
 
   useEffect(() => setMenuSlot(document.getElementById("forge-panel-menu")), []);
 
-  useEffect(() => saveColumns(columns), [columns]);
+  useEffect(
+    () => saveColumns(columns, layoutStorageKey),
+    [columns, layoutStorageKey],
+  );
 
   const resizeDock = useCallback((side: EdgeSide, fraction: number) => {
     setDockWidths((current) => clampDock(current, side, fraction));

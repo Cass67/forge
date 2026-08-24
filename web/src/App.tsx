@@ -1166,6 +1166,7 @@ export default function App() {
           </>
         ) : null}
         <WorkspaceShell
+          key={browseDir || (init?.work_dir ?? "")}
           workDir={browseDir || (init?.work_dir ?? "")}
           browsing={browseDir}
           chatDir={init?.work_dir ?? ""}

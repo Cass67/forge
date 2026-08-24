@@ -56,6 +56,12 @@ const MIN_GROUP = 0.12;
 export const DOCK_STORAGE_KEY = "forge.dockWidths";
 export const LAYOUT_STORAGE_KEY = "forge.dockLayout";
 
+// Panel presence and placement belong to one workspace. In particular, a
+// terminal opened in one directory must not appear when another is selected.
+export function workspaceLayoutKey(workDir: string): string {
+  return `${LAYOUT_STORAGE_KEY}:${workDir}`;
+}
+
 export const SIDES: DockSide[] = ["left", "center", "right"];
 
 // The tools that always exist exactly once, and the column each one falls back
