@@ -638,30 +638,46 @@ export default function App() {
   const bulkDelete = useCallback(
     (threadIDs: string[], dirs: string[]) => {
       void (async () => {
-        let failed = 0;
-        for (const id of threadIDs) {
+        // A workspace's chats go with it. The list has a section for every
+        // directory a stored thread ran in, so a folder whose chats survive
+        // is derived straight back and the button looks broken.
+        const doomed = new Set(threadIDs);
+        for (const thread of threads) {
+          if (thread.cwd && dirs.includes(thread.cwd))
+            doomed.add(thread.thread_id);
+        }
+        let failedThreads = 0;
+        for (const id of doomed) {
           try {
             setThreads(await forge.deleteThread(id));
           } catch {
-            failed++;
+            failedThreads++;
           }
         }
+        let failedDirs = 0;
         for (const dir of dirs) {
           try {
             setWorkspaces(await forge.forgetWorkspace(dir));
-          } catch {
-            failed++;
+          } catch (e: unknown) {
+            failedDirs++;
+            notify(String(e));
           }
         }
-        const removed = threadIDs.length + dirs.length - failed;
+        const chats = doomed.size - failedThreads;
+        const places = dirs.length - failedDirs;
+        const said = [
+          chats ? `${chats} chat${chats === 1 ? "" : "s"}` : "",
+          places ? `${places} workspace${places === 1 ? "" : "s"}` : "",
+        ].filter(Boolean);
         notify(
-          failed
-            ? `removed ${removed}, ${failed} failed`
-            : `removed ${removed} item${removed === 1 ? "" : "s"}`,
+          said.length === 0
+            ? "nothing was removed"
+            : `removed ${said.join(" and ")}`,
         );
+        refreshThreads();
       })();
     },
-    [notify],
+    [notify, refreshThreads, threads],
   );
 
   const switchModel = useCallback(

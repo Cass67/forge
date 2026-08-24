@@ -43,14 +43,15 @@ const (
 )
 
 var (
-	errNotReady      = errors.New("the chat runtime is still starting")
-	errNoDelete      = errors.New("deleting threads is not available in this session")
-	errNoRename      = errors.New("renaming threads is not available in this session")
-	errNoWorkDir     = errors.New("no workspace directory")
-	errNoSession     = errors.New("no such session")
-	errNoThread      = errors.New("no thread id")
-	errNoStop        = errors.New("this session cannot be closed")
-	errLastWorkspace = errors.New("the last workspace cannot be closed")
+	errNotReady            = errors.New("the chat runtime is still starting")
+	errNoDelete            = errors.New("deleting threads is not available in this session")
+	errNoRename            = errors.New("renaming threads is not available in this session")
+	errNoWorkDir           = errors.New("no workspace directory")
+	errNoSession           = errors.New("no such session")
+	errNoThread            = errors.New("no thread id")
+	errNoStop              = errors.New("this session cannot be closed")
+	errLastWorkspace       = errors.New("the last workspace cannot be closed")
+	errWorkspaceHasThreads = errors.New("workspace still has stored chats")
 	// Browsing is read-only on purpose. Anything that would change a file or a
 	// repository says so rather than acting on the workspace being looked at.
 	errBrowsing   = errors.New("browsing, so this is read-only — open the workspace to change it")
@@ -879,10 +880,42 @@ func (s *Service) ForgetWorkspace(path string) ([]Workspace, error) {
 	if filepath.Clean(strings.TrimSpace(cfg.WorkDir)) == filepath.Clean(strings.TrimSpace(path)) {
 		return s.Workspaces(), errors.New("cannot remove the workspace you are in")
 	}
+	// The list is not just the registry: a section exists for every directory
+	// a stored thread ran in, so forgetting a folder that still has chats
+	// removed the entry and then derived it straight back. That looked like
+	// the button doing nothing. Say so instead.
+	if n := s.storedThreadsIn(path); n > 0 {
+		return s.Workspaces(), fmt.Errorf("%w: %s still has %d stored chat%s",
+			errWorkspaceHasThreads, filepath.Base(filepath.Clean(path)), n, plural(n))
+	}
 	if err := s.Registry.Forget(path); err != nil {
 		return s.Workspaces(), err
 	}
 	return s.Workspaces(), nil
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+// storedThreadsIn counts the threads recorded against a directory, which is
+// what keeps its section in the list whether or not it is remembered.
+func (s *Service) storedThreadsIn(path string) int {
+	cfg, _, ready := s.snapshot()
+	if !ready || cfg.ListThreads == nil {
+		return 0
+	}
+	want := filepath.Clean(strings.TrimSpace(path))
+	n := 0
+	for _, t := range cfg.ListThreads() {
+		if dir := strings.TrimSpace(t.CWD); dir != "" && filepath.Clean(dir) == want {
+			n++
+		}
+	}
+	return n
 }
 
 // ChooseWorkspace prompts for a folder and switches to it. Returns the chosen

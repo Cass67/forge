@@ -116,6 +116,20 @@ export function Sidebar({
     .filter((key) => key.startsWith("w:"))
     .map((key) => key.slice(2));
 
+  // Everything Remove is allowed to touch: every workspace except the one the
+  // chat is in, and every chat except the one on screen.
+  const selectableKeys = [
+    ...workspaces
+      .filter((ws) => ws.path !== activeWorkspace)
+      .map((ws) => `w:${ws.path}`),
+    ...threads
+      .filter((t) => t.thread_id !== activeID)
+      .map((t) => `t:${t.thread_id}`),
+  ];
+  const selectableCount = selectableKeys.length;
+  const selectEverything = () =>
+    toggleMany(selectableKeys, !selectableKeys.every((key) => picked.has(key)));
+
   // A section exists per directory any stored thread ran in, which on a
   // machine that has done benchmark runs means a hundred of them, most holding
   // one thread and most called "work". Names are grown until they differ, and
@@ -479,6 +493,8 @@ export function Sidebar({
           threadCount={pickedThreads.length}
           dirCount={pickedDirs.length}
           totalThreads={threads.length}
+          selectable={selectableCount}
+          onSelectAll={selectEverything}
           onCancel={leaveSelect}
           onDelete={() => {
             onBulkDelete(pickedThreads, pickedDirs);
@@ -498,6 +514,8 @@ function BulkBar({
   threadCount,
   dirCount,
   totalThreads,
+  selectable,
+  onSelectAll,
   onCancel,
   onDelete,
   onClearThreads,
@@ -505,6 +523,8 @@ function BulkBar({
   threadCount: number;
   dirCount: number;
   totalThreads: number;
+  selectable: number;
+  onSelectAll: () => void;
   onCancel: () => void;
   onDelete: () => void;
   onClearThreads: () => void;
@@ -523,7 +543,8 @@ function BulkBar({
     return (
       <div className="bulk-bar">
         <span className="bulk-count">
-          Delete every stored thread except the one you are in?
+          Delete every stored chat except the one you are in? Workspaces stay in
+          the list.
         </span>
         <button className="btn danger" onClick={onClearThreads}>
           Delete all
@@ -559,11 +580,19 @@ function BulkBar({
             Remove
           </button>
           <button
+            className="btn"
+            disabled={selectable === 0}
+            onClick={onSelectAll}
+            title="Select every workspace and chat except the ones you are in"
+          >
+            Select all{selectable ? ` (${selectable})` : ""}
+          </button>
+          <button
             className="btn danger"
             onClick={() => setConfirmAll(true)}
-            title="Delete every stored thread, including ones with no section in this list"
+            title="Delete every stored chat, including ones with no section here. Workspaces stay in the list."
           >
-            All{totalThreads ? ` (${totalThreads})` : ""}
+            All chats{totalThreads ? ` (${totalThreads})` : ""}
           </button>
           <button className="btn" onClick={onCancel}>
             Cancel

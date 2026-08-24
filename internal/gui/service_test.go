@@ -406,6 +406,42 @@ func mustEval(t *testing.T, dir string) string {
 	return resolved
 }
 
+// A section exists for every directory a stored thread ran in, so forgetting a
+// folder that still has chats used to remove the entry and derive it straight
+// back — the button looked broken. It says why instead.
+func TestForgetWorkspaceRefusesWhileItStillHasChats(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	chatDir := t.TempDir()
+	other := t.TempDir()
+	stored := []tui.ThreadSummary{{ThreadID: "1", CWD: other}}
+
+	s, c := New(func(string, any) {})
+	s.Registry = workspace.LoadRegistry()
+	if err := s.Registry.Remember(other); err != nil {
+		t.Fatalf("Remember: %v", err)
+	}
+	c.Attach("chat", tui.ChatLiveConfig{
+		WorkDir:     chatDir,
+		ListThreads: func() []tui.ThreadSummary { return stored },
+	}, make(chan string, 1), nil)
+
+	if _, err := s.ForgetWorkspace(other); !errors.Is(err, errWorkspaceHasThreads) {
+		t.Fatalf("ForgetWorkspace = %v, want errWorkspaceHasThreads", err)
+	}
+
+	// With its chats gone the folder goes too, and stays gone.
+	stored = nil
+	list, err := s.ForgetWorkspace(other)
+	if err != nil {
+		t.Fatalf("ForgetWorkspace: %v", err)
+	}
+	for _, w := range list {
+		if filepath.Clean(w.Path) == filepath.Clean(other) {
+			t.Fatalf("workspace still listed after removal: %+v", w)
+		}
+	}
+}
+
 // Closing a workspace ends every conversation live in it and hands the window
 // to what is left, without deleting any threads.
 func TestCloseWorkspaceStopsItsSessionsAndMovesOn(t *testing.T) {
