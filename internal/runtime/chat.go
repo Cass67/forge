@@ -840,6 +840,7 @@ func RunChatLive(setup *ChatSetup) {
 		return true
 	}
 	lean := leanToolExposure(setup)
+	mcpNames := mcpServerNames(setup.Config)
 	reactRunner := reactruntime.NewRunner(reactruntime.Config{
 		Driver:           setup.Driver,
 		Tools:            reg,
@@ -850,7 +851,7 @@ func RunChatLive(setup *ChatSetup) {
 			snap := session.Snapshot()
 			base := agent.BuildNativeSystemPromptForMode(setup.WorkDir, string(snap.Mode), snap.TaskState != nil)
 			if lean {
-				if note := deferredToolsNote(reg); note != "" {
+				if note := deferredToolsNote(reg, mcpNames); note != "" {
 					base += "\n\n" + note
 				}
 			}
@@ -1432,22 +1433,61 @@ func isLocalBaseURL(raw string) bool {
 
 // deferredToolsNote lists registered tools whose schemas are not attached
 // under lean exposure, so the model knows they exist and how to reach them.
-func deferredToolsNote(reg *tools.Registry) string {
+//
+// MCP tools are named by their server rather than listed individually, and the
+// server names come from config rather than the registry. MCP servers connect
+// in the background, so listing their tools would rewrite the system prompt
+// the moment a server came up mid-session — and because the system prompt
+// sits ahead of the whole conversation, that edit invalidates the KV cache
+// behind it and makes the provider re-read every token of history. On a local
+// 27B that one edit cost a second full prefill per session.
+// mcpToolPrefix is how tools.MCPToolName namespaces every MCP-provided tool.
+const mcpToolPrefix = "mcp__"
+
+func deferredToolsNote(reg *tools.Registry, mcpServers []string) string {
 	core := make(map[string]bool, len(reactruntime.LeanCoreToolNames))
 	for _, name := range reactruntime.LeanCoreToolNames {
 		core[name] = true
 	}
 	var names []string
 	for _, tool := range reg.All() {
-		if name := strings.TrimSpace(tool.Name); name != "" && !core[name] {
-			names = append(names, name)
+		name := strings.TrimSpace(tool.Name)
+		if name == "" || core[name] || strings.HasPrefix(name, mcpToolPrefix) {
+			continue
 		}
-	}
-	if len(names) == 0 {
-		return ""
+		names = append(names, name)
 	}
 	sort.Strings(names)
-	return "## Additional Tools\nThese tools also exist but their schemas are not attached: " + strings.Join(names, ", ") + ".\nTo use one, first call tool_help with its name to get its parameters, then call it like any other tool."
+
+	var sb strings.Builder
+	if len(names) > 0 {
+		sb.WriteString("## Additional Tools\nThese tools also exist but their schemas are not attached: " + strings.Join(names, ", ") + ".\nTo use one, first call tool_help with its name to get its parameters, then call it like any other tool.")
+	}
+	if len(mcpServers) > 0 {
+		if sb.Len() > 0 {
+			sb.WriteString("\n")
+		} else {
+			sb.WriteString("## Additional Tools\n")
+		}
+		sb.WriteString("MCP servers (" + strings.Join(mcpServers, ", ") + ") expose further tools once connected; call tool_help with a server or topic name to reveal them.")
+	}
+	return sb.String()
+}
+
+// mcpServerNames lists the MCP servers configured for this session, sorted so
+// the note it feeds is byte-identical on every turn.
+func mcpServerNames(cfg *config.Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	names := make([]string, 0, len(cfg.MCPServers))
+	for name, server := range cfg.MCPServers {
+		if server.IsEnabled() {
+			names = append(names, strings.TrimSpace(name))
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 type consoleRuntime struct {
@@ -1560,6 +1600,7 @@ func buildConsoleRuntime(setup *ChatSetup, approve tools.ApprovalFunc, out io.Wr
 		return true
 	}
 	lean := leanToolExposure(setup)
+	mcpNames := mcpServerNames(setup.Config)
 	reactRunner = reactruntime.NewRunner(reactruntime.Config{
 		Driver:           setup.Driver,
 		Tools:            reg,
@@ -1573,7 +1614,7 @@ func buildConsoleRuntime(setup *ChatSetup, approve tools.ApprovalFunc, out io.Wr
 				base += "\n\n" + skillText
 			}
 			if lean {
-				if note := deferredToolsNote(reg); note != "" {
+				if note := deferredToolsNote(reg, mcpNames); note != "" {
 					base += "\n\n" + note
 				}
 			}
