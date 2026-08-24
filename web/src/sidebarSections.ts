@@ -5,7 +5,7 @@
 // most holding one thread, and 88 of them called "work" because that is the
 // last segment of every `runs_*/tN/forge/work` path. The list was unreadable
 // and unusable at the same time.
-import type { Workspace } from "./bridge";
+import type { ThreadSummary, Workspace } from "./bridge";
 
 // How many sections to show before the rest go behind "show all". Active and
 // pinned ones are always shown and do not count against it.
@@ -104,4 +104,40 @@ export function ordered<T extends { thread_id: string }>(
     }
     return 0;
   });
+}
+
+// Searching the sidebar. A query narrows the list to the workspaces it names,
+// with their threads intact underneath, so finding a project is one word
+// rather than a scroll through everything opened this year. A thread title can
+// match too, in which case its workspace shows carrying only the threads that
+// matched.
+export type SectionMatch = { workspace: Workspace; threads: ThreadSummary[] };
+
+function hit(haystack: string, needle: string): boolean {
+  return haystack.toLowerCase().includes(needle);
+}
+
+export function searchSections(
+  workspaces: Workspace[],
+  threadsFor: (path: string) => ThreadSummary[],
+  query: string,
+): SectionMatch[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return [];
+  const out: SectionMatch[] = [];
+  for (const workspace of workspaces) {
+    const threads = threadsFor(workspace.path);
+    // A named workspace keeps everything under it: the point of searching for
+    // a folder is to get at its chats.
+    if (hit(workspace.name, needle) || hit(workspace.path, needle)) {
+      out.push({ workspace, threads });
+      continue;
+    }
+    const matching = threads.filter(
+      (thread) =>
+        hit(thread.title ?? "", needle) || hit(thread.preview ?? "", needle),
+    );
+    if (matching.length > 0) out.push({ workspace, threads: matching });
+  }
+  return out;
 }

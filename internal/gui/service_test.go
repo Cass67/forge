@@ -16,6 +16,7 @@ import (
 	"forge/internal/chatstate"
 	"forge/internal/skills"
 	"forge/internal/tui"
+	"forge/internal/workspace"
 )
 
 // Wails binds every exported method of the service, and the frontend calls
@@ -29,7 +30,7 @@ func TestBoundMethodSurface(t *testing.T) {
 		"Providers", "RenameThread", "Restore", "Send",
 		// live sessions
 		"Sessions", "ActivateSession", "OpenThread", "CloseSession",
-		"CloseWorkspace",
+		"CloseWorkspace", "AddWorkspaceTree",
 		"SendWithImages", "SetEffort", "SetProviderKey", "SignOutProvider",
 		"StartProviderLogin", "SwitchModel", "SwitchWorkspace", "Threads", "Workspaces",
 		"ListWorkspaceDir", "ReadWorkspaceFile", "WriteWorkspaceFile",
@@ -288,6 +289,65 @@ func TestOpenThreadResumesItInItsOwnWorkspace(t *testing.T) {
 	}
 	if filepath.Clean(startedIn) != filepath.Clean(elsewhere) {
 		t.Fatalf("started in %q, want %q", startedIn, elsewhere)
+	}
+}
+
+// A folder holding a pile of repositories is opened once and every repository
+// under it becomes a workspace, without starting any of them.
+func TestAddWorkspaceTreeRemembersEachSubdirectory(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"alpha", "beta", ".cache"} {
+		if err := os.MkdirAll(filepath.Join(root, name), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "notes.md"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Keep the registry out of the real config directory.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	s, c := New(func(string, any) {})
+	s.Registry = workspace.LoadRegistry()
+	c.Attach("boot", tui.ChatLiveConfig{WorkDir: root}, make(chan string, 1), nil)
+	var started int
+	s.StartRuntime = func(string, string, string) { started++ }
+
+	if _, err := s.AddWorkspaceTree(root); err != nil {
+		t.Fatalf("AddWorkspaceTree: %v", err)
+	}
+	remembered := map[string]bool{}
+	for _, entry := range s.Registry.List() {
+		remembered[filepath.Base(entry.Path)] = true
+	}
+	if !remembered["alpha"] || !remembered["beta"] {
+		t.Fatalf("subdirectories missing: %v", remembered)
+	}
+	// Hidden directories are tooling state, and a file is not a workspace.
+	if remembered[".cache"] || remembered["notes.md"] {
+		t.Fatalf("registered something that is not a project: %v", remembered)
+	}
+	// Opening a folder full of repositories must not start a chat in each.
+	if started != 0 {
+		t.Fatalf("started %d runtimes, want 0", started)
+	}
+}
+
+// A folder with nothing under it is itself the workspace, rather than a pick
+// that quietly changes nothing.
+func TestAddWorkspaceTreeFallsBackToTheFolderItself(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	s, c := New(func(string, any) {})
+	s.Registry = workspace.LoadRegistry()
+	c.Attach("boot", tui.ChatLiveConfig{WorkDir: root}, make(chan string, 1), nil)
+
+	if _, err := s.AddWorkspaceTree(root); err != nil {
+		t.Fatalf("AddWorkspaceTree: %v", err)
+	}
+	list := s.Registry.List()
+	if len(list) != 1 || filepath.Clean(list[0].Path) != filepath.Clean(root) {
+		t.Fatalf("registry = %+v, want just the folder", list)
 	}
 }
 

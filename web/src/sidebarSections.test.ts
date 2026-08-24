@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
-import type { Workspace } from "./bridge";
+import type { ThreadSummary, Workspace } from "./bridge";
 import {
+  searchSections,
   labelFor,
   ordered,
   splitSections,
@@ -106,4 +107,49 @@ test("selecting a workspace does not move it up the list", () => {
   expect(after.shown.map((w) => w.path)).toEqual(
     before.shown.map((w) => w.path),
   );
+});
+
+test("searching names a workspace and keeps its threads under it", () => {
+  const ws = (path: string, name: string): Workspace => ({
+    path,
+    name,
+    threads: 0,
+    last_use: "2026-08-24T00:00:00Z",
+    active: false,
+    missing: false,
+    pinned: false,
+  });
+  const thread = (id: string, title: string): ThreadSummary => ({
+    thread_id: id,
+    title,
+    updated_at: "2026-08-24T00:00:00Z",
+    item_count: 1,
+  });
+  const workspaces = [
+    ws("/git/forge", "forge"),
+    ws("/git/agent-bench", "agent-bench"),
+  ];
+  const threads: Record<string, ThreadSummary[]> = {
+    "/git/forge": [thread("1", "dock layout"), thread("2", "mcp sharing")],
+    "/git/agent-bench": [thread("3", "run the harness")],
+  };
+  const find = (query: string) =>
+    searchSections(workspaces, (path) => threads[path] ?? [], query);
+
+  // A folder match brings everything under it.
+  const byFolder = find("forge");
+  expect(byFolder).toHaveLength(1);
+  expect(byFolder[0].threads).toHaveLength(2);
+
+  // A thread match brings only the threads that matched.
+  const byThread = find("harness");
+  expect(byThread).toHaveLength(1);
+  expect(byThread[0].workspace.name).toBe("agent-bench");
+  expect(byThread[0].threads.map((t) => t.thread_id)).toEqual(["3"]);
+
+  // Case and path fragments both work; an empty query hides nothing by
+  // returning no matches at all, which the caller reads as "not searching".
+  expect(find("GIT/")).toHaveLength(2);
+  expect(find("   ")).toEqual([]);
+  expect(find("nothing here")).toEqual([]);
 });

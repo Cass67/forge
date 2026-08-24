@@ -50,6 +50,17 @@ import {
   DEFAULT_SCALE,
 } from "./scale";
 
+// flag sets one key of a boolean map, returning the map untouched when the
+// value is already what it should be. React re-renders on identity, so this is
+// the difference between a state update per streamed token and one per change.
+function flag(
+  current: Record<string, boolean>,
+  key: string,
+  value: boolean,
+): Record<string, boolean> {
+  return current[key] === value ? current : { ...current, [key]: value };
+}
+
 const initialStats: Stats = {
   inTok: 0,
   outTok: 0,
@@ -70,6 +81,7 @@ const defaultPrefs: Prefs = {
   showActivity: true,
   showSidebar: true,
   scopeThreads: true,
+  expandSubfolders: false,
 };
 
 function loadPrefs(): Prefs {
@@ -133,6 +145,8 @@ export default function App() {
   const switchingWorkspace = useRef(false);
   const scaleRef = useRef(scale);
   scaleRef.current = scale;
+  const prefsRef = useRef(prefs);
+  prefsRef.current = prefs;
   const dragDepth = useRef(0);
   const [dragging, setDragging] = useState(false);
   const [workspaceMode, setWorkspaceMode] = useState(false);
@@ -329,10 +343,11 @@ export default function App() {
       const dir = ev.workspace ?? "";
       const finished =
         ev.kind === "done" || ev.kind === "agent_done" || ev.kind === "abort";
-      if (from) {
-        setBusySessions((m) => ({ ...m, [from]: !finished }));
-      }
-      if (dir) setBusyDirs((m) => ({ ...m, [dir]: !finished }));
+      // Every token of every live session comes through here. Replacing these
+      // maps unconditionally re-rendered the whole sidebar per token, so they
+      // are only replaced when the answer actually changes.
+      if (from) setBusySessions((m) => flag(m, from, !finished));
+      if (dir) setBusyDirs((m) => flag(m, dir, !finished));
       // Background sessions keep streaming into their own caches: their
       // output must never land in the transcript on screen.
       if (from && from !== sessionRef.current) {
@@ -390,9 +405,9 @@ export default function App() {
       const from = action.session ?? "";
       if (from && from !== sessionRef.current) {
         pendingApprovals.current[from] = action;
-        setBusySessions((m) => ({ ...m, [from]: true }));
+        setBusySessions((m) => flag(m, from, true));
         if (action.workspace)
-          setBusyDirs((m) => ({ ...m, [action.workspace as string]: true }));
+          setBusyDirs((m) => flag(m, action.workspace as string, true));
         return;
       }
       if (switchingWorkspace.current) return;
@@ -402,8 +417,8 @@ export default function App() {
     const offDone = forge.onTurnDone((done) => {
       const from = done.session ?? "";
       const tag = done.workspace ?? "";
-      if (from) setBusySessions((m) => ({ ...m, [from]: false }));
-      if (tag) setBusyDirs((m) => ({ ...m, [tag]: false }));
+      if (from) setBusySessions((m) => flag(m, from, false));
+      if (tag) setBusyDirs((m) => flag(m, tag, false));
       // A background session finishing its turn only clears its own dot.
       if (!from || from === sessionRef.current) {
         setBusy(false);
@@ -434,7 +449,7 @@ export default function App() {
       setHistory((h) => [...h, text]);
       setBusy(true);
       const dir = init?.work_dir ?? "";
-      if (dir) setBusyDirs((m) => ({ ...m, [dir]: true }));
+      if (dir) setBusyDirs((m) => flag(m, dir, true));
       // The draft belongs to this chat session; sending it clears it so the
       // composer is empty for the next message.
       setDrafts((current) =>
@@ -732,10 +747,19 @@ export default function App() {
       return;
     void forge
       .chooseWorkspace()
-      .then((dir) => {
-        if (dir) {
-          setEntries([]);
-          setActiveID("");
+      .then(async (dir) => {
+        if (!dir) return;
+        setEntries([]);
+        setActiveID("");
+        if (!prefsRef.current.expandSubfolders) return;
+        // A container folder registers everything under it and stays where it
+        // is: chooseWorkspace has already switched to the folder itself, and
+        // the repositories under it are a click away rather than all started.
+        try {
+          setWorkspaces(await forge.addWorkspaceTree(dir));
+          notify("subfolders added as workspaces");
+        } catch (e: unknown) {
+          notify(String(e));
         }
       })
       .catch((e: unknown) => notify(String(e)));

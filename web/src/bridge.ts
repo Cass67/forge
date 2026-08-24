@@ -329,6 +329,9 @@ export const forge = {
   // Ends every conversation live in a workspace and drops it from the list.
   // The threads stay on disk.
   closeWorkspace: (dir: string) => call<Workspace[]>("CloseWorkspace", dir),
+  // Registers every immediate subfolder of dir as its own workspace. Nothing
+  // is started: runtimes stay lazy.
+  addWorkspaceTree: (dir: string) => call<Workspace[]>("AddWorkspaceTree", dir),
   yolo: () => call<boolean>("Yolo"),
   setYolo: (on: boolean) => call<boolean>("SetYolo", on),
   attachImage: (name: string, dataB64: string) =>

@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { ThreadSummary, Workspace } from "../bridge";
 import {
   labelFor,
   loadThreadOrders,
   ordered,
   saveThreadOrder,
+  searchSections,
   splitSections,
 } from "../sidebarSections";
 import type { SessionStatus } from "../sessionTabs";
@@ -75,6 +76,7 @@ export function Sidebar({
   const [dragID, setDragID] = useState("");
   const [renaming, setRenaming] = useState("");
   const [closed, setClosed] = useState<Record<string, boolean>>({});
+  const [query, setQuery] = useState("");
   const [selecting, setSelecting] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [picked, setPicked] = useState<Set<string>>(new Set());
@@ -112,7 +114,34 @@ export function Sidebar({
   // one thread and most called "work". Names are grown until they differ, and
   // everything past the first few sits behind one toggle.
   const labels = labelFor(workspaces.map((ws) => ws.path));
-  const { shown: sections, hidden } = splitSections(workspaces, showAll);
+  // Threads grouped by workspace, in one pass. Filtering the whole list per
+  // section meant every render cost sections x threads, which on a machine
+  // with a folder of repositories open is the sidebar's whole budget.
+  const byWorkspace = useMemo(() => {
+    const groups = new Map<string, ThreadSummary[]>();
+    for (const thread of threads) {
+      // The active workspace also owns threads with no recorded directory,
+      // which is what a conversation looks like before its first message.
+      const key = thread.cwd ? thread.cwd : activeWorkspace;
+      const group = groups.get(key);
+      if (group) group.push(thread);
+      else groups.set(key, [thread]);
+    }
+    for (const [path, group] of groups) {
+      groups.set(path, ordered(group, orders[path] ?? []));
+    }
+    return groups;
+  }, [activeWorkspace, orders, threads]);
+  const threadsIn = (path: string) => byWorkspace.get(path) ?? [];
+  // While searching, the list is exactly the matches: a query is a request to
+  // see one project, not to highlight it among ninety others.
+  const matches = searchSections(workspaces, threadsIn, query);
+  const searching = query.trim() !== "";
+  const { shown: unfiltered, hidden } = splitSections(workspaces, showAll);
+  const sections = searching ? matches.map((m) => m.workspace) : unfiltered;
+  const matchedThreads = new Map(
+    matches.map((m) => [m.workspace.path, m.threads]),
+  );
 
   return (
     <aside className="sidebar">
@@ -133,16 +162,34 @@ export function Sidebar({
           Open…
         </button>
       </div>
+      <div className="ws-search">
+        <input
+          aria-label="Search workspaces"
+          className="ws-search-input"
+          onChange={(event) => setQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") setQuery("");
+          }}
+          placeholder="Search folders and chats"
+          value={query}
+        />
+        {searching ? (
+          <button
+            className="ws-pin"
+            onClick={() => setQuery("")}
+            title="Clear the search"
+          >
+            ✕
+          </button>
+        ) : null}
+      </div>
       <div className="ws-sections">
         {sections.map((ws) => {
           const isActive = ws.path === activeWorkspace;
           const collapsed = closed[ws.path];
-          const list = ordered(
-            threads.filter(
-              (t) => (t.cwd ?? "") === ws.path || (isActive && !t.cwd),
-            ),
-            orders[ws.path] ?? [],
-          );
+          const list = searching
+            ? (matchedThreads.get(ws.path) ?? [])
+            : threadsIn(ws.path);
           const dropBefore = (targetID: string) => {
             if (!dragID || dragID === targetID) return;
             const ids = list.map((t) => t.thread_id);

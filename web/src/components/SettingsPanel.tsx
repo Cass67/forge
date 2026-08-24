@@ -13,6 +13,9 @@ export type Prefs = {
   showActivity: boolean;
   showSidebar: boolean;
   scopeThreads: boolean;
+  // Open a folder as a container: every repository under it becomes its own
+  // workspace, rather than the folder itself being the one you work in.
+  expandSubfolders: boolean;
 };
 
 type SectionID =
@@ -205,6 +208,18 @@ export function SettingsPanel({
                   <span className="set-k">current</span>
                   <span className="set-v mono">{init?.work_dir || "—"}</span>
                 </div>
+                <label className="set-row toggle">
+                  <input
+                    type="checkbox"
+                    checked={prefs.expandSubfolders}
+                    onChange={(e) =>
+                      onPrefs({ ...prefs, expandSubfolders: e.target.checked })
+                    }
+                  />
+                  <span>
+                    opening a folder adds each subfolder as its own workspace
+                  </span>
+                </label>
                 <div className="set-row">
                   <span className="set-k" />
                   <button className="btn" onClick={onAddWorkspace}>

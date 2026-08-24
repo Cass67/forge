@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -192,6 +193,77 @@ func (s *JSONLThreadStore) UpdateThreadMetadata(ctx context.Context, threadID st
 	return os.Rename(tmpPath, s.metadataPath(threadID))
 }
 
+// itemCounts remembers how many items a thread file holds. A store instance is
+// built per call by its callers, so the cache is package level, keyed by path
+// and invalidated by the file's size and modification time: a thread that has
+// not been appended to since the last listing is not read again.
+var itemCounts sync.Map // path -> itemCount
+
+type itemCount struct {
+	size  int64
+	mod   time.Time
+	count int
+}
+
+// countItems reports how many items a thread holds, by counting the lines of
+// its JSONL file. Blank lines are ignored, as they are when reading items.
+func (s *JSONLThreadStore) countItems(threadID string) (int, error) {
+	path := s.threadPath(threadID)
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if cached, ok := itemCounts.Load(path); ok {
+		if entry, ok := cached.(itemCount); ok &&
+			entry.size == info.Size() && entry.mod.Equal(info.ModTime()) {
+			return entry.count, nil
+		}
+	}
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = f.Close() }()
+
+	buf := make([]byte, 128*1024)
+	count := 0
+	pendingContent := false
+	for {
+		n, readErr := f.Read(buf)
+		for _, b := range buf[:n] {
+			if b == '\n' {
+				if pendingContent {
+					count++
+				}
+				pendingContent = false
+				continue
+			}
+			// A line of whitespace is not an item.
+			if b != '\r' && b != ' ' && b != '\t' {
+				pendingContent = true
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return 0, readErr
+		}
+	}
+	// A final line with no newline after it still counts.
+	if pendingContent {
+		count++
+	}
+	itemCounts.Store(path, itemCount{size: info.Size(), mod: info.ModTime(), count: count})
+	return count, nil
+}
+
 func (s *JSONLThreadStore) ReadThread(ctx context.Context, threadID string) (ThreadRecord, error) {
 	items, err := s.ReadItems(ctx, threadID)
 	if err != nil {
@@ -260,11 +332,20 @@ func (s *JSONLThreadStore) ListThreads(ctx context.Context, opts ListOptions) ([
 			continue
 		}
 		seen[threadID] = true
-		record, err := s.ReadThread(ctx, threadID)
+		metadata, err := s.readThreadMetadata(ctx, threadID)
 		if err != nil {
 			return nil, err
 		}
-		records = append(records, record)
+		// A listing wants the size of each thread, not its contents. Decoding
+		// every item to arrive at a count made listing cost the whole store:
+		// on a few megabytes of history that is tens of milliseconds, paid
+		// again on every refresh. One item is one line, so the lines are
+		// counted instead and nothing is parsed or allocated.
+		count, err := s.countItems(threadID)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, ThreadRecord{ThreadID: threadID, Metadata: metadata, ItemCount: count})
 	}
 	sort.SliceStable(records, func(i, j int) bool {
 		iUpdated := records[i].Metadata.UpdatedAt

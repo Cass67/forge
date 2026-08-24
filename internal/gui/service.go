@@ -1011,6 +1011,63 @@ func (s *Service) otherRememberedLocked(skip string) string {
 	return ""
 }
 
+// maxWorkspaceTree caps how many subdirectories one folder can contribute.
+// Pointed at a home directory this would otherwise register hundreds of
+// entries, and a sidebar that long is not navigable anyway.
+const maxWorkspaceTree = 200
+
+// AddWorkspaceTree remembers every immediate subdirectory of dir as its own
+// workspace, which is how a folder holding a pile of repositories is opened:
+// one pick, and each repository underneath becomes a workspace one click away.
+// Nothing is started — runtimes stay lazy, so this costs a directory listing
+// and no processes.
+func (s *Service) AddWorkspaceTree(dir string) ([]Workspace, error) {
+	root, err := workspaceDir(dir)
+	if err != nil {
+		return s.Workspaces(), err
+	}
+	if s.Registry == nil {
+		return s.Workspaces(), errNoWorkDir
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return s.Workspaces(), err
+	}
+	added := 0
+	for _, entry := range entries {
+		if added >= maxWorkspaceTree {
+			break
+		}
+		name := entry.Name()
+		// Hidden directories are caches and tooling state, not projects.
+		if strings.HasPrefix(name, ".") {
+			continue
+		}
+		if !entry.IsDir() {
+			// A symlink to a directory is how people keep a project in one
+			// place and list it in another, so it counts.
+			if entry.Type()&os.ModeSymlink == 0 {
+				continue
+			}
+			if st, statErr := os.Stat(filepath.Join(root, name)); statErr != nil || !st.IsDir() {
+				continue
+			}
+		}
+		if err := s.Registry.Remember(filepath.Join(root, name)); err != nil {
+			return s.Workspaces(), err
+		}
+		added++
+	}
+	// A folder with nothing under it is the workspace, rather than an empty
+	// gesture that leaves the list unchanged.
+	if added == 0 {
+		if err := s.Registry.Remember(root); err != nil {
+			return s.Workspaces(), err
+		}
+	}
+	return s.Workspaces(), nil
+}
+
 // workspaceDir validates a directory chosen in the UI.
 func workspaceDir(dir string) (string, error) {
 	trimmed := strings.TrimSpace(dir)

@@ -3830,3 +3830,26 @@ textarea:not(.xterm-helper-textarea),
 .plan-step.failed .plan-ic {
   color: var(--err);
 }
+
+/* ---- workspace search ---- */
+.ws-search {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px 6px;
+}
+.ws-search-input {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 7px;
+  font: inherit;
+  font-size: 0.75rem;
+  color: var(--text);
+  background: var(--input);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+.ws-search-input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
