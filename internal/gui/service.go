@@ -35,6 +35,10 @@ const (
 	EventTurnDone = "forge:done"
 	EventReady    = "forge:ready"
 	EventTerminal = "forge:terminal"
+	// EventStarting fires when a workspace runtime begins its asynchronous
+	// spin-up (building setup, starting the chat loop), before Attach reports
+	// it ready. The UI shows progress for these directories.
+	EventStarting = "forge:starting"
 )
 
 var (
@@ -50,19 +54,22 @@ var (
 // Service is the surface bound into the window: every exported method here is
 // callable from the frontend, so runtime plumbing lives on Controller instead.
 type Service struct {
-	mu      sync.RWMutex
-	cfg     tui.ChatLiveConfig
-	inputCh chan<- string
-	ready   bool
+	mu sync.RWMutex
+	// runtimes holds one chat runtime per workspace directory. Runtimes are
+	// expensive (tools, sandbox rules and thread stores are bound to their
+	// directory) and independent, so switching workspaces activates another
+	// entry rather than tearing anything down.
+	runtimes  map[string]*guiRuntime
+	activeDir string
 
 	emit      func(name string, data any)
 	connected sync.Once
 	flows     *providerauth.Flows
 
-	// switchSig carries a workspace change to the event pump, which unwinds
-	// the chat runtime so it can be rebuilt against nextDir.
-	switchSig chan struct{}
-	nextDir   string // guarded by mu
+	// StartRuntime asks the window layer to start a chat runtime for a
+	// directory that has none yet. Set by main.go; starting is lazy, on first
+	// activation.
+	StartRuntime func(dir string)
 
 	// PickDir opens the platform's folder chooser. Set by the window layer,
 	// which owns the dialog API.
@@ -78,6 +85,14 @@ type Service struct {
 	preview   *previewProxy
 }
 
+// guiRuntime is one chat runtime bound to a workspace directory. Runtimes are
+// independent and long-lived; switching workspaces never tears one down.
+type guiRuntime struct {
+	cfg     tui.ChatLiveConfig
+	inputCh chan<- string
+	ready   bool
+}
+
 // Controller drives the service from the Go side. It is deliberately a
 // separate type: Wails binds every exported method of the service it is given,
 // and none of this belongs in the frontend's reach.
@@ -86,49 +101,93 @@ type Controller struct{ s *Service }
 // New returns the bound service and the controller that feeds it.
 func New(emit func(name string, data any)) (*Service, *Controller) {
 	s := &Service{
-		emit: emit, flows: providerauth.NewFlows(), switchSig: make(chan struct{}, 1),
+		emit: emit, flows: providerauth.NewFlows(),
+		runtimes:  make(map[string]*guiRuntime),
 		terminals: make(map[string]*terminalSession),
 	}
 	return s, &Controller{s: s}
 }
 
-// Attach wires the running chat loop into the service and tells the frontend
-// it can ask for its init payload.
+func cleanDir(dir string) string {
+	return filepath.Clean(strings.TrimSpace(dir))
+}
+
+// Attach wires a running chat loop into the service under its workspace
+// directory and tells the frontend it can ask for its init payload. If no
+// runtime is active yet this one becomes active.
 func (c *Controller) Attach(cfg tui.ChatLiveConfig, inputCh chan<- string) {
 	s := c.s
+	dir := cleanDir(cfg.WorkDir)
 	s.mu.Lock()
-	s.cfg = cfg
-	s.inputCh = inputCh
-	s.ready = true
+	rt := &guiRuntime{cfg: cfg, inputCh: inputCh, ready: true}
+	s.runtimes[dir] = rt
+	if s.activeDir == "" {
+		s.activeDir = dir
+	}
 	s.mu.Unlock()
 	log.Printf("gui: chat runtime ready (model %s, workspace %s)", cfg.Model, cfg.WorkDir)
 	s.emit(EventReady, nil)
 }
 
-func (s *Service) snapshot() (tui.ChatLiveConfig, chan<- string, bool) {
+// Starting announces that a workspace runtime is spinning up asynchronously,
+// which lets the frontend show progress instead of a silent stall. The matching
+// Attach→EventReady clears it.
+func (c *Controller) Starting(dir string) {
+	c.s.emit(EventStarting, dir)
+}
+
+// Forget unregisters a runtime whose stream has ended.
+func (c *Controller) Forget(dir string) {
+	s := c.s
+	s.mu.Lock()
+	delete(s.runtimes, cleanDir(dir))
+	if s.activeDir == cleanDir(dir) {
+		s.activeDir = ""
+	}
+	s.mu.Unlock()
+}
+
+// Shutdown tears down every runtime's terminals. The runtimes themselves are
+// stopped by process exit.
+func (c *Controller) Shutdown() { c.s.closeTerminals() }
+
+// active returns the runtime the frontend is talking to.
+func (s *Service) active() (*guiRuntime, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.cfg, s.inputCh, s.ready
+	rt, ok := s.runtimes[s.activeDir]
+	return rt, ok && rt.ready
+}
+
+// snapshot returns the active runtime's config and input channel. Every
+// frontend call addresses the active workspace.
+func (s *Service) snapshot() (tui.ChatLiveConfig, chan<- string, bool) {
+	rt, ok := s.active()
+	if !ok {
+		return tui.ChatLiveConfig{}, nil, false
+	}
+	return rt.cfg, rt.inputCh, true
+}
+
+// currentDir reports which workspace the frontend is addressing.
+func (s *Service) currentDir() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.activeDir
 }
 
 // ---- streaming ----------------------------------------------------------
 
-// PumpEvents forwards the runtime's event stream to the window. It returns
-// when the stream closes or a workspace switch is requested, which is what
-// unwinds RunChatLive so the runtime can be rebuilt elsewhere.
-func (c *Controller) PumpEvents(events <-chan llm.Event) {
-	for {
-		select {
-		case ev, ok := <-events:
-			if !ok {
-				c.s.emit(EventTurnDone, nil)
-				return
-			}
-			c.s.emit(EventChat, toWireEvent(ev))
-		case <-c.s.switchSig:
-			return
-		}
+// PumpEvents forwards one runtime's event stream to the window, tagging every
+// event with its workspace directory so the frontend can route output from
+// several live runtimes. It returns only when the stream closes.
+func (c *Controller) PumpEvents(dir string, events <-chan llm.Event) {
+	for ev := range events {
+		w := toWireEvent(ev)
+		w.Workspace = dir
+		c.s.emit(EventChat, w)
 	}
+	c.s.emit(EventTurnDone, DonePayload{Workspace: dir})
 }
 
 // EventFilesDropped carries OS file drops to the frontend.
@@ -150,27 +209,21 @@ func (c *Controller) ReportError(msg string) {
 	c.s.emit(EventChat, wireEvent{Kind: "error", Error: msg})
 }
 
-// PendingWorkspace returns the directory a switch asked for, clearing it. An
-// empty string means the chat ended for some other reason.
-func (c *Controller) PendingWorkspace() string {
-	c.s.mu.Lock()
-	defer c.s.mu.Unlock()
-	dir := c.s.nextDir
-	c.s.nextDir = ""
-	return dir
-}
-
-// PumpApprovals forwards tool approval requests to the window.
-func (c *Controller) PumpApprovals(ch <-chan tools.Action) {
+// PumpApprovals forwards tool approval requests to the window, tagged with the
+// workspace they came from.
+func (c *Controller) PumpApprovals(dir string, ch <-chan tools.Action) {
 	for a := range ch {
-		c.s.emit(EventApproval, wireAction{Tool: a.Tool, Summary: a.Summary, Detail: a.Detail, Path: a.Path})
+		c.s.emit(EventApproval, wireAction{
+			Tool: a.Tool, Summary: a.Summary, Detail: a.Detail, Path: a.Path,
+			Workspace: dir,
+		})
 	}
 }
 
-// PumpDone signals the end of each turn.
-func (c *Controller) PumpDone(doneCh <-chan struct{}) {
+// PumpDone signals the end of each turn for one runtime.
+func (c *Controller) PumpDone(dir string, doneCh <-chan struct{}) {
 	for range doneCh {
-		c.s.emit(EventTurnDone, nil)
+		c.s.emit(EventTurnDone, DonePayload{Workspace: dir})
 	}
 }
 
@@ -208,24 +261,21 @@ func (s *Service) Send(text string) error {
 	return s.submit(text, nil)
 }
 
-// submit hands input to the runtime while holding the read lock, so a
-// workspace switch waits for it rather than closing the channel underneath.
+// submit hands input to the active runtime.
 func (s *Service) submit(text string, attachments []chatstate.ChatAttachment) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if !s.ready {
+	cfg, inputCh, ready := s.snapshot()
+	if !ready {
 		return errNotReady
 	}
-	s.inputCh <- encodeInput(s.cfg, text, attachments)
+	inputCh <- encodeInput(cfg, text, attachments)
 	return nil
 }
 
-// control sends a runtime control message under the same lock as submit.
+// control sends a runtime control message to the active runtime.
 func (s *Service) controlLocked(msg string) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if s.ready {
-		s.inputCh <- msg
+	_, inputCh, ready := s.snapshot()
+	if ready {
+		inputCh <- msg
 	}
 }
 
@@ -582,10 +632,12 @@ func (s *Service) ChooseWorkspace() (string, error) {
 	return dir, s.SwitchWorkspace(dir)
 }
 
-// SwitchWorkspace rebuilds the chat runtime against another directory, in this
-// same window. The agent's tools, sandbox rules and thread store are all bound
-// to the directory the runtime started in, so the runtime is torn down and
-// started again rather than repointed.
+// SwitchWorkspace activates another directory's runtime in this same window.
+// Runtimes are bound to the directory they started in — tools, sandbox rules
+// and thread store cannot be repointed — so each directory gets its own, and
+// switching only changes which one the frontend talks to. A directory without
+// a runtime yet is started lazily via StartRuntime; runtimes already running
+// are left untouched.
 func (s *Service) SwitchWorkspace(dir string) error {
 	clean, err := workspaceDir(dir)
 	if err != nil {
@@ -593,26 +645,20 @@ func (s *Service) SwitchWorkspace(dir string) error {
 	}
 
 	s.mu.Lock()
-	if !s.ready {
-		s.mu.Unlock()
-		return errNotReady
-	}
-	if filepath.Clean(strings.TrimSpace(s.cfg.WorkDir)) == clean {
+	if s.activeDir == clean {
 		s.mu.Unlock()
 		return nil
 	}
-	// Taking the write lock waits for any in-flight submit, so nothing is
-	// still writing to the input channel when the runtime closes it.
-	s.ready = false
-	s.nextDir = clean
+	s.activeDir = clean
+	_, running := s.runtimes[clean]
 	s.mu.Unlock()
-	s.closeTerminals()
 	s.StopPreview()
 
-	select {
-	case s.switchSig <- struct{}{}:
-	default:
+	if !running && s.StartRuntime != nil {
+		s.StartRuntime(clean)
 	}
+	// The frontend re-initialises against the newly active runtime.
+	s.emit(EventReady, nil)
 	return nil
 }
 

@@ -34,9 +34,10 @@ type WorkspaceFile struct {
 }
 
 type TerminalEvent struct {
-	ID     string `json:"id"`
-	Data   string `json:"data,omitempty"`
-	Closed bool   `json:"closed,omitempty"`
+	ID        string `json:"id"`
+	Workspace string `json:"workspace,omitempty"`
+	Data      string `json:"data,omitempty"`
+	Closed    bool   `json:"closed,omitempty"`
 }
 
 type terminalSession struct {
@@ -230,6 +231,11 @@ func (s *Service) StartTerminal(id string, rows, cols int) error {
 	if err != nil {
 		return err
 	}
+	dir, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return err
+	}
+	key := s.terminalKey(dir, id)
 	if rows < 1 {
 		rows = 24
 	}
@@ -248,39 +254,60 @@ func (s *Service) StartTerminal(id string, rows, cols int) error {
 		return err
 	}
 	s.mu.Lock()
-	if _, exists := s.terminals[id]; exists {
+	if _, exists := s.terminals[key]; exists {
 		s.mu.Unlock()
 		_ = ptmx.Close()
 		return errors.New("terminal already exists")
 	}
 	session := &terminalSession{ptmx: ptmx}
-	s.terminals[id] = session
+	s.terminals[key] = session
 	s.mu.Unlock()
 	go func() {
 		buf := make([]byte, 8192)
 		for {
 			n, readErr := ptmx.Read(buf)
 			if n > 0 {
-				s.emit(EventTerminal, TerminalEvent{ID: id, Data: string(buf[:n])})
+				s.emit(EventTerminal, TerminalEvent{ID: id, Workspace: dir, Data: string(buf[:n])})
 			}
 			if readErr != nil {
 				break
 			}
 		}
 		s.mu.Lock()
-		if s.terminals[id] == session {
-			delete(s.terminals, id)
+		if s.terminals[key] == session {
+			delete(s.terminals, key)
 		}
 		s.mu.Unlock()
 		_ = ptmx.Close()
-		s.emit(EventTerminal, TerminalEvent{ID: id, Closed: true})
+		s.emit(EventTerminal, TerminalEvent{ID: id, Workspace: dir, Closed: true})
 	}()
 	return nil
 }
 
+// terminalKey scopes a terminal to its workspace, so switching workspaces
+// never collides with or closes another directory's terminals.
+func (s *Service) terminalKey(dir, id string) string {
+	return cleanDir(dir) + "/" + id
+}
+
+// activeTerminalKey resolves a frontend terminal id against the active
+// workspace.
+func (s *Service) activeTerminalKey(id string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.activeDir == "" {
+		return ""
+	}
+	root, err := filepath.EvalSymlinks(s.activeDir)
+	if err != nil {
+		return s.activeDir + "/" + id
+	}
+	return root + "/" + id
+}
+
 func (s *Service) WriteTerminal(id, data string) error {
 	s.mu.RLock()
-	session := s.terminals[id]
+	session := s.terminals[s.activeTerminalKey(id)]
 	s.mu.RUnlock()
 	if session == nil {
 		return errors.New("terminal not found")
@@ -296,7 +323,7 @@ func (s *Service) ResizeTerminal(id string, rows, cols int) error {
 		return errors.New("terminal size must be positive")
 	}
 	s.mu.RLock()
-	session := s.terminals[id]
+	session := s.terminals[s.activeTerminalKey(id)]
 	s.mu.RUnlock()
 	if session == nil {
 		return errors.New("terminal not found")
@@ -306,8 +333,9 @@ func (s *Service) ResizeTerminal(id string, rows, cols int) error {
 
 func (s *Service) CloseTerminal(id string) error {
 	s.mu.Lock()
-	session := s.terminals[id]
-	delete(s.terminals, id)
+	key := s.activeTerminalKey(id)
+	session := s.terminals[key]
+	delete(s.terminals, key)
 	s.mu.Unlock()
 	if session == nil {
 		return nil

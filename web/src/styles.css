@@ -683,6 +683,10 @@ textarea:not(.xterm-helper-textarea),
 .thread-confirm .thread-x {
   opacity: 1;
 }
+/* Drag-to-reorder chats within a workspace section. */
+.thread.dragging {
+  opacity: 0.4;
+}
 .thread-title {
   font-size: 0.75rem;
   overflow: hidden;
@@ -2016,6 +2020,24 @@ textarea:not(.xterm-helper-textarea),
   color: var(--muted);
   font-size: 0.625rem;
   font-weight: 400;
+}
+/* Liveness dot: a runtime in this workspace has a turn in flight. */
+.ws-live {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok, #4caf50);
+  flex: none;
+  animation: ws-live-pulse 1.2s ease-in-out infinite;
+}
+@keyframes ws-live-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
 }
 .ws-section .thread-list {
   max-height: none;

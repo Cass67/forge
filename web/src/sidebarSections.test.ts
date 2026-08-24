@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test";
 import type { Workspace } from "./bridge";
-import { labelFor, splitSections, SECTION_LIMIT } from "./sidebarSections";
+import {
+  labelFor,
+  ordered,
+  splitSections,
+  SECTION_LIMIT,
+} from "./sidebarSections";
 
 const ws = (path: string, extra: Partial<Workspace> = {}): Workspace => ({
   path,
@@ -17,6 +22,25 @@ test("a unique last segment is name enough", () => {
   const labels = labelFor(["/Users/cass/git/forge", "/Users/cass/git/pool"]);
   expect(labels["/Users/cass/git/forge"]).toBe("…/forge");
   expect(labels["/Users/cass/git/pool"]).toBe("…/pool");
+});
+
+const thread = (thread_id: string) => ({ thread_id });
+
+test("ordered puts dragged chats first, in the saved order", () => {
+  const list = [thread("a"), thread("b"), thread("c")];
+  expect(ordered(list, ["c"])).toEqual([thread("c"), thread("a"), thread("b")]);
+  expect(ordered(list, ["b", "c"])).toEqual([
+    thread("b"),
+    thread("c"),
+    thread("a"),
+  ]);
+  // Unknown ids and empty orders leave the list alone.
+  expect(ordered(list, [])).toEqual(list);
+  expect(ordered(list, ["zzz", "b"])).toEqual([
+    thread("b"),
+    thread("a"),
+    thread("c"),
+  ]);
 });
 
 test("colliding names grow until they are told apart", () => {

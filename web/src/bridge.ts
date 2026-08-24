@@ -31,6 +31,7 @@ export type WireEvent = {
   context_estimated?: boolean;
   sub_agent?: string;
   error?: string;
+  workspace?: string;
 };
 
 export type ClearResult = {
@@ -54,6 +55,7 @@ export type WireAction = {
   summary: string;
   detail?: string;
   path?: string;
+  workspace?: string;
 };
 
 export type StoredItem = {
@@ -252,7 +254,14 @@ export type RunLaunch = {
   worktree: boolean;
 };
 export type PreviewInfo = { url: string; target: string };
-export type TerminalEvent = { id: string; data?: string; closed?: boolean };
+export type TerminalEvent = {
+  id: string;
+  workspace?: string;
+  data?: string;
+  closed?: boolean;
+};
+
+export type DonePayload = { workspace?: string };
 
 // Wails delivers a payload as event.data, sometimes wrapped in an array.
 function payload<T>(event: unknown): T {
@@ -378,7 +387,8 @@ export const forge = {
     Events.On("forge:event", (e: unknown) => fn(payload<WireEvent>(e))),
   onApproval: (fn: (a: WireAction) => void) =>
     Events.On("forge:approval", (e: unknown) => fn(payload<WireAction>(e))),
-  onTurnDone: (fn: () => void) => Events.On("forge:done", () => fn()),
+  onTurnDone: (fn: (done: DonePayload) => void) =>
+    Events.On("forge:done", (e: unknown) => fn(payload<DonePayload>(e))),
   // Not payload(): that helper unwraps a one-element array, which for a list
   // of filenames yields the first name and leaves the caller iterating its
   // characters. Both wrapping shapes are handled explicitly here.

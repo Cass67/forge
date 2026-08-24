@@ -62,3 +62,41 @@ export function splitSections(
     hidden: Math.max(0, rest.length - room),
   };
 }
+
+// Manual chat ordering, per workspace. Threads the user dragged stay where
+// they were put; everything else keeps its recency order below them.
+export const THREAD_ORDER_KEY = "forge.threadOrder";
+
+export function loadThreadOrders(): Record<string, string[]> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(THREAD_ORDER_KEY) ?? "null");
+    if (!raw || typeof raw !== "object") return {};
+    return raw as Record<string, string[]>;
+  } catch {
+    return {};
+  }
+}
+
+export function saveThreadOrder(dir: string, ids: string[]): void {
+  const all = loadThreadOrders();
+  all[dir] = ids;
+  localStorage.setItem(THREAD_ORDER_KEY, JSON.stringify(all));
+}
+
+// ordered applies a saved order: ids present in it come first in that order,
+// then everything else unchanged.
+export function ordered<T extends { thread_id: string }>(
+  list: T[],
+  order: string[],
+): T[] {
+  if (order.length === 0) return list;
+  const rank = new Map(order.map((id, i) => [id, i]));
+  return [...list].sort((a, b) => {
+    const ra = rank.get(a.thread_id);
+    const rb = rank.get(b.thread_id);
+    if (ra !== undefined || rb !== undefined) {
+      return (ra ?? Infinity) - (rb ?? Infinity);
+    }
+    return 0;
+  });
+}

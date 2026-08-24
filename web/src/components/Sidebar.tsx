@@ -1,6 +1,12 @@
 import { useState } from "react";
 import type { ThreadSummary, Workspace } from "../bridge";
-import { labelFor, splitSections } from "../sidebarSections";
+import {
+  labelFor,
+  loadThreadOrders,
+  ordered,
+  saveThreadOrder,
+  splitSections,
+} from "../sidebarSections";
 
 function fmtTime(iso: string): string {
   if (!iso) return "";
@@ -19,6 +25,7 @@ export function Sidebar({
   workDir,
   activeID,
   busy,
+  busyWorkspaces = {},
   onNew,
   onRestore,
   onAddWorkspace,
@@ -30,12 +37,17 @@ export function Sidebar({
   onForget,
   onBulkDelete,
   onClearThreads,
+  openThreadIDs = [],
+  onCloseThread,
 }: {
   threads: ThreadSummary[];
   workspaces: Workspace[];
   workDir: string;
   activeID: string;
   busy: boolean;
+  // Workspaces with an agent turn in flight in their own runtime, keyed by
+  // directory. Shown as a liveness dot on each section.
+  busyWorkspaces?: Record<string, boolean>;
   onNew: () => void;
   onRestore: (id: string) => void;
   onAddWorkspace: () => void;
@@ -47,8 +59,16 @@ export function Sidebar({
   onForget: (dir: string) => void;
   onBulkDelete: (threadIDs: string[], dirs: string[]) => void;
   onClearThreads: () => void;
+  // Threads currently open as tabs; their ✕ closes the tab instead of
+  // deleting anything.
+  openThreadIDs?: string[];
+  onCloseThread: (id: string) => void;
 }) {
   const [confirming, setConfirming] = useState("");
+  const [orders, setOrders] = useState<Record<string, string[]>>(() =>
+    loadThreadOrders(),
+  );
+  const [dragID, setDragID] = useState("");
   const [renaming, setRenaming] = useState("");
   const [closed, setClosed] = useState<Record<string, boolean>>({});
   const [selecting, setSelecting] = useState(false);
@@ -113,9 +133,23 @@ export function Sidebar({
         {sections.map((ws) => {
           const isActive = ws.path === activeWorkspace;
           const collapsed = closed[ws.path];
-          const list = threads.filter(
-            (t) => (t.cwd ?? "") === ws.path || (isActive && !t.cwd),
+          const list = ordered(
+            threads.filter(
+              (t) => (t.cwd ?? "") === ws.path || (isActive && !t.cwd),
+            ),
+            orders[ws.path] ?? [],
           );
+          const dropBefore = (targetID: string) => {
+            if (!dragID || dragID === targetID) return;
+            const ids = list.map((t) => t.thread_id);
+            const from = ids.indexOf(dragID);
+            const to = ids.indexOf(targetID);
+            if (from < 0 || to < 0) return;
+            ids.splice(to, 0, ids.splice(from, 1)[0]);
+            saveThreadOrder(ws.path, ids);
+            setOrders((current) => ({ ...current, [ws.path]: ids }));
+            setDragID("");
+          };
           return (
             <section
               className={`ws-section ${isActive ? "active" : ""}`}
@@ -156,6 +190,13 @@ export function Sidebar({
                       gone
                     </span>
                   ) : null}
+                  {busyWorkspaces[ws.path] ? (
+                    <span
+                      className="ws-live"
+                      aria-label="agent working"
+                      title="An agent is working here"
+                    />
+                  ) : null}
                   <span className="ws-section-count">{list.length || ""}</span>
                 </button>
                 <button
@@ -187,7 +228,6 @@ export function Sidebar({
                   <button
                     className="btn"
                     onClick={onNew}
-                    disabled={busy}
                     title="New thread (⌘N)"
                   >
                     +
@@ -233,7 +273,12 @@ export function Sidebar({
                         key={t.thread_id}
                         className={`thread ${current ? "active" : ""} ${
                           picked.has(`t:${t.thread_id}`) ? "picked" : ""
-                        }`}
+                        } ${dragID === t.thread_id ? "dragging" : ""}`}
+                        draggable={!selecting && renaming !== t.thread_id}
+                        onDragStart={() => setDragID(t.thread_id)}
+                        onDragEnd={() => setDragID("")}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={() => dropBefore(t.thread_id)}
                       >
                         {selecting ? (
                           <input
@@ -295,7 +340,20 @@ export function Sidebar({
                             </span>
                           </button>
                         )}
-                        {selecting ? null : confirming === t.thread_id ? (
+                        {selecting ? null : openThreadIDs.includes(
+                            t.thread_id,
+                          ) ? (
+                          <button
+                            className="thread-x"
+                            title="Close this conversation"
+                            onClick={() => {
+                              setConfirming("");
+                              onCloseThread(t.thread_id);
+                            }}
+                          >
+                            ✕
+                          </button>
+                        ) : confirming === t.thread_id ? (
                           <span className="thread-confirm">
                             <button
                               className="thread-x danger"

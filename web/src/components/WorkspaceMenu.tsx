@@ -12,12 +12,15 @@ function fmtWhen(iso: string): string {
 // thread store are all bound to the directory it started in.
 export function WorkspaceMenu({
   workspaces,
+  busyWorkspaces = {},
   onOpen,
   onNewIn,
   onAdd,
   onClose,
 }: {
   workspaces: Workspace[];
+  // Directories whose runtime has a turn in flight, shown as a liveness dot.
+  busyWorkspaces?: Record<string, boolean>;
   onOpen: (dir: string) => void;
   // Double-click starts a fresh session in that workspace, switching to it
   // first when it is not the one already open.
@@ -65,6 +68,9 @@ export function WorkspaceMenu({
                 {fmtWhen(w.last_use)}
               </span>
               {w.active ? <span className="ws-row-tag">current</span> : null}
+              {busyWorkspaces[w.path] ? (
+                <span className="ws-live" title="An agent is working here" />
+              ) : null}
               {w.missing ? (
                 <span className="ws-row-tag warn">missing</span>
               ) : null}

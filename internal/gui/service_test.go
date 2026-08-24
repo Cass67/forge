@@ -7,8 +7,8 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
-	"time"
 
 	"forge/internal/llm"
 
@@ -123,49 +123,72 @@ func TestWorkspacesGroupsByThreadCWD(t *testing.T) {
 	}
 }
 
-// Switching workspace has to unwind the chat runtime: the event pump must
-// return so RunChatLive can tear down and be rebuilt against the new
-// directory. Getting this wrong leaves two runtimes racing on one input
-// channel.
-func TestSwitchWorkspaceUnwindsTheEventPump(t *testing.T) {
-	dir := t.TempDir()
-	s, c := New(func(string, any) {})
-	inputCh := make(chan string, 1)
-	c.Attach(tui.ChatLiveConfig{WorkDir: t.TempDir()}, inputCh)
+// Runtimes are independent: switching workspaces activates another directory's
+// runtime without tearing the old one down, so both keep accepting input and
+// their events stay tagged with their own workspace.
+func TestSwitchWorkspaceKeepsBothRuntimesAlive(t *testing.T) {
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	var mu sync.Mutex
+	var emitted []any
+	s, c := New(func(_ string, data any) {
+		mu.Lock()
+		emitted = append(emitted, data)
+		mu.Unlock()
+	})
 
-	events := make(chan llm.Event)
-	returned := make(chan struct{})
+	inputA := make(chan string, 1)
+	inputB := make(chan string, 1)
+	c.Attach(tui.ChatLiveConfig{WorkDir: dirA}, inputA)
+
+	eventsA := make(chan llm.Event)
+	done := make(chan struct{})
 	go func() {
-		c.PumpEvents(events)
-		close(returned)
+		c.PumpEvents(dirA, eventsA)
+		close(done)
 	}()
 
-	if err := s.SwitchWorkspace(dir); err != nil {
+	if err := s.SwitchWorkspace(dirB); err != nil {
 		t.Fatalf("SwitchWorkspace: %v", err)
 	}
+	if got := s.currentDir(); filepath.Clean(got) != filepath.Clean(dirB) {
+		t.Fatalf("ActiveDir = %q, want %q", got, dirB)
+	}
+	c.Attach(tui.ChatLiveConfig{WorkDir: dirB}, inputB)
+
+	// Both runtimes still accept input.
+	inputA <- "to a"
+	inputB <- "to b"
+
+	// The first runtime's pump is long-lived: it must not have returned on
+	// the switch, and its events carry its own workspace tag.
 	select {
-	case <-returned:
-	case <-time.After(2 * time.Second):
-		t.Fatal("PumpEvents did not return, so the runtime would never be rebuilt")
+	case <-done:
+		t.Fatal("PumpEvents returned on a workspace switch")
+	default:
 	}
-	if got := c.PendingWorkspace(); got != dir {
-		t.Fatalf("PendingWorkspace = %q, want %q", got, dir)
+	eventsA <- llm.Event{Kind: "text", Text: "hi"}
+	close(eventsA)
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	found := false
+	for _, e := range emitted {
+		if we, ok := e.(wireEvent); ok && we.Workspace == dirA && we.Text == "hi" {
+			found = true
+		}
 	}
-	// Taken once only: a second read must not trigger another switch.
-	if got := c.PendingWorkspace(); got != "" {
-		t.Fatalf("PendingWorkspace repeated = %q, want empty", got)
-	}
-	// Input is refused between the switch and the next Attach, so nothing
-	// writes to a channel the runtime is about to close.
-	if err := s.Send("hello"); err == nil {
-		t.Fatal("Send accepted input while detached")
+	if !found {
+		t.Fatalf("no event tagged %s among %+v", dirA, emitted)
 	}
 }
 
-func TestSwitchWorkspaceClosesTerminals(t *testing.T) {
-	dir := t.TempDir()
+func TestSwitchWorkspaceKeepsTerminalsAlive(t *testing.T) {
+	dirA := t.TempDir()
+	dirB := t.TempDir()
 	s, c := New(func(string, any) {})
-	c.Attach(tui.ChatLiveConfig{WorkDir: t.TempDir()}, make(chan string, 1))
+	c.Attach(tui.ChatLiveConfig{WorkDir: dirA}, make(chan string, 1))
 
 	reader, writer, err := os.Pipe()
 	if err != nil {
@@ -176,16 +199,32 @@ func TestSwitchWorkspaceClosesTerminals(t *testing.T) {
 			t.Errorf("close pipe reader: %v", err)
 		}
 	})
-	s.terminals["terminal"] = &terminalSession{ptmx: writer}
+	resolvedA, err := filepath.EvalSymlinks(dirA)
+	if err != nil {
+		t.Fatalf("evalsymlinks: %v", err)
+	}
+	keyA := resolvedA + "/terminal"
+	s.terminals[keyA] = &terminalSession{ptmx: writer}
 
-	if err := s.SwitchWorkspace(dir); err != nil {
+	if err := s.SwitchWorkspace(dirB); err != nil {
 		t.Fatalf("SwitchWorkspace: %v", err)
 	}
-	if len(s.terminals) != 0 {
-		t.Fatal("SwitchWorkspace left a terminal registered")
+	if len(s.terminals) != 1 {
+		t.Fatalf("terminals = %d, want the other workspace's to survive", len(s.terminals))
 	}
-	if _, err := writer.Write([]byte("x")); err == nil {
-		t.Fatal("SwitchWorkspace left a terminal open")
+	if _, ok := s.terminals[keyA]; !ok {
+		t.Fatal("switching workspaces closed another workspace's terminal")
+	}
+	if _, err := writer.Write([]byte("x")); err != nil {
+		t.Fatalf("terminal should survive a switch: %v", err)
+	}
+
+	// Switching back addresses it again through the active-workspace key.
+	if err := s.SwitchWorkspace(dirA); err != nil {
+		t.Fatalf("SwitchWorkspace back: %v", err)
+	}
+	if err := s.WriteTerminal("terminal", "y"); err != nil {
+		t.Fatalf("WriteTerminal after switching back: %v", err)
 	}
 }
 
@@ -204,7 +243,7 @@ func TestSwitchWorkspaceRejectsBadDirectories(t *testing.T) {
 	}
 }
 
-// Switching to the directory already open is a no-op, not a teardown.
+// Switching to the directory already open is a no-op.
 func TestSwitchWorkspaceIgnoresTheCurrentDirectory(t *testing.T) {
 	dir := t.TempDir()
 	s, c := New(func(string, any) {})
@@ -213,8 +252,8 @@ func TestSwitchWorkspaceIgnoresTheCurrentDirectory(t *testing.T) {
 	if err := s.SwitchWorkspace(dir); err != nil {
 		t.Fatalf("SwitchWorkspace: %v", err)
 	}
-	if got := c.PendingWorkspace(); got != "" {
-		t.Fatalf("PendingWorkspace = %q, want no switch", got)
+	if got := s.currentDir(); filepath.Clean(got) != filepath.Clean(dir) {
+		t.Fatalf("ActiveDir = %q, want %q", got, dir)
 	}
 	if err := s.Send(""); err != nil {
 		t.Fatalf("service should still be attached: %v", err)

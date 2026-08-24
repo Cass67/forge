@@ -5,7 +5,18 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"forge/internal/tui"
 )
+
+// serviceAt returns a service whose active runtime is rooted at root, for
+// tests that exercise workspace-path logic without a chat runtime.
+func serviceAt(root string) *Service {
+	svc, _ := New(func(string, any) {})
+	svc.runtimes[root] = &guiRuntime{cfg: tui.ChatLiveConfig{WorkDir: root}, ready: true}
+	svc.activeDir = root
+	return svc
+}
 
 // gitRepo builds a throwaway repository with one commit, one staged edit, one
 // unstaged edit and one untracked file, which is every case GitStatus groups.
@@ -50,8 +61,7 @@ func gitRepo(t *testing.T) string {
 
 func statusFor(t *testing.T, root string) GitStatusResult {
 	t.Helper()
-	svc := &Service{ready: true}
-	svc.cfg.WorkDir = root
+	svc := serviceAt(root)
 	got, err := svc.GitStatus()
 	if err != nil {
 		t.Fatalf("GitStatus: %v", err)
@@ -104,8 +114,7 @@ func TestGitStatusOutsideRepoIsNotAnError(t *testing.T) {
 
 func TestGitDiffCoversStagedAndUntracked(t *testing.T) {
 	root := gitRepo(t)
-	svc := &Service{ready: true}
-	svc.cfg.WorkDir = root
+	svc := serviceAt(root)
 
 	staged, err := svc.GitDiff("edited.txt", true)
 	if err != nil {
@@ -126,8 +135,7 @@ func TestGitDiffCoversStagedAndUntracked(t *testing.T) {
 
 func TestGitStageUnstageDiscardRoundTrip(t *testing.T) {
 	root := gitRepo(t)
-	svc := &Service{ready: true}
-	svc.cfg.WorkDir = root
+	svc := serviceAt(root)
 
 	after, err := svc.GitStage([]string{"kept.txt"})
 	if err != nil {
@@ -156,8 +164,7 @@ func TestGitStageUnstageDiscardRoundTrip(t *testing.T) {
 
 func TestRelPathsRejectsEscapes(t *testing.T) {
 	root := gitRepo(t)
-	svc := &Service{ready: true}
-	svc.cfg.WorkDir = root
+	svc := serviceAt(root)
 	if _, _, err := svc.relPaths([]string{"../outside"}); err == nil {
 		t.Error("relPaths accepted a path escaping the workspace")
 	}
@@ -165,8 +172,7 @@ func TestRelPathsRejectsEscapes(t *testing.T) {
 
 func TestWorktreeAddListRemove(t *testing.T) {
 	root := gitRepo(t)
-	svc := &Service{ready: true}
-	svc.cfg.WorkDir = root
+	svc := serviceAt(root)
 
 	tree, err := svc.GitAddWorktree("feature/spike", "", "main", true)
 	if err != nil {
@@ -241,8 +247,7 @@ func fileIn(status GitStatusResult, path string) GitFileStatus {
 // interrupted merge there is only visible if the git dir is resolved.
 func TestRepoStateSeesAMergeInsideAWorktree(t *testing.T) {
 	root := gitRepo(t)
-	svc := &Service{ready: true}
-	svc.cfg.WorkDir = root
+	svc := serviceAt(root)
 	tree, err := svc.GitAddWorktree("side", "", "main", true)
 	if err != nil {
 		t.Fatalf("GitAddWorktree: %v", err)

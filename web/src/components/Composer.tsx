@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type KeyboardEvent,
+} from "react";
 import { matchCommands, type Command } from "../commands";
 import { CommandPalette } from "./CommandPalette";
 import type { Attachment } from "../bridge";
@@ -18,6 +24,7 @@ export function Composer({
   onSend,
   onCancel,
   onCommand,
+  focusToken = 0,
 }: {
   draft: string;
   onDraftChange: (text: string) => void;
@@ -32,6 +39,9 @@ export function Composer({
   onSend: (text: string) => void;
   onCancel: () => void;
   onCommand: (raw: string) => void;
+  // Bumped whenever the user asks for a fresh conversation; the composer takes
+  // focus then, so the placeholder is visible and typing works without a click.
+  focusToken?: number;
 }) {
   const [index, setIndex] = useState(0);
   const [histPos, setHistPos] = useState(-1);
@@ -48,11 +58,17 @@ export function Composer({
     if (!el) return;
     el.style.height = "auto";
     // Cap in rem so the box grows with the text size rather than clipping.
-    const cap = 13.75 * parseFloat(getComputedStyle(document.documentElement).fontSize || "16");
+    const cap =
+      13.75 *
+      parseFloat(getComputedStyle(document.documentElement).fontSize || "16");
     el.style.height = Math.min(el.scrollHeight, cap) + "px";
   }, [text]);
 
   useEffect(() => setIndex(0), [text]);
+
+  useEffect(() => {
+    if (focusToken > 0) ref.current?.focus();
+  }, [focusToken]);
 
   function onPaste(e: ClipboardEvent<HTMLTextAreaElement>) {
     const files = Array.from(e.clipboardData.files);
@@ -128,14 +144,23 @@ export function Composer({
 
   return (
     <div className="composer-wrap">
-      {paletteOpen ? <CommandPalette items={items} index={index} onPick={pick} /> : null}
+      {paletteOpen ? (
+        <CommandPalette items={items} index={index} onPick={pick} />
+      ) : null}
       {attachments.length > 0 ? (
         <div className="attachments">
           {attachments.map((a) => (
-            <span className="chip attach" key={a.id} title={`${a.name} · ${a.width}×${a.height}`}>
+            <span
+              className="chip attach"
+              key={a.id}
+              title={`${a.name} · ${a.width}×${a.height}`}
+            >
               <ImagePreview path={a.path} alt={a.name} small />
               {a.name}
-              <button className="chip-x" onClick={() => onRemoveAttachment(a.id)}>
+              <button
+                className="chip-x"
+                onClick={() => onRemoveAttachment(a.id)}
+              >
                 ✕
               </button>
             </span>
@@ -146,7 +171,9 @@ export function Composer({
         <textarea
           ref={ref}
           value={text}
-          placeholder={busy ? "steer the running turn…" : "message forge…  /  for commands"}
+          placeholder={
+            busy ? "steer the running turn…" : "message forge…  /  for commands"
+          }
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKey}
           onPaste={onPaste}
@@ -156,7 +183,11 @@ export function Composer({
           <button
             className={`yolo-btn ${yolo ? "on" : ""}`}
             onClick={onToggleYolo}
-            title={yolo ? "Tools run without asking — click to require approval" : "Tools ask before running — click for yolo"}
+            title={
+              yolo
+                ? "Tools run without asking — click to require approval"
+                : "Tools ask before running — click for yolo"
+            }
           >
             yolo
           </button>

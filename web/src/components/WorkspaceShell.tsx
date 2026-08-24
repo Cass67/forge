@@ -64,9 +64,6 @@ type Props = {
   // Opening a panel from the menu while the docks are hidden has to show them
   // again, or the click looks like it did nothing.
   onShowDocks: () => void;
-  // The strip of open conversations. It belongs to the chat, so it rides in
-  // the chat panel's own tab strip rather than adding a second bar under it.
-  chatTabs: ReactNode;
   // The chat's current model and the models it can switch to: the source
   // control panel drafts commit messages with the former and multi-run
   // launches windows across the latter.
@@ -172,7 +169,6 @@ export function WorkspaceShell({
   onDirtyChange,
   onNotify,
   onShowDocks,
-  chatTabs,
   model,
   models,
 }: Props) {
@@ -907,14 +903,6 @@ export function WorkspaceShell({
             </div>
           );
         })}
-        {group.tools.some((tool) => tool.kind === "chat") ? (
-          <span
-            className="workspace-chat-tabs"
-            onClick={() => focusTool("chat")}
-          >
-            {chatTabs}
-          </span>
-        ) : null}
       </div>
       <div className="workspace-group-body" ref={groupBodyRef(group.id)} />
       {dragging ? (

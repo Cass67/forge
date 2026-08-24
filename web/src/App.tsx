@@ -10,7 +10,6 @@ import {
 import { applyEvent, userEntry, type Entry } from "./entries";
 import { itemsToEntries } from "./replay";
 import { Sidebar } from "./components/Sidebar";
-import { SessionTabs } from "./components/SessionTabs";
 import {
   closeTab as closeSessionTab,
   emptyTabs,
@@ -92,6 +91,8 @@ export default function App() {
   const [activeID, setActiveID] = useState("");
   const [tabs, setTabs] = useState<SessionTabState>(emptyTabs);
   const [busy, setBusy] = useState(false);
+  // Bumped on every new-session request so the composer takes focus.
+  const [composerFocus, setComposerFocus] = useState(0);
   const [approval, setApproval] = useState<WireAction | null>(null);
   const [stats, setStats] = useState<Stats>(initialStats);
   const [noticeSeen, setNoticeSeen] = useState(false);
@@ -105,6 +106,19 @@ export default function App() {
   const [history, setHistory] = useState<string[]>([]);
   const [pending, setPending] = useState<Attachment[]>([]);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  // Which workspaces have an agent turn in flight, keyed by directory. A
+  // runtime keeps working while its workspace is in the background, so this
+  // drives the liveness dots instead of the focused pane's busy flag.
+  const [busyDirs, setBusyDirs] = useState<Record<string, boolean>>({});
+  // Session state stashed per workspace so switching away and back restores
+  // the transcript instead of replaying it from storage.
+  const wsCache = useRef(
+    new Map<string, { entries: Entry[]; activeID: string }>(),
+  );
+  const prevDirRef = useRef("");
+  // Approvals that arrived while their workspace was in the background; they
+  // are shown when that workspace becomes active again.
+  const pendingApprovals = useRef<Record<string, WireAction>>({});
   const switchingWorkspace = useRef(false);
   const scaleRef = useRef(scale);
   scaleRef.current = scale;
@@ -173,6 +187,9 @@ export default function App() {
   );
 
   const workDir = init?.work_dir ?? "";
+  // Unfinished input is per chat session, not per workspace: switching
+  // workspaces mid-typing must not carry someone else's draft over.
+  const chatKey = `${workDir}::${activeID}`;
 
   // Tabs live per workspace, and are reloaded when the window switches to one.
   useEffect(() => setTabs(loadTabs(workDir)), [workDir]);
@@ -211,6 +228,10 @@ export default function App() {
 
   const markRef = useRef(markActive);
   markRef.current = markActive;
+  const entriesRef = useRef(entries);
+  entriesRef.current = entries;
+  const activeIDRef = useRef(activeID);
+  activeIDRef.current = activeID;
   // Whether anything in the current turn failed, which decides between the
   // "finished" and "failed" dot when the turn ends.
   const turnFailed = useRef(false);
@@ -223,20 +244,43 @@ export default function App() {
   const loadInit = useCallback(() => {
     void forge.init().then((payload) => {
       if (!payload.ready) return;
+      const dir = payload.work_dir;
       switchingWorkspace.current = false;
       setInit(payload);
       setNoticeSeen(false);
       setStats((s) => ({ ...s, model: payload.model }));
       if (payload.effort) setEffort(payload.effort);
       setYoloState(payload.yolo);
-      if (payload.thread_id) {
+      // Stash the outgoing workspace's session so returning to it restores
+      // the live transcript instead of replaying it from storage.
+      if (prevDirRef.current && prevDirRef.current !== dir) {
+        wsCache.current.set(prevDirRef.current, {
+          entries: entriesRef.current,
+          activeID: activeIDRef.current,
+        });
+      }
+      const switched = prevDirRef.current !== dir;
+      prevDirRef.current = dir;
+      if (switched) {
+        // The focused pane's busy flag belongs to the previous workspace's
+        // runtime; carrying it over would lock the composer and disable "+".
+        setBusy(false);
+      }
+      const saved = wsCache.current.get(dir);
+      const savedMatches =
+        saved && (!payload.thread_id || saved.activeID === payload.thread_id);
+      if (savedMatches) {
+        setActiveID(saved.activeID);
+        setEntries(saved.entries);
+      } else if (payload.thread_id) {
         setActiveID(payload.thread_id);
         void forge
           .history(payload.thread_id)
           .then((items) => setEntries(itemsToEntries(items)));
       } else {
-        setActiveID("");
-        setEntries([]);
+        // A workspace opened for the first time starts with a fresh
+        // conversation rather than an empty pane waiting for input.
+        newThreadRef.current();
       }
       refreshThreads();
       if (pendingNewSession.current) {
@@ -250,6 +294,21 @@ export default function App() {
     loadInit();
     const offReady = forge.onReady(loadInit);
     const offEvent = forge.onEvent((ev) => {
+      const dir = ev.workspace ?? "";
+      // Background runtimes keep streaming: track their liveness without
+      // touching the focused transcript.
+      if (dir && init && dir !== init.work_dir) {
+        if (
+          ev.kind === "done" ||
+          ev.kind === "agent_done" ||
+          ev.kind === "abort"
+        ) {
+          setBusyDirs((m) => ({ ...m, [dir]: false }));
+        } else {
+          setBusyDirs((m) => ({ ...m, [dir]: true }));
+        }
+        return;
+      }
       if (switchingWorkspace.current) return;
       setEntries((prev) => applyEvent(prev, ev));
       if (ev.is_error || ev.error) turnFailed.current = true;
@@ -292,16 +351,27 @@ export default function App() {
       void attachPaths(paths);
     });
     const offApproval = forge.onApproval((action) => {
-      // An approval from the runtime being torn down belongs to a workspace
-      // that is no longer on screen; answering it would target the wrong one.
+      // An approval from a background runtime stays queued for its own
+      // workspace: answering it here would hit the active runtime instead.
+      if (action.workspace && init && action.workspace !== init.work_dir) {
+        const ws = action.workspace;
+        pendingApprovals.current[ws] = action;
+        setBusyDirs((m) => ({ ...m, [ws]: true }));
+        return;
+      }
       if (switchingWorkspace.current) return;
       setApproval(action);
       markRef.current("waiting");
     });
-    const offDone = forge.onTurnDone(() => {
-      setBusy(false);
-      markRef.current(turnFailed.current ? "failed" : "done");
-      refreshThreads();
+    const offDone = forge.onTurnDone((done) => {
+      const tag = done.workspace ?? "";
+      if (tag) setBusyDirs((m) => ({ ...m, [tag]: false }));
+      // A background workspace finishing its turn only clears its own dot.
+      if (!tag || !init || tag === init.work_dir) {
+        setBusy(false);
+        markRef.current(turnFailed.current ? "failed" : "done");
+        refreshThreads();
+      }
     });
     return () => {
       offReady();
@@ -324,6 +394,13 @@ export default function App() {
       ]);
       setHistory((h) => [...h, text]);
       setBusy(true);
+      const dir = init?.work_dir ?? "";
+      if (dir) setBusyDirs((m) => ({ ...m, [dir]: true }));
+      // The draft belongs to this chat session; sending it clears it so the
+      // composer is empty for the next message.
+      setDrafts((current) =>
+        current[chatKey] ? { ...current, [chatKey]: "" } : current,
+      );
       turnFailed.current = false;
       markRef.current("working");
       setPending([]);
@@ -347,12 +424,15 @@ export default function App() {
 
   const cancel = useCallback(() => void forge.cancel(), []);
   const newThread = useCallback(() => {
-    void forge.newSession().then(() => {
-      setEntries([]);
-      setActiveID("");
-      refreshThreads();
-    });
-  }, [refreshThreads]);
+    // Optimistic: the empty-session tab exists before anything is sent.
+    setEntries([]);
+    setActiveID("");
+    setComposerFocus((n) => n + 1);
+    void forge
+      .newSession()
+      .then(refreshThreads)
+      .catch((e: unknown) => notify(String(e)));
+  }, [notify, refreshThreads]);
   newThreadRef.current = newThread;
 
   const restoreThread = useCallback(
@@ -367,6 +447,20 @@ export default function App() {
         .catch((e: unknown) => notify(String(e)));
     },
     [notify, refreshThreads],
+  );
+
+  // Closing a chat forgets the tab, not the thread. Shared by the tab strip
+  // and the sidebar's ✕ so both behave the same.
+  const closeChat = useCallback(
+    (id: string) => {
+      const next = nextAfterClose(tabs, id);
+      setTabs((current) => closeSessionTab(current, id));
+      if (id === activeID) {
+        if (next) restoreThread(next);
+        else newThread();
+      }
+    },
+    [activeID, newThread, restoreThread, tabs],
   );
 
   const deleteThread = useCallback(
@@ -490,8 +584,9 @@ export default function App() {
     [notify],
   );
 
-  // Switching rebuilds the runtime in this window; the frontend re-initialises
-  // when the backend signals it is ready again.
+  // Switching activates another directory's runtime in this same window and
+  // leaves the previous one running; the frontend re-initialises when the
+  // backend signals the newly active runtime.
   const openWorkspace = useCallback(
     (dir: string) => {
       if (
@@ -501,11 +596,6 @@ export default function App() {
         )
       )
         return;
-      setEntries([]);
-      setActiveID("");
-      setBusy(false);
-      setApproval(null);
-      setPending([]);
       switchingWorkspace.current = true;
       notify(`opening ${dir.split("/").pop()}…`);
       void forge.switchWorkspace(dir).catch((e: unknown) => notify(String(e)));
@@ -852,6 +942,7 @@ export default function App() {
               workDir={init?.work_dir ?? ""}
               activeID={activeID}
               busy={busy}
+              busyWorkspaces={busyDirs}
               onNew={newThread}
               onRestore={restoreThread}
               onAddWorkspace={addWorkspace}
@@ -878,6 +969,8 @@ export default function App() {
               }
               onBulkDelete={bulkDelete}
               onClearThreads={clearThreads}
+              openThreadIDs={tabs.open}
+              onCloseThread={closeChat}
             />
             <div
               aria-label="Resize workspace panel"
@@ -898,37 +991,15 @@ export default function App() {
           onDirtyChange={setWorkspaceDirty}
           onNotify={notify}
           onShowDocks={() => setWorkspaceMode(true)}
-          chatTabs={
-            <SessionTabs
-              tabs={tabs}
-              threads={threads}
-              activeID={activeID}
-              onSelect={(id) => {
-                if (id !== activeID) restoreThread(id);
-              }}
-              onClose={(id) => {
-                const next = nextAfterClose(tabs, id);
-                setTabs((current) => closeSessionTab(current, id));
-                if (id === activeID) {
-                  if (next) restoreThread(next);
-                  else newThread();
-                }
-              }}
-              onNew={newThread}
-            />
-          }
           model={init?.model ?? ""}
           models={init?.models ?? []}
         >
           <main className="center">
             <Transcript entries={entries} prefs={prefs} busy={busy} />
             <Composer
-              draft={drafts[init?.work_dir ?? ""] ?? ""}
+              draft={drafts[chatKey] ?? ""}
               onDraftChange={(draft) =>
-                setDrafts((current) => ({
-                  ...current,
-                  [init?.work_dir ?? ""]: draft,
-                }))
+                setDrafts((current) => ({ ...current, [chatKey]: draft }))
               }
               yolo={yolo}
               onToggleYolo={() => toggleYolo(!yolo)}
@@ -943,6 +1014,7 @@ export default function App() {
               onSend={sendInput}
               onCancel={cancel}
               onCommand={runCommand}
+              focusToken={composerFocus}
             />
           </main>
           {prefs.showActivity ? (
@@ -973,6 +1045,7 @@ export default function App() {
       {overlay === "workspaces" ? (
         <WorkspaceMenu
           workspaces={workspaces}
+          busyWorkspaces={busyDirs}
           onNewIn={newSessionIn}
           onOpen={(dir) => {
             setOverlay("none");

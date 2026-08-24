@@ -4,14 +4,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"forge/internal/tui"
 )
 
 func workspaceTestService(t *testing.T) (*Service, string) {
 	t.Helper()
 	root := t.TempDir()
-	return &Service{cfg: tui.ChatLiveConfig{WorkDir: root}, ready: true}, root
+	return serviceAt(root), root
 }
 
 func TestTerminalEnvironmentSetsXtermCapabilities(t *testing.T) {

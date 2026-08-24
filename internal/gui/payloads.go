@@ -47,16 +47,23 @@ type SkillPayload struct {
 
 // wireAction is a pending tool approval request.
 type wireAction struct {
-	Tool    string `json:"tool"`
-	Summary string `json:"summary"`
-	Detail  string `json:"detail,omitempty"`
-	Path    string `json:"path,omitempty"`
+	Tool      string `json:"tool"`
+	Summary   string `json:"summary"`
+	Detail    string `json:"detail,omitempty"`
+	Path      string `json:"path,omitempty"`
+	Workspace string `json:"workspace,omitempty"`
+}
+
+// DonePayload marks the end of a turn for one workspace's runtime.
+type DonePayload struct {
+	Workspace string `json:"workspace"`
 }
 
 // wireEvent is a JSON-safe projection of llm.Event: errors render to strings
 // and durations to milliseconds, so the hot event type needs no JSON tags.
 type wireEvent struct {
 	Kind             string     `json:"kind"`
+	Workspace        string     `json:"workspace,omitempty"`
 	Agent            string     `json:"agent,omitempty"`
 	Text             string     `json:"text,omitempty"`
 	PassName         string     `json:"pass_name,omitempty"`
