@@ -30,11 +30,25 @@ Run the binary:
 just run
 ```
 
-Build and install to `~/.local/bin/forge` (make sure `~/.local/bin` is on your `PATH`):
+Build and install only the CLI/TUI to `~/.local/bin/forge` (make sure
+`~/.local/bin` is on your `PATH`):
 
 ```bash
-just install    # or: just all
+just install
 ```
+
+Build and install the CLI/TUI, desktop binary, and macOS app bundle:
+
+```bash
+just all
+```
+
+On macOS this produces and installs:
+
+- `~/.local/bin/forge` — CLI/TUI
+- `~/.local/bin/forge-gui` — desktop executable
+- `/Applications/Forge.app` or `~/Applications/Forge.app` — app bundle containing
+  separate `Contents/MacOS/forge` and `Contents/MacOS/forge-gui` executables
 
 Run tests:
 

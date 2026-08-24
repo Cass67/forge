@@ -31,10 +31,11 @@ install: build
     install -m 0755 ./bin/forge {{bindir}}/forge
 
 # On macOS the .app bundle is what gives the app its icon, name and Spotlight
-# entry; a bare binary cannot have one.
+# entry; a bare binary cannot have one. The bundle carries both executables:
+# forge-gui is its entrypoint and forge remains available as the CLI/TUI.
 
 # Install the desktop app
-install-gui: gui
+install-gui: build gui
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p {{bindir}}
@@ -97,7 +98,7 @@ web:
 
 # macOS .app bundle on its own, without installing it.
 [private]
-app: gui
+app: build gui
     ./build/macapp.sh
 
 # Regenerates the icon assets. Runs as part of the bundle build.
