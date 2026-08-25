@@ -19,6 +19,7 @@ import {
   setRatio,
   splitPane,
   type SplitDirection,
+  type SplitPath,
   type TerminalNode,
 } from "../terminalSplit";
 
@@ -101,6 +102,9 @@ function TerminalPane({
     let disposed = false;
     let started = false;
     let pendingInput = "";
+    let resizeFrame = 0;
+    let backendRows = 0;
+    let backendCols = 0;
     const term = new Terminal({
       allowProposedApi: false,
       convertEol: false,
@@ -115,13 +119,23 @@ function TerminalPane({
     term.open(element);
 
     const resize = () => {
-      if (element.clientWidth < 2 || element.clientHeight < 2) return;
-      fit.fit();
-      if (started) {
-        void forge
-          .resizeTerminal(id, term.rows, term.cols)
-          .catch((error: unknown) => onNotify(String(error)));
-      }
+      if (resizeFrame) return;
+      resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = 0;
+        if (element.closest(".terminal-workspace.resizing")) return;
+        if (element.clientWidth < 2 || element.clientHeight < 2) return;
+        fit.fit();
+        if (
+          started &&
+          (term.rows !== backendRows || term.cols !== backendCols)
+        ) {
+          backendRows = term.rows;
+          backendCols = term.cols;
+          void forge
+            .resizeTerminal(id, term.rows, term.cols)
+            .catch((error: unknown) => onNotify(String(error)));
+        }
+      });
     };
     resizeRef.current = resize;
     const offEvent = forge.onTerminal((event) => {
@@ -146,6 +160,8 @@ function TerminalPane({
     });
     const observer = new ResizeObserver(resize);
     observer.observe(element);
+    const workspace = element.closest(".terminal-workspace");
+    workspace?.addEventListener("terminal-resize-end", resize);
     const themeObserver = new MutationObserver(() => {
       term.options.theme = terminalTheme();
       term.options.fontSize = terminalFontSize();
@@ -156,7 +172,9 @@ function TerminalPane({
       attributeFilter: ["data-theme", "style"],
     });
 
-    resize();
+    if (element.clientWidth >= 2 && element.clientHeight >= 2) fit.fit();
+    backendRows = term.rows;
+    backendCols = term.cols;
     void forge
       .startTerminal(id, term.rows, term.cols)
       .then(() => {
@@ -177,7 +195,9 @@ function TerminalPane({
 
     return () => {
       disposed = true;
+      cancelAnimationFrame(resizeFrame);
       observer.disconnect();
+      workspace?.removeEventListener("terminal-resize-end", resize);
       themeObserver.disconnect();
       input.dispose();
       offEvent();
@@ -293,27 +313,58 @@ export function TerminalWorkspace({
   // A divider drags along its own axis, measured against the panel so a nested
   // split still tracks the pointer.
   const startDrag =
-    (firstPane: string, dir: SplitDirection, element: HTMLElement | null) =>
+    (path: SplitPath, dir: SplitDirection, element: HTMLElement | null) =>
     (event: React.PointerEvent) => {
       event.preventDefault();
-      const box = element?.parentElement?.getBoundingClientRect();
-      if (!box) return;
+      const split = element?.parentElement;
+      const first = element?.previousElementSibling as HTMLElement | null;
+      const second = element?.nextElementSibling as HTMLElement | null;
+      const box = split?.getBoundingClientRect();
+      if (!box || !first || !second) return;
+      const workspace = frameRef.current;
+      workspace?.classList.add("resizing");
+      let frame = 0;
+      let nextRatio: number | null = null;
+      let appliedRatio: number | null = null;
+      const apply = () => {
+        frame = 0;
+        if (nextRatio === null) return;
+        const ratio = Math.max(0.1, Math.min(0.9, nextRatio));
+        nextRatio = null;
+        appliedRatio = ratio;
+        first.style.flex = `${ratio} 1 0px`;
+        second.style.flex = `${1 - ratio} 1 0px`;
+      };
       const move = (pointer: PointerEvent) => {
-        const ratio =
+        nextRatio =
           dir === "row"
             ? (pointer.clientX - box.left) / box.width
             : (pointer.clientY - box.top) / box.height;
-        setTree((current) => setRatio(current, firstPane, ratio));
+        if (!frame) frame = requestAnimationFrame(apply);
       };
       const stop = () => {
+        if (frame) {
+          cancelAnimationFrame(frame);
+          apply();
+        }
+        if (appliedRatio !== null) {
+          const ratio = appliedRatio;
+          setTree((current) => setRatio(current, path, ratio));
+        }
+        workspace?.classList.remove("resizing");
+        requestAnimationFrame(() =>
+          workspace?.dispatchEvent(new Event("terminal-resize-end")),
+        );
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", stop);
+        window.removeEventListener("pointercancel", stop);
       };
       window.addEventListener("pointermove", move);
       window.addEventListener("pointerup", stop);
+      window.addEventListener("pointercancel", stop);
     };
 
-  const render = (node: TerminalNode): ReactNode => {
+  const render = (node: TerminalNode, path: SplitPath = []): ReactNode => {
     if (isPane(node)) {
       return (
         <div
@@ -323,16 +374,18 @@ export function TerminalWorkspace({
         />
       );
     }
-    const first = paneIDs(node.first)[0];
     return (
-      <div className={`terminal-split ${node.dir}`} key={first}>
+      <div
+        className={`terminal-split ${node.dir}`}
+        key={path.join(".") || "root"}
+      >
         <div style={{ flex: `${node.ratio} 1 0` }} className="terminal-branch">
-          {render(node.first)}
+          {render(node.first, [...path, "first"])}
         </div>
         <div
           className={`terminal-divider ${node.dir}`}
           onPointerDown={(event) =>
-            startDrag(first, node.dir, event.currentTarget)(event)
+            startDrag(path, node.dir, event.currentTarget)(event)
           }
           role="separator"
         />
@@ -340,7 +393,7 @@ export function TerminalWorkspace({
           style={{ flex: `${1 - node.ratio} 1 0` }}
           className="terminal-branch"
         >
-          {render(node.second)}
+          {render(node.second, [...path, "second"])}
         </div>
       </div>
     );
@@ -371,7 +424,7 @@ export function TerminalWorkspace({
           closable={paneIDs(tree).length > 1}
           instanceID={id}
           key={id}
-          layoutKey={`${layoutKey}:${JSON.stringify(tree)}`}
+          layoutKey={layoutKey}
           onClose={() => close(id)}
           onFocus={() => setActivePane(id)}
           onNotify={onNotify}

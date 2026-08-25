@@ -37,10 +37,29 @@ test("closing a pane collapses onto its sibling", () => {
 
 test("a divider cannot squeeze a pane out of existence", () => {
   const row = splitPane(root, "a", "row", "b");
-  const wide = setRatio(row, "a", 5);
-  const thin = setRatio(row, "a", -5);
+  const wide = setRatio(row, [], 5);
+  const thin = setRatio(row, [], -5);
   if (!isPane(wide)) expect(wide.ratio).toBe(0.9);
   if (!isPane(thin)) expect(thin.ratio).toBe(0.1);
+});
+
+test("each divider in a four-pane grid resizes its own split", () => {
+  const columns = splitPane(root, "a", "row", "c");
+  const left = splitPane(columns, "a", "col", "b");
+  const grid = splitPane(left, "c", "col", "d");
+  const resizedLeft = setRatio(grid, ["first"], 0.3);
+  const resizedRight = setRatio(resizedLeft, ["second"], 0.7);
+
+  if (
+    isPane(resizedRight) ||
+    isPane(resizedRight.first) ||
+    isPane(resizedRight.second)
+  ) {
+    throw new Error("expected four-pane split tree");
+  }
+  expect(resizedRight.ratio).toBe(0.5);
+  expect(resizedRight.first.ratio).toBe(0.3);
+  expect(resizedRight.second.ratio).toBe(0.7);
 });
 
 test("splitting an unknown pane changes nothing", () => {

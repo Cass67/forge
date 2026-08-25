@@ -16,6 +16,7 @@ export type TerminalNode =
     };
 
 export type SplitDirection = "row" | "col";
+export type SplitPath = readonly ("first" | "second")[];
 
 export function isPane(node: TerminalNode): node is TerminalPane {
   return "id" in node;
@@ -64,20 +65,18 @@ export function closePane(node: TerminalNode, target: string): TerminalNode {
 // can be squeezed past a tenth of the space.
 export function setRatio(
   node: TerminalNode,
-  first: string,
+  path: SplitPath,
   ratio: number,
 ): TerminalNode {
   if (isPane(node)) return node;
   const clamped = Math.max(0.1, Math.min(0.9, ratio));
-  if (paneIDs(node.first).includes(first) && paneIDs(node.first)[0] === first) {
-    // The divider belongs to the shallowest node whose first branch starts
-    // with this pane, which is the one being dragged.
+  if (path.length === 0) {
     return { ...node, ratio: clamped };
   }
+  const [branch, ...rest] = path;
   return {
     ...node,
-    first: setRatio(node.first, first, ratio),
-    second: setRatio(node.second, first, ratio),
+    [branch]: setRatio(node[branch], rest, ratio),
   };
 }
 
