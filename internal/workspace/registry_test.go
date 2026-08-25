@@ -117,3 +117,24 @@ func TestRegistryPersistsRootsAndEnsurePreservesPinnedState(t *testing.T) {
 		t.Fatalf("List() = %+v, want pinned repo", list)
 	}
 }
+
+func TestRegistryInfersLegacyRootFromParentWorkspace(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	if err := os.Mkdir(repo, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	r := LoadRegistry()
+	if err := r.Remember(root); err != nil {
+		t.Fatalf("Remember root: %v", err)
+	}
+	if err := r.Remember(repo); err != nil {
+		t.Fatalf("Remember repo: %v", err)
+	}
+
+	roots := LoadRegistry().Roots()
+	if len(roots) != 1 || roots[0] != root {
+		t.Fatalf("Roots() = %v, want inferred root %s", roots, root)
+	}
+}

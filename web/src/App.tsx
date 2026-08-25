@@ -304,6 +304,20 @@ export default function App() {
     void list.then(setWorkspaces);
   }, []);
 
+  useEffect(() => {
+    if (!prefs.autoDiscoverSubfolders) return;
+    const scan = () => {
+      void forge.refreshWorkspaceTrees().then(setWorkspaces);
+    };
+    scan();
+    window.addEventListener("focus", scan);
+    const timer = window.setInterval(scan, 10_000);
+    return () => {
+      window.removeEventListener("focus", scan);
+      window.clearInterval(timer);
+    };
+  }, [prefs.autoDiscoverSubfolders]);
+
   const loadInit = useCallback(() => {
     void forge.init().then((payload) => {
       if (!payload.ready) return;

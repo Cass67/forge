@@ -130,14 +130,31 @@ func (r *Registry) RememberRoot(path string) error {
 	return r.saveLocked()
 }
 
-// Roots returns existing top-level folders selected for expansion.
+// Roots returns existing top-level folders selected for expansion. Registries
+// written before roots were stored are migrated by recognizing a remembered
+// workspace that directly contains another remembered workspace.
 func (r *Registry) Roots() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	seen := make(map[string]bool, len(r.roots))
 	roots := make([]string, 0, len(r.roots))
 	for _, root := range r.roots {
 		if st, err := os.Stat(root); err == nil && st.IsDir() {
 			roots = append(roots, root)
+			seen[root] = true
+		}
+	}
+	entries := make(map[string]bool, len(r.entries))
+	for _, entry := range r.entries {
+		entries[entry.Path] = true
+	}
+	for _, entry := range r.entries {
+		parent := filepath.Dir(entry.Path)
+		if !seen[parent] && entries[parent] {
+			if st, err := os.Stat(parent); err == nil && st.IsDir() {
+				roots = append(roots, parent)
+				seen[parent] = true
+			}
 		}
 	}
 	return roots

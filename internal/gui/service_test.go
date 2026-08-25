@@ -413,8 +413,12 @@ func TestRefreshWorkspaceTreesAddsNewChildrenWithoutChangingPins(t *testing.T) {
 	s, c := New(func(string, any) {})
 	s.Registry = workspace.LoadRegistry()
 	c.Attach("boot", tui.ChatLiveConfig{WorkDir: alpha}, make(chan string, 1), nil)
-	if _, err := s.AddWorkspaceTree(root); err != nil {
-		t.Fatalf("AddWorkspaceTree: %v", err)
+	// Simulate registry written before container roots were persisted.
+	if err := s.Registry.Remember(root); err != nil {
+		t.Fatalf("Remember root: %v", err)
+	}
+	if err := s.Registry.Remember(alpha); err != nil {
+		t.Fatalf("Remember alpha: %v", err)
 	}
 	if err := s.Registry.SetPinned(alpha, true); err != nil {
 		t.Fatalf("SetPinned: %v", err)
@@ -428,11 +432,15 @@ func TestRefreshWorkspaceTreesAddsNewChildrenWithoutChangingPins(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RefreshWorkspaceTrees: %v", err)
 	}
-	if len(list) != 2 || list[0].Path != alpha || !list[0].Pinned {
-		t.Fatalf("refreshed workspaces = %+v, want pinned alpha then beta", list)
+	if len(list) != 3 || list[0].Path != alpha || !list[0].Pinned {
+		t.Fatalf("refreshed workspaces = %+v, want pinned alpha first", list)
 	}
-	if list[1].Path != beta {
-		t.Fatalf("new workspace = %q, want %q", list[1].Path, beta)
+	foundBeta := false
+	for _, item := range list {
+		foundBeta = foundBeta || item.Path == beta
+	}
+	if !foundBeta {
+		t.Fatalf("new workspace %q missing from %+v", beta, list)
 	}
 }
 
