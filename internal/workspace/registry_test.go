@@ -88,3 +88,32 @@ func TestRegistryDropsMissingDirectories(t *testing.T) {
 		t.Fatalf("List() = %+v, want the missing directory dropped", list)
 	}
 }
+
+func TestRegistryPersistsRootsAndEnsurePreservesPinnedState(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	if err := os.Mkdir(repo, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	r := LoadRegistry()
+	if err := r.RememberRoot(root); err != nil {
+		t.Fatalf("RememberRoot: %v", err)
+	}
+	if err := r.SetPinned(repo, true); err != nil {
+		t.Fatalf("SetPinned: %v", err)
+	}
+	if err := r.Ensure(repo); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+
+	reloaded := LoadRegistry()
+	roots := reloaded.Roots()
+	if len(roots) != 1 || roots[0] != root {
+		t.Fatalf("Roots() = %v, want [%s]", roots, root)
+	}
+	list := reloaded.List()
+	if len(list) != 1 || list[0].Path != repo || !list[0].Pinned {
+		t.Fatalf("List() = %+v, want pinned repo", list)
+	}
+}

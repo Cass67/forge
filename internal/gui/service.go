@@ -1138,9 +1138,41 @@ func (s *Service) AddWorkspaceTree(dir string) ([]Workspace, error) {
 	if s.Registry == nil {
 		return s.Workspaces(), errNoWorkDir
 	}
-	entries, err := os.ReadDir(root)
+	if err := s.Registry.RememberRoot(root); err != nil {
+		return s.Workspaces(), err
+	}
+	added, err := s.scanWorkspaceTree(root)
 	if err != nil {
 		return s.Workspaces(), err
+	}
+	// A folder with nothing under it is the workspace, rather than an empty
+	// gesture that leaves the list unchanged.
+	if added == 0 {
+		if err := s.Registry.Ensure(root); err != nil {
+			return s.Workspaces(), err
+		}
+	}
+	return s.Workspaces(), nil
+}
+
+// RefreshWorkspaceTrees discovers new immediate children under folders that
+// were previously opened as containers.
+func (s *Service) RefreshWorkspaceTrees() ([]Workspace, error) {
+	if s.Registry == nil {
+		return s.Workspaces(), errNoWorkDir
+	}
+	for _, root := range s.Registry.Roots() {
+		if _, err := s.scanWorkspaceTree(root); err != nil {
+			return s.Workspaces(), err
+		}
+	}
+	return s.Workspaces(), nil
+}
+
+func (s *Service) scanWorkspaceTree(root string) (int, error) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return 0, err
 	}
 	added := 0
 	for _, entry := range entries {
@@ -1162,19 +1194,12 @@ func (s *Service) AddWorkspaceTree(dir string) ([]Workspace, error) {
 				continue
 			}
 		}
-		if err := s.Registry.Remember(filepath.Join(root, name)); err != nil {
-			return s.Workspaces(), err
+		if err := s.Registry.Ensure(filepath.Join(root, name)); err != nil {
+			return added, err
 		}
 		added++
 	}
-	// A folder with nothing under it is the workspace, rather than an empty
-	// gesture that leaves the list unchanged.
-	if added == 0 {
-		if err := s.Registry.Remember(root); err != nil {
-			return s.Workspaces(), err
-		}
-	}
-	return s.Workspaces(), nil
+	return added, nil
 }
 
 // workspaceDir validates a directory chosen in the UI.

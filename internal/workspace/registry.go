@@ -26,6 +26,12 @@ type Registry struct {
 	mu      sync.Mutex
 	path    string
 	entries []Entry
+	roots   []string
+}
+
+type registryData struct {
+	Entries []Entry  `json:"entries"`
+	Roots   []string `json:"roots,omitempty"`
 }
 
 // LoadRegistry reads the stored workspaces. A missing or unreadable file is
@@ -36,6 +42,13 @@ func LoadRegistry() *Registry {
 	if err != nil {
 		return r
 	}
+	var stored registryData
+	if err := json.Unmarshal(data, &stored); err == nil && stored.Entries != nil {
+		r.entries = stored.Entries
+		r.roots = stored.Roots
+		return r
+	}
+	// Older versions stored entries as a bare array.
 	_ = json.Unmarshal(data, &r.entries)
 	return r
 }
@@ -80,6 +93,54 @@ func (r *Registry) Remember(path string) error {
 	}
 	r.entries = append(r.entries, Entry{Path: clean, LastUsed: time.Now().UTC()})
 	return r.saveLocked()
+}
+
+// Ensure records a discovered workspace without changing existing pin or
+// recency state.
+func (r *Registry) Ensure(path string) error {
+	clean, err := Clean(path)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, entry := range r.entries {
+		if entry.Path == clean {
+			return nil
+		}
+	}
+	r.entries = append(r.entries, Entry{Path: clean, LastUsed: time.Now().UTC()})
+	return r.saveLocked()
+}
+
+// RememberRoot records a folder whose immediate children can be rediscovered.
+func (r *Registry) RememberRoot(path string) error {
+	clean, err := Clean(path)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, root := range r.roots {
+		if root == clean {
+			return nil
+		}
+	}
+	r.roots = append(r.roots, clean)
+	return r.saveLocked()
+}
+
+// Roots returns existing top-level folders selected for expansion.
+func (r *Registry) Roots() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	roots := make([]string, 0, len(r.roots))
+	for _, root := range r.roots {
+		if st, err := os.Stat(root); err == nil && st.IsDir() {
+			roots = append(roots, root)
+		}
+	}
+	return roots
 }
 
 // SetPinned pins a workspace so it survives regardless of how long ago it was
@@ -133,7 +194,7 @@ func (r *Registry) saveLocked() error {
 	if err := os.MkdirAll(filepath.Dir(r.path), 0o700); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(r.entries, "", "  ")
+	data, err := json.MarshalIndent(registryData{Entries: r.entries, Roots: r.roots}, "", "  ")
 	if err != nil {
 		return err
 	}

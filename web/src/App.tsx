@@ -91,6 +91,7 @@ const defaultPrefs: Prefs = {
   showSidebar: true,
   scopeThreads: true,
   expandSubfolders: false,
+  autoDiscoverSubfolders: false,
 };
 
 function loadPrefs(): Prefs {
@@ -297,7 +298,10 @@ export default function App() {
 
   const refreshThreads = useCallback(() => {
     void forge.threads().then(setThreads);
-    void forge.workspaces().then(setWorkspaces);
+    const list = prefsRef.current.autoDiscoverSubfolders
+      ? forge.refreshWorkspaceTrees()
+      : forge.workspaces();
+    void list.then(setWorkspaces);
   }, []);
 
   const loadInit = useCallback(() => {

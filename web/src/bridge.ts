@@ -312,6 +312,7 @@ export const forge = {
   renameThread: (threadID: string, title: string) =>
     call<ThreadSummary[]>("RenameThread", threadID, title),
   workspaces: () => call<Workspace[]>("Workspaces"),
+  refreshWorkspaceTrees: () => call<Workspace[]>("RefreshWorkspaceTrees"),
   providers: () => call<Provider[]>("Providers"),
   mcpServers: () => call<MCPServer[]>("MCPServers"),
   signOutProvider: (id: string) => call<Provider[]>("SignOutProvider", id),

@@ -18,6 +18,7 @@ export type Prefs = {
   // Open a folder as a container: every repository under it becomes its own
   // workspace, rather than the folder itself being the one you work in.
   expandSubfolders: boolean;
+  autoDiscoverSubfolders: boolean;
 };
 
 type SectionID =
@@ -244,6 +245,19 @@ export function SettingsPanel({
                   <span>
                     opening a folder adds each subfolder as its own workspace
                   </span>
+                </label>
+                <label className="set-row toggle">
+                  <input
+                    type="checkbox"
+                    checked={prefs.autoDiscoverSubfolders}
+                    onChange={(e) =>
+                      onPrefs({
+                        ...prefs,
+                        autoDiscoverSubfolders: e.target.checked,
+                      })
+                    }
+                  />
+                  <span>automatically add new subfolders from opened containers</span>
                 </label>
                 <div className="set-row">
                   <span className="set-k" />

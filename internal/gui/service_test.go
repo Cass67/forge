@@ -30,7 +30,7 @@ func TestBoundMethodSurface(t *testing.T) {
 		"Providers", "RenameThread", "Restore", "Send",
 		// live sessions
 		"Sessions", "ActivateSession", "OpenThread", "CloseSession",
-		"CloseWorkspace", "AddWorkspaceTree",
+		"CloseWorkspace", "AddWorkspaceTree", "RefreshWorkspaceTrees",
 		"SetExplorerRoot", "ExplorerRoot",
 		"SendWithImages", "SetEffort", "SetProviderKey", "SignOutProvider",
 		"StartProviderLogin", "SwitchModel", "SwitchWorkspace", "Threads", "Workspaces",
@@ -400,6 +400,39 @@ func TestAddWorkspaceTreeFallsBackToTheFolderItself(t *testing.T) {
 	list := s.Registry.List()
 	if len(list) != 1 || filepath.Clean(list[0].Path) != filepath.Clean(root) {
 		t.Fatalf("registry = %+v, want just the folder", list)
+	}
+}
+
+func TestRefreshWorkspaceTreesAddsNewChildrenWithoutChangingPins(t *testing.T) {
+	root := t.TempDir()
+	alpha := filepath.Join(root, "alpha")
+	if err := os.Mkdir(alpha, 0o755); err != nil {
+		t.Fatalf("mkdir alpha: %v", err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	s, c := New(func(string, any) {})
+	s.Registry = workspace.LoadRegistry()
+	c.Attach("boot", tui.ChatLiveConfig{WorkDir: alpha}, make(chan string, 1), nil)
+	if _, err := s.AddWorkspaceTree(root); err != nil {
+		t.Fatalf("AddWorkspaceTree: %v", err)
+	}
+	if err := s.Registry.SetPinned(alpha, true); err != nil {
+		t.Fatalf("SetPinned: %v", err)
+	}
+	beta := filepath.Join(root, "beta")
+	if err := os.Mkdir(beta, 0o755); err != nil {
+		t.Fatalf("mkdir beta: %v", err)
+	}
+
+	list, err := s.RefreshWorkspaceTrees()
+	if err != nil {
+		t.Fatalf("RefreshWorkspaceTrees: %v", err)
+	}
+	if len(list) != 2 || list[0].Path != alpha || !list[0].Pinned {
+		t.Fatalf("refreshed workspaces = %+v, want pinned alpha then beta", list)
+	}
+	if list[1].Path != beta {
+		t.Fatalf("new workspace = %q, want %q", list[1].Path, beta)
 	}
 }
 
