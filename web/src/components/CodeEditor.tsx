@@ -12,12 +12,20 @@ import { EditorView, keymap } from "@codemirror/view";
 type Props = {
   path: string;
   value: string;
+  lightBackground: boolean;
   onChange: (value: string) => void;
   onSave: () => void;
   onNotify: (message: string) => void;
 };
 
-export function CodeEditor({ path, value, onChange, onSave, onNotify }: Props) {
+export function CodeEditor({
+  path,
+  value,
+  lightBackground,
+  onChange,
+  onSave,
+  onNotify,
+}: Props) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const changeHandler = useRef(onChange);
@@ -55,8 +63,8 @@ export function CodeEditor({ path, value, onChange, onSave, onNotify }: Props) {
           EditorView.theme({
             "&": {
               height: "100%",
-              backgroundColor: "var(--bg)",
-              color: "var(--text)",
+              backgroundColor: "var(--editor-bg)",
+              color: "var(--editor-text)",
             },
             ".cm-scroller": {
               fontFamily: "var(--mono)",
@@ -64,17 +72,19 @@ export function CodeEditor({ path, value, onChange, onSave, onNotify }: Props) {
               lineHeight: "1.55",
             },
             ".cm-gutters": {
-              backgroundColor: "var(--panel)",
-              color: "var(--muted)",
-              borderRight: "1px solid var(--border)",
+              backgroundColor: "var(--editor-gutter-bg)",
+              color: "var(--editor-muted)",
+              borderRight: "1px solid var(--editor-border)",
             },
             ".cm-activeLine, .cm-activeLineGutter": {
-              backgroundColor: "var(--hover)",
+              backgroundColor: "var(--editor-active-line)",
             },
-            ".cm-content": { caretColor: "var(--text)" },
-            ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--text)" },
+            ".cm-content": { caretColor: "var(--editor-text)" },
+            ".cm-cursor, .cm-dropCursor": {
+              borderLeftColor: "var(--editor-text)",
+            },
             "&.cm-focused .cm-selectionBackground, .cm-selectionBackground": {
-              backgroundColor: "var(--selected)",
+              backgroundColor: "var(--editor-selection)",
             },
           }),
         ],
@@ -117,7 +127,7 @@ export function CodeEditor({ path, value, onChange, onSave, onNotify }: Props) {
 
   return (
     <div
-      className="workspace-code-editor"
+      className={`workspace-code-editor ${lightBackground ? "light" : "dark"}`}
       ref={host}
       aria-label={`Edit ${path}`}
     />

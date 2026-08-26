@@ -3026,6 +3026,12 @@ textarea:not(.xterm-helper-textarea),
   padding: 0 0.25rem !important;
   font-size: 1rem !important;
 }
+.workspace-editor-theme-button {
+  flex: none;
+  width: 1.75rem;
+  padding: 0 !important;
+  font-size: 1rem;
+}
 .workspace-toolbar {
   display: flex;
   align-items: center;
@@ -3056,10 +3062,26 @@ textarea:not(.xterm-helper-textarea),
   tab-size: 2;
 }
 .workspace-code-editor {
+  --editor-bg: var(--bg);
+  --editor-text: var(--text);
+  --editor-gutter-bg: var(--panel);
+  --editor-muted: var(--muted);
+  --editor-border: var(--border);
+  --editor-active-line: var(--hover);
+  --editor-selection: var(--selected);
   min-width: 0;
   min-height: 0;
   flex: 1;
   overflow: hidden;
+}
+.workspace-code-editor.light {
+  --editor-bg: #ffffff;
+  --editor-text: #202124;
+  --editor-gutter-bg: #f3f4f6;
+  --editor-muted: #5f6368;
+  --editor-border: #d1d5db;
+  --editor-active-line: #eef6ff;
+  --editor-selection: #b8d7f5;
 }
 .workspace-code-editor .cm-editor {
   height: 100%;

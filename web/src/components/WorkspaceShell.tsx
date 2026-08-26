@@ -226,6 +226,7 @@ export function WorkspaceShell({
   // be handed the same id twice.
   const nextTerminal = useRef(0);
   const [quickOpen, setQuickOpen] = useState(false);
+  const [lightEditorBackground, setLightEditorBackground] = useState(false);
   const [query, setQuery] = useState("");
   const [workspacePaths, setWorkspacePaths] = useState<string[]>([]);
   // One body element per group, tracked in state because the portalled tools
@@ -825,6 +826,15 @@ export function WorkspaceShell({
           >
             ⌕
           </button>
+          <button
+            aria-label={`Use ${lightEditorBackground ? "dark" : "light"} editor background`}
+            aria-pressed={lightEditorBackground}
+            className="workspace-editor-theme-button"
+            onClick={() => setLightEditorBackground((light) => !light)}
+            title={`Use ${lightEditorBackground ? "dark" : "light"} editor background`}
+          >
+            <span aria-hidden="true">{lightEditorBackground ? "☾" : "☀"}</span>
+          </button>
           <button disabled={!dirty} onClick={revert}>
             Revert
           </button>
@@ -858,6 +868,7 @@ export function WorkspaceShell({
             key={file.path}
             path={file.path}
             value={file.content}
+            lightBackground={lightEditorBackground}
             onChange={updateContent}
             onSave={save}
             onNotify={onNotify}
