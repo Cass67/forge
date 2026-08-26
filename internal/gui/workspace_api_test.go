@@ -128,3 +128,22 @@ func TestReadWorkspaceFileRejectsBinary(t *testing.T) {
 		}
 	}
 }
+
+func TestListWorkspaceDirIgnoresDirectoryRemovedAfterTreeScan(t *testing.T) {
+	service, root := workspaceTestService(t)
+	cache := filepath.Join(root, ".mypy_cache")
+	if err := os.Mkdir(cache, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(cache); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := service.ListWorkspaceDir(".mypy_cache")
+	if err != nil {
+		t.Fatalf("listing removed directory: %v", err)
+	}
+	if entries != nil {
+		t.Fatalf("entries = %#v, want nil", entries)
+	}
+}

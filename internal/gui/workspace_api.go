@@ -158,6 +158,9 @@ func (s *Service) ListWorkspaceDir(relative string) ([]WorkspaceEntry, error) {
 	}
 	dir, err := workspacePath(root, relative)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	items, err := os.ReadDir(dir)
