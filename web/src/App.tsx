@@ -64,6 +64,7 @@ import {
   setStatsModel,
   type SessionStats,
 } from "./sessionStats";
+import { initialDockVisibility, initialYoloState } from "./dockVisibility";
 
 // flag sets one key of a boolean map, returning the map untouched when the
 // value is already what it should be. React re-renders on identity, so this is
@@ -83,6 +84,8 @@ const defaultPrefs: Prefs = {
   expandTools: false,
   showActivity: true,
   showSidebar: true,
+  showDocks: true,
+  yolo: false,
   scopeThreads: true,
   expandSubfolders: false,
   autoDiscoverSubfolders: false,
@@ -122,7 +125,9 @@ export default function App() {
   const [statsBySession, setStatsBySession] = useState<SessionStats>({});
   const [noticeSeen, setNoticeSeen] = useState(false);
   const [effort, setEffort] = useState("");
-  const [yolo, setYoloState] = useState(false);
+  const [yolo, setYoloState] = useState(() =>
+    initialYoloState(loadPrefs().yolo),
+  );
   const [overlay, setOverlay] = useState<Overlay>("none");
   const [theme, setThemeState] = useState<Theme>(loadTheme);
   const [scale, setScaleState] = useState<number>(loadScale);
@@ -165,7 +170,9 @@ export default function App() {
   prefsRef.current = prefs;
   const dragDepth = useRef(0);
   const [dragging, setDragging] = useState(false);
-  const [workspaceMode, setWorkspaceMode] = useState(false);
+  const [workspaceMode, setWorkspaceMode] = useState(() =>
+    initialDockVisibility(loadPrefs().showDocks),
+  );
   const [workspaceDirty, setWorkspaceDirty] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(() =>
     parseSidebarWidth(
@@ -325,7 +332,13 @@ export default function App() {
         setStatsModel(current, session, payload.model),
       );
       if (payload.effort) setEffort(payload.effort);
-      setYoloState(payload.yolo);
+      const firstInit = !prevSessionRef.current;
+      setYoloState(firstInit ? prefsRef.current.yolo : payload.yolo);
+      if (firstInit && payload.yolo !== prefsRef.current.yolo) {
+        void forge
+          .setYolo(prefsRef.current.yolo)
+          .catch((e: unknown) => notify(String(e)));
+      }
       // Stash the outgoing session's transcript so coming back to it shows
       // what it streamed rather than a replay from storage.
       if (prevSessionRef.current && prevSessionRef.current !== session) {
@@ -1349,7 +1362,15 @@ export default function App() {
           onVividness={setVividness}
           onModel={() => setOverlay("models")}
           onEffort={setEffortAction}
-          onPrefs={setPrefsState}
+          onPrefs={(next) => {
+            setPrefsState(next);
+            if (next.yolo !== prefs.yolo) {
+              toggleYolo(next.yolo);
+            }
+            if (next.showDocks !== prefs.showDocks) {
+              setWorkspaceMode(next.showDocks);
+            }
+          }}
           onProviders={(next) =>
             setInit((i) => (i ? { ...i, providers: next } : i))
           }

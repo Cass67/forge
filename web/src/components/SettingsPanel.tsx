@@ -15,6 +15,8 @@ export type Prefs = {
   expandTools: boolean;
   showActivity: boolean;
   showSidebar: boolean;
+  showDocks: boolean;
+  yolo: boolean;
   scopeThreads: boolean;
   // Open a folder as a container: every repository under it becomes its own
   // workspace, rather than the folder itself being the one you work in.
@@ -36,6 +38,8 @@ const DISPLAY_TOGGLES: [keyof Omit<Prefs, "dockLayoutPersistence">, string][] =
   [
     ["showSidebar", "thread sidebar"],
     ["showActivity", "activity panel"],
+    ["showDocks", "docks"],
+    ["yolo", "yolo mode"],
     ["showTools", "tool cards"],
     ["showReasoning", "thinking blocks"],
     ["expandReasoning", "expand thinking by default"],
