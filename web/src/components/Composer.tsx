@@ -15,6 +15,11 @@ export function Composer({
   onDraftChange,
   yolo,
   onToggleYolo,
+  model,
+  onModel,
+  effort,
+  efforts,
+  onEffort,
   busy,
   skills,
   commands,
@@ -31,6 +36,11 @@ export function Composer({
   onDraftChange: (text: string) => void;
   yolo: boolean;
   onToggleYolo: () => void;
+  model: string;
+  onModel: () => void;
+  effort: string;
+  efforts: string[];
+  onEffort: (effort: string) => void;
   busy: boolean;
   skills: { name: string; description?: string }[];
   commands: { name: string; description?: string }[];
@@ -182,6 +192,28 @@ export function Composer({
           rows={1}
         />
         <div className="composer-actions">
+          <button
+            className="composer-option composer-model"
+            onClick={onModel}
+            title="Switch model (⌘K)"
+          >
+            {model || "Pick model"} ▾
+          </button>
+          {efforts.length > 0 ? (
+            <select
+              aria-label="Reasoning effort"
+              className="composer-option"
+              title="Reasoning effort"
+              value={effort}
+              onChange={(event) => onEffort(event.target.value)}
+            >
+              {efforts.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          ) : null}
           <button
             className={`yolo-btn ${yolo ? "on" : ""}`}
             onClick={onToggleYolo}

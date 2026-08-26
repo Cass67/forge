@@ -226,9 +226,6 @@ export function WorkspaceShell({
   // `${groupID}:${where}` — only used to light up drop targets.
   const [dragging, setDragging] = useState("");
   const [dropHint, setDropHint] = useState("");
-  // The group whose "add panel" menu is open, if any.
-  const [addMenu, setAddMenu] = useState("");
-  const [menuSlot, setMenuSlot] = useState<HTMLElement | null>(null);
   const [terminalSlot, setTerminalSlot] = useState<HTMLElement | null>(null);
   // Seeded from the restored layout, not from one: a saved Terminal 1 must not
   // be handed the same id twice.
@@ -476,15 +473,6 @@ export function WorkspaceShell({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [active]);
 
-  // Any click outside the open "add panel" menu dismisses it; the effect is
-  // attached after the opening click has finished dispatching.
-  useEffect(() => {
-    if (!addMenu) return;
-    const close = () => setAddMenu("");
-    window.addEventListener("click", close);
-    return () => window.removeEventListener("click", close);
-  }, [addMenu]);
-
   const matches = useMemo(
     () => filterPaths(workspacePaths, query),
     [workspacePaths, query],
@@ -496,7 +484,6 @@ export function WorkspaceShell({
   );
 
   useEffect(() => {
-    setMenuSlot(document.getElementById("forge-panel-menu"));
     setTerminalSlot(document.getElementById("forge-terminal-button"));
   }, []);
 
@@ -896,7 +883,6 @@ export function WorkspaceShell({
   // dock by default and always on screen, and from there they can be dragged
   // anywhere.
   const openPanel = (open: () => void) => {
-    setAddMenu("");
     onShowDocks();
     open();
   };
@@ -937,54 +923,6 @@ export function WorkspaceShell({
         terminalSlot,
       )
     : null;
-  const panelMenu = menuSlot;
-  const panelsMenu = panelMenu
-    ? createPortal(
-        <span className="topbar-menu">
-          <button
-            aria-expanded={addMenu === "panels"}
-            aria-haspopup="menu"
-            className="pill"
-            onClick={(event) => {
-              event.stopPropagation();
-              setAddMenu((current) => (current === "panels" ? "" : "panels"));
-            }}
-            title="Open a panel"
-          >
-            Panels ▾
-          </button>
-          {addMenu === "panels" ? (
-            <div className="topbar-dropdown" role="menu">
-              <button onClick={() => openPanel(launchTerminal)} role="menuitem">
-                New Terminal
-              </button>
-              <button onClick={() => openPanel(openPreview)} role="menuitem">
-                Preview
-              </button>
-              <button onClick={() => openPanel(openActivity)} role="menuitem">
-                Progress
-              </button>
-              <hr />
-              {[
-                { id: "explorer", label: "Explorer" },
-                { id: "git", label: "Source Control" },
-                { id: "editor", label: "Editor" },
-              ].map((entry) => (
-                <button
-                  key={entry.id}
-                  onClick={() => openPanel(() => focusTool(entry.id))}
-                  role="menuitem"
-                >
-                  {entry.label}
-                </button>
-              ))}
-            </div>
-          ) : null}
-        </span>,
-        panelMenu,
-      )
-    : null;
-
   // One unmissable line, rather than a subtle cue: which repository the panels
   // are showing, which one the agent is in, and both ways out.
   const browseBanner = browsing ? (
@@ -1198,7 +1136,6 @@ export function WorkspaceShell({
             </DockToolHost>
           );
         })}
-        {panelsMenu}
         {terminalButton}
         {quickOpen ? (
           <div

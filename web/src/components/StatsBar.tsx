@@ -1,4 +1,5 @@
 import type { Stats } from "../sessionStats";
+import type { ReactNode } from "react";
 
 function fmt(n: number): string {
   return n.toLocaleString();
@@ -21,9 +22,11 @@ function fmtRate(outTokens: number, ms: number): string {
 export function StatsBar({
   stats,
   connected,
+  actions,
 }: {
   stats: Stats;
   connected: boolean;
+  actions?: ReactNode;
 }) {
   const total = stats.inTok + stats.outTok;
   const pct =
@@ -67,6 +70,7 @@ export function StatsBar({
       <span className="stat" title="Wall time of the last turn">
         <span className="stat-k">turn</span> {fmtDur(stats.durationMs)}
       </span>
+      {actions ? <nav className="status-actions">{actions}</nav> : null}
     </div>
   );
 }

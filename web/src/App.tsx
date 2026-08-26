@@ -1143,8 +1143,6 @@ export default function App() {
     data.types.includes("Files") ||
     data.types.includes("text/uri-list");
 
-  const workDirLabel = init?.work_dir?.replace(/^\/Users\/[^/]+/, "~") ?? "";
-
   return (
     <div
       className={`app ${dragging ? "dragging" : ""}`}
@@ -1171,69 +1169,7 @@ export default function App() {
         void attachDrop(e.dataTransfer);
       }}
     >
-      <header className="topbar">
-        <button
-          className="icon-btn"
-          onClick={() =>
-            setPrefsState((p) => ({ ...p, showSidebar: !p.showSidebar }))
-          }
-          title="Toggle sidebar (⌘B)"
-        >
-          ☰
-        </button>
-        <span className="brand">FORGE</span>
-        <button
-          className="workspace-btn"
-          onClick={() => setOverlay("workspaces")}
-          title="Switch workspace (⌘O)"
-        >
-          <span className="ws-name">
-            {init?.work_dir ? init.work_dir.split("/").pop() : "no workspace"}
-          </span>
-          <span className="ws-path">{workDirLabel}</span>
-        </button>
-        {/* The panels menu is rendered here by the workspace shell, which owns
-            the dock layout. A dropdown inside a panel's own tab strip was
-            clipped by the strip's scroll box, and there was nowhere obvious to
-            look for it. */}
-        <span className="topbar-menu-slot" id="forge-panel-menu" />
-        <span className="topbar-spacer" />
-        {flash ? <span className="flash">{flash}</span> : null}
-        <span className="topbar-menu-slot" id="forge-terminal-button" />
-        <button
-          className="pill"
-          onClick={() => setOverlay("models")}
-          title="Switch model (⌘K)"
-        >
-          {stats.model || "—"}
-        </button>
-        <button
-          className={`pill ${workspaceMode ? "on" : ""}`}
-          onClick={() => setWorkspaceMode((on) => !on)}
-        >
-          {workspaceMode ? "Hide Docks" : "Show Docks"}
-        </button>
-        {init && init.efforts && init.efforts.length > 0 ? (
-          <div className="seg">
-            {init.efforts.map((e) => (
-              <button
-                key={e}
-                className={`seg-btn ${e === effort ? "on" : ""}`}
-                onClick={() => setEffortAction(e)}
-              >
-                {e}
-              </button>
-            ))}
-          </div>
-        ) : null}
-        <button
-          className="icon-btn"
-          onClick={() => setOverlay("settings")}
-          title="Settings (⌘,)"
-        >
-          ⚙
-        </button>
-      </header>
+      {flash ? <span className="flash app-flash">{flash}</span> : null}
 
       {/* Startup decided something the user did not ask for — most often that
           the saved model was dropped because no provider serves it any more.
@@ -1350,6 +1286,11 @@ export default function App() {
               }
               yolo={yolo}
               onToggleYolo={() => toggleYolo(!yolo)}
+              model={stats.model ?? ""}
+              onModel={() => setOverlay("models")}
+              effort={effort}
+              efforts={init?.efforts ?? []}
+              onEffort={setEffortAction}
               busy={busy}
               skills={init?.skills ?? []}
               commands={init?.commands ?? []}
@@ -1368,7 +1309,39 @@ export default function App() {
         </WorkspaceShell>
       </div>
 
-      <StatsBar stats={stats} connected={init !== null} />
+      <StatsBar
+        stats={stats}
+        connected={init !== null}
+        actions={
+          <>
+            <button
+              className="icon-btn"
+              onClick={() =>
+                setPrefsState((p) => ({ ...p, showSidebar: !p.showSidebar }))
+              }
+              title="Toggle sidebar (⌘B)"
+            >
+              ☰
+            </button>
+            <span className="topbar-menu-slot" id="forge-terminal-button" />
+            <button
+              className={`icon-btn ${workspaceMode ? "on" : ""}`}
+              onClick={() => setWorkspaceMode((on) => !on)}
+              title={workspaceMode ? "Hide all docks" : "Show all docks"}
+              aria-label={workspaceMode ? "Hide all docks" : "Show all docks"}
+            >
+              ◫
+            </button>
+            <button
+              className="icon-btn"
+              onClick={() => setOverlay("settings")}
+              title="Settings (⌘,)"
+            >
+              ⚙
+            </button>
+          </>
+        }
+      />
 
       {dragging ? <div className="drop-veil">drop images to attach</div> : null}
 
