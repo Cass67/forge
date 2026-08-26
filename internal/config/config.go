@@ -600,18 +600,29 @@ func expandTilde(s *string) {
 // per-workspace directory under the user's state dir. An existing ./output in
 // the workspace still wins so older sessions stay readable.
 func (c *Config) ResolvedOutputDir() string {
-	dir := strings.TrimSpace(c.Session.OutputDir)
-	if dir != "" && !isLegacyOutputDir(dir) {
-		return dir
-	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		cwd = "."
 	}
-	if legacy := filepath.Join(cwd, "output"); dirExists(legacy) {
+	return c.ResolvedOutputDirFor(cwd)
+}
+
+// ResolvedOutputDirFor resolves session storage for workspaceDir without
+// depending on the process-wide current directory. GUI runtimes for different
+// workspaces share one process, so using os.Getwd there can attach a thread to
+// whichever workspace was opened most recently.
+func (c *Config) ResolvedOutputDirFor(workspaceDir string) string {
+	dir := strings.TrimSpace(c.Session.OutputDir)
+	if dir != "" && !isLegacyOutputDir(dir) {
+		return dir
+	}
+	if strings.TrimSpace(workspaceDir) == "" {
+		workspaceDir = "."
+	}
+	if legacy := filepath.Join(workspaceDir, "output"); dirExists(legacy) {
 		return legacy
 	}
-	return filepath.Join(fsutil.ForgeStateDir(), "projects", workspaceSlug(cwd))
+	return filepath.Join(fsutil.ForgeStateDir(), "projects", workspaceSlug(workspaceDir))
 }
 
 func isLegacyOutputDir(dir string) bool {

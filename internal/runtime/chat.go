@@ -216,14 +216,14 @@ func ResolveResumeThreadID(cfg *config.Config, explicitID string, continueLast b
 // workDir. GUI uses this for cold-start continuity; CLI keeps explicit resume
 // semantics above.
 func ResolveWorkspaceResumeThreadID(cfg *config.Config, workDir string) (string, error) {
-	if cfg == nil || strings.TrimSpace(cfg.ResolvedOutputDir()) == "" {
+	if cfg == nil || strings.TrimSpace(cfg.ResolvedOutputDirFor(workDir)) == "" {
 		return "", nil
 	}
 	want, err := filepath.Abs(strings.TrimSpace(workDir))
 	if err != nil {
 		return "", err
 	}
-	store := sessionstore.NewJSONLThreadStore(filepath.Join(cfg.ResolvedOutputDir(), "threads"))
+	store := sessionstore.NewJSONLThreadStore(filepath.Join(cfg.ResolvedOutputDirFor(workDir), "threads"))
 	records, err := store.ListThreads(context.Background(), sessionstore.ListOptions{Limit: 500})
 	if err != nil {
 		return "", err
@@ -258,7 +258,7 @@ func adoptResumeThread(setup *ChatSetup, session *reactruntime.Session) {
 	if threadID == "" || session == nil {
 		return
 	}
-	outputDir := setup.Config.ResolvedOutputDir()
+	outputDir := setup.Config.ResolvedOutputDirFor(setup.WorkDir)
 	if outputDir == "" {
 		fmt.Fprintln(os.Stderr, "resume: session output dir not configured; starting fresh")
 		return
@@ -465,7 +465,7 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 			return workDir
 		}
 	}
-	if outputStore := configuredOutputStore(cfg); outputStore != nil {
+	if outputStore := configuredOutputStore(cfg, workDir); outputStore != nil {
 		reg.Register(tools.NewReadOutput(outputStore, secretPolicy))
 	}
 	reg.Register(tools.NewReadFile(workDir, secretPolicy))
@@ -598,7 +598,7 @@ func configureDurableSessionSink(cfg *config.Config, session *reactruntime.Sessi
 	if cfg == nil || session == nil {
 		return
 	}
-	store := sessionstore.NewJSONLThreadStore(filepath.Join(cfg.ResolvedOutputDir(), "threads"))
+	store := sessionstore.NewJSONLThreadStore(filepath.Join(cfg.ResolvedOutputDirFor(workDir), "threads"))
 	model := strings.TrimSpace(cfg.Chat.Model)
 	if model == "" {
 		model = strings.TrimSpace(cfg.Chat.LastModel)
@@ -641,11 +641,11 @@ func backgroundExitNote(status tools.ExecSessionStatus) string {
 	return note
 }
 
-func configuredOutputStore(cfg *config.Config) sessionstore.OutputStore {
+func configuredOutputStore(cfg *config.Config, workDir string) sessionstore.OutputStore {
 	if cfg == nil {
 		return nil
 	}
-	return sessionstore.NewFileOutputStore(cfg.ResolvedOutputDir())
+	return sessionstore.NewFileOutputStore(cfg.ResolvedOutputDirFor(workDir))
 }
 
 func durableThreadID(session *reactruntime.Session) string {
@@ -922,7 +922,7 @@ func RunChatLive(setup *ChatSetup) {
 		DiagnosticsProvider:      lspDiagnosticsProvider(setup.WorkDir),
 		Interactive:              true,
 		ToolThrashCircuitBreaker: setup.Config.Resilience.ToolThrashCircuitBreaker,
-		OutputStore:              configuredOutputStore(setup.Config),
+		OutputStore:              configuredOutputStore(setup.Config, setup.WorkDir),
 	})
 	registerReactDelegationTools(reg, setup, baseReg, approve, evRenderer, pluginManager, session)
 
@@ -1281,7 +1281,7 @@ func RunChatLive(setup *ChatSetup) {
 		CopilotClientID: setup.Config.CopilotClientID(),
 		ReloadPlugins:   reloadPlugins,
 		ListThreads: func() []tui.ThreadSummary {
-			outputDir := setup.Config.ResolvedOutputDir()
+			outputDir := setup.Config.ResolvedOutputDirFor(setup.WorkDir)
 			if outputDir == "" {
 				return nil
 			}
@@ -1305,7 +1305,7 @@ func RunChatLive(setup *ChatSetup) {
 			return out
 		},
 		DeleteThread: func(threadID string) error {
-			outputDir := setup.Config.ResolvedOutputDir()
+			outputDir := setup.Config.ResolvedOutputDirFor(setup.WorkDir)
 			if outputDir == "" {
 				return errors.New("no session output directory configured")
 			}
@@ -1316,7 +1316,7 @@ func RunChatLive(setup *ChatSetup) {
 			return store.DeleteThread(context.Background(), threadID)
 		},
 		PurgeThread: func(threadID string) error {
-			outputDir := setup.Config.ResolvedOutputDir()
+			outputDir := setup.Config.ResolvedOutputDirFor(setup.WorkDir)
 			if outputDir == "" {
 				return errors.New("no session output directory configured")
 			}
@@ -1711,7 +1711,7 @@ func buildConsoleRuntime(setup *ChatSetup, approve tools.ApprovalFunc, out io.Wr
 		DiagnosticsProvider:      lspDiagnosticsProvider(setup.WorkDir),
 		Interactive:              true,
 		ToolThrashCircuitBreaker: setup.Config.Resilience.ToolThrashCircuitBreaker,
-		OutputStore:              configuredOutputStore(setup.Config),
+		OutputStore:              configuredOutputStore(setup.Config, setup.WorkDir),
 	})
 	registerReactDelegationTools(reg, setup, baseReg, approve, nil, pluginManager, session)
 
@@ -2006,7 +2006,7 @@ func registerReactDelegationTools(reg *tools.Registry, setup *ChatSetup, baseReg
 			ContextWindowTokens:      func() int { return lookupContextWindow(model) },
 			Interactive:              false,
 			ToolThrashCircuitBreaker: setup.Config.Resilience.ToolThrashCircuitBreaker,
-			OutputStore:              configuredOutputStore(setup.Config),
+			OutputStore:              configuredOutputStore(setup.Config, setup.WorkDir),
 		})
 		if err := childRunner.Run(ctx, task); err != nil {
 			childRenderer.Info(fmt.Sprintf("[%s] cancelled", role))

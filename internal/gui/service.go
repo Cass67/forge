@@ -938,22 +938,20 @@ func (s *Service) Workspaces() []Workspace {
 			}
 		}
 	}
-	if cfg.ListThreads != nil {
-		for _, t := range cfg.ListThreads() {
-			dir := strings.TrimSpace(t.CWD)
-			if dir == "" {
-				continue
-			}
-			dir = filepath.Clean(dir)
-			w, ok := byPath[dir]
-			if !ok {
-				w = &Workspace{Path: dir, Name: filepath.Base(dir), Active: dir == active}
-				byPath[dir] = w
-			}
-			w.Threads++
-			if t.UpdatedAt.After(w.LastUse) {
-				w.LastUse = t.UpdatedAt
-			}
+	for _, t := range s.allThreads() {
+		dir := strings.TrimSpace(t.CWD)
+		if dir == "" {
+			continue
+		}
+		dir = filepath.Clean(dir)
+		w, ok := byPath[dir]
+		if !ok {
+			w = &Workspace{Path: dir, Name: filepath.Base(dir), Active: dir == active}
+			byPath[dir] = w
+		}
+		w.Threads++
+		if t.UpdatedAt.After(w.LastUse) {
+			w.LastUse = t.UpdatedAt
 		}
 	}
 	out := make([]Workspace, 0, len(byPath))
@@ -1028,18 +1026,47 @@ func plural(n int) string {
 // storedThreadsIn counts the threads recorded against a directory, which is
 // what keeps its section in the list whether or not it is remembered.
 func (s *Service) storedThreadsIn(path string) int {
-	cfg, _, ready := s.snapshot()
-	if !ready || cfg.ListThreads == nil {
-		return 0
-	}
 	want := filepath.Clean(strings.TrimSpace(path))
 	n := 0
-	for _, t := range cfg.ListThreads() {
+	for _, t := range s.allThreads() {
 		if dir := strings.TrimSpace(t.CWD); dir != "" && filepath.Clean(dir) == want {
 			n++
 		}
 	}
 	return n
+}
+
+// allThreads combines the stores exposed by every live workspace runtime.
+// Each GUI runtime is permanently bound to its own workspace store, so asking
+// only the active runtime makes other live workspaces appear to lose their
+// thread counts. Thread IDs identify duplicates when runtimes share an
+// explicitly configured output directory.
+func (s *Service) allThreads() []tui.ThreadSummary {
+	s.mu.RLock()
+	listers := make([]func() []tui.ThreadSummary, 0, len(s.runtimes))
+	for _, rt := range s.runtimes {
+		if rt.cfg.ListThreads != nil {
+			listers = append(listers, rt.cfg.ListThreads)
+		}
+	}
+	s.mu.RUnlock()
+
+	seen := make(map[string]bool)
+	var threads []tui.ThreadSummary
+	for _, list := range listers {
+		for _, thread := range list() {
+			key := thread.ThreadID
+			if key == "" {
+				key = thread.CWD + "\x00" + thread.Title + "\x00" + thread.UpdatedAt.String()
+			}
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			threads = append(threads, thread)
+		}
+	}
+	return threads
 }
 
 // ChooseWorkspace prompts for a folder and switches to it. Returns the chosen

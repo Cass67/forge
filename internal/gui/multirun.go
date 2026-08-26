@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -110,7 +112,12 @@ func spawnRun(binary, dir, model, prompt string, yolo bool) error {
 	if yolo {
 		args = append(args, "-yolo")
 	}
-	cmd := exec.Command(binary, args...)
+	command := binary
+	if app := installedMacApp(runtime.GOOS); app != "" {
+		command = "open"
+		args = append([]string{"-na", app, "--args"}, args...)
+	}
+	cmd := exec.Command(command, args...)
 	cmd.Dir = dir
 	// Detached: the new window outlives whichever window launched it.
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, nil
@@ -119,6 +126,25 @@ func spawnRun(binary, dir, model, prompt string, yolo bool) error {
 	}
 	go func() { _ = cmd.Wait() }()
 	return nil
+}
+
+// installedMacApp returns the installed bundle rather than launching its bare
+// executable. AppKit then applies Forge's bundle identity, icon, and Dock
+// profile to windows opened from a terminal or another Forge window.
+func installedMacApp(goos string) string {
+	if goos != "darwin" {
+		return ""
+	}
+	candidates := []string{"/Applications/Forge.app"}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates, filepath.Join(home, "Applications", "Forge.app"))
+	}
+	for _, app := range candidates {
+		if info, err := os.Stat(app); err == nil && info.IsDir() {
+			return app
+		}
+	}
+	return ""
 }
 
 func dedupe(in []string) []string {

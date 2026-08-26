@@ -185,6 +185,35 @@ func TestWorkspacesGroupsByThreadCWD(t *testing.T) {
 	}
 }
 
+func TestWorkspacesCombinesThreadStoresFromLiveWorkspaces(t *testing.T) {
+	s, c := New(func(string, any) {})
+	c.Attach("a", tui.ChatLiveConfig{
+		WorkDir: "/work/a",
+		ListThreads: func() []tui.ThreadSummary {
+			return []tui.ThreadSummary{{ThreadID: "a", CWD: "/work/a"}}
+		},
+	}, make(chan string, 1), nil)
+	c.Attach("b", tui.ChatLiveConfig{
+		WorkDir: "/work/b",
+		ListThreads: func() []tui.ThreadSummary {
+			return []tui.ThreadSummary{
+				{ThreadID: "b", CWD: "/work/b"},
+				// Explicit shared output directories can expose the same thread
+				// through multiple runtimes; it must only be counted once.
+				{ThreadID: "a", CWD: "/work/a"},
+			}
+		},
+	}, make(chan string, 1), nil)
+
+	got := s.Workspaces()
+	if len(got) != 2 {
+		t.Fatalf("want 2 workspaces, got %d: %+v", len(got), got)
+	}
+	if got[0].Path != "/work/a" || got[0].Threads != 1 || got[1].Path != "/work/b" || got[1].Threads != 1 {
+		t.Fatalf("unexpected aggregated workspaces: %+v", got)
+	}
+}
+
 // Sessions are independent: switching workspaces starts or activates another
 // session without tearing the old one down, so both keep accepting input and
 // their events stay tagged with their own session and workspace.

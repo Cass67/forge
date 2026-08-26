@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"forge/internal/fsutil"
 )
 
 func TestResolvedOutputDirStaysOutOfTheWorkspace(t *testing.T) {
@@ -43,6 +45,21 @@ func TestResolvedOutputDirKeepsExistingWorkspaceOutput(t *testing.T) {
 	setDefaults(cfg)
 	if got := cfg.ResolvedOutputDir(); got != filepath.Join(workspace, "output") {
 		t.Fatalf("output dir = %q, want existing workspace output", got)
+	}
+}
+
+func TestResolvedOutputDirForDoesNotFollowProcessCWD(t *testing.T) {
+	workspace := t.TempDir()
+	other := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Chdir(other)
+
+	cfg := &Config{}
+	setDefaults(cfg)
+	got := cfg.ResolvedOutputDirFor(workspace)
+	want := filepath.Join(fsutil.ForgeStateDir(), "projects", workspaceSlug(workspace))
+	if got != want {
+		t.Fatalf("output dir = %q, want %q", got, want)
 	}
 }
 
