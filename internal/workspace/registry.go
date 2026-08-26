@@ -5,7 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -68,11 +68,14 @@ func (r *Registry) listLocked() []Entry {
 			out = append(out, e)
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Pinned != out[j].Pinned {
-			return out[i].Pinned
+	slices.SortStableFunc(out, func(a, b Entry) int {
+		if a.Pinned != b.Pinned {
+			if a.Pinned {
+				return -1
+			}
+			return 1
 		}
-		return out[i].LastUsed.After(out[j].LastUsed)
+		return b.LastUsed.Compare(a.LastUsed)
 	})
 	return out
 }

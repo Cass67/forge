@@ -8,11 +8,11 @@ import (
 func TestCompactDiffForDisplay(t *testing.T) {
 	var b strings.Builder
 	b.WriteString("--- a/f.go\n+++ b/f.go\n")
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		b.WriteString(" ctx\n")
 	}
 	b.WriteString("-old\n+new\n")
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		b.WriteString(" ctx\n")
 	}
 

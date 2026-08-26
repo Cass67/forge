@@ -1137,7 +1137,7 @@ func TestMalformedToolArgSchemaAliasFeedsRepeatLoopDetector(t *testing.T) {
 	r := NewRunner(Config{Tools: reg, Session: session})
 	call := llm.NativeToolCall{ID: "read-1", Name: "read_file", ArgsJSON: `{"filePath":"README.md","summary":true}`}
 
-	for i := 0; i < repeatToolCallThreshold; i++ {
+	for i := range repeatToolCallThreshold {
 		call.ID = fmt.Sprintf("read-%d", i)
 		if err := r.executeNativeToolCalls(active.Context, turn, []llm.NativeToolCall{call}); err != nil {
 			t.Fatal(err)
@@ -3346,7 +3346,7 @@ func TestRunnerBlocksRepeatedSameFileReadsAfterThreshold(t *testing.T) {
 	// Repetition is nudged first and only refused once the nudge has gone
 	// unheeded, so the block lands at the block threshold, not the nudge one.
 	steps := make([][]llm.Token, repeatToolCallBlockThreshold+2)
-	for i := 0; i < repeatToolCallBlockThreshold+1; i++ {
+	for i := range repeatToolCallBlockThreshold + 1 {
 		steps[i] = []llm.Token{{ToolCall: &llm.NativeToolCall{
 			ID:       fmt.Sprintf("c%d", i+1),
 			Name:     "read_file",

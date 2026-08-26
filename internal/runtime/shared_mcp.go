@@ -68,34 +68,32 @@ func acquireMCP(dir string, onEvent func(mcp.Event)) (manager *mcp.Manager, firs
 	}
 	host.mu.Unlock()
 
-	var once sync.Once
-	return host.manager, first, func() {
-		once.Do(func() {
+	release = sync.OnceFunc(func() {
+		host.mu.Lock()
+		delete(host.listeners, id)
+		host.refs--
+		last := host.refs == 0
+		host.mu.Unlock()
+		if !last {
+			return
+		}
+		mcpHostsMu.Lock()
+		// A chat started in the meantime has taken the host over, so the
+		// servers it is using must not be closed underneath it.
+		if mcpHosts[key] == host {
 			host.mu.Lock()
-			delete(host.listeners, id)
-			host.refs--
-			last := host.refs == 0
+			stillIdle := host.refs == 0
 			host.mu.Unlock()
-			if !last {
+			if stillIdle {
+				delete(mcpHosts, key)
+				mcpHostsMu.Unlock()
+				_ = host.manager.Close()
 				return
 			}
-			mcpHostsMu.Lock()
-			// A chat started in the meantime has taken the host over, so the
-			// servers it is using must not be closed underneath it.
-			if mcpHosts[key] == host {
-				host.mu.Lock()
-				stillIdle := host.refs == 0
-				host.mu.Unlock()
-				if stillIdle {
-					delete(mcpHosts, key)
-					mcpHostsMu.Unlock()
-					_ = host.manager.Close()
-					return
-				}
-			}
-			mcpHostsMu.Unlock()
-		})
-	}
+		}
+		mcpHostsMu.Unlock()
+	})
+	return host.manager, first, release
 }
 
 // connectMCP brings a freshly started host's servers up. Connecting is a

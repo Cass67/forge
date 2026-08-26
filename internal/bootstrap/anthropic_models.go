@@ -1,11 +1,12 @@
 package bootstrap
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -198,16 +199,20 @@ func preferredClaudeModels(models []string) []string {
 	for family := range bestByFamily {
 		families = append(families, family)
 	}
-	sort.Slice(families, func(i, j int) bool {
-		oi, iok := order[families[i]]
-		oj, jok := order[families[j]]
-		if iok && jok {
-			return oi < oj
+	slices.SortFunc(families, func(a, b string) int {
+		oi, iok := order[a]
+		oj, jok := order[b]
+		switch {
+		case iok && jok:
+			return cmp.Compare(oi, oj)
+		case iok != jok:
+			if iok {
+				return -1
+			}
+			return 1
+		default:
+			return cmp.Compare(a, b)
 		}
-		if iok != jok {
-			return iok
-		}
-		return families[i] < families[j]
 	})
 
 	out := make([]string, 0, len(families))

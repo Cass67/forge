@@ -92,8 +92,7 @@ func ghFailure(mode string, number int, err error, out string) string {
 	case strings.Contains(lower, "could not resolve to a repository") || strings.Contains(lower, "not a git repository"):
 		return "gh_pr failed: this directory has no GitHub remote gh can resolve\n" + out
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && out != "" {
+	if _, ok := errors.AsType[*exec.ExitError](err); ok && out != "" {
 		return "gh_pr failed: " + out
 	}
 	return fmt.Sprintf("gh_pr failed: %s\n%s", err, out)

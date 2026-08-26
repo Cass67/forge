@@ -114,8 +114,8 @@ func output(dir string, name string, args ...string) (string, error) {
 }
 
 func isNotRepositoryError(err error) bool {
-	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) {
+	var exitErr, ok = errors.AsType[*exec.ExitError](err)
+	if !ok {
 		return false
 	}
 	msg := strings.ToLower(strings.TrimSpace(string(exitErr.Stderr)))

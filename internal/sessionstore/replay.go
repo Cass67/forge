@@ -1,9 +1,10 @@
 package sessionstore
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	"forge/internal/llm"
@@ -31,7 +32,7 @@ type ReplayTurn struct {
 
 func ReplayItems(items []protocol.Item) (Replay, error) {
 	sorted := append([]protocol.Item(nil), items...)
-	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
+	slices.SortStableFunc(sorted, func(a, b protocol.Item) int { return cmp.Compare(a.Seq, b.Seq) })
 	turns := map[string]*ReplayTurn{}
 	order := []string{}
 	terminal := map[string]bool{}
@@ -210,7 +211,7 @@ func replayNativeToolCall(call protocol.ToolCallItem) llm.NativeToolCall {
 // adopted into another session directly.
 func ResolveItems(items []protocol.Item) []protocol.Item {
 	sorted := append([]protocol.Item(nil), items...)
-	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
+	slices.SortStableFunc(sorted, func(a, b protocol.Item) int { return cmp.Compare(a.Seq, b.Seq) })
 	shadowed, replacements := compactionOverlay(sorted)
 	out := make([]protocol.Item, 0, len(sorted))
 	for _, item := range sorted {
@@ -238,7 +239,7 @@ func ResolveItems(items []protocol.Item) []protocol.Item {
 // what is still live without rebuilding the whole projection.
 func CompactionOverlay(items []protocol.Item) (map[string]bool, map[string]string) {
 	sorted := append([]protocol.Item(nil), items...)
-	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
+	slices.SortStableFunc(sorted, func(a, b protocol.Item) int { return cmp.Compare(a.Seq, b.Seq) })
 	return compactionOverlay(sorted)
 }
 

@@ -1,6 +1,7 @@
 package drivers
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -10,7 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 
@@ -1188,7 +1189,7 @@ func makeSchemaStrictNullable(schema map[string]any) {
 		}
 		makeSchemaStrictNullable(prop)
 	}
-	sort.Strings(required)
+	slices.Sort(required)
 	schema["required"] = required
 	if _, ok := schema["additionalProperties"]; !ok {
 		schema["additionalProperties"] = false
@@ -1779,7 +1780,9 @@ func debugRequestSizing(registryName, apiModel string, messages []llm.Message) {
 		totalBytes += sz
 		infos = append(infos, msgInfo{idx: i, role: m.Role, bytes: sz})
 	}
-	sort.Slice(infos, func(i, j int) bool { return infos[i].bytes > infos[j].bytes })
+	slices.SortFunc(infos, func(a, b msgInfo) int {
+		return cmp.Compare(b.bytes, a.bytes)
+	})
 	parts := make([]string, 0, len(infos))
 	for _, info := range infos {
 		parts = append(parts, fmt.Sprintf("%d:%s=%dB", info.idx, info.role, info.bytes))
@@ -1894,7 +1897,7 @@ func headersSummary(h http.Header) string {
 	for k := range h {
 		keys = append(keys, k)
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	parts := make([]string, 0, len(keys))
 	for _, k := range keys {
 		v := strings.TrimSpace(h.Get(k))

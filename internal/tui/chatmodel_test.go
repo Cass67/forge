@@ -4392,7 +4392,7 @@ func TestChatModelViewShowsChatScrollbarWhenOverflowing(t *testing.T) {
 	m.chatViewport.Width = m.chatPaneWidth()
 	m.chatViewport.Height = 8
 
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		m.AddMessage(ChatMessage{Kind: MsgUser, Header: "You", Content: strings.Repeat("line ", 8)})
 	}
 	v := m.View()
@@ -4749,7 +4749,7 @@ func TestChatModelKeepsAutoscrollWhenManualModeIsAlreadyAtBottom(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 12})
 	m = updated.(ChatModel)
 
-	for i := 0; i < 12; i++ {
+	for i := range 12 {
 		m.AddMessage(ChatMessage{
 			Kind:    MsgAgent,
 			Header:  fmt.Sprintf("Forge • 12:00:%02d", i),

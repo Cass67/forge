@@ -188,10 +188,7 @@ func run() error {
 				// symlinked or uncleaned variant of the path.
 				dir := filepath.Clean(strings.TrimSpace(live.WorkDir))
 				stop := make(chan struct{})
-				var stopOnce sync.Once
-				controller.Attach(sessionID, live, inputCh, func() {
-					stopOnce.Do(func() { close(stop) })
-				})
+				controller.Attach(sessionID, live, inputCh, sync.OnceFunc(func() { close(stop) }))
 				if strings.TrimSpace(*prompt) != "" {
 					sendPrompt.Do(func() {
 						go func() { inputCh <- *prompt }()

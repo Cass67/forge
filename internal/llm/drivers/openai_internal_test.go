@@ -311,7 +311,7 @@ func TestResponsesRequestStateUsesFullInputForChatGPTStatelessMode(t *testing.T)
 func TestTrimStatelessConversationPreservesLatestUserRequest(t *testing.T) {
 	msgs := []llm.Message{{Role: llm.RoleSystem, Content: "sys"}}
 	msgs = append(msgs, llm.Message{Role: llm.RoleUser, Content: "add /new session option"})
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		msgs = append(msgs, llm.Message{Role: llm.RoleAssistant, Content: strings.Repeat("tool chatter ", 20)})
 	}
 

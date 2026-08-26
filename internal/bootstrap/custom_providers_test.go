@@ -1,9 +1,10 @@
 package bootstrap
 
 import (
+	"cmp"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"testing"
 )
 
@@ -191,7 +192,7 @@ models = ["b1"]
 			t.Fatalf("expected 2 providers, got %d", len(defs))
 		}
 
-		sort.Slice(defs, func(i, j int) bool { return defs[i].ID < defs[j].ID })
+		slices.SortFunc(defs, func(a, b CustomProviderDef) int { return cmp.Compare(a.ID, b.ID) })
 		if defs[0].ID != "alpha" || defs[1].ID != "beta" {
 			t.Errorf("IDs = [%q, %q], want [alpha, beta]", defs[0].ID, defs[1].ID)
 		}

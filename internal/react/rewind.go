@@ -1,9 +1,10 @@
 package react
 
 import (
+	"cmp"
 	"context"
 	"fmt"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -24,8 +25,8 @@ func (r *Runner) Checkpoints() []CheckpointRef {
 	for turnID, id := range r.checkpointIDsByTurn {
 		refs = append(refs, CheckpointRef{TurnID: turnID, ID: id})
 	}
-	sort.Slice(refs, func(i, j int) bool {
-		return turnNumber(refs[i].TurnID) < turnNumber(refs[j].TurnID)
+	slices.SortFunc(refs, func(a, b CheckpointRef) int {
+		return cmp.Compare(turnNumber(a.TurnID), turnNumber(b.TurnID))
 	})
 	return refs
 }

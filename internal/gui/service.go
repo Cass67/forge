@@ -6,6 +6,7 @@
 package gui
 
 import (
+	"cmp"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -14,7 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -714,7 +715,7 @@ func (s *Service) Sessions() []SessionInfo {
 		})
 	}
 	s.mu.RUnlock()
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	slices.SortFunc(out, func(a, b SessionInfo) int { return cmp.Compare(a.ID, b.ID) })
 	return out
 }
 
@@ -912,14 +913,17 @@ func (s *Service) Workspaces() []Workspace {
 	// using it moves it, so the list under the pointer stays where it was.
 	// Pinning is the only thing that promotes an entry, because that is the
 	// user asking for it.
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Pinned != out[j].Pinned {
-			return out[i].Pinned
+	slices.SortStableFunc(out, func(a, b Workspace) int {
+		if a.Pinned != b.Pinned {
+			if a.Pinned {
+				return -1
+			}
+			return 1
 		}
-		if out[i].Name != out[j].Name {
-			return out[i].Name < out[j].Name
+		if a.Name != b.Name {
+			return cmp.Compare(a.Name, b.Name)
 		}
-		return out[i].Path < out[j].Path
+		return cmp.Compare(a.Path, b.Path)
 	})
 	return out
 }
@@ -1329,7 +1333,7 @@ func encodeInput(cfg tui.ChatLiveConfig, text string, attachments []chatstate.Ch
 		for _, sk := range cfg.Skills {
 			if sk.Name == name {
 				ui.SkillName = sk.Name
-				ui.SkillBody = sk.Body
+				ui.SkillBody = sk.ResolveBody()
 				ui.Text = strings.TrimSpace(rest)
 				break
 			}
@@ -1368,6 +1372,6 @@ func readItems(fn func(string) []protocol.Item, threadID string) []protocol.Item
 	if items == nil {
 		return []protocol.Item{}
 	}
-	sort.SliceStable(items, func(i, j int) bool { return items[i].Seq < items[j].Seq })
+	slices.SortStableFunc(items, func(a, b protocol.Item) int { return cmp.Compare(a.Seq, b.Seq) })
 	return items
 }

@@ -1,10 +1,11 @@
 package tools
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -389,7 +390,7 @@ func exampleValueForParameter(param ParameterDef) any {
 
 func sortToolsByName(tools []Tool) []Tool {
 	out := append([]Tool(nil), tools...)
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	slices.SortFunc(out, func(a, b Tool) int { return cmp.Compare(a.Name, b.Name) })
 	return out
 }
 

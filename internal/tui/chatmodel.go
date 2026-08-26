@@ -2429,7 +2429,7 @@ func (m ChatModel) submitSkillInput(s skills.Skill, turnLabel, msg string) (tea.
 	if m.inputCh != nil {
 		ch := m.inputCh
 		return m, func() tea.Msg {
-			ch <- chatUserInputToString(chatstate.ChatUserInput{IsInput: true, Text: msg, SkillName: s.Name, SkillBody: s.Body})
+			ch <- chatUserInputToString(chatstate.ChatUserInput{IsInput: true, Text: msg, SkillName: s.Name, SkillBody: s.ResolveBody()})
 			return nil
 		}
 	}

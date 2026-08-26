@@ -1,10 +1,11 @@
 package skills
 
 import (
+	"cmp"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -14,6 +15,7 @@ type Skill struct {
 	Description string
 	Body        string
 	Source      string // file path it was loaded from
+	Dir         string // skill bundle directory (parent of Source) if the skill ships assets, else ""
 }
 
 // Descriptor is the stable skill catalog entry shared with the primary
@@ -84,9 +86,12 @@ func LoadDir(dir string) ([]Skill, error) {
 	var out []Skill
 	for _, e := range entries {
 		var path string
+		var skillDir string
 		if e.IsDir() {
-			// Check for SKILL.md inside the subdirectory
-			path = filepath.Join(dir, e.Name(), "SKILL.md")
+			// A subdirectory with a SKILL.md is a bundled skill: its assets
+			// (scripts/, assets/) live alongside the entry point.
+			skillDir = filepath.Join(dir, e.Name())
+			path = filepath.Join(skillDir, "SKILL.md")
 			if _, err := os.Stat(path); err != nil {
 				continue
 			}
@@ -99,6 +104,7 @@ func LoadDir(dir string) ([]Skill, error) {
 		if err != nil {
 			continue
 		}
+		s.Dir = skillDir
 		out = append(out, s)
 	}
 	return out, nil
@@ -131,7 +137,7 @@ func Load(workDir string) []Skill {
 	for _, s := range byName {
 		out = append(out, s)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	slices.SortFunc(out, func(a, b Skill) int { return cmp.Compare(a.Name, b.Name) })
 	return out
 }
 
@@ -148,7 +154,7 @@ func Descriptors(skills []Skill) []Descriptor {
 			Source:      s.Source,
 		})
 	}
-	sort.Slice(descriptors, func(i, j int) bool { return descriptors[i].Name < descriptors[j].Name })
+	slices.SortFunc(descriptors, func(a, b Descriptor) int { return cmp.Compare(a.Name, b.Name) })
 	return descriptors
 }
 
@@ -165,9 +171,18 @@ func Describe(skills []Skill) string {
 	return sb.String()
 }
 
+// ResolveBody substitutes a bundled skill's <skill-dir> placeholder with the
+// path to its installed asset directory, so bodies like
+// sh "<skill-dir>/scripts/run-tool.sh" point at real files. It leaves the body
+// untouched when the skill is a single flat file (no bundle).
+func (s Skill) ResolveBody() string {
+	if s.Dir == "" {
+		return s.Body
+	}
+	return strings.ReplaceAll(s.Body, "<skill-dir>", s.Dir)
+}
+
 // Get finds a skill by exact name, or by unambiguous prefix/abbreviation.
-// For example, "tdd" matches "test-driven-development" if it's the only skill
-// whose initials or name starts with "tdd".
 func Get(skills []Skill, name string) (Skill, bool) {
 	// Exact match first.
 	for _, s := range skills {

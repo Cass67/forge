@@ -1,8 +1,9 @@
 package secscan
 
 import (
+	"cmp"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -50,11 +51,11 @@ func (s *Scanner) Scan(text string) []Match {
 		}
 	}
 	matches = dropGenericTokenOverlaps(matches)
-	sort.SliceStable(matches, func(i, j int) bool {
-		if matches[i].Start == matches[j].Start {
-			return matches[i].End < matches[j].End
+	slices.SortStableFunc(matches, func(a, b Match) int {
+		if a.Start == b.Start {
+			return cmp.Compare(a.End, b.End)
 		}
-		return matches[i].Start < matches[j].Start
+		return cmp.Compare(a.Start, b.Start)
 	})
 	return coalesceMatches(matches)
 }
@@ -130,11 +131,11 @@ func coalesceMatches(matches []Match) []Match {
 	if len(matches) == 0 {
 		return nil
 	}
-	sort.SliceStable(matches, func(i, j int) bool {
-		if matches[i].Start == matches[j].Start {
-			return matches[i].End < matches[j].End
+	slices.SortStableFunc(matches, func(a, b Match) int {
+		if a.Start == b.Start {
+			return cmp.Compare(a.End, b.End)
 		}
-		return matches[i].Start < matches[j].Start
+		return cmp.Compare(a.Start, b.Start)
 	})
 	out := make([]Match, 0, len(matches))
 	for _, match := range matches {

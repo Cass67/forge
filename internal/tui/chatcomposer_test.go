@@ -375,7 +375,7 @@ func TestChatComposerClearAttachments(t *testing.T) {
 
 func TestChatComposerMaxAttachments(t *testing.T) {
 	c := NewChatComposer()
-	for i := 0; i < chatstate.MaxAttachments+2; i++ {
+	for range chatstate.MaxAttachments + 2 {
 		c.SetAttachments(append(c.Attachments(), chatstate.ChatAttachment{
 			ID: "a", Name: "img.png", MIMEType: "image/png", Size: 100, Width: 10, Height: 20,
 		}))

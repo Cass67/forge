@@ -2,6 +2,7 @@ package gui
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -10,7 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -178,11 +179,14 @@ func (s *Service) ListWorkspaceDir(relative string) ([]WorkspaceEntry, error) {
 		}
 		result = append(result, WorkspaceEntry{Name: item.Name(), Path: filepath.ToSlash(rel), IsDir: item.IsDir(), Size: info.Size()})
 	}
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].IsDir != result[j].IsDir {
-			return result[i].IsDir
+	slices.SortFunc(result, func(a, b WorkspaceEntry) int {
+		if a.IsDir != b.IsDir {
+			if a.IsDir {
+				return -1
+			}
+			return 1
 		}
-		return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name)
+		return cmp.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name))
 	})
 	return result, nil
 }

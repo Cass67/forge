@@ -2,6 +2,7 @@ package sessionstore
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,7 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -347,13 +348,11 @@ func (s *JSONLThreadStore) ListThreads(ctx context.Context, opts ListOptions) ([
 		}
 		records = append(records, ThreadRecord{ThreadID: threadID, Metadata: metadata, ItemCount: count})
 	}
-	sort.SliceStable(records, func(i, j int) bool {
-		iUpdated := records[i].Metadata.UpdatedAt
-		jUpdated := records[j].Metadata.UpdatedAt
-		if !iUpdated.Equal(jUpdated) {
-			return iUpdated.After(jUpdated)
+	slices.SortStableFunc(records, func(a, b ThreadRecord) int {
+		if !a.Metadata.UpdatedAt.Equal(b.Metadata.UpdatedAt) {
+			return cmp.Compare(b.Metadata.UpdatedAt.UnixNano(), a.Metadata.UpdatedAt.UnixNano())
 		}
-		return records[i].ThreadID < records[j].ThreadID
+		return cmp.Compare(a.ThreadID, b.ThreadID)
 	})
 	if len(records) > limit {
 		records = records[:limit]

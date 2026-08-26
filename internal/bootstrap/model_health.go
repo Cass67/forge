@@ -1,10 +1,11 @@
 package bootstrap
 
 import (
+	"cmp"
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -75,21 +76,21 @@ func sortModelsByHealth(models []string) []string {
 	for i, model := range out {
 		index[model] = i
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		left := store.Models[out[i]]
-		right := store.Models[out[j]]
+	slices.SortStableFunc(out, func(a, b string) int {
+		left := store.Models[a]
+		right := store.Models[b]
 		ls := modelHealthScore(left)
 		rs := modelHealthScore(right)
-		if ls != rs {
-			return ls > rs
+		switch {
+		case ls != rs:
+			return cmp.Compare(rs, ls)
+		case left.Successes != right.Successes:
+			return cmp.Compare(right.Successes, left.Successes)
+		case left.Failures != right.Failures:
+			return cmp.Compare(left.Failures, right.Failures)
+		default:
+			return cmp.Compare(index[a], index[b])
 		}
-		if left.Successes != right.Successes {
-			return left.Successes > right.Successes
-		}
-		if left.Failures != right.Failures {
-			return left.Failures < right.Failures
-		}
-		return index[out[i]] < index[out[j]]
 	})
 	return out
 }

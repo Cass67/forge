@@ -193,7 +193,7 @@ func TestLiveSessionAppendConcurrentAssignsUniqueOrderedSequences(t *testing.T) 
 	start := make(chan struct{})
 	errCh := make(chan error, count)
 
-	for i := 0; i < count; i++ {
+	for range count {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -52,7 +54,16 @@ func ProjectDir(workDir string) string {
 func InstallFromSource(source, destDir string) ([]Skill, error) {
 	var installed []Skill
 	var records []LockRecord
-	if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") {
+	if gitURL, ok := gitCloneURL(source); ok {
+		skills, err := InstallFromGitRepo(gitURL, "", destDir)
+		if err != nil {
+			return nil, err
+		}
+		installed = skills
+		for _, s := range installed {
+			records = append(records, LockRecord{Name: s.Name, File: s.Source, Provider: "git", Source: gitURL, Origin: gitURL})
+		}
+	} else if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") {
 		skills, err := installFromURL(source, destDir)
 		if err != nil {
 			return nil, err
@@ -90,6 +101,49 @@ func InstallFromSource(source, destDir string) ([]Skill, error) {
 		return nil, err
 	}
 	return installed, nil
+}
+
+// gitCloneURL reports whether a bare source string names a git repository that
+// should be cloned rather than fetched as a raw markdown file. It returns the
+// clone URL. Without this, pasting a repo URL like
+// https://github.com/JetBrains/go-modern-guidelines fell through to
+// installFromURL, which http.Get'd the HTML page and failed to parse frontmatter.
+func gitCloneURL(source string) (string, bool) {
+	trimmed := strings.TrimSpace(source)
+	if trimmed == "" {
+		return "", false
+	}
+	// Explicit git transports.
+	if strings.HasPrefix(trimmed, "git@") ||
+		strings.HasPrefix(trimmed, "ssh://") ||
+		strings.HasPrefix(trimmed, "git://") ||
+		strings.HasSuffix(trimmed, ".git") {
+		return trimmed, true
+	}
+	if !strings.HasPrefix(trimmed, "http://") && !strings.HasPrefix(trimmed, "https://") {
+		return "", false
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil {
+		return "", false
+	}
+	// Only known git hosts are repo sources; arbitrary raw-file URLs are fetched.
+	switch strings.ToLower(u.Hostname()) {
+	case "github.com", "gitlab.com", "bitbucket.org":
+		// github.com/owner/repo — needs at least owner/repo (two path segments).
+		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+		if len(parts) < 2 {
+			return "", false
+		}
+		// A direct file fetch (e.g. .../blob/main/skill.md) is not a repo to clone.
+		// github.com/owner/repo/blob/main/<file> puts "blob"/"raw" at index 2.
+		if len(parts) >= 3 && (parts[2] == "blob" || parts[2] == "raw") {
+			return "", false
+		}
+		return trimmed, true
+	default:
+		return "", false
+	}
 }
 
 func InstallFromGitRepo(repoURL, repoSubdir, destDir string) ([]Skill, error) {
@@ -186,38 +240,144 @@ func RemoveByName(workDir, name string) (string, error) {
 		if s.Name != name {
 			continue
 		}
-		if err := os.Remove(s.Source); err != nil {
+		// The lock file lives at the skill store root, which for a bundled skill
+		// is the parent of its directory (not filepath.Dir(s.Source), which would
+		// be the bundle dir itself).
+		lockDir := filepath.Dir(s.Source)
+		removeTarget := s.Source
+		if s.Dir != "" {
+			lockDir = filepath.Dir(s.Dir)
+			removeTarget = s.Dir
+		}
+		if err := os.RemoveAll(removeTarget); err != nil {
 			return "", err
 		}
-		_ = removeLockRecord(filepath.Dir(s.Source), name)
-		return s.Source, nil
+		_ = removeLockRecord(lockDir, name)
+		return removeTarget, nil
 	}
 	return "", fmt.Errorf("skill %q not found", name)
 }
 
 func installFromDir(sourceDir, destDir string) ([]Skill, error) {
-	entries, err := os.ReadDir(sourceDir)
-	if err != nil {
-		return nil, err
-	}
 	var installed []Skill
-	for _, e := range entries {
-		path := filepath.Join(sourceDir, e.Name())
-		if e.IsDir() {
-			path = filepath.Join(path, "SKILL.md")
-		} else if !strings.HasSuffix(e.Name(), ".md") {
-			continue
-		}
-		skill, err := copySkillFile(path, destDir)
+	var walkErr error
+	seen := make(map[string]bool)
+	// Walk the tree so skills nested in arbitrary layouts (e.g. a plugin or
+	// marketplace repo like plugin/skills/<name>/SKILL.md) are discovered.
+	_ = filepath.WalkDir(sourceDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			continue
+			walkErr = err
+			return filepath.SkipDir
 		}
+		if d.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), ".md") {
+			return nil
+		}
+		// Prefer a container's SKILL.md over a sibling .md at the same level.
+		if d.Name() != "SKILL.md" && looksLikeSiblingSkill(path) {
+			return nil
+		}
+		var skill Skill
+		var copyErr error
+		if d.Name() == "SKILL.md" {
+			// Bundled skill: copy its whole directory (SKILL.md plus any
+			// scripts/, assets/) so the skill keeps the files its body
+			// references, e.g. <skill-dir>/scripts/run-tool.sh.
+			skill, copyErr = copySkillBundle(path, destDir)
+		} else {
+			skill, copyErr = copySkillFile(path, destDir)
+		}
+		if copyErr != nil {
+			return nil
+		}
+		if seen[skill.Name] {
+			return nil
+		}
+		seen[skill.Name] = true
 		installed = append(installed, skill)
+		return nil
+	})
+	if walkErr != nil {
+		return nil, walkErr
 	}
 	if len(installed) == 0 {
 		return nil, fmt.Errorf("no valid skill markdown files found in %s", sourceDir)
 	}
 	return installed, nil
+}
+
+// copySkillBundle installs a bundled skill: it copies the directory that holds
+// the SKILL.md (scripts, assets, etc.) into destDir/<name> so the skill ships
+// complete. Returns a Skill whose Source points at the copied SKILL.md and
+// whose Dir is the copied bundle directory.
+func copySkillBundle(skillFile, destDir string) (Skill, error) {
+	skill, err := LoadFile(skillFile)
+	if err != nil {
+		return Skill{}, err
+	}
+	srcDir := filepath.Dir(skillFile)
+	dstDir := filepath.Join(destDir, sanitizeDirName(skill.Name))
+	if err := copyTree(srcDir, dstDir); err != nil {
+		return Skill{}, err
+	}
+	skill.Source = filepath.Join(dstDir, "SKILL.md")
+	skill.Dir = dstDir
+	return skill, nil
+}
+
+// sanitizeDirName maps a skill name to a filesystem-safe subdirectory name.
+func sanitizeDirName(name string) string {
+	name = strings.TrimSpace(name)
+	name = strings.Map(func(r rune) rune {
+		switch r {
+		case '/', '\\', ':', '*', '?', '"', '<', '>', '|', 0:
+			return '-'
+		}
+		return r
+	}, name)
+	if name == "" || name == "." || name == ".." {
+		return "skill"
+	}
+	return name
+}
+
+// copyTree recursively copies src into dst, creating dst as needed.
+func copyTree(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, 0o755)
+	})
+}
+
+// looksLikeSiblingSkill reports whether path is a .md file that sits alongside a
+// SKILL.md in the same directory. When a format stores both (e.g. INDEX.md plus
+// SKILL.md), the SKILL.md is the canonical entry so the sibling is skipped.
+func looksLikeSiblingSkill(path string) bool {
+	dir, base := filepath.Split(path)
+	if base == "SKILL.md" {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(dir, "SKILL.md"))
+	return err == nil
 }
 
 func installFromFile(sourceFile, destDir string) ([]Skill, error) {

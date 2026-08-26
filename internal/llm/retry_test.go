@@ -235,8 +235,8 @@ func TestRetryMaxAttemptsExhausted(t *testing.T) {
 	if !strings.Contains(err.Error(), "all 3 attempts failed") {
 		t.Errorf("unexpected error: %v", err)
 	}
-	var exhausted *llm.RetryAttemptsExhaustedError
-	if !errors.As(err, &exhausted) {
+	exhausted, ok := errors.AsType[*llm.RetryAttemptsExhaustedError](err)
+	if !ok {
 		t.Fatalf("error type = %T, want RetryAttemptsExhaustedError", err)
 	}
 	if exhausted.Attempts != 3 {

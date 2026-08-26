@@ -749,8 +749,7 @@ func classifyTurnFailure(err error) protocol.FailureDecision {
 	if err == nil {
 		return protocol.FailureDecision{Class: protocol.FailureNone}
 	}
-	var retryable *RetryableCompletionError
-	if errors.As(err, &retryable) {
+	if _, ok := errors.AsType[*RetryableCompletionError](err); ok {
 		return protocol.ClassifyModelOutputFailure("error: " + err.Error())
 	}
 	return protocol.ClassifyToolExecutionFailure("runtime", err)

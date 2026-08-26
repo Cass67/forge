@@ -69,7 +69,7 @@ func TestRendererToolResultTruncatesWithoutExpandHint(t *testing.T) {
 	r := NewRenderer(&buf, 80, false)
 	// Create a long diff that will be truncated
 	var longDiff strings.Builder
-	for i := 0; i < 30; i++ {
+	for i := range 30 {
 		longDiff.WriteString("+line " + string(rune('A'+i)) + "\n")
 	}
 	r.ToolResult("edit_file", "edited main.go", longDiff.String(), false)

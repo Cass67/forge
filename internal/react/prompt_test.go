@@ -178,7 +178,7 @@ func TestSessionMessagesIncludeInitialRequestAnchorForLongHistory(t *testing.T) 
 	turn := session.RecordInput(initial)
 	mustAppendAssistantMessage(t, session, "I'll inspect the image input flow.")
 	mustCompleteTurn(t, session, turn, "I'll inspect the image input flow.", nil, nil)
-	for i := 0; i < 18; i++ {
+	for i := range 18 {
 		if err := session.AppendUserMessage(fmt.Sprintf("tool result chunk %d", i)); err != nil {
 			t.Fatal(err)
 		}

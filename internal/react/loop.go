@@ -759,8 +759,7 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 					continue
 				}
 			}
-			var retryable *RetryableCompletionError
-			if errors.As(err, &retryable) && completionRetries < maxCompletionRetriesPerTurn {
+			if retryable, ok := errors.AsType[*RetryableCompletionError](err); ok && completionRetries < maxCompletionRetriesPerTurn {
 				completionRetries++
 				if prompt := strings.TrimSpace(retryable.Prompt); prompt != "" {
 					r.pendingRetryPrompt = prompt
@@ -768,7 +767,7 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 				r.emitRetryNotice(retryNoticeText)
 				continue
 			}
-			if errors.As(err, &retryable) && isEmptyNativeResponseError(retryable) {
+			if retryable, ok := errors.AsType[*RetryableCompletionError](err); ok && isEmptyNativeResponseError(retryable) {
 				if failed := r.failedAgentFallbackErrorText(); failed != "" {
 					return r.completeTurn(turn, "", nil, errors.New(failed))
 				}
@@ -787,7 +786,7 @@ func (r *Runner) runLoop(ctx context.Context, turn int) error {
 					return nil
 				}
 			}
-			if errors.As(err, &retryable) {
+			if retryable, ok := errors.AsType[*RetryableCompletionError](err); ok {
 				if retryableCompletionAllowsCompletedAgentFallback(retryable) && ctx.Err() == nil {
 					if handled, fallbackErr := r.tryCompletedAgentResultFallbackAfterError(ctx, turn); handled {
 						return fallbackErr
@@ -881,8 +880,7 @@ func shouldRetryTransientStreamError(ctx context.Context, err error) bool {
 	// A completion the runtime rejected (empty answer, failed gate) is the
 	// completion budget's business: it needs a re-prompt, not a bare retry,
 	// and counting it here would spend the transport allowance on it.
-	var completion *RetryableCompletionError
-	if errors.As(err, &completion) {
+	if _, ok := errors.AsType[*RetryableCompletionError](err); ok {
 		return false
 	}
 	classified := resilienceerrors.ClassifyError(err)
@@ -894,8 +892,8 @@ func shouldRetryTransientStreamError(ctx context.Context, err error) bool {
 }
 
 func retryDriverExhaustedTransientError(err error) bool {
-	var exhausted *llm.RetryAttemptsExhaustedError
-	if !errors.As(err, &exhausted) {
+	var exhausted, ok = errors.AsType[*llm.RetryAttemptsExhaustedError](err)
+	if !ok {
 		return false
 	}
 	classified := resilienceerrors.ClassifyError(exhausted.Err)

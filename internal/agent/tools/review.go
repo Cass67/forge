@@ -1,10 +1,11 @@
 package tools
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	"forge/internal/llm"
@@ -230,8 +231,8 @@ func NewReportFindings() Tool {
 					return "", fmt.Errorf("finding %d has invalid severity %q; use critical, high, medium, or low", i+1, findings[i].Severity)
 				}
 			}
-			sort.SliceStable(findings, func(i, j int) bool {
-				return reviewSeverityRank[findings[i].Severity] < reviewSeverityRank[findings[j].Severity]
+			slices.SortStableFunc(findings, func(a, b reviewFinding) int {
+				return cmp.Compare(reviewSeverityRank[a.Severity], reviewSeverityRank[b.Severity])
 			})
 			return renderReviewFindings(findings, strings.TrimSpace(stringArg(args, "verdict"))), nil
 		},

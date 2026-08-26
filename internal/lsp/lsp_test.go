@@ -121,7 +121,7 @@ func TestServiceReusesPooledSession(t *testing.T) {
 	svc.lookPath = func(name string) (string, error) { return name, nil }
 	defer svc.Close(context.Background())
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		out, err := svc.Hover(context.Background(), dir, source, 3, 6)
 		if err != nil {
 			t.Fatalf("hover %d: %v", i, err)

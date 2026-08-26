@@ -7,7 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -262,8 +262,8 @@ func listChatSessions() ([]chatSessionEntry, error) {
 		})
 	}
 
-	sort.Slice(sessions, func(i, j int) bool {
-		return sessions[i].modTime.After(sessions[j].modTime)
+	slices.SortFunc(sessions, func(a, b chatSessionEntry) int {
+		return b.modTime.Compare(a.modTime)
 	})
 	return sessions, nil
 }

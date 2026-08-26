@@ -757,14 +757,11 @@ var liveLSPHolders atomic.Int64
 // the pool only when the last holder lets go.
 func holdSharedLSP() func() {
 	liveLSPHolders.Add(1)
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			if liveLSPHolders.Add(-1) == 0 {
-				lsp.Shared().Close(context.Background())
-			}
-		})
-	}
+	return sync.OnceFunc(func() {
+		if liveLSPHolders.Add(-1) == 0 {
+			lsp.Shared().Close(context.Background())
+		}
+	})
 }
 
 func RunChatLive(setup *ChatSetup) {
@@ -2578,7 +2575,7 @@ func handleChatSlashCommand(input string, renderer *agent.Renderer, loadedSkills
 			renderer.Info(fmt.Sprintf("skill already active: %s", s.Name))
 			return true
 		}
-		body := s.Body
+		body := s.ResolveBody()
 		switch {
 		case strings.Contains(body, "$ARGUMENTS"):
 			body = strings.ReplaceAll(body, "$ARGUMENTS", args)

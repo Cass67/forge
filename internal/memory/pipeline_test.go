@@ -256,7 +256,7 @@ func TestRememberPinnedSurvivesRotation(t *testing.T) {
 	if !ok || !state.Records[0].Pinned {
 		t.Fatalf("expected pinned record, got %+v", state)
 	}
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		state = ConsolidateRecords(append(state.Records, Record{Summary: fmt.Sprintf("turn %d", i)}), 3)
 	}
 	if len(state.Records) != 3 || !state.Records[0].Pinned {
