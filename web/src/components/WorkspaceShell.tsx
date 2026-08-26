@@ -80,6 +80,11 @@ type Props = {
   onActivityClosed: () => void;
   onDirtyChange: (dirty: boolean) => void;
   onNotify: (message: string) => void;
+  onTerminalPresenceChange: (
+    workspace: string,
+    id: string,
+    open: boolean,
+  ) => void;
   // Opening a panel from the menu while the docks are hidden has to show them
   // again, or the click looks like it did nothing.
   onShowDocks: () => void;
@@ -195,6 +200,7 @@ export function WorkspaceShell({
   onActivityClosed,
   onDirtyChange,
   onNotify,
+  onTerminalPresenceChange,
   onShowDocks,
   model,
   models,
@@ -760,6 +766,7 @@ export function WorkspaceShell({
           instanceID={tool.id}
           layoutKey={layoutKey}
           onNotify={onNotify}
+          onPresenceChange={onTerminalPresenceChange}
         />
       );
     const diffTab = gitTabs.find((tab) => tab.id === activeGitTab) ?? null;

@@ -140,6 +140,9 @@ export default function App() {
   // runtime keeps working while its workspace is in the background, so this
   // drives the liveness dots instead of the focused pane's busy flag.
   const [busyDirs, setBusyDirs] = useState<Record<string, boolean>>({});
+  const [openTerminals, setOpenTerminals] = useState<
+    Record<string, Record<string, boolean>>
+  >({});
   // Sub-agent roles that have produced output in the turn on screen. Cleared
   // when the turn ends, which is the only signal the event stream gives that
   // delegation is over.
@@ -631,6 +634,31 @@ export default function App() {
     }
     return [...ids];
   }, [sessions, tabs.open]);
+
+  const terminalDirs = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(openTerminals).map(([dir]) => [dir, true]),
+      ),
+    [openTerminals],
+  );
+
+  const setTerminalPresence = useCallback(
+    (dir: string, id: string, open: boolean) =>
+      setOpenTerminals((current) => {
+        if (!open && !current[dir]?.[id]) return current;
+        const terminals = { ...(current[dir] ?? {}) };
+        if (open) terminals[id] = true;
+        else delete terminals[id];
+        if (Object.keys(terminals).length === 0) {
+          const next = { ...current };
+          delete next[dir];
+          return next;
+        }
+        return { ...current, [dir]: terminals };
+      }),
+    [],
+  );
 
   // Looking at a workspace's files without starting a chat in it. The panels
   // follow; the conversation on screen stays where it is.
@@ -1216,6 +1244,7 @@ export default function App() {
               activeID={activeID}
               busy={busy}
               busyWorkspaces={busyDirs}
+              terminalWorkspaces={terminalDirs}
               onNew={newThread}
               onRestore={restoreThread}
               onOpenThread={openExactThread}
@@ -1268,6 +1297,7 @@ export default function App() {
           active={workspaceMode}
           onDirtyChange={setWorkspaceDirty}
           onNotify={notify}
+          onTerminalPresenceChange={setTerminalPresence}
           onShowDocks={() => setWorkspaceMode(true)}
           showActivity={prefs.showActivity}
           onActivityClosed={() =>

@@ -28,6 +28,7 @@ type Props = {
   instanceID?: string;
   layoutKey?: string;
   onNotify: (message: string) => void;
+  onPresenceChange?: (workspace: string, id: string, open: boolean) => void;
 };
 
 function terminalFontSize(): number {
@@ -79,6 +80,7 @@ function TerminalPane({
   active,
   onClose,
   closable,
+  onPresenceChange,
 }: {
   workDir: string;
   instanceID: string;
@@ -88,6 +90,7 @@ function TerminalPane({
   active: boolean;
   onClose: () => void;
   closable: boolean;
+  onPresenceChange?: (workspace: string, id: string, open: boolean) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const resizeRef = useRef<() => void>(() => {});
@@ -143,6 +146,7 @@ function TerminalPane({
       if (event.data) term.write(event.data);
       if (event.closed) {
         started = false;
+        onPresenceChange?.(workDir, id, false);
         term.writeln("\r\n[process exited]");
       }
     });
@@ -183,6 +187,7 @@ function TerminalPane({
           return;
         }
         started = true;
+        onPresenceChange?.(workDir, id, true);
         resize();
         if (pendingInput) {
           write(pendingInput);
@@ -202,12 +207,13 @@ function TerminalPane({
       input.dispose();
       offEvent();
       started = false;
+      onPresenceChange?.(workDir, id, false);
       void forge.closeTerminal(id);
       resizeRef.current = () => {};
       term.dispose();
       element.replaceChildren();
     };
-  }, [instanceID, onNotify, workDir]);
+  }, [instanceID, onNotify, onPresenceChange, workDir]);
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => resizeRef.current());
@@ -263,6 +269,7 @@ export function TerminalWorkspace({
   instanceID = "default",
   layoutKey = "",
   onNotify,
+  onPresenceChange,
 }: Props) {
   const storageID = `${workDir}:${instanceID}`;
   const [tree, setTree] = useState<TerminalNode>(() =>
@@ -428,6 +435,7 @@ export function TerminalWorkspace({
           onClose={() => close(id)}
           onFocus={() => setActivePane(id)}
           onNotify={onNotify}
+          onPresenceChange={onPresenceChange}
           target={paneTargets[id] ?? null}
           workDir={workDir}
         />

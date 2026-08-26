@@ -30,6 +30,7 @@ export function Sidebar({
   activeID,
   busy,
   busyWorkspaces = {},
+  terminalWorkspaces = {},
   onNew,
   onRestore,
   onOpenThread,
@@ -57,6 +58,8 @@ export function Sidebar({
   // Workspaces with an agent turn in flight in their own runtime, keyed by
   // directory. Shown as a liveness dot on each section.
   busyWorkspaces?: Record<string, boolean>;
+  // Workspaces with at least one open terminal pane.
+  terminalWorkspaces?: Record<string, boolean>;
   onNew: () => void;
   onRestore: (id: string) => void;
   onOpenThread: (id: string) => void;
@@ -169,7 +172,10 @@ export function Sidebar({
   // see one project, not to highlight it among ninety others.
   const matches = searchSections(visibleWorkspaces, threadsIn, query);
   const searching = query.trim() !== "";
-  const { shown: unfiltered, hidden } = splitSections(visibleWorkspaces, showAll);
+  const { shown: unfiltered, hidden } = splitSections(
+    visibleWorkspaces,
+    showAll,
+  );
   const sections = searching ? matches.map((m) => m.workspace) : unfiltered;
   const matchedThreads = new Map(
     matches.map((m) => [m.workspace.path, m.threads]),
@@ -306,6 +312,15 @@ export function Sidebar({
                       title="Directory no longer exists"
                     >
                       gone
+                    </span>
+                  ) : null}
+                  {terminalWorkspaces[ws.path] ? (
+                    <span
+                      className="ws-terminal"
+                      aria-label="terminal open"
+                      title="A terminal is open here"
+                    >
+                      &gt;_
                     </span>
                   ) : null}
                   {busyWorkspaces[ws.path] ? (
