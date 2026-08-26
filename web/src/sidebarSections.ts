@@ -11,6 +11,47 @@ import type { ThreadSummary, Workspace } from "./bridge";
 // pinned ones are always shown and do not count against it.
 export const SECTION_LIMIT = 8;
 
+// A workspace refresh can race thread loading while switching runtimes. Keep
+// thread-owned directories in the sidebar even when that refresh is stale.
+export function workspacesWithThreads(
+  workspaces: Workspace[],
+  threads: ThreadSummary[],
+  activePath: string,
+): Workspace[] {
+  const out = workspaces.map((workspace) => ({
+    ...workspace,
+    active: workspace.path === activePath,
+  }));
+  const paths = new Set(out.map((workspace) => workspace.path));
+  if (activePath && !paths.has(activePath)) {
+    out.push({
+      path: activePath,
+      name: activePath.split("/").filter(Boolean).pop() ?? activePath,
+      threads: 0,
+      last_use: "",
+      active: true,
+      missing: false,
+      pinned: false,
+    });
+    paths.add(activePath);
+  }
+  for (const thread of threads) {
+    const path = thread.cwd?.trim() || activePath;
+    if (!path || paths.has(path)) continue;
+    out.push({
+      path,
+      name: path.split("/").filter(Boolean).pop() ?? path,
+      threads: 1,
+      last_use: thread.updated_at,
+      active: path === activePath,
+      missing: false,
+      pinned: false,
+    });
+    paths.add(path);
+  }
+  return out;
+}
+
 const segments = (path: string) => path.split("/").filter(Boolean);
 
 // labelFor names each path by the shortest tail that tells it apart from the

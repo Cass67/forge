@@ -8,6 +8,7 @@ import {
   saveThreadOrder,
   searchSections,
   splitSections,
+  workspacesWithThreads,
 } from "../sidebarSections";
 import type { SessionStatus } from "../sessionTabs";
 
@@ -94,6 +95,10 @@ export function Sidebar({
   const [showAll, setShowAll] = useState(false);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const activeWorkspace = workDir;
+  const visibleWorkspaces = useMemo(
+    () => workspacesWithThreads(workspaces, threads, activeWorkspace),
+    [activeWorkspace, threads, workspaces],
+  );
 
   const toggle = (key: string, on?: boolean) =>
     setPicked((current) => {
@@ -140,7 +145,7 @@ export function Sidebar({
   // machine that has done benchmark runs means a hundred of them, most holding
   // one thread and most called "work". Names are grown until they differ, and
   // everything past the first few sits behind one toggle.
-  const labels = labelFor(workspaces.map((ws) => ws.path));
+  const labels = labelFor(visibleWorkspaces.map((ws) => ws.path));
   // Threads grouped by workspace, in one pass. Filtering the whole list per
   // section meant every render cost sections x threads, which on a machine
   // with a folder of repositories open is the sidebar's whole budget.
@@ -162,9 +167,9 @@ export function Sidebar({
   const threadsIn = (path: string) => byWorkspace.get(path) ?? [];
   // While searching, the list is exactly the matches: a query is a request to
   // see one project, not to highlight it among ninety others.
-  const matches = searchSections(workspaces, threadsIn, query);
+  const matches = searchSections(visibleWorkspaces, threadsIn, query);
   const searching = query.trim() !== "";
-  const { shown: unfiltered, hidden } = splitSections(workspaces, showAll);
+  const { shown: unfiltered, hidden } = splitSections(visibleWorkspaces, showAll);
   const sections = searching ? matches.map((m) => m.workspace) : unfiltered;
   const matchedThreads = new Map(
     matches.map((m) => [m.workspace.path, m.threads]),

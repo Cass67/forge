@@ -6,6 +6,7 @@ import {
   ordered,
   splitSections,
   SECTION_LIMIT,
+  workspacesWithThreads,
 } from "./sidebarSections";
 
 const ws = (path: string, extra: Partial<Workspace> = {}): Workspace => ({
@@ -164,4 +165,29 @@ test("searching names a workspace and keeps its threads under it", () => {
   expect(find("GIT/")).toHaveLength(2);
   expect(find("   ")).toEqual([]);
   expect(find("nothing here")).toEqual([]);
+});
+
+test("threads stay visible under their workspace even when workspace refresh lags", () => {
+  const threads: ThreadSummary[] = [{
+    thread_id: "thread-1",
+    title: "open",
+    cwd: "/work/project",
+    updated_at: "2026-08-24T00:00:00Z",
+    item_count: 1,
+  }];
+  const result = workspacesWithThreads([], threads, "/work/active");
+  expect(result.map((workspace) => workspace.path)).toEqual([
+    "/work/active",
+    "/work/project",
+  ]);
+  expect(result.find((workspace) => workspace.path === "/work/project")?.threads).toBe(1);
+});
+
+test("switched workspace stays visible when refresh has stale active flag", () => {
+  const result = workspacesWithThreads(
+    [ws("/work/project", { active: false })],
+    [],
+    "/work/project",
+  );
+  expect(result[0].active).toBe(true);
 });
