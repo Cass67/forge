@@ -852,8 +852,9 @@ func RunChatLive(setup *ChatSetup) {
 	reloadPlugins := func() string {
 		return reloadPluginsHandler(&pluginManager, setup.Config, setup.WorkDir, reg, approve, evRenderer.Info)
 	}
-	baseReg := reg.Filter(nil)
 	loadedSkills := skills.Load(setup.WorkDir)
+	reg.Register(tools.NewSkillTool(func() []skills.Skill { return skills.Load(setup.WorkDir) }))
+	baseReg := reg.Filter(nil)
 	state := chatstate.New()
 	memPipeline := memory.Pipeline{MaxRecords: 12}
 	memState := memory.LoadState(setup.WorkDir)
@@ -884,6 +885,9 @@ func RunChatLive(setup *ChatSetup) {
 		SystemPrompt: func() string {
 			snap := session.Snapshot()
 			base := agent.BuildNativeSystemPromptForMode(setup.WorkDir, string(snap.Mode), snap.TaskState != nil)
+			if skillText := skills.Describe(loadedSkills); skillText != "" {
+				base += "\n\n" + skillText
+			}
 			if lean {
 				if note := deferredToolsNote(reg, mcpNames); note != "" {
 					base += "\n\n" + note
@@ -1625,8 +1629,9 @@ func buildConsoleRuntime(setup *ChatSetup, approve tools.ApprovalFunc, out io.Wr
 		}
 		lsp.Shared().Close(context.Background())
 	}
-	baseReg := reg.Filter(nil)
 	loadedSkills := skills.Load(setup.WorkDir)
+	reg.Register(tools.NewSkillTool(func() []skills.Skill { return skills.Load(setup.WorkDir) }))
+	baseReg := reg.Filter(nil)
 	state := chatstate.New()
 	memPipeline := memory.Pipeline{MaxRecords: 12}
 	memState := memory.LoadState(setup.WorkDir)
@@ -2062,7 +2067,7 @@ func childReadOnlyToolNames() []string {
 		"read_file", "read_output", "artifact_read", "list_dir", "search", "code_search", "ast_grep", "glob", "view_image",
 		"lsp_definition", "lsp_references", "lsp_hover", "lsp_document_symbols",
 		"git_status", "git_diff", "git_log", "git_branch_state", "git_merge_status",
-		"tool_help", "think",
+		"tool_help", "think", "Skill",
 	}
 }
 

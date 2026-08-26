@@ -1671,6 +1671,16 @@ func TestRegisterDelegationToolsStripsGitMutationFromChildren(t *testing.T) {
 	}
 }
 
+func TestChildRegistryIncludesSkillTool(t *testing.T) {
+	reg := tools.NewRegistry()
+	reg.Register(tools.NewSkillTool(func() []skills.Skill { return nil }))
+
+	childReg := childRegistryForRole(reg.Filter(nil))
+	if _, ok := childReg.Get("Skill"); !ok {
+		t.Fatal("child registry does not include Skill tool")
+	}
+}
+
 func TestChildRegistryForResearchRolesStripsMutationTools(t *testing.T) {
 	cfg, err := config.Load(filepath.Join(t.TempDir(), "forge.toml"))
 	if err != nil {
