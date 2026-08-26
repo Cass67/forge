@@ -27,7 +27,7 @@ import {
 import { Transcript } from "./components/Transcript";
 import { ApprovalModal } from "./components/ApprovalModal";
 import { Composer } from "./components/Composer";
-import { StatsBar, type Stats } from "./components/StatsBar";
+import { StatsBar } from "./components/StatsBar";
 import { ActivityPanel } from "./components/ActivityPanel";
 import { ModelPicker } from "./components/ModelPicker";
 import { SettingsPanel, type Prefs } from "./components/SettingsPanel";
@@ -58,6 +58,12 @@ import {
   step,
   DEFAULT_SCALE,
 } from "./scale";
+import {
+  applyStatsEvent,
+  emptyStats,
+  setStatsModel,
+  type SessionStats,
+} from "./sessionStats";
 
 // flag sets one key of a boolean map, returning the map untouched when the
 // value is already what it should be. React re-renders on identity, so this is
@@ -69,18 +75,6 @@ function flag(
 ): Record<string, boolean> {
   return current[key] === value ? current : { ...current, [key]: value };
 }
-
-const initialStats: Stats = {
-  inTok: 0,
-  outTok: 0,
-  cachedTok: 0,
-  lastOut: 0,
-  lastMs: 0,
-  contextUsed: 0,
-  contextLimit: 0,
-  durationMs: 0,
-  model: "",
-};
 
 const defaultPrefs: Prefs = {
   showTools: true,
@@ -125,7 +119,7 @@ export default function App() {
     Record<string, WireAction[]>
   >({});
   const [submittingApproval, setSubmittingApproval] = useState(false);
-  const [stats, setStats] = useState<Stats>(initialStats);
+  const [statsBySession, setStatsBySession] = useState<SessionStats>({});
   const [noticeSeen, setNoticeSeen] = useState(false);
   const [effort, setEffort] = useState("");
   const [yolo, setYoloState] = useState(false);
@@ -273,6 +267,7 @@ export default function App() {
   const sessionID = init?.session ?? "";
   const sessionRef = useRef(sessionID);
   sessionRef.current = sessionID;
+  const stats = statsBySession[sessionID] ?? emptyStats(init?.model);
   const subAgents = agentsBySession[sessionID] ?? [];
   const approvalQueue = approvalQueues[sessionID] ?? [];
   const approval = approvalQueue[0] ?? null;
@@ -326,7 +321,9 @@ export default function App() {
       switchingWorkspace.current = false;
       setInit(payload);
       setNoticeSeen(false);
-      setStats((s) => ({ ...s, model: payload.model }));
+      setStatsBySession((current) =>
+        setStatsModel(current, session, payload.model),
+      );
       if (payload.effort) setEffort(payload.effort);
       setYoloState(payload.yolo);
       // Stash the outgoing session's transcript so coming back to it shows
@@ -396,6 +393,15 @@ export default function App() {
       }
       if (from && finished)
         setAgentsBySession((current) => ({ ...current, [from]: [] }));
+      // Usage belongs to its producing session even while that session runs
+      // behind another workspace. The status bar selects only the map entry
+      // for the conversation currently on screen.
+      if (ev.kind === "stats") {
+        const statsSession = from || sessionRef.current;
+        setStatsBySession((current) =>
+          applyStatsEvent(current, statsSession, ev),
+        );
+      }
       // Background sessions keep streaming into their own caches: their
       // output must never land in the transcript on screen.
       if (from && from !== sessionRef.current) {
@@ -405,27 +411,6 @@ export default function App() {
       if (switchingWorkspace.current) return;
       setEntries((prev) => applyEvent(prev, ev));
       if (ev.is_error || ev.error) turnFailed.current = true;
-      if (ev.kind === "stats" && ev.usage) {
-        const u = ev.usage;
-        setStats((s) => ({
-          ...s,
-          inTok: s.inTok + u.input_tokens,
-          outTok: s.outTok + u.output_tokens,
-          cachedTok: s.cachedTok + (u.cached_input_tokens || 0),
-          // Kept separately so the rate describes the last turn rather than
-          // an average dragged down by time spent idle.
-          lastOut: u.output_tokens || s.lastOut,
-        }));
-      }
-      if (ev.context_used || ev.context_limit || ev.duration_ms) {
-        setStats((s) => ({
-          ...s,
-          contextUsed: ev.context_used || s.contextUsed,
-          contextLimit: ev.context_limit || s.contextLimit,
-          durationMs: ev.duration_ms || s.durationMs,
-          lastMs: ev.duration_ms || s.lastMs,
-        }));
-      }
       if (finished) {
         setBusy(false);
         // The backend hands the panels back to the chat on a deliberate
@@ -782,7 +767,9 @@ export default function App() {
       void forge
         .switchModel(model)
         .then((applied) => {
-          setStats((s) => ({ ...s, model: applied }));
+          setStatsBySession((current) =>
+            setStatsModel(current, sessionID, applied),
+          );
           setNoticeSeen(true);
           notify(`model → ${applied}`);
           return forge.efforts(applied);
@@ -790,7 +777,7 @@ export default function App() {
         .then((list) => setInit((i) => (i ? { ...i, efforts: list } : i)))
         .catch((e: unknown) => notify(String(e)));
     },
-    [notify],
+    [notify, sessionID],
   );
 
   const setEffortAction = useCallback(

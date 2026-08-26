@@ -1,5 +1,5 @@
 import type { Entry } from "../entries";
-import type { Stats } from "./StatsBar";
+import type { Stats } from "../sessionStats";
 import { latestPlan, planProgress, type PlanStatus } from "../plan";
 
 // Icons match the TUI's plan rendering, so the same plan reads the same way

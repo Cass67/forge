@@ -1,14 +1,4 @@
-export type Stats = {
-  inTok: number;
-  outTok: number;
-  cachedTok: number;
-  lastOut: number;
-  lastMs: number;
-  contextUsed: number;
-  contextLimit: number;
-  durationMs: number;
-  model?: string;
-};
+import type { Stats } from "../sessionStats";
 
 function fmt(n: number): string {
   return n.toLocaleString();
