@@ -6,9 +6,33 @@ import {
   dockFraction,
   dockStorageKeys,
   loadColumns,
+  loadRuntimeColumns,
   parseDockWidths,
+  saveRuntimeColumns,
   workspaceLayoutKey,
 } from "./dockLayout";
+
+test("runtime layouts return with a workspace when persistence is off", () => {
+  const columns = loadRuntimeColumns("/tmp/runtime-layout-test", null);
+  columns.right[0].tools.push({
+    id: "terminal-1",
+    kind: "terminal",
+    title: "Terminal 1",
+  });
+  saveRuntimeColumns("/tmp/runtime-layout-test", columns, null);
+
+  expect(
+    loadRuntimeColumns("/tmp/runtime-layout-test", null).right[0].tools.some(
+      (tool) => tool.id === "terminal-1",
+    ),
+  ).toBe(true);
+  expect(
+    loadRuntimeColumns(
+      "/tmp/other-runtime-layout-test",
+      null,
+    ).right[0].tools.some((tool) => tool.id === "terminal-1"),
+  ).toBe(false);
+});
 
 test("a dock cannot be dragged shut or over the chat column", () => {
   expect(clampDock(DEFAULT_DOCK_WIDTHS, "left", 0).left).toBeGreaterThan(0.05);

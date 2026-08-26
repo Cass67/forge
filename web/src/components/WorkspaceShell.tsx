@@ -33,13 +33,13 @@ import {
   type DropTarget,
   dropZone,
   findTool,
-  loadColumns,
+  loadRuntimeColumns,
   loadDockWidths,
   moveTool,
   nextTerminalNumber,
   removeTool,
   resizeGroups,
-  saveColumns,
+  saveRuntimeColumns,
   saveDockWidths,
   setActiveTool,
   showsDivider,
@@ -220,7 +220,7 @@ export function WorkspaceShell({
   const [multiRun, setMultiRun] = useState(false);
   const storageKeys = dockStorageKeys(layoutPersistence, workDir);
   const [columns, setColumns] = useState<DockColumns>(() =>
-    loadColumns(storageKeys?.layout ?? null),
+    loadRuntimeColumns(workDir, storageKeys?.layout ?? null),
   );
   // The tool being dragged, and the zone the pointer is over, as
   // `${groupID}:${where}` — only used to light up drop targets.
@@ -501,8 +501,8 @@ export function WorkspaceShell({
   }, []);
 
   useEffect(
-    () => saveColumns(columns, storageKeys?.layout ?? null),
-    [columns, storageKeys?.layout],
+    () => saveRuntimeColumns(workDir, columns, storageKeys?.layout ?? null),
+    [columns, storageKeys?.layout, workDir],
   );
 
   const resizeDock = useCallback((side: EdgeSide, fraction: number) => {

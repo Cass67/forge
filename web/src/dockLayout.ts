@@ -418,6 +418,34 @@ export function saveColumns(
   localStorage.setItem(key, JSON.stringify(columns));
 }
 
+// WorkspaceShell is remounted when the user changes workspaces. Keep its live
+// layout in memory even when persistent layout storage is disabled, so open
+// panels return with the workspace during this app session.
+const runtimeColumns = new Map<string, DockColumns>();
+
+function runtimeLayoutKey(workDir: string, storageKey: string | null): string {
+  return `${workDir}\0${storageKey ?? "default"}`;
+}
+
+export function loadRuntimeColumns(
+  workDir: string,
+  storageKey: string | null,
+): DockColumns {
+  return (
+    runtimeColumns.get(runtimeLayoutKey(workDir, storageKey)) ??
+    loadColumns(storageKey)
+  );
+}
+
+export function saveRuntimeColumns(
+  workDir: string,
+  columns: DockColumns,
+  storageKey: string | null,
+): void {
+  runtimeColumns.set(runtimeLayoutKey(workDir, storageKey), columns);
+  saveColumns(columns, storageKey);
+}
+
 export function clampDock(
   widths: DockWidths,
   side: "left" | "right",
