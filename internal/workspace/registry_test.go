@@ -70,6 +70,29 @@ func TestRegistryRemembersPinsAndOrders(t *testing.T) {
 	}
 }
 
+func TestRegistryPersistsModelPerWorkspace(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	first, second := t.TempDir(), t.TempDir()
+	r := LoadRegistry()
+	if err := r.SetModel(first, "openai/gpt-5.4"); err != nil {
+		t.Fatalf("SetModel(first): %v", err)
+	}
+	if err := r.SetModel(second, "anthropic/claude-sonnet-4-6"); err != nil {
+		t.Fatalf("SetModel(second): %v", err)
+	}
+
+	reloaded := LoadRegistry()
+	if got := reloaded.Model(first); got != "openai/gpt-5.4" {
+		t.Fatalf("Model(first) = %q", got)
+	}
+	if got := reloaded.Model(second); got != "anthropic/claude-sonnet-4-6" {
+		t.Fatalf("Model(second) = %q", got)
+	}
+	if got := reloaded.Model(t.TempDir()); got != "" {
+		t.Fatalf("new workspace Model() = %q, want default fallback", got)
+	}
+}
+
 // Directories that have since been deleted must not linger in the list.
 func TestRegistryDropsMissingDirectories(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())

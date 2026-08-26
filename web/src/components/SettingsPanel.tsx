@@ -24,11 +24,11 @@ export type Prefs = {
 };
 
 type SectionID =
+  | "providers"
   | "model"
   | "appearance"
   | "display"
   | "workspace"
-  | "providers"
   | "mcp"
   | "skills";
 
@@ -85,21 +85,17 @@ export function SettingsPanel({
   onNotify: (msg: string) => void;
   onClose: () => void;
 }) {
-  const [section, setSection] = useState<SectionID>("model");
+  const [section, setSection] = useState<SectionID>("providers");
   const efforts = init?.efforts ?? [];
   const providerCount = init?.providers.length ?? 0;
   const skillCount = init?.skills.length ?? 0;
 
-  // Sections with nothing behind them yet are left out rather than opening to
-  // an empty pane.
   const sections: { id: SectionID; label: string; count?: number }[] = [
+    { id: "providers", label: "providers", count: providerCount || undefined },
     { id: "model", label: "model" },
     { id: "appearance", label: "appearance" },
     { id: "display", label: "display" },
     { id: "workspace", label: "workspace" },
-    ...(providerCount > 0
-      ? [{ id: "providers" as const, label: "providers", count: providerCount }]
-      : []),
     { id: "mcp", label: "mcp servers" },
     { id: "skills", label: "skills", count: skillCount },
   ];

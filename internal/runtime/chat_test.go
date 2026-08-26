@@ -844,6 +844,32 @@ func TestHandleChatSlashCommandModelAlsoUpdatesReactSessionDriver(t *testing.T) 
 	}
 }
 
+func TestHandleChatSlashCommandModelWithoutAuthenticatedProviderDoesNotChangeModel(t *testing.T) {
+	var buf bytes.Buffer
+	renderer := agent.NewRenderer(&buf, 80, false)
+	session := &stubChatSessionControl{}
+	setup := &ChatSetup{
+		ChatModel: "openai/gpt-5.4",
+		Available: []string{"openai/gpt-5.4"},
+		MakeDriver: func(string) llm.Driver {
+			return nil
+		},
+	}
+
+	if handled := handleChatSlashCommand("/model openai/gpt-5.4", renderer, nil, nil, session, setup); !handled {
+		t.Fatal("expected slash command to be handled")
+	}
+	if session.driver != nil {
+		t.Fatal("expected react session driver to remain unchanged")
+	}
+	if setup.Driver != nil {
+		t.Fatal("expected setup driver to remain unchanged")
+	}
+	if !strings.Contains(buf.String(), "no API key found") {
+		t.Fatalf("expected missing-provider guidance, got %q", buf.String())
+	}
+}
+
 func TestLoadChatApprovalConfigWiresAutoClassifier(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Permissions.Auto.Enabled = true

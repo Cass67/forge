@@ -18,6 +18,7 @@ type Entry struct {
 	Path     string    `json:"path"`
 	Pinned   bool      `json:"pinned"`
 	LastUsed time.Time `json:"last_used"`
+	Model    string    `json:"model,omitempty"`
 }
 
 // Registry remembers which workspaces have been opened, so the app can offer
@@ -95,6 +96,40 @@ func (r *Registry) Remember(path string) error {
 		}
 	}
 	r.entries = append(r.entries, Entry{Path: clean, LastUsed: time.Now().UTC()})
+	return r.saveLocked()
+}
+
+// Model returns the model last selected in this workspace. An empty result
+// means the workspace has never chosen one and should use the global default.
+func (r *Registry) Model(path string) string {
+	clean := filepath.Clean(strings.TrimSpace(path))
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, entry := range r.entries {
+		if entry.Path == clean {
+			return entry.Model
+		}
+	}
+	return ""
+}
+
+// SetModel remembers a successful model selection without changing workspace
+// recency or pin state.
+func (r *Registry) SetModel(path, model string) error {
+	clean, err := Clean(path)
+	if err != nil {
+		return err
+	}
+	model = strings.TrimSpace(model)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.entries {
+		if r.entries[i].Path == clean {
+			r.entries[i].Model = model
+			return r.saveLocked()
+		}
+	}
+	r.entries = append(r.entries, Entry{Path: clean, LastUsed: time.Now().UTC(), Model: model})
 	return r.saveLocked()
 }
 

@@ -32,6 +32,7 @@ import (
 	"forge/internal/tui"
 	"forge/internal/workspace"
 	forgeweb "forge/web"
+
 	// Register native plugins (tools, slash commands, skills) in the GUI
 	// binary, matching the CLI. Without this the sandbox plugin's /sandbox
 	// command (and its tool/skill) never exist server-side.
@@ -80,7 +81,7 @@ func run() error {
 	_ = registry.Remember(startDir)
 	enterWorkspace(startDir)
 
-	setup, err := buildSetup(startDir, *model, *yolo)
+	setup, err := buildWorkspaceSetup(startDir, *model, *yolo, registry)
 	if err != nil {
 		return err
 	}
@@ -165,7 +166,7 @@ func run() error {
 		controller.Starting(dir)
 
 		go func() {
-			setup, err := buildSetup(dir, *model, *yolo)
+			setup, err := buildWorkspaceSetup(dir, *model, *yolo, registry)
 			if err != nil {
 				log.Printf("forge-gui: cannot open %s: %v", dir, err)
 				controller.ReportError(fmt.Sprintf("cannot open %s: %v", dir, err))
@@ -301,6 +302,31 @@ func buildSetup(workDir, model string, yolo bool) (*runtimepkg.ChatSetup, error)
 		yolo = true
 	}
 	return runtimepkg.BuildChatSetup(cfg, nil, model, workDir, yolo)
+}
+
+func buildWorkspaceSetup(workDir, model string, yolo bool, registry *workspace.Registry) (*runtimepkg.ChatSetup, error) {
+	setup, err := buildSetup(workDir, model, yolo)
+	if err != nil {
+		return nil, err
+	}
+	// An explicit command-line override wins. Otherwise reuse this workspace's
+	// selection only while its provider still makes that model available.
+	// Reusing the setup avoids writing the workspace choice into the global
+	// default, which remains the fallback for newly opened workspaces.
+	if model == "" {
+		if saved := registry.Model(workDir); saved != "" && runtimepkg.ContainsModel(setup.Available, saved) && saved != setup.ChatModel {
+			if driver := setup.MakeDriver(saved); driver != nil {
+				setup.ChatModel = saved
+				setup.Driver = driver
+			}
+		}
+	}
+	setup.ModelChanged = func(name string) {
+		if err := registry.SetModel(workDir, name); err != nil {
+			log.Printf("forge-gui: remember model for %s: %v", workDir, err)
+		}
+	}
+	return setup, nil
 }
 
 func windowTitle(workDir string) string {

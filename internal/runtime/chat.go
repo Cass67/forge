@@ -144,7 +144,10 @@ type ChatSetup struct {
 	Available  []string
 	Providers  []tui.ProviderOption
 	MakeDriver func(string) llm.Driver
-	DebugLog   string
+	// ModelChanged is called after a model switch succeeds. GUI clients use it
+	// to persist the selection for the current workspace.
+	ModelChanged func(string)
+	DebugLog     string
 	// ReasoningEffort is the currently selected provider reasoning-effort level,
 	// re-applied to each driver built via MakeDriver so it survives model switches.
 	ReasoningEffort string
@@ -1194,7 +1197,11 @@ func RunChatLive(setup *ChatSetup) {
 			if reactRunner != nil {
 				reactRunner.SetDriver(setup.Driver)
 			}
-			persistChatLastModel(setup.Config, name)
+			if setup.ModelChanged != nil {
+				setup.ModelChanged(name)
+			} else {
+				persistChatLastModel(setup.Config, name)
+			}
 			return name, nil
 		},
 		SetEffort: func(effort string) error {
@@ -2413,8 +2420,12 @@ func handleChatSlashCommand(input string, renderer *agent.Renderer, loadedSkills
 		}
 		setup.ChatModel = picked
 		setup.Driver = d
+		setup.applyChatParams(d)
 		if session != nil {
 			session.SetDriver(setup.Driver)
+		}
+		if setup.ModelChanged != nil {
+			setup.ModelChanged(picked)
 		}
 		renderer.Info(fmt.Sprintf("switched to %s", setup.ChatModel))
 	case strings.HasPrefix(input, "/model "):
@@ -2435,8 +2446,12 @@ func handleChatSlashCommand(input string, renderer *agent.Renderer, loadedSkills
 		}
 		setup.ChatModel = newModel
 		setup.Driver = d
+		setup.applyChatParams(d)
 		if session != nil {
 			session.SetDriver(setup.Driver)
+		}
+		if setup.ModelChanged != nil {
+			setup.ModelChanged(newModel)
 		}
 		renderer.Info(fmt.Sprintf("switched to %s", setup.ChatModel))
 	case input == "/models":
