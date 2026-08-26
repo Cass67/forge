@@ -143,6 +143,8 @@ export default function App() {
   const [openTerminals, setOpenTerminals] = useState<
     Record<string, Record<string, boolean>>
   >({});
+  const openTerminalsRef = useRef(openTerminals);
+  openTerminalsRef.current = openTerminals;
   // Sub-agent roles that have produced output in the turn on screen. Cleared
   // when the turn ends, which is the only signal the event stream gives that
   // delegation is over.
@@ -658,6 +660,30 @@ export default function App() {
         return { ...current, [dir]: terminals };
       }),
     [],
+  );
+
+  const closeTerminalPanel = useCallback((dir: string, panelID: string) => {
+    const ids = Object.keys(openTerminalsRef.current[dir] ?? {}).filter((id) =>
+      id.startsWith(`${panelID}:`),
+    );
+    for (const id of ids) void forge.closeTerminal(id);
+    setOpenTerminals((current) => {
+      const terminals = { ...(current[dir] ?? {}) };
+      for (const id of ids) delete terminals[id];
+      const next = { ...current };
+      if (Object.keys(terminals).length > 0) next[dir] = terminals;
+      else delete next[dir];
+      return next;
+    });
+  }, []);
+
+  useEffect(
+    () =>
+      forge.onTerminal((event) => {
+        if (!event.closed || !event.workspace) return;
+        setTerminalPresence(event.workspace, event.id, false);
+      }),
+    [setTerminalPresence],
   );
 
   // Looking at a workspace's files without starting a chat in it. The panels
@@ -1298,6 +1324,7 @@ export default function App() {
           onDirtyChange={setWorkspaceDirty}
           onNotify={notify}
           onTerminalPresenceChange={setTerminalPresence}
+          onTerminalPanelClose={closeTerminalPanel}
           onShowDocks={() => setWorkspaceMode(true)}
           showActivity={prefs.showActivity}
           onActivityClosed={() =>

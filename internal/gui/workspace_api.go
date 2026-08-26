@@ -42,9 +42,12 @@ type TerminalEvent struct {
 }
 
 type terminalSession struct {
-	mu   sync.Mutex
-	ptmx *os.File
+	mu     sync.Mutex
+	ptmx   *os.File
+	buffer []byte
 }
+
+const terminalBufferLimit = 4 << 20
 
 func terminalEnvironment(env []string) []string {
 	result := make([]string, 0, len(env)+2)
@@ -290,22 +293,31 @@ func fileVersion(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (s *Service) StartTerminal(id string, rows, cols int) error {
+func (s *Service) StartTerminal(id string, rows, cols int) (string, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
-		return errors.New("terminal id is required")
+		return "", errors.New("terminal id is required")
 	}
 	// Shells belong to the workspace the chat is in, not to whatever is being
 	// browsed: they are keyed by it, and they outlive a look at another repo.
 	root, err := s.chatRoot()
 	if err != nil {
-		return err
+		return "", err
 	}
 	dir, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		return err
+		return "", err
 	}
 	key := s.terminalKey(dir, id)
+	s.mu.RLock()
+	existing := s.terminals[key]
+	s.mu.RUnlock()
+	if existing != nil {
+		existing.mu.Lock()
+		output := string(existing.buffer)
+		existing.mu.Unlock()
+		return output, nil
+	}
 	if rows < 1 {
 		rows = 24
 	}
@@ -321,13 +333,13 @@ func (s *Service) StartTerminal(id string, rows, cols int) error {
 	cmd.Env = terminalEnvironment(os.Environ())
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
 	if err != nil {
-		return err
+		return "", err
 	}
 	s.mu.Lock()
 	if _, exists := s.terminals[key]; exists {
 		s.mu.Unlock()
 		_ = ptmx.Close()
-		return errors.New("terminal already exists")
+		return s.StartTerminal(id, rows, cols)
 	}
 	session := &terminalSession{ptmx: ptmx}
 	s.terminals[key] = session
@@ -337,6 +349,12 @@ func (s *Service) StartTerminal(id string, rows, cols int) error {
 		for {
 			n, readErr := ptmx.Read(buf)
 			if n > 0 {
+				session.mu.Lock()
+				session.buffer = append(session.buffer, buf[:n]...)
+				if extra := len(session.buffer) - terminalBufferLimit; extra > 0 {
+					session.buffer = append(session.buffer[:0], session.buffer[extra:]...)
+				}
+				session.mu.Unlock()
 				s.emit(EventTerminal, TerminalEvent{ID: id, Workspace: dir, Data: string(buf[:n])})
 			}
 			if readErr != nil {
@@ -351,7 +369,7 @@ func (s *Service) StartTerminal(id string, rows, cols int) error {
 		_ = ptmx.Close()
 		s.emit(EventTerminal, TerminalEvent{ID: id, Workspace: dir, Closed: true})
 	}()
-	return nil
+	return "", nil
 }
 
 // terminalKey scopes a terminal to its workspace, so switching workspaces

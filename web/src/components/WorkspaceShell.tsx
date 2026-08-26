@@ -85,6 +85,7 @@ type Props = {
     id: string,
     open: boolean,
   ) => void;
+  onTerminalPanelClose: (workspace: string, panelID: string) => void;
   // Opening a panel from the menu while the docks are hidden has to show them
   // again, or the click looks like it did nothing.
   onShowDocks: () => void;
@@ -201,6 +202,7 @@ export function WorkspaceShell({
   onDirtyChange,
   onNotify,
   onTerminalPresenceChange,
+  onTerminalPanelClose,
   onShowDocks,
   model,
   models,
@@ -621,6 +623,9 @@ export function WorkspaceShell({
 
   const closePanel = (id: string) => {
     if (id === ACTIVITY_TOOL.id) onActivityClosed();
+    if (findTool(columns, id)?.tool.kind === "terminal") {
+      onTerminalPanelClose(workDir, id);
+    }
     setColumns((current) => {
       const kind = findTool(current, id)?.tool.kind;
       return kind === "terminal" || kind === "preview" || kind === "activity"

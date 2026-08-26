@@ -416,7 +416,7 @@ export const forge = {
     call<boolean>("WalkthroughStale", scope, base, fingerprint),
   startRuns: (spec: RunSpec) => call<RunLaunch[]>("StartRuns", spec),
   startTerminal: (id: string, rows: number, cols: number) =>
-    call<void>("StartTerminal", id, rows, cols),
+    call<string>("StartTerminal", id, rows, cols),
   writeTerminal: (id: string, data: string) =>
     call<void>("WriteTerminal", id, data),
   resizeTerminal: (id: string, rows: number, cols: number) =>

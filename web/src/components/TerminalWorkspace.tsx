@@ -101,7 +101,9 @@ function TerminalPane({
     // for readiness; changing workDir then starts a fresh workspace-bound PTY.
     if (!element || !workDir) return;
     element.replaceChildren();
-    const id = `${instanceID}:pty:${crypto.randomUUID()}`;
+    // Stable IDs let the backend reattach this pane after its workspace UI is
+    // unmounted while another workspace is active.
+    const id = `${instanceID}:pty`;
     let disposed = false;
     let started = false;
     let pendingInput = "";
@@ -181,12 +183,13 @@ function TerminalPane({
     backendCols = term.cols;
     void forge
       .startTerminal(id, term.rows, term.cols)
-      .then(() => {
+      .then((output) => {
         if (disposed) {
           void forge.closeTerminal(id);
           return;
         }
         started = true;
+        if (output) term.write(output);
         onPresenceChange?.(workDir, id, true);
         resize();
         if (pendingInput) {
@@ -207,8 +210,6 @@ function TerminalPane({
       input.dispose();
       offEvent();
       started = false;
-      onPresenceChange?.(workDir, id, false);
-      void forge.closeTerminal(id);
       resizeRef.current = () => {};
       term.dispose();
       element.replaceChildren();
@@ -315,7 +316,11 @@ export function TerminalWorkspace({
     });
   };
 
-  const close = (id: string) => setTree((current) => closePane(current, id));
+  const close = (id: string) => {
+    void forge.closeTerminal(`${id}:pty`);
+    onPresenceChange?.(workDir, `${id}:pty`, false);
+    setTree((current) => closePane(current, id));
+  };
 
   // A divider drags along its own axis, measured against the panel so a nested
   // split still tracks the pointer.

@@ -3,6 +3,7 @@ package gui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -22,6 +23,37 @@ func TestTerminalEnvironmentSetsXtermCapabilities(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("terminal environment = %q, want %q", got, want)
 		}
+	}
+}
+
+func TestStartTerminalReattachesExistingSession(t *testing.T) {
+	service, root := workspaceTestService(t)
+	t.Cleanup(service.closeTerminals)
+
+	if _, err := service.StartTerminal("terminal-1", 24, 80); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := service.terminalKey(dir, "terminal-1")
+	service.mu.RLock()
+	session := service.terminals[key]
+	service.mu.RUnlock()
+	if session == nil {
+		t.Fatal("terminal session was not registered")
+	}
+	session.mu.Lock()
+	session.buffer = append(session.buffer, []byte("preserved output")...)
+	session.mu.Unlock()
+
+	output, err := service.StartTerminal("terminal-1", 24, 80)
+	if err != nil {
+		t.Fatalf("reattach terminal: %v", err)
+	}
+	if !strings.Contains(output, "preserved output") {
+		t.Fatalf("reattach output = %q", output)
 	}
 }
 
