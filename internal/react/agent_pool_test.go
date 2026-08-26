@@ -29,6 +29,27 @@ func TestAgentPoolSpawnAndWaitComplete(t *testing.T) {
 	}
 }
 
+func TestAgentPoolContainsSpawnPanic(t *testing.T) {
+	pool := NewAgentPool(func(context.Context, string, string) (string, error) {
+		panic("boom")
+	})
+
+	id, err := pool.Spawn(t.Context(), "explorer", "inspect repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := pool.Wait(t.Context(), id, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != AgentStatusFailed {
+		t.Fatalf("status = %q, want %q", result.Status, AgentStatusFailed)
+	}
+	if !strings.Contains(result.Error, "child agent panic: boom") {
+		t.Fatalf("error = %q, want contained panic", result.Error)
+	}
+}
+
 func TestAgentPoolUpdatesSessionAgentTaskOnSpawnAndComplete(t *testing.T) {
 	session := NewSession()
 	turn := session.RecordInput("delegate audit")

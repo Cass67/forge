@@ -92,6 +92,7 @@ const defaultPrefs: Prefs = {
   scopeThreads: true,
   expandSubfolders: false,
   autoDiscoverSubfolders: false,
+  dockLayoutPersistence: "default",
 };
 
 function loadPrefs(): Prefs {
@@ -1258,7 +1259,7 @@ export default function App() {
           </>
         ) : null}
         <WorkspaceShell
-          key={browseDir || (init?.work_dir ?? "")}
+          key={`${browseDir || (init?.work_dir ?? "")}:${prefs.dockLayoutPersistence}`}
           workDir={browseDir || (init?.work_dir ?? "")}
           browsing={browseDir}
           chatDir={init?.work_dir ?? ""}
@@ -1281,6 +1282,7 @@ export default function App() {
           }
           model={init?.model ?? ""}
           models={init?.models ?? []}
+          layoutPersistence={prefs.dockLayoutPersistence}
         >
           <main className="center">
             <Transcript entries={entries} prefs={prefs} busy={busy} />

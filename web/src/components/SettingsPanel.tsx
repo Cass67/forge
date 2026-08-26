@@ -6,6 +6,7 @@ import { forge, type InitPayload, type Provider } from "../bridge";
 import { ProviderPanel } from "./ProviderPanel";
 import { MCPPanel } from "./MCPPanel";
 import { SkillsPanel } from "./SkillsPanel";
+import type { DockLayoutPersistence } from "../dockLayout";
 
 export type Prefs = {
   showTools: boolean;
@@ -19,6 +20,7 @@ export type Prefs = {
   // workspace, rather than the folder itself being the one you work in.
   expandSubfolders: boolean;
   autoDiscoverSubfolders: boolean;
+  dockLayoutPersistence: DockLayoutPersistence;
 };
 
 type SectionID =
@@ -30,14 +32,15 @@ type SectionID =
   | "mcp"
   | "skills";
 
-const DISPLAY_TOGGLES: [keyof Prefs, string][] = [
-  ["showSidebar", "thread sidebar"],
-  ["showActivity", "activity panel"],
-  ["showTools", "tool cards"],
-  ["showReasoning", "thinking blocks"],
-  ["expandReasoning", "expand thinking by default"],
-  ["expandTools", "expand tool and code panels by default"],
-];
+const DISPLAY_TOGGLES: [keyof Omit<Prefs, "dockLayoutPersistence">, string][] =
+  [
+    ["showSidebar", "thread sidebar"],
+    ["showActivity", "activity panel"],
+    ["showTools", "tool cards"],
+    ["showReasoning", "thinking blocks"],
+    ["expandReasoning", "expand thinking by default"],
+    ["expandTools", "expand tool and code panels by default"],
+  ];
 
 export function SettingsPanel({
   init,
@@ -234,6 +237,40 @@ export function SettingsPanel({
                   <span className="set-k">current</span>
                   <span className="set-v mono">{init?.work_dir || "—"}</span>
                 </div>
+                <div className="set-row">
+                  <span className="set-k">dock layout</span>
+                  <div
+                    aria-label="Remember dock layout"
+                    className="seg wrap"
+                    role="group"
+                  >
+                    {(
+                      [
+                        ["default", "Default"],
+                        ["global", "Globally"],
+                        ["workspace", "By workspace"],
+                      ] as [DockLayoutPersistence, string][]
+                    ).map(([value, label]) => (
+                      <button
+                        aria-pressed={prefs.dockLayoutPersistence === value}
+                        className={`seg-btn ${prefs.dockLayoutPersistence === value ? "on" : ""}`}
+                        key={value}
+                        onClick={() =>
+                          onPrefs({ ...prefs, dockLayoutPersistence: value })
+                        }
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="set-row">
+                  <span className="set-k" />
+                  <span className="muted-note">
+                    Default resets panel positions and sizes when a workspace
+                    opens.
+                  </span>
+                </div>
                 <label className="set-row toggle">
                   <input
                     type="checkbox"
@@ -257,7 +294,9 @@ export function SettingsPanel({
                       })
                     }
                   />
-                  <span>automatically add new subfolders from opened containers</span>
+                  <span>
+                    automatically add new subfolders from opened containers
+                  </span>
                 </label>
                 <div className="set-row">
                   <span className="set-k" />

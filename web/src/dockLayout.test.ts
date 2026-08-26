@@ -4,6 +4,8 @@ import {
   clampDock,
   DEFAULT_DOCK_WIDTHS,
   dockFraction,
+  dockStorageKeys,
+  loadColumns,
   parseDockWidths,
   workspaceLayoutKey,
 } from "./dockLayout";
@@ -47,6 +49,38 @@ test("dock layouts use separate storage for each workspace", () => {
   );
 });
 
+test("dock persistence selects global, workspace, or no storage", () => {
+  expect(dockStorageKeys("global", "/git/forge")).toEqual({
+    layout: "forge.dockLayout",
+    widths: "forge.dockWidths",
+  });
+  expect(dockStorageKeys("workspace", "/git/forge")).toEqual({
+    layout: "forge.dockLayout:/git/forge",
+    widths: "forge.dockWidths:/git/forge",
+  });
+  expect(dockStorageKeys("default", "/git/forge")).toBeNull();
+});
+
+test("loading a remembered layout preserves its dock locations", () => {
+  const stored = moveTool(defaultColumns(), "explorer", {
+    side: "left",
+    where: "end",
+  });
+  const previous = globalThis.localStorage;
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: { getItem: () => JSON.stringify(stored) },
+  });
+  try {
+    expect(findTool(loadColumns("remembered"), "explorer")?.side).toBe("left");
+  } finally {
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: previous,
+    });
+  }
+});
+
 import {
   addTool,
   allTools,
@@ -56,7 +90,6 @@ import {
   findTool,
   moveTool,
   parseColumns,
-  placeDocksRight,
   removeTool,
   resizeGroups,
   showsDivider,
@@ -87,7 +120,7 @@ function spreadColumns(): DockColumns {
   });
 }
 
-test("workspaces open with chat first and every dock on the right", () => {
+test("the default layout opens with chat first and every dock on the right", () => {
   const defaults = defaultColumns();
   expect(defaults.left).toHaveLength(0);
   expect(
@@ -97,26 +130,6 @@ test("workspaces open with chat first and every dock on the right", () => {
   expect(
     defaults.right.flatMap((group) => group.tools).map((tool) => tool.id),
   ).toEqual(["explorer", "editor", "git"]);
-
-  const legacy = spreadColumns();
-  const terminalInChat = moveTool(
-    addTool(legacy, terminal, {
-      side: "center",
-      where: "into",
-      groupID: legacy.center[0].id,
-    }),
-    "editor",
-    { side: "left", where: "end" },
-  );
-  const opened = placeDocksRight(terminalInChat);
-  expect(opened.left).toHaveLength(0);
-  expect(
-    opened.center.flatMap((group) => group.tools).map((tool) => tool.id),
-  ).toEqual(["chat"]);
-  expect(opened.right).toHaveLength(1);
-  expect(
-    opened.right.flatMap((group) => group.tools).map((tool) => tool.id),
-  ).toEqual(["explorer", "editor", "git", "terminal-1"]);
 });
 
 test("a tab dropped below a group splits that column", () => {

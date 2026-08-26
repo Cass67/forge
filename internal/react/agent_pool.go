@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -190,7 +191,7 @@ func (p *AgentPool) SetLifecycleObserver(observer func(AgentTaskState)) {
 }
 
 func (p *AgentPool) runSpawn(runCtx context.Context, job *agentJob, role, task string) {
-	result, err := p.spawn(runCtx, role, task)
+	result, err := p.callSpawn(runCtx, role, task)
 	completedAt := time.Now()
 	var handoff *AgentHandoff
 	if err == nil {
@@ -232,6 +233,15 @@ func (p *AgentPool) runSpawn(runCtx context.Context, job *agentJob, role, task s
 	p.mu.Unlock()
 	p.notifyAgentTask(state)
 	close(job.done)
+}
+
+func (p *AgentPool) callSpawn(ctx context.Context, role, task string) (result string, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("child agent panic: %v\n%s", recovered, debug.Stack())
+		}
+	}()
+	return p.spawn(ctx, role, task)
 }
 
 func (p *AgentPool) Wait(ctx context.Context, id string, timeout time.Duration) (AgentResult, error) {

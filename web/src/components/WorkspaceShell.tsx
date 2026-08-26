@@ -24,9 +24,11 @@ import {
   DEFAULT_DOCK_WIDTHS,
   type DockColumns,
   type DockGroup,
+  type DockLayoutPersistence,
   type DockSide,
   type DockTool,
   dockFraction,
+  dockStorageKeys,
   type DockWidths,
   type DropTarget,
   dropZone,
@@ -42,7 +44,6 @@ import {
   setActiveTool,
   showsDivider,
   SIDES,
-  workspaceLayoutKey,
 } from "../dockLayout";
 import {
   acceptSavedFile,
@@ -87,6 +88,7 @@ type Props = {
   // launches windows across the latter.
   model: string;
   models: string[];
+  layoutPersistence: DockLayoutPersistence;
 };
 type TreeNode = WorkspaceEntry & {
   loaded?: boolean;
@@ -196,6 +198,7 @@ export function WorkspaceShell({
   onShowDocks,
   model,
   models,
+  layoutPersistence,
 }: Props) {
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [files, setFiles] = useState<OpenFile[]>([]);
@@ -207,11 +210,9 @@ export function WorkspaceShell({
   // Bumped on every index or working-tree change so open diffs re-read.
   const [gitRevision, setGitRevision] = useState(0);
   const [multiRun, setMultiRun] = useState(false);
-  // Panel layout is workspace-scoped. Terminal panels from another directory
-  // must neither render here nor be overwritten when this workspace changes.
-  const layoutStorageKey = workspaceLayoutKey(workDir);
+  const storageKeys = dockStorageKeys(layoutPersistence, workDir);
   const [columns, setColumns] = useState<DockColumns>(() =>
-    loadColumns(layoutStorageKey),
+    loadColumns(storageKeys?.layout ?? null),
   );
   // The tool being dragged, and the zone the pointer is over, as
   // `${groupID}:${where}` — only used to light up drop targets.
@@ -248,7 +249,9 @@ export function WorkspaceShell({
     return assign;
   };
   const shellRef = useRef<HTMLDivElement>(null);
-  const [dockWidths, setDockWidths] = useState<DockWidths>(loadDockWidths);
+  const [dockWidths, setDockWidths] = useState<DockWidths>(() =>
+    loadDockWidths(storageKeys?.widths ?? null),
+  );
   const workspaceGeneration = useRef(0);
   const openRequest = useRef(0);
   const file = files.find((candidate) => candidate.path === activePath) ?? null;
@@ -478,7 +481,10 @@ export function WorkspaceShell({
     [workspacePaths, query],
   );
 
-  useEffect(() => saveDockWidths(dockWidths), [dockWidths]);
+  useEffect(
+    () => saveDockWidths(dockWidths, storageKeys?.widths ?? null),
+    [dockWidths, storageKeys?.widths],
+  );
 
   useEffect(() => {
     setMenuSlot(document.getElementById("forge-panel-menu"));
@@ -486,8 +492,8 @@ export function WorkspaceShell({
   }, []);
 
   useEffect(
-    () => saveColumns(columns, layoutStorageKey),
-    [columns, layoutStorageKey],
+    () => saveColumns(columns, storageKeys?.layout ?? null),
+    [columns, storageKeys?.layout],
   );
 
   const resizeDock = useCallback((side: EdgeSide, fraction: number) => {
@@ -1008,7 +1014,11 @@ export function WorkspaceShell({
                     event.dataTransfer.effectAllowed = "move";
                     event.dataTransfer.setData(DOCK_TOOL_MIME, tool.id);
                     event.dataTransfer.setData("text/plain", tool.id);
-                    setDragging(tool.id);
+                    // Let the browser establish the native drag before opening
+                    // empty columns and mounting drop zones. Changing the centre
+                    // layout synchronously during dragstart can cancel the drag
+                    // in the WebKit host, leaving panels moved into chat stuck.
+                    requestAnimationFrame(() => setDragging(tool.id));
                   }}
                   onDrop={tabDrop.onDrop}
                   onKeyDown={(event) => {
