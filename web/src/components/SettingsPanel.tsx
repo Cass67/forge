@@ -18,8 +18,8 @@ export type Prefs = {
   showDocks: boolean;
   yolo: boolean;
   scopeThreads: boolean;
-  // Open a folder as a container: every repository under it becomes its own
-  // workspace, rather than the folder itself being the one you work in.
+  // Open a folder as a container: every repository below it becomes its own
+  // workspace.
   expandSubfolders: boolean;
   autoDiscoverSubfolders: boolean;
   dockLayoutPersistence: DockLayoutPersistence;
@@ -280,7 +280,7 @@ export function SettingsPanel({
                     }
                   />
                   <span>
-                    opening a folder adds each subfolder as its own workspace
+                    opening a folder discovers Git repositories recursively
                   </span>
                 </label>
                 <label className="set-row toggle">
@@ -295,13 +295,13 @@ export function SettingsPanel({
                     }
                   />
                   <span>
-                    automatically add new subfolders from opened containers
+                    automatically discover new Git repositories in added folders
                   </span>
                 </label>
                 <div className="set-row">
                   <span className="set-k" />
                   <button className="btn" onClick={onAddWorkspace}>
-                    Open folder…
+                    Add folder…
                   </button>
                   <button className="btn" onClick={onOpenWorkspaces}>
                     Recent workspaces

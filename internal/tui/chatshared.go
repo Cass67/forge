@@ -95,6 +95,8 @@ type ChatLiveConfig struct {
 	ReadThreadItems func(threadID string) []protocol.Item
 	// DeleteThread permanently removes a stored thread.
 	DeleteThread func(threadID string) error
+	// PurgeThread removes a thread after its live session has stopped.
+	PurgeThread func(threadID string) error
 	// RenameThread gives a stored thread a title of the user's choosing.
 	RenameThread func(threadID, title string) error
 	// MCPServers reports the configured MCP servers and what each has loaded.

@@ -90,6 +90,9 @@ type Service struct {
 	// Directories being torn down by CloseWorkspace, so a session ending there
 	// is not mistaken for one that died and reopened.
 	closing map[string]bool
+	// pendingThreadDeletes are purged once their live runtimes have stopped,
+	// so no writer can recreate a thread after the user removes it.
+	pendingThreadDeletes map[string]bool
 
 	emit      func(name string, data any)
 	connected sync.Once
@@ -158,10 +161,11 @@ type Controller struct{ s *Service }
 func New(emit func(name string, data any)) (*Service, *Controller) {
 	s := &Service{
 		emit: emit, flows: providerauth.NewFlows(),
-		runtimes:         make(map[string]*guiRuntime),
-		terminals:        make(map[string]*terminalSession),
-		closing:          make(map[string]bool),
-		pendingApprovals: make(map[string][]pendingApproval),
+		runtimes:             make(map[string]*guiRuntime),
+		terminals:            make(map[string]*terminalSession),
+		closing:              make(map[string]bool),
+		pendingThreadDeletes: make(map[string]bool),
+		pendingApprovals:     make(map[string][]pendingApproval),
 	}
 	return s, &Controller{s: s}
 }
@@ -208,6 +212,24 @@ func (c *Controller) Forget(sessionID string) {
 	gone := s.runtimes[sessionID]
 	delete(s.runtimes, sessionID)
 	delete(s.pendingApprovals, sessionID)
+	threadID := ""
+	var purge func(string) error
+	if gone != nil {
+		threadID = gone.threadID()
+	}
+	if s.pendingThreadDeletes[threadID] {
+		stillLive := false
+		for _, rt := range s.runtimes {
+			if rt.threadID() == threadID {
+				stillLive = true
+				break
+			}
+		}
+		if !stillLive {
+			delete(s.pendingThreadDeletes, threadID)
+			purge = gone.cfg.PurgeThread
+		}
+	}
 	if s.activeSession == sessionID {
 		s.activeSession = ""
 		if gone != nil {
@@ -224,6 +246,11 @@ func (c *Controller) Forget(sessionID string) {
 		delete(s.closing, gone.dir)
 	}
 	s.mu.Unlock()
+	if purge != nil {
+		if err := purge(threadID); err != nil {
+			log.Printf("gui: could not delete thread %s: %v", threadID, err)
+		}
+	}
 	// Closing the last session would leave the window addressing nothing, with
 	// no way back: give its workspace a fresh conversation instead.
 	if orphaned && s.StartRuntime != nil {
@@ -562,7 +589,7 @@ func (s *Service) History(threadID string) []protocol.Item {
 }
 
 // DeleteThread permanently removes a stored thread and returns the updated
-// list. The active thread is refused: it is still being written to.
+// list. Live sessions are stopped before their storage is removed.
 func (s *Service) DeleteThread(threadID string) ([]tui.ThreadSummary, error) {
 	cfg, _, ready := s.snapshot()
 	if !ready {
@@ -571,10 +598,37 @@ func (s *Service) DeleteThread(threadID string) ([]tui.ThreadSummary, error) {
 	if cfg.DeleteThread == nil {
 		return s.Threads(), errNoDelete
 	}
+	s.mu.Lock()
+	var stops []func()
+	for _, rt := range s.runtimes {
+		if rt.threadID() == threadID {
+			if rt.stop == nil || rt.cfg.PurgeThread == nil {
+				s.mu.Unlock()
+				return s.Threads(), errNoDelete
+			}
+			stops = append(stops, rt.stop)
+		}
+	}
+	if len(stops) > 0 {
+		s.pendingThreadDeletes[threadID] = true
+	}
+	s.mu.Unlock()
+	if len(stops) > 0 {
+		for _, stop := range stops {
+			stop()
+		}
+		return withoutThread(s.Threads(), threadID), nil
+	}
 	if err := cfg.DeleteThread(threadID); err != nil {
 		return s.Threads(), err
 	}
 	return s.Threads(), nil
+}
+
+func withoutThread(threads []tui.ThreadSummary, threadID string) []tui.ThreadSummary {
+	return slices.DeleteFunc(threads, func(thread tui.ThreadSummary) bool {
+		return thread.ThreadID == threadID
+	})
 }
 
 // ClearResult reports what a bulk clear removed.
@@ -1124,14 +1178,13 @@ func (s *Service) otherRememberedLocked(skip string) string {
 	return ""
 }
 
-// maxWorkspaceTree caps how many subdirectories one folder can contribute.
+// maxWorkspaceTree caps how many repositories one folder can contribute.
 // Pointed at a home directory this would otherwise register hundreds of
 // entries, and a sidebar that long is not navigable anyway.
 const maxWorkspaceTree = 200
 
-// AddWorkspaceTree remembers every immediate subdirectory of dir as its own
-// workspace, which is how a folder holding a pile of repositories is opened:
-// one pick, and each repository underneath becomes a workspace one click away.
+// AddWorkspaceTree remembers every Git repository below dir as its own
+// workspace. Repositories may be nested several directories deep.
 // Nothing is started — runtimes stay lazy, so this costs a directory listing
 // and no processes.
 func (s *Service) AddWorkspaceTree(dir string) ([]Workspace, error) {
@@ -1159,8 +1212,8 @@ func (s *Service) AddWorkspaceTree(dir string) ([]Workspace, error) {
 	return s.Workspaces(), nil
 }
 
-// RefreshWorkspaceTrees discovers new immediate children under folders that
-// were previously opened as containers.
+// RefreshWorkspaceTrees discovers new repositories under folders that were
+// previously opened as containers. Existing registry entries are left alone.
 func (s *Service) RefreshWorkspaceTrees() ([]Workspace, error) {
 	if s.Registry == nil {
 		return s.Workspaces(), errNoWorkDir
@@ -1174,36 +1227,35 @@ func (s *Service) RefreshWorkspaceTrees() ([]Workspace, error) {
 }
 
 func (s *Service) scanWorkspaceTree(root string) (int, error) {
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return 0, err
-	}
 	added := 0
-	for _, entry := range entries {
-		if added >= maxWorkspaceTree {
-			break
-		}
-		name := entry.Name()
-		// Hidden directories are caches and tooling state, not projects.
-		if strings.HasPrefix(name, ".") {
-			continue
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			// One unreadable build/cache directory should not prevent repositories
+			// elsewhere under the selected folder from being discovered.
+			if path != root {
+				return filepath.SkipDir
+			}
+			return walkErr
 		}
 		if !entry.IsDir() {
-			// A symlink to a directory is how people keep a project in one
-			// place and list it in another, so it counts.
-			if entry.Type()&os.ModeSymlink == 0 {
-				continue
+			return nil
+		}
+		if path != root && strings.HasPrefix(entry.Name(), ".") {
+			return filepath.SkipDir
+		}
+		gitPath := filepath.Join(path, ".git")
+		if _, err := os.Stat(gitPath); err == nil {
+			if err := s.Registry.Ensure(path); err != nil {
+				return err
 			}
-			if st, statErr := os.Stat(filepath.Join(root, name)); statErr != nil || !st.IsDir() {
-				continue
+			added++
+			if added >= maxWorkspaceTree {
+				return filepath.SkipAll
 			}
 		}
-		if err := s.Registry.Ensure(filepath.Join(root, name)); err != nil {
-			return added, err
-		}
-		added++
-	}
-	return added, nil
+		return nil
+	})
+	return added, err
 }
 
 // workspaceDir validates a directory chosen in the UI.

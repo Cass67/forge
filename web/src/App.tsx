@@ -64,7 +64,11 @@ import {
   setStatsModel,
   type SessionStats,
 } from "./sessionStats";
-import { initialDockVisibility, initialYoloState } from "./dockVisibility";
+import {
+  initialDockVisibility,
+  initialYoloState,
+  sessionYoloState,
+} from "./dockVisibility";
 
 // flag sets one key of a boolean map, returning the map untouched when the
 // value is already what it should be. React re-renders on identity, so this is
@@ -105,6 +109,12 @@ function loadPrefs(): Prefs {
 
 type Overlay = "none" | "models" | "settings" | "help" | "workspaces";
 
+const EFFORT_KEY = "forge.effort";
+
+function loadEffort(): string {
+  return localStorage.getItem(EFFORT_KEY) ?? "";
+}
+
 export default function App() {
   const [init, setInit] = useState<InitPayload | null>(null);
   const [entries, setEntries] = useState<Entry[]>([]);
@@ -124,7 +134,7 @@ export default function App() {
   const [submittingApproval, setSubmittingApproval] = useState(false);
   const [statsBySession, setStatsBySession] = useState<SessionStats>({});
   const [noticeSeen, setNoticeSeen] = useState(false);
-  const [effort, setEffort] = useState("");
+  const [effort, setEffort] = useState(loadEffort);
   const [yolo, setYoloState] = useState(() =>
     initialYoloState(loadPrefs().yolo),
   );
@@ -166,6 +176,8 @@ export default function App() {
     new Map<string, { entries: Entry[]; activeID: string }>(),
   );
   const prevSessionRef = useRef("");
+  const initializedYoloSessions = useRef(new Set<string>());
+  const initializedEffortSessions = useRef(new Set<string>());
   const [completedAt, setCompletedAt] = useState<Record<string, number>>({});
   const [visitedAt, setVisitedAt] = useState<Record<string, number>>({});
   const switchingWorkspace = useRef(false);
@@ -336,12 +348,32 @@ export default function App() {
       setStatsBySession((current) =>
         setStatsModel(current, session, payload.model),
       );
-      if (payload.effort) setEffort(payload.effort);
-      const firstInit = !prevSessionRef.current;
-      setYoloState(firstInit ? prefsRef.current.yolo : payload.yolo);
-      if (firstInit && payload.yolo !== prefsRef.current.yolo) {
+      const seenEffortSession = initializedEffortSessions.current.has(session);
+      initializedEffortSessions.current.add(session);
+      const desiredEffort = seenEffortSession
+        ? (payload.effort ?? "")
+        : loadEffort();
+      setEffort(desiredEffort);
+      if (
+        !seenEffortSession &&
+        desiredEffort &&
+        payload.effort !== desiredEffort
+      ) {
         void forge
-          .setYolo(prefsRef.current.yolo)
+          .setEffort(desiredEffort)
+          .catch((e: unknown) => notify(String(e)));
+      }
+      const seenYoloSession = initializedYoloSessions.current.has(session);
+      initializedYoloSessions.current.add(session);
+      const desiredYolo = sessionYoloState(
+        seenYoloSession,
+        prefsRef.current.yolo,
+        payload.yolo,
+      );
+      setYoloState(desiredYolo);
+      if (!seenYoloSession && payload.yolo !== desiredYolo) {
+        void forge
+          .setYolo(desiredYolo)
           .catch((e: unknown) => notify(String(e)));
       }
       // Stash the outgoing session's transcript so coming back to it shows
@@ -628,15 +660,6 @@ export default function App() {
     return result;
   }, [approvalQueues, completedAt, sessions, threadStatus, threads, visitedAt]);
 
-  // A thread is open if it has a live session, whatever this window remembers.
-  const openThreadIDs = useMemo(() => {
-    const ids = new Set(tabs.open);
-    for (const session of sessions) {
-      if (session.thread_id) ids.add(session.thread_id);
-    }
-    return [...ids];
-  }, [sessions, tabs.open]);
-
   const terminalDirs = useMemo(
     () =>
       Object.fromEntries(
@@ -850,6 +873,7 @@ export default function App() {
   const setEffortAction = useCallback(
     (e: string) => {
       setEffort(e);
+      localStorage.setItem(EFFORT_KEY, e);
       void forge.setEffort(e).catch((err: unknown) => notify(String(err)));
     },
     [notify],
@@ -939,12 +963,11 @@ export default function App() {
         setEntries([]);
         setActiveID("");
         if (!prefsRef.current.expandSubfolders) return;
-        // A container folder registers everything under it and stays where it
-        // is: chooseWorkspace has already switched to the folder itself, and
-        // the repositories under it are a click away rather than all started.
+        // A container folder registers repositories anywhere below it. They
+        // stay lazy and are a click away rather than all being started.
         try {
           setWorkspaces(await forge.addWorkspaceTree(dir));
-          notify("subfolders added as workspaces");
+          notify("Git repositories added as workspaces");
         } catch (e: unknown) {
           notify(String(e));
         }
@@ -1231,8 +1254,6 @@ export default function App() {
               browsing={browseDir || (init?.work_dir ?? "")}
               onBulkDelete={bulkDelete}
               onClearThreads={clearThreads}
-              openThreadIDs={openThreadIDs}
-              onCloseThread={closeChat}
               threadStatus={threadStatus}
               threadAttention={threadAttention}
             />

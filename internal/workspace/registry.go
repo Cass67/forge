@@ -151,7 +151,7 @@ func (r *Registry) Ensure(path string) error {
 	return r.saveLocked()
 }
 
-// RememberRoot records a folder whose immediate children can be rediscovered.
+// RememberRoot records a folder whose Git repositories can be rediscovered.
 func (r *Registry) RememberRoot(path string) error {
 	clean, err := Clean(path)
 	if err != nil {
@@ -168,7 +168,7 @@ func (r *Registry) RememberRoot(path string) error {
 	return r.saveLocked()
 }
 
-// Roots returns existing top-level folders selected for expansion. Registries
+// Roots returns existing top-level folders selected for repository discovery. Registries
 // written before roots were stored are migrated by recognizing a remembered
 // workspace that directly contains another remembered workspace.
 func (r *Registry) Roots() []string {

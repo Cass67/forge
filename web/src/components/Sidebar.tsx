@@ -45,8 +45,6 @@ export function Sidebar({
   browsing = "",
   onBulkDelete,
   onClearThreads,
-  openThreadIDs = [],
-  onCloseThread,
   threadStatus = {},
   threadAttention = {},
 }: {
@@ -77,15 +75,10 @@ export function Sidebar({
   browsing?: string;
   onBulkDelete: (threadIDs: string[], dirs: string[]) => void;
   onClearThreads: () => void;
-  // Threads currently open as tabs; their ✕ closes the tab instead of
-  // deleting anything.
-  openThreadIDs?: string[];
-  onCloseThread: (id: string) => void;
   // Latest known status per session, for the running/waiting/stopped dot.
   threadStatus?: Record<string, SessionStatus>;
   threadAttention?: Record<string, Attention>;
 }) {
-  const [confirming, setConfirming] = useState("");
   const [orders, setOrders] = useState<Record<string, string[]>>(() =>
     loadThreadOrders(),
   );
@@ -193,16 +186,16 @@ export function Sidebar({
         <button
           className={`btn ${selecting ? "primary" : ""}`}
           onClick={() => (selecting ? leaveSelect() : setSelecting(true))}
-          title="Select several threads or workspaces and remove them at once"
+          title="Manage several chats or workspaces at once"
         >
-          {selecting ? "Done" : "Select"}
+          {selecting ? "Done" : "Manage"}
         </button>
         <button
           className="btn"
           onClick={onAddWorkspace}
-          title="Open a folder to work in"
+          title="Add a folder and discover its Git repositories"
         >
-          Open…
+          Add folder…
         </button>
       </div>
       <div className="ws-search">
@@ -292,14 +285,12 @@ export function Sidebar({
                 </button>
                 <button
                   className={`ws-section-title ${ws.path === browsing ? "browsing" : ""}`}
-                  onClick={() =>
-                    isActive ? onBrowse(ws.path) : onOpenWorkspace(ws.path)
-                  }
+                  onClick={() => onBrowse(ws.path)}
                   onDoubleClick={() => onNewIn(ws.path)}
                   title={
                     isActive
                       ? `${ws.path} — click to return to the chat, double-click for a new chat`
-                      : `${ws.path} — click to work here, double-click for a new chat`
+                      : `${ws.path} — click to browse, double-click for a new chat`
                   }
                 >
                   <span className="ws-caret">{collapsed ? "▸" : "▾"}</span>
@@ -369,9 +360,9 @@ export function Sidebar({
                   <button
                     className="btn"
                     onClick={() => onOpenWorkspace(ws.path)}
-                    title={`Work in ${ws.path}`}
+                    title={`Open a chat in ${ws.path}`}
                   >
-                    Open
+                    Chat
                   </button>
                 )}
                 {/* Closing is offered for the workspace you are in as well:
@@ -459,7 +450,12 @@ export function Sidebar({
                                 setRenaming("");
                               }
                             }}
-                            onBlur={() => setRenaming("")}
+                            onBlur={(e) => {
+                              const name = e.currentTarget.value.trim();
+                              setRenaming("");
+                              if (name && name !== t.title)
+                                onRename(t.thread_id, name);
+                            }}
                           />
                         ) : (
                           <button
@@ -497,44 +493,11 @@ export function Sidebar({
                             </span>
                           </button>
                         )}
-                        {selecting ? null : openThreadIDs.includes(
-                            t.thread_id,
-                          ) ? (
+                        {selecting ? null : (
                           <button
                             className="thread-x"
-                            title="Close this conversation"
-                            onClick={() => {
-                              setConfirming("");
-                              onCloseThread(t.thread_id);
-                            }}
-                          >
-                            ✕
-                          </button>
-                        ) : confirming === t.thread_id ? (
-                          <span className="thread-confirm">
-                            <button
-                              className="thread-x danger"
-                              onClick={() => onDelete(t.thread_id)}
-                            >
-                              delete
-                            </button>
-                            <button
-                              className="thread-x"
-                              onClick={() => setConfirming("")}
-                            >
-                              keep
-                            </button>
-                          </span>
-                        ) : (
-                          <button
-                            className="thread-x"
-                            title={
-                              current
-                                ? "Cannot delete the thread you are in"
-                                : "Delete thread"
-                            }
-                            disabled={current}
-                            onClick={() => setConfirming(t.thread_id)}
+                            title="Delete thread"
+                            onClick={() => onDelete(t.thread_id)}
                           >
                             ✕
                           </button>

@@ -56,6 +56,7 @@ const MIN_GROUP = 0.12;
 
 export const DOCK_STORAGE_KEY = "forge.dockWidths";
 export const LAYOUT_STORAGE_KEY = "forge.dockLayout";
+const TERMINAL_LAYOUT_KEY = "forge.terminals";
 
 // Panel presence can belong to one workspace. In particular, a terminal opened
 // in one directory must not appear in another when workspace persistence is
@@ -431,10 +432,18 @@ export function loadRuntimeColumns(
   workDir: string,
   storageKey: string | null,
 ): DockColumns {
-  return (
-    runtimeColumns.get(runtimeLayoutKey(workDir, storageKey)) ??
-    loadColumns(storageKey)
-  );
+  const runtime = runtimeColumns.get(runtimeLayoutKey(workDir, storageKey));
+  if (runtime) return runtime;
+  if (storageKey) return loadColumns(storageKey);
+  const columns = defaultColumns();
+  try {
+    if (typeof localStorage === "undefined") return columns;
+    const saved = localStorage.getItem(`${TERMINAL_LAYOUT_KEY}:${workDir}`);
+    return saved ? parseColumns(saved) : columns;
+  } catch {
+    // Corrupt optional UI state falls back to the default layout.
+  }
+  return columns;
 }
 
 export function saveRuntimeColumns(
@@ -443,6 +452,12 @@ export function saveRuntimeColumns(
   storageKey: string | null,
 ): void {
   runtimeColumns.set(runtimeLayoutKey(workDir, storageKey), columns);
+  if (!storageKey && workDir && typeof localStorage !== "undefined") {
+    localStorage.setItem(
+      `${TERMINAL_LAYOUT_KEY}:${workDir}`,
+      JSON.stringify(columns),
+    );
+  }
   saveColumns(columns, storageKey);
 }
 

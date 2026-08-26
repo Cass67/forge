@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import {
+  addTool,
+  defaultColumns,
   nextTerminalNumber,
   clampDock,
   DEFAULT_DOCK_WIDTHS,
@@ -7,8 +9,10 @@ import {
   dockStorageKeys,
   loadColumns,
   loadRuntimeColumns,
+  parseColumns,
   parseDockWidths,
   saveRuntimeColumns,
+  SIDES,
   workspaceLayoutKey,
 } from "./dockLayout";
 
@@ -32,6 +36,52 @@ test("runtime layouts return with a workspace when persistence is off", () => {
       null,
     ).right[0].tools.some((tool) => tool.id === "terminal-1"),
   ).toBe(false);
+});
+
+test("terminal panels return in their exact dock group and tab position", () => {
+  const workDir = "/tmp/persistent-terminal";
+  const stored = new Map<string, string>();
+  const previous = globalThis.localStorage;
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) => stored.get(key) ?? null,
+      setItem: (key: string, value: string) => stored.set(key, value),
+    },
+  });
+  const base = defaultColumns();
+  const columns = addTool(
+    base,
+    {
+      id: "terminal-1",
+      kind: "terminal",
+      title: "Terminal 1",
+    },
+    {
+      side: "right",
+      where: "into",
+      groupID: base.right[0].id,
+      index: 1,
+    },
+  );
+  saveRuntimeColumns(workDir, columns, null);
+  try {
+    const restored = parseColumns(
+      stored.get(`forge.terminals:${workDir}`) ?? null,
+    );
+    expect(restored.right).toHaveLength(1);
+    expect(restored.right[0].tools.map((tool) => tool.id)).toEqual([
+      "explorer",
+      "terminal-1",
+      "editor",
+      "git",
+    ]);
+  } finally {
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: previous,
+    });
+  }
 });
 
 test("a dock cannot be dragged shut or over the chat column", () => {

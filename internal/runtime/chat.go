@@ -1315,6 +1315,14 @@ func RunChatLive(setup *ChatSetup) {
 			store := sessionstore.NewJSONLThreadStore(filepath.Join(outputDir, "threads"))
 			return store.DeleteThread(context.Background(), threadID)
 		},
+		PurgeThread: func(threadID string) error {
+			outputDir := setup.Config.ResolvedOutputDir()
+			if outputDir == "" {
+				return errors.New("no session output directory configured")
+			}
+			store := sessionstore.NewJSONLThreadStore(filepath.Join(outputDir, "threads"))
+			return store.DeleteThread(context.Background(), threadID)
+		},
 		MCPServers: func() []tui.MCPServerStatus {
 			byServer := map[string][]string{}
 			for _, tool := range mcpManager.Tools() {

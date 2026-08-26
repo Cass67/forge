@@ -344,11 +344,16 @@ func TestOpenThreadResumesItInItsOwnWorkspace(t *testing.T) {
 	}
 }
 
-// A folder holding a pile of repositories is opened once and every repository
-// under it becomes a workspace, without starting any of them.
-func TestAddWorkspaceTreeRemembersEachSubdirectory(t *testing.T) {
+// A folder holding repositories is opened once and every repository below it
+// becomes a workspace, without starting any of them.
+func TestAddWorkspaceTreeFindsNestedGitRepositories(t *testing.T) {
 	root := t.TempDir()
-	for _, name := range []string{"alpha", "beta", ".cache"} {
+	for _, name := range []string{
+		"alpha/.git",
+		"group/services/beta/.git",
+		"plain-folder",
+		".cache/ignored/.git",
+	} {
 		if err := os.MkdirAll(filepath.Join(root, name), 0o755); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}
@@ -373,11 +378,12 @@ func TestAddWorkspaceTreeRemembersEachSubdirectory(t *testing.T) {
 		remembered[filepath.Base(entry.Path)] = true
 	}
 	if !remembered["alpha"] || !remembered["beta"] {
-		t.Fatalf("subdirectories missing: %v", remembered)
+		t.Fatalf("repositories missing: %v", remembered)
 	}
-	// Hidden directories are tooling state, and a file is not a workspace.
-	if remembered[".cache"] || remembered["notes.md"] {
-		t.Fatalf("registered something that is not a project: %v", remembered)
+	// Ordinary and hidden directories are not repositories, and a file is not
+	// a workspace.
+	if remembered["plain-folder"] || remembered["ignored"] || remembered["notes.md"] {
+		t.Fatalf("registered something that is not a repository: %v", remembered)
 	}
 	// Opening a folder full of repositories must not start a chat in each.
 	if started != 0 {
@@ -406,7 +412,7 @@ func TestAddWorkspaceTreeFallsBackToTheFolderItself(t *testing.T) {
 func TestRefreshWorkspaceTreesAddsNewChildrenWithoutChangingPins(t *testing.T) {
 	root := t.TempDir()
 	alpha := filepath.Join(root, "alpha")
-	if err := os.Mkdir(alpha, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(alpha, ".git"), 0o755); err != nil {
 		t.Fatalf("mkdir alpha: %v", err)
 	}
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -423,8 +429,8 @@ func TestRefreshWorkspaceTreesAddsNewChildrenWithoutChangingPins(t *testing.T) {
 	if err := s.Registry.SetPinned(alpha, true); err != nil {
 		t.Fatalf("SetPinned: %v", err)
 	}
-	beta := filepath.Join(root, "beta")
-	if err := os.Mkdir(beta, 0o755); err != nil {
+	beta := filepath.Join(root, "group", "beta")
+	if err := os.MkdirAll(filepath.Join(beta, ".git"), 0o755); err != nil {
 		t.Fatalf("mkdir beta: %v", err)
 	}
 
@@ -629,6 +635,35 @@ func TestCloseSessionFallsBackToAnotherSession(t *testing.T) {
 	c.Forget("s2")
 	if got := s.Sessions(); len(got) != 1 || !got[0].Active || got[0].ID != "s1" {
 		t.Fatalf("after closing, sessions = %+v", got)
+	}
+}
+
+func TestDeleteThreadStopsLiveSessionBeforePurgingIt(t *testing.T) {
+	dir := t.TempDir()
+	s, c := New(func(string, any) {})
+	threads := []tui.ThreadSummary{{ThreadID: "live", CWD: dir}}
+	purged := false
+	c.Attach("live-session", tui.ChatLiveConfig{
+		WorkDir:         dir,
+		CurrentThreadID: func() string { return "live" },
+		ListThreads:     func() []tui.ThreadSummary { return threads },
+		DeleteThread:    func(string) error { return errors.New("thread is live") },
+		PurgeThread: func(id string) error {
+			purged = id == "live"
+			threads = nil
+			return nil
+		},
+	}, make(chan string, 1), func() { c.Forget("live-session") })
+
+	list, err := s.DeleteThread("live")
+	if err != nil {
+		t.Fatalf("DeleteThread: %v", err)
+	}
+	if !purged {
+		t.Fatal("live thread was not purged after its session stopped")
+	}
+	if len(list) != 0 {
+		t.Fatalf("deleted thread still listed: %+v", list)
 	}
 }
 

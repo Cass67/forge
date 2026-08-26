@@ -332,8 +332,8 @@ export const forge = {
   // Ends every conversation live in a workspace and drops it from the list.
   // The threads stay on disk.
   closeWorkspace: (dir: string) => call<Workspace[]>("CloseWorkspace", dir),
-  // Registers every immediate subfolder of dir as its own workspace. Nothing
-  // is started: runtimes stay lazy.
+  // Registers every Git repository below dir as its own workspace. Nothing is
+  // started: runtimes stay lazy.
   addWorkspaceTree: (dir: string) => call<Workspace[]>("AddWorkspaceTree", dir),
   // Points the file tree, editor and source control at a directory without
   // starting a chat there. "" hands them back to the chat's workspace.
