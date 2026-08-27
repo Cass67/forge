@@ -528,11 +528,26 @@ func (s *Service) Clear() {
 
 // SwitchModel changes the active model and returns the name actually applied.
 func (s *Service) SwitchModel(model string) (string, error) {
-	cfg, _, ready := s.snapshot()
-	if !ready || cfg.SwitchModel == nil {
+	s.mu.RLock()
+	sessionID := s.activeSession
+	rt := s.runtimes[sessionID]
+	s.mu.RUnlock()
+	if rt == nil || !rt.ready || rt.cfg.SwitchModel == nil {
 		return "", errNotReady
 	}
-	return cfg.SwitchModel(model)
+	applied, err := rt.cfg.SwitchModel(model)
+	if err != nil {
+		return "", err
+	}
+	// Init is called again whenever the frontend moves between sessions. Keep
+	// the runtime's advertised model in sync so returning to this session does
+	// not reset the model picker to the value it started with.
+	s.mu.Lock()
+	if current := s.runtimes[sessionID]; current == rt {
+		current.cfg.Model = applied
+	}
+	s.mu.Unlock()
+	return applied, nil
 }
 
 // Models re-reads the available model list.
@@ -565,13 +580,11 @@ func (s *Service) SetEffort(effort string) error {
 	return cfg.SetEffort(effort)
 }
 
-// Threads lists stored threads, newest first.
+// Threads lists stored threads from every live workspace runtime. The frontend
+// keeps all workspace sections mounted, so limiting this to the active runtime
+// makes the other sections appear to lose their open threads after a switch.
 func (s *Service) Threads() []tui.ThreadSummary {
-	cfg, _, ready := s.snapshot()
-	if !ready || cfg.ListThreads == nil {
-		return []tui.ThreadSummary{}
-	}
-	items := cfg.ListThreads()
+	items := s.allThreads()
 	if items == nil {
 		return []tui.ThreadSummary{}
 	}

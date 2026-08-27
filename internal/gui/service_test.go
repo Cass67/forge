@@ -214,6 +214,60 @@ func TestWorkspacesCombinesThreadStoresFromLiveWorkspaces(t *testing.T) {
 	}
 }
 
+func TestThreadsCombinesThreadStoresFromLiveWorkspaces(t *testing.T) {
+	s, c := New(func(string, any) {})
+	c.Attach("a", tui.ChatLiveConfig{
+		WorkDir: "/work/a",
+		ListThreads: func() []tui.ThreadSummary {
+			return []tui.ThreadSummary{{ThreadID: "a", CWD: "/work/a"}}
+		},
+	}, make(chan string, 1), nil)
+	c.Attach("b", tui.ChatLiveConfig{
+		WorkDir: "/work/b",
+		ListThreads: func() []tui.ThreadSummary {
+			return []tui.ThreadSummary{{ThreadID: "b", CWD: "/work/b"}}
+		},
+	}, make(chan string, 1), nil)
+
+	got := s.Threads()
+	if len(got) != 2 {
+		t.Fatalf("want threads from both workspaces, got %+v", got)
+	}
+	ids := []string{got[0].ThreadID, got[1].ThreadID}
+	sort.Strings(ids)
+	if !reflect.DeepEqual(ids, []string{"a", "b"}) {
+		t.Fatalf("thread ids = %v, want [a b]", ids)
+	}
+}
+
+func TestSelectedModelSurvivesLeavingAndReturningToSession(t *testing.T) {
+	s, c := New(func(string, any) {})
+	c.Attach("a", tui.ChatLiveConfig{
+		WorkDir: "/work/a",
+		Model:   "old-model",
+		SwitchModel: func(model string) (string, error) {
+			return model, nil
+		},
+	}, make(chan string, 1), nil)
+	c.Attach("b", tui.ChatLiveConfig{
+		WorkDir: "/work/b",
+		Model:   "other-model",
+	}, make(chan string, 1), nil)
+
+	if _, err := s.SwitchModel("new-model"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ActivateSession("b"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ActivateSession("a"); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Init().Model; got != "new-model" {
+		t.Fatalf("model after returning = %q, want new-model", got)
+	}
+}
+
 // Sessions are independent: switching workspaces starts or activates another
 // session without tearing the old one down, so both keep accepting input and
 // their events stay tagged with their own session and workspace.
