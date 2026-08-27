@@ -122,18 +122,28 @@ func normalizePlanStatus(s string) string {
 	return s
 }
 
-// normalizePlanSteps enforces the one-in_progress rule by auto-promoting
-// the first pending step when no active step is present. It rejects
-// plans with multiple active steps. Active means in_progress or blocked.
+// normalizePlanSteps enforces the one-active-step rule. It keeps the first
+// in_progress step and demotes later ones to pending, auto-promotes the first
+// pending step when no active step exists, and rejects multiple blocked steps.
 func normalizePlanSteps(steps []react.PlanStep) ([]react.PlanStep, error) {
 	if len(steps) == 0 {
 		return nil, fmt.Errorf("at least one plan step is required")
 	}
+	out := append([]react.PlanStep(nil), steps...)
 	active := 0
 	firstPending := -1
-	for i, step := range steps {
+	for i, step := range out {
 		switch step.Status {
-		case "in_progress", "blocked":
+		case "in_progress":
+			if active > 0 {
+				out[i].Status = "pending"
+				if firstPending < 0 {
+					firstPending = i
+				}
+				continue
+			}
+			active++
+		case "blocked":
 			active++
 		case "pending":
 			if firstPending < 0 {
@@ -146,9 +156,8 @@ func normalizePlanSteps(steps []react.PlanStep) ([]react.PlanStep, error) {
 	}
 	// Auto-promote the first pending step when no active step exists yet.
 	if active == 0 && firstPending >= 0 {
-		out := append([]react.PlanStep(nil), steps...)
 		out[firstPending].Status = "in_progress"
 		return out, nil
 	}
-	return steps, nil
+	return out, nil
 }
