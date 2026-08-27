@@ -30,17 +30,20 @@ func TestUpdatePlanStoresPlanInSession(t *testing.T) {
 	}
 }
 
-func TestUpdatePlanRejectsMultipleInProgressSteps(t *testing.T) {
+func TestUpdatePlanDemotesExtraInProgressSteps(t *testing.T) {
 	session := react.NewSession()
 	tool := NewUpdatePlan(session)
-	_, err := tool.Execute(context.Background(), map[string]any{
+	result, err := tool.Execute(context.Background(), map[string]any{
 		"steps": []any{
 			map[string]any{"step": "Inspect files", "status": "in_progress"},
 			map[string]any{"step": "Patch runtime", "status": "in_progress"},
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "exactly one active step") {
-		t.Fatalf("err = %v", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "[in_progress] Inspect files") || !strings.Contains(result, "[pending] Patch runtime") {
+		t.Fatalf("expected extra active step demoted, got %q", result)
 	}
 }
 
