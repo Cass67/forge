@@ -70,13 +70,19 @@ func enhancedDiffBlock(body string, width int, theme chatTheme) string {
 	return unifiedDiffBlock(body, width, theme)
 }
 
+// Hoisted out of the render path: these were recompiled on every diff block
+// and, for the ANSI strip, on every line of one.
+var (
+	reHunk    = regexp.MustCompile(`^@@ -(\d+),(\d+) \+(\d+),(\d+) @@(.*)`)
+	reANSISGR = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+)
+
 func unifiedDiffBlock(body string, width int, theme chatTheme) string {
 	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
 	if len(lines) == 0 || (len(lines) == 1 && lines[0] == "") {
 		return ""
 	}
 	var out []string
-	reHunk := regexp.MustCompile(`^@@ -(\d+),(\d+) \+(\d+),(\d+) @@(.*)`)
 
 	// Track old/new line numbers across hunks
 	oldLnum := 0
@@ -136,7 +142,6 @@ func sideBySideDiffBlock(body string, width int, theme chatTheme) string {
 	}
 	const gap = 2
 	cellW := (width - gap) / 2
-	reHunk := regexp.MustCompile(`^@@ -(\d+),(\d+) \+(\d+),(\d+) @@(.*)`)
 
 	oldLnum := 0
 	newLnum := 0
@@ -278,8 +283,7 @@ func renderDiffLine(line string, oldNum, newNum int, theme chatTheme, width int)
 
 // stripANSILen returns the length of a string with all ANSI escape sequences removed.
 func stripANSILen(s string) int {
-	re := regexp.MustCompile(`\x1b\[[0-9;]*m`)
-	return len(re.ReplaceAllString(s, ""))
+	return len(reANSISGR.ReplaceAllString(s, ""))
 }
 
 // parseIntOrZero parses a string as an int, returning 0 on failure.

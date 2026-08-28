@@ -10,25 +10,27 @@ import (
 
 func TestLookupFallsBackToBundledLimitsWhenLiveCatalogOmitsThem(t *testing.T) {
 	origCatalog := catalog
-	origBundled := bundledCatalog
+	origBundled := bundled
 	t.Cleanup(func() {
 		catalog = origCatalog
-		bundledCatalog = origBundled
+		bundled = origBundled
 	})
 
-	bundledCatalog = map[string]providerData{
-		"openrouter": {
-			Models: map[string]modelEntry{
-				"arcee-ai/trinity-large-preview:free": {
-					Temperature: true,
-					ToolCall:    true,
-					Limit: struct {
-						Context int `json:"context"`
-						Output  int `json:"output"`
-					}{Context: 131072, Output: 32768},
+	bundled = func() map[string]providerData {
+		return map[string]providerData{
+			"openrouter": {
+				Models: map[string]modelEntry{
+					"arcee-ai/trinity-large-preview:free": {
+						Temperature: true,
+						ToolCall:    true,
+						Limit: struct {
+							Context int `json:"context"`
+							Output  int `json:"output"`
+						}{Context: 131072, Output: 32768},
+					},
 				},
 			},
-		},
+		}
 	}
 	catalog = map[string]providerData{
 		"openrouter": {
@@ -77,17 +79,17 @@ func TestMergeModelInfoPrefersLiveLimitsWhenPresent(t *testing.T) {
 
 func TestLookupLoadsCustomProviderMetadataFromConfiguredSource(t *testing.T) {
 	origCatalog := catalog
-	origBundled := bundledCatalog
+	origBundled := bundled
 	origSources := customSources
 	t.Cleanup(func() {
 		catalog = origCatalog
-		bundledCatalog = origBundled
+		bundled = origBundled
 		customSources = origSources
 	})
 
 	configHome := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", configHome)
-	bundledCatalog = map[string]providerData{}
+	bundled = func() map[string]providerData { return map[string]providerData{} }
 	catalog = map[string]providerData{}
 	customSources = map[string]customSource{}
 

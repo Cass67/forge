@@ -78,6 +78,10 @@ type Registry struct {
 	tools     map[string]Tool
 	order     []string
 	disclosed map[string]bool
+	// toolDefs caches the LLM tool definitions, which are rebuilt on every
+	// model request and depend only on what is registered. Invalidated in
+	// Register.
+	toolDefs []llm.ToolDef
 }
 
 // NewRegistry creates an empty tool registry.
@@ -96,6 +100,7 @@ func (r *Registry) Register(t Tool) {
 		r.order = append(r.order, t.Name)
 	}
 	r.tools[t.Name] = t
+	r.toolDefs = nil
 }
 
 // Get retrieves a tool by name.
@@ -411,8 +416,11 @@ func formatToolSignature(t Tool) string {
 
 // ToLLMToolDefs converts registered tools to llm.ToolDef for native tool calling.
 func (r *Registry) ToLLMToolDefs() []llm.ToolDef {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.toolDefs != nil {
+		return r.toolDefs
+	}
 	defs := make([]llm.ToolDef, 0, len(r.order))
 	for _, name := range r.order {
 		t := r.tools[name]
@@ -432,6 +440,7 @@ func (r *Registry) ToLLMToolDefs() []llm.ToolDef {
 			Schema:      protocol.SanitizeToolSchema(t.Schema),
 		})
 	}
+	r.toolDefs = defs
 	return defs
 }
 

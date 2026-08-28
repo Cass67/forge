@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"unicode"
 )
 
@@ -142,7 +143,27 @@ func splitShellWords(input string) ([]string, error) {
 	return words, nil
 }
 
+// Shell rules are checked on every command the model runs, so each pattern is
+// compiled once and reused.
+type compiledShellPattern struct {
+	hasWildcard bool
+	re          *regexp.Regexp
+	err         error
+}
+
+var shellPatternCache sync.Map // pattern -> compiledShellPattern
+
 func compileShellPattern(pattern string) (bool, *regexp.Regexp, error) {
+	if v, ok := shellPatternCache.Load(pattern); ok {
+		c := v.(compiledShellPattern)
+		return c.hasWildcard, c.re, c.err
+	}
+	hasWildcard, re, err := buildShellPattern(pattern)
+	shellPatternCache.Store(pattern, compiledShellPattern{hasWildcard: hasWildcard, re: re, err: err})
+	return hasWildcard, re, err
+}
+
+func buildShellPattern(pattern string) (bool, *regexp.Regexp, error) {
 	var out strings.Builder
 	out.WriteString("^")
 

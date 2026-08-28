@@ -174,9 +174,7 @@ func ProviderMinContextWindow(provider string) int {
 	if !ok {
 		mdevID = provider
 	}
-	mu.RLock()
-	live := catalog[mdevID]
-	mu.RUnlock()
+	live := liveCatalog()[mdevID]
 
 	smallest := 0
 	consider := func(data providerData) {
@@ -190,9 +188,7 @@ func ProviderMinContextWindow(provider string) int {
 		}
 	}
 	consider(live)
-	if bundledCatalog != nil {
-		consider(bundledCatalog[mdevID])
-	}
+	consider(bundled()[mdevID])
 	return smallest
 }
 
@@ -256,10 +252,13 @@ func normalizeOpenCodeGoModel(model string) string {
 }
 
 var (
-	mu             sync.RWMutex
-	bundledCatalog = parseSnapshot(snapshotData)
-	catalog        map[string]providerData // keyed by models.dev provider ID
-	customSources  = map[string]customSource{}
+	mu sync.RWMutex
+	// Parsing the 3.2MB embedded snapshot costs ~17ms. As a package-level
+	// initialiser that ran before main in every binary, whether or not a
+	// lookup ever needed it; deferred here so short-lived runs never pay it.
+	bundled       = sync.OnceValue(func() map[string]providerData { return parseSnapshot(snapshotData) })
+	catalog       map[string]providerData // keyed by models.dev provider ID
+	customSources = map[string]customSource{}
 )
 
 type imageCapability struct {
@@ -348,8 +347,19 @@ type customProviderCache struct {
 	Routes map[string]CustomProviderRoute `json:"routes,omitempty"`
 }
 
+// liveCatalog returns the catalog to look up in: the refreshed one once it has
+// arrived, and the bundled snapshot until then.
+func liveCatalog() map[string]providerData {
+	mu.RLock()
+	c := catalog
+	mu.RUnlock()
+	if c == nil {
+		return bundled()
+	}
+	return c
+}
+
 func init() {
-	catalog = bundledCatalog
 	go refreshLoop()
 }
 
@@ -467,11 +477,9 @@ func Lookup(providerID, modelID string) *ModelInfo {
 		mdevID = providerID
 	}
 
-	mu.RLock()
-	provider, ok := catalog[mdevID]
-	mu.RUnlock()
+	provider, ok := liveCatalog()[mdevID]
 	liveInfo, liveOK := lookupModelInfo(provider, ok, modelID)
-	bundledInfo, bundledOK := lookupModelInfo(bundledCatalog[mdevID], bundledCatalog != nil, modelID)
+	bundledInfo, bundledOK := lookupModelInfo(bundled()[mdevID], true, modelID)
 
 	switch {
 	case liveOK && bundledOK:
@@ -602,9 +610,7 @@ func ProviderModels(providerID string) []string {
 		mdevID = providerID
 	}
 
-	mu.RLock()
-	provider, ok := catalog[mdevID]
-	mu.RUnlock()
+	provider, ok := liveCatalog()[mdevID]
 	if !ok {
 		return nil
 	}

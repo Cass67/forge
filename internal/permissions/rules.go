@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"unicode"
 )
 
@@ -162,7 +163,37 @@ func normalizeCommandPattern(value string) string {
 	return strings.Join(strings.Fields(value), " ")
 }
 
+// Patterns come from user config and are matched on every tool call, so the
+// compiled form is kept rather than rebuilt per check.
+type compiledPattern struct {
+	re  *regexp.Regexp
+	err error
+}
+
+var (
+	commandRegexCache sync.Map // pattern -> compiledPattern
+	globRegexCache    sync.Map // pattern -> compiledPattern
+)
+
+func cachedPatternRegex(cache *sync.Map, pattern string, build func(string) (*regexp.Regexp, error)) (*regexp.Regexp, error) {
+	if v, ok := cache.Load(pattern); ok {
+		c := v.(compiledPattern)
+		return c.re, c.err
+	}
+	re, err := build(pattern)
+	cache.Store(pattern, compiledPattern{re: re, err: err})
+	return re, err
+}
+
 func commandPatternRegex(pattern string) (*regexp.Regexp, error) {
+	return cachedPatternRegex(&commandRegexCache, pattern, buildCommandPatternRegex)
+}
+
+func globPatternRegex(pattern string) (*regexp.Regexp, error) {
+	return cachedPatternRegex(&globRegexCache, pattern, buildGlobPatternRegex)
+}
+
+func buildCommandPatternRegex(pattern string) (*regexp.Regexp, error) {
 	var out strings.Builder
 	out.WriteString("^")
 	escaped := false
@@ -195,7 +226,7 @@ func commandPatternRegex(pattern string) (*regexp.Regexp, error) {
 	return regexp.Compile(out.String())
 }
 
-func globPatternRegex(pattern string) (*regexp.Regexp, error) {
+func buildGlobPatternRegex(pattern string) (*regexp.Regexp, error) {
 	var out strings.Builder
 	out.WriteString("^")
 	for i := 0; i < len(pattern); i++ {
