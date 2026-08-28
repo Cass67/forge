@@ -934,18 +934,6 @@ func (r *Runner) reactiveCompactForContextError(ctx context.Context, err error) 
 // ordinary prose contains no trigger, so it streams the moment it arrives.
 var secretTriggerPattern = regexp.MustCompile(`(?i)(-----BEGIN |bearer\s|sk-|gh[pousr]_|AKIA|ASIA|TOKEN|API[_-]?KEY|PASSWORD|SECRET)`)
 
-// streamableLen returns how much of an in-flight response may be displayed:
-// everything, unless a secret trigger has appeared, in which case the text
-// from that trigger onwards waits until the response is complete and the
-// scanner can match it whole.
-func streamableLen(raw string) int {
-	matches := secretTriggerPattern.FindAllStringIndex(raw, -1)
-	if len(matches) == 0 {
-		return len(raw)
-	}
-	return matches[len(matches)-1][0]
-}
-
 // streamRedactedPrefix emits whatever of an accumulating response has become
 // both markup-safe and redaction-stable, and returns the new emitted length.
 // Streaming raw tokens would put a secret on screen that the stored copy
@@ -954,18 +942,75 @@ func streamableLen(raw string) int {
 // Secret patterns span whitespace and a private key block is unbounded, so
 // text is held back from the point a secret could still be forming rather
 // than by a fixed window.
-func streamRedactedPrefix(emit func(string), raw string, emitted int) int {
-	cut := streamableLen(raw)
+// secretTriggerOverlap is one less than the longest trigger literal
+// ("-----BEGIN "), so a trigger split across two tokens is still seen.
+const secretTriggerOverlap = 10
+
+// redactedStream carries the emit cursor for one accumulating response.
+// Rescanning the whole buffer on every token made streaming quadratic: a 4KB
+// answer cost ~420ms of regex work, and a reasoning model pays it twice.
+type redactedStream struct {
+	emitted    int
+	lastSafe   int
+	scanFrom   int  // raw offset the trigger search resumes from
+	triggerAt  int  // start of the last trigger seen
+	sawTrigger bool // whether triggerAt is set
+}
+
+// scanTriggers advances the trigger cursor over the newly arrived text.
+//
+// FindAllStringIndex consumes matches left to right without overlap, so
+// resuming at the end of the last match sees exactly what a scan of the whole
+// buffer would see from that point. Where no match was found the cursor still
+// keeps the final secretTriggerOverlap bytes in play, since only a trigger
+// straddling the end of the buffer can still be completing.
+func (s *redactedStream) scanTriggers(raw string) {
+	if s.scanFrom >= len(raw) {
+		return
+	}
+	if m := secretTriggerPattern.FindAllStringIndex(raw[s.scanFrom:], -1); len(m) > 0 {
+		last := m[len(m)-1]
+		s.triggerAt = s.scanFrom + last[0]
+		s.sawTrigger = true
+		s.scanFrom += last[1]
+	}
+	if tail := len(raw) - secretTriggerOverlap; tail > s.scanFrom {
+		s.scanFrom = tail
+	}
+}
+
+// next emits whatever of an accumulating response has become both
+// markup-safe and redaction-stable.
+func (s *redactedStream) next(emit func(string), raw string) {
+	s.scanTriggers(raw)
+	cut := len(raw)
+	if s.sawTrigger {
+		cut = s.triggerAt
+	}
 	if cut <= 0 {
-		return emitted
+		return
 	}
 	safe := safeRawMarkupStreamingPrefixLen(raw[:cut])
-	redacted := redactRuntimeText(raw[:safe])
-	if len(redacted) <= emitted {
-		return emitted
+	// The emittable region is unchanged since the last token, so redacting it
+	// again would produce the same bytes. Once a trigger appears, cut pins to
+	// it and this is the path every further token of the response takes.
+	if safe == s.lastSafe {
+		return
 	}
-	emit(redacted[emitted:])
-	return len(redacted)
+	s.lastSafe = safe
+	// Every secscan rule matches text containing a secretTriggerPattern
+	// substring, so a buffer with no trigger has nothing for the scanner to
+	// find and skips it. That is ordinary prose, and it is the whole cost:
+	// the scan is ~386us per 4KB against ~41us for the trigger search.
+	redacted := raw[:safe]
+	if s.sawTrigger {
+		redacted = redactRuntimeText(raw[:safe])
+	}
+	if len(redacted) <= s.emitted {
+		return
+	}
+	emit(redacted[s.emitted:])
+	s.emitted = len(redacted)
 }
 
 // reasoningTarget reports the renderer that can display thinking, when the
@@ -1003,11 +1048,11 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 	var textBuf strings.Builder
 	var reasoningBuf strings.Builder
 	var toolCalls []llm.NativeToolCall
-	visibleEmitted := 0
+	var visibleStream redactedStream
 	streamVisible := r.renderer != nil
 	suppressFinalStreaming := r.finalPlanGateMayBlock()
 	reasoningTarget, showReasoning := r.reasoningTarget()
-	reasoningEmitted := 0
+	var reasoningStream redactedStream
 
 	for tok := range out {
 		if tok.ReasoningContent != "" {
@@ -1016,7 +1061,7 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 			// working turn showed nothing but tool cards. Stream it as it
 			// arrives, kept separate from the answer.
 			if showReasoning {
-				reasoningEmitted = streamRedactedPrefix(reasoningTarget.AgentReasoning, reasoningBuf.String(), reasoningEmitted)
+				reasoningStream.next(reasoningTarget.AgentReasoning, reasoningBuf.String())
 			}
 			continue
 		}
@@ -1032,7 +1077,7 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 		// calls. Withholding it until the step finished meant every working
 		// turn arrived as a block after the fact, which read as silence.
 		if !suppressFinalStreaming && streamVisible && r.renderer != nil {
-			visibleEmitted = streamRedactedPrefix(r.renderer.AgentToken, textBuf.String(), visibleEmitted)
+			visibleStream.next(r.renderer.AgentToken, textBuf.String())
 		}
 	}
 	if err := <-errCh; err != nil {
@@ -1054,8 +1099,8 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 		if reasoning != "" {
 			r.session.SetLastAssistantReasoning(reasoning)
 		}
-		if safePreamble != "" && r.renderer != nil && visibleEmitted < len(safePreamble) {
-			r.renderer.AgentText(safePreamble[visibleEmitted:])
+		if safePreamble != "" && r.renderer != nil && visibleStream.emitted < len(safePreamble) {
+			r.renderer.AgentText(safePreamble[visibleStream.emitted:])
 		}
 		return toolCalls, nil
 	}
@@ -1083,8 +1128,8 @@ func (r *Runner) streamNativeTurn(ctx context.Context, turn int, caller llm.Nati
 		return nil, err
 	}
 	r.notifyTurnComplete()
-	if r.renderer != nil && visibleEmitted < len(finalText) {
-		r.renderer.AgentText(finalText[visibleEmitted:])
+	if r.renderer != nil && visibleStream.emitted < len(finalText) {
+		r.renderer.AgentText(finalText[visibleStream.emitted:])
 	}
 	return nil, nil
 }
@@ -1098,11 +1143,11 @@ func (r *Runner) streamPlainTurn(ctx context.Context, turn int, messages []llm.M
 
 	var textBuf strings.Builder
 	var reasoningBuf strings.Builder
-	visibleEmitted := 0
+	var visibleStream redactedStream
 	streamVisible := r.renderer != nil
 	suppressFinalStreaming := r.finalPlanGateMayBlock()
 	reasoningTarget, showReasoning := r.reasoningTarget()
-	reasoningEmitted := 0
+	var reasoningStream redactedStream
 
 	for tok := range out {
 		// Reasoning was dropped entirely on this path: not shown, not even
@@ -1110,7 +1155,7 @@ func (r *Runner) streamPlainTurn(ctx context.Context, turn int, messages []llm.M
 		if tok.ReasoningContent != "" {
 			reasoningBuf.WriteString(tok.ReasoningContent)
 			if showReasoning {
-				reasoningEmitted = streamRedactedPrefix(reasoningTarget.AgentReasoning, reasoningBuf.String(), reasoningEmitted)
+				reasoningStream.next(reasoningTarget.AgentReasoning, reasoningBuf.String())
 			}
 			continue
 		}
@@ -1119,7 +1164,7 @@ func (r *Runner) streamPlainTurn(ctx context.Context, turn int, messages []llm.M
 		}
 		textBuf.WriteString(tok.Text)
 		if !suppressFinalStreaming && streamVisible && r.renderer != nil {
-			visibleEmitted = streamRedactedPrefix(r.renderer.AgentToken, textBuf.String(), visibleEmitted)
+			visibleStream.next(r.renderer.AgentToken, textBuf.String())
 		}
 	}
 	if err := <-errCh; err != nil {
@@ -1144,8 +1189,8 @@ func (r *Runner) streamPlainTurn(ctx context.Context, turn int, messages []llm.M
 		return nil, err
 	}
 	r.notifyTurnComplete()
-	if r.renderer != nil && visibleEmitted < len(finalText) {
-		r.renderer.AgentText(finalText[visibleEmitted:])
+	if r.renderer != nil && visibleStream.emitted < len(finalText) {
+		r.renderer.AgentText(finalText[visibleStream.emitted:])
 	}
 	return nil, nil
 }
