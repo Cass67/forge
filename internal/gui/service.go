@@ -303,17 +303,69 @@ func (s *Service) currentDir() string {
 
 // ---- streaming ----------------------------------------------------------
 
+// tokenFlushInterval bounds how long a run of coalesced tokens waits before
+// reaching the window. One event per token meant one IPC message and one full
+// copy of the transcript array (applyEvent in web/src/entries.ts) per token,
+// so streaming got slower the longer the session ran. Batching to roughly a
+// frame cuts both by one to two orders of magnitude and renders identically:
+// the frontend already concatenates consecutive tokens from the same agent.
+const tokenFlushInterval = 16 * time.Millisecond
+
+// mergeable reports whether a token event can be folded into the pending one.
+// Only text deltas from the same source merge; anything else is forwarded as
+// it arrives, in order.
+func mergeable(pending *wireEvent, next wireEvent) bool {
+	if pending == nil {
+		return false
+	}
+	if next.Kind != string(llm.EventToken) && next.Kind != string(llm.EventReasoning) {
+		return false
+	}
+	return pending.Kind == next.Kind && pending.Agent == next.Agent && pending.SubAgent == next.SubAgent
+}
+
 // PumpEvents forwards one session's event stream to the window, tagging every
 // event with its session id and workspace so the frontend can route output
 // from several live sessions at once. It returns only when the stream closes.
 func (c *Controller) PumpEvents(sessionID, dir string, events <-chan llm.Event) {
-	for ev := range events {
-		w := toWireEvent(ev)
-		w.Workspace = dir
-		w.Session = sessionID
-		c.s.emit(EventChat, w)
+	ticker := time.NewTicker(tokenFlushInterval)
+	defer ticker.Stop()
+
+	var pending *wireEvent
+	flush := func() {
+		if pending == nil {
+			return
+		}
+		c.s.emit(EventChat, *pending)
+		pending = nil
 	}
-	c.s.emit(EventTurnDone, DonePayload{Workspace: dir, Session: sessionID})
+
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				flush()
+				c.s.emit(EventTurnDone, DonePayload{Workspace: dir, Session: sessionID})
+				return
+			}
+			w := toWireEvent(ev)
+			w.Workspace = dir
+			w.Session = sessionID
+			if mergeable(pending, w) {
+				pending.Text += w.Text
+				continue
+			}
+			// Ordering: a non-token event never overtakes buffered text.
+			flush()
+			if w.Kind == string(llm.EventToken) || w.Kind == string(llm.EventReasoning) {
+				pending = &w
+				continue
+			}
+			c.s.emit(EventChat, w)
+		case <-ticker.C:
+			flush()
+		}
+	}
 }
 
 // EventFilesDropped carries OS file drops to the frontend.
