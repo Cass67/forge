@@ -168,7 +168,22 @@ func (s *FileOutputStore) outputRoot() string {
 }
 
 func errInvalidHandle(id string) error {
+	// A bare integer is a background command session, not an output handle.
+	// Saying so routes the caller instead of leaving it to guess again: observed
+	// a model try wait_agent, then read_output, then fall back to sleeping.
+	if trimmed := strings.TrimSpace(id); trimmed != "" && isAllDigits(trimmed) {
+		return fmt.Errorf("%q is a background command session id, not an output handle: check it with command_status {\"session_id\": %s}. Output handles look like \"<thread>/<sha256-hex>\" and are only issued in a stored-output message", trimmed, trimmed)
+	}
 	return fmt.Errorf("invalid output handle %q: expected \"<thread>/<sha256-hex>\" exactly as shown after \"Handle:\" in the stored-output message; tool call IDs are not output handles", id)
+}
+
+func isAllDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func parseHandleID(id string) (string, string, bool) {

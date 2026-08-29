@@ -92,6 +92,7 @@ func NewRunCommandWithWorkDirProvider(fallbackWorkDir string, provider WorkDirPr
 					Status:    "running",
 					SessionID: sessionID,
 					Command:   command,
+					Next:      nextForSession(sessionID),
 				})
 				if err != nil {
 					return "", err

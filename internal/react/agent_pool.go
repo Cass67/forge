@@ -456,7 +456,27 @@ func decorateAgentResultResumeState(result AgentResult) AgentResult {
 	if agentTerminalCannotResume(result.Status) {
 		result.ResumeHint = "Child agent sessions cannot be resumed; spawn a new agent with follow-up context to continue."
 	}
+	// A bare integer is a background command session, not an agent. Route rather
+	// than only reporting not_found: observed a model pass a session_id here,
+	// then to read_output, then give up and sleep.
+	if result.Status == AgentStatusNotFound && isAllDigits(strings.TrimSpace(result.ID)) {
+		result.ResumeHint = fmt.Sprintf(
+			"%q looks like a background command session id, not an agent id: check it with command_status {\"session_id\": %s}. Agent ids come from spawn_agent.",
+			result.ID, strings.TrimSpace(result.ID))
+	}
 	return result
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func agentTerminalCannotResume(status AgentStatus) bool {

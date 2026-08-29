@@ -52,6 +52,19 @@ type execSessionStatus struct {
 	PTY       bool   `json:"pty,omitempty"`
 	Cols      int    `json:"cols,omitempty"`
 	Rows      int    `json:"rows,omitempty"`
+	// Next names the tool that consumes SessionID. A bare id in a payload is an
+	// invitation to guess: observed a model try wait_agent and then read_output
+	// with this id before reaching command_status, then fall back to sleeping.
+	Next string `json:"next,omitempty"`
+}
+
+// nextForSession tells the caller how to follow up on a background command.
+func nextForSession(id int) string {
+	return fmt.Sprintf(
+		"still running: poll with command_status {\"session_id\": %d}. "+
+			"Send input with command_write_stdin, stop it with command_stop. "+
+			"Do not sleep to wait, and do not pass this id to read_output or wait_agent.",
+		id)
 }
 
 type ExecSessionStatus = execSessionStatus
@@ -176,6 +189,11 @@ func (m *ExecSessionManager) Status(id int) (string, error) {
 		return "", fmt.Errorf("unknown session %d", id)
 	}
 	payload := sess.snapshot()
+	// Repeat the routing hint while it is still running: a model polling a
+	// long job re-reads this payload, not the one that started it.
+	if payload.Status == "running" {
+		payload.Next = nextForSession(id)
+	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return "", err
