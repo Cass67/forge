@@ -42,6 +42,11 @@ type Tool struct {
 	MutatesWorkspace bool
 	Execute          func(ctx context.Context, args map[string]any) (string, error)
 	LastDiff         func() string // optional: returns diff from last execution, nil if not applicable
+	// LastParts optionally returns multimodal content produced by the last
+	// execution. Tool results are text-only by contract (and OpenAI-compatible
+	// APIs reject image parts in a tool message), so the loop replays these as a
+	// follow-up user message, which is the only role that carries images.
+	LastParts func() []llm.MessageContentPart
 }
 
 func (t Tool) ParallelSafe() bool {

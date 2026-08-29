@@ -789,6 +789,28 @@ func (s *Session) AppendUserMessage(text string) error {
 	return s.persistDurableItem(item, sink)
 }
 
+// AppendUserParts records multimodal content produced by a tool as a user
+// message. Images cannot travel in a tool message -- OpenAI-compatible APIs
+// reject them there -- so this is how a tool hands a vision model something to
+// look at. Drivers that cannot take images degrade to a placeholder note.
+func (s *Session) AppendUserParts(text string, parts []llm.MessageContentPart) error {
+	if s == nil || len(parts) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	item := s.appendItemLocked(protocol.Item{
+		Kind: protocol.ItemUserMessage,
+		Message: &protocol.MessageItem{
+			Role:         string(llm.RoleUser),
+			Text:         strings.TrimSpace(text),
+			ContentParts: parts,
+		},
+	})
+	sink := s.durableSink
+	s.mu.Unlock()
+	return s.persistDurableItem(item, sink)
+}
+
 func (s *Session) appendQueuedUserInput(text string) {
 	trimmed := strings.TrimSpace(text)
 	if s == nil || trimmed == "" {

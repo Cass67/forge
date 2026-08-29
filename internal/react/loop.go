@@ -1677,6 +1677,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 		status ToolRunStatus
 		result string
 		diff   string
+		parts  []llm.MessageContentPart
 		err    error
 	}
 	results := make([]execResult, 0, len(execs))
@@ -1691,7 +1692,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 		// Sequential: execute tools one at a time, in order
 		for _, exec := range execs {
 			run := exec.execute()
-			results = append(results, execResult{status: run.Status, result: run.Result, diff: run.Diff, err: run.Error})
+			results = append(results, execResult{status: run.Status, result: run.Result, diff: run.Diff, parts: run.Parts, err: run.Error})
 		}
 	} else {
 		// Parallel: dispatch all tools in goroutines, collect in order
@@ -1700,6 +1701,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 			status ToolRunStatus
 			result string
 			diff   string
+			parts  []llm.MessageContentPart
 			err    error
 		}
 		ch := make(chan indexedResult, len(execs))
@@ -1710,7 +1712,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 			go func() {
 				defer wg.Done()
 				run := exec.execute()
-				ch <- indexedResult{index: i, status: run.Status, result: run.Result, diff: run.Diff, err: run.Error}
+				ch <- indexedResult{index: i, status: run.Status, result: run.Result, diff: run.Diff, parts: run.Parts, err: run.Error}
 			}()
 		}
 		wg.Wait()
@@ -1773,6 +1775,15 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, turn int, calls []l
 		}
 		if !appended {
 			return nil
+		}
+		// A tool message cannot carry an image, so multimodal output follows as a
+		// user message. Without this the model receives only the tool's text and
+		// is blind to anything it just asked to look at.
+		if len(res.parts) > 0 {
+			if err := r.session.AppendUserParts(
+				fmt.Sprintf("Attached: output of %s.", call.Name), res.parts); err != nil {
+				return err
+			}
 		}
 		if r.renderer != nil {
 			r.renderer.ToolResult(call.Name, display, res.diff, false)

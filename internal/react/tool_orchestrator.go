@@ -3,6 +3,7 @@ package react
 import (
 	"context"
 	"errors"
+	"forge/internal/llm"
 
 	agenttools "forge/internal/agent/tools"
 )
@@ -27,7 +28,11 @@ type ToolRunResult struct {
 	Status ToolRunStatus
 	Result string
 	Diff   string
-	Error  error
+	// Parts carries multimodal output (currently images) that a tool produced.
+	// The tool message itself stays text; the loop replays these as a user
+	// message so vision models actually receive the content.
+	Parts []llm.MessageContentPart
+	Error error
 }
 
 type ToolOrchestrator struct{}
@@ -74,5 +79,9 @@ func (ToolOrchestrator) Run(ctx context.Context, req ToolRunRequest) ToolRunResu
 	if req.Tool.LastDiff != nil {
 		diff = req.Tool.LastDiff()
 	}
-	return ToolRunResult{Status: ToolRunSucceeded, Result: result, Diff: diff}
+	var parts []llm.MessageContentPart
+	if req.Tool.LastParts != nil {
+		parts = req.Tool.LastParts()
+	}
+	return ToolRunResult{Status: ToolRunSucceeded, Result: result, Diff: diff, Parts: parts}
 }
