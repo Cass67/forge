@@ -228,6 +228,18 @@ func inlineToolResultLimit(configured int, contextWindowTokens func() int) int {
 // largeToolResultBytes keeps the compaction trigger above the inline limit.
 // If a result may be inlined but immediately counts as "large", the next
 // decision micro-compacts it away and the inlining gained nothing.
+// promptToolResultBytes scales the micro-compaction trigger with the window.
+// It stays a quarter of the inline limit so micro compaction still fires before
+// summarize pressure, but on a large window it no longer crushes every result
+// over a flat 4 KiB while most of the context sits unused.
+func promptToolResultBytes(configured int, contextWindowTokens func() int) int {
+	limit := inlineToolResultLimit(configured, contextWindowTokens) / 4
+	if limit < defaultPromptToolResultBytes {
+		limit = defaultPromptToolResultBytes
+	}
+	return limit
+}
+
 func largeToolResultBytes(configured int, contextWindowTokens func() int) int {
 	limit := 2 * inlineToolResultLimit(configured, contextWindowTokens)
 	if limit < defaultLargeToolResultBytes {
@@ -377,6 +389,9 @@ func NewRunner(cfg Config) *Runner {
 			LargeToolResultBytesFn: func() int {
 				return largeToolResultBytes(cfg.OutputStoreThresholdBytes, cfg.ContextWindowTokens)
 			},
+			PromptToolResultBytesFn: func() int {
+				return promptToolResultBytes(cfg.OutputStoreThresholdBytes, cfg.ContextWindowTokens)
+			},
 		}),
 		compactionMaxFailures:     cfg.CompactionMaxFailures,
 		turnComplete:              cfg.TurnComplete,
@@ -393,6 +408,9 @@ func NewRunner(cfg Config) *Runner {
 		contextWindowTokens:       cfg.ContextWindowTokens,
 		diagnosticsProvider:       cfg.DiagnosticsProvider,
 	}
+	// Without this the prompt-side truncation limits stay at their small-window
+	// defaults no matter how large the model's context is.
+	session.SetContextWindowFn(cfg.ContextWindowTokens)
 	if snap := session.Snapshot(); snap.TaskState != nil && isSynthesisGuardOperation(snap.TaskState.Operation) {
 		runner.planWorkflow.active = true
 		runner.planWorkflow.mode = strings.ToLower(strings.TrimSpace(snap.TaskState.Operation))

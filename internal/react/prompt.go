@@ -136,7 +136,9 @@ func BuildMessages(systemPrompt string, snapshot SessionSnapshot) []llm.Message 
 
 	messages = append(messages, composedOverlayMessages(tailOverlays)...)
 
-	return dropOrphanedToolCalls(truncateToolResults(truncateAssistantToolCalls(messages), toolResultMaxLines))
+	window := snapshot.ContextWindowTokens
+	messages = truncateAssistantToolCalls(messages, scaledToolCallArgSoftLimit(window), scaledToolCallArgHardLimit(window))
+	return dropOrphanedToolCalls(truncateToolResults(messages, scaledToolResultMaxLines(window)))
 }
 
 // composedOverlayMessages renders overlays as system messages. Drivers that

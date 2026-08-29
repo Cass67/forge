@@ -49,7 +49,13 @@ type CompactionConfig struct {
 	// Resolved per decision so a mid-session model switch picks up the new window.
 	PromptBudgetFn        func() int
 	PromptToolResultBytes int
-	MaxFailures           int
+	// PromptToolResultBytesFn, when set and returning > 0, overrides
+	// PromptToolResultBytes. Without it this threshold stayed at its 4 KiB
+	// default while its siblings scaled with the window, so on a large-context
+	// model every tool result over 4 KiB was crushed once the prompt passed
+	// half budget — discarding diagnostics with most of the window still free.
+	PromptToolResultBytesFn func() int
+	MaxFailures             int
 }
 
 type CompactionManager struct {
@@ -71,7 +77,7 @@ func NewCompactionManager(cfg CompactionConfig) *CompactionManager {
 		cfg.PromptBudgetBytes = 256 * 1024
 	}
 	if cfg.PromptToolResultBytes < 1 {
-		cfg.PromptToolResultBytes = 4 * 1024
+		cfg.PromptToolResultBytes = defaultPromptToolResultBytes
 	}
 	return &CompactionManager{cfg: cfg}
 }
@@ -95,6 +101,10 @@ func (m *CompactionManager) Decide(snapshot SessionSnapshot) CompactionDecision 
 // trigger; the effective value scales with the context window.
 const defaultLargeToolResultBytes = 64 * 1024
 
+// defaultPromptToolResultBytes is the floor for the micro-compaction trigger,
+// used when no window-scaled value is supplied.
+const defaultPromptToolResultBytes = 4 * 1024
+
 func (m *CompactionManager) largeToolResultBytes() int {
 	if m.cfg.LargeToolResultBytesFn != nil {
 		if b := m.cfg.LargeToolResultBytesFn(); b > 0 {
@@ -102,6 +112,15 @@ func (m *CompactionManager) largeToolResultBytes() int {
 		}
 	}
 	return m.cfg.LargeToolResultBytes
+}
+
+func (m *CompactionManager) promptToolResultBytes() int {
+	if m.cfg.PromptToolResultBytesFn != nil {
+		if b := m.cfg.PromptToolResultBytesFn(); b > 0 {
+			return b
+		}
+	}
+	return m.cfg.PromptToolResultBytes
 }
 
 func (m *CompactionManager) promptBudgetBytes() int {
@@ -154,8 +173,9 @@ func (m *CompactionManager) microCompactableDecision(messages []llm.Message, rea
 		if i >= compactableEnd {
 			break
 		}
-		if msg.Role == llm.RoleTool && len(msg.Content) > m.cfg.PromptToolResultBytes {
-			return CompactionDecision{Mode: CompactionMicro, Reason: reason, KeepTurns: m.cfg.KeepTurns, ToolResultBytes: m.cfg.PromptToolResultBytes, ProtectTail: tail}, true
+		limit := m.promptToolResultBytes()
+		if msg.Role == llm.RoleTool && len(msg.Content) > limit {
+			return CompactionDecision{Mode: CompactionMicro, Reason: reason, KeepTurns: m.cfg.KeepTurns, ToolResultBytes: limit, ProtectTail: tail}, true
 		}
 	}
 	return CompactionDecision{}, false

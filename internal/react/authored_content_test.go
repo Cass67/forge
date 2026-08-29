@@ -20,7 +20,7 @@ func TestAuthoredContentSurvivesHistoryTruncation(t *testing.T) {
 				ArgsJSON: `{"path":"main.go","content":` + quote(body) + `}`,
 			}},
 		}}
-		got := truncateAssistantToolCalls(msgs)
+		got := truncateAssistantToolCalls(msgs, toolCallArgSoftStringLimit, toolCallArgHardStringLimit)
 		args := got[0].ToolCalls[0].ArgsJSON
 		if strings.Contains(args, "omitted") {
 			t.Errorf("%s content was truncated: %.80s", tool, args)
@@ -42,7 +42,7 @@ func TestNonAuthoredToolArgsStillTruncated(t *testing.T) {
 			ArgsJSON: `{"url":"https://example.com","body":` + quote(body) + `}`,
 		}},
 	}}
-	got := truncateAssistantToolCalls(msgs)
+	got := truncateAssistantToolCalls(msgs, toolCallArgSoftStringLimit, toolCallArgHardStringLimit)
 	if !strings.Contains(got[0].ToolCalls[0].ArgsJSON, "omitted") {
 		t.Fatal("non-authored bulky argument was not truncated")
 	}

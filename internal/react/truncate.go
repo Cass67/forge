@@ -19,6 +19,32 @@ const (
 	toolCallArgHardStringLimit = 4000
 )
 
+// These three are floors, not ceilings. They were sized for a small window and
+// applied flat, so a large-context model clipped its own tool output and command
+// history exactly as hard as a 32k one. Each now scales with the active window
+// and never drops below the original value, so small windows are unchanged.
+func scaledToolResultMaxLines(windowTokens int) int {
+	return scaleFromWindow(windowTokens, 256, toolResultMaxLines)
+}
+
+func scaledToolCallArgSoftLimit(windowTokens int) int {
+	return scaleFromWindow(windowTokens, 100, toolCallArgSoftStringLimit)
+}
+
+func scaledToolCallArgHardLimit(windowTokens int) int {
+	return scaleFromWindow(windowTokens, 25, toolCallArgHardStringLimit)
+}
+
+func scaleFromWindow(windowTokens, divisor, floor int) int {
+	if windowTokens <= 0 || divisor <= 0 {
+		return floor
+	}
+	if scaled := windowTokens / divisor; scaled > floor {
+		return scaled
+	}
+	return floor
+}
+
 // authoredContentTools carry content the model composed itself. Truncating
 // their arguments puts an "<omitted N chars>" marker into the model's view of
 // its own past calls, and validation rejects any new call carrying that
@@ -28,10 +54,16 @@ const (
 // artifact_write is deliberately absent: artifacts are write-once outputs
 // that are rarely reused as a template, and they carry the largest payloads,
 // so the context saving is worth more there than the risk.
+// run_command is here for the same reason: a truncated command is a command the
+// model cannot re-issue. Observed 2026-08-29 — a ~950-char command was truncated,
+// the model replayed the marker, validation rejected it, and it retried into a
+// loop. Shell commands are bounded by the hard string limit anyway, so exempting
+// them costs little context and removes the trap.
 var authoredContentTools = map[string]struct{}{
 	"write_file":  {},
 	"edit_file":   {},
 	"apply_patch": {},
+	"run_command": {},
 }
 
 var bulkyToolArgKeys = map[string]struct{}{
@@ -92,13 +124,13 @@ func truncateToolResults(messages []llm.Message, maxLines int) []llm.Message {
 	return out
 }
 
-func truncateAssistantToolCalls(messages []llm.Message) []llm.Message {
+func truncateAssistantToolCalls(messages []llm.Message, softLimit, hardLimit int) []llm.Message {
 	var out []llm.Message
 	for i, msg := range messages {
 		if len(msg.ToolCalls) == 0 {
 			continue
 		}
-		truncatedCalls, changed := truncateNativeToolCalls(msg.ToolCalls)
+		truncatedCalls, changed := truncateNativeToolCalls(msg.ToolCalls, softLimit, hardLimit)
 		if !changed {
 			continue
 		}
@@ -114,7 +146,7 @@ func truncateAssistantToolCalls(messages []llm.Message) []llm.Message {
 	return out
 }
 
-func truncateNativeToolCalls(calls []llm.NativeToolCall) ([]llm.NativeToolCall, bool) {
+func truncateNativeToolCalls(calls []llm.NativeToolCall, softLimit, hardLimit int) ([]llm.NativeToolCall, bool) {
 	out := make([]llm.NativeToolCall, len(calls))
 	copy(out, calls)
 	changed := false
@@ -122,7 +154,7 @@ func truncateNativeToolCalls(calls []llm.NativeToolCall) ([]llm.NativeToolCall, 
 		if _, ok := authoredContentTools[strings.ToLower(strings.TrimSpace(call.Name))]; ok {
 			continue
 		}
-		argsJSON, truncated := truncateToolCallArgsJSON(call.ArgsJSON)
+		argsJSON, truncated := truncateToolCallArgsJSON(call.ArgsJSON, softLimit, hardLimit)
 		if !truncated {
 			continue
 		}
@@ -135,7 +167,7 @@ func truncateNativeToolCalls(calls []llm.NativeToolCall) ([]llm.NativeToolCall, 
 	return out, true
 }
 
-func truncateToolCallArgsJSON(raw string) (string, bool) {
+func truncateToolCallArgsJSON(raw string, softLimit, hardLimit int) (string, bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return raw, false
@@ -147,7 +179,7 @@ func truncateToolCallArgsJSON(raw string) (string, bool) {
 		}
 		return fmt.Sprintf(`{"_truncated_args":"%d chars omitted"}`, len(raw)), true
 	}
-	truncated, changed := truncateToolCallArgValue("", payload)
+	truncated, changed := truncateToolCallArgValue("", payload, softLimit, hardLimit)
 	if !changed {
 		return raw, false
 	}
@@ -158,13 +190,13 @@ func truncateToolCallArgsJSON(raw string) (string, bool) {
 	return string(encoded), true
 }
 
-func truncateToolCallArgValue(key string, value any) (any, bool) {
+func truncateToolCallArgValue(key string, value any, softLimit, hardLimit int) (any, bool) {
 	switch typed := value.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(typed))
 		changed := false
 		for childKey, childValue := range typed {
-			next, childChanged := truncateToolCallArgValue(childKey, childValue)
+			next, childChanged := truncateToolCallArgValue(childKey, childValue, softLimit, hardLimit)
 			out[childKey] = next
 			changed = changed || childChanged
 		}
@@ -173,13 +205,13 @@ func truncateToolCallArgValue(key string, value any) (any, bool) {
 		out := make([]any, len(typed))
 		changed := false
 		for i, childValue := range typed {
-			next, childChanged := truncateToolCallArgValue(key, childValue)
+			next, childChanged := truncateToolCallArgValue(key, childValue, softLimit, hardLimit)
 			out[i] = next
 			changed = changed || childChanged
 		}
 		return out, changed
 	case string:
-		if !shouldTruncateToolCallString(key, typed) {
+		if !shouldTruncateToolCallString(key, typed, softLimit, hardLimit) {
 			return typed, false
 		}
 		return fmt.Sprintf("<omitted %d chars>", len(typed)), true
@@ -188,11 +220,11 @@ func truncateToolCallArgValue(key string, value any) (any, bool) {
 	}
 }
 
-func shouldTruncateToolCallString(key, value string) bool {
-	if len(value) > toolCallArgHardStringLimit {
+func shouldTruncateToolCallString(key, value string, softLimit, hardLimit int) bool {
+	if len(value) > hardLimit {
 		return true
 	}
-	if len(value) <= toolCallArgSoftStringLimit {
+	if len(value) <= softLimit {
 		return false
 	}
 	if _, ok := bulkyToolArgKeys[strings.ToLower(strings.TrimSpace(key))]; ok {

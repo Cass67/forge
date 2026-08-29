@@ -171,14 +171,18 @@ type SessionSnapshot struct {
 	LastTurnEndReason    TurnEndReason
 	LastTurnCancelReason string
 	ActiveWorkspaceRoot  string
+	// ContextWindowTokens lets prompt building scale its truncation limits to
+	// the active model. Zero means unknown, and the flat defaults apply.
+	ContextWindowTokens int
 }
 
 type Session struct {
-	mu           sync.Mutex
-	turn         int
-	lastInput    string
-	initialInput string
-	recentInputs []string
+	mu              sync.Mutex
+	contextWindowFn func() int
+	turn            int
+	lastInput       string
+	initialInput    string
+	recentInputs    []string
 	// items is the only source of conversation truth. historyCache is a
 	// projection of it, rebuilt on demand; nothing may write to it directly.
 	// Keeping a second, independently mutated message list is what let the
@@ -953,6 +957,17 @@ func appendDurableItem(sink DurableSink, item protocol.Item) error {
 	return sink.Append(context.Background(), item)
 }
 
+// SetContextWindowFn supplies the active model's window so prompt building can
+// scale its truncation limits instead of applying flat defaults.
+func (s *Session) SetContextWindowFn(fn func() int) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.contextWindowFn = fn
+	s.mu.Unlock()
+}
+
 func (s *Session) Messages(systemPrompt string) []llm.Message {
 	return BuildMessages(systemPrompt, s.Snapshot())
 }
@@ -963,7 +978,12 @@ func (s *Session) Snapshot() SessionSnapshot {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	window := 0
+	if s.contextWindowFn != nil {
+		window = s.contextWindowFn()
+	}
 	return SessionSnapshot{
+		ContextWindowTokens:  window,
 		Turn:                 s.turn,
 		LastInput:            s.lastInput,
 		InitialInput:         s.initialInput,
