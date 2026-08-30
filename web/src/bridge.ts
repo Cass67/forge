@@ -361,6 +361,28 @@ export const forge = {
     call<WorkspaceFile>("ReadWorkspaceFile", path),
   writeWorkspaceFile: (path: string, content: string, version: string) =>
     call<WorkspaceFile>("WriteWorkspaceFile", path, content, version),
+  createWorkspaceFile: (path: string, content: string) =>
+    call<WorkspaceFile>("CreateWorkspaceFile", path, content),
+  createWorkspaceDir: (path: string) => call<void>("CreateWorkspaceDir", path),
+  deleteWorkspacePath: (path: string) =>
+    call<void>("DeleteWorkspacePath", path),
+  renameWorkspacePath: (from: string, to: string) =>
+    call<void>("RenameWorkspacePath", from, to),
+  copyWorkspacePath: (from: string, to: string) =>
+    call<void>("CopyWorkspacePath", from, to),
+  scratchRoot: () => call<string>("ScratchRoot"),
+  listScratch: () => call<WorkspaceEntry[]>("ListScratch"),
+  createScratchFile: (name: string, content: string) =>
+    call<WorkspaceFile>("CreateScratchFile", name, content),
+  readScratchFile: (name: string) =>
+    call<WorkspaceFile>("ReadScratchFile", name),
+  writeScratchFile: (name: string, content: string, version: string) =>
+    call<WorkspaceFile>("WriteScratchFile", name, content, version),
+  deleteScratchFile: (name: string) => call<void>("DeleteScratchFile", name),
+  renameScratchFile: (from: string, to: string) =>
+    call<void>("RenameScratchFile", from, to),
+  copyScratchFile: (from: string, to: string) =>
+    call<void>("CopyScratchFile", from, to),
   gitStatus: () => call<GitStatusResult>("GitStatus"),
   gitDiff: (path: string, staged: boolean) =>
     call<string>("GitDiff", path, staged),

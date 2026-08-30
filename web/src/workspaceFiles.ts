@@ -3,6 +3,10 @@ export type OpenFile = {
   content: string;
   savedContent: string;
   version: string;
+  // Scratch files live outside the workspace in the throwaway scratch dir, so
+  // they load via readScratchFile and save via writeScratchFile rather than
+  // their workspace counterparts. path is the bare file name for these.
+  scratch?: boolean;
 };
 
 export function isDirty(file: OpenFile): boolean {

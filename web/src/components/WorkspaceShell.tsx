@@ -53,6 +53,7 @@ import {
 } from "../workspaceFiles";
 import type { GitTab } from "../gitTabs";
 import { CodeEditor } from "./CodeEditor";
+import { ConfirmDialog, NameDialog } from "./FileDialog";
 import { GitTabView } from "./DiffView";
 import { GitPanel } from "./GitPanel";
 import { MultiRunDialog } from "./MultiRunDialog";
@@ -145,16 +146,31 @@ function patchTree(
   );
 }
 
+// collapseTree clears the expanded flag on every directory so the explorer
+// returns to its flat, top-level view.
+function collapseTree(nodes: TreeNode[]): TreeNode[] {
+  return nodes.map((node) => {
+    if (!node.is_dir) return node;
+    return {
+      ...node,
+      expanded: false,
+      children: node.children ? collapseTree(node.children) : node.children,
+    };
+  });
+}
+
 function FileTree({
   nodes,
   active,
   onOpen,
   onExpand,
+  onContext,
 }: {
   nodes: TreeNode[];
   active: string;
   onOpen: (path: string) => void;
   onExpand: (node: TreeNode) => void;
+  onContext: (event: React.MouseEvent, node: TreeNode) => void;
 }) {
   return (
     <ul className="workspace-tree">
@@ -163,7 +179,11 @@ function FileTree({
           <button
             className={node.path === active ? "active" : ""}
             onClick={() => (node.is_dir ? onExpand(node) : onOpen(node.path))}
-            title={node.path}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              onContext(event, node);
+            }}
+            title={`${node.path} — right-click for file actions`}
           >
             <span aria-hidden="true">
               {node.is_dir ? (node.expanded ? "▾" : "▸") : "·"}
@@ -176,11 +196,88 @@ function FileTree({
               active={active}
               onOpen={onOpen}
               onExpand={onExpand}
+              onContext={onContext}
             />
           ) : null}
         </li>
       ))}
     </ul>
+  );
+}
+
+// The target of a right-click context menu: a workspace tree node or a flat
+// scratch file. x/y are viewport coords so the menu can be positioned from a
+// fixed element regardless of which dock the tree sits in.
+type MenuTarget = {
+  x: number;
+  y: number;
+  path: string;
+  name: string;
+  isDir: boolean;
+  // When true the target is a scratch file (its path is its bare name).
+  scratch: boolean;
+};
+
+function ContextMenu({
+  target,
+  disabled,
+  onAction,
+  onClose,
+}: {
+  target: MenuTarget;
+  disabled: boolean;
+  onAction: (action: string) => void;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const close = () => onClose();
+    window.addEventListener("click", close);
+    window.addEventListener("blur", close);
+    const key = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", key);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("blur", close);
+      window.removeEventListener("keydown", key);
+    };
+  }, [onClose]);
+
+  const items: { action: string; label: string }[] = [];
+  if (target.isDir && !target.scratch) {
+    items.push({ action: "new-file", label: "New file" });
+    items.push({ action: "new-folder", label: "New folder" });
+  }
+  if (target.scratch || target.isDir) {
+    items.push({ action: "new-scratch", label: "New scratch" });
+  }
+  items.push({ action: "rename", label: "Rename" });
+  items.push({ action: "duplicate", label: "Duplicate" });
+  items.push({ action: "delete", label: "Delete" });
+
+  return createPortal(
+    <div
+      className="workspace-context-menu"
+      role="menu"
+      style={{
+        left: Math.min(target.x, window.innerWidth - 200),
+        top: Math.min(target.y, window.innerHeight - 180),
+      }}
+      onMouseDown={(event) => event.stopPropagation()}
+    >
+      {items.map((item) => (
+        <button
+          disabled={disabled}
+          key={item.action}
+          onClick={() => onAction(item.action)}
+          role="menuitem"
+        >
+          {item.label}
+        </button>
+      ))}
+    </div>,
+    document.body,
   );
 }
 
@@ -211,6 +308,27 @@ export function WorkspaceShell({
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [files, setFiles] = useState<OpenFile[]>([]);
   const [activePath, setActivePath] = useState("");
+  const [scratchFiles, setScratchFiles] = useState<WorkspaceEntry[]>([]);
+  // The active right-click menu, or null when none is open.
+  const [menu, setMenu] = useState<MenuTarget | null>(null);
+  // The file manager's naming/confirmation dialogs. window.prompt and
+  // window.confirm are no-ops in the Wails webview, so these are real modals.
+  type NameRequest = {
+    title: string;
+    initial?: string;
+    confirmLabel: string;
+    onConfirm: (name: string) => void;
+  };
+  const [nameRequest, setNameRequest] = useState<NameRequest | null>(null);
+  type ConfirmRequest = {
+    title: string;
+    message: string;
+    confirmLabel: string;
+    onConfirm: () => void;
+  };
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(
+    null,
+  );
   const [git, setGit] = useState<GitStatusResult | null>(null);
   const [gitTabs, setGitTabs] = useState<GitTab[]>([]);
   // A non-empty id means the editor area is showing a diff rather than a file.
@@ -232,6 +350,7 @@ export function WorkspaceShell({
   const nextTerminal = useRef(0);
   const [quickOpen, setQuickOpen] = useState(false);
   const [lightEditorBackground, setLightEditorBackground] = useState(false);
+  const [scratchExpanded, setScratchExpanded] = useState(true);
   const [query, setQuery] = useState("");
   const [workspacePaths, setWorkspacePaths] = useState<string[]>([]);
   // One body element per group, tracked in state because the portalled tools
@@ -374,28 +493,307 @@ export function WorkspaceShell({
       .catch((error: unknown) => onNotify(String(error)));
   };
 
+  const collapseAll = () => {
+    setTree((current) => collapseTree(current));
+  };
+
+  // Reloads the top-level tree and the quick-open index. Called after a file
+  // operation so the explorer reflects what just changed without resetting the
+  // open editors.
+  const refreshTree = useCallback(
+    (generation: number): Promise<void> =>
+      Promise.all([
+        forge.listWorkspaceDir("").then((next) => {
+          if (generation === workspaceGeneration.current) setTree(next);
+        }),
+        indexWorkspace(generation),
+      ])
+        .then(() => {
+          refreshGit();
+        })
+        .then(() => undefined),
+    [indexWorkspace, onNotify, refreshGit],
+  );
+
+  // Reloads the scratch file list so the explorer reflects a scratch
+  // mutation. Workspaces are irrelevant to scratch files, so no generation
+  // guard is needed: the list is cheap and idempotent.
+  const refreshScratch = useCallback(() => {
+    void forge
+      .listScratch()
+      .then(setScratchFiles)
+      .catch((error: unknown) => onNotify(String(error)));
+  }, [onNotify]);
+
+  useEffect(() => {
+    refreshScratch();
+  }, [refreshScratch]);
+
+  // Joins a parent directory (already relative to the workspace) with a user
+  // name to make a workspace-relative path. Escaping names are rejected rather
+  // than silently truncated.
+  const nameToPath = (parent: string, name: string): string | null => {
+    const trimmed = name.trim();
+    if (!trimmed) return null;
+    if (trimmed === "." || trimmed === ".." || trimmed.includes("/"))
+      return null;
+    return parent ? `${parent}/${trimmed}` : trimmed;
+  };
+
+  // Prompts for a scratch-file name and, if valid, creates and opens it.
+  const newScratch = () => {
+    setNameRequest({
+      title: "New scratch file",
+      confirmLabel: "Create",
+      onConfirm: (name) => {
+        setNameRequest(null);
+        void forge
+          .createScratchFile(name, "")
+          .then(() => refreshScratch())
+          .then(() => openFile(name, true))
+          .catch((error: unknown) => onNotify(String(error)));
+      },
+    });
+  };
+
+  // Creates a new empty file in parent (relative path, "" for the root) and
+  // opens it for editing.
+  const newFile = (parent: string) => {
+    setNameRequest({
+      title: "New file",
+      confirmLabel: "Create",
+      onConfirm: (name) => {
+        setNameRequest(null);
+        const path = nameToPath(parent, name);
+        if (!path) return;
+        void forge
+          .createWorkspaceFile(path, "")
+          .then(() => openFile(path))
+          .then(() =>
+            refreshTree(++workspaceGeneration.current).catch((error: unknown) =>
+              onNotify(String(error)),
+            ),
+          )
+          .catch((error: unknown) => onNotify(String(error)));
+      },
+    });
+  };
+
+  // Creates a new folder under parent.
+  const newFolder = (parent: string) => {
+    setNameRequest({
+      title: "New folder",
+      confirmLabel: "Create",
+      onConfirm: (name) => {
+        setNameRequest(null);
+        const path = nameToPath(parent, name);
+        if (!path) return;
+        void forge
+          .createWorkspaceDir(path)
+          .then(() =>
+            refreshTree(++workspaceGeneration.current).catch((error: unknown) =>
+              onNotify(String(error)),
+            ),
+          )
+          .catch((error: unknown) => onNotify(String(error)));
+      },
+    });
+  };
+
+  const runMenuAction = (menuAction: string) => {
+    if (!menu) return;
+    const target = menu;
+    const close = () => setMenu(null);
+    if (menuAction === "new-file") newFile(target.path);
+    else if (menuAction === "new-folder") newFolder(target.path);
+    else if (menuAction === "new-scratch") newScratch();
+    else if (menuAction === "duplicate") duplicateTarget(target);
+    else if (menuAction === "rename") renameTarget(target);
+    else if (menuAction === "delete") deleteTarget(target);
+    close();
+  };
+
+  // Duplicates a workspace path or scratch file, asking for the copy's name.
+  const duplicateTarget = (target: MenuTarget) => {
+    const base = target.name.replace(/\.[^.]*$/, "");
+    const defaultName = `${base} copy${target.isDir ? "" : (target.name.match(/\.[^.]*$/)?.[0] ?? "")}`;
+    setNameRequest({
+      title: "Duplicate",
+      initial: defaultName,
+      confirmLabel: "Duplicate",
+      onConfirm: (name) => {
+        setNameRequest(null);
+        if (target.scratch) {
+          if (name === target.name) {
+            onNotify("Choose a different scratch file name");
+            return;
+          }
+          void forge
+            .copyScratchFile(target.name, name)
+            .then(() => refreshScratch())
+            .catch((error: unknown) => onNotify(String(error)));
+          return;
+        }
+        const parent = target.path.includes("/")
+          ? target.path.slice(0, target.path.lastIndexOf("/"))
+          : "";
+        const to = nameToPath(parent, name);
+        if (!to) return;
+        void forge
+          .copyWorkspacePath(target.path, to)
+          .then(() =>
+            refreshTree(++workspaceGeneration.current).catch((error: unknown) =>
+              onNotify(String(error)),
+            ),
+          )
+          .catch((error: unknown) => onNotify(String(error)));
+      },
+    });
+  };
+
+  // Renames a workspace path or scratch file.
+  const renameTarget = (target: MenuTarget) => {
+    setNameRequest({
+      title: "Rename",
+      initial: target.name,
+      confirmLabel: "Rename",
+      onConfirm: (name) => {
+        setNameRequest(null);
+        if (target.scratch) {
+          if (name === target.name) {
+            onNotify("Choose a different scratch file name");
+            return;
+          }
+          void forge
+            .renameScratchFile(target.name, name)
+            .then(() => {
+              const oldKey = `${SCRATCH_PREFIX}${target.name}`;
+              const newKey = `${SCRATCH_PREFIX}${name}`;
+              setFiles((current) =>
+                current.map((open) =>
+                  open.scratch && open.path === oldKey
+                    ? { ...open, path: newKey }
+                    : open,
+                ),
+              );
+              if (activePath === oldKey) setActivePath(newKey);
+              refreshScratch();
+            })
+            .catch((error: unknown) => onNotify(String(error)));
+          return;
+        }
+        const parent = target.path.includes("/")
+          ? target.path.slice(0, target.path.lastIndexOf("/"))
+          : "";
+        const to = nameToPath(parent, name);
+        if (!to) return;
+        void forge
+          .renameWorkspacePath(target.path, to)
+          .then(() => {
+            // Keep the editor open on the renamed file: re-read it under its new
+            // path so the tab, syntax highlighting and save target follow.
+            const open = files.find(
+              (candidate) =>
+                !candidate.scratch && candidate.path === target.path,
+            );
+            if (open) {
+              void forge.readWorkspaceFile(to).then((next) => {
+                setFiles((current) =>
+                  current.map((candidate) =>
+                    !candidate.scratch && candidate.path === target.path
+                      ? toOpenFile(next)
+                      : candidate,
+                  ),
+                );
+                if (activePath === target.path) setActivePath(to);
+              });
+            }
+            return refreshTree(++workspaceGeneration.current).catch(
+              (error: unknown) => onNotify(String(error)),
+            );
+          })
+          .catch((error: unknown) => onNotify(String(error)));
+      },
+    });
+  };
+
+  // Deletes a workspace path or scratch file after confirmation.
+  const deleteTarget = (target: MenuTarget) => {
+    setConfirmRequest({
+      title: "Delete",
+      message: `Delete ${target.name}${target.isDir ? " and its contents" : ""}?`,
+      confirmLabel: "Delete",
+      onConfirm: () => {
+        setConfirmRequest(null);
+        if (target.scratch) {
+          const key = `${SCRATCH_PREFIX}${target.name}`;
+          void forge
+            .deleteScratchFile(target.name)
+            .then(() => {
+              setFiles((current) =>
+                current.filter((open) => open.path !== key),
+              );
+              if (activePath === key) setActivePath("");
+              refreshScratch();
+            })
+            .catch((error: unknown) => onNotify(String(error)));
+          return;
+        }
+        void forge
+          .deleteWorkspacePath(target.path)
+          .then(() => {
+            setFiles((current) =>
+              current.filter((open) => open.path !== target.path),
+            );
+            if (activePath === target.path) setActivePath("");
+            refreshTree(++workspaceGeneration.current).catch((error: unknown) =>
+              onNotify(String(error)),
+            );
+          })
+          .catch((error: unknown) => onNotify(String(error)));
+      },
+    });
+  };
+
+  // Open-file paths are namespaced so a scratch file and a workspace file that
+  // share a name never collide in the tab strip or the active-path lookup.
+  const SCRATCH_PREFIX = "scratch:";
+  const scratchOpenName = (file: OpenFile) =>
+    file.scratch ? file.path.slice(SCRATCH_PREFIX.length) : file.path;
+
   const openFile = useCallback(
-    (path: string) => {
+    (path: string, scratch = false) => {
       setActiveGitTab("");
       focusTool("editor");
-      if (files.some((candidate) => candidate.path === path)) {
+      const key = scratch ? `${SCRATCH_PREFIX}${path}` : path;
+      if (
+        files.some(
+          (candidate) =>
+            candidate.path === key && candidate.scratch === scratch,
+        )
+      ) {
         openRequest.current++;
-        setActivePath(path);
+        setActivePath(key);
         setQuickOpen(false);
         return;
       }
       const request = ++openRequest.current;
       const generation = workspaceGeneration.current;
-      void forge
-        .readWorkspaceFile(path)
+      const read = scratch
+        ? forge.readScratchFile(path)
+        : forge.readWorkspaceFile(path);
+      void read
         .then((next) => {
-          if (generation !== workspaceGeneration.current) return;
+          if (!scratch && generation !== workspaceGeneration.current) return;
           setFiles((current) =>
-            current.some((candidate) => candidate.path === path)
+            current.some(
+              (candidate) =>
+                candidate.path === key && candidate.scratch === scratch,
+            )
               ? current
-              : [...current, toOpenFile(next)],
+              : [...current, { ...toOpenFile(next), path: key, scratch }],
           );
-          if (request === openRequest.current) setActivePath(path);
+          if (request === openRequest.current) setActivePath(key);
           setQuickOpen(false);
         })
         .catch((error: unknown) => onNotify(String(error)));
@@ -414,27 +812,36 @@ export function WorkspaceShell({
     const index = files.findIndex((candidate) => candidate.path === path);
     const remaining = files.filter((candidate) => candidate.path !== path);
     setFiles(remaining);
-    if (activePath === path)
-      setActivePath(
-        remaining[Math.min(index, remaining.length - 1)]?.path ?? "",
-      );
+    if (activePath === path) {
+      const next = remaining[Math.min(index, remaining.length - 1)]?.path ?? "";
+      setActivePath(next);
+      // With no file left the editor has nothing to show, so hand the dock
+      // back to the explorer instead of leaving an empty editor on screen.
+      if (!next && remaining.length === 0) focusTool("explorer");
+    }
   };
 
   const save = useCallback(() => {
     if (!file || !isDirty(file)) return;
     const expectedVersion = file.version;
-    void forge
-      .writeWorkspaceFile(file.path, file.content, file.version)
+    const save = file.scratch
+      ? forge.writeScratchFile(
+          scratchOpenName(file),
+          file.content,
+          file.version,
+        )
+      : forge.writeWorkspaceFile(file.path, file.content, file.version);
+    void save
       .then((saved) => {
         setFiles((current) =>
           current.map((candidate) =>
-            candidate.path === saved.path
+            candidate.path === file.path && candidate.scratch === file.scratch
               ? acceptSavedFile(candidate, saved, expectedVersion)
               : candidate,
           ),
         );
         refreshGit();
-        onNotify(`saved ${saved.path}`);
+        onNotify(`saved ${scratchOpenName(file)}`);
       })
       .catch((error: unknown) => onNotify(String(error)));
   }, [file, onNotify, refreshGit]);
@@ -727,13 +1134,124 @@ export function WorkspaceShell({
         <>
           <div className="workspace-root" title={workDir}>
             {workDir.split("/").pop() || workDir}
+            <span className="workspace-root-actions">
+              <button
+                className="icon-btn"
+                onClick={collapseAll}
+                title="Collapse all folders"
+                aria-label="Collapse all folders"
+              >
+                ⟲
+              </button>
+              <span className="workspace-root-actions-sep" aria-hidden="true" />
+              <button
+                className="icon-btn"
+                disabled={Boolean(browsing)}
+                onClick={() => newFile("")}
+                title={
+                  browsing
+                    ? "Browsing is read-only"
+                    : "New file in this workspace"
+                }
+                aria-label="New file"
+              >
+                New file
+              </button>
+              <button
+                className="icon-btn"
+                onClick={newScratch}
+                title="New scratch file"
+                aria-label="New scratch file"
+              >
+                New scratch
+              </button>
+            </span>
           </div>
           <FileTree
             nodes={tree}
             active={activePath}
             onOpen={openFile}
             onExpand={expand}
+            onContext={(event, node) =>
+              setMenu({
+                x: event.clientX,
+                y: event.clientY,
+                path: node.path,
+                name: node.name,
+                isDir: node.is_dir,
+                scratch: false,
+              })
+            }
           />
+          <button
+            className="scratch-head"
+            onClick={() => setScratchExpanded((expanded) => !expanded)}
+            aria-expanded={scratchExpanded}
+          >
+            <span aria-hidden="true">{scratchExpanded ? "▾" : "▸"}</span>
+            scratch
+          </button>
+          {scratchExpanded ? (
+            <ul className="workspace-tree scratch-tree">
+              {scratchFiles.map((entry) => {
+                const key = `${SCRATCH_PREFIX}${entry.path}`;
+                return (
+                  <li key={entry.path}>
+                    <button
+                      className={key === activePath ? "active" : ""}
+                      onClick={() => openFile(entry.path, true)}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        setMenu({
+                          x: event.clientX,
+                          y: event.clientY,
+                          path: entry.path,
+                          name: entry.name,
+                          isDir: entry.is_dir,
+                          scratch: true,
+                        });
+                      }}
+                      title={`${entry.name} — right-click for scratch actions`}
+                    >
+                      <span aria-hidden="true">·</span>
+                      {entry.name}
+                    </button>
+                  </li>
+                );
+              })}
+              {scratchFiles.length === 0 ? (
+                <li className="workspace-tree-empty">
+                  <button onClick={newScratch}>Create a scratch file</button>
+                </li>
+              ) : null}
+            </ul>
+          ) : null}
+          {menu ? (
+            <ContextMenu
+              target={menu}
+              disabled={Boolean(browsing)}
+              onAction={runMenuAction}
+              onClose={() => setMenu(null)}
+            />
+          ) : null}
+          {nameRequest ? (
+            <NameDialog
+              title={nameRequest.title}
+              initial={nameRequest.initial}
+              confirmLabel={nameRequest.confirmLabel}
+              onConfirm={nameRequest.onConfirm}
+              onCancel={() => setNameRequest(null)}
+            />
+          ) : null}
+          {confirmRequest ? (
+            <ConfirmDialog
+              title={confirmRequest.title}
+              message={confirmRequest.message}
+              confirmLabel={confirmRequest.confirmLabel}
+              onConfirm={confirmRequest.onConfirm}
+              onCancel={() => setConfirmRequest(null)}
+            />
+          ) : null}
         </>
       );
     if (tool.kind === "git")
@@ -766,30 +1284,35 @@ export function WorkspaceShell({
       <section className="workspace-editor">
         {files.length > 0 || gitTabs.length > 0 ? (
           <div className="workspace-tabs">
-            {files.map((open) => (
-              <div
-                className={`workspace-tab ${!diffTab && open.path === activePath ? "active" : ""}`}
-                key={open.path}
-                title={open.path}
-              >
-                <button
-                  onClick={() => {
-                    setActiveGitTab("");
-                    setActivePath(open.path);
-                  }}
+            {files.map((open) => {
+              const openName = open.scratch
+                ? open.path.slice("scratch:".length)
+                : open.path;
+              return (
+                <div
+                  className={`workspace-tab ${!diffTab && open.path === activePath ? "active" : ""}`}
+                  key={open.path}
+                  title={open.path}
                 >
-                  {open.path.split("/").pop()}
-                  {isDirty(open) ? " ●" : ""}
-                </button>
-                <button
-                  className="workspace-tab-close"
-                  onClick={() => closeFile(open.path)}
-                  aria-label={`Close ${open.path}`}
-                >
-                  ×
-                </button>
-              </div>
-            ))}
+                  <button
+                    onClick={() => {
+                      setActiveGitTab("");
+                      setActivePath(open.path);
+                    }}
+                  >
+                    {openName.split("/").pop()}
+                    {isDirty(open) ? " ●" : ""}
+                  </button>
+                  <button
+                    className="workspace-tab-close"
+                    onClick={() => closeFile(open.path)}
+                    aria-label={`Close ${open.path}`}
+                  >
+                    ×
+                  </button>
+                </div>
+              );
+            })}
             {gitTabs.map((tab) => (
               <div
                 className={`workspace-tab diff ${tab.id === activeGitTab ? "active" : ""}`}
@@ -812,7 +1335,13 @@ export function WorkspaceShell({
         ) : null}
         <div className="workspace-toolbar">
           <span className="workspace-file-name">
-            {diffTab ? diffTab.title : file ? file.path : "No file open"}
+            {diffTab
+              ? diffTab.title
+              : file
+                ? file.scratch
+                  ? file.path.slice("scratch:".length)
+                  : file.path
+                : "No file open"}
           </span>
           <button
             className="workspace-quick-open-button"
@@ -834,12 +1363,16 @@ export function WorkspaceShell({
           >
             <span aria-hidden="true">{lightEditorBackground ? "☾" : "☀"}</span>
           </button>
-          <button disabled={!dirty} onClick={revert}>
-            Revert
-          </button>
-          <button disabled={!dirty} onClick={save}>
-            Save
-          </button>
+          {file ? (
+            <>
+              <button disabled={!dirty} onClick={revert}>
+                Revert
+              </button>
+              <button disabled={!dirty} onClick={save}>
+                Save
+              </button>
+            </>
+          ) : null}
         </div>
         {diffTab ? (
           <GitTabView
@@ -865,7 +1398,7 @@ export function WorkspaceShell({
         ) : file ? (
           <CodeEditor
             key={file.path}
-            path={file.path}
+            path={file.scratch ? file.path.slice("scratch:".length) : file.path}
             value={file.content}
             lightBackground={lightEditorBackground}
             onChange={updateContent}

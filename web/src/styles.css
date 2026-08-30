@@ -1638,6 +1638,31 @@ textarea:not(.xterm-helper-textarea),
 .modal-head .close {
   margin-left: auto;
 }
+.modal.fusedialog {
+  max-width: 400px;
+}
+.fusedialog input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--input);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.8125rem;
+}
+.fusedialog input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.fusedialog-message {
+  margin: 0.25rem 0 0.75rem;
+  color: var(--text);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  word-break: break-word;
+}
 .modal-tool {
   font-family: var(--mono);
   font-weight: 600;
@@ -2891,6 +2916,99 @@ textarea:not(.xterm-helper-textarea),
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.workspace-root-actions {
+  display: flex;
+  flex: none;
+  gap: 0.25rem;
+  margin-left: auto;
+  padding-left: 0.4rem;
+}
+.workspace-root-actions .icon-btn {
+  padding: 0.1rem 0.4rem;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.6875rem;
+  cursor: pointer;
+}
+.workspace-root-actions .icon-btn:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+.workspace-root-actions .icon-btn:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+.workspace-root-actions-sep {
+  width: 1px;
+  height: 1rem;
+  margin: 0 0.15rem;
+  background: var(--border);
+}
+/* The scratch area sits below the workspace tree under its own heading, and it
+   shares the tree's row styling so files behave identically under the mouse. */
+.scratch-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+  padding: 0.3rem 0.65rem;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-align: left;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+.scratch-head:hover {
+  color: var(--text);
+}
+.scratch-head ~ .workspace-tree {
+  flex: 1;
+}
+.workspace-tree-empty button {
+  color: var(--muted);
+  font-style: italic;
+}
+/* A right-click action menu, fixed to the viewport so it never clips against
+   the dock it was opened from. */
+.workspace-context-menu {
+  position: fixed;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  min-width: 9rem;
+  padding: 0.25rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel2);
+  box-shadow: 0 4px 12px var(--shadow);
+}
+.workspace-context-menu button {
+  padding: 0.3rem 0.6rem;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.75rem;
+  text-align: left;
+  cursor: pointer;
+}
+.workspace-context-menu button:hover:not(:disabled) {
+  background: var(--hover);
+}
+.workspace-context-menu button:disabled {
+  color: var(--muted);
+  cursor: default;
 }
 .workspace-branch {
   justify-content: space-between;

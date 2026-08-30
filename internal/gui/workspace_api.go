@@ -151,6 +151,29 @@ func workspacePath(root, relative string) (string, error) {
 	return path, nil
 }
 
+// workspaceNewPath resolves a relative path that does not exist yet (used by
+// create and copy). The final component is not required to exist, but its
+// parent directory is resolved through symlinks so a create can never write
+// outside the workspace through a link.
+func workspaceNewPath(root, relative string) (string, error) {
+	if filepath.IsAbs(relative) {
+		return "", errors.New("workspace path must be relative")
+	}
+	clean := filepath.Clean(relative)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", errors.New("workspace path escapes the workspace")
+	}
+	parentReal, err := filepath.EvalSymlinks(filepath.Dir(filepath.Join(root, clean)))
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(root, parentReal)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", errors.New("workspace path escapes the workspace")
+	}
+	return filepath.Join(parentReal, filepath.Base(clean)), nil
+}
+
 func (s *Service) ListWorkspaceDir(relative string) ([]WorkspaceEntry, error) {
 	root, err := s.workspaceRoot()
 	if err != nil {
@@ -294,6 +317,375 @@ func replaceWorkspaceFile(path string, data []byte, mode os.FileMode) (err error
 func fileVersion(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+// scratchRoot resolves the directory the throwaway scratch files live in and
+// makes sure it exists. Unlike the workspace, scratch is not bound to a chat
+// workspace: it is junk, so nothing is gated on being able to write to a repo.
+func (s *Service) scratchRoot() (string, error) {
+	dir := strings.TrimSpace(s.ScratchDir)
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// scratchName rejects traversal: a scratch file is a single name inside the
+// scratch root, never a path.
+func scratchName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	base := filepath.Base(name)
+	if name == "" || name == "." || name == ".." || base != name {
+		return "", errors.New("scratch name must be a plain file name")
+	}
+	return name, nil
+}
+
+func (s *Service) CreateWorkspaceFile(relative, content string) (WorkspaceFile, error) {
+	if _, err := s.mutableRoot(); err != nil {
+		return WorkspaceFile{}, err
+	}
+	root, err := s.workspaceRoot()
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	path, err := workspaceNewPath(root, relative)
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return WorkspaceFile{}, err
+	}
+	if _, err := os.Stat(path); err == nil {
+		return WorkspaceFile{}, errors.New("workspace file already exists")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return WorkspaceFile{}, err
+	}
+	if len(content) > maxWorkspaceFileBytes {
+		return WorkspaceFile{}, fmt.Errorf("file exceeds %d MiB editor limit", maxWorkspaceFileBytes>>20)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		return WorkspaceFile{}, err
+	}
+	return WorkspaceFile{
+		Path:    filepath.ToSlash(filepath.Clean(relative)),
+		Content: content,
+		Version: fileVersion([]byte(content)),
+	}, nil
+}
+
+func (s *Service) CreateWorkspaceDir(relative string) error {
+	if _, err := s.mutableRoot(); err != nil {
+		return err
+	}
+	root, err := s.workspaceRoot()
+	if err != nil {
+		return err
+	}
+	path, err := workspaceNewPath(root, relative)
+	if err != nil {
+		return err
+	}
+	return os.MkdirAll(path, 0o755)
+}
+
+func (s *Service) DeleteWorkspacePath(relative string) error {
+	if _, err := s.mutableRoot(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(relative) == "." {
+		return errors.New("cannot delete the workspace root")
+	}
+	root, err := s.workspaceRoot()
+	if err != nil {
+		return err
+	}
+	path, err := workspacePath(root, relative)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	return os.RemoveAll(path)
+}
+
+func (s *Service) RenameWorkspacePath(from, to string) error {
+	if _, err := s.mutableRoot(); err != nil {
+		return err
+	}
+	root, err := s.workspaceRoot()
+	if err != nil {
+		return err
+	}
+	src, err := workspacePath(root, from)
+	if err != nil {
+		return err
+	}
+	dst, err := workspaceNewPath(root, to)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	return os.Rename(src, dst)
+}
+
+func (s *Service) CopyWorkspacePath(from, to string) error {
+	if _, err := s.mutableRoot(); err != nil {
+		return err
+	}
+	root, err := s.workspaceRoot()
+	if err != nil {
+		return err
+	}
+	src, err := workspacePath(root, from)
+	if err != nil {
+		return err
+	}
+	dst, err := workspaceNewPath(root, to)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		if err := os.MkdirAll(dst, 0o755); err != nil {
+			return err
+		}
+		return filepath.WalkDir(src, func(p string, d os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			rel, err := filepath.Rel(src, p)
+			if err != nil {
+				return err
+			}
+			target := filepath.Join(dst, rel)
+			if d.IsDir() {
+				return os.MkdirAll(target, 0o755)
+			}
+			mode := os.FileMode(0o600)
+			if fi, err := d.Info(); err == nil {
+				mode = fi.Mode().Perm()
+			}
+			return copyFile(p, target, mode)
+		})
+	}
+	mode := info.Mode().Perm()
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	return copyFile(src, dst, mode)
+}
+
+func copyFile(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
+}
+
+// — Scratch files —
+
+func (s *Service) ScratchRoot() string {
+	dir, err := s.scratchRoot()
+	if err != nil {
+		return ""
+	}
+	return dir
+}
+
+func (s *Service) ListScratch() ([]WorkspaceEntry, error) {
+	root, err := s.scratchRoot()
+	if err != nil {
+		return nil, err
+	}
+	items, err := os.ReadDir(root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	result := make([]WorkspaceEntry, 0, len(items))
+	for _, item := range items {
+		info, infoErr := item.Info()
+		if infoErr != nil {
+			continue
+		}
+		result = append(result, WorkspaceEntry{
+			Name:  item.Name(),
+			Path:  item.Name(),
+			IsDir: item.IsDir(),
+			Size:  info.Size(),
+		})
+	}
+	slices.SortFunc(result, func(a, b WorkspaceEntry) int {
+		if a.IsDir != b.IsDir {
+			if a.IsDir {
+				return -1
+			}
+			return 1
+		}
+		return cmp.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name))
+	})
+	return result, nil
+}
+
+func (s *Service) CreateScratchFile(name, content string) (WorkspaceFile, error) {
+	name, err := scratchName(name)
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	root, err := s.scratchRoot()
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	path := filepath.Join(root, name)
+	if _, err := os.Stat(path); err == nil {
+		return WorkspaceFile{}, errors.New("scratch file already exists")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return WorkspaceFile{}, err
+	}
+	if len(content) > maxWorkspaceFileBytes {
+		return WorkspaceFile{}, fmt.Errorf("file exceeds %d MiB editor limit", maxWorkspaceFileBytes>>20)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		return WorkspaceFile{}, err
+	}
+	return WorkspaceFile{Path: name, Content: content, Version: fileVersion([]byte(content))}, nil
+}
+
+func (s *Service) ReadScratchFile(name string) (WorkspaceFile, error) {
+	name, err := scratchName(name)
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	root, err := s.scratchRoot()
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	path := filepath.Join(root, name)
+	info, err := os.Stat(path)
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return WorkspaceFile{}, errors.New("scratch path is not a regular file")
+	}
+	if info.Size() > maxWorkspaceFileBytes {
+		return WorkspaceFile{}, fmt.Errorf("file exceeds %d MiB editor limit", maxWorkspaceFileBytes>>20)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	if bytes.IndexByte(data, 0) >= 0 || !utf8.Valid(data) {
+		return WorkspaceFile{}, errors.New("binary files cannot be edited")
+	}
+	return WorkspaceFile{Path: name, Content: string(data), Version: fileVersion(data)}, nil
+}
+
+func (s *Service) WriteScratchFile(name, content, expectedVersion string) (WorkspaceFile, error) {
+	name, err := scratchName(name)
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	if len(content) > maxWorkspaceFileBytes {
+		return WorkspaceFile{}, fmt.Errorf("file exceeds %d MiB editor limit", maxWorkspaceFileBytes>>20)
+	}
+	root, err := s.scratchRoot()
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	path := filepath.Join(root, name)
+	current, err := os.ReadFile(path)
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	if fileVersion(current) != expectedVersion {
+		return WorkspaceFile{}, errors.New("file changed on disk; reload before saving")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return WorkspaceFile{}, err
+	}
+	if err := replaceWorkspaceFile(path, []byte(content), info.Mode().Perm()); err != nil {
+		return WorkspaceFile{}, err
+	}
+	return WorkspaceFile{Path: name, Content: content, Version: fileVersion([]byte(content))}, nil
+}
+
+func (s *Service) DeleteScratchFile(name string) error {
+	name, err := scratchName(name)
+	if err != nil {
+		return err
+	}
+	root, err := s.scratchRoot()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(root, name)
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return os.RemoveAll(path)
+}
+
+func (s *Service) RenameScratchFile(from, to string) error {
+	from, err := scratchName(from)
+	if err != nil {
+		return err
+	}
+	to, err = scratchName(to)
+	if err != nil {
+		return err
+	}
+	root, err := s.scratchRoot()
+	if err != nil {
+		return err
+	}
+	return os.Rename(filepath.Join(root, from), filepath.Join(root, to))
+}
+
+func (s *Service) CopyScratchFile(from, to string) error {
+	from, err := scratchName(from)
+	if err != nil {
+		return err
+	}
+	to, err = scratchName(to)
+	if err != nil {
+		return err
+	}
+	root, err := s.scratchRoot()
+	if err != nil {
+		return err
+	}
+	src := filepath.Join(root, from)
+	if _, err := os.Stat(src); err != nil {
+		return err
+	}
+	return copyFile(src, filepath.Join(root, to), 0o600)
 }
 
 func (s *Service) StartTerminal(id string, rows, cols int) (string, error) {

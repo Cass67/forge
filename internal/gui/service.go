@@ -84,9 +84,12 @@ type Service struct {
 	// looked at: it takes the window as soon as it attaches. A runtime started
 	// for any other reason attaches in the background.
 	pendingFocus string
-	// browseDir points the file tree, editor and source control at a workspace
+	// BrowseDir points the file tree, editor and source control at a workspace
 	// without a chat running in it. Empty means they follow the chat.
 	browseDir string
+	// ScratchDir is where the GUI's throwaway scratch files live. Set by the
+	// window layer from [scratch] dir; empty resolves to the OS temp dir.
+	ScratchDir string
 	// Directories being torn down by CloseWorkspace, so a session ending there
 	// is not mistaken for one that died and reopened.
 	closing map[string]bool

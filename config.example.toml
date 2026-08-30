@@ -13,6 +13,11 @@ live_compat_models = true
 # ./output directory in the workspace still wins, for older sessions.
 # output_dir = ""
 
+[scratch]
+# Where the GUI's "New Scratch" throwaway files live. Unset (default) uses the
+# operating system's temp dir, since scratch files are junk by definition.
+# dir = ""
+
 # API keys. Environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, ...)
 # override these; `forge login` tokens in auth.json are the final fallback.
 [keys]

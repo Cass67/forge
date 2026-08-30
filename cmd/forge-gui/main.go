@@ -128,6 +128,7 @@ func run() error {
 	})
 
 	service.Registry = registry
+	service.ScratchDir = cfg.ScratchDir()
 	service.PickDir = func() (string, error) {
 		return app.Dialog.OpenFile().
 			SetTitle("Choose a workspace folder").

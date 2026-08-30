@@ -22,6 +22,14 @@ type Session struct {
 	OutputDir string `toml:"output_dir"`
 }
 
+// Scratch is the throwaway-file area used by the GUI's "New Scratch" action:
+// quick paste/search buffers that are not part of any repository. Files live
+// outside the workspace by default; point Dir somewhere else when you want
+// them on disk where you can find them.
+type Scratch struct {
+	Dir string `toml:"dir"`
+}
+
 type Keys struct {
 	Anthropic  string `toml:"anthropic"`
 	OpenAI     string `toml:"openai"`
@@ -192,6 +200,7 @@ type AgentOverride struct {
 
 type Config struct {
 	Session     Session                    `toml:"session"`
+	Scratch     Scratch                    `toml:"scratch"`
 	Keys        Keys                       `toml:"keys"`
 	Copilot     Copilot                    `toml:"copilot"`
 	Log         Log                        `toml:"log"`
@@ -323,6 +332,16 @@ func SaveChatLastModel(path, model string) error {
 
 func DefaultPath() string {
 	return fsutil.ForgeConfigPath("config.toml")
+}
+
+// ScratchDir resolves the throwaway-file directory. Empty (unset) means the
+// operating system's temp dir, since scratch files are junk by definition.
+func (c *Config) ScratchDir() string {
+	dir := strings.TrimSpace(c.Scratch.Dir)
+	if dir == "" {
+		return os.TempDir()
+	}
+	return dir
 }
 
 func setDefaults(c *Config) {
