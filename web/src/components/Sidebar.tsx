@@ -96,6 +96,12 @@ export function Sidebar({
     [activeWorkspace, threads, workspaces],
   );
 
+  const collapseAllWorkspaces = () => {
+    setClosed(
+      Object.fromEntries(visibleWorkspaces.map((ws) => [ws.path, true])),
+    );
+  };
+
   const toggle = (key: string, on?: boolean) =>
     setPicked((current) => {
       const next = new Set(current);
@@ -183,6 +189,13 @@ export function Sidebar({
     <aside className="sidebar">
       <div className="sidebar-head">
         <span className="section-label">Workspaces</span>
+        <button
+          className="btn"
+          onClick={collapseAllWorkspaces}
+          title="Collapse every workspace section"
+        >
+          Collapse all
+        </button>
         <button
           className={`btn ${selecting ? "primary" : ""}`}
           onClick={() => (selecting ? leaveSelect() : setSelecting(true))}
