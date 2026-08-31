@@ -320,3 +320,24 @@ func TestFileOutputStoreHandleRejectsMalformedIDWithGuidance(t *testing.T) {
 		t.Fatalf("want guidance in error, got %v", err)
 	}
 }
+
+func TestHandleResolvesElidedID(t *testing.T) {
+	store := NewFileOutputStore(t.TempDir())
+	handle, err := store.Put(context.Background(), "session", []byte("hello world"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ellipsis := range []string{"…", "..."} {
+		id := "session/" + handle.SHA256[:6] + ellipsis + handle.SHA256[len(handle.SHA256)-4:]
+		got, err := store.Handle(context.Background(), id)
+		if err != nil {
+			t.Fatalf("%q: %v", id, err)
+		}
+		if got.ID != handle.ID {
+			t.Fatalf("%q: got %q want %q", id, got.ID, handle.ID)
+		}
+	}
+	if _, err := store.Handle(context.Background(), "session/call_123"); err == nil {
+		t.Fatal("expected error for non-handle id")
+	}
+}

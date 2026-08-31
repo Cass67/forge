@@ -119,7 +119,18 @@ func (s *FileOutputStore) Handle(ctx context.Context, id string) (OutputHandle, 
 	}
 	_, hash, ok := parseHandleID(id)
 	if !ok {
-		return OutputHandle{}, errInvalidHandle(id)
+		// Handles reach the model through display and compaction paths that
+		// elide the middle of long strings. Recover the real one rather than
+		// making the model reconstruct 64 hex chars it never saw.
+		resolved, rerr := s.resolveElidedHandle(id)
+		if rerr != nil {
+			return OutputHandle{}, rerr
+		}
+		if resolved == "" {
+			return OutputHandle{}, errInvalidHandle(id)
+		}
+		id = resolved
+		_, hash, _ = parseHandleID(id)
 	}
 	handle := OutputHandle{ID: strings.TrimSpace(id), SHA256: hash}
 	path, err := s.pathForHandle(handle)
@@ -138,6 +149,81 @@ func (s *FileOutputStore) Handle(ctx context.Context, id string) (OutputHandle, 
 	}
 	handle.Bytes = int(info.Size())
 	return handle, nil
+}
+
+// resolveElidedHandle maps a handle whose middle was replaced by an ellipsis
+// ("thread/656f…8639") back to the stored handle it uniquely identifies.
+// Returns "" when the id is not elided or matches nothing.
+func (s *FileOutputStore) resolveElidedHandle(id string) (string, error) {
+	thread, prefix, suffix, ok := splitElidedHandle(id)
+	if !ok {
+		return "", nil
+	}
+	dir := filepath.Join(s.outputRoot(), thread)
+	if err := rejectSymlink(dir); err != nil {
+		return "", nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", nil
+	}
+	var matches []string
+	for _, entry := range entries {
+		hash := strings.TrimSuffix(entry.Name(), ".out")
+		if hash == entry.Name() || !isHexSHA256(hash) {
+			continue
+		}
+		if strings.HasPrefix(hash, prefix) && strings.HasSuffix(hash, suffix) {
+			matches = append(matches, thread+"/"+hash)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return "", nil
+	case 1:
+		return matches[0], nil
+	default:
+		return "", fmt.Errorf("output handle %q was truncated and matches %d stored outputs; use the full \"<thread>/<sha256-hex>\" handle", id, len(matches))
+	}
+}
+
+func splitElidedHandle(id string) (thread, prefix, suffix string, ok bool) {
+	parts := strings.Split(strings.TrimSpace(id), "/")
+	if len(parts) != 2 {
+		return "", "", "", false
+	}
+	thread, ok = validHandlePart(parts[0])
+	if !ok {
+		return "", "", "", false
+	}
+	hash := parts[1]
+	var head, tail string
+	switch {
+	case strings.Contains(hash, "…"):
+		head, tail, _ = strings.Cut(hash, "…")
+	case strings.Contains(hash, "..."):
+		head, tail, _ = strings.Cut(hash, "...")
+	default:
+		return "", "", "", false
+	}
+	head = strings.Trim(head, ".…")
+	tail = strings.Trim(tail, ".…")
+	if head == "" && tail == "" {
+		return "", "", "", false
+	}
+	if !isHexRunes(head) || !isHexRunes(tail) {
+		return "", "", "", false
+	}
+	return thread, head, tail, true
+}
+
+func isHexRunes(value string) bool {
+	for _, r := range value {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *FileOutputStore) pathForHandle(handle OutputHandle) (string, error) {

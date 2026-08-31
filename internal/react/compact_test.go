@@ -424,3 +424,13 @@ func TestRunnerContextErrorMicroCompactsLargeActiveToolResultAndRetriesOnce(t *t
 	}
 	t.Fatal("compacted tool result not found")
 }
+
+func TestCompactedToolMetadataSnippetKeepsHandleWhole(t *testing.T) {
+	handle := "session/" + strings.Repeat("a", 64)
+	line := "Tool output was large (53364 bytes) and is stored under handle " + handle +
+		" (sha256 " + strings.Repeat("a", 64) + "). Read it now with read_output(handle=\"" + handle + "\")."
+	got := compactedToolMetadataSnippet(line)
+	if got != "Handle: "+handle {
+		t.Fatalf("got %q", got)
+	}
+}

@@ -154,6 +154,11 @@ func compactedToolMetadataSnippet(line string) string {
 	if len(line) <= compactedToolMetadataMaxBytes {
 		return line
 	}
+	// A truncated handle is useless: read_output rejects it and the model
+	// cannot reconstruct the elided middle. Drop the other fields instead.
+	if token := handleToken(line); token != "" {
+		return "Handle: " + token
+	}
 	lower := strings.ToLower(line)
 	idx := strings.Index(lower, "handle")
 	if idx < 0 {
@@ -179,4 +184,19 @@ func compactedToolMetadataSnippet(line string) string {
 		snippet += "..."
 	}
 	return snippet
+}
+
+// handleToken pulls the handle value out of a metadata line such as
+// `Handle: session/<sha>. Size: 1234.` or a JSON `"handle": "session/<sha>"`.
+func handleToken(line string) string {
+	lower := strings.ToLower(line)
+	idx := strings.Index(lower, "handle")
+	if idx < 0 {
+		return ""
+	}
+	rest := strings.TrimLeft(line[idx+len("handle"):], "\"': \t")
+	if end := strings.IndexAny(rest, " \t\","); end >= 0 {
+		rest = rest[:end]
+	}
+	return strings.TrimRight(strings.TrimSpace(rest), ".")
 }
