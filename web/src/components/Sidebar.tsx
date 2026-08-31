@@ -11,6 +11,7 @@ import {
   workspacesWithThreads,
 } from "../sidebarSections";
 import type { SessionStatus } from "../sessionTabs";
+import { NameDialog } from "./FileDialog";
 
 function fmtTime(iso: string): string {
   if (!iso) return "";
@@ -45,6 +46,8 @@ export function Sidebar({
   browsing = "",
   onBulkDelete,
   onClearThreads,
+  onPickWorkspaceParent,
+  onCreateWorkspace,
   threadStatus = {},
   threadAttention = {},
 }: {
@@ -75,6 +78,9 @@ export function Sidebar({
   browsing?: string;
   onBulkDelete: (threadIDs: string[], dirs: string[]) => void;
   onClearThreads: () => void;
+  // "Create folder" flow: pick where (via the OS dialog) then name it.
+  onPickWorkspaceParent: () => Promise<string | null>;
+  onCreateWorkspace: (parent: string, name: string) => Promise<void>;
   // Latest known status per session, for the running/waiting/stopped dot.
   threadStatus?: Record<string, SessionStatus>;
   threadAttention?: Record<string, Attention>;
@@ -90,11 +96,29 @@ export function Sidebar({
   const [selecting, setSelecting] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [picked, setPicked] = useState<Set<string>>(new Set());
+  // The parent directory chosen by the OS picker while the create-folder dialog
+  // is open, or "" when no pick has happened yet.
+  const [pendingParent, setPendingParent] = useState("");
   const activeWorkspace = workDir;
   const visibleWorkspaces = useMemo(
     () => workspacesWithThreads(workspaces, threads, activeWorkspace),
     [activeWorkspace, threads, workspaces],
   );
+
+  // "Create folder" is two steps: an OS picker for where, then a name dialog
+  // once a parent directory has been chosen. The props resolve the happy path;
+  // App owns error reporting, so failures surface there.
+  const startCreateFolder = () => {
+    setPendingParent("");
+    void onPickWorkspaceParent().then((parent) => {
+      if (parent) setPendingParent(parent);
+    });
+  };
+  const confirmCreateFolder = (name: string) => {
+    const parent = pendingParent;
+    setPendingParent("");
+    void onCreateWorkspace(parent, name);
+  };
 
   const collapseAllWorkspaces = () => {
     setClosed(
@@ -202,13 +226,6 @@ export function Sidebar({
           title="Manage several chats or workspaces at once"
         >
           {selecting ? "Done" : "Manage"}
-        </button>
-        <button
-          className="btn"
-          onClick={onAddWorkspace}
-          title="Add a folder and discover its Git repositories"
-        >
-          Add folder…
         </button>
       </div>
       <div className="ws-search">
@@ -539,6 +556,8 @@ export function Sidebar({
           dirCount={pickedDirs.length}
           totalThreads={threads.length}
           selectable={selectableCount}
+          onAddWorkspace={onAddWorkspace}
+          onCreateFolder={startCreateFolder}
           onSelectAll={selectEverything}
           onCancel={leaveSelect}
           onDelete={() => {
@@ -551,6 +570,14 @@ export function Sidebar({
           }}
         />
       ) : null}
+      {pendingParent ? (
+        <NameDialog
+          title="Create workspace folder"
+          confirmLabel="Create folder"
+          onConfirm={confirmCreateFolder}
+          onCancel={() => setPendingParent("")}
+        />
+      ) : null}
     </aside>
   );
 }
@@ -560,6 +587,8 @@ function BulkBar({
   dirCount,
   totalThreads,
   selectable,
+  onAddWorkspace,
+  onCreateFolder,
   onSelectAll,
   onCancel,
   onDelete,
@@ -569,6 +598,8 @@ function BulkBar({
   dirCount: number;
   totalThreads: number;
   selectable: number;
+  onAddWorkspace: () => void;
+  onCreateFolder: () => void;
   onSelectAll: () => void;
   onCancel: () => void;
   onDelete: () => void;
@@ -617,6 +648,20 @@ function BulkBar({
         </>
       ) : (
         <>
+          <button
+            className="btn"
+            onClick={onAddWorkspace}
+            title="Add a folder and discover its Git repositories"
+          >
+            Add folder…
+          </button>
+          <button
+            className="btn"
+            onClick={onCreateFolder}
+            title="Pick a parent directory, then name a new workspace folder"
+          >
+            Create folder…
+          </button>
           <button
             className="btn danger"
             disabled={total === 0}

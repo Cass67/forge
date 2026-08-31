@@ -325,6 +325,9 @@ export const forge = {
     call<Provider[]>("CompleteProviderLogin", id, pasted),
   openURL: (url: string) => call<void>("OpenURL", url),
   chooseWorkspace: () => call<string>("ChooseWorkspace"),
+  pickWorkspaceParent: () => call<string>("PickWorkspaceParent"),
+  createWorkspaceFolder: (parent: string, name: string) =>
+    call<Workspace[]>("CreateWorkspaceFolder", parent, name),
   switchWorkspace: (dir: string) => call<void>("SwitchWorkspace", dir),
   pinWorkspace: (dir: string, pinned: boolean) =>
     call<Workspace[]>("PinWorkspace", dir, pinned),

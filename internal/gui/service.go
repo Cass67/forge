@@ -1150,6 +1150,51 @@ func (s *Service) ChooseWorkspace() (string, error) {
 	return dir, s.SwitchWorkspace(dir)
 }
 
+// PickWorkspaceParent opens the native OS folder picker so the user can choose
+// where a new workspace directory should be created. Returns the chosen parent
+// path, or "" when the user cancelled. Nothing is created or registered here.
+func (s *Service) PickWorkspaceParent() (string, error) {
+	if s.PickDir == nil {
+		return "", errNoWorkDir
+	}
+	dir, err := s.PickDir()
+	if err != nil || strings.TrimSpace(dir) == "" {
+		return "", err
+	}
+	return filepath.Clean(strings.TrimSpace(dir)), nil
+}
+
+// CreateWorkspaceFolder makes a new directory under parent and remembers it as
+// a workspace in the registry. The folder on disk is only ever created here;
+// nothing is deleted. Use AddWorkspaceTree when the chosen folder already
+// exists and may contain repositories.
+func (s *Service) CreateWorkspaceFolder(parent, name string) ([]Workspace, error) {
+	parent, err := workspaceDir(parent)
+	if err != nil {
+		return s.Workspaces(), err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" || name == "." || name == ".." ||
+		name != filepath.Base(name) {
+		return s.Workspaces(), errors.New("invalid folder name")
+	}
+	dir := filepath.Join(parent, name)
+	if _, err := os.Stat(dir); err == nil {
+		return s.Workspaces(), errors.New("a folder by that name already exists")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return s.Workspaces(), err
+	}
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		return s.Workspaces(), err
+	}
+	if s.Registry != nil {
+		if err := s.Registry.Ensure(dir); err != nil {
+			return s.Workspaces(), err
+		}
+	}
+	return s.Workspaces(), nil
+}
+
 // SwitchWorkspace activates another directory's runtime in this same window.
 // Runtimes are bound to the directory they started in — tools, sandbox rules
 // and thread store cannot be repointed — so each directory gets its own, and

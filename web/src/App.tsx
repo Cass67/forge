@@ -975,6 +975,31 @@ export default function App() {
       .catch((e: unknown) => notify(String(e)));
   }, [notify, workspaceDirty]);
 
+  // "Create folder" in Manage: the user picks where a new workspace directory
+  // should go (via the OS dialog), names it, and it is created and remembered.
+  // Unlike Add folder it makes the folder too; it never removes anything.
+  const createWorkspace = useCallback(
+    async (parent: string, name: string) => {
+      try {
+        setWorkspaces(await forge.createWorkspaceFolder(parent, name));
+        notify(`Created workspace folder`);
+      } catch (e: unknown) {
+        notify(String(e));
+      }
+    },
+    [notify],
+  );
+  // Step one of the same flow: resolve a parent directory. App owns error
+  // reporting, so failures surface as a message rather than a rejected prop.
+  const pickWorkspaceParent = useCallback(
+    () =>
+      forge.pickWorkspaceParent().catch((e: unknown) => {
+        notify(String(e));
+        return null;
+      }),
+    [notify],
+  );
+
   const lastAgentText = useMemo(() => {
     for (let i = entries.length - 1; i >= 0; i--) {
       const e = entries[i];
@@ -1234,6 +1259,8 @@ export default function App() {
               onRestore={restoreThread}
               onOpenThread={openExactThread}
               onAddWorkspace={addWorkspace}
+              onPickWorkspaceParent={pickWorkspaceParent}
+              onCreateWorkspace={createWorkspace}
               onNewIn={newSessionIn}
               onOpenWorkspace={openWorkspace}
               onDelete={deleteThread}

@@ -27,6 +27,7 @@ func TestBoundMethodSurface(t *testing.T) {
 		"Approve", "AttachImage", "AttachPath", "AwaitProviderLogin", "Cancel", "ChooseWorkspace",
 		"Clear", "ClearThreads", "CompleteProviderLogin", "DeleteThread", "Efforts", "ForgetWorkspace",
 		"History", "ImagePreview", "Init", "MCPServers", "Models", "NewSession", "OpenURL", "PinWorkspace",
+		"PickWorkspaceParent", "CreateWorkspaceFolder",
 		"Providers", "RenameThread", "Restore", "Send",
 		// live sessions
 		"Sessions", "ActivateSession", "OpenThread", "CloseSession",
