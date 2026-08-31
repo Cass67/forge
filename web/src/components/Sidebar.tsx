@@ -265,6 +265,34 @@ export function Sidebar({
           </button>
         ) : null}
       </div>
+      {selecting ? (
+        <BulkBar
+          threadCount={pickedThreads.length}
+          dirCount={pickedDirs.length}
+          totalThreads={threads.length}
+          selectable={selectableCount}
+          onAddWorkspace={onAddWorkspace}
+          onCreateFolder={startCreateFolder}
+          onSelectAll={selectEverything}
+          onCancel={leaveSelect}
+          onDelete={() => {
+            onBulkDelete(pickedThreads, pickedDirs);
+            leaveSelect();
+          }}
+          onClearThreads={() => {
+            onClearThreads();
+            leaveSelect();
+          }}
+        />
+      ) : null}
+      {pendingParent ? (
+        <NameDialog
+          title="Create workspace folder"
+          confirmLabel="Create folder"
+          onConfirm={confirmCreateFolder}
+          onCancel={() => setPendingParent("")}
+        />
+      ) : null}
       <div className="ws-sections">
         {sections.map((ws) => {
           const isActive = ws.path === activeWorkspace;
@@ -550,34 +578,6 @@ export function Sidebar({
           </button>
         ) : null}
       </div>
-      {selecting ? (
-        <BulkBar
-          threadCount={pickedThreads.length}
-          dirCount={pickedDirs.length}
-          totalThreads={threads.length}
-          selectable={selectableCount}
-          onAddWorkspace={onAddWorkspace}
-          onCreateFolder={startCreateFolder}
-          onSelectAll={selectEverything}
-          onCancel={leaveSelect}
-          onDelete={() => {
-            onBulkDelete(pickedThreads, pickedDirs);
-            leaveSelect();
-          }}
-          onClearThreads={() => {
-            onClearThreads();
-            leaveSelect();
-          }}
-        />
-      ) : null}
-      {pendingParent ? (
-        <NameDialog
-          title="Create workspace folder"
-          confirmLabel="Create folder"
-          onConfirm={confirmCreateFolder}
-          onCancel={() => setPendingParent("")}
-        />
-      ) : null}
     </aside>
   );
 }
