@@ -118,6 +118,9 @@ type Service struct {
 	PickDir func() (string, error)
 	// Registry remembers opened workspaces across launches.
 	Registry *workspace.Registry
+	// ListWorkspaceThreads reads stored threads without starting a full chat
+	// runtime. Cold-start sidebar uses it for remembered workspaces.
+	ListWorkspaceThreads func(string) []tui.ThreadSummary
 
 	terminals map[string]*terminalSession
 
@@ -930,11 +933,7 @@ func (s *Service) OpenThread(threadID string) (string, error) {
 // threadWorkDir reports the directory a stored thread was recorded in, empty
 // if it is unknown or no longer a directory.
 func (s *Service) threadWorkDir(threadID string) string {
-	cfg, _, ready := s.snapshot()
-	if !ready || cfg.ListThreads == nil {
-		return ""
-	}
-	for _, t := range cfg.ListThreads() {
+	for _, t := range s.allThreads() {
 		if t.ThreadID != threadID {
 			continue
 		}
@@ -1104,20 +1103,27 @@ func (s *Service) storedThreadsIn(path string) int {
 	return n
 }
 
-// allThreads combines the stores exposed by every live workspace runtime.
-// Each GUI runtime is permanently bound to its own workspace store, so asking
-// only the active runtime makes other live workspaces appear to lose their
-// thread counts. Thread IDs identify duplicates when runtimes share an
-// explicitly configured output directory.
+// allThreads combines live runtime stores with remembered workspace stores.
+// Remembered stores keep cold-start sidebar complete without paying cost of
+// starting every workspace runtime. Thread IDs identify duplicates when stores
+// overlap through explicit output-directory configuration.
 func (s *Service) allThreads() []tui.ThreadSummary {
 	s.mu.RLock()
-	listers := make([]func() []tui.ThreadSummary, 0, len(s.runtimes))
+	listers := make([]func() []tui.ThreadSummary, 0, len(s.runtimes)+1)
 	for _, rt := range s.runtimes {
 		if rt.cfg.ListThreads != nil {
 			listers = append(listers, rt.cfg.ListThreads)
 		}
 	}
 	s.mu.RUnlock()
+	if s.Registry != nil && s.ListWorkspaceThreads != nil {
+		for _, entry := range s.Registry.List() {
+			dir := entry.Path
+			listers = append(listers, func() []tui.ThreadSummary {
+				return s.ListWorkspaceThreads(dir)
+			})
+		}
+	}
 
 	seen := make(map[string]bool)
 	var threads []tui.ThreadSummary

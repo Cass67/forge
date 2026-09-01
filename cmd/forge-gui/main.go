@@ -8,6 +8,7 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"flag"
 	"fmt"
@@ -28,6 +29,7 @@ import (
 	"forge/internal/gui"
 	"forge/internal/llm"
 	runtimepkg "forge/internal/runtime"
+	"forge/internal/sessionstore"
 	"forge/internal/shellenv"
 	"forge/internal/tui"
 	"forge/internal/workspace"
@@ -129,6 +131,30 @@ func run() error {
 
 	service.Registry = registry
 	service.ScratchDir = cfg.ScratchDir()
+	service.ListWorkspaceThreads = func(dir string) []tui.ThreadSummary {
+		outputDir := setup.Config.ResolvedOutputDirFor(dir)
+		if outputDir == "" {
+			return nil
+		}
+		store := sessionstore.NewJSONLThreadStore(filepath.Join(outputDir, "threads"))
+		records, err := store.ListThreads(context.Background(), sessionstore.ListOptions{Limit: 500})
+		if err != nil {
+			return nil
+		}
+		out := make([]tui.ThreadSummary, 0, len(records))
+		for _, r := range records {
+			out = append(out, tui.ThreadSummary{
+				ThreadID:  r.ThreadID,
+				Title:     r.Metadata.Title,
+				Preview:   r.Metadata.Preview,
+				Model:     r.Metadata.Model,
+				CWD:       r.Metadata.CWD,
+				UpdatedAt: r.Metadata.UpdatedAt,
+				ItemCount: r.ItemCount,
+			})
+		}
+		return out
+	}
 	service.PickDir = func() (string, error) {
 		return app.Dialog.OpenFile().
 			SetTitle("Choose a workspace folder").

@@ -247,6 +247,30 @@ func TestThreadsCombinesThreadStoresFromLiveWorkspaces(t *testing.T) {
 	}
 }
 
+func TestThreadsIncludesRememberedWorkspacesBeforeTheirRuntimeStarts(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	active, remembered := t.TempDir(), t.TempDir()
+	registry := workspace.LoadRegistry()
+	if err := registry.Remember(remembered); err != nil {
+		t.Fatal(err)
+	}
+
+	s, c := New(func(string, any) {})
+	s.Registry = registry
+	s.ListWorkspaceThreads = func(dir string) []tui.ThreadSummary {
+		if dir == remembered {
+			return []tui.ThreadSummary{{ThreadID: "remembered", CWD: remembered}}
+		}
+		return nil
+	}
+	c.Attach("active", tui.ChatLiveConfig{WorkDir: active}, make(chan string, 1), nil)
+
+	got := s.Threads()
+	if len(got) != 1 || got[0].ThreadID != "remembered" {
+		t.Fatalf("threads on cold start = %+v, want remembered workspace thread", got)
+	}
+}
+
 func TestSelectedModelSurvivesLeavingAndReturningToSession(t *testing.T) {
 	s, c := New(func(string, any) {})
 	c.Attach("a", tui.ChatLiveConfig{
