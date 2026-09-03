@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -376,5 +377,79 @@ func TestWebSearchFallbackProvider(t *testing.T) {
 	}
 	if !strings.Contains(result, "example.com/fallback") {
 		t.Fatalf("expected fallback URL, got: %s", result)
+	}
+}
+
+// TestWebFetchUnspecifiedAddressReachesLocalhost pins the audit finding: dialing
+// 0.0.0.0 or [::] connects to a service listening on loopback, so both forms must
+// be blocked. The listener is real, so a regression connects instead of failing.
+func TestWebFetchUnspecifiedAddressReachesLocalhost(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, "should never be reached")
+	}))
+	defer srv.Close()
+
+	_, port, err := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatalf("split listener addr: %v", err)
+	}
+
+	tool := NewWebFetch()
+	for _, host := range []string{"0.0.0.0", "[::]"} {
+		url := fmt.Sprintf("http://%s:%s/", host, port)
+		result, err := tool.Execute(context.Background(), map[string]any{"url": url})
+		if err != nil {
+			t.Fatalf("url=%s: %v", url, err)
+		}
+		if strings.Contains(result, "should never be reached") {
+			t.Errorf("url=%s: SSRF guard bypassed, reached the loopback listener", url)
+		}
+		if !strings.Contains(result, "private") && !strings.Contains(result, "blocked") {
+			t.Errorf("url=%s: expected block, got: %s", url, result)
+		}
+	}
+}
+
+// TestIsPrivateIPRanges covers the reserved ranges added alongside the
+// unspecified-address fix, and guards the IPv4-mapped form that already worked.
+func TestIsPrivateIPRanges(t *testing.T) {
+	blocked := []string{
+		"0.0.0.0",          // unspecified, dials localhost
+		"::",               // unspecified v6
+		"127.0.0.1",        // loopback
+		"::1",              // loopback v6
+		"10.0.0.1",         // RFC1918
+		"172.16.0.1",       // RFC1918
+		"192.168.1.1",      // RFC1918
+		"169.254.169.254",  // link-local, cloud metadata
+		"fe80::1",          // link-local v6
+		"fc00::1",          // unique local v6
+		"::ffff:127.0.0.1", // IPv4-mapped loopback
+		"100.64.0.1",       // RFC6598 CGNAT
+		"198.18.0.1",       // RFC2544 benchmarking
+		"64:ff9b::7f00:1",  // NAT64-wrapped loopback
+		"2002:7f00:1::",    // 6to4-wrapped loopback
+		"224.0.0.1",        // multicast
+		"255.255.255.255",  // broadcast
+		"240.0.0.1",        // reserved
+	}
+	for _, s := range blocked {
+		ip := net.ParseIP(s)
+		if ip == nil {
+			t.Fatalf("bad test address %q", s)
+		}
+		if !isPrivateIP(ip) {
+			t.Errorf("%s should be blocked", s)
+		}
+	}
+
+	for _, s := range []string{"8.8.8.8", "1.1.1.1", "93.184.216.34", "2606:4700:4700::1111"} {
+		ip := net.ParseIP(s)
+		if ip == nil {
+			t.Fatalf("bad test address %q", s)
+		}
+		if isPrivateIP(ip) {
+			t.Errorf("%s is public and must not be blocked", s)
+		}
 	}
 }

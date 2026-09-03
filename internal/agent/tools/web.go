@@ -496,21 +496,33 @@ func checkPrivateHost(host string) error {
 	return nil
 }
 
+// extraBlockedRanges are reserved ranges that the net.IP predicates below do
+// not cover: RFC 6598 carrier-grade NAT, RFC 2544 benchmarking, IETF protocol
+// assignments, the RFC 1112 reserved space (which IsGlobalUnicast reports as
+// global), and the NAT64 and 6to4 prefixes that can wrap a private IPv4
+// address inside an IPv6 one.
+var extraBlockedRanges = []*net.IPNet{
+	mustParseCIDR("100.64.0.0/10"),
+	mustParseCIDR("198.18.0.0/15"),
+	mustParseCIDR("192.0.0.0/24"),
+	mustParseCIDR("240.0.0.0/4"),
+	mustParseCIDR("64:ff9b::/96"),
+	mustParseCIDR("2002::/16"),
+}
+
 func isPrivateIP(ip net.IP) bool {
-	privateRanges := []struct {
-		network *net.IPNet
-	}{
-		{mustParseCIDR("127.0.0.0/8")},
-		{mustParseCIDR("10.0.0.0/8")},
-		{mustParseCIDR("172.16.0.0/12")},
-		{mustParseCIDR("192.168.0.0/16")},
-		{mustParseCIDR("169.254.0.0/16")},
-		{mustParseCIDR("::1/128")},
-		{mustParseCIDR("fe80::/10")},
-		{mustParseCIDR("fc00::/7")},
+	if ip == nil {
+		return true
 	}
-	for _, r := range privateRanges {
-		if r.network.Contains(ip) {
+	// IsUnspecified covers 0.0.0.0 and ::, which dial as localhost.
+	// !IsGlobalUnicast sweeps up multicast and broadcast.
+	if ip.IsUnspecified() || ip.IsLoopback() || ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast() || !ip.IsGlobalUnicast() {
+		return true
+	}
+	for _, network := range extraBlockedRanges {
+		if network.Contains(ip) {
 			return true
 		}
 	}
