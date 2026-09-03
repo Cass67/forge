@@ -144,3 +144,9 @@ __pycache__/
 /docs/gui-extension-plan.html
 /docs/t3code-gui-review.html
 /docs/assets/t3code-gui-review/
+
+# Built frontend: 3.7 MB of minified output that churned on every GUI change.
+# `just gui` builds it; .gitkeep keeps the directory present so //go:embed
+# all:dist in web/embed.go is satisfied on a clean clone.
+/web/dist/*
+!/web/dist/.gitkeep

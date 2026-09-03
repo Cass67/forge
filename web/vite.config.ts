@@ -7,10 +7,13 @@ export default defineConfig({
   plugins: [react()],
   build: {
     outDir: "dist",
-    // dist is committed so a machine without bun can still build the app.
-    // Content hashes in the filenames would make every rebuild a churn of
-    // ~100 added and deleted files; stable names overwrite in place instead.
-    // Nothing caches these — the window serves them from the binary.
+    // Stable filenames rather than content hashes: nothing caches these — the
+    // window serves them from the binary — and hashed names would leave stale
+    // assets behind on every rebuild.
+    //
+    // public/.gitkeep is copied into dist on each build. dist is not committed,
+    // and that one tracked file keeps the directory present on a clean clone so
+    // //go:embed all:dist in web/embed.go still resolves.
     rollupOptions: {
       external: ["/wails/runtime.js"],
       output: {

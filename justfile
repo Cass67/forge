@@ -77,22 +77,23 @@ pre-commit:
 
 # Compiles the frontend into web/dist, which the desktop binary embeds.
 #
-# web/dist is committed, so a Go build never needs a JS toolchain. Rebuild it
-# when bun is usable and fall back to the committed output otherwise, rather
-# than failing an install on a machine whose bun is missing or broken.
+# web/dist is built, not committed: it was 3.7 MB of minified output that
+# churned on every GUI change. A previous build is reused when bun is missing
+# or the build fails, so a broken toolchain does not cost you an install, but
+# an empty web/dist is fatal — there is nothing to embed.
 [private]
 web:
     #!/usr/bin/env bash
     set -uo pipefail
     if ! bun --version >/dev/null 2>&1; then
-        echo "web: no usable bun; embedding the committed web/dist" >&2
+        echo "web: no usable bun; reusing the existing web/dist" >&2
     elif ! (cd web && bun install && bun run build); then
-        echo "web: frontend build failed; embedding the committed web/dist" >&2
+        echo "web: frontend build failed; reusing the existing web/dist" >&2
     else
         exit 0
     fi
     if [ ! -f web/dist/index.html ]; then
-        echo "web: web/dist is missing and cannot be rebuilt" >&2
+        echo "web: web/dist is empty and cannot be rebuilt; install bun and run 'just gui'" >&2
         exit 1
     fi
 

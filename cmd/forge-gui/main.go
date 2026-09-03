@@ -107,6 +107,11 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("embedded frontend: %w", err)
 	}
+	// web/dist is built, not committed, so a clean clone embeds an empty
+	// directory. Say so here rather than opening a blank window.
+	if _, err := fs.Stat(assets, "index.html"); err != nil {
+		return fmt.Errorf("embedded frontend is empty: build it first with `just gui` (or `cd web && bun install && bun run build`) and rebuild")
+	}
 
 	// The app pointer is captured by the emit closure, which the service uses
 	// before Run starts; events emitted that early are simply dropped.
