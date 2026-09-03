@@ -134,3 +134,13 @@ __pycache__/
 # Scratch and agent working notes: screenshots, schema dumps, handoff files.
 .tmp/
 .forge/
+
+# Internal working docs: audits, progress notes, design reviews. Kept locally,
+# not published — an audit is a map of the weak spots.
+/PRE_PUBLICATION_AUDIT.md
+/docs/frontend-audit.md
+/docs/perf-audit.md
+/docs/gui-progress.md
+/docs/gui-extension-plan.html
+/docs/t3code-gui-review.html
+/docs/assets/t3code-gui-review/
