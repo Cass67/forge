@@ -164,6 +164,19 @@ func TestTildeExpansion(t *testing.T) {
 	}
 }
 
+func TestScratchDirExpandsTilde(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	path := writeTemp(t, "[scratch]\ndir = \"~/forge-scratch\"")
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := filepath.Join(home, "forge-scratch")
+	if got := cfg.ScratchDir(); got != expected {
+		t.Fatalf("ScratchDir() = %q, want %q", got, expected)
+	}
+}
+
 func TestChatConfigDefaults(t *testing.T) {
 	cfg, err := config.Load("/nonexistent/path.toml")
 	if err != nil {

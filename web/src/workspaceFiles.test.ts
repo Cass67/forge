@@ -1,11 +1,16 @@
 import { expect, test } from "bun:test";
 import {
   acceptSavedFile,
+  DEFAULT_SCRATCH_EXPANDED,
   filterPaths,
   fuzzyScore,
   isDirty,
   type OpenFile,
 } from "./workspaceFiles";
+
+test("scratch starts collapsed", () => {
+  expect(DEFAULT_SCRATCH_EXPANDED).toBe(false);
+});
 
 test("dirty files compare editor content to the saved snapshot", () => {
   const file: OpenFile = {

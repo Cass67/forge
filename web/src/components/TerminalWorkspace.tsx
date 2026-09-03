@@ -1,5 +1,5 @@
 import { FitAddon } from "xterm-addon-fit";
-import { Terminal, type ITheme } from "xterm";
+import { Terminal } from "xterm";
 import "xterm/css/xterm.css";
 import {
   useEffect,
@@ -10,6 +10,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { forge } from "../bridge";
+import { terminalTheme, type Theme } from "../theme";
 import {
   closePane,
   isPane,
@@ -29,6 +30,8 @@ type Props = {
   layoutKey?: string;
   onNotify: (message: string) => void;
   onPresenceChange?: (workspace: string, id: string, open: boolean) => void;
+  theme: Theme;
+  vividness: number;
 };
 
 function terminalFontSize(): number {
@@ -38,36 +41,11 @@ function terminalFontSize(): number {
   );
 }
 
-function terminalTheme(): ITheme {
+function currentTerminalTheme() {
   const styles = getComputedStyle(document.documentElement);
-  const color = (token: string) => styles.getPropertyValue(token).trim();
-  const background = color("--bg");
-  const foreground = color("--text");
-  const accent = color("--accent");
-  const muted = color("--muted");
-  return {
-    background,
-    foreground,
-    cursor: accent,
-    cursorAccent: background,
-    selectionBackground: color("--selected"),
-    black: color("--panel"),
-    red: color("--err"),
-    green: color("--ok"),
-    yellow: color("--warn"),
-    blue: accent,
-    magenta: accent,
-    cyan: accent,
-    white: foreground,
-    brightBlack: muted,
-    brightRed: color("--err"),
-    brightGreen: color("--ok"),
-    brightYellow: color("--warn"),
-    brightBlue: accent,
-    brightMagenta: accent,
-    brightCyan: accent,
-    brightWhite: foreground,
-  };
+  return terminalTheme((token) =>
+    styles.getPropertyValue(`--${token}`).trim(),
+  );
 }
 
 // One shell. The panel above it decides how many there are and where they sit.
@@ -81,6 +59,8 @@ function TerminalPane({
   onClose,
   closable,
   onPresenceChange,
+  theme,
+  vividness,
 }: {
   workDir: string;
   instanceID: string;
@@ -91,9 +71,12 @@ function TerminalPane({
   onClose: () => void;
   closable: boolean;
   onPresenceChange?: (workspace: string, id: string, open: boolean) => void;
+  theme: Theme;
+  vividness: number;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const resizeRef = useRef<() => void>(() => {});
+  const terminalRef = useRef<Terminal | null>(null);
 
   useEffect(() => {
     const element = host.current;
@@ -117,8 +100,9 @@ function TerminalPane({
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
       fontSize: terminalFontSize(),
       scrollback: 5000,
-      theme: terminalTheme(),
+      theme: currentTerminalTheme(),
     });
+    terminalRef.current = term;
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(element);
@@ -168,16 +152,6 @@ function TerminalPane({
     observer.observe(element);
     const workspace = element.closest(".terminal-workspace");
     workspace?.addEventListener("terminal-resize-end", resize);
-    const themeObserver = new MutationObserver(() => {
-      term.options.theme = terminalTheme();
-      term.options.fontSize = terminalFontSize();
-      resize();
-    });
-    themeObserver.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["data-theme", "style"],
-    });
-
     if (element.clientWidth >= 2 && element.clientHeight >= 2) fit.fit();
     backendRows = term.rows;
     backendCols = term.cols;
@@ -206,15 +180,26 @@ function TerminalPane({
       cancelAnimationFrame(resizeFrame);
       observer.disconnect();
       workspace?.removeEventListener("terminal-resize-end", resize);
-      themeObserver.disconnect();
       input.dispose();
       offEvent();
       started = false;
       resizeRef.current = () => {};
+      terminalRef.current = null;
       term.dispose();
       element.replaceChildren();
     };
   }, [instanceID, onNotify, onPresenceChange, workDir]);
+
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      const term = terminalRef.current;
+      if (!term) return;
+      term.options.theme = currentTerminalTheme();
+      term.options.fontSize = terminalFontSize();
+      resizeRef.current();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [theme, vividness]);
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => resizeRef.current());
@@ -271,6 +256,8 @@ export function TerminalWorkspace({
   layoutKey = "",
   onNotify,
   onPresenceChange,
+  theme,
+  vividness,
 }: Props) {
   const storageID = `${workDir}:${instanceID}`;
   const [tree, setTree] = useState<TerminalNode>(() =>
@@ -442,6 +429,8 @@ export function TerminalWorkspace({
           onNotify={onNotify}
           onPresenceChange={onPresenceChange}
           target={paneTargets[id] ?? null}
+          theme={theme}
+          vividness={vividness}
           workDir={workDir}
         />
       ))}

@@ -1324,6 +1324,8 @@ export default function App() {
           model={init?.model ?? ""}
           models={init?.models ?? []}
           layoutPersistence={prefs.dockLayoutPersistence}
+          theme={theme}
+          vividness={vividness}
         >
           <main className="center">
             <Transcript entries={entries} prefs={prefs} busy={busy} />

@@ -9,6 +9,8 @@ export type OpenFile = {
   scratch?: boolean;
 };
 
+export const DEFAULT_SCRATCH_EXPANDED = false;
+
 export function isDirty(file: OpenFile): boolean {
   return file.content !== file.savedContent;
 }

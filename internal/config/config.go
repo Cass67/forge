@@ -239,6 +239,7 @@ func Load(path string) (*Config, error) {
 	normalizeLegacyDefaults(cfg)
 
 	expandTilde(&cfg.Session.OutputDir)
+	expandTilde(&cfg.Scratch.Dir)
 	return cfg, nil
 }
 

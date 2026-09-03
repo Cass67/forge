@@ -1,3 +1,5 @@
+import type { ITheme } from "xterm";
+
 // Themes are ported from secure_abc so the two apps look like siblings. Each
 // one defines the same token set; components reference tokens only, never a
 // raw colour. "default" is the VS Code-style dark palette secure_abc ships.
@@ -27,6 +29,38 @@ export const THEMES = [
 ] as const;
 
 export type Theme = (typeof THEMES)[number];
+
+export function terminalTheme(
+  color: (token: string) => string,
+): ITheme {
+  const background = color("bg");
+  const foreground = color("text");
+  const accent = color("accent");
+  const muted = color("muted");
+  return {
+    background,
+    foreground,
+    cursor: accent,
+    cursorAccent: background,
+    selectionBackground: color("selected"),
+    black: color("panel"),
+    red: color("err"),
+    green: color("ok"),
+    yellow: color("warn"),
+    blue: accent,
+    magenta: accent,
+    cyan: accent,
+    white: foreground,
+    brightBlack: muted,
+    brightRed: color("err"),
+    brightGreen: color("ok"),
+    brightYellow: color("warn"),
+    brightBlue: accent,
+    brightMagenta: accent,
+    brightCyan: accent,
+    brightWhite: foreground,
+  };
+}
 
 import {
   loadVividness,

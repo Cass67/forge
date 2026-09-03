@@ -47,10 +47,12 @@ import {
 } from "../dockLayout";
 import {
   acceptSavedFile,
+  DEFAULT_SCRATCH_EXPANDED,
   filterPaths,
   isDirty,
   type OpenFile,
 } from "../workspaceFiles";
+import type { Theme } from "../theme";
 import type { GitTab } from "../gitTabs";
 import { CodeEditor } from "./CodeEditor";
 import { ConfirmDialog, NameDialog } from "./FileDialog";
@@ -96,6 +98,8 @@ type Props = {
   model: string;
   models: string[];
   layoutPersistence: DockLayoutPersistence;
+  theme: Theme;
+  vividness: number;
 };
 type TreeNode = WorkspaceEntry & {
   loaded?: boolean;
@@ -304,6 +308,8 @@ export function WorkspaceShell({
   model,
   models,
   layoutPersistence,
+  theme,
+  vividness,
 }: Props) {
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [files, setFiles] = useState<OpenFile[]>([]);
@@ -350,7 +356,9 @@ export function WorkspaceShell({
   const nextTerminal = useRef(0);
   const [quickOpen, setQuickOpen] = useState(false);
   const [lightEditorBackground, setLightEditorBackground] = useState(false);
-  const [scratchExpanded, setScratchExpanded] = useState(true);
+  const [scratchExpanded, setScratchExpanded] = useState(
+    DEFAULT_SCRATCH_EXPANDED,
+  );
   const [query, setQuery] = useState("");
   const [workspacePaths, setWorkspacePaths] = useState<string[]>([]);
   // One body element per group, tracked in state because the portalled tools
@@ -1275,6 +1283,8 @@ export function WorkspaceShell({
           workDir={workDir}
           instanceID={tool.id}
           layoutKey={layoutKey}
+          theme={theme}
+          vividness={vividness}
           onNotify={onNotify}
           onPresenceChange={onTerminalPresenceChange}
         />
