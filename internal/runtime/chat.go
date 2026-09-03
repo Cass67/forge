@@ -432,7 +432,7 @@ func registerTools(reg *tools.Registry, workDir string, cfg *config.Config, sess
 	})
 	registerMCPTools = func(defs []mcp.Tool) {
 		for _, def := range defs {
-			reg.Register(tools.NewMCPDynamicTool(def, mcpManager))
+			reg.Register(tools.NewMCPDynamicTool(def, mcpManager, approve))
 		}
 	}
 	// Whatever is already connected is registered straight away, which is what

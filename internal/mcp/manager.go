@@ -41,6 +41,10 @@ type Tool struct {
 	Description string
 	Parameters  []llm.ToolParam
 	Schema      *llm.ToolSchema
+	// ReadOnly mirrors the server's readOnlyHint annotation. It is only ever
+	// true when a server explicitly declares it, so a server that says nothing
+	// is treated as write-capable and gets an approval prompt.
+	ReadOnly bool
 }
 
 type Resource struct {
@@ -808,6 +812,7 @@ func normalizeTool(serverName string, tool *sdkmcp.Tool) Tool {
 		Description: tool.Description,
 		Parameters:  paramsFromSchema(tool.InputSchema),
 		Schema:      toolSchema(tool.InputSchema),
+		ReadOnly:    tool.Annotations != nil && tool.Annotations.ReadOnlyHint,
 	}
 }
 

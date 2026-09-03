@@ -83,7 +83,7 @@ func TestNewMCPDynamicToolUsesNamespacedName(t *testing.T) {
 		Parameters: []llm.ToolParam{
 			{Name: "library_name", Type: "string", Required: true},
 		},
-	}, fakeMCPManager{})
+	}, fakeMCPManager{}, nil)
 	if tool.Name != "mcp__context7__resolve_library_id" {
 		t.Fatalf("tool.Name = %q", tool.Name)
 	}
@@ -99,13 +99,14 @@ func TestNewMCPDynamicToolExecutesCall(t *testing.T) {
 	tool := NewMCPDynamicTool(mcp.Tool{
 		ServerName: "context7",
 		Name:       "resolve_library_id",
+		ReadOnly:   true,
 	}, fakeMCPManager{
 		callResult: mcp.ToolResult{
 			ServerName: "context7",
 			ToolName:   "resolve_library_id",
 			Content:    []mcp.ContentItem{{Type: "text", Text: "ok"}},
 		},
-	})
+	}, nil)
 	result, err := tool.Execute(context.Background(), map[string]any{"library_name": "react"})
 	if err != nil {
 		t.Fatal(err)
@@ -151,4 +152,105 @@ func TestListMCPResourcesExplainsEmptyResults(t *testing.T) {
 	if !strings.Contains(result, "no MCP servers configured") {
 		t.Fatalf("unconfigured case not distinguished: %s", result)
 	}
+}
+
+// TestMCPWriteToolRequiresApproval pins the gating decision: a server that does
+// not declare readOnlyHint is treated as write-capable, so the call must not
+// reach the server until the user approves it.
+func TestMCPWriteToolRequiresApproval(t *testing.T) {
+	manager := &recordingMCPManager{
+		callResult: mcp.ToolResult{ServerName: "fs", ToolName: "write_file"},
+	}
+	var asked bool
+	tool := NewMCPDynamicTool(mcp.Tool{
+		ServerName: "fs",
+		Name:       "write_file",
+	}, manager, func(Action) (bool, error) {
+		asked = true
+		return false, nil
+	})
+
+	if tool.AutoApprove {
+		t.Fatal("a tool with no readOnlyHint must not be auto-approved")
+	}
+	result, err := tool.Execute(context.Background(), map[string]any{"path": "/etc/passwd"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !asked {
+		t.Fatal("user was never asked to approve")
+	}
+	if manager.calls != 0 {
+		t.Fatalf("denied tool still reached the server (%d calls)", manager.calls)
+	}
+	if !strings.Contains(result, "denied by user") {
+		t.Fatalf("result = %q", result)
+	}
+}
+
+// TestMCPReadOnlyToolSkipsApproval keeps the common case unattended: a server
+// that declares readOnlyHint should not add a prompt to every session.
+func TestMCPReadOnlyToolSkipsApproval(t *testing.T) {
+	manager := &recordingMCPManager{
+		callResult: mcp.ToolResult{
+			ServerName: "context7",
+			ToolName:   "resolve_library_id",
+			Content:    []mcp.ContentItem{{Type: "text", Text: "ok"}},
+		},
+	}
+	tool := NewMCPDynamicTool(mcp.Tool{
+		ServerName: "context7",
+		Name:       "resolve_library_id",
+		ReadOnly:   true,
+	}, manager, func(Action) (bool, error) {
+		t.Fatal("read-only tool must not prompt")
+		return false, nil
+	})
+
+	if !tool.AutoApprove {
+		t.Fatal("readOnlyHint tool should be auto-approved")
+	}
+	if _, err := tool.Execute(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if manager.calls != 1 {
+		t.Fatalf("calls = %d, want 1", manager.calls)
+	}
+}
+
+// TestMCPResultIsSecretScanned covers the exfil half: a server returning a
+// credential must not pass it through to the model verbatim.
+func TestMCPResultIsSecretScanned(t *testing.T) {
+	secret := "sk-ant-api03-" + strings.Repeat("A", 80)
+	manager := &recordingMCPManager{
+		callResult: mcp.ToolResult{
+			ServerName: "fs",
+			ToolName:   "read_env",
+			Content:    []mcp.ContentItem{{Type: "text", Text: "ANTHROPIC_API_KEY=" + secret}},
+		},
+	}
+	tool := NewMCPDynamicTool(mcp.Tool{
+		ServerName: "fs",
+		Name:       "read_env",
+		ReadOnly:   true,
+	}, manager, nil)
+
+	result, err := tool.Execute(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(result, secret) {
+		t.Fatal("MCP result leaked a secret to the model unredacted")
+	}
+}
+
+type recordingMCPManager struct {
+	fakeMCPManager
+	calls      int
+	callResult mcp.ToolResult
+}
+
+func (m *recordingMCPManager) CallTool(_ context.Context, _, _ string, _ map[string]any) (mcp.ToolResult, error) {
+	m.calls++
+	return m.callResult, nil
 }

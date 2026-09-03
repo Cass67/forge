@@ -18,21 +18,63 @@ type mcpManager interface {
 	ReadResource(ctx context.Context, serverName, uri string) (mcp.Resource, error)
 }
 
-func NewMCPDynamicTool(def mcp.Tool, manager mcpManager) Tool {
+// NewMCPDynamicTool wraps one MCP server tool. Only tools a server explicitly
+// annotates readOnlyHint run unattended; anything else is treated as
+// write-capable and goes through approval, because an auto-approved write tool
+// on a third-party server is reachable by prompt injection with no user in the
+// loop. Results are redacted through the secret policy either way, matching
+// read_file and run_command — an MCP filesystem server reading ~/.ssh or .env
+// would otherwise ship those bytes to the provider unredacted.
+func NewMCPDynamicTool(def mcp.Tool, manager mcpManager, approve ApprovalFunc) Tool {
+	name := namespacedMCPToolName(def.ServerName, def.Name)
+	secretPolicy := DefaultSecretPolicy()
 	return Tool{
-		Name:        namespacedMCPToolName(def.ServerName, def.Name),
+		Name:        name,
 		Description: def.Description,
 		Parameters:  toolParamsFromLLM(def.Parameters),
 		Schema:      def.Schema,
-		AutoApprove: true,
+		AutoApprove: def.ReadOnly,
 		Execute: func(ctx context.Context, args map[string]any) (string, error) {
+			if !def.ReadOnly {
+				if approve == nil {
+					return "", fmt.Errorf("MCP tool %s requires approval", name)
+				}
+				approved, err := approve(Action{
+					Context: ctx,
+					Tool:    name,
+					Summary: "Call MCP tool " + name,
+					Detail:  mcpApprovalDetail(secretPolicy, args),
+				})
+				if err != nil {
+					return "", err
+				}
+				if !approved {
+					return name + " denied by user", nil
+				}
+			}
 			result, err := manager.CallTool(ctx, def.ServerName, def.Name, args)
 			if err != nil {
 				return "", err
 			}
-			return encodeToolJSON(result)
+			encoded, err := encodeToolJSON(result)
+			if err != nil {
+				return "", err
+			}
+			redacted, _ := secretPolicy.ApplyCommandOutput(encoded)
+			return redacted, nil
 		},
 	}
+}
+
+func mcpApprovalDetail(policy SecretPolicy, args map[string]any) string {
+	if len(args) == 0 {
+		return "(no arguments)"
+	}
+	encoded, err := encodeToolJSON(args)
+	if err != nil {
+		return "(arguments could not be rendered)"
+	}
+	return policy.RedactApprovalDetail(encoded)
 }
 
 // mcpListing wraps a listing with server status. A bare "null" reply told the
