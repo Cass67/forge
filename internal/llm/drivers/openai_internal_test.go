@@ -487,6 +487,76 @@ func TestOpenRouterCompatibleDriverAddsProviderHeadersAndCacheKey(t *testing.T) 
 	}
 }
 
+func TestOpenCodeGoAddsStableSessionHeader(t *testing.T) {
+	t.Parallel()
+
+	// opencode.ai requires x-opencode-session: one stable ID per conversation.
+	// Verify every request carries a non-empty header, that it is stable across
+	// requests on the same driver (a forge conversation), and that a fresh
+	// driver gets its own ID.
+	capture := func() (func() (string, string), *httptest.Server) {
+		headers := make(chan string, 4)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			headers <- r.Header.Get("x-opencode-session")
+			headers <- r.Header.Get("User-Agent")
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n"))
+			_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		}))
+		read := func() (string, string) { return <-headers, <-headers }
+		return read, srv
+	}
+	stream := func(d llm.Driver) error {
+		out := make(chan llm.Token, 4)
+		if err := d.Stream(context.Background(), []llm.Message{{Role: llm.RoleUser, Content: "test"}}, out); err != nil {
+			return err
+		}
+		for range out {
+		}
+		return nil
+	}
+
+	getHeader, srv := capture()
+	defer srv.Close()
+	d1 := NewOpenAICompatibleProviderAlias("opencode-go", "sk-test", srv.URL, "opencode-go/gpt-5.1-codex", "gpt-5.1-codex")
+	if err := stream(d1); err != nil {
+		t.Fatalf("stream (alias): %v", err)
+	}
+	first, ua := getHeader()
+	if first == "" {
+		t.Fatal("x-opencode-session header missing on request")
+	}
+	if ua != forgeUserAgent {
+		t.Fatalf("User-Agent = %q, want %q", ua, forgeUserAgent)
+	}
+	if err := stream(d1); err != nil {
+		t.Fatalf("stream (alias, second call): %v", err)
+	}
+	second, _ := getHeader()
+	if second != first {
+		t.Fatalf("x-opencode-session changed between requests on same driver: %q then %q", first, second)
+	}
+
+	// The NewCustomCompatProvider path must set the header too, with its own ID.
+	getHeader2, srv2 := capture()
+	defer srv2.Close()
+	d2 := NewCustomCompatProvider("opencode-go", "sk-test", srv2.URL, "opencode-go/gpt-5.1-codex", "gpt-5.1-codex", false, nil)
+	if err := stream(d2); err != nil {
+		t.Fatalf("stream (custom): %v", err)
+	}
+	got2, ua2 := getHeader2()
+	switch got2 {
+	case "":
+		t.Fatal("x-opencode-session header missing on request (custom provider)")
+	case first:
+		t.Fatal("two drivers must not share an x-opencode-session ID")
+	}
+	if ua2 != forgeUserAgent {
+		t.Fatalf("User-Agent = %q, want %q (custom provider)", ua2, forgeUserAgent)
+	}
+}
+
 func TestCopilotResponsesOmitsStoreFlag(t *testing.T) {
 	t.Parallel()
 

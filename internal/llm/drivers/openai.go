@@ -3,6 +3,7 @@ package drivers
 import (
 	"cmp"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -53,8 +54,9 @@ type OpenAIDriver struct {
 const (
 	responseStateCompactionThreshold = 8000
 	responseStatePreserveMessages    = 6
-	openRouterReferer                = "https://github.com/cass/forge"
+	openRouterReferer                = "https://github.com/Cass67/forge"
 	openRouterTitle                  = "forge"
+	forgeUserAgent                   = "Forge"
 )
 
 func NewOpenAI(apiKey, model string) *OpenAIDriver {
@@ -69,6 +71,7 @@ func newOpenAI(apiKey, providerLabel, registryName, apiModel string, supportsRes
 	if httpClient != nil {
 		opts = append(opts, option.WithHTTPClient(httpClient))
 	}
+	opts = append(opts, option.WithHeader("User-Agent", forgeUserAgent)) // override the openai-go SDK default UA
 	opts = append(opts, providerHeaders(providerLabel)...)
 	opts = append(opts, legibleErrorBodies(), filterSSEComments())
 	client := openai.NewClient(opts...)
@@ -97,6 +100,7 @@ func NewCustomCompatProvider(providerLabel, apiKey, baseURL, registryName, apiMo
 	if strings.TrimSpace(baseURL) != "" {
 		opts = append(opts, option.WithBaseURL(baseURL))
 	}
+	opts = append(opts, option.WithHeader("User-Agent", forgeUserAgent)) // override the openai-go SDK default UA; user http_headers below may override
 	for k, v := range headers {
 		opts = append(opts, option.WithHeader(k, v))
 	}
@@ -121,6 +125,7 @@ func NewCopilot(token, registryName, apiModel string) *OpenAIDriver {
 	client := openai.NewClient(
 		option.WithAPIKey(strings.TrimSpace(token)),
 		option.WithBaseURL("https://api.githubcopilot.com"),
+		option.WithHeader("User-Agent", forgeUserAgent), // override the openai-go SDK default UA
 		option.WithHeader("Copilot-Integration-Id", "copilot-developer-cli"),
 		option.WithHeader("Openai-Intent", "conversation-agent"),
 		option.WithHeader("X-Initiator", "user"),
@@ -859,9 +864,31 @@ func providerHeaders(providerLabel string) []option.RequestOption {
 			option.WithHeader("X-Title", openRouterTitle),
 			option.WithHeader("X-OpenRouter-Title", openRouterTitle),
 		}
+	case "opencode-go":
+		// opencode.ai wants one stable session ID per conversation so it can
+		// group requests. A forge driver lives for the conversation it was
+		// built for, so one ID per driver construction is one ID per
+		// conversation; all requests from that driver reuse it.
+		id := randomOpenCodeSessionID()
+		if id == "" {
+			return nil
+		}
+		return []option.RequestOption{option.WithHeader("x-opencode-session", id)}
 	default:
 		return nil
 	}
+}
+
+// randomOpenCodeSessionID returns a random RFC 4122-style UUIDv4 used as the
+// stable per-conversation value for the x-opencode-session header.
+func randomOpenCodeSessionID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return ""
+	}
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 func providerSupportsStreamUsageOptions(providerLabel string) bool {
