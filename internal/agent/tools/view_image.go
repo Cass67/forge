@@ -16,6 +16,15 @@ import (
 	"forge/internal/llm"
 )
 
+// isImagePath reports whether the path has an extension view_image can decode.
+func isImagePath(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp":
+		return true
+	}
+	return false
+}
+
 func NewViewImage(workDir string) Tool {
 	// Guarded because parallel tool dispatch can run two view_image calls at once.
 	var mu sync.Mutex

@@ -521,8 +521,17 @@ func beforeToolGitCommitBlockHook(_ context.Context, event hooks.Event) []hooks.
 			Provenance: "runtime",
 		}}
 	case payload.GitWorkflow.commitBlocker == commitBlockerRestage:
+		// A run_command that stages before committing is the fix, not a repeat
+		// offence: let it through so the hooks run and their output is visible.
+		if payload.ToolName == "run_command" && isGitStageCommand(commandArg(payload.Args)) {
+			return nil
+		}
+		message := "blocked: pre-commit hooks modified files. Review and stage the intended hook changes before retrying commit."
+		if summary := strings.TrimSpace(payload.GitWorkflow.blockerSummary); summary != "" {
+			message += " " + summary
+		}
 		return []hooks.Result{hooks.BlockResult{
-			Message:    "blocked: pre-commit hooks modified files. Review and stage the intended hook changes before retrying commit.",
+			Message:    message,
 			Provenance: "runtime",
 		}}
 	case payload.GitWorkflow.commitBlocker == commitBlockerEdit:
@@ -733,6 +742,16 @@ func isGitCommitLike(command string) bool {
 	return strings.Contains(command, "git commit")
 }
 
+// isGitStageCommand reports whether the command stages files, including the
+// common `git add -A && git commit -m ...` one-liner.
+func isGitStageCommand(command string) bool {
+	return strings.Contains(command, "git add") || strings.Contains(command, "git stage")
+}
+
+func commandArg(args map[string]any) string {
+	return strings.ToLower(strings.TrimSpace(stringArg(args, "command")))
+}
+
 func isGitMergeLike(command string) bool {
 	return strings.HasPrefix(command, "git merge ") || strings.Contains(command, " git merge ")
 }
@@ -795,6 +814,30 @@ func isSuccessfulGitCommit(result string) bool {
 		!strings.Contains(lower, "exit 1") &&
 		(strings.Contains(lower, "file changed") || strings.Contains(lower, "files changed") ||
 			strings.Contains(lower, "nothing to commit") || strings.Contains(lower, "create mode"))
+}
+
+// summarizeRestageFailure names the hooks that rewrote files so the model can
+// fix the cause instead of retrying the same commit blind.
+func summarizeRestageFailure(result string) string {
+	var hooks []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(result, "\n") {
+		idx := strings.Index(strings.ToLower(line), "hook id:")
+		if idx < 0 {
+			continue
+		}
+		id := strings.TrimSpace(line[idx+len("hook id:"):])
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		hooks = append(hooks, id)
+	}
+	if len(hooks) == 0 {
+		return "pre-commit modified files; re-stage them before retrying commit"
+	}
+	return "pre-commit modified files (hooks: " + strings.Join(hooks, ", ") +
+		"); re-stage them before retrying commit"
 }
 
 func summarizeCommitFailure(result string) string {

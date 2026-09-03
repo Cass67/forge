@@ -2704,7 +2704,15 @@ func (r *Runner) updateGitWorkflowForCommand(command, result string) {
 		r.gitWorkflow.blockerSummary = ""
 	case isGitCommitLike(command):
 		r.updateGitWorkflowForCommitResult(result)
-	case strings.Contains(command, "git add") && isValidationPass(result):
+		// `git add -A && git commit ...` matches here too. The staging half
+		// satisfies the re-stage blocker, so a clean run clears it rather than
+		// leaving the loop with no way out.
+		if r.gitWorkflow.commitBlocker == commitBlockerRestage &&
+			isGitStageCommand(command) && isValidationPass(result) {
+			r.gitWorkflow.commitBlocker = commitBlockerNone
+			r.gitWorkflow.blockerSummary = ""
+		}
+	case isGitStageCommand(command) && isValidationPass(result):
 		r.gitWorkflow.commitBlocker = commitBlockerNone
 		r.gitWorkflow.blockerSummary = ""
 	}
@@ -2717,7 +2725,7 @@ func (r *Runner) updateGitWorkflowForCommitResult(result string) {
 		r.gitWorkflow = gitWorkflowState{}
 	case strings.Contains(lower, "files were modified by this hook"):
 		r.gitWorkflow.commitBlocker = commitBlockerRestage
-		r.gitWorkflow.blockerSummary = "pre-commit modified files; re-stage them before retrying commit"
+		r.gitWorkflow.blockerSummary = summarizeRestageFailure(result)
 	case strings.Contains(lower, "hook id:") || strings.Contains(lower, "line too long") || strings.Contains(lower, "error committing:"):
 		r.gitWorkflow.commitBlocker = commitBlockerEdit
 		r.gitWorkflow.blockerSummary = summarizeCommitFailure(result)

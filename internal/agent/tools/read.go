@@ -48,6 +48,12 @@ func NewReadFile(workDir string, policies ...SecretPolicy) Tool {
 			}
 
 			if IsBinary(data) {
+				// read_file cannot render bytes, but images have a tool that can.
+				// Without this pointer the model retries read_file on the same
+				// screenshot until it gives up.
+				if isImagePath(resolved) {
+					return "error: binary file, cannot display — this is an image; call view_image with the same path to see it", nil
+				}
 				return "error: binary file, cannot display", nil
 			}
 

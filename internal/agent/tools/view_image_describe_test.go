@@ -89,3 +89,27 @@ func TestViewImageReturnsImagePartOnce(t *testing.T) {
 		t.Fatalf("parts must be consumed once, got %d on second read", len(got))
 	}
 }
+
+func TestReadFileOnImagePointsAtViewImage(t *testing.T) {
+	dir := t.TempDir()
+	pngPath := filepath.Join(dir, "shot.png")
+	f, err := os.Create(pngPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(f, fill(8, 8, color.RGBA{10, 200, 10, 255})); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := NewReadFile(dir).Execute(context.Background(), map[string]any{"path": "shot.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = pngPath
+	if !strings.Contains(out, "view_image") {
+		t.Fatalf("read_file on an image should point at view_image, got %q", out)
+	}
+}

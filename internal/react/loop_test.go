@@ -763,6 +763,33 @@ func TestRunnerBeforeToolHookBlocksCommitWorkflow(t *testing.T) {
 		}
 	})
 
+	t.Run("restage blocker allows staged commit one-liner", func(t *testing.T) {
+		r := NewRunner(Config{})
+		r.gitWorkflow.commitBlocker = commitBlockerRestage
+
+		output := r.beforeToolHookOutput(context.Background(), "run_command", map[string]any{
+			"command": `git add -A && git commit -m "fix"`,
+		})
+
+		if output.Block != nil {
+			t.Fatalf("unexpected block = %#v", output.Block)
+		}
+	})
+
+	t.Run("restage blocker names the offending hooks", func(t *testing.T) {
+		r := NewRunner(Config{})
+		r.updateGitWorkflow("git_commit", nil,
+			"prettier.....Failed\n- hook id: prettier\n- files were modified by this hook\n")
+
+		output := r.beforeToolHookOutput(context.Background(), "git_commit", map[string]any{
+			"message": "fix",
+		})
+
+		if output.Block == nil || !strings.Contains(output.Block.Message, "hooks: prettier") {
+			t.Fatalf("block = %#v", output.Block)
+		}
+	})
+
 	t.Run("edit blocker", func(t *testing.T) {
 		r := NewRunner(Config{})
 		r.gitWorkflow.commitBlocker = commitBlockerEdit
@@ -775,6 +802,47 @@ func TestRunnerBeforeToolHookBlocksCommitWorkflow(t *testing.T) {
 			t.Fatalf("block = %#v", output.Block)
 		}
 	})
+}
+
+func TestUpdateGitWorkflowClearsRestageBlocker(t *testing.T) {
+	cases := []struct {
+		name    string
+		command string
+		result  string
+		want    gitCommitBlocker
+	}{
+		{
+			name:    "staged commit one-liner clears",
+			command: `git add -A && git commit -m "fix"`,
+			result:  "[master 1a2b3c4] fix\n\nexit 0",
+			want:    commitBlockerNone,
+		},
+		{
+			name:    "bare git add clears",
+			command: "git add -A",
+			result:  "\nexit 0",
+			want:    commitBlockerNone,
+		},
+		{
+			name:    "staged commit that fails again stays blocked",
+			command: `git add -A && git commit -m "fix"`,
+			result:  "- hook id: prettier\n- files were modified by this hook\n\nexit 1",
+			want:    commitBlockerRestage,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := NewRunner(Config{})
+			r.gitWorkflow.commitBlocker = commitBlockerRestage
+
+			r.updateGitWorkflow("run_command", map[string]any{"command": tc.command}, tc.result)
+
+			if r.gitWorkflow.commitBlocker != tc.want {
+				t.Fatalf("commitBlocker = %v, want %v", r.gitWorkflow.commitBlocker, tc.want)
+			}
+		})
+	}
 }
 
 func TestRunnerPlanStateBlocksFinalSuccessWhenStepInProgress(t *testing.T) {
