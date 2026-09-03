@@ -127,3 +127,6 @@ config.toml
 # Python bytecode and caches.
 __pycache__/
 *.py[cod]
+
+# pi-subagents skill artifacts
+.pi-subagents/

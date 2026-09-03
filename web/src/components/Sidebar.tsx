@@ -615,78 +615,85 @@ function BulkBar({
     dirCount ? `${dirCount} workspace${dirCount === 1 ? "" : "s"}` : "",
   ].filter(Boolean);
 
-  if (confirmAll) {
-    return (
-      <div className="bulk-bar">
-        <span className="bulk-count">
-          Delete every stored chat except the one you are in? Workspaces stay in
-          the list.
-        </span>
-        <button className="btn danger" onClick={onClearThreads}>
-          Delete all
-        </button>
-        <button className="btn" onClick={() => setConfirmAll(false)}>
-          Keep
-        </button>
-      </div>
-    );
-  }
-
   return (
     <div className="bulk-bar">
-      <span className="bulk-count">
-        {total === 0 ? "nothing selected" : parts.join(" + ")}
-      </span>
-      {confirm ? (
-        <>
-          <button className="btn danger" onClick={onDelete}>
-            Confirm
-          </button>
-          <button className="btn" onClick={() => setConfirm(false)}>
-            Keep
-          </button>
-        </>
+      <div className="bulk-head">
+        <span className="bulk-count">
+          {total === 0 ? "nothing selected" : parts.join(" + ")}
+        </span>
+        <button className="btn" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+      {confirmAll ? (
+        <div className="bulk-actions bulk-confirm">
+          <span className="bulk-hint">
+            Delete every stored chat except the one you are in? Workspaces stay
+            in the list.
+          </span>
+          <span className="bulk-btns">
+            <button className="btn danger" onClick={onClearThreads}>
+              Delete all
+            </button>
+            <button className="btn" onClick={() => setConfirmAll(false)}>
+              Keep
+            </button>
+          </span>
+        </div>
+      ) : confirm ? (
+        <div className="bulk-actions bulk-confirm">
+          <span className="bulk-hint">Remove the selected items?</span>
+          <span className="bulk-btns">
+            <button className="btn danger" onClick={onDelete}>
+              Confirm
+            </button>
+            <button className="btn" onClick={() => setConfirm(false)}>
+              Keep
+            </button>
+          </span>
+        </div>
       ) : (
         <>
-          <button
-            className="btn"
-            onClick={onAddWorkspace}
-            title="Add a folder and discover its Git repositories"
-          >
-            Add folder…
-          </button>
-          <button
-            className="btn"
-            onClick={onCreateFolder}
-            title="Pick a parent directory, then name a new workspace folder"
-          >
-            Create folder…
-          </button>
-          <button
-            className="btn danger"
-            disabled={total === 0}
-            onClick={() => setConfirm(true)}
-          >
-            Remove
-          </button>
-          <button
-            className="btn"
-            disabled={selectable === 0}
-            onClick={onSelectAll}
-            title="Select every workspace and chat except the ones you are in"
-          >
-            Select all{selectable ? ` (${selectable})` : ""}
-          </button>
-          <button
-            className="btn danger"
-            onClick={() => setConfirmAll(true)}
-            title="Delete every stored chat, including ones with no section here. Workspaces stay in the list."
-          >
-            All chats{totalThreads ? ` (${totalThreads})` : ""}
-          </button>
-          <button className="btn" onClick={onCancel}>
-            Cancel
-          </button>
+          <div className="bulk-actions">
+            <button
+              className="btn"
+              onClick={onAddWorkspace}
+              title="Add a folder and discover its Git repositories"
+            >
+              Add folder…
+            </button>
+            <button
+              className="btn"
+              onClick={onCreateFolder}
+              title="Pick a parent directory, then name a new workspace folder"
+            >
+              Create folder…
+            </button>
+          </div>
+          <div className="bulk-actions">
+            <button
+              className="btn danger"
+              disabled={total === 0}
+              onClick={() => setConfirm(true)}
+            >
+              Remove
+            </button>
+            <button
+              className="btn"
+              disabled={selectable === 0}
+              onClick={onSelectAll}
+              title="Select every workspace and chat except the ones you are in"
+            >
+              Select all{selectable ? ` (${selectable})` : ""}
+            </button>
+            <button
+              className="btn danger"
+              onClick={() => setConfirmAll(true)}
+              title="Delete every stored chat, including ones with no section here. Workspaces stay in the list."
+            >
+              All chats{totalThreads ? ` (${totalThreads})` : ""}
+            </button>
+          </div>
         </>
       )}
     </div>

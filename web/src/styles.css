@@ -3269,15 +3269,39 @@ textarea:not(.xterm-helper-textarea),
 }
 .bulk-bar {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 6px;
   padding: 6px 8px;
   border-top: 1px solid var(--border);
   background: var(--panel2);
 }
+.bulk-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .bulk-count {
   flex: 1;
   min-width: 0;
+  font-size: 0.6875rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bulk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.bulk-actions .bulk-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.bulk-hint {
+  flex: 1 1 100%;
   font-size: 0.6875rem;
   color: var(--muted);
 }
