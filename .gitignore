@@ -130,3 +130,7 @@ __pycache__/
 
 # pi-subagents skill artifacts
 .pi-subagents/
+
+# Scratch and agent working notes: screenshots, schema dumps, handoff files.
+.tmp/
+.forge/
