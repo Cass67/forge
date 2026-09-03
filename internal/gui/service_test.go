@@ -32,7 +32,7 @@ func TestBoundMethodSurface(t *testing.T) {
 		// live sessions
 		"Sessions", "ActivateSession", "OpenThread", "CloseSession",
 		"CloseWorkspace", "AddWorkspaceTree", "RefreshWorkspaceTrees",
-		"SetExplorerRoot", "ExplorerRoot",
+		"SetExplorerRoot", "ExplorerRoot", "SetScratchDir",
 		"SendWithImages", "SetEffort", "SetProviderKey", "SignOutProvider",
 		"StartProviderLogin", "SwitchModel", "SwitchWorkspace", "Threads", "Workspaces",
 		"ListWorkspaceDir", "ReadWorkspaceFile", "WriteWorkspaceFile",

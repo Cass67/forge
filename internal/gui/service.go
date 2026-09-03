@@ -90,6 +90,8 @@ type Service struct {
 	// ScratchDir is where the GUI's throwaway scratch files live. Set by the
 	// window layer from [scratch] dir; empty resolves to the OS temp dir.
 	ScratchDir string
+	// SaveScratchDir persists a user-entered path and returns its resolved path.
+	SaveScratchDir func(string) (string, error)
 	// Directories being torn down by CloseWorkspace, so a session ending there
 	// is not mistaken for one that died and reopened.
 	closing map[string]bool
@@ -442,12 +444,14 @@ func (s *Service) Init() InitPayload {
 	}
 	s.mu.RLock()
 	sessionID := s.activeSession
+	scratchDir := s.ScratchDir
 	s.mu.RUnlock()
 	return InitPayload{
 		Ready:       true,
 		Session:     sessionID,
 		Model:       cfg.Model,
 		WorkDir:     cfg.WorkDir,
+		ScratchDir:  scratchDir,
 		Models:      cfg.AvailableModels,
 		Providers:   providerPayloads(cfg.Providers),
 		Effort:      call(cfg.CurrentEffort),

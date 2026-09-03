@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"fmt"
 	"os"
@@ -329,6 +330,107 @@ func SaveChatLastModel(path, model string) error {
 		content += "\n"
 	}
 	return os.WriteFile(path, []byte(content), 0o600)
+}
+
+// SaveScratchDir updates only dir in [scratch], preserving comments and all
+// unrelated config, including credential sections.
+func SaveScratchDir(path, dir string) error {
+	var encoded bytes.Buffer
+	if err := toml.NewEncoder(&encoded).Encode(struct {
+		Dir string `toml:"dir"`
+	}{Dir: dir}); err != nil {
+		return err
+	}
+	line := strings.TrimSpace(encoded.String())
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	lines := []string{}
+	if len(data) > 0 {
+		lines = strings.Split(string(data), "\n")
+	}
+
+	sectionFound := false
+	inserted := false
+	inScratch := false
+	out := make([]string, 0, len(lines)+2)
+	for _, existing := range lines {
+		trimmed := strings.TrimSpace(existing)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			if inScratch && !inserted {
+				out = append(out, line)
+				inserted = true
+			}
+			inScratch = trimmed == "[scratch]"
+			sectionFound = sectionFound || inScratch
+			out = append(out, existing)
+			continue
+		}
+		if inScratch {
+			key, _, found := strings.Cut(trimmed, "=")
+			if found && strings.TrimSpace(key) == "dir" {
+				if !inserted {
+					out = append(out, line)
+					inserted = true
+				}
+				continue
+			}
+		}
+		out = append(out, existing)
+	}
+	if sectionFound && !inserted {
+		out = append(out, line)
+	}
+	if !sectionFound {
+		for len(out) > 0 && strings.TrimSpace(out[len(out)-1]) == "" {
+			out = out[:len(out)-1]
+		}
+		if len(out) > 0 {
+			out = append(out, "")
+		}
+		out = append(out, "[scratch]", line)
+	}
+	content := strings.Join(out, "\n")
+	if content != "" && !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	return atomicWrite(path, []byte(content))
+}
+
+func atomicWrite(path string, data []byte) error {
+	mode := os.FileMode(0o600)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".config-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if err := f.Chmod(mode); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func DefaultPath() string {

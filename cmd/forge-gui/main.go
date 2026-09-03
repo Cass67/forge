@@ -26,6 +26,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/events"
 
 	"forge/internal/bootstrap"
+	"forge/internal/config"
 	"forge/internal/gui"
 	"forge/internal/llm"
 	runtimepkg "forge/internal/runtime"
@@ -131,6 +132,17 @@ func run() error {
 
 	service.Registry = registry
 	service.ScratchDir = cfg.ScratchDir()
+	service.SaveScratchDir = func(dir string) (string, error) {
+		path := config.DefaultPath()
+		if err := config.SaveScratchDir(path, dir); err != nil {
+			return "", err
+		}
+		updated, err := config.Load(path)
+		if err != nil {
+			return "", err
+		}
+		return updated.ScratchDir(), nil
+	}
 	service.ListWorkspaceThreads = func(dir string) []tui.ThreadSummary {
 		outputDir := setup.Config.ResolvedOutputDirFor(dir)
 		if outputDir == "" {

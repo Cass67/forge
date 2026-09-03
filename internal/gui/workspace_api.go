@@ -120,6 +120,22 @@ func (s *Service) SetExplorerRoot(dir string) error {
 	return nil
 }
 
+// SetScratchDir persists and immediately activates the Explorer scratch root.
+func (s *Service) SetScratchDir(dir string) (string, error) {
+	trimmed := strings.TrimSpace(dir)
+	if s.SaveScratchDir == nil {
+		return "", errNotReady
+	}
+	resolved, err := s.SaveScratchDir(trimmed)
+	if err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	s.ScratchDir = resolved
+	s.mu.Unlock()
+	return resolved, nil
+}
+
 // ExplorerRoot reports the directory the panels are on.
 func (s *Service) ExplorerRoot() string {
 	root, err := s.workspaceRoot()
@@ -323,7 +339,9 @@ func fileVersion(data []byte) string {
 // makes sure it exists. Unlike the workspace, scratch is not bound to a chat
 // workspace: it is junk, so nothing is gated on being able to write to a repo.
 func (s *Service) scratchRoot() (string, error) {
+	s.mu.RLock()
 	dir := strings.TrimSpace(s.ScratchDir)
+	s.mu.RUnlock()
 	if dir == "" {
 		dir = os.TempDir()
 	}

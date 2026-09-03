@@ -100,6 +100,7 @@ type Props = {
   layoutPersistence: DockLayoutPersistence;
   theme: Theme;
   vividness: number;
+  scratchDir: string;
 };
 type TreeNode = WorkspaceEntry & {
   loaded?: boolean;
@@ -310,6 +311,7 @@ export function WorkspaceShell({
   layoutPersistence,
   theme,
   vividness,
+  scratchDir,
 }: Props) {
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [files, setFiles] = useState<OpenFile[]>([]);
@@ -535,7 +537,7 @@ export function WorkspaceShell({
 
   useEffect(() => {
     refreshScratch();
-  }, [refreshScratch]);
+  }, [refreshScratch, scratchDir]);
 
   // Joins a parent directory (already relative to the workspace) with a user
   // name to make a workspace-relative path. Escaping names are rejected rather

@@ -13,6 +13,27 @@ func workspaceTestService(t *testing.T) (*Service, string) {
 	return serviceAt(root), root
 }
 
+func TestSetScratchDirPersistsAndUpdatesInit(t *testing.T) {
+	service, _ := workspaceTestService(t)
+	service.ScratchDir = "/old/scratch"
+	var saved string
+	service.SaveScratchDir = func(dir string) (string, error) {
+		saved = dir
+		return "/resolved/scratch", nil
+	}
+
+	got, err := service.SetScratchDir("  ~/scratch  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved != "~/scratch" || got != "/resolved/scratch" {
+		t.Fatalf("saved = %q, returned = %q", saved, got)
+	}
+	if got := service.Init().ScratchDir; got != "/resolved/scratch" {
+		t.Fatalf("Init scratch dir = %q", got)
+	}
+}
+
 func TestTerminalEnvironmentSetsXtermCapabilities(t *testing.T) {
 	got := terminalEnvironment([]string{"PATH=/bin", "TERM=dumb", "COLORTERM=old"})
 	want := []string{"PATH=/bin", "TERM=xterm-256color", "COLORTERM=truecolor"}

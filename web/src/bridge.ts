@@ -111,6 +111,7 @@ export type InitPayload = {
   ready: boolean;
   model: string;
   work_dir: string;
+  scratch_dir: string;
   models: string[];
   providers: Provider[];
   effort?: string;
@@ -341,6 +342,7 @@ export const forge = {
   // Points the file tree, editor and source control at a directory without
   // starting a chat there. "" hands them back to the chat's workspace.
   setExplorerRoot: (dir: string) => call<void>("SetExplorerRoot", dir),
+  setScratchDir: (dir: string) => call<string>("SetScratchDir", dir),
   yolo: () => call<boolean>("Yolo"),
   setYolo: (on: boolean) => call<boolean>("SetYolo", on),
   installSkill: (source: string, scope: string) =>

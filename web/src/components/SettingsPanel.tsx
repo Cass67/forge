@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { THEMES, type Theme } from "../theme";
 import { SCALES, formatScale } from "../scale";
 import { MAX_VIVIDNESS, vividnessLabel } from "../vividness";
@@ -7,6 +7,7 @@ import { ProviderPanel } from "./ProviderPanel";
 import { MCPPanel } from "./MCPPanel";
 import { SkillsPanel } from "./SkillsPanel";
 import type { DockLayoutPersistence } from "../dockLayout";
+import { saveScratchDirectory } from "../scratchSettings";
 
 export type Prefs = {
   showTools: boolean;
@@ -64,6 +65,7 @@ export function SettingsPanel({
   onSkills,
   onAddWorkspace,
   onOpenWorkspaces,
+  onScratchDir,
   onNotify,
   onClose,
 }: {
@@ -86,10 +88,31 @@ export function SettingsPanel({
   onSkills: (next: { name: string; description?: string }[]) => void;
   onAddWorkspace: () => void;
   onOpenWorkspaces: () => void;
+  onScratchDir: (dir: string) => void;
   onNotify: (msg: string) => void;
   onClose: () => void;
 }) {
   const [section, setSection] = useState<SectionID>("providers");
+  const [scratchDir, setScratchDir] = useState(init?.scratch_dir ?? "");
+  const [savingScratch, setSavingScratch] = useState(false);
+  useEffect(() => setScratchDir(init?.scratch_dir ?? ""), [init?.scratch_dir]);
+
+  const saveScratch = async () => {
+    setSavingScratch(true);
+    try {
+      const resolved = await saveScratchDirectory(
+        scratchDir,
+        forge.setScratchDir,
+        setScratchDir,
+      );
+      onScratchDir(resolved);
+      onNotify("scratch directory saved");
+    } catch (error: unknown) {
+      onNotify(String(error));
+    } finally {
+      setSavingScratch(false);
+    }
+  };
   const efforts = init?.efforts ?? [];
   const providerCount = init?.providers.length ?? 0;
   const skillCount = init?.skills.length ?? 0;
@@ -236,6 +259,28 @@ export function SettingsPanel({
                 <div className="set-row">
                   <span className="set-k">current</span>
                   <span className="set-v mono">{init?.work_dir || "—"}</span>
+                </div>
+                <div className="set-row">
+                  <label className="set-k" htmlFor="scratch-directory">
+                    scratch directory
+                  </label>
+                  <input
+                    className="set-input mono"
+                    id="scratch-directory"
+                    onChange={(event) => setScratchDir(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") void saveScratch();
+                    }}
+                    spellCheck={false}
+                    value={scratchDir}
+                  />
+                  <button
+                    className="btn"
+                    disabled={savingScratch}
+                    onClick={() => void saveScratch()}
+                  >
+                    {savingScratch ? "Saving…" : "Save"}
+                  </button>
                 </div>
                 <div className="set-row">
                   <span className="set-k">dock layout</span>

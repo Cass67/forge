@@ -16,6 +16,7 @@ type InitPayload struct {
 	Ready       bool              `json:"ready"`
 	Model       string            `json:"model"`
 	WorkDir     string            `json:"work_dir"`
+	ScratchDir  string            `json:"scratch_dir"`
 	Models      []string          `json:"models"`
 	Providers   []ProviderPayload `json:"providers"`
 	Effort      string            `json:"effort,omitempty"`

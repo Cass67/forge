@@ -1910,6 +1910,15 @@ textarea:not(.xterm-helper-textarea),
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.set-input {
+  min-width: 0;
+  flex: 1;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 5px 7px;
+}
 .set-v.badge {
   border: 1px solid var(--border);
   border-radius: 3px;

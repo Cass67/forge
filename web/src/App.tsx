@@ -1326,6 +1326,7 @@ export default function App() {
           layoutPersistence={prefs.dockLayoutPersistence}
           theme={theme}
           vividness={vividness}
+          scratchDir={init?.scratch_dir ?? ""}
         >
           <main className="center">
             <Transcript entries={entries} prefs={prefs} busy={busy} />
@@ -1460,6 +1461,11 @@ export default function App() {
             addWorkspace();
           }}
           onOpenWorkspaces={() => setOverlay("workspaces")}
+          onScratchDir={(scratchDir) =>
+            setInit((current) =>
+              current ? { ...current, scratch_dir: scratchDir } : current,
+            )
+          }
           onNotify={notify}
           onClose={() => setOverlay("none")}
         />

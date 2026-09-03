@@ -534,6 +534,37 @@ func TestSaveChatLastModelAddsChatSectionWhenMissing(t *testing.T) {
 	}
 }
 
+func TestSaveScratchDirChangesOnlyScratchDir(t *testing.T) {
+	path := writeTemp(t, "# keep this comment\n[keys]\nopenai = \"example-only\"\n\n[scratch]\ndir = \"/old/path\"\nkeep = \"unchanged\"\n\n[chat]\nmodel = \"openai/test\"\n")
+
+	if err := config.SaveScratchDir(path, `/new/"quoted"/path`); err != nil {
+		t.Fatalf("SaveScratchDir: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	for _, unchanged := range []string{
+		"# keep this comment",
+		"openai = \"example-only\"",
+		"keep = \"unchanged\"",
+		"model = \"openai/test\"",
+	} {
+		if !strings.Contains(content, unchanged) {
+			t.Fatalf("SaveScratchDir removed %q from:\n%s", unchanged, content)
+		}
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load updated config: %v", err)
+	}
+	if got := cfg.Scratch.Dir; got != `/new/"quoted"/path` {
+		t.Fatalf("scratch dir = %q", got)
+	}
+}
+
 func TestLoadMCPServers(t *testing.T) {
 	toml := `
 [mcp_servers.context7]
