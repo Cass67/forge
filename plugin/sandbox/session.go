@@ -29,8 +29,33 @@ var (
 	configOn      bool
 	cfgImage      string
 	cfgDockerfile string
+	cfgWritable   bool
 	sess          *sessionState
 )
+
+// hardeningArgs are the docker flags applied to every sandbox container. They
+// reduce what a container can do to the host if code inside it misbehaves;
+// they do not make the sandbox a security boundary (see the plugin docs).
+// --read-only is deliberately absent: HOME=/workspace means a read-only root
+// breaks ordinary builds, and a flag that forces users to disable hardening is
+// worse than not shipping it.
+func hardeningArgs() []string {
+	return []string{
+		"--cap-drop=ALL",
+		"--security-opt", "no-new-privileges",
+		"--network", "none",
+	}
+}
+
+// mountSpec returns the project bind-mount. Read-only unless the user opts in
+// with writable = true, because the mount is the one route from container code
+// back onto the host filesystem.
+func mountSpec(dir string) string {
+	if cfgWritable {
+		return dir + ":/workspace:rw"
+	}
+	return dir + ":/workspace:ro"
+}
 
 type sessionState struct {
 	ContainerName string
@@ -59,6 +84,7 @@ func (Plugin) Configure(settings map[string]any) {
 	} else {
 		cfgDockerfile = ""
 	}
+	cfgWritable = settings["writable"] == true
 	syncExecutorLocked()
 }
 
@@ -179,14 +205,17 @@ func ensureSession(ctx context.Context) (*sessionState, error) {
 	// prior process that reused our PID: remove it and start clean rather than
 	// inherit a polluted environment.
 	_, _ = dockerRunner(ctx, "rm", "-f", name)
-	out, err := dockerRunner(ctx, "run", "-d",
+	runArgs := []string{"run", "-d",
 		"--name", name,
 		"--label", "forge.sandbox=1",
-		"--label", "forge.pid="+strconv.Itoa(os.Getpid()),
-		"-v", dir+":/workspace:rw",
+		"--label", "forge.pid=" + strconv.Itoa(os.Getpid()),
+		"-v", mountSpec(dir),
 		"-w", "/workspace",
 		"-e", "HOME=/workspace",
-		image, "tail", "-f", "/dev/null")
+	}
+	runArgs = append(runArgs, hardeningArgs()...)
+	runArgs = append(runArgs, image, "tail", "-f", "/dev/null")
+	out, err := dockerRunner(ctx, runArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("docker run: %w: %s", err, strings.TrimSpace(string(out)))
 	}

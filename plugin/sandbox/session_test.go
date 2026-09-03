@@ -424,3 +424,32 @@ func TestSlashRouting(t *testing.T) {
 		t.Fatalf("off: %q", out)
 	}
 }
+
+// TestSandboxRunAppliesHardening pins the audit finding: containers must drop
+// capabilities and mount the project read-only unless the user opts in.
+func TestSandboxRunAppliesHardening(t *testing.T) {
+	sessionMu.Lock()
+	cfgWritable = false
+	sessionMu.Unlock()
+
+	args := strings.Join(hardeningArgs(), " ")
+	for _, want := range []string{"--cap-drop=ALL", "no-new-privileges", "--network none"} {
+		if !strings.Contains(args, want) {
+			t.Errorf("hardening args missing %q, got: %s", want, args)
+		}
+	}
+
+	if got := mountSpec("/proj"); got != "/proj:/workspace:ro" {
+		t.Errorf("default mount = %q, want read-only", got)
+	}
+
+	sessionMu.Lock()
+	cfgWritable = true
+	sessionMu.Unlock()
+	if got := mountSpec("/proj"); got != "/proj:/workspace:rw" {
+		t.Errorf("opt-in mount = %q, want read-write", got)
+	}
+	sessionMu.Lock()
+	cfgWritable = false
+	sessionMu.Unlock()
+}

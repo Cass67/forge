@@ -191,14 +191,13 @@ func toolRun(ctx context.Context, args map[string]any) (string, error) {
 	dockerArgs := []string{
 		"run",
 		"--name", dirHash,
-		"-v", fmt.Sprintf("%s:/workspace:rw", absDir),
+		"-v", mountSpec(absDir),
 		"-w", "/workspace",
 		"-e", "HOME=/workspace",
 		"--rm",
-		image,
-		shell,
-		"-c", command,
 	}
+	dockerArgs = append(dockerArgs, hardeningArgs()...)
+	dockerArgs = append(dockerArgs, image, shell, "-c", command)
 
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
@@ -331,13 +330,20 @@ func containerName(dir string) string {
 
 const skillBody = `## Docker Sandbox
 
-Run code in an isolated Docker container that bind-mounts the current project directory.
-Changes made inside the container (file writes, package installs, builds) persist on disk
-because the container mounts the project directory as /workspace.
+Run code in a Docker container that bind-mounts the current project directory at /workspace.
+
+**This is convenience isolation, not a security boundary.** It keeps environment side effects
+(installed packages, changed toolchains, stray build output) off your host. It does not contain
+hostile code: the project directory is mounted into the container, the container shares the host
+kernel, and a container escape or a mount-write is not defended against. Do not run code you
+actively distrust and expect the host to be safe.
+
+Containers run with ` + "`" + `--cap-drop=ALL --security-opt no-new-privileges --network none` + "`" + `, and the
+project is mounted **read-only** by default. Set ` + "`" + `[plugins.settings] writable = true` + "`" + ` to mount
+it read-write, which is what you need for builds or installs that must persist to the project.
 
 ## When to Use
 
-- Running untrusted code or scripts
 - Testing without affecting the host environment
 - Installing packages in a clean container
 - Building or compiling in an isolated environment
@@ -346,7 +352,7 @@ because the container mounts the project directory as /workspace.
 ## Commands
 
 ### /sandbox on [image] | off | status | build [dockerfile]
-Session mode: ` + "`" + `on` + "`" + ` starts one persistent container (project dir bind-mounted at /workspace) and routes ALL run_command and terminal (exec_session) execution through it until ` + "`" + `off` + "`" + `. Config: ` + "`" + `[plugins.settings] default_on = true` + "`" + `, optional ` + "`" + `image = "..."` + "`" + ` or ` + "`" + `dockerfile = "path/to/Dockerfile"` + "`" + ` (built on demand, content-hash tagged; edits rebuild automatically). ` + "`" + `build` + "`" + ` forces a rebuild now. Image precedence: explicit image > dockerfile > auto-detect.
+Session mode: ` + "`" + `on` + "`" + ` starts one persistent container (project dir bind-mounted at /workspace) and routes ALL run_command and terminal (exec_session) execution through it until ` + "`" + `off` + "`" + `. Config: ` + "`" + `[plugins.settings] default_on = true` + "`" + `, optional ` + "`" + `writable = true` + "`" + ` (read-write project mount; default is read-only), ` + "`" + `image = "..."` + "`" + ` or ` + "`" + `dockerfile = "path/to/Dockerfile"` + "`" + ` (built on demand, content-hash tagged; edits rebuild automatically). ` + "`" + `build` + "`" + ` forces a rebuild now. Image precedence: explicit image > dockerfile > auto-detect.
 
 ### /sandbox <command>
 Alias for ` + "`" + `sandbox_run` + "`" + `. Runs a shell command in a Docker container with the current directory bind-mounted. When session mode is on, runs in the session container instead.
