@@ -414,7 +414,7 @@ func atomicWrite(path string, data []byte) error {
 		return err
 	}
 	tmp := f.Name()
-	defer os.Remove(tmp)
+	defer func() { _ = os.Remove(tmp) }()
 	if err := f.Chmod(mode); err != nil {
 		_ = f.Close()
 		return err
