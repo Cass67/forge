@@ -17,8 +17,8 @@ require (
 	github.com/muesli/termenv v0.16.0
 	github.com/openai/openai-go v1.12.0
 	github.com/pmezard/go-difflib v1.0.0
-	golang.org/x/net v0.55.0
-	golang.org/x/term v0.43.0
+	golang.org/x/net v0.56.0
+	golang.org/x/term v0.44.0
 )
 
 require (
@@ -59,7 +59,7 @@ require (
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/oauth2 v0.34.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.45.0
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/sync v0.21.0 // indirect
+	golang.org/x/sys v0.46.0
+	golang.org/x/text v0.39.0 // indirect
 )
