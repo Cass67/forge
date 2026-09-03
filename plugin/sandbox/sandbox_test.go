@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"forge/internal/plugin"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -53,6 +54,7 @@ func TestPluginRegistration(t *testing.T) {
 }
 
 func TestSandboxRunTool(t *testing.T) {
+	requireDocker(t)
 	p := Plugin{}
 	var runTool plugin.Tool
 	for _, tool := range p.Tools() {
@@ -126,6 +128,7 @@ func TestSandboxStopTool(t *testing.T) {
 }
 
 func TestSlashCommand(t *testing.T) {
+	requireDocker(t)
 	resetState()
 	p := Plugin{}
 	var cmd plugin.Command
@@ -167,5 +170,14 @@ func TestContainerName(t *testing.T) {
 		if strings.Contains(name, "--") {
 			t.Errorf("containerName(%q) = %q, contains consecutive dashes", tt.dir, name)
 		}
+	}
+}
+
+// requireDocker skips tests that actually start a container. They need a
+// working docker daemon, which a CI runner does not have.
+func requireDocker(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not installed; skipping container test")
 	}
 }
