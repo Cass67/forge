@@ -88,13 +88,16 @@ func TestPostEditValidatorTimeoutKillsSubprocessTree(t *testing.T) {
 	}
 	marker := filepath.Join(t.TempDir(), "child-survived")
 	validator := PostEditValidator{
-		Command:        []string{"/bin/sh", "-c", fmt.Sprintf("(trap '' HUP; sleep 0.25; printf survived > %q) & wait", marker)},
+		Command:        []string{"/bin/sh", "-c", fmt.Sprintf("(trap '' HUP; sleep 2; printf survived > %q) & wait", marker)},
 		Timeout:        10 * time.Millisecond,
 		MaxOutputBytes: 1024,
 	}
 
 	result := validator.Validate(context.Background(), PostEditValidationRequest{})
-	time.Sleep(500 * time.Millisecond)
+	// The child writes its marker 2s in, so waiting past that proves the kill
+	// happened rather than that we looked too early. The wide margin keeps a
+	// loaded CI runner from failing a working process-group kill.
+	time.Sleep(2500 * time.Millisecond)
 
 	if !errors.Is(result.Err, context.DeadlineExceeded) {
 		t.Fatalf("Err = %v, want context deadline exceeded", result.Err)
