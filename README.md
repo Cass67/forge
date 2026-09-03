@@ -31,6 +31,21 @@ Forge is not a hosted SaaS or remote coding sandbox. It is a native local tool t
 - command exec sessions for long-running terminal work without blocking the visible chat loop
 - session artifacts, summaries, audit logs, and usage tracking
 
+## GUI Features
+
+Forge desktop app (macOS, Windows, Linux) includes native panels for:
+
+- **Explorer**: Browse and navigate project files with directory tree
+- **Source Control**: Git integration with staging area, commit history, branches, and worktrees
+- **Editor**: View and navigate code with syntax highlighting and diff views
+- **Progress**: Real-time activity and agent execution status
+- **Terminal**: Integrated terminal with streaming command output
+- **Model/Provider Picker**: Switch models and authentication without leaving the interface
+- **Approvals**: Built-in approval gates for destructive operations
+- **Session Management**: Resume previous sessions, checkpoint/undo functionality
+
+The desktop app provides the full Forge capability set alongside the terminal TUI, with a persistent session transcript and workspace-level configuration.
+
 ## Quick Start
 
 Prerequisite: install `just` and make sure it is available on your `PATH`. If you need setup details, see [BUILD.md](./BUILD.md).
