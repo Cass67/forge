@@ -2,12 +2,15 @@ package workspace
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -23,7 +26,21 @@ type Checkpoint struct {
 	ChangedFiles []string  `json:"changed_files,omitempty"`
 	RestoreFiles []string  `json:"restore_files,omitempty"`
 	BaseCommit   string    `json:"base_commit,omitempty"`
+	// PatchHash names the shared patch file under patches/. Empty means the
+	// checkpoint predates content-addressed storage and owns <id>.patch.
+	PatchHash string `json:"patch_hash,omitempty"`
 }
+
+// Retention bounds the checkpoint store. The patch is the whole working-tree
+// diff against HEAD, rewritten every turn, so an unbounded store grows without
+// limit — 2.8 GB across 25k checkpoints in one repo before this was added.
+// Nothing outside the current session can list or restore a checkpoint anyway
+// (Runner.Checkpoints reads an in-memory map), so old entries are unreachable
+// rather than useful.
+const (
+	maxCheckpoints   = 200
+	maxCheckpointAge = 7 * 24 * time.Hour
+)
 
 type CheckpointManager struct {
 	root string
@@ -66,6 +83,21 @@ func (m *CheckpointManager) Create(ctx context.Context, turnID string) (Checkpoi
 	if err := os.MkdirAll(storeDir, 0o700); err != nil {
 		return Checkpoint{}, fmt.Errorf("create checkpoint: prepare store: %w", err)
 	}
+	// Patches are content-addressed: identical working trees share one file
+	// instead of writing a fresh multi-megabyte copy per turn.
+	sum := sha256.Sum256([]byte(patch))
+	cp.PatchHash = hex.EncodeToString(sum[:])
+	patchDir := filepath.Join(storeDir, "patches")
+	if err := os.MkdirAll(patchDir, 0o700); err != nil {
+		return Checkpoint{}, fmt.Errorf("create checkpoint: prepare patch store: %w", err)
+	}
+	patchPath := filepath.Join(patchDir, cp.PatchHash+".patch")
+	if _, err := os.Stat(patchPath); errors.Is(err, os.ErrNotExist) {
+		if err := os.WriteFile(patchPath, []byte(patch), 0o600); err != nil {
+			return Checkpoint{}, fmt.Errorf("create checkpoint: write patch: %w", err)
+		}
+	}
+
 	meta, err := json.Marshal(cp)
 	if err != nil {
 		return Checkpoint{}, fmt.Errorf("create checkpoint: encode metadata: %w", err)
@@ -73,10 +105,95 @@ func (m *CheckpointManager) Create(ctx context.Context, turnID string) (Checkpoi
 	if err := os.WriteFile(filepath.Join(storeDir, cp.ID+".json"), meta, 0o600); err != nil {
 		return Checkpoint{}, fmt.Errorf("create checkpoint: write metadata: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(storeDir, cp.ID+".patch"), []byte(patch), 0o600); err != nil {
-		return Checkpoint{}, fmt.Errorf("create checkpoint: write patch: %w", err)
-	}
+	// Best effort: a full store is not a reason to fail the turn.
+	_ = pruneCheckpoints(storeDir)
 	return cp, nil
+}
+
+// pruneCheckpoints drops checkpoints past the count or age limit, then deletes
+// any patch file no longer referenced by a surviving checkpoint.
+func pruneCheckpoints(storeDir string) error {
+	entries, err := os.ReadDir(storeDir)
+	if err != nil {
+		return err
+	}
+	type record struct {
+		name    string
+		created time.Time
+	}
+	var records []record
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		records = append(records, record{name: entry.Name(), created: info.ModTime()})
+	}
+	slices.SortFunc(records, func(a, b record) int { return b.created.Compare(a.created) })
+
+	cutoff := time.Now().Add(-maxCheckpointAge)
+	for i, rec := range records {
+		if i < maxCheckpoints && rec.created.After(cutoff) {
+			continue
+		}
+		id := strings.TrimSuffix(rec.name, ".json")
+		_ = os.Remove(filepath.Join(storeDir, rec.name))
+		// Pre-dedupe checkpoints owned their patch outright.
+		_ = os.Remove(filepath.Join(storeDir, id+".patch"))
+	}
+	return collectPatches(storeDir)
+}
+
+// collectPatches removes shared patch files that no surviving checkpoint names.
+func collectPatches(storeDir string) error {
+	patchDir := filepath.Join(storeDir, "patches")
+	patches, err := os.ReadDir(patchDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	entries, err := os.ReadDir(storeDir)
+	if err != nil {
+		return err
+	}
+	referenced := make(map[string]bool)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(storeDir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		var cp Checkpoint
+		if err := json.Unmarshal(raw, &cp); err != nil {
+			continue
+		}
+		if cp.PatchHash != "" {
+			referenced[cp.PatchHash] = true
+		}
+	}
+	for _, patch := range patches {
+		hash := strings.TrimSuffix(patch.Name(), ".patch")
+		if !referenced[hash] {
+			_ = os.Remove(filepath.Join(patchDir, patch.Name()))
+		}
+	}
+	return nil
+}
+
+// checkpointPatchPath resolves where a checkpoint's patch lives, tolerating
+// stores written before patches were content-addressed.
+func checkpointPatchPath(storeDir string, cp Checkpoint) string {
+	if cp.PatchHash != "" {
+		return filepath.Join(storeDir, "patches", cp.PatchHash+".patch")
+	}
+	return filepath.Join(storeDir, strings.TrimSpace(cp.ID)+".patch")
 }
 
 func (m *CheckpointManager) RecordChangedFiles(ctx context.Context, checkpointID string, files []string) error {
@@ -135,7 +252,7 @@ func (m *CheckpointManager) Restore(ctx context.Context, checkpointID string) er
 	if err != nil {
 		return fmt.Errorf("restore checkpoint: resolve store: %w", err)
 	}
-	patchPath := filepath.Join(storeDir, strings.TrimSpace(checkpointID)+".patch")
+	patchPath := checkpointPatchPath(storeDir, cp)
 	patch, err := os.ReadFile(patchPath)
 	if err != nil {
 		return fmt.Errorf("restore checkpoint: read patch: %w", err)

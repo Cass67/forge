@@ -2,7 +2,9 @@ package workspace
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -215,4 +217,155 @@ func readFile(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(b)
+}
+
+func checkpointStore(t *testing.T, root string) string {
+	t.Helper()
+	dir, err := checkpointStoreDir(context.Background(), root)
+	if err != nil {
+		t.Fatalf("checkpointStoreDir() error = %v", err)
+	}
+	return dir
+}
+
+func countFiles(t *testing.T, dir, suffix string) int {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0
+		}
+		t.Fatalf("ReadDir(%s) error = %v", dir, err)
+	}
+	n := 0
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), suffix) {
+			n++
+		}
+	}
+	return n
+}
+
+// TestCheckpointPatchesAreDeduplicated pins the disk-growth fix: repeated
+// checkpoints of an unchanged tree must share one patch file rather than
+// writing a fresh copy of the whole working-tree diff per turn.
+func TestCheckpointPatchesAreDeduplicated(t *testing.T) {
+	ctx := context.Background()
+	root := initTestGitRepo(t)
+	writeFile(t, filepath.Join(root, "tracked.txt"), "original\n")
+	runGit(t, root, "add", "tracked.txt")
+	runGit(t, root, "commit", "-m", "initial")
+	writeFile(t, filepath.Join(root, "tracked.txt"), "mutated\n")
+
+	manager := NewCheckpointManager(root)
+	first, err := manager.Create(ctx, "turn-1")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	second, err := manager.Create(ctx, "turn-2")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if first.PatchHash == "" || first.PatchHash != second.PatchHash {
+		t.Fatalf("identical trees should share a patch hash: %q vs %q", first.PatchHash, second.PatchHash)
+	}
+	patchDir := filepath.Join(checkpointStore(t, root), "patches")
+	if n := countFiles(t, patchDir, ".patch"); n != 1 {
+		t.Fatalf("patch files = %d, want 1 shared copy", n)
+	}
+
+	// A changed tree must still get its own patch.
+	writeFile(t, filepath.Join(root, "tracked.txt"), "changed again\n")
+	third, err := manager.Create(ctx, "turn-3")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if third.PatchHash == first.PatchHash {
+		t.Fatal("different trees must not share a patch")
+	}
+	if n := countFiles(t, patchDir, ".patch"); n != 2 {
+		t.Fatalf("patch files = %d, want 2", n)
+	}
+}
+
+// TestCheckpointRetentionCapsStore verifies old checkpoints are dropped and
+// their now-unreferenced patches garbage collected.
+func TestCheckpointRetentionCapsStore(t *testing.T) {
+	ctx := context.Background()
+	root := initTestGitRepo(t)
+	writeFile(t, filepath.Join(root, "tracked.txt"), "original\n")
+	runGit(t, root, "add", "tracked.txt")
+	runGit(t, root, "commit", "-m", "initial")
+
+	manager := NewCheckpointManager(root)
+	storeDir := checkpointStore(t, root)
+
+	// Each checkpoint gets a distinct tree, so none of them dedupe away.
+	total := maxCheckpoints + 25
+	for i := range total {
+		writeFile(t, filepath.Join(root, "tracked.txt"), fmt.Sprintf("content %d\n", i))
+		if _, err := manager.Create(ctx, fmt.Sprintf("turn-%d", i)); err != nil {
+			t.Fatalf("Create() error = %v", err)
+		}
+	}
+
+	if n := countFiles(t, storeDir, ".json"); n > maxCheckpoints {
+		t.Fatalf("metadata files = %d, want <= %d", n, maxCheckpoints)
+	}
+	patchDir := filepath.Join(storeDir, "patches")
+	if n := countFiles(t, patchDir, ".patch"); n > maxCheckpoints {
+		t.Fatalf("patch files = %d, want <= %d (orphans not collected)", n, maxCheckpoints)
+	}
+}
+
+// TestCheckpointRestoreReadsLegacyPatchLayout keeps stores written before
+// content-addressed patches restorable.
+func TestCheckpointRestoreReadsLegacyPatchLayout(t *testing.T) {
+	ctx := context.Background()
+	root := initTestGitRepo(t)
+	writeFile(t, filepath.Join(root, "tracked.txt"), "original\n")
+	runGit(t, root, "add", "tracked.txt")
+	runGit(t, root, "commit", "-m", "initial")
+
+	manager := NewCheckpointManager(root)
+	writeFile(t, filepath.Join(root, "tracked.txt"), "mutated\n")
+	checkpoint, err := manager.Create(ctx, "turn-1")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := manager.RecordChangedFiles(ctx, checkpoint.ID, []string{"tracked.txt"}); err != nil {
+		t.Fatalf("RecordChangedFiles() error = %v", err)
+	}
+
+	// Rewrite the store in the pre-dedupe shape: <id>.patch, no patch_hash.
+	storeDir := checkpointStore(t, root)
+	shared := filepath.Join(storeDir, "patches", checkpoint.PatchHash+".patch")
+	patch, err := os.ReadFile(shared)
+	if err != nil {
+		t.Fatalf("read shared patch: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(storeDir, checkpoint.ID+".patch"), patch, 0o600); err != nil {
+		t.Fatalf("write legacy patch: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(storeDir, "patches")); err != nil {
+		t.Fatalf("remove patch dir: %v", err)
+	}
+	legacy, metaPath, err := manager.loadCheckpoint(ctx, root, checkpoint.ID)
+	if err != nil {
+		t.Fatalf("loadCheckpoint() error = %v", err)
+	}
+	legacy.PatchHash = ""
+	meta, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(metaPath, meta, 0o600); err != nil {
+		t.Fatalf("write legacy metadata: %v", err)
+	}
+
+	writeFile(t, filepath.Join(root, "tracked.txt"), "mutated again\n")
+	if err := manager.Restore(ctx, checkpoint.ID); err != nil {
+		t.Fatalf("Restore() with legacy layout error = %v", err)
+	}
 }
