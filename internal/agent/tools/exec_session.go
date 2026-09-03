@@ -125,6 +125,7 @@ func (m *ExecSessionManager) start(workDir, command string, cols, rows int, ptyM
 		}
 		stream = ptmx
 	} else {
+		setProcGroup(cmd)
 		stdout, pipeErr := cmd.StdoutPipe()
 		if pipeErr != nil {
 			return 0, pipeErr
@@ -315,7 +316,7 @@ func (s *execSession) kill() {
 	if done {
 		return
 	}
-	_ = s.cmd.Process.Kill()
+	killProcGroup(s.cmd.Process.Pid)
 }
 
 func (s *execSession) notify(status ExecSessionStatus) {
