@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -2002,12 +2003,22 @@ func (d *OpenAIDriver) shouldPersistResponsesState() bool {
 	return providerSupportsResponseReuse(d.providerLabel) && !d.providerRequiresStatelessResponses()
 }
 
+// chatGPTResponsesFamily matches gpt-5 and every later family. The ChatGPT
+// subscription backend serves these over the responses endpoint only --
+// /backend-api/codex/models reports use_responses_lite for them -- so routing
+// one to chat/completions 404s. This was a literal "gpt-5" prefix test, which
+// meant gpt-6-astra was dispatched to the wrong endpoint the day it shipped.
+var chatGPTResponsesFamily = regexp.MustCompile(`^gpt-([5-9]|[1-9][0-9]+)(\.|-|$)`)
+
 func providerRequiresStatelessResponses(providerLabel, model string) bool {
 	if strings.TrimSpace(strings.ToLower(providerLabel)) != "chatgpt" {
 		return false
 	}
 	m := strings.ToLower(strings.TrimSpace(model))
-	return strings.HasPrefix(m, "gpt-5")
+	if idx := strings.LastIndex(m, "/"); idx >= 0 {
+		m = m[idx+1:]
+	}
+	return chatGPTResponsesFamily.MatchString(m)
 }
 
 func isReasoningModel(model string) bool {
