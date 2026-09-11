@@ -53,13 +53,11 @@ timeout_seconds = 600
 
 [resilience]
 compaction_max_failures = 3
-token_diminishing_threshold = 500
-token_diminishing_checks = 2
 tool_thrash_circuit_breaker = 8
 stream_idle_timeout_ms = 120000
 
 [security.secrets]
-# Each: allow | redact | ask | block
+# Each: allow | redact | block
 read = "redact"
 write = "block"
 command_output = "redact"
@@ -192,8 +190,8 @@ timeout_ms = 5000
 #http_headers = { X-Custom = "value" }
 
 # Route work to a model by role. Unset roles fall back to the chat model, so
-# an empty [models] table changes nothing.
-#   default — the main conversation turn
+# an empty [models] table changes nothing. Scope is subagents plus the two GUI
+# git features; the main conversation model is chat.model, not a role here.
 #   smol    — cheap subagent fan-out (explorer, synthesizer)
 #   slow    — the subagents worth paying for (oracle, code-reviewer) and the
 #             changes walkthrough

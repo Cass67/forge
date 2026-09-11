@@ -210,11 +210,9 @@ Long-session resilience settings live under `[resilience]`:
 stream_idle_timeout_ms = 120000
 compaction_max_failures = 3
 tool_thrash_circuit_breaker = 8
-token_diminishing_threshold = 500
-token_diminishing_checks = 2
 ```
 
-`stream_idle_timeout_ms` bounds stalled provider streams. `compaction_max_failures` opens the compaction failure circuit after repeated compaction failures. `tool_thrash_circuit_breaker` controls when Forge starts adding recovery guidance for repeated same-target tool use; it is a progressive prompt overlay, not a hard tool block. `token_diminishing_threshold` and `token_diminishing_checks` are reserved for future token-budget diagnostics and do not currently interrupt chat turns.
+`stream_idle_timeout_ms` bounds stalled provider streams. `compaction_max_failures` opens the compaction failure circuit after repeated compaction failures. `tool_thrash_circuit_breaker` controls when Forge starts adding recovery guidance for repeated same-target tool use; it is a progressive prompt overlay, not a hard tool block.
 
 Compaction modes are deterministic:
 

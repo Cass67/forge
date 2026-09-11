@@ -142,16 +142,16 @@ func TestValidateSecuritySecretsPolicy(t *testing.T) {
 	cfg.Security.Secrets.ApprovalDetail = "mask"
 
 	issues := cfg.Validate()
-	if !hasIssueContaining(issues, "security.secrets.read", "must be one of allow, redact, ask, block") {
+	if !hasIssueContaining(issues, "security.secrets.read", "must be one of allow, redact, block") {
 		t.Fatalf("expected read policy issue, got %v", issues)
 	}
-	if !hasIssueContaining(issues, "security.secrets.write", "must be one of allow, redact, ask, block") {
+	if !hasIssueContaining(issues, "security.secrets.write", "must be one of allow, redact, block") {
 		t.Fatalf("expected write policy issue, got %v", issues)
 	}
-	if !hasIssueContaining(issues, "security.secrets.command_output", "must be one of allow, redact, ask, block") {
+	if !hasIssueContaining(issues, "security.secrets.command_output", "must be one of allow, redact, block") {
 		t.Fatalf("expected command_output policy issue, got %v", issues)
 	}
-	if !hasIssueContaining(issues, "security.secrets.approval_detail", "must be one of allow, redact, ask, block") {
+	if !hasIssueContaining(issues, "security.secrets.approval_detail", "must be one of allow, redact, block") {
 		t.Fatalf("expected approval_detail policy issue, got %v", issues)
 	}
 }
@@ -210,4 +210,29 @@ func hasIssueContaining(issues []ValidationIssue, field, substring string) bool 
 		}
 	}
 	return false
+}
+
+// "ask" was accepted by the validator and documented as a distinct mode, but
+// applySecretMode treated it as block: no prompt was ever shown. A security
+// setting that silently means something else is worse than a missing one, so
+// the mode is gone and the config must now be rejected rather than quietly
+// reinterpreted.
+func TestValidateRejectsRemovedAskSecretsPolicy(t *testing.T) {
+	var cfg Config
+	setDefaults(&cfg)
+	cfg.Security.Secrets.Read = "ask"
+
+	if !hasIssueContaining(cfg.Validate(), "security.secrets.read", "must be one of allow, redact, block") {
+		t.Fatalf("ask must be rejected, got %v", cfg.Validate())
+	}
+}
+
+// [models] default was validated as a legal role while nothing ever called
+// RoleModel("default"), so it read as though it re-pointed the main
+// conversation and did nothing. chat.model is the main model.
+func TestValidateRejectsDefaultModelRole(t *testing.T) {
+	c := &Config{Models: map[string]string{"default": "anthropic/claude-opus-5"}}
+	if !hasIssueContaining(c.Validate(), "models.default", "unknown model role") {
+		t.Fatalf("models.default must be rejected, got %v", c.Validate())
+	}
 }

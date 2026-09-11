@@ -38,9 +38,9 @@ func (c *Config) Validate() []ValidationIssue {
 	}
 	validateSecretPolicy := func(field, value string) {
 		switch strings.ToLower(strings.TrimSpace(value)) {
-		case "allow", "redact", "ask", "block":
+		case "allow", "redact", "block":
 		default:
-			add(field, fmt.Sprintf("must be one of allow, redact, ask, block, got %q", value))
+			add(field, fmt.Sprintf("must be one of allow, redact, block, got %q", value))
 		}
 	}
 	validateSecretPolicy("security.secrets.read", c.Security.Secrets.Read)

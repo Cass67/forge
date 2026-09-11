@@ -12,7 +12,6 @@ type SecretPolicyMode string
 const (
 	SecretPolicyAllow  SecretPolicyMode = "allow"
 	SecretPolicyRedact SecretPolicyMode = "redact"
-	SecretPolicyAsk    SecretPolicyMode = "ask"
 	SecretPolicyBlock  SecretPolicyMode = "block"
 )
 
@@ -93,7 +92,7 @@ func applySecretMode(text string, mode SecretPolicyMode) (string, bool) {
 	switch mode {
 	case SecretPolicyRedact:
 		return redacted, false
-	case SecretPolicyAsk, SecretPolicyBlock:
+	case SecretPolicyBlock:
 		return fmt.Sprintf("blocked: content matched secret rule %s", secscan.Summary(matches)), true
 	default:
 		if strings.TrimSpace(string(mode)) == "" {

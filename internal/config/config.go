@@ -14,11 +14,6 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-type ModelParams struct {
-	MaxTokens   int     `toml:"max_tokens"`  // 0 = use provider default
-	Temperature float64 `toml:"temperature"` // -1 = use provider default
-}
-
 type Session struct {
 	OutputDir string `toml:"output_dir"`
 }
@@ -65,11 +60,9 @@ type Retry struct {
 }
 
 type Resilience struct {
-	CompactionMaxFailures     int `toml:"compaction_max_failures"`
-	TokenDiminishingThreshold int `toml:"token_diminishing_threshold"`
-	TokenDiminishingChecks    int `toml:"token_diminishing_checks"`
-	ToolThrashCircuitBreaker  int `toml:"tool_thrash_circuit_breaker"`
-	StreamIdleTimeoutMS       int `toml:"stream_idle_timeout_ms"`
+	CompactionMaxFailures    int `toml:"compaction_max_failures"`
+	ToolThrashCircuitBreaker int `toml:"tool_thrash_circuit_breaker"`
+	StreamIdleTimeoutMS      int `toml:"stream_idle_timeout_ms"`
 }
 
 type SecretSecurityConfig struct {
@@ -454,8 +447,6 @@ func setDefaults(c *Config) {
 	c.Retry.MaxWait = 30000
 	c.Retry.Timeout = 600
 	c.Resilience.CompactionMaxFailures = 3
-	c.Resilience.TokenDiminishingThreshold = 500
-	c.Resilience.TokenDiminishingChecks = 2
 	c.Resilience.ToolThrashCircuitBreaker = 8
 	c.Resilience.StreamIdleTimeoutMS = defaultStreamIdleTimeoutMS
 	c.Security.Secrets.Read = "redact"
@@ -677,9 +668,15 @@ func (c *Config) ChatModel() string {
 	return ""
 }
 
-// ModelRoles are the routing intents RoleModel understands. Anything else in
-// [models] is a typo, and Validate says so.
-var ModelRoles = []string{"default", "smol", "slow", "commit"}
+// ModelRoles are the routing intents settable in [models]. Anything else is a
+// typo, and Validate says so.
+//
+// "default" is deliberately absent: nothing calls RoleModel("default"), so
+// setting it did nothing while reading as though it re-pointed the main
+// conversation. The main model is chat.model. RoleModel still resolves an
+// empty role to the chat model internally -- that is the fallback callers
+// rely on, not a configurable knob.
+var ModelRoles = []string{"smol", "slow", "commit"}
 
 // RoleModel returns the model configured for a routing role. The "default"
 // role falls back to the chat model; every other role falls back to empty so

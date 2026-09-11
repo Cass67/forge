@@ -301,7 +301,7 @@ func TestLoadSecuritySecretsConfig(t *testing.T) {
 	toml := `
 [security.secrets]
 read = "block"
-write = "ask"
+write = "block"
 command_output = "allow"
 approval_detail = "redact"
 `
@@ -313,7 +313,7 @@ approval_detail = "redact"
 	if cfg.Security.Secrets.Read != "block" {
 		t.Fatalf("Read = %q", cfg.Security.Secrets.Read)
 	}
-	if cfg.Security.Secrets.Write != "ask" {
+	if cfg.Security.Secrets.Write != "block" {
 		t.Fatalf("Write = %q", cfg.Security.Secrets.Write)
 	}
 	if cfg.Security.Secrets.CommandOutput != "allow" {
