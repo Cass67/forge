@@ -1,6 +1,7 @@
 package modelcatalog
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -241,9 +242,33 @@ func TestGPT55HasImageSupport(t *testing.T) {
 }
 
 func TestNonVisionModelLacksImageSupport(t *testing.T) {
-	info := Lookup("openai", "gpt-4o-mini")
+	// Was gpt-4o-mini, asserting that it lacked image support "in hardcoded
+	// list" -- which pinned an omission in imageCapableModels rather than a
+	// real capability: gpt-4o-mini takes images, and the catalog says so.
+	// Now that modality data is read, capability follows the catalog, so this
+	// needs a model that is genuinely text-only.
+	info := Lookup("openai", "o3-mini")
 	if info != nil && info.SupportsImages {
-		t.Error("gpt-4o-mini should not have image support in hardcoded list")
+		t.Error("o3-mini is text-only and must not report image support")
+	}
+}
+
+func TestCatalogModalityDrivesImageSupport(t *testing.T) {
+	// The hardcoded table listed a handful of models; the catalog knows dozens.
+	// gpt-4o-mini is the case that exposed it -- image-capable in reality and
+	// in the catalog, absent from the table.
+	info := Lookup("openai", "gpt-4o-mini")
+	if info == nil {
+		t.Skip("gpt-4o-mini not in catalog")
+	}
+	if !info.SupportsImages {
+		t.Error("gpt-4o-mini takes images per the catalog and must report it")
+	}
+	if info.MaxImageBytes <= 0 {
+		t.Errorf("MaxImageBytes = %d, want a positive default", info.MaxImageBytes)
+	}
+	if len(info.SupportedImageMIMEs) == 0 {
+		t.Error("image-capable model must advertise at least one MIME type")
 	}
 }
 
@@ -300,5 +325,46 @@ func TestEffortValuesFromReasoningOptions(t *testing.T) {
 
 	if plain := Lookup("openai", "gpt-plain"); plain == nil || len(plain.ReasoningEfforts) != 0 {
 		t.Fatalf("model without reasoning_options should expose no efforts, got %+v", plain)
+	}
+}
+
+// Image support had to be hardcoded per model in imageCapableModels because
+// modelEntry discarded modality data entirely -- models.dev publishes
+// modalities.input, and an OpenAI-compatible /v1/models publishes a flat
+// input array, and neither was parsed. A vision model the catalog knew about
+// was therefore treated as text-only.
+func TestModelEntrySupportsImageInput(t *testing.T) {
+	var modelsDev modelEntry
+	if err := json.Unmarshal([]byte(`{"modalities":{"input":["text","image","pdf"],"output":["text"]}}`), &modelsDev); err != nil {
+		t.Fatal(err)
+	}
+	if !modelsDev.supportsImageInput() {
+		t.Error("modalities.input containing image must count as image support")
+	}
+
+	var compatEndpoint modelEntry
+	if err := json.Unmarshal([]byte(`{"input":["text","image"]}`), &compatEndpoint); err != nil {
+		t.Fatal(err)
+	}
+	if !compatEndpoint.supportsImageInput() {
+		t.Error("a flat input array containing image must count as image support")
+	}
+
+	var textOnly modelEntry
+	if err := json.Unmarshal([]byte(`{"input":["text"],"modalities":{"input":["text"]}}`), &textOnly); err != nil {
+		t.Fatal(err)
+	}
+	if textOnly.supportsImageInput() {
+		t.Error("text-only model must not be treated as image-capable")
+	}
+
+	// Most entries carry no modality data at all. That is not a denial: the
+	// hardcoded table still has to be able to fill it in.
+	var silent modelEntry
+	if err := json.Unmarshal([]byte(`{"tool_call":true}`), &silent); err != nil {
+		t.Fatal(err)
+	}
+	if silent.supportsImageInput() {
+		t.Error("absent modality data must not assert image support")
 	}
 }

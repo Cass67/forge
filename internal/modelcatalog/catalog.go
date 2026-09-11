@@ -64,6 +64,29 @@ type modelEntry struct {
 		Context int `json:"context"`
 		Output  int `json:"output"`
 	} `json:"limit"`
+	// Input modality, under the two spellings forge actually meets:
+	// models.dev nests it as modalities.input, while an OpenAI-compatible
+	// /v1/models (and a hand-maintained providers/<id>-models.json) puts a
+	// flat input array on the model. Both were being discarded, which is why
+	// image support had to be hardcoded per model in imageCapableModels.
+	Input      []string `json:"input"`
+	Modalities struct {
+		Input []string `json:"input"`
+	} `json:"modalities"`
+}
+
+// supportsImageInput reports whether the catalog says this model accepts
+// images. Absent modality data is not a denial -- plenty of entries carry
+// none -- so the hardcoded table still fills those in.
+func (e modelEntry) supportsImageInput() bool {
+	for _, list := range [][]string{e.Modalities.Input, e.Input} {
+		for _, m := range list {
+			if strings.EqualFold(strings.TrimSpace(m), "image") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type reasoningOption struct {
@@ -286,6 +309,13 @@ var imageCapableModels = map[string]map[string]imageCapability{
 		"o4-mini":     {MaxBytes: 20 * 1024 * 1024, MIMEs: []string{"image/png", "image/jpeg", "image/gif"}},
 	},
 }
+
+// Defaults for a model the catalog reports as image-capable without stating
+// limits. 20 MB matches chatstate.MaxImageBytes, which is what actually gates
+// attachment in practice.
+const defaultMaxImageBytes = 20 * 1024 * 1024
+
+var defaultImageMIMEs = []string{"image/png", "image/jpeg", "image/gif", "image/webp"}
 
 // imageGatedProviders lists providers whose models must be explicitly
 // declared image-capable (via image_models in a custom provider TOML) before
@@ -558,14 +588,24 @@ func lookupModelInfo(provider providerData, providerOK bool, modelID string) (*M
 	if !ok {
 		return nil, false
 	}
-	return &ModelInfo{
+	info := &ModelInfo{
 		Reasoning:        entry.Reasoning,
 		Temperature:      entry.Temperature,
 		ToolCall:         entry.ToolCall,
 		ContextWindow:    entry.Limit.Context,
 		OutputLimit:      entry.Limit.Output,
 		ReasoningEfforts: entry.effortValues(),
-	}, true
+	}
+	if entry.supportsImageInput() {
+		// The catalog states capability but never size or MIME limits, so use
+		// the same ceiling the attachment path already enforces. A model with
+		// an explicit imageCapableModels entry still overrides this, since
+		// injectImageCapability runs afterwards.
+		info.SupportsImages = true
+		info.MaxImageBytes = defaultMaxImageBytes
+		info.SupportedImageMIMEs = defaultImageMIMEs
+	}
+	return info, true
 }
 
 func mergeModelInfo(primary, fallback *ModelInfo) *ModelInfo {
@@ -587,6 +627,13 @@ func mergeModelInfo(primary, fallback *ModelInfo) *ModelInfo {
 	}
 	if len(out.ReasoningEfforts) == 0 {
 		out.ReasoningEfforts = fallback.ReasoningEfforts
+	}
+	out.SupportsImages = out.SupportsImages || fallback.SupportsImages
+	if out.MaxImageBytes <= 0 {
+		out.MaxImageBytes = fallback.MaxImageBytes
+	}
+	if len(out.SupportedImageMIMEs) == 0 {
+		out.SupportedImageMIMEs = fallback.SupportedImageMIMEs
 	}
 	return &out
 }
