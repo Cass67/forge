@@ -368,3 +368,37 @@ func TestModelEntrySupportsImageInput(t *testing.T) {
 		t.Error("absent modality data must not assert image support")
 	}
 }
+
+// The chatgpt provider resolves to the models.dev "openai" catalog, which
+// describes the API, not the subscription. gpt-6-astra is 1,050,000 there and
+// 272,000 on /backend-api/codex/models. Trusting the API figure means
+// compaction fires ~4x too late and the session dies at depth.
+func TestChatGPTContextIsClampedToSubscriptionWindow(t *testing.T) {
+	info := Lookup("chatgpt", "gpt-6-astra")
+	if info == nil {
+		t.Skip("gpt-6-astra not in catalog")
+	}
+	if info.ContextWindow > chatGPTMaxContextWindow {
+		t.Errorf("ContextWindow = %d, must be clamped to %d",
+			info.ContextWindow, chatGPTMaxContextWindow)
+	}
+
+	// The API provider is not clamped: there the large window is real.
+	if api := Lookup("openai", "gpt-6-astra"); api != nil && api.ContextWindow <= chatGPTMaxContextWindow {
+		t.Errorf("openai ContextWindow = %d, should keep the full API window", api.ContextWindow)
+	}
+}
+
+func TestClampProviderContextOnlyLowers(t *testing.T) {
+	small := &ModelInfo{ContextWindow: 8000}
+	clampProviderContext("chatgpt", small)
+	if small.ContextWindow != 8000 {
+		t.Errorf("a smaller window must be left alone, got %d", small.ContextWindow)
+	}
+	other := &ModelInfo{ContextWindow: 1_000_000}
+	clampProviderContext("anthropic", other)
+	if other.ContextWindow != 1_000_000 {
+		t.Errorf("non-chatgpt providers must not be clamped, got %d", other.ContextWindow)
+	}
+	clampProviderContext("chatgpt", nil) // must not panic
+}

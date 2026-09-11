@@ -310,6 +310,30 @@ var imageCapableModels = map[string]map[string]imageCapability{
 	},
 }
 
+// chatGPTMaxContextWindow is the window the ChatGPT subscription backend
+// actually serves. The "chatgpt" provider resolves through forgeToModelsDev to
+// the models.dev "openai" catalog, which describes the *API* -- it reports
+// 1,050,000 for gpt-6-astra where /backend-api/codex/models reports 272,000 for
+// the same model on a subscription. Believing the API figure means compaction
+// does not fire until roughly 4x past the real ceiling, and the session fails
+// at depth instead of compacting.
+//
+// Hardcoded because the authoritative endpoint needs the account's OAuth token,
+// which the catalog has no access to. Consuming /backend-api/codex/models would
+// retire this along with the curated model list and the family regexes.
+const chatGPTMaxContextWindow = 272000
+
+// clampProviderContext lowers a catalog context window to what the provider
+// really serves. Only ever lowers: a smaller catalog figure is left alone.
+func clampProviderContext(providerID string, info *ModelInfo) {
+	if info == nil || strings.TrimSpace(strings.ToLower(providerID)) != "chatgpt" {
+		return
+	}
+	if info.ContextWindow > chatGPTMaxContextWindow {
+		info.ContextWindow = chatGPTMaxContextWindow
+	}
+}
+
 // Defaults for a model the catalog reports as image-capable without stating
 // limits. 20 MB matches chatstate.MaxImageBytes, which is what actually gates
 // attachment in practice.
@@ -515,17 +539,21 @@ func Lookup(providerID, modelID string) *ModelInfo {
 	case liveOK && bundledOK:
 		info := mergeModelInfo(liveInfo, bundledInfo)
 		injectImageCapability(providerID, modelID, info)
+		clampProviderContext(providerID, info)
 		return info
 	case liveOK:
 		injectImageCapability(providerID, modelID, liveInfo)
+		clampProviderContext(providerID, liveInfo)
 		return liveInfo
 	case bundledOK:
 		injectImageCapability(providerID, modelID, bundledInfo)
+		clampProviderContext(providerID, bundledInfo)
 		return bundledInfo
 	default:
 		info := lookupCustomProvider(providerID, modelID)
 		if info != nil {
 			injectImageCapability(providerID, modelID, info)
+			clampProviderContext(providerID, info)
 			return info
 		}
 		// Model not found in any catalog, but may still have hardcoded image capability.
