@@ -74,3 +74,29 @@ func TestFetchCompatibleModelsAddsOpenRouterHeaders(t *testing.T) {
 		t.Fatalf("fetchCompatibleModels() = %#v, want %#v", got, want)
 	}
 }
+
+// gpt-6-astra was present in the model catalog under openai (which "chatgpt"
+// aliases to) and still never appeared in the picker, because the family
+// filter was a literal "gpt-5" prefix test. Pin the boundary so the next
+// family does not need a code change, and API-only models stay excluded.
+func TestIsSubscriptionGPTModel(t *testing.T) {
+	included := []string{
+		"gpt-5", "gpt-5.6", "gpt-5.6-sol", "gpt-5.3-codex",
+		"gpt-6-astra", "gpt-6-astra-pro", "gpt-7", "gpt-10.1",
+	}
+	for _, m := range included {
+		if !isSubscriptionGPTModel(m) {
+			t.Errorf("%q should be offered on the subscription", m)
+		}
+	}
+
+	excluded := []string{
+		"gpt-4o", "gpt-4-turbo", "gpt-4.1", "o3", "o4-mini",
+		"gpt-", "gpt-5x", "claude-opus-5", "",
+	}
+	for _, m := range excluded {
+		if isSubscriptionGPTModel(m) {
+			t.Errorf("%q must not be offered on the subscription", m)
+		}
+	}
+}

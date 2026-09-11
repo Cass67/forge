@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -56,6 +57,17 @@ func OpenAIModels() []string {
 	return append([]string(nil), hardcodedOpenAIModels...)
 }
 
+// subscriptionGPTFamily matches gpt-5 and every later family. The filter exists
+// to keep API-only models (gpt-4o, o3, o4-mini) out of a subscription list that
+// cannot serve them, and it used to be a literal "gpt-5" prefix test -- which
+// silently hid gpt-6-astra the day it shipped, catalog entry and all. Matching
+// the family number instead means the next one appears on its own.
+var subscriptionGPTFamily = regexp.MustCompile(`^gpt-([5-9]|[1-9][0-9]+)(\.|-|$)`)
+
+func isSubscriptionGPTModel(model string) bool {
+	return subscriptionGPTFamily.MatchString(strings.TrimSpace(model))
+}
+
 func ChatGPTModels() []string {
 	out := append([]string(nil), hardcodedChatGPTModels...)
 	seen := make(map[string]struct{}, len(out))
@@ -65,8 +77,7 @@ func ChatGPTModels() []string {
 	catalog := modelcatalog.ProviderModels("chatgpt")
 	sort.Strings(catalog)
 	for _, m := range catalog {
-		// ChatGPT/Codex backend only serves the gpt-5 family
-		if !strings.HasPrefix(m, "gpt-5") {
+		if !isSubscriptionGPTModel(m) {
 			continue
 		}
 		if _, ok := seen[m]; ok {
